@@ -92,6 +92,7 @@ impl App {
     /// from `new` (whose `volume`-only signature many tests rely on) so `main` can apply
     /// the full config without churning those call sites.
     pub fn apply_config(&mut self, cfg: &Config) {
+        let animations_were_on = self.animations().master;
         self.audio.preset = cfg.eq_preset;
         self.audio.bands = cfg.effective_eq_bands();
         self.audio.normalize = cfg.effective_normalize();
@@ -145,6 +146,9 @@ impl App {
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
         self.ensure_radio_mode_constraints();
+        if animations_were_on && !self.animations().master {
+            self.fx.cancel();
+        }
     }
 
     pub fn search_config_for_mode(&self) -> SearchConfig {

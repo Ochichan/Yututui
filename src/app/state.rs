@@ -161,6 +161,21 @@ impl FxState {
             last_lyric_index: None,
         }
     }
+
+    /// Drop every in-flight visual while retaining the reducer's change-detection anchors.
+    pub(in crate::app) fn cancel(&mut self) {
+        self.until = 0;
+        self.toast = None;
+        self.track_intro = None;
+        self.volume = None;
+        self.like = None;
+        self.seek = None;
+        self.switch = None;
+        self.tabbar = None;
+        self.list = None;
+        self.popup = None;
+        self.lyric = None;
+    }
 }
 
 /// The transient status/notification line shown to the user: its text, when it was last set

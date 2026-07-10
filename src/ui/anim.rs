@@ -482,8 +482,16 @@ pub fn volume_flash_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let Some(t) = fx_t(app, app.fx.volume, fx_window::VOLUME_MS) else {
         return;
     };
-    let alpha = ((1.0 - t) * 3.0).clamp(0.0, 1.0);
-    let vol = (app.playback.volume.clamp(0, 100) as f64) / 100.0;
+    let volume = app.playback.volume.clamp(0, 100);
+    let edge_blink = if matches!(volume, 0 | 100) {
+        // One low-amplitude brightness breath replaces any endpoint size change. It only
+        // changes colour: the glyphs, overlay bounds, and transport hit geometry stay fixed.
+        0.82 + 0.18 * (std::f64::consts::PI * t).sin()
+    } else {
+        1.0
+    };
+    let alpha = ((1.0 - t) * 3.0).clamp(0.0, 1.0) * edge_blink;
+    let vol = volume as f64 / 100.0;
     let filled = (vol * f64::from(area.width)).round() as u16;
     let bg = app.theme.color(R::Background);
     let on = lerp_color(bg, app.theme.color(R::GaugeFilled), alpha);

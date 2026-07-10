@@ -18,6 +18,7 @@ impl App {
         status_before.push_str(&self.status.text);
         let kind_before = self.status.kind;
         let paused_before = self.playback.paused;
+        let animations_were_on = self.animations().master;
         // Default this turn's status to the error styling; the few positive handlers override
         // it to `Info` while they run. This keeps the kind in lock-step with the status text:
         // an error set by one of the ~40 plain `self.status.text = …` sites can never inherit a
@@ -55,6 +56,9 @@ impl App {
         // TTL above: every input path (key, mouse, remote, DJ Gem) changes the same state, so
         // diffing it here means no call site can forget to trigger the matching effect.
         self.detect_fx(status_changed, seeked);
+        if animations_were_on && !self.animations().master {
+            self.fx.cancel();
+        }
         self.sync_art_overlay_state();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds

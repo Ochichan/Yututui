@@ -11,7 +11,7 @@
   import type { AppCtx } from '../../lib/ctx';
   import { LOCAL_THEMES } from '../../lib/theme/local';
   import { ROLES } from '../../lib/theme/roles';
-  import { FPS_MIN, FPS_MAX, FPS_DEFAULT, type EffectId } from '../../lib/stores/anim.svelte';
+  import { EFFECT_GROUPS, FPS_MIN, FPS_MAX, FPS_DEFAULT } from '../../lib/stores/anim.svelte';
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
@@ -41,25 +41,13 @@
     return /^#[0-9a-f]{6}$/i.test(h) ? h : '#000000';
   }
 
-  const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: EffectId[] }> = $derived([
-    {
-      title: t('settings.graphics.animGroup.element'),
-      effects: ['title', 'heart', 'seekbar', 'spinner', 'eq_bars', 'controls', 'border'],
-    },
-    {
-      title: t('settings.graphics.animGroup.oneShot'),
-      effects: ['track_intro', 'lyrics', 'toast', 'volume_flash', 'like_burst', 'seek_flash'],
-    },
-    {
-      title: t('settings.graphics.animGroup.uiWide'),
-      effects: ['selection', 'stagger', 'caret', 'tabs', 'popup_fade', 'activity', 'about_fx'],
-    },
-    {
-      title: t('settings.graphics.animGroup.filler'),
-      tui: true,
-      effects: ['visualizer', 'rain', 'donut', 'starfield', 'bounce'],
-    },
-  ]);
+  const ANIM_GROUPS = $derived(
+    EFFECT_GROUPS.map((group) => ({
+      title: t(`settings.graphics.animGroup.${group.id}`),
+      tui: group.id === 'filler',
+      effects: group.effects,
+    })),
+  );
   const TUI_ONLY = new Set(['rain', 'donut', 'starfield', 'bounce']);
 </script>
 
@@ -166,6 +154,12 @@
       onchange={(v) => settings.apply('animations', 'master', v)}
     />
   </SettingRow>
+  <SettingRow label={t('settings.graphics.pauseUnfocused')}>
+    <Toggle
+      checked={anim?.pause_unfocused ?? true}
+      onchange={(v) => settings.apply('animations', 'pause_unfocused', v)}
+    />
+  </SettingRow>
   {@const fps = anim?.fps ?? FPS_DEFAULT}
   <SettingRow label="FPS" hint={t('settings.graphics.fpsHint')}>
     <input
@@ -179,12 +173,6 @@
       onchange={(e) => settings.apply('animations', 'fps', e.currentTarget.valueAsNumber)}
     />
     <span class="val mono">{fps}</span>
-  </SettingRow>
-  <SettingRow label={t('settings.graphics.pauseUnfocused')}>
-    <Toggle
-      checked={anim?.pause_unfocused ?? true}
-      onchange={(v) => settings.apply('animations', 'pause_unfocused', v)}
-    />
   </SettingRow>
   <div class="anim-grid" class:dim={!(anim?.master ?? false)}>
     {#each ANIM_GROUPS as g (g.title)}
@@ -342,8 +330,8 @@
     font-size: 12px;
   }
   .anim-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    display: flex;
+    flex-direction: column;
     gap: var(--space-4);
     padding: var(--space-4);
     transition: opacity 140ms ease;
@@ -352,7 +340,13 @@
   .anim-grid.dim {
     opacity: 0.5;
   }
+  .ag {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    column-gap: var(--space-3);
+  }
   .ag h4 {
+    grid-column: 1 / -1;
     margin: 0 0 var(--space-2);
     font-size: 11px;
     text-transform: uppercase;

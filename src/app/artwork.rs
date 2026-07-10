@@ -101,7 +101,7 @@ impl App {
     }
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
-    /// player view (master switch + at least one effect enabled, a track loaded, not paused),
+    /// player view (master switch + a visible continuous effect, a track loaded, not paused),
     /// radio mode has its built-in radio art motion enabled, when the DJ Gem start-screen
     /// mascot wants to groove (see [`Self::ai_mascot_active`]), while a one-shot feedback
     /// effect is mid-flight (see [`Self::fx_active`]), or while an ambient UI effect has
@@ -125,7 +125,9 @@ impl App {
             && self.radio_dedicated_mode
             && self.config.effective_album_art()
             && a.master;
-        let running = (player_running && (a.active() || radio_art_running))
+        let player_effect_running = player_running && self.player_animation_config_active(a);
+        let running = player_effect_running
+            || radio_art_running
             || self.ai_mascot_active()
             || self.fx_active()
             || self.ambient_animation_running()
@@ -136,13 +138,28 @@ impl App {
         running && (!a.pause_unfocused || self.focused)
     }
 
-    /// Whether any one-shot feedback effect is still inside its window. While true the clock
+    /// Continuous effects that can currently paint the player. Event feedback wakes the clock
+    /// through `fx_active()` only; contextual UI effects use `ambient_animation_running()`.
+    fn player_animation_config_active(&self, a: crate::config::AnimationsConfig) -> bool {
+        a.master
+            && (a.title
+                || a.heart
+                || a.seekbar
+                || a.spinner
+                || a.eq_bars
+                || a.controls
+                || a.border
+                || (!self.lyrics.visible
+                    && (a.rain || a.donut || a.visualizer || a.starfield || a.bounce)))
+    }
+
+    /// Whether an enabled one-shot feedback effect is still inside its window. While true the clock
     /// keeps ticking even where it would otherwise sleep (paused playback, non-player views) so
     /// the effect gets to finish; the deadline is comparison-based, so once passed the stale
     /// start frames cost nothing. Armed only through [`Self::fx_arm`], which is gated per-flag,
     /// so with every toggle off this is permanently false.
     pub fn fx_active(&self) -> bool {
-        self.anim.anim_frame < self.fx.until
+        self.animations().master && self.anim.anim_frame < self.fx.until
     }
 
     /// Whether a *continuous* UI effect currently has something on screen to animate outside
@@ -169,11 +186,24 @@ impl App {
         match self.mode {
             Mode::Player => {
                 // The element effects already run via the player gate while playing; the two
-                // ambient extras are the lyrics glow (breathes only while playing — pausing
-                // freezes it like every player effect) and animated "fetching" dots.
+                // ambient extras are contextual selections and activity indicators. They retain
+                // the player's pause/track gate while avoiding idle redraws.
                 let playing = !self.playback.paused && self.queue.current().is_some();
-                (playing && a.lyrics && self.lyrics.visible)
-                    || (playing && a.activity && self.lyrics.visible && self.lyrics.loading)
+                let downloading = self.queue.current().is_some_and(|song| {
+                    matches!(
+                        self.downloads.active.get(&song.video_id),
+                        Some(DownloadState::Running(_))
+                    )
+                });
+                (playing
+                    && a.selection
+                    && (self.queue_popup.open
+                        || self.dropdowns.eq_open
+                        || self.dropdowns.streaming_open))
+                    || (playing && a.lyrics && self.lyrics.visible)
+                    || (playing
+                        && a.activity
+                        && ((self.lyrics.visible && self.lyrics.loading) || downloading))
             }
             Mode::Search => {
                 (a.activity && self.search.searching)
@@ -238,18 +268,19 @@ impl App {
             // One-shots are short and motion-dense; let them draw at the full tick rate.
             return fps;
         }
-        if matches!(self.mode, Mode::Player)
-            && a.master
-            && (a.rain || a.donut || a.visualizer || a.starfield)
-        {
-            return fps.min(20);
-        }
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
         if player_running
             && a.master
-            && (a.any_effect() || (self.radio_dedicated_mode && self.config.effective_album_art()))
+            && !self.lyrics.visible
+            && (a.rain || a.donut || a.visualizer || a.starfield)
+        {
+            return fps.min(20);
+        }
+        if player_running
+            && (self.player_animation_config_active(a)
+                || (self.radio_dedicated_mode && self.config.effective_album_art() && a.master))
         {
             return fps;
         }
@@ -501,6 +532,9 @@ impl App {
             self.config.animations.radio_master = Some(on);
         } else {
             self.config.animations.master = on;
+        }
+        if !on {
+            self.fx.cancel();
         }
         // If the Settings screen is open, its draft is the source of truth on close
         // (`SettingsDraft::apply_to` copies `draft.animations` wholesale), so mirror the flip there
