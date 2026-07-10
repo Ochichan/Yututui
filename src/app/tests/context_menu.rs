@@ -101,7 +101,9 @@ fn queue_right_click_preserves_existing_range_and_menu_removes_it() {
 }
 
 #[test]
-fn queue_menu_play_selected_plays_whole_range_now() {
+fn queue_menu_play_from_here_preserves_the_existing_queue() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
     let mut app = app_playing(6, 0);
     app.update(Msg::Key(key(KeyCode::Char('c'))));
     app.queue_popup.anchor = 2;
@@ -112,14 +114,13 @@ fn queue_menu_play_selected_plays_whole_range_now() {
     let cmds = app.update(Msg::MouseRightClick { col, row });
 
     assert!(cmds.is_empty());
-    assert_eq!(
-        app.overlays
-            .context_menu
-            .as_ref()
-            .expect("queue menu should open")
-            .target_count(),
-        3
-    );
+    let menu = app
+        .overlays
+        .context_menu
+        .as_ref()
+        .expect("queue menu should open");
+    assert_eq!(menu.target_count(), 3);
+    assert_eq!(menu.items[0].label(menu.target_count()), "Play from here");
 
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(0));
     let cmds = app.update(Msg::MouseClick { col, row });
@@ -133,12 +134,7 @@ fn queue_menu_play_selected_plays_whole_range_now() {
         .iter()
         .map(|song| song.video_id.as_str())
         .collect();
-    assert_eq!(
-        ids,
-        vec![
-            "id0", "id2", "id3", "id4", "id1", "id2", "id3", "id4", "id5"
-        ]
-    );
+    assert_eq!(ids, vec!["id0", "id1", "id2", "id3", "id4", "id5"]);
 }
 
 #[test]

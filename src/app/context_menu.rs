@@ -88,6 +88,7 @@ impl ContextTarget {
 pub(crate) enum ContextCommand {
     Activate,
     PlayNow,
+    PlayFromHere,
     Enqueue,
     ToggleFavorite,
     AddToPlaylist,
@@ -114,6 +115,7 @@ impl ContextMenuItem {
                 format!("{} ({count})", t!("Play selected", "선택 항목 재생"))
             }
             ContextCommand::PlayNow => t!("Play now", "지금 재생").to_owned(),
+            ContextCommand::PlayFromHere => t!("Play from here", "여기서부터 재생").to_owned(),
             ContextCommand::Enqueue if count > 1 => {
                 format!(
                     "{} ({count})",
@@ -190,19 +192,20 @@ impl App {
 
     /// A right press either opens the in-TUI menu or runs the configured safe direct action.
     pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if let Some(menu) = self.overlays.context_menu.as_ref() {
-            if menu.anchor_col == col && menu.anchor_row == row {
-                let action = self
-                    .mousemap
-                    .action(menu.target.mouse_context(), MouseGesture::RightClick);
-                if matches!(action, MouseAction::ContextMenu | MouseAction::Disabled) {
-                    return Vec::new();
-                }
-                let target = menu.target.clone();
-                self.overlays.context_menu = None;
-                self.dirty = true;
-                return self.execute_mouse_action(target, action);
+        if let Some(menu) = self.overlays.context_menu.as_ref()
+            && menu.anchor_col == col
+            && menu.anchor_row == row
+        {
+            let action = self
+                .mousemap
+                .action(menu.target.mouse_context(), MouseGesture::RightClick);
+            if matches!(action, MouseAction::ContextMenu | MouseAction::Disabled) {
+                return Vec::new();
             }
+            let target = menu.target.clone();
+            self.overlays.context_menu = None;
+            self.dirty = true;
+            return self.execute_mouse_action(target, action);
         }
         if self.overlays.context_menu.take().is_some() {
             self.dirty = true;
@@ -229,19 +232,20 @@ impl App {
     /// now covering that cell. If single-click is configured as a direct action no menu exists,
     /// so the still-current underlying hit map supplies the snapshot instead.
     pub(in crate::app) fn on_mouse_right_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if let Some(menu) = self.overlays.context_menu.as_ref() {
-            if menu.anchor_col == col && menu.anchor_row == row {
-                let action = self
-                    .mousemap
-                    .action(menu.target.mouse_context(), MouseGesture::RightDoubleClick);
-                if action == MouseAction::Disabled {
-                    return Vec::new();
-                }
-                let target = menu.target.clone();
-                self.overlays.context_menu = None;
-                self.dirty = true;
-                return self.execute_mouse_action(target, action);
+        if let Some(menu) = self.overlays.context_menu.as_ref()
+            && menu.anchor_col == col
+            && menu.anchor_row == row
+        {
+            let action = self
+                .mousemap
+                .action(menu.target.mouse_context(), MouseGesture::RightDoubleClick);
+            if action == MouseAction::Disabled {
+                return Vec::new();
             }
+            let target = menu.target.clone();
+            self.overlays.context_menu = None;
+            self.dirty = true;
+            return self.execute_mouse_action(target, action);
         }
         let target = match self.overlays.context_menu.take() {
             Some(menu) if menu.anchor_col == col && menu.anchor_row == row => Some(menu.target),
@@ -593,7 +597,7 @@ impl App {
                 C::Download,
                 C::Remove,
             ],
-            ContextTarget::Queue { .. } => vec![C::PlayNow, C::Remove],
+            ContextTarget::Queue { .. } => vec![C::PlayFromHere, C::Remove],
             ContextTarget::Local {
                 row,
                 song_ids,
@@ -789,19 +793,10 @@ impl App {
                 self.queue_popup.cursor = hi;
                 self.queue_popup.anchor = lo;
                 self.dirty = true;
-                let selected: Vec<Song> = self
-                    .queue
-                    .ordered_iter()
-                    .skip(lo)
-                    .take(hi - lo + 1)
-                    .cloned()
-                    .collect();
                 match command {
-                    ContextCommand::Activate | ContextCommand::PlayNow if selected.len() > 1 => {
-                        self.queue_popup.open = false;
-                        self.play_now_many(selected)
-                    }
-                    ContextCommand::Activate | ContextCommand::PlayNow => self.queue_popup_play(lo),
+                    ContextCommand::Activate
+                    | ContextCommand::PlayNow
+                    | ContextCommand::PlayFromHere => self.queue_popup_play(lo),
                     ContextCommand::Remove => self.remove_queue_range(lo, hi),
                     _ => Vec::new(),
                 }
