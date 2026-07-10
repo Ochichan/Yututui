@@ -3,6 +3,8 @@
 **English** · [한국어](README.ko.md) · [日本語](README.ja.md)
 
 [![Release](https://img.shields.io/github/v/release/Ochichan/Yututui)](https://github.com/Ochichan/Yututui/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/Ochichan/Yututui/ci-pr.yml?branch=main&label=CI)](https://github.com/Ochichan/Yututui/actions/workflows/ci-pr.yml)
+[![Downloads](https://img.shields.io/github/downloads/Ochichan/Yututui/total?color=f6c177)](https://github.com/Ochichan/Yututui/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8aadf4.svg)](LICENSE)
 
 YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating your RAM, no ads. All behind a three-letter command: `ytt`. Rust + ratatui. MIT.
@@ -10,6 +12,8 @@ YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating 
 Public beta: stable enough for daily use, still moving fast.
 
 ### [▶ Live demo & the full feature tour → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
+
+**📖 New to terminals?** The [friendly manual](MANUAL.md) walks through every mode — music, radio, the Local Deck, and the full Spotify move-in — step by step, no jargon. ([한국어](MANUAL.ko.md) · [日本語](MANUAL.ja.md))
 
 > 🖼️ *Demo GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/hero.gif, delete the "coming soon" line above, then uncomment:
@@ -43,7 +47,12 @@ Windows direct installer:
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
-**Tray companion:** macOS and Windows releases include `yututray`, the menu-bar / notification-area mini player.
+Then run `ytt`. If anything's off, `ytt doctor` tells you exactly what to fix — more in [Troubleshooting](#troubleshooting).
+
+<details>
+<summary><b>Tray companion (macOS / Windows)</b></summary>
+
+macOS and Windows releases include `yututray`, the menu-bar / notification-area mini player.
 
 | Channel | What gets installed | How to start the tray |
 | --- | --- | --- |
@@ -54,15 +63,7 @@ irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 
 Start-at-login is opt-in: `yututray --install-startup`.
 
-> After a direct installer or source build, run `ytt doctor` to see what's missing.
-> **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. Check with `ytt tools status --why`, update with `ytt tools update`, or pin a known-good binary with `ytt tools use system|managed|<path>`.
-
-## Terminal support
-
-- Terminal support varies by emulator; YuTuTui! probes capabilities and falls back where possible.
-- Album art uses Kitty/Sixel/iTerm2 protocols when the terminal supports them, otherwise halfblocks or retro ASCII.
-- Text zoom, CJK/IME behavior, mouse reporting, and video overlay depend on terminal and OS support.
-- Check your environment with `ytt doctor terminal --json`; see the full [terminal compatibility matrix](docs/terminal-compatibility.md).
+</details>
 
 ## Quick start
 
@@ -74,15 +75,17 @@ ytt
 2. Move with **`↑`/`↓`**, press **`Enter`** to play.
 3. Press **`?`** anytime for the full, always-current key list.
 
-That's it. Music. (Something off? **`ytt doctor`** tells you exactly what to fix.)
+That's it. Music.
 
 ## Tour
 
-Screenshots and GIFs are landing here shortly — meanwhile the **[feature tour](https://ochichan.github.io/Yututui/)** has everything live, in detail.
+Every feature below is shown live, in detail, on the **[feature tour](https://ochichan.github.io/Yututui/)**.
 
 <!-- 📸 FOR THE PERSON ADDING MEDIA: drop files into docs/media/ with these exact names:
-hero.gif · player.png · djgem.gif · assistant.gif · video.gif · sources.png · radio.png ·
-everywhere.png · themes.gif · animations.gif · retro.png · transfer.gif
+hero.gif · player.png · lyrics.gif · search.gif · sources.png · djgem.gif · assistant.gif ·
+video.gif · radio.png · radio-id.gif · library.png · queue.png · downloads.png ·
+localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · eq.png ·
+retro.png · transfer.gif · help.png
 The same files serve README.md, README.ko.md and README.ja.md. Every slot below has the
 same one-line instruction; extra shots are welcome — just copy a slot block. -->
 
@@ -93,6 +96,21 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
 ![The player with album art and synced lyrics](docs/media/player.png)
+-->
+<!-- 📸 TO FILL: add docs/media/lyrics.gif, then uncomment:
+![Time-synced lyrics scrolling under the player](docs/media/lyrics.gif)
+-->
+
+### Six catalogs, one search box
+
+**`Tab`** in Search flips between YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive and Radio Browser — or all at once, every result tagged `[SRC]`.
+
+> 🖼️ *Screenshots coming soon.*
+<!-- 📸 TO FILL: add docs/media/search.gif, delete the "coming soon" line above, then uncomment:
+![Typing a search and playing a result](docs/media/search.gif)
+-->
+<!-- 📸 TO FILL: add docs/media/sources.png, then uncomment:
+![Searching across six catalogs from one box](docs/media/sources.png)
 -->
 
 ### DJ Gem streaming
@@ -115,44 +133,74 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 ### The music video, floating over your terminal
 
-**`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's. When that mpv window has focus, `Space`, `.`, `,`, `q`, `f`, and `m` control play/pause, next, previous, close, fullscreen, and mute. Those mpv overlay bindings show up in Help/Hotkeys too; fixed compatibility aliases `<`, `>`, and `p` still work.
+**`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's, and the mpv window answers `Space`, `.`, `,`, `q`, `f`, `m`.
 
 > 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/video.gif, delete the "coming soon" line above, then uncomment:
 ![The music video floating over the terminal](docs/media/video.gif)
 -->
 
-### Six catalogs, one search box — plus a radio mode
+### Radio mode — and it knows the song
 
-**`Tab`** in Search flips between YouTube Music, SoundCloud, Audius, Jamendo, Internet Archive and Radio Browser (or all at once). **`Alt+Shift+R`** turns the whole app into an internet-radio tuner.
+**`Alt+Shift+R`** turns the whole app into an internet-radio tuner; press **`i`** and Gemini names what's playing on the live stream, **`f`** favorites it.
 
 > 🖼️ *Screenshots coming soon.*
-<!-- 📸 TO FILL: add docs/media/sources.png, delete the "coming soon" line above, then uncomment both:
-![Searching across six catalogs from one box](docs/media/sources.png)
--->
-<!-- 📸 TO FILL: add docs/media/radio.png, then uncomment:
+<!-- 📸 TO FILL: add docs/media/radio.png, delete the "coming soon" line above, then uncomment:
 ![Radio mode as an internet-radio tuner](docs/media/radio.png)
+-->
+<!-- 📸 TO FILL: add docs/media/radio-id.gif, then uncomment:
+![Pressing i to identify the song playing on live radio](docs/media/radio-id.gif)
+-->
+
+### Library, queue & downloads
+
+Build playlists in the Library (or let DJ Gem build them), pop the queue with **`c`**, and **`d`** saves a tagged m4a with cover art — **`Shift+D`** grabs the whole list.
+
+> 🖼️ *Screenshots coming soon.*
+<!-- 📸 TO FILL: add docs/media/library.png, delete the "coming soon" line above, then uncomment:
+![The Library with playlists, favorites and history](docs/media/library.png)
+-->
+<!-- 📸 TO FILL: add docs/media/queue.png, then uncomment:
+![The queue popup over the player](docs/media/queue.png)
+-->
+<!-- 📸 TO FILL: add docs/media/downloads.png, then uncomment:
+![Downloads: tagged m4a files with cover art, played offline](docs/media/downloads.png)
+-->
+
+### Local Deck — an offline player for everything on disk
+
+**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres, smart lists, no internet needed. The [manual](MANUAL.md) has the full tour.
+
+> 🖼️ *Screenshot coming soon.*
+<!-- 📸 TO FILL: add docs/media/localdeck.png, delete the "coming soon" line above, then uncomment:
+![The Local Deck browsing local albums](docs/media/localdeck.png)
 -->
 
 ### Control from anywhere
 
 Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, `ytt -r` from any shell — or a fully headless daemon.
 
-> 🖼️ *Screenshot coming soon.*
+> 🖼️ *Screenshots coming soon.*
 <!-- 📸 TO FILL: add docs/media/everywhere.png, delete the "coming soon" line above, then uncomment:
 ![OS integrations: tray mini player, Control Center, SMTC, MPRIS](docs/media/everywhere.png)
+-->
+<!-- 📸 TO FILL: add docs/media/tray.png, then uncomment:
+![The yututray mini player in the menu bar / tray](docs/media/tray.png)
 -->
 
 ### Make it yours
 
-13 themes with all 34 color roles hex-editable, and 25 animations — up to and including a spinning ASCII donut.
+13 themes with all 34 color roles hex-editable, 25 animations — up to a spinning ASCII donut — and a 10-band EQ with presets plus loudness normalization.
 
 > 🖼️ *GIFs coming soon.*
-<!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment both:
+<!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:
 ![Cycling through the built-in themes](docs/media/themes.gif)
 -->
 <!-- 📸 TO FILL: add docs/media/animations.gif, then uncomment:
 ![Animations, including the spinning ASCII donut](docs/media/animations.gif)
+-->
+<!-- 📸 TO FILL: add docs/media/eq.png, then uncomment:
+![The 10-band EQ with presets](docs/media/eq.png)
 -->
 
 ### Retro mode
@@ -166,21 +214,21 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 ### Spotify moves in with one command
 
-`ytt transfer import <url>` — checkpointed, resumable, with a match report for anything ambiguous. Setup in the reference below.
+`ytt transfer import <url>` — checkpointed, resumable, with a match report for anything ambiguous. Setup in the [reference](#reference) below, or let the [manual](MANUAL.md) hold your hand through the whole thing.
 
 > 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/transfer.gif, delete the "coming soon" line above, then uncomment:
 ![A Spotify playlist importing in one command](docs/media/transfer.gif)
 -->
 
-### And the rest
+### The app remembers the keys
 
-- **Downloads** — `d` saves a tagged m4a with cover art for offline play.
-- **Scrobbling** — Last.fm / ListenBrainz with a crash-safe offline queue.
-- **10-band EQ** with presets, plus loudness normalization.
-- Every key rebindable, the whole UI mouse-aware, interface in English & 한국어.
+**`?`** opens a live cheat sheet that reflects *your* bindings — every key rebindable, the whole UI mouse-aware, interface in English & 한국어.
 
-**The long version of everything → [feature tour](https://ochichan.github.io/Yututui/).**
+> 🖼️ *Screenshot coming soon.*
+<!-- 📸 TO FILL: add docs/media/help.png, delete the "coming soon" line above, then uncomment:
+![The live keybinding cheat sheet](docs/media/help.png)
+-->
 
 ## Essential keys
 
@@ -204,6 +252,67 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `Ctrl+Q` | Quit |
 
 > **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume.
+
+## Troubleshooting
+
+First aid, always: **`ytt doctor`** checks mpv, yt-dlp and ffmpeg and tells you exactly what to fix. `ytt doctor --verbose` digs deeper; `ytt doctor terminal --json` reports what your terminal can do.
+
+### Playback
+
+| Symptom | Fix |
+| --- | --- |
+| Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
+| Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
+| Several tracks fail with 403/429 or "YouTube rejected the stream" | Run `ytt doctor --verbose`, check the [cookies reference](#reference), and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. |
+| A specific song won't play | It may need sign-in — see the cookies section in the [reference](#reference). |
+| The app runs a different yt-dlp than your shell | That's by design (managed copy vs `PATH`) — see *yt-dlp selection* in the [reference](#reference). |
+
+### Install & startup
+
+| Symptom | Fix |
+| --- | --- |
+| `ytt: command not found` | Open a fresh terminal; still stuck, add the `PATH` line the installer printed. |
+| Direct installer / source build is missing helpers | The one-line installers only install `ytt` itself — `ytt doctor` lists what to install and how. |
+
+### Display & terminals
+
+Terminal support varies by emulator — YuTuTui! probes capabilities and falls back where possible. Check your environment with `ytt doctor terminal --json` and compare with the [terminal compatibility matrix](docs/terminal-compatibility.md).
+
+| Symptom | Fix |
+| --- | --- |
+| No album art | Off by default: Settings → General → **Album art**, then restart. |
+| Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
+| Album art looks blocky in VS Code / Apple Terminal | Those terminals have no image protocol — halfblocks are the intended fallback there. |
+| Bare Linux console or an old SSH session looks broken | Switch on retro mode (Settings → Graphics): everything redraws CP437-safe, album art becomes ASCII art. |
+| `v` (music video) does nothing over SSH / a bare TTY | The video overlay is an mpv GUI window — it needs a desktop session. |
+
+### Spotify import
+
+| Symptom | Fix |
+| --- | --- |
+| Spotify 403 / "not allowlisted" | Add your own account under *User Management* in your Spotify app dashboard, and check the Client ID for typos. |
+| Browser shows INVALID_CLIENT / redirect mismatch | The redirect URI must match **exactly**: `http://127.0.0.1:9271/callback` — IP not `localhost`, correct port, no trailing slash. |
+| "could not listen on 127.0.0.1:9271" | That port is busy. Set `spotify.redirect_port` in `config.json` and update the dashboard redirect URI to match. |
+| Clicked Connect but no browser opened | On headless/SSH the auth URL is copied to your clipboard and saved to `spotify_auth_url.txt` — paste it into any browser to approve. |
+| Spotify import "needs a YouTube Music cookie" | Importing into a YTM playlist/likes needs sign-in; importing into a local Library playlist works without one. See the cookies section in the [reference](#reference). |
+
+### Accounts, scrobbling & OS integration
+
+| Symptom | Fix |
+| --- | --- |
+| Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start — restart it after connecting. |
+| No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
+| Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
+| No desktop update notification | Update notices still appear in About/status; desktop notifications are best-effort and depend on terminal, tmux, and OS notification support. |
+
+### Everything else
+
+| Symptom | Fix |
+| --- | --- |
+| DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
+| Remapped a key into chaos | Settings → General → **Reset keybindings**. |
+
+Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and mention your OS.
 
 ## Reference
 
@@ -272,7 +381,7 @@ Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while
 7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. Dev-Mode apps serve up to 25 such allowlisted users.
 8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page — approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
 
-Matching is metadata-based (NFKC-normalized, CJK-safe) and now resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
+Matching is metadata-based (NFKC-normalized, CJK-safe) and resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
 
 </details>
 
@@ -292,7 +401,7 @@ Matching is metadata-based (NFKC-normalized, CJK-safe) and now resolves Spotify 
 <details>
 <summary><b>yt-dlp selection</b></summary>
 
-`ytt` may run a different yt-dlp than the one your shell prints with `yt-dlp --version`: the app can use its managed copy, a configured override, or the system binary on `PATH`. To see the actual choice and candidates:
+**yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. It may therefore run a different yt-dlp than the one your shell prints with `yt-dlp --version`. To see the actual choice and candidates:
 
 ```sh
 ytt tools status --why
@@ -311,34 +420,6 @@ ytt tools unpin               # return to normal managed/system selection
 `YTM_YTDLP` is still the strongest override. If you change it in your OS settings, open a fresh terminal or unset it before expecting `ytt tools use ...` to take over.
 
 The app's own yt-dlp calls ignore your yt-dlp config file by default, so options meant for shell downloads do not break parsed output. Set `YTM_YTDLP_USER_CONFIG=1` to re-enable your yt-dlp config for app-parsed calls. Playback through mpv's `ytdl_hook` still honors your yt-dlp config; only search, playlist fetches, metadata, prefetch resolution, and downloads ignore it by default.
-
-</details>
-
-<details>
-<summary><b>Troubleshooting</b></summary>
-
-| Symptom | Fix |
-| --- | --- |
-| Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
-| `ytt: command not found` | Open a fresh terminal; still stuck, add the `PATH` line the installer printed. |
-| Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
-| Several tracks fail with 403/429 or "YouTube rejected the stream" | Run `ytt doctor --verbose`, check the cookies section above, and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. |
-| A specific song won't play | It may need sign-in — see the cookies section above. |
-| No album art | Off by default: Settings → General → **Album art**, then restart. |
-| Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
-| No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
-| No desktop update notification | Update notices still appear in About/status; desktop notifications are best-effort and depend on terminal, tmux, and OS notification support. |
-| Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
-| DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
-| Spotify 403 / "not allowlisted" | Add your own account under *User Management* in your Spotify app dashboard, and check the Client ID for typos. |
-| Browser shows INVALID_CLIENT / redirect mismatch | The redirect URI must match **exactly**: `http://127.0.0.1:9271/callback` — IP not `localhost`, correct port, no trailing slash. |
-| "could not listen on 127.0.0.1:9271" | That port is busy. Set `spotify.redirect_port` in `config.json` and update the dashboard redirect URI to match. |
-| Clicked Connect but no browser opened | On headless/SSH the auth URL is copied to your clipboard and saved to `spotify_auth_url.txt` — paste it into any browser to approve. |
-| Spotify import "needs a YouTube Music cookie" | Importing into a YTM playlist/likes needs sign-in; importing into a local Library playlist works without one. See the cookies section. |
-| Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start — restart it after connecting. |
-| Remapped a key into chaos | Settings → General → **Reset keybindings**. |
-
-Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and mention your OS.
 
 </details>
 

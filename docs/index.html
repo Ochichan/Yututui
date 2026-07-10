@@ -542,6 +542,22 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
   .feature--wide p { flex: 1 1 34ch; min-width: 28ch; }
 }
 
+/* by-the-numbers strip under the feature grid */
+.stats {
+  margin-top: 1.2rem; display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 600px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+.stat { background: var(--surface); padding: 1.15rem .9rem 1rem; text-align: center; transition: background .25s ease; }
+.stat:hover { background: var(--overlay); }
+.stat b { display: block; font-size: 1.75rem; font-weight: 800; letter-spacing: -.03em; line-height: 1.1; margin-bottom: .25rem; }
+.stat span { color: var(--muted); font-size: .76rem; line-height: 1.4; display: inline-block; }
+.stat:nth-child(1) b { color: var(--pine); } .stat:nth-child(2) b { color: var(--love); }
+.stat:nth-child(3) b { color: var(--gold); } .stat:nth-child(4) b { color: var(--iris); }
+.stat:nth-child(5) b { color: var(--foam); } .stat:nth-child(6) b { color: var(--rose); }
+
 /* compact ✓-fact lists — used instead of second paragraphs */
 .facts { list-style: none; padding: 0; margin-top: 1.2rem; display: flex; flex-direction: column; gap: .55rem; }
 .facts li { display: flex; gap: .65rem; align-items: baseline; color: var(--subtle); font-size: .85rem; line-height: 1.55; }
@@ -1043,7 +1059,7 @@ kbd {
     <article class="feature ros">
       <div class="feature__top"><kbd>n</kbd> <kbd>d</kbd></div>
       <h3 class="display" data-i18n="f.playlists.h">Playlists and downloads, kept local</h3>
-      <p data-i18n-html="f.playlists.p">Build playlists in the Library (or let DJ Gem build them), and press <code>d</code> to save any track as a tagged m4a with cover art — played offline from the Downloads tab.</p>
+      <p data-i18n-html="f.playlists.p">Build playlists in the Library (or let DJ Gem build them), and press <code>d</code> to save any track as a tagged m4a with cover art — <code>Shift+D</code> grabs the whole list, played offline from the Downloads tab or the immersive Local Deck (<code>Alt+Shift+L</code>).</p>
     </article>
 
     <article class="feature foa">
@@ -1069,6 +1085,15 @@ kbd {
       <h3 class="display" data-i18n="f.help.h">The app remembers the keys</h3>
       <p data-i18n-html="f.help.p">Press <code>?</code> for the always-current cheat sheet — your language, your custom bindings. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), everything on screen is clickable, and <code>Ctrl+-</code> / <code>Ctrl+=</code> zooms the whole UI.</p>
     </article>
+  </div>
+
+  <div class="stats reveal" aria-label="YuTuTui! by the numbers">
+    <div class="stat"><b class="display">6</b><span data-i18n="st.catalogs">catalogs, one search box</span></div>
+    <div class="stat"><b class="display">13</b><span data-i18n="st.themes">themes, yours to recolor</span></div>
+    <div class="stat"><b class="display">34</b><span data-i18n="st.roles">hex-editable color roles</span></div>
+    <div class="stat"><b class="display">25</b><span data-i18n="st.anims">animations, donut included</span></div>
+    <div class="stat"><b class="display">10</b><span data-i18n="st.eq">EQ bands, with presets</span></div>
+    <div class="stat"><b class="display">3</b><span data-i18n="st.os">platforms — macOS · Windows · Linux</span></div>
   </div>
 </section>
 
@@ -1395,6 +1420,8 @@ scoop install yututui" data-i18n="copy">copy</button>
       <a href="https://github.com/Ochichan/Yututui/blob/main/README.ko.md" target="_blank" rel="noopener">한국어</a>
       <a href="https://github.com/Ochichan/Yututui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
       <a href="https://github.com/Ochichan/Yututui/releases" target="_blank" rel="noopener" data-i18n="foot.releases">Releases</a>
+      <a href="https://github.com/Ochichan/Yututui/blob/main/MANUAL.md" target="_blank" rel="noopener" data-i18n="foot.manual">Manual</a>
+      <a href="https://github.com/Ochichan/Yututui#troubleshooting" target="_blank" rel="noopener" data-i18n="foot.trouble">Troubleshooting</a>
     </div>
     <div class="foot__meta">
       <div class="lic">MIT © Ochichan</div>
@@ -1467,13 +1494,20 @@ var KO = {
   "f.spotify.h": "Spotify에서 이사 오기",
   "f.spotify.p": "좋아요와 플레이리스트가 체크포인트·이어하기 되는 명령 한 줄로 YouTube Music에 — CJK 안전 매칭, 애매한 곡은 때려 맞추지 않고 리포트로. 반대 방향도 됩니다.",
   "f.playlists.h": "플레이리스트와 다운로드는 내 손안에",
-  "f.playlists.p": "라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), <code>d</code> 하나로 커버 아트·태그 박힌 m4a 저장 — 다운로드 탭에서 오프라인 재생.",
+  "f.playlists.p": "라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), <code>d</code> 하나로 커버 아트·태그 박힌 m4a 저장 — <code>Shift+D</code> 는 목록 통째로, 다운로드 탭이나 몰입형 로컬 덱(<code>Alt+Shift+L</code>)에서 오프라인 재생.",
   "f.remote.h": "어디서든 조종하기",
   "f.remote.p": "미디어 키, macOS Control Center, 메뉴 바/트레이 미니 플레이어, Linux MPRIS, 아무 셸에서나 <code>ytt -r</code> — 아니면 터미널 없이 headless 데몬으로.",
   "f.custom.h": "누가 봐도 내 취향",
   "f.custom.p": "테마 13종, 색 역할 34개 전부 hex 편집, 프리셋 있는 10밴드 EQ, 도는 ASCII 도넛까지 25가지 애니메이션 — 그리고 맨몸 리눅스 콘솔용 레트로 모드.",
   "f.help.h": "단축키는 앱이 기억합니다",
   "f.help.p": "<code>?</code> 를 누르면 내 언어·내가 바꾼 키 그대로 최신 치트시트가 뜹니다. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 화면의 모든 게 클릭되고, <code>Ctrl+-</code> / <code>Ctrl+=</code> 로 화면 전체 확대까지.",
+
+  "st.catalogs": "카탈로그 — 검색창은 하나",
+  "st.themes": "테마 — 전부 내 색으로",
+  "st.roles": "hex로 고치는 색 역할",
+  "st.anims": "애니메이션 — 도넛 포함",
+  "st.eq": "EQ 밴드 — 프리셋과 함께",
+  "st.os": "플랫폼 — macOS · Windows · Linux",
 
   "why.eyebrow": "이유까지 말하는 스트리밍",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
@@ -1565,6 +1599,8 @@ var KO = {
   "foot.cta": "GitHub에서 별 주기",
   "foot.thanks": "QA 영웅: <a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> 님이 일부러 다 부숴본 덕분에, 여러분은 부술 일이 없습니다. 🫡",
   "foot.releases": "릴리스",
+  "foot.manual": "사용 설명서",
+  "foot.trouble": "문제 해결",
   "foot.made": "Rust · ratatui",
   "foot.disclaimer": "YouTube, Google, Spotify, Last.fm, ListenBrainz와 무관합니다. 공개된 곡을 익명으로 재생하며, 계정 연결은 전부 선택 사항입니다. Gemini 기반 기능(DJ Gem, 라디오 곡 식별)은 무료 Gemini API 키가 필요한 선택 기능이고, 나머지는 키 없이도 전부 동작합니다."
 };
@@ -1623,13 +1659,20 @@ var JA = {
   "f.spotify.h": "Spotify から引っ越す",
   "f.spotify.p": "いいねもプレイリストも、チェックポイント付き・再開可能なコマンド一行で YouTube Music へ — CJK に安全なマッチング、あいまいな曲は当てずっぽうにせずレポートへ。逆方向も OK。",
   "f.playlists.h": "プレイリストとダウンロードは手元に",
-  "f.playlists.p": "ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、<code>d</code> 一つでカバーアートとタグ入りの m4a に保存 — ダウンロードタブからオフライン再生。",
+  "f.playlists.p": "ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、<code>d</code> 一つでカバーアートとタグ入りの m4a に保存 — <code>Shift+D</code> はリスト丸ごと、ダウンロードタブや没入型ローカルデッキ（<code>Alt+Shift+L</code>）からオフライン再生。",
   "f.remote.h": "どこからでも操作",
   "f.remote.p": "メディアキー、macOS のコントロールセンター、メニューバー/トレイのミニプレイヤー、Linux の MPRIS、どのシェルからでも <code>ytt -r</code> — あるいはターミナルなしの headless デーモンで。",
   "f.custom.h": "誰が見ても自分好み",
   "f.custom.p": "テーマ13種、34の色ロールすべて hex 編集、プリセット付き10バンド EQ、回る ASCII ドーナツまで25種のアニメーション — 素の Linux コンソール用レトロモードも。",
   "f.help.h": "ショートカットはアプリが覚えています",
   "f.help.p": "<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出ます。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、画面のすべてがクリックでき、<code>Ctrl+-</code> / <code>Ctrl+=</code> で全体を拡大。",
+
+  "st.catalogs": "カタログ — 検索窓は一つ",
+  "st.themes": "テーマ — 全部自分色に",
+  "st.roles": "hex で編集できる色ロール",
+  "st.anims": "アニメーション — ドーナツ込み",
+  "st.eq": "EQ バンド — プリセット付き",
+  "st.os": "プラットフォーム — macOS · Windows · Linux",
 
   "why.eyebrow": "理由まで語るストリーミング",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
@@ -1721,6 +1764,8 @@ var JA = {
   "foot.cta": "GitHub でスターを付ける",
   "foot.thanks": "QA ヒーロー：<a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> さんがわざと全部壊してくれたおかげで、あなたが壊す必要はありません。🫡",
   "foot.releases": "リリース",
+  "foot.manual": "マニュアル",
+  "foot.trouble": "トラブルシューティング",
   "foot.made": "Rust · ratatui",
   "foot.disclaimer": "YouTube、Google、Spotify、Last.fm、ListenBrainz とは無関係です。公開曲を匿名で再生し、アカウント接続はすべて任意です。Gemini を使う機能（DJ Gem、ラジオの曲識別）は無料の Gemini API キーが必要なオプションで、それ以外はキーなしで全部動きます。"
 };
