@@ -228,6 +228,66 @@ fn completed_provider_results_are_drained_in_frozen_source_order() {
 }
 
 #[test]
+fn committed_results_after_capacity_preserve_non_writing_outcomes() {
+    let existing = (0..crate::playlists::SONGS_PER_PLAYLIST_MAX - 1)
+        .map(|index| format!("existing-{index}"))
+        .collect::<HashSet<_>>();
+    let mut capacity_keys = Some(existing);
+    let mut capacity_skips = 0u32;
+    let mut cp = Checkpoint::new(
+        "job_committed_capacity_results".to_owned(),
+        spec(TransferDest::LocalPlaylist {
+            name: Some("Capacity".to_owned()),
+        }),
+        vec![
+            entry(input("Last slot", &["Artist"]), Some(matched("last-slot"))),
+            entry(
+                input("Not found", &["Artist"]),
+                Some(MatchOutcome::NotFound),
+            ),
+            entry(input("Overflow", &["Artist"]), Some(matched("overflow"))),
+            entry(input("Duplicate", &["Artist"]), Some(matched("last-slot"))),
+        ],
+    );
+
+    assert!(enforce_local_capacity_for_committed_entry(
+        &mut cp,
+        0,
+        &mut capacity_keys,
+        &mut capacity_skips
+    ));
+    assert!(enforce_local_capacity_for_committed_entry(
+        &mut cp,
+        1,
+        &mut capacity_keys,
+        &mut capacity_skips
+    ));
+    assert!(enforce_local_capacity_for_committed_entry(
+        &mut cp,
+        2,
+        &mut capacity_keys,
+        &mut capacity_skips
+    ));
+    assert!(enforce_local_capacity_for_committed_entry(
+        &mut cp,
+        3,
+        &mut capacity_keys,
+        &mut capacity_skips
+    ));
+
+    assert!(matches!(cp.tracks[1].outcome, Some(MatchOutcome::NotFound)));
+    assert!(matches!(
+        cp.tracks[2].outcome,
+        Some(MatchOutcome::SkippedCapacity)
+    ));
+    assert!(matches!(
+        cp.tracks[3].outcome,
+        Some(MatchOutcome::Matched { ref key, .. }) if key == "last-slot"
+    ));
+    assert_eq!(capacity_skips, 1);
+}
+
+#[test]
 fn local_destination_resolution_reuses_case_insensitive_name_and_prefers_id() {
     let mut store = crate::playlists::Playlists::default();
     let mix_id = store.create("Mix").expect("create Mix");

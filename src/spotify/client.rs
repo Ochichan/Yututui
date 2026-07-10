@@ -574,9 +574,9 @@ impl SpotifyClient {
                     page.offset
                 )));
             }
-            if page.items.len() != usize::try_from(limit).unwrap_or(usize::MAX) {
+            if page.items.len() > usize::try_from(limit).unwrap_or(usize::MAX) {
                 return Err(SpotifyError::Network(format!(
-                    "liked_tracks_for_transfer returned {} of {limit} rows at offset {offset}",
+                    "liked_tracks_for_transfer returned {} rows for limit {limit} at offset {offset}",
                     page.items.len()
                 )));
             }

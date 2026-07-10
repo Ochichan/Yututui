@@ -624,6 +624,7 @@ async fn match_stage(
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         heartbeat.tick().await;
         let mut capacity_reached = false;
+        let mut computed_capacity_skips = 0u32;
         let mut ready_by_source = BTreeMap::new();
         let mut next_source_sequence = 0usize;
         let mut stream_finished = false;
@@ -690,46 +691,26 @@ async fn match_stage(
             while let Some((idx, input, result)) =
                 take_ready_in_source_order(&mut ready_by_source, &mut next_source_sequence)
             {
-                let outcome = result.outcome;
-                if cache_write_enabled
-                    && let Some(cache) = match_cache.as_mut()
-                    && matches!(outcome, MatchOutcome::Matched { .. })
-                {
-                    cache.save_match(&input, &outcome);
-                    cache_dirty = true;
-                }
-                let trace = result.trace;
-                record_match_outcome_stats(&mut cp.match_stats, &outcome);
-                record_match_trace_stats(&mut cp.match_stats, &trace);
-                increment_outcome_counts(
-                    &outcome,
+                capacity_reached |= commit_ytm_match_result(
+                    cp,
+                    idx,
+                    input,
+                    result.outcome,
+                    result.trace,
+                    cache_write_enabled,
+                    &mut match_cache,
+                    &mut cache_dirty,
+                    &mut local_capacity_keys,
+                    &mut journal,
                     &mut matched_count,
                     &mut ambiguous_count,
                     &mut not_found_count,
-                );
-                cp.match_traces.insert(idx as u32 + 1, trace);
-                cp.tracks[idx].outcome = Some(outcome);
-                if let Some(keys) = local_capacity_keys.as_mut()
-                    && let Some(key) = effective_write_key(&cp.tracks[idx], cp.spec.take_best)
-                {
-                    keys.insert(key.to_owned());
-                    capacity_reached = keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX;
-                }
-                journal.append(cp, idx)?;
-                completed_count = completed_count.saturating_add(1);
-
-                progress(TransferProgress {
-                    job_id: cp.job_id.clone(),
-                    stage: Stage::Matching,
-                    done: completed_count,
+                    &mut completed_count,
+                    &mut computed_capacity_skips,
+                    matching_written,
                     total,
-                    matched: matched_count,
-                    auto_accepted: 0,
-                    ambiguous: ambiguous_count,
-                    not_found: not_found_count,
-                    written: matching_written,
-                    current: input.display(),
-                });
+                    progress,
+                )?;
                 if capacity_reached {
                     break 'matching;
                 }
@@ -740,10 +721,36 @@ async fn match_stage(
             }
         }
         if capacity_reached {
+            for (_, (idx, input, result)) in std::mem::take(&mut ready_by_source) {
+                commit_ytm_match_result(
+                    cp,
+                    idx,
+                    input,
+                    result.outcome,
+                    result.trace,
+                    cache_write_enabled,
+                    &mut match_cache,
+                    &mut cache_dirty,
+                    &mut local_capacity_keys,
+                    &mut journal,
+                    &mut matched_count,
+                    &mut ambiguous_count,
+                    &mut not_found_count,
+                    &mut completed_count,
+                    &mut computed_capacity_skips,
+                    matching_written,
+                    total,
+                    progress,
+                )?;
+            }
+            if computed_capacity_skips > 0 {
+                record_capacity_skips(&mut cp.match_stats, computed_capacity_skips);
+            }
             // This is a deterministic in-memory bulk transition followed immediately by the
             // compact stage snapshot below. Journaling thousands of synthetic capacity rows
             // would add one open/write per row (and periodic fsyncs) without protecting any
-            // provider result; a crash simply recomputes the same boundary on resume.
+            // provider result; buffered provider results were committed above, and a crash
+            // simply recomputes the same boundary on resume.
             mark_pending_capacity_skipped(cp);
         }
         if cache_write_enabled && let Some(cache) = match_cache.as_mut() {
@@ -772,6 +779,94 @@ fn take_ready_in_source_order<T>(
     let value = ready.remove(next_sequence)?;
     *next_sequence = next_sequence.saturating_add(1);
     Some(value)
+}
+
+fn commit_ytm_match_result(
+    cp: &mut Checkpoint,
+    idx: usize,
+    input: TrackInput,
+    outcome: MatchOutcome,
+    trace: MatchTrace,
+    cache_write_enabled: bool,
+    match_cache: &mut Option<TransferMatchCache>,
+    cache_dirty: &mut bool,
+    local_capacity_keys: &mut Option<HashSet<String>>,
+    journal: &mut MatchJournalCadence,
+    matched_count: &mut u32,
+    ambiguous_count: &mut u32,
+    not_found_count: &mut u32,
+    completed_count: &mut u32,
+    computed_capacity_skips: &mut u32,
+    matching_written: u32,
+    total: u32,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+) -> Result<bool, JobError> {
+    let current = input.display();
+    if cache_write_enabled
+        && let Some(cache) = match_cache.as_mut()
+        && matches!(outcome, MatchOutcome::Matched { .. })
+    {
+        cache.save_match(&input, &outcome);
+        *cache_dirty = true;
+    }
+    cp.tracks[idx].outcome = Some(outcome);
+    let capacity_reached = enforce_local_capacity_for_committed_entry(
+        cp,
+        idx,
+        local_capacity_keys,
+        computed_capacity_skips,
+    );
+    let outcome = cp.tracks[idx]
+        .outcome
+        .as_ref()
+        .expect("committed match has an outcome");
+    record_match_outcome_stats(&mut cp.match_stats, outcome);
+    record_match_trace_stats(&mut cp.match_stats, &trace);
+    increment_outcome_counts(outcome, matched_count, ambiguous_count, not_found_count);
+    cp.match_traces.insert(idx as u32 + 1, trace);
+    journal.append(cp, idx)?;
+    *completed_count = (*completed_count).saturating_add(1);
+
+    progress(TransferProgress {
+        job_id: cp.job_id.clone(),
+        stage: Stage::Matching,
+        done: *completed_count,
+        total,
+        matched: *matched_count,
+        auto_accepted: 0,
+        ambiguous: *ambiguous_count,
+        not_found: *not_found_count,
+        written: matching_written,
+        current,
+    });
+    Ok(capacity_reached)
+}
+
+fn enforce_local_capacity_for_committed_entry(
+    cp: &mut Checkpoint,
+    idx: usize,
+    local_capacity_keys: &mut Option<HashSet<String>>,
+    computed_capacity_skips: &mut u32,
+) -> bool {
+    let Some(keys) = local_capacity_keys.as_mut() else {
+        return false;
+    };
+    let capacity = crate::playlists::SONGS_PER_PLAYLIST_MAX;
+    let Some(key) = effective_write_key(&cp.tracks[idx], cp.spec.take_best).map(str::to_owned)
+    else {
+        return keys.len() >= capacity;
+    };
+    if cp.tracks[idx].written || keys.contains(&key) {
+        return keys.len() >= capacity;
+    }
+    if keys.len() < capacity {
+        keys.insert(key);
+    } else {
+        cp.tracks[idx].outcome = Some(MatchOutcome::SkippedCapacity);
+        cp.tracks[idx].review_decision = None;
+        *computed_capacity_skips = (*computed_capacity_skips).saturating_add(1);
+    }
+    keys.len() >= capacity
 }
 
 fn auto_accept_ambiguous_candidates(cp: &mut Checkpoint) -> Result<u32, JobError> {

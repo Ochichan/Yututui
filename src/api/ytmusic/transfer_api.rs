@@ -508,6 +508,18 @@ async fn search_catalog_songs_bounded(
     {
         let page = match page {
             Ok(page) => page,
+            Err(e) if songs.is_empty() && filtered_search_missing_music_shelf(&e.to_string()) => {
+                tracing::debug!(
+                    "YTM filtered song search omitted its music shelf; retrying as a basic search"
+                );
+                return Ok(basic_search_first_page(client, query)
+                    .await?
+                    .songs
+                    .into_iter()
+                    .take(limit)
+                    .map(song_from_catalog_search)
+                    .collect());
+            }
             Err(e) if songs.is_empty() => return Err(e.into()),
             Err(_) => break,
         };
