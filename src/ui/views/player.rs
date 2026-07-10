@@ -320,9 +320,9 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|(target, text)| match target {
             Some(t @ MouseTarget::Player(Action::IdentifyNowPlaying)) => {
-                Seg::padded_button(*t, text.as_ref(), id_pad)
+                Seg::padded_button(t.clone(), text.as_ref(), id_pad)
             }
-            Some(t) => Seg::button(*t, text.as_ref()),
+            Some(t) => Seg::button(t.clone(), text.as_ref()),
             None => Seg::label(text.as_ref()),
         })
         .collect();
@@ -746,7 +746,7 @@ fn render_dropdown(
             app.theme.style(R::TextPrimary)
         };
         frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
-        app.register_mouse_button(row, *target);
+        app.register_mouse_button(row, target.clone());
     }
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);

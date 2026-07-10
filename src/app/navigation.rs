@@ -31,6 +31,7 @@ impl App {
         self.library_ui.confirm_download = None;
         self.local_mode.pending_organize_confirm = None;
         self.local_mode.pending_accept_all_confirm = None;
+        self.local_mode.pending_import_record_delete = None;
         self.playlist_picker = None;
         // These three render as top-level overlays but route input only inside Settings-mode
         // dispatch, so leaving the screen must drop them explicitly or they'd paint on top of
@@ -124,6 +125,7 @@ impl App {
         self.library_ui.confirm_download = None;
         self.local_mode.pending_organize_confirm = None;
         self.local_mode.pending_accept_all_confirm = None;
+        self.local_mode.pending_import_record_delete = None;
         // Popup-like playlist surfaces dismiss on any navigation (the drill-down itself is
         // content state - it resets only on a fresh Library entry below).
         self.library_ui.create_input = None;

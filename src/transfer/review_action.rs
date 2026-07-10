@@ -4,7 +4,7 @@ use anyhow::{Context as _, anyhow, bail};
 
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
-use super::session::ImportSession;
+use super::session::{ImportRecordGuard, ImportSession};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewActionSummary {
@@ -34,6 +34,7 @@ pub fn accept_first_candidate(
     job_id: &str,
     source_order: u32,
 ) -> anyhow::Result<ReviewActionSummary> {
+    let _guard = ImportRecordGuard::try_acquire(job_id)?;
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
@@ -48,6 +49,7 @@ pub fn choose_next_candidate(
     job_id: &str,
     source_order: u32,
 ) -> anyhow::Result<ReviewActionSummary> {
+    let _guard = ImportRecordGuard::try_acquire(job_id)?;
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
@@ -78,6 +80,7 @@ pub fn skip_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionS
 }
 
 pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary> {
+    let _guard = ImportRecordGuard::try_acquire(job_id)?;
     let mut cp = Checkpoint::load(job_id)?;
     let mut rows = Vec::new();
     for index in 0..cp.tracks.len() {
@@ -149,6 +152,7 @@ fn apply_terminal_decision(
     decision: ReviewDecision,
     label: &'static str,
 ) -> anyhow::Result<ReviewActionSummary> {
+    let _guard = ImportRecordGuard::try_acquire(job_id)?;
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
@@ -166,7 +170,7 @@ fn apply_terminal_decision(
 fn save_checkpoint_and_session(cp: &mut Checkpoint) -> anyhow::Result<()> {
     cp.save().context("save checkpoint")?;
     ImportSession::from_checkpoint(cp)
-        .save()
+        .save_unlocked()
         .context("save import session")?;
     Ok(())
 }

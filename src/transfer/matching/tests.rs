@@ -1,4 +1,4 @@
-use super::ytm_retrieval::{is_noisy_video_fallback_query, video_search_error_is_soft};
+use super::ytm_retrieval::video_search_error_is_soft;
 use super::*;
 
 fn input(title: &str, artists: &[&str], album: Option<&str>, dur: Option<u32>) -> TrackInput {
@@ -33,9 +33,17 @@ fn cand(title: &str, artist: &str, album: Option<&str>, dur: Option<u32>) -> Mat
         album: album.map(str::to_owned),
         duration_secs: dur,
         track_number: None,
+        release_year: None,
+        explicit: None,
         source_kind: CandidateSourceKind::YtmCatalogSong,
         channel: Some(artist.to_owned()),
+        channel_id: None,
+        channel_verified: None,
+        availability: None,
+        has_audio_format: None,
+        max_audio_bitrate_kbps: None,
         isrc: None,
+        metadata_title: None,
         preflighted: false,
         preflight_reject_reason: None,
         preflight_reason_codes: Vec::new(),
@@ -253,38 +261,23 @@ fn ytm_catalog_plan_uses_only_fast_primary_queries_before_fallbacks() {
         ]
     );
     let fallback = ytm_fallback_query_plan(&input);
-    assert!(!fallback.contains(&"Primary Song Title".to_owned()));
-    assert!(fallback.contains(&"Primary Song Title official audio".to_owned()));
-    assert!(
-        !fallback.contains(&"Primary Song Title topic".to_owned()),
-        "bare topic suffix is filtered from video fallback"
-    );
-    assert!(
-        !fallback.iter().any(|q| q.ends_with(" 2024")),
-        "year-suffix variants are filtered from video fallback: {fallback:?}"
+    assert_eq!(
+        fallback,
+        vec![
+            "Primary Song Title".to_owned(),
+            "Primary Song Title official audio".to_owned(),
+            "Song Title official music video".to_owned(),
+        ],
+        "public search is a separate backend, so its primary query must not be suppressed by a catalog attempt"
     );
 }
 
 #[test]
-fn noisy_video_fallback_query_filter_drops_topic_and_year_suffix() {
-    assert!(is_noisy_video_fallback_query("Aimyon Marigold topic"));
-    assert!(is_noisy_video_fallback_query(
-        "21univ. Sticker picture 2022"
-    ));
-    assert!(!is_noisy_video_fallback_query(
-        "Primary Song Title official audio"
-    ));
-    assert!(!is_noisy_video_fallback_query(
-        "Primary Song Title Album Name"
-    ));
-}
-
-#[test]
-fn video_search_errors_are_soft_at_matching_boundary() {
+fn video_search_provider_errors_remain_hard_at_matching_boundary() {
     let err = anyhow::anyhow!(
         "yt-dlp search exited with status exit status: 1 (ERROR: query \"Aimyon Marigold topic\" page 1: Unable to download API page: HTTP Error 403: Forbidden)"
     );
-    assert!(video_search_error_is_soft(&err));
+    assert!(!video_search_error_is_soft(&err));
 }
 
 #[test]
@@ -329,7 +322,7 @@ fn instrumental_source_can_match_instrumental_candidate() {
 }
 
 #[test]
-fn top_gap_sends_close_candidates_to_review() {
+fn duplicate_recording_representations_do_not_consume_cluster_margin() {
     let i = input("Song", &["Artist"], None, Some(180));
     let a = cand("Song", "Artist", None, Some(180));
     let b = cand("Song", "Artist", Some("Other Album"), Some(180));
@@ -337,7 +330,7 @@ fn top_gap_sends_close_candidates_to_review() {
 
     assert!(matches!(
         best_outcome(&i, &[a, b], &cfg),
-        MatchOutcome::Ambiguous { .. }
+        MatchOutcome::Matched { .. }
     ));
 }
 
@@ -355,6 +348,64 @@ fn ytm_catalog_candidate_beats_plain_video_when_close() {
     match best_outcome(&i, &[video, catalog], &MatchConfig::default()) {
         MatchOutcome::Matched { key, .. } => assert_eq!(key, "catalog"),
         other => panic!("expected matched catalog candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocked_top_candidate_does_not_hide_safe_official_match() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut blocked = cand("Song", "Artist", Some("Album"), Some(180));
+    blocked.key = "blocked-generic".to_owned();
+    blocked.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    blocked.channel = Some("Random Uploads".to_owned());
+
+    let mut official = cand("Song", "Artist Official", None, Some(180));
+    official.key = "safe-official".to_owned();
+    official.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    official.channel = Some("Artist Official".to_owned());
+    official.preflighted = true;
+    official.has_audio_format = Some(true);
+
+    let blocked_score = score_candidate_breakdown(&i, &blocked);
+    let official_score = score_candidate_breakdown(&i, &official);
+    assert!(blocked_score.accept_blocked);
+    assert!(blocked_score.total > official_score.total);
+
+    match best_outcome(&i, &[blocked, official], &MatchConfig::default()) {
+        MatchOutcome::Matched { key, .. } => assert_eq!(key, "safe-official"),
+        other => panic!("expected safe official match, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocked_runner_up_does_not_consume_safe_acceptance_margin() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut catalog = cand("Song", "Artist", None, Some(180));
+    catalog.key = "safe-catalog".to_owned();
+    catalog.source_kind = CandidateSourceKind::YtmCatalogSong;
+
+    let mut blocked = cand("Song", "Artist", Some("Album"), Some(180));
+    blocked.key = "blocked-generic".to_owned();
+    blocked.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    blocked.channel = Some("Random Uploads".to_owned());
+
+    let catalog_score = score_candidate_breakdown(&i, &catalog);
+    let blocked_score = score_candidate_breakdown(&i, &blocked);
+    assert!(blocked_score.accept_blocked);
+    assert!(
+        (catalog_score.total - blocked_score.total).abs() < MatchConfig::default().accept_margin
+    );
+
+    match best_outcome(&i, &[blocked, catalog], &MatchConfig::default()) {
+        MatchOutcome::Matched {
+            key,
+            score_breakdown: Some(score),
+            ..
+        } => {
+            assert_eq!(key, "safe-catalog");
+            assert!(score.reason_codes.contains(&"policy_safe_cache".to_owned()));
+        }
+        other => panic!("expected catalog match with blocked runner-up ignored, got {other:?}"),
     }
 }
 
@@ -419,6 +470,301 @@ fn official_topic_youtube_candidate_can_auto_accept() {
             assert_eq!(score.quality_tier, "trusted_official");
         }
         other => panic!("expected matched Topic candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn public_official_title_requires_finalist_metadata_before_auto_accept() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut video = cand("Song (Official Audio)", "Artist", Some("Album"), Some(180));
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("Artist".to_owned());
+
+    let before = score_candidate_breakdown(&i, &video);
+    assert!(before.accept_blocked);
+    assert!(
+        before
+            .reason_codes
+            .contains(&"unverified_youtube_upload".to_owned())
+    );
+
+    video.preflighted = true;
+    video.has_audio_format = Some(true);
+    match best_outcome(&i, &[video], &MatchConfig::default()) {
+        MatchOutcome::Matched {
+            score_breakdown: Some(score),
+            ..
+        } => {
+            assert!(!score.accept_blocked);
+            assert!(
+                score
+                    .reason_codes
+                    .contains(&"playable_audio_format".to_owned())
+            );
+        }
+        other => panic!("expected preflighted official audio match, got {other:?}"),
+    }
+}
+
+#[test]
+fn failed_metadata_preflight_never_auto_accepts_even_when_user_videos_are_allowed() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut video = cand(
+        "Artist - Song [OFFICIAL MUSIC VIDEO]",
+        "Artist",
+        Some("Album"),
+        Some(180),
+    );
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("Artist".to_owned());
+    video
+        .preflight_reason_codes
+        .push("metadata_preflight_failed".to_owned());
+    let cfg = MatchConfig {
+        allow_user_videos: true,
+        ..MatchConfig::default()
+    };
+
+    let breakdown = score_candidate_breakdown_with_config(&i, &video, &cfg);
+    assert!(breakdown.accept_blocked);
+    assert!(
+        breakdown
+            .reason_codes
+            .contains(&"metadata_preflight_failed".to_owned())
+    );
+    assert!(!matches!(
+        best_outcome(&i, &[video], &cfg),
+        MatchOutcome::Matched { .. }
+    ));
+}
+
+#[test]
+fn verified_official_title_credit_bridges_cross_script_channel_artist() {
+    let i = input("Marigold", &["Aimyon"], None, Some(306));
+    let mut video = cand(
+        "Aimyon - Marigold [OFFICIAL MUSIC VIDEO]",
+        "あいみょん",
+        None,
+        Some(322),
+    );
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("あいみょん".to_owned());
+    video.preflighted = true;
+    video.channel_verified = Some(true);
+    video.channel_id = Some("UCQVhrypJhw1HxuRV4gX6hoQ".to_owned());
+    video.has_audio_format = Some(true);
+    video
+        .preflight_reason_codes
+        .push("metadata_title_channel_corroborated".to_owned());
+
+    let breakdown = score_candidate_breakdown(&i, &video);
+    assert_eq!(breakdown.artist, 1.0);
+    assert!(
+        breakdown
+            .reason_codes
+            .contains(&"corroborated_title_artist_credit".to_owned())
+    );
+    assert!(!breakdown.accept_blocked);
+    assert!(matches!(
+        best_outcome(&i, &[video], &MatchConfig::default()),
+        MatchOutcome::Matched { .. }
+    ));
+}
+
+#[test]
+fn unverified_or_spoofed_title_credit_does_not_replace_channel_artist() {
+    let i = input("Marigold", &["Aimyon"], None, Some(306));
+    let user_video_config = MatchConfig {
+        allow_user_videos: true,
+        ..MatchConfig::default()
+    };
+
+    let mut unverified = cand(
+        "Aimyon - Marigold [OFFICIAL MUSIC VIDEO]",
+        "ファン投稿",
+        None,
+        Some(322),
+    );
+    unverified.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    unverified.channel = Some("ファン投稿".to_owned());
+    unverified.preflighted = true;
+    unverified.channel_verified = Some(false);
+    unverified.has_audio_format = Some(true);
+
+    let unverified_score =
+        score_candidate_breakdown_with_config(&i, &unverified, &user_video_config);
+    assert!(unverified_score.artist < 0.5);
+    assert!(
+        !unverified_score
+            .reason_codes
+            .contains(&"corroborated_title_artist_credit".to_owned())
+    );
+    assert!(!matches!(
+        best_outcome(&i, &[unverified], &user_video_config),
+        MatchOutcome::Matched { .. }
+    ));
+
+    let mut spoof = cand(
+        "Aimyon Fan Channel - Marigold [OFFICIAL MUSIC VIDEO]",
+        "ファン投稿",
+        None,
+        Some(322),
+    );
+    spoof.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    spoof.channel = Some("ファン投稿".to_owned());
+    spoof.preflighted = true;
+    spoof.channel_verified = Some(true);
+    spoof.channel_id = Some("verified-fan-channel".to_owned());
+    spoof.has_audio_format = Some(true);
+
+    let spoof_score = score_candidate_breakdown_with_config(&i, &spoof, &user_video_config);
+    assert!(spoof_score.artist < 0.5);
+    assert!(
+        !spoof_score
+            .reason_codes
+            .contains(&"corroborated_title_artist_credit".to_owned())
+    );
+    assert!(!matches!(
+        best_outcome(&i, &[spoof], &user_video_config),
+        MatchOutcome::Matched { .. }
+    ));
+}
+
+#[test]
+fn official_title_credit_cannot_override_instrumental_identity_gate() {
+    let i = input("Marigold", &["Aimyon"], None, Some(306));
+    let mut video = cand(
+        "Aimyon - Marigold (Instrumental) [Official Audio]",
+        "あいみょん",
+        None,
+        Some(306),
+    );
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("あいみょん".to_owned());
+    video.preflighted = true;
+    video.channel_verified = Some(true);
+    video.has_audio_format = Some(true);
+    video
+        .preflight_reason_codes
+        .push("metadata_title_channel_corroborated".to_owned());
+
+    let breakdown = score_candidate_breakdown(&i, &video);
+    assert_eq!(breakdown.artist, 1.0);
+    assert!(breakdown.accept_blocked);
+    assert!(
+        breakdown
+            .reason_codes
+            .contains(&"instrumental_mismatch".to_owned())
+    );
+    assert!(!matches!(
+        best_outcome(&i, &[video], &MatchConfig::default()),
+        MatchOutcome::Matched { .. }
+    ));
+}
+
+#[test]
+fn low_audio_ceiling_stays_review_only_and_reason_codes_are_unique() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut video = cand("Song (Official Audio)", "Artist", Some("Album"), Some(180));
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("Artist".to_owned());
+    video.preflighted = true;
+    video.has_audio_format = Some(true);
+    video.max_audio_bitrate_kbps = Some(32.0);
+    video.preflight_reason_codes = vec![
+        "metadata_preflight".to_owned(),
+        "low_audio_ceiling".to_owned(),
+        "low_audio_ceiling".to_owned(),
+    ];
+
+    match best_outcome(&i, &[video], &MatchConfig::default()) {
+        MatchOutcome::Ambiguous { candidates } => {
+            let score = candidates[0].score_breakdown.as_ref().unwrap();
+            assert!(score.accept_blocked);
+            assert_eq!(
+                score
+                    .reason_codes
+                    .iter()
+                    .filter(|reason| reason.as_str() == "low_audio_ceiling")
+                    .count(),
+                1
+            );
+        }
+        other => panic!("expected low-quality official upload to need review, got {other:?}"),
+    }
+}
+
+#[test]
+fn adversarial_version_matrix_never_silently_auto_accepts_plain_source() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let unsafe_versions = [
+        "Song (Instrumental)",
+        "Song (Karaoke)",
+        "Song (Backing Track)",
+        "Song (Vocal Removed)",
+        "Song (Cover)",
+        "Song (AI Cover)",
+        "Song (Live)",
+        "Song (Acoustic)",
+        "Song (Demo)",
+        "Song (Rehearsal)",
+        "Song (Remix)",
+        "Song (Radio Edit)",
+        "Song (Extended Mix)",
+        "Song (Sped Up)",
+        "Song (Slowed)",
+        "Song (Slowed + Reverb)",
+        "Song (Nightcore)",
+        "Song (8D Audio)",
+        "Song (Bass Boosted)",
+        "Song (Lofi)",
+        "Song (2011 Remaster)",
+        "Song (Taylor's Version)",
+        "Song (Japanese Version)",
+    ];
+
+    for title in unsafe_versions {
+        let outcome = best_outcome(
+            &i,
+            &[cand(title, "Artist", Some("Album"), Some(180))],
+            &MatchConfig::default(),
+        );
+        assert!(
+            !matches!(outcome, MatchOutcome::Matched { .. }),
+            "plain source unexpectedly auto-accepted {title}: {outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn requested_version_matrix_requires_the_same_version_marker() {
+    for source_title in [
+        "Song (Instrumental)",
+        "Song (Live)",
+        "Song (Acoustic)",
+        "Song (Remix)",
+        "Song (Radio Edit)",
+        "Song (2011 Remaster)",
+        "Song (Taylor's Version)",
+    ] {
+        let source = input(source_title, &["Artist"], Some("Album"), Some(180));
+        let plain = cand("Song", "Artist", Some("Album"), Some(180));
+        assert!(
+            !matches!(
+                best_outcome(&source, &[plain], &MatchConfig::default()),
+                MatchOutcome::Matched { .. }
+            ),
+            "requested version {source_title} unexpectedly accepted a plain candidate"
+        );
+
+        let same = cand(source_title, "Artist", Some("Album"), Some(180));
+        assert!(
+            matches!(
+                best_outcome(&source, &[same], &MatchConfig::default()),
+                MatchOutcome::Matched { .. }
+            ),
+            "requested version {source_title} did not accept the same marked version"
+        );
     }
 }
 
@@ -488,7 +834,7 @@ fn score_breakdown_exposes_weighted_components() {
     assert_eq!(breakdown.title, 1.0);
     assert_eq!(breakdown.artist, 1.0);
     assert_eq!(breakdown.duration, 1.0);
-    assert_eq!(breakdown.album_bonus, 0.05);
+    assert_eq!(breakdown.album_bonus, 0.08);
     assert_eq!(breakdown.total, score_candidate(&i, &exact));
 }
 
@@ -503,7 +849,7 @@ fn album_track_candidate_gets_track_number_bonus() {
     let breakdown = score_candidate_breakdown(&i, &exact);
 
     assert_eq!(breakdown.source_kind, "ytm_album_track");
-    assert_eq!(breakdown.track_number_bonus, 0.04);
+    assert_eq!(breakdown.track_number_bonus, 0.02);
     assert_eq!(breakdown.confidence_tier, "exact");
     assert!(breakdown.reason_codes.contains(&"album_track".to_owned()));
 }
@@ -587,6 +933,35 @@ fn memo_key_folds_case_and_annotations() {
     let a = input("Song (feat. X)", &["Artist"], None, None);
     let b = input("SONG (FEAT. X)", &["artist"], None, None);
     assert_eq!(memo_key(&a), memo_key(&b));
+}
+
+#[test]
+fn memo_key_separates_recording_identity_and_source_metadata() {
+    let base = input("Song", &["Artist", "Guest"], Some("Album"), Some(180));
+
+    let mut different_source = base.clone();
+    different_source.source_key = "spotify:track:other".to_owned();
+    assert_ne!(memo_key(&base), memo_key(&different_source));
+
+    let mut different_isrc = base.clone();
+    different_isrc.isrc = Some("USRC00000001".to_owned());
+    assert_ne!(memo_key(&base), memo_key(&different_isrc));
+
+    let mut different_version = base.clone();
+    different_version.title = "Song (Instrumental)".to_owned();
+    assert_ne!(memo_key(&base), memo_key(&different_version));
+
+    let mut different_album = base.clone();
+    different_album.album = Some("Deluxe Album".to_owned());
+    assert_ne!(memo_key(&base), memo_key(&different_album));
+
+    let mut different_duration = base.clone();
+    different_duration.duration_secs = Some(240);
+    assert_ne!(memo_key(&base), memo_key(&different_duration));
+
+    let mut different_artist_order = base.clone();
+    different_artist_order.artists.reverse();
+    assert_ne!(memo_key(&base), memo_key(&different_artist_order));
 }
 
 /// Degraded (yt-dlp video) results: MV-decorated titles, artist-in-title, and

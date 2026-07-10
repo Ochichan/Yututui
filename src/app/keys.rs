@@ -72,6 +72,18 @@ impl App {
             };
         }
 
+        // Import history deletion removes resumability artifacts, so it requires confirmation.
+        if let Some(session_id) = self.local_mode.pending_import_record_delete.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_local_import_record_delete(session_id)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.overlays.pending_settings_confirm.take() {

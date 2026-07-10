@@ -209,6 +209,7 @@ impl App {
             }
             Some(Action::Download) => self.local_download_selected(),
             Some(Action::DownloadAll) => self.local_download_visible(),
+            Some(Action::LibraryRemove) => self.request_local_import_record_delete(),
             Some(Action::Back) => self.local_back_or_exit(),
             Some(Action::MoveUp) => {
                 let step = self.nav_repeat_step(Action::MoveUp);

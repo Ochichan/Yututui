@@ -152,6 +152,7 @@ mod tests {
             source: SessionEndpoint::default(),
             destination: SessionEndpoint::default(),
             counts: Default::default(),
+            defer_reason: None,
             rows: vec![ImportSessionRow {
                 row_id: "row-00001".to_owned(),
                 source_order: 1,

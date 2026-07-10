@@ -19,7 +19,7 @@ use crate::util::safe_fs;
 
 /// Caps (bounded memory).
 const PLAYLISTS_MAX: usize = 999;
-const SONGS_PER_PLAYLIST_MAX: usize = 999;
+pub(crate) const SONGS_PER_PLAYLIST_MAX: usize = 999;
 /// Upper bound on `playlists.json` when loading. With ≤999 playlists × ≤999 tracks written,
 /// a legitimate file is comfortably under this; a larger one is corrupt/hostile and set aside.
 const MAX_PLAYLISTS_BYTES: u64 = 50 * 1024 * 1024;
@@ -195,6 +195,39 @@ impl Playlists {
             Some(i) => Self::push_song(&mut self.playlists[i], song),
             None => AddResult::NotFound,
         }
+    }
+
+    /// Bulk append with one destination lookup and one de-duplication set. Results stay
+    /// aligned with `songs`, allowing resumable import callers to checkpoint each row.
+    pub(crate) fn add_many(&mut self, key: &str, songs: Vec<Song>) -> Vec<AddResult> {
+        let key = key.trim();
+        let idx = self.playlists.iter().position(|p| p.id == key).or_else(|| {
+            self.playlists
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(key))
+        });
+        let Some(idx) = idx else {
+            return vec![AddResult::NotFound; songs.len()];
+        };
+        let playlist = &mut self.playlists[idx];
+        let mut present = playlist
+            .songs
+            .iter()
+            .map(|song| song.video_id.clone())
+            .collect::<HashSet<_>>();
+        let mut results = Vec::with_capacity(songs.len());
+        for song in songs {
+            if present.contains(&song.video_id) {
+                results.push(AddResult::Duplicate);
+            } else if playlist.songs.len() >= SONGS_PER_PLAYLIST_MAX {
+                results.push(AddResult::Full);
+            } else {
+                present.insert(song.video_id.clone());
+                playlist.songs.push(song);
+                results.push(AddResult::Added);
+            }
+        }
+        results
     }
 
     /// Remove the playlist matched by `key` (id or name), returning it so callers can
@@ -381,6 +414,38 @@ mod tests {
         assert_eq!(p.add("mix", song("a")), AddResult::Duplicate); // same id, by name
         assert_eq!(p.add("missing", song("b")), AddResult::NotFound);
         assert_eq!(p.find("mix").unwrap().songs.len(), 1);
+    }
+
+    #[test]
+    fn add_many_preserves_order_and_dedupes_in_one_pass() {
+        let mut playlists = Playlists::default();
+        playlists.create("Mix").unwrap();
+        assert_eq!(playlists.add("Mix", song("existing")), AddResult::Added);
+
+        let results = playlists.add_many(
+            "Mix",
+            vec![song("existing"), song("new"), song("new"), song("last")],
+        );
+
+        assert_eq!(
+            results,
+            vec![
+                AddResult::Duplicate,
+                AddResult::Added,
+                AddResult::Duplicate,
+                AddResult::Added,
+            ]
+        );
+        assert_eq!(
+            playlists
+                .find("Mix")
+                .unwrap()
+                .songs
+                .iter()
+                .map(|song| song.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing", "new", "last"]
+        );
     }
 
     #[test]

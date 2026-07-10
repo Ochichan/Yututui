@@ -77,7 +77,25 @@ fn load_report(job_id: &str) -> anyhow::Result<TransferReport> {
 
 fn format_text_report(report: &TransferReport) -> String {
     let mut out = format!("Report: {}\n{}\n", report.job_id, report.render_text());
+    if let Some(defer) = &report.defer_reason {
+        out.push_str(&format!(
+            "Deferred: {}{} — {}\n",
+            defer.code,
+            defer
+                .backend
+                .as_deref()
+                .map(|backend| format!(" ({backend})"))
+                .unwrap_or_default(),
+            defer.message
+        ));
+    }
     append_match_stats(&mut out, &report.match_stats);
+    append_rows(&mut out, "Deferred", &report.deferred);
+    append_rows(
+        &mut out,
+        "Skipped at destination capacity",
+        &report.capacity_skipped,
+    );
     append_rows(&mut out, "Ambiguous", &report.ambiguous);
     append_rows(&mut out, "Not found", &report.not_found);
     out
@@ -112,6 +130,16 @@ fn append_match_stats(out: &mut String, stats: &MatchStats) {
             stats.video_searches
         ));
     }
+    append_nonzero(
+        out,
+        "YTM video catalog searches",
+        stats.ytm_video_catalog_searches.into(),
+    );
+    append_nonzero(
+        out,
+        "public video searches",
+        stats.public_video_searches.into(),
+    );
     if stats.preflight_lookups > 0 {
         out.push_str(&format!(
             "        metadata preflight lookups: {}\n",
@@ -124,9 +152,49 @@ fn append_match_stats(out: &mut String, stats: &MatchStats) {
             stats.authenticated_catalog_degraded
         ));
     }
+    append_nonzero(out, "catalog HTTP pages", stats.catalog_http_pages.into());
+    append_nonzero(
+        out,
+        "video process spawns",
+        stats.video_process_spawns.into(),
+    );
+    append_nonzero(
+        out,
+        "preflight process spawns",
+        stats.preflight_process_spawns.into(),
+    );
+    append_nonzero(
+        out,
+        "successful empty probes",
+        stats.successful_empty_probes.into(),
+    );
+    append_nonzero(out, "retries", stats.retries.into());
+    append_nonzero(out, "circuit opens", stats.circuit_opens.into());
+    append_nonzero(out, "deferred jobs", stats.deferred_jobs.into());
+    append_nonzero(out, "capacity-skipped rows", stats.capacity_skipped.into());
+    append_nonzero(out, "candidates fetched", stats.candidates_fetched.into());
+    append_nonzero(out, "candidates deduped", stats.candidates_deduped.into());
+    append_nonzero(out, "candidates rejected", stats.candidates_rejected.into());
+    append_nonzero(
+        out,
+        "candidates review-only",
+        stats.candidates_review_only.into(),
+    );
+    append_nonzero(out, "cache evictions", stats.cache_evictions.into());
+    append_nonzero(out, "checkpoint bytes", stats.checkpoint_bytes);
+    append_nonzero(out, "checkpoint flushes", stats.checkpoint_flushes.into());
+    append_counter_map(out, "provider errors", &stats.provider_errors);
+    append_counter_map(out, "terminal reasons", &stats.terminal_reasons);
     append_counter_map(out, "source kinds", &stats.source_kinds);
     append_counter_map(out, "quality tiers", &stats.quality_tiers);
     append_counter_map(out, "reason codes", &stats.reason_codes);
+    append_duration_map(out, "elapsed", &stats.elapsed_ms);
+}
+
+fn append_nonzero(out: &mut String, label: &str, value: u64) {
+    if value > 0 {
+        out.push_str(&format!("        {label}: {value}\n"));
+    }
 }
 
 fn append_counter_map(
@@ -140,6 +208,22 @@ fn append_counter_map(
     let rendered = values
         .iter()
         .map(|(key, count)| format!("{key}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push_str(&format!("        {label}: {rendered}\n"));
+}
+
+fn append_duration_map(
+    out: &mut String,
+    label: &str,
+    values: &std::collections::BTreeMap<String, u64>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    let rendered = values
+        .iter()
+        .map(|(key, millis)| format!("{key}={millis}ms"))
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!("        {label}: {rendered}\n"));
@@ -186,6 +270,20 @@ fn append_rows(out: &mut String, label: &str, rows: &[ReportRow]) {
             out.push_str(&format!(
                 "        reasons: {}\n",
                 row.reason_codes.join(", ")
+            ));
+        }
+        if let Some(reason) = &row.terminal_reason {
+            out.push_str(&format!("        terminal: {reason}\n"));
+        }
+        for probe in &row.executed_probes {
+            out.push_str(&format!(
+                "        probe [{}:{}] {} -> {} ({} results, {}ms)\n",
+                probe.backend,
+                probe.intent,
+                probe.query,
+                probe.status,
+                probe.result_count,
+                probe.elapsed_ms
             ));
         }
         for (idx, candidate) in row.candidates.iter().enumerate() {
@@ -271,7 +369,7 @@ mod tests {
         let output = run_inner(&[job_id, "--format", "json"]).expect("json report");
 
         assert!(output.contains(r#""job_id": "sp2yt-report-json""#));
-        assert!(output.contains(r#""schema_version": 4"#));
+        assert!(output.contains(r#""schema_version": 5"#));
         assert!(output.contains(r#""source_key": "spotify:track:maybe""#));
     }
 

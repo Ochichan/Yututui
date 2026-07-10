@@ -796,6 +796,7 @@ fn row_status_label(status: ImportSessionRowStatus) -> &'static str {
         ImportSessionRowStatus::Ambiguous => "review",
         ImportSessionRowStatus::NotFound => "not_found",
         ImportSessionRowStatus::SkippedLocal => "skipped",
+        ImportSessionRowStatus::SkippedCapacity => "capacity",
     }
 }
 

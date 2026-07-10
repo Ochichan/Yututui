@@ -18,6 +18,179 @@ use crate::transfer::organize_plan::{
 use crate::transfer::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
 
 impl App {
+    pub(in crate::app) fn intercept_local_import_modal_mouse_click(
+        &mut self,
+        col: u16,
+        row: u16,
+    ) -> Option<Vec<Cmd>> {
+        if self.local_mode.pending_organize_confirm.is_some() {
+            return Some(match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmLocalOrganize | MouseTarget::CancelLocalOrganize),
+                ) => self.on_mouse_target(target),
+                _ => {
+                    self.local_mode.pending_organize_confirm = None;
+                    self.dirty = true;
+                    Vec::new()
+                }
+            });
+        }
+        if self.local_mode.pending_accept_all_confirm.is_some() {
+            return Some(match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmLocalAcceptAll
+                    | MouseTarget::CancelLocalAcceptAll),
+                ) => self.on_mouse_target(target),
+                _ => {
+                    self.local_mode.pending_accept_all_confirm = None;
+                    self.dirty = true;
+                    Vec::new()
+                }
+            });
+        }
+        if self.local_mode.pending_import_record_delete.is_some() {
+            return Some(match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmLocalImportDelete
+                    | MouseTarget::CancelLocalImportDelete),
+                ) => self.on_mouse_target(target),
+                _ => {
+                    self.local_mode.pending_import_record_delete = None;
+                    self.dirty = true;
+                    Vec::new()
+                }
+            });
+        }
+        None
+    }
+
+    pub(crate) fn local_import_confirmation_open(&self) -> bool {
+        self.local_mode.pending_organize_confirm.is_some()
+            || self.local_mode.pending_accept_all_confirm.is_some()
+            || self.local_mode.pending_import_record_delete.is_some()
+    }
+
+    pub(crate) fn local_import_record_deletable(&self, row: &crate::local::LocalRowId) -> bool {
+        let crate::local::LocalRowId::ImportSession(session_id) = row else {
+            return false;
+        };
+        ImportSession::record_exists(session_id)
+    }
+
+    pub(in crate::app) fn request_local_import_record_delete(&mut self) -> Vec<Cmd> {
+        let selected = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned();
+        let session_id = match selected {
+            Some(crate::local::LocalRowId::ImportSession(session_id)) => Some(session_id),
+            _ => self
+                .local_mode
+                .ui
+                .drill
+                .last()
+                .and_then(|drill| match drill {
+                    LocalDrill::ImportSession(session_id) => Some(session_id.clone()),
+                    _ => None,
+                }),
+        };
+        let Some(session_id) = session_id else {
+            return Vec::new();
+        };
+        self.prepare_local_import_record_delete(session_id);
+        Vec::new()
+    }
+
+    pub(in crate::app) fn request_local_import_record_delete_id(
+        &mut self,
+        session_id: String,
+    ) -> Vec<Cmd> {
+        if let Some(index) = self.local_visible_rows().iter().position(
+            |row| matches!(row, crate::local::LocalRowId::ImportSession(id) if id == &session_id),
+        ) {
+            self.local_mode.ui.selected = index;
+            self.local_mode.ui.anchor = index;
+        }
+        self.prepare_local_import_record_delete(session_id);
+        Vec::new()
+    }
+
+    fn prepare_local_import_record_delete(&mut self, session_id: String) {
+        if !ImportSession::record_exists(&session_id) {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "No saved import record exists; imported songs were left unchanged.",
+                "저장된 임포트 기록이 없습니다. 임포트한 곡은 변경하지 않았습니다."
+            )
+            .to_owned();
+            self.dirty = true;
+            return;
+        }
+        self.local_mode.pending_import_record_delete = Some(session_id);
+        self.dirty = true;
+    }
+
+    pub(in crate::app) fn apply_local_import_record_delete(
+        &mut self,
+        session_id: String,
+    ) -> Vec<Cmd> {
+        self.local_mode.pending_import_record_delete = None;
+        match ImportSession::delete_record(&session_id) {
+            Ok(removed) => {
+                if matches!(
+                    self.local_mode.ui.drill.last(),
+                    Some(LocalDrill::ImportSession(open_id)) if open_id == &session_id
+                ) {
+                    self.local_mode.ui.drill.pop();
+                }
+                self.local_mode.ui.selected = self
+                    .local_mode
+                    .ui
+                    .selected
+                    .min(self.local_rows_len().saturating_sub(1));
+                self.local_mode.ui.anchor = self.local_mode.ui.selected;
+                self.status.kind = StatusKind::Info;
+                self.status.text = if removed == 0 {
+                    t!(
+                        "Import record was already absent; imported songs were left unchanged.",
+                        "임포트 기록이 이미 없습니다. 임포트한 곡은 변경하지 않았습니다."
+                    )
+                    .to_owned()
+                } else if crate::i18n::is_korean() {
+                    format!(
+                        "임포트 기록 {session_id} 삭제 완료 ({removed}개 파일). 임포트한 곡, 오디오 파일, 플레이리스트는 유지했습니다."
+                    )
+                } else {
+                    format!(
+                        "Deleted import record {session_id} ({removed} artifacts). Imported songs, audio files, and playlists were kept."
+                    )
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = format!(
+                    "{}: {session_id}",
+                    t!(
+                        "Import is still active; try deleting its record after it finishes",
+                        "임포트가 아직 진행 중입니다. 완료된 뒤 기록 삭제를 다시 시도하세요"
+                    )
+                );
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!(
+                        "Could not delete import record",
+                        "임포트 기록을 삭제하지 못했습니다"
+                    )
+                );
+            }
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
     pub(in crate::app) fn local_import_session_rows_for_query(
         &self,
         query: &str,
@@ -53,6 +226,12 @@ impl App {
                     .or_insert((0, summary.updated_at, None));
             entry.1 = entry.1.max(summary.updated_at);
             entry.2 = Some(summary);
+        }
+        for record in ImportSession::list_record_entries() {
+            let entry = sessions
+                .entry(record.session_id)
+                .or_insert((0, record.updated_at, None));
+            entry.1 = entry.1.max(record.updated_at);
         }
         let mut rows: Vec<_> = sessions.into_iter().collect();
         rows.sort_by(|a, b| b.1.1.cmp(&a.1.1).then_with(|| a.0.cmp(&b.0)));
@@ -219,6 +398,9 @@ impl App {
                 }
                 actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
                 actions.push(t!("m commit inbox", "m 인박스 커밋"));
+                if ImportSession::record_exists(&session_id) {
+                    actions.push(t!("Del delete record", "Del 기록 삭제"));
+                }
                 Some(actions.join("  |  "))
             }
             crate::local::LocalRowId::ImportSessionRow {
@@ -257,6 +439,13 @@ impl App {
                 actions.push(t!("s search", "s 검색"));
                 if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
                     actions.push(t!("m commit", "m 커밋"));
+                }
+                if matches!(
+                    self.local_mode.ui.drill.last(),
+                    Some(LocalDrill::ImportSession(open_id)) if open_id == &session_id
+                ) && ImportSession::record_exists(&session_id)
+                {
+                    actions.push(t!("Del delete session record", "Del 세션 기록 삭제"));
                 }
                 (!actions.is_empty()).then(|| actions.join("  |  "))
             }
@@ -1098,13 +1287,35 @@ fn load_import_session_recovering(session_id: &str) -> anyhow::Result<ImportSess
     match ImportSession::load(session_id) {
         Ok(session) => Ok(session),
         Err(session_error) => {
+            let _guard = match crate::transfer::session::ImportRecordGuard::try_acquire(session_id)
+            {
+                Ok(guard) => guard,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Another process (or another view refresh) may already be repairing this
+                    // same corrupt session from its checkpoint. Wait only for that short repair
+                    // window; never block the TUI for the lifetime of an active import.
+                    for _ in 0..50 {
+                        if let Ok(session) = ImportSession::load(session_id) {
+                            return Ok(session);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    return Err(anyhow::anyhow!(
+                        "import session `{session_id}` is being updated and is not readable yet"
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if let Ok(session) = ImportSession::load(session_id) {
+                return Ok(session);
+            }
             let cp = Checkpoint::load(session_id).map_err(|checkpoint_error| {
                 anyhow::anyhow!(
                     "load import session `{session_id}` failed ({session_error:#}); checkpoint recovery failed ({checkpoint_error:#})"
                 )
             })?;
             let session = ImportSession::from_checkpoint(&cp);
-            session.save().map_err(|save_error| {
+            session.save_unlocked().map_err(|save_error| {
                 anyhow::anyhow!(
                     "recover import session `{session_id}` from checkpoint failed while saving: {save_error}"
                 )

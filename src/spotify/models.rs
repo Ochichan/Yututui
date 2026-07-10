@@ -17,6 +17,13 @@ pub struct Paging<T> {
     pub next: Option<String>,
     #[serde(default)]
     pub total: u32,
+    /// Spotify's offset envelopes include these on every page. Keeping them lets the
+    /// client reject a repeated/overlapping continuation before duplicate rows grow the
+    /// transfer input indefinitely.
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -42,7 +42,7 @@ impl HitMap {
             .iter()
             .rev()
             .find(|b| rect_contains(b.rect, col, row))
-            .copied()
+            .cloned()
     }
 
     /// The target of the topmost region covering `(col, row)`, if any.
@@ -136,35 +136,8 @@ impl App {
                 }
             }
         }
-        // Local import organize is modal: only its Confirm/Cancel buttons act.
-        if self.local_mode.pending_organize_confirm.is_some() {
-            match self.mouse_target_at(col, row) {
-                Some(
-                    t @ (MouseTarget::ConfirmLocalOrganize | MouseTarget::CancelLocalOrganize),
-                ) => {
-                    return self.on_mouse_target(t);
-                }
-                _ => {
-                    self.local_mode.pending_organize_confirm = None;
-                    self.dirty = true;
-                    return Vec::new();
-                }
-            }
-        }
-        // Local import accept-all is modal: only its Confirm/Cancel buttons act.
-        if self.local_mode.pending_accept_all_confirm.is_some() {
-            match self.mouse_target_at(col, row) {
-                Some(
-                    t @ (MouseTarget::ConfirmLocalAcceptAll | MouseTarget::CancelLocalAcceptAll),
-                ) => {
-                    return self.on_mouse_target(t);
-                }
-                _ => {
-                    self.local_mode.pending_accept_all_confirm = None;
-                    self.dirty = true;
-                    return Vec::new();
-                }
-            }
+        if let Some(cmds) = self.intercept_local_import_modal_mouse_click(col, row) {
+            return cmds;
         }
         // The "what's playing" identify overlay is modal: only its own buttons act; a
         // click anywhere else closes it (no click-through to the player/seekbar).
@@ -625,6 +598,12 @@ impl App {
                 self.local_row_click(i)
             }
             MouseTarget::LocalRow(_) => Vec::new(),
+            MouseTarget::LocalImportDel(session_id)
+                if self.mode == Mode::Library && self.local_dedicated_mode =>
+            {
+                self.request_local_import_record_delete_id(session_id)
+            }
+            MouseTarget::LocalImportDel(_) => Vec::new(),
             MouseTarget::MouseHelp => {
                 self.overlays.help_visible = false;
                 self.overlays.mouse_help_visible = true;
@@ -822,6 +801,17 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmLocalImportDelete => {
+                let Some(session_id) = self.local_mode.pending_import_record_delete.take() else {
+                    return Vec::new();
+                };
+                self.apply_local_import_record_delete(session_id)
+            }
+            MouseTarget::CancelLocalImportDelete => {
+                self.local_mode.pending_import_record_delete = None;
+                self.dirty = true;
+                Vec::new()
+            }
             MouseTarget::NowPlayingFavorite => self.now_playing_favorite(),
             MouseTarget::NowPlayingAskAi => self.now_playing_ask_ai(),
             MouseTarget::CloseNowPlaying => {
@@ -877,8 +867,7 @@ impl App {
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
-            || self.local_mode.pending_organize_confirm.is_some()
-            || self.local_mode.pending_accept_all_confirm.is_some()
+            || self.local_import_confirmation_open()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
@@ -1436,8 +1425,7 @@ impl App {
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
-            || self.local_mode.pending_organize_confirm.is_some()
-            || self.local_mode.pending_accept_all_confirm.is_some()
+            || self.local_import_confirmation_open()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()

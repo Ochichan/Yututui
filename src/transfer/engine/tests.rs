@@ -1,6 +1,8 @@
 use super::*;
-use crate::transfer::checkpoint::ReviewDecision;
+use crate::transfer::checkpoint::{ProbeTrace, ReviewDecision};
 use crate::transfer::matching::{AmbiguousCandidate, MatchScoreBreakdown};
+
+mod capacity;
 
 fn spec(dest: TransferDest) -> JobSpec {
     JobSpec {
@@ -422,6 +424,166 @@ fn provider_errors_are_classified_for_resume_safety() {
 }
 
 #[test]
+fn first_ytm_provider_failure_defers_without_fabricating_missing() {
+    // Underscores deliberately make this an in-memory-only checkpoint id.
+    let mut cp = Checkpoint::new(
+        "job_provider_failure_no_persist".to_owned(),
+        spec(TransferDest::YtmLikes),
+        vec![entry(input("Still Pending", &["Artist"]), None)],
+    );
+    cp.stage = Stage::Matching;
+    cp.match_traces.insert(
+        1,
+        MatchTrace {
+            probes: vec![ProbeTrace {
+                backend: "public_youtube".to_owned(),
+                status: "error".to_owned(),
+                error_kind: Some("http_429".to_owned()),
+                attempt: 2,
+                ..ProbeTrace::default()
+            }],
+            ..MatchTrace::default()
+        },
+    );
+
+    let error = defer_ytm_match_error(
+        &mut cp,
+        Some(0),
+        anyhow!("yt-dlp search failed with HTTP Error 429"),
+    );
+
+    assert!(error.resumable);
+    assert!(cp.tracks[0].outcome.is_none());
+    let reason = cp
+        .defer_reason
+        .as_ref()
+        .expect("job is explicitly deferred");
+    assert_eq!(reason.code, "youtube_search_unavailable");
+    assert_eq!(reason.backend.as_deref(), Some("youtube"));
+    assert_eq!(cp.match_stats.deferred_jobs, 1);
+    assert_eq!(
+        cp.match_stats
+            .provider_errors
+            .get("youtube_search_unavailable"),
+        Some(&1)
+    );
+    assert_eq!(
+        cp.match_stats
+            .terminal_reasons
+            .get("deferred_provider_error"),
+        Some(&1)
+    );
+    assert_eq!(
+        cp.match_traces
+            .get(&1)
+            .and_then(|trace| trace.terminal_reason.as_deref()),
+        Some("youtube_search_unavailable")
+    );
+    let probe = &cp.match_traces.get(&1).expect("failure trace").probes[0];
+    assert_eq!(probe.status, "error");
+    assert_eq!(probe.error_kind.as_deref(), Some("http_429"));
+    assert_eq!(probe.attempt, 2);
+}
+
+#[test]
+fn matching_budget_exhaustion_has_accurate_resume_reason() {
+    let mut cp = Checkpoint::new(
+        "job_provider_budget_no_persist".to_owned(),
+        spec(TransferDest::YtmLikes),
+        vec![entry(input("Still Pending", &["Artist"]), None)],
+    );
+    cp.stage = Stage::Matching;
+
+    let error = defer_ytm_match_error(
+        &mut cp,
+        Some(0),
+        anyhow!("transfer matching exceeded the per-track 60 second provider budget"),
+    );
+
+    assert!(error.resumable);
+    assert!(cp.tracks[0].outcome.is_none());
+    let reason = cp.defer_reason.as_ref().expect("explicit defer reason");
+    assert_eq!(reason.code, "provider_budget_exhausted");
+    assert_eq!(reason.backend.as_deref(), Some("youtube"));
+    assert!(format!("{:#}", error.error).contains("resume this job"));
+}
+
+#[test]
+fn match_journal_cadence_bounds_unsynced_outcomes_by_count_and_time() {
+    let mut cadence = MatchJournalCadence::new();
+    for _ in 1..CHECKPOINT_EVERY {
+        assert!(!cadence.next_is_durable());
+    }
+    assert!(cadence.next_is_durable());
+    assert_eq!(cadence.pending, 0);
+
+    cadence.last_durable = Instant::now() - MATCH_JOURNAL_DURABLE_EVERY;
+    assert!(cadence.next_is_durable());
+    assert_eq!(cadence.pending, 0);
+}
+
+#[test]
+fn match_trace_stats_count_only_retrieval_candidates_and_safe_empty_probes() {
+    let trace = MatchTrace {
+        probes: vec![
+            crate::transfer::checkpoint::ProbeTrace {
+                backend: "ytm_song".to_owned(),
+                status: "empty".to_owned(),
+                elapsed_ms: 11,
+                ..crate::transfer::checkpoint::ProbeTrace::default()
+            },
+            crate::transfer::checkpoint::ProbeTrace {
+                backend: "public_youtube".to_owned(),
+                status: "success".to_owned(),
+                result_count: 4,
+                elapsed_ms: 22,
+                ..crate::transfer::checkpoint::ProbeTrace::default()
+            },
+            crate::transfer::checkpoint::ProbeTrace {
+                backend: "youtube_metadata".to_owned(),
+                status: "success".to_owned(),
+                result_count: 2,
+                elapsed_ms: 7,
+                ..crate::transfer::checkpoint::ProbeTrace::default()
+            },
+        ],
+        candidates: vec![
+            ReportCandidate {
+                key: "rejected".to_owned(),
+                score: 0.1,
+                display: "Rejected".to_owned(),
+                score_breakdown: Some(MatchScoreBreakdown {
+                    reject_reason: Some("version mismatch".to_owned()),
+                    ..MatchScoreBreakdown::default()
+                }),
+            },
+            ReportCandidate {
+                key: "review".to_owned(),
+                score: 0.7,
+                display: "Review".to_owned(),
+                score_breakdown: Some(MatchScoreBreakdown {
+                    accept_blocked: true,
+                    ..MatchScoreBreakdown::default()
+                }),
+            },
+        ],
+        terminal_reason: Some("ambiguous".to_owned()),
+    };
+    let mut stats = MatchStats::default();
+
+    record_match_trace_stats(&mut stats, &trace);
+
+    assert_eq!(stats.successful_empty_probes, 1);
+    assert_eq!(stats.candidates_fetched, 4);
+    assert_eq!(stats.candidates_rejected, 1);
+    assert_eq!(stats.candidates_review_only, 1);
+    assert_eq!(stats.elapsed_ms.get("ytm_song"), Some(&11));
+    assert_eq!(stats.elapsed_ms.get("public_youtube"), Some(&22));
+    assert_eq!(stats.elapsed_ms.get("youtube_metadata"), Some(&7));
+    assert_eq!(stats.terminal_reasons.get("ambiguous"), Some(&1));
+}
+
+#[test]
 fn progress_beat_accepts_fetch_progress_without_surface_state() {
     let mut beat = progress_beat("job-fetch", Stage::Fetching);
     beat(1, 3, "Page 1".to_owned());
@@ -455,7 +617,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
     maybe.isrc = Some("ISRC-B".to_owned());
     maybe.explicit = Some(false);
     maybe.source_url = Some("https://open.spotify.com/track/b".to_owned());
-    let cp = Checkpoint::new(
+    let mut cp = Checkpoint::new(
         "job-report".to_owned(),
         spec(TransferDest::YtmLikes),
         vec![
@@ -489,11 +651,53 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
             ),
         ],
     );
+    cp.match_traces.insert(
+        2,
+        MatchTrace {
+            probes: vec![
+                ProbeTrace {
+                    backend: "ytm_song".to_owned(),
+                    query: "Artist B Maybe Song".to_owned(),
+                    status: "success".to_owned(),
+                    ..ProbeTrace::default()
+                },
+                ProbeTrace {
+                    backend: "public_youtube".to_owned(),
+                    query: "Artist B Maybe Song official audio".to_owned(),
+                    status: "success".to_owned(),
+                    ..ProbeTrace::default()
+                },
+            ],
+            terminal_reason: Some("ambiguous".to_owned()),
+            ..MatchTrace::default()
+        },
+    );
+    cp.match_traces.insert(
+        3,
+        MatchTrace {
+            probes: vec![
+                ProbeTrace {
+                    backend: "ytm_song".to_owned(),
+                    query: "Artist C Missing Song".to_owned(),
+                    status: "empty".to_owned(),
+                    ..ProbeTrace::default()
+                },
+                ProbeTrace {
+                    backend: "public_youtube".to_owned(),
+                    query: "Artist C Missing Song official audio".to_owned(),
+                    status: "empty".to_owned(),
+                    ..ProbeTrace::default()
+                },
+            ],
+            terminal_reason: Some("successful_exhaustion".to_owned()),
+            ..MatchTrace::default()
+        },
+    );
 
     let report = build_report(&cp, 1);
 
     assert_eq!(report.job_id, "job-report");
-    assert_eq!(report.schema_version, 4);
+    assert_eq!(report.schema_version, 5);
     assert_eq!(report.total, 4);
     assert_eq!(report.matched, 1);
     assert_eq!(report.skipped_local, 1);
@@ -541,13 +745,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
         report.ambiguous[0].search_queries,
         vec![
             "Artist B Maybe Song".to_owned(),
-            "Album Artist B Maybe Song".to_owned(),
-            "Artist B Maybe Song Input Album".to_owned(),
-            "Maybe Song Input Album".to_owned(),
-            "Artist B Maybe Song 2026".to_owned(),
             "Artist B Maybe Song official audio".to_owned(),
-            "Artist B Maybe Song topic".to_owned(),
-            "Maybe Song".to_owned(),
         ]
     );
     assert_eq!(report.ambiguous[0].candidates.len(), 2);
@@ -558,18 +756,16 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
     );
     assert_eq!(report.not_found.len(), 1);
     assert_eq!(report.not_found[0].artists, "Artist C, Feat D");
-    assert_eq!(report.not_found[0].note, "no match on the destination");
+    assert_eq!(
+        report.not_found[0].note,
+        "all executed providers completed without a candidate"
+    );
     assert_eq!(report.not_found[0].source_order, Some(3));
     assert_eq!(
         report.not_found[0].search_queries,
         vec![
             "Artist C Missing Song".to_owned(),
-            "Artist C Feat D Missing Song".to_owned(),
-            "Artist C Missing Song Input Album".to_owned(),
-            "Missing Song Input Album".to_owned(),
             "Artist C Missing Song official audio".to_owned(),
-            "Artist C Missing Song topic".to_owned(),
-            "Missing Song".to_owned(),
         ]
     );
 }
@@ -688,7 +884,8 @@ fn progress_write_reports_current_track_and_outcome_counts() {
         ],
     );
 
-    let progress = progress_write(&cp, 2, 3, 1, 1);
+    let counts = WriteProgressCounts::from_checkpoint(&cp);
+    let progress = progress_write(&cp, 2, 3, 1, 1, counts);
 
     assert_eq!(progress.job_id, "job-progress");
     assert_eq!(progress.stage, Stage::Writing);
@@ -713,13 +910,49 @@ fn progress_write_handles_missing_index_without_panicking() {
         )],
     );
 
-    let progress = progress_write(&cp, 1, 1, 99, 0);
+    let counts = WriteProgressCounts::from_checkpoint(&cp);
+    let progress = progress_write(&cp, 1, 1, 99, 0, counts);
 
     assert_eq!(progress.job_id, "job-progress-missing");
     assert_eq!(progress.current, "");
     assert_eq!(progress.matched, 1);
     assert_eq!(progress.auto_accepted, 0);
     assert_eq!(progress.written, 0);
+}
+
+#[test]
+fn write_progress_counts_update_without_rescanning_tracks() {
+    let mut already_written = entry(
+        input("Already Written", &["Artist A"]),
+        Some(matched("vid-a")),
+    );
+    already_written.written = true;
+    let cp = Checkpoint::new(
+        "job-progress-incremental".to_owned(),
+        spec(TransferDest::YtmLikes),
+        vec![
+            already_written,
+            entry(input("Pending", &["Artist B"]), Some(matched("vid-b"))),
+        ],
+    );
+
+    let mut counts = WriteProgressCounts::from_checkpoint(&cp);
+    assert_eq!(counts.written, 1);
+    counts.record_written(1);
+
+    let progress = progress_write(&cp, 2, 2, 1, 0, counts);
+    assert_eq!(progress.matched, 2);
+    assert_eq!(progress.written, 2);
+}
+
+#[test]
+fn ytm_playlist_pause_is_only_between_chunks() {
+    assert!(!should_pause_after_chunk(0, 0));
+    assert!(!should_pause_after_chunk(0, 1));
+    assert!(should_pause_after_chunk(0, 2));
+    assert!(!should_pause_after_chunk(1, 2));
+    assert!(should_pause_after_chunk(7, 10));
+    assert!(!should_pause_after_chunk(9, 10));
 }
 
 #[tokio::test]
@@ -849,6 +1082,42 @@ async fn write_stage_dedupes_matches_before_missing_client_error() {
     assert!(cp.tracks.iter().all(|track| !track.written));
 }
 
+#[tokio::test]
+async fn ytm_reconciliation_failure_is_resumable_instead_of_assuming_empty() {
+    // Underscores deliberately make this an in-memory-only checkpoint id.
+    let mut cp = Checkpoint::new(
+        "job_reconcile_failure_no_persist".to_owned(),
+        spec(TransferDest::YtmNewPlaylist {
+            name: Some("Destination".to_owned()),
+        }),
+        vec![entry(
+            input("Still Pending", &["Artist"]),
+            Some(matched("video-id")),
+        )],
+    );
+    cp.stage = Stage::Writing;
+    cp.dest_id = Some("existing-playlist".to_owned());
+    let mut ctx = JobCtx {
+        ytm: Some(YtMusicApi::Anonymous),
+        spotify: None,
+        search_config: SearchConfig::default(),
+        market: None,
+    };
+
+    let error = reconcile_written_ytm(&mut cp, &mut ctx, "existing-playlist")
+        .await
+        .expect_err("destination fetch failure must pause the job");
+
+    assert!(error.resumable);
+    assert!(
+        error
+            .error
+            .to_string()
+            .contains("YouTube Music request failed")
+    );
+    assert!(!cp.tracks[0].written);
+}
+
 #[test]
 fn collect_writes_skips_rejected_review_rows_even_with_take_best() {
     let mut rejected = entry(
@@ -883,7 +1152,7 @@ fn collect_writes_skips_rejected_review_rows_even_with_take_best() {
 }
 
 #[test]
-fn fast_auto_accept_promotes_only_safe_first_candidates_above_threshold() {
+fn fast_auto_accept_promotes_highest_safe_candidates_above_threshold() {
     let mut spec = spec(TransferDest::LocalPlaylist { name: None });
     spec.auto_accept_ambiguous_min_score = Some(0.75);
     let mut already_reviewed = entry(
@@ -914,7 +1183,7 @@ fn fast_auto_accept_promotes_only_safe_first_candidates_above_threshold() {
                 input("Safe first", &["Artist"]),
                 Some(ambiguous(vec![
                     ambiguous_candidate("safe-first", 0.76, false, None),
-                    ambiguous_candidate("safe-second", 0.95, false, None),
+                    ambiguous_candidate("safe-second", 0.75, false, None),
                 ])),
             ),
             entry(
@@ -941,7 +1210,7 @@ fn fast_auto_accept_promotes_only_safe_first_candidates_above_threshold() {
     let accepted = auto_accept_ambiguous_candidates(&mut cp)
         .unwrap_or_else(|err| panic!("auto-accept safe candidates failed: {}", err.error));
 
-    assert_eq!(accepted, 1);
+    assert_eq!(accepted, 2);
     assert!(matches!(
         cp.tracks[0].review_decision,
         Some(ReviewDecision::Accepted { ref key, .. }) if key == "safe-first"
@@ -955,7 +1224,14 @@ fn fast_auto_accept_promotes_only_safe_first_candidates_above_threshold() {
         cp.tracks[1].outcome,
         Some(MatchOutcome::Ambiguous { .. })
     ));
-    assert!(cp.tracks[2].review_decision.is_none());
+    assert!(matches!(
+        cp.tracks[2].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "high-second"
+    ));
+    assert!(matches!(
+        cp.tracks[2].outcome,
+        Some(MatchOutcome::Matched { ref key, .. }) if key == "high-second"
+    ));
     assert_eq!(cp.tracks[3].review_decision, Some(ReviewDecision::Skipped));
     assert!(cp.tracks[4].review_decision.is_none());
 }
@@ -983,23 +1259,30 @@ fn fast_auto_accept_never_promotes_blocked_or_rejected_candidates() {
                     Some("duration mismatch"),
                 )])),
             ),
+            entry(
+                input("Safe behind blocked", &["Artist"]),
+                Some(ambiguous(vec![
+                    ambiguous_candidate("blocked-first", 0.99, true, None),
+                    ambiguous_candidate("safe-later", 0.80, false, None),
+                ])),
+            ),
         ],
     );
 
     let accepted = auto_accept_ambiguous_candidates(&mut cp)
         .unwrap_or_else(|err| panic!("auto-accept inspection failed: {}", err.error));
 
-    assert_eq!(accepted, 0);
-    assert!(
-        cp.tracks
-            .iter()
-            .all(|track| track.review_decision.is_none())
-    );
-    assert!(
-        cp.tracks
-            .iter()
-            .all(|track| matches!(track.outcome, Some(MatchOutcome::Ambiguous { .. })))
-    );
+    assert_eq!(accepted, 1);
+    assert!(cp.tracks[0].review_decision.is_none());
+    assert!(cp.tracks[1].review_decision.is_none());
+    assert!(matches!(
+        cp.tracks[2].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "safe-later"
+    ));
+    assert!(matches!(
+        cp.tracks[2].outcome,
+        Some(MatchOutcome::Matched { ref key, .. }) if key == "safe-later"
+    ));
 }
 
 #[tokio::test]

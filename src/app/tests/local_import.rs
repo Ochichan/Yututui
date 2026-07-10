@@ -484,6 +484,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
             not_found: 1,
             ..crate::transfer::session::ImportSessionCounts::default()
         },
+        defer_reason: None,
         rows: vec![
             crate::transfer::session::ImportSessionRow {
                 row_id: "row-00001".to_owned(),
@@ -700,6 +701,169 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
             .expect("linked row should load local path")
             .contains("/tmp/inbox/Linked.m4a")
     );
+}
+
+#[test]
+fn delete_key_confirms_then_removes_saved_import_history() {
+    let session_id = "sp2yt-local-delete-key";
+    save_ambiguous_import_job(session_id);
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    assert_eq!(app.local_rows_len(), 1);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode.pending_import_record_delete.as_deref(),
+        Some(session_id)
+    );
+    assert!(crate::transfer::session::ImportSession::record_exists(
+        session_id
+    ));
+    render_app(&app);
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .any(|hit| hit.target == MouseTarget::ConfirmLocalImportDelete)
+    );
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.local_mode.pending_import_record_delete.is_none());
+    assert!(!crate::transfer::session::ImportSession::record_exists(
+        session_id
+    ));
+    assert_eq!(app.local_rows_len(), 0);
+    assert!(app.status.text.contains(session_id));
+}
+
+#[test]
+fn active_import_record_delete_fails_immediately_without_removing_history() {
+    let session_id = "sp2yt-local-delete-active";
+    save_ambiguous_import_job(session_id);
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    let guard = crate::transfer::session::ImportRecordGuard::try_acquire(session_id)
+        .expect("hold active import lock");
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(cmds.is_empty());
+    assert!(app.local_mode.pending_import_record_delete.is_none());
+    assert!(crate::transfer::session::ImportSession::record_exists(
+        session_id
+    ));
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.status.text.contains(session_id));
+    drop(guard);
+    crate::transfer::session::ImportSession::delete_record(session_id)
+        .expect("clean active record fixture");
+}
+
+#[test]
+fn import_row_delete_button_keeps_imported_track_after_confirm() {
+    let session_id = "sp2yt-local-delete-mouse";
+    save_ambiguous_import_job(session_id);
+    let mut track = local_deck_track(
+        "/tmp/music/import/delete/01 Keep.m4a",
+        "Keep",
+        &["Artist"],
+        Some("Album"),
+        Some("Artist"),
+        &["Pop"],
+        20,
+    );
+    track.import_session_id = Some(session_id.to_owned());
+    track.import_source_order = Some(1);
+    let mut app = app_with_local_deck_index(vec![track]);
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+
+    let cmds = click_target(&mut app, MouseTarget::LocalImportDel(session_id.to_owned()));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode.pending_import_record_delete.as_deref(),
+        Some(session_id)
+    );
+    let cmds = click_target(&mut app, MouseTarget::ConfirmLocalImportDelete);
+    assert!(cmds.is_empty());
+    assert!(!crate::transfer::session::ImportSession::record_exists(
+        session_id
+    ));
+
+    assert_eq!(app.local_rows_len(), 1, "track provenance grouping remains");
+    assert_eq!(app.local_mode.index.index.tracks().len(), 1);
+    assert_eq!(
+        app.local_mode.index.index.tracks()[0]
+            .import_session_id
+            .as_deref(),
+        Some(session_id)
+    );
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[0])
+            .contains("1 track")
+    );
+}
+
+#[test]
+fn import_delete_mouse_target_keeps_rendered_session_id_after_rows_change() {
+    let rendered_id = "sp2yt-local-delete-stable-rendered";
+    let now_visible_id = "sp2yt-local-delete-stable-visible";
+    save_ambiguous_import_job(rendered_id);
+    save_ambiguous_import_job(now_visible_id);
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = rendered_id.to_owned();
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::LocalImportDel(rendered_id.to_owned()));
+
+    // Simulate an async refresh/re-sort between the last render and delivery of that frame's
+    // click. The hit target must retain the rendered id instead of resolving display index 0.
+    app.local_mode.ui.filter_query = now_visible_id.to_owned();
+    let cmds = app.update(Msg::MouseClick { col, row });
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode.pending_import_record_delete.as_deref(),
+        Some(rendered_id)
+    );
+
+    app.local_mode.pending_import_record_delete = None;
+    crate::transfer::session::ImportSession::delete_record(rendered_id)
+        .expect("clean rendered session fixture");
+    crate::transfer::session::ImportSession::delete_record(now_visible_id)
+        .expect("clean visible session fixture");
+}
+
+#[test]
+fn orphan_report_without_session_document_is_visible_and_deletable() {
+    let session_id = "sp2yt-local-delete-orphan-report";
+    let report_path = crate::transfer::checkpoint::report_path(session_id).expect("report path");
+    std::fs::create_dir_all(report_path.parent().expect("report parent"))
+        .expect("create transfers dir");
+    std::fs::write(&report_path, b"{}").expect("write orphan report");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    assert_eq!(
+        app.local_visible_rows(),
+        vec![crate::local::LocalRowId::ImportSession(
+            session_id.to_owned()
+        )]
+    );
+    assert!(
+        app.local_import_record_deletable(&crate::local::LocalRowId::ImportSession(
+            session_id.to_owned()
+        ))
+    );
+
+    app.request_local_import_record_delete();
+    app.apply_local_import_record_delete(session_id.to_owned());
+    assert!(!report_path.exists());
+    assert!(app.local_visible_rows().is_empty());
 }
 
 #[test]

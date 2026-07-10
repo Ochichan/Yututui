@@ -110,6 +110,20 @@ pub fn build_import_organize_plan(
 pub fn apply_import_organize_plan(
     plan: &ImportOrganizePlan,
 ) -> anyhow::Result<ImportOrganizeApplyReport> {
+    let _guard = super::session::ImportRecordGuard::try_acquire(&plan.session_id)?;
+    for row in &plan.rows {
+        if matches!(row.decision, ImportOrganizeDecision::Move)
+            && let Some(target) = row.target_path.as_ref().filter(|path| path.exists())
+        {
+            anyhow::bail!("organize target already exists: {}", target.display());
+        }
+    }
+    ImportSession::load(&plan.session_id).with_context(|| {
+        format!(
+            "reload import session {} before organizing",
+            plan.session_id
+        )
+    })?;
     let mut moved_count = 0u32;
     let mut already_count = 0u32;
     let mut skipped_count = 0u32;
@@ -125,7 +139,7 @@ pub fn apply_import_organize_plan(
                     .as_ref()
                     .context("move row missing target path")?;
                 move_audio_and_sidecar(from, to, &plan.root)?;
-                super::session::record_download_done(
+                super::session::record_download_done_unlocked(
                     &plan.session_id,
                     row.source_order,
                     to.clone(),
@@ -627,6 +641,33 @@ mod tests {
         assert!(err.to_string().contains("already exists"));
         assert!(audio.exists());
         assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_does_not_move_files_after_import_record_was_deleted() {
+        let root = temp_root("apply-deleted-record");
+        let inbox = root
+            .join(".yututui-inbox")
+            .join("sp2yt-organize-deleted-record");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let audio = inbox.join("Song.m4a");
+        std::fs::write(&audio, b"audio").unwrap();
+        let session = ImportSession {
+            session_id: "sp2yt-organize-deleted-record".to_owned(),
+            rows: vec![row(1, "Song", &audio.to_string_lossy())],
+            ..ImportSession::default()
+        };
+        let plan = build_import_organize_plan(&session, &ImportOrganizeOptions::new(root.clone()))
+            .unwrap();
+        let target = plan.rows[0].target_path.clone().unwrap();
+
+        let error = apply_import_organize_plan(&plan)
+            .expect_err("an already-deleted import record must abort before moving audio");
+
+        assert!(error.to_string().contains("reload import session"));
+        assert!(audio.exists());
+        assert!(!target.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

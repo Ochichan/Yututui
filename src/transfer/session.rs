@@ -5,11 +5,16 @@
 //! follow-up, and Local Deck inbox organization without making UI code reverse-engineer
 //! checkpoint internals.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-use super::checkpoint::{Checkpoint, ReportCandidate, ReviewDecision};
+use super::checkpoint::{
+    Checkpoint, JobDeferReason, MatchTrace, ProbeTrace, ReportCandidate, ReviewDecision,
+};
 use super::matching::{MatchOutcome, TrackInput};
 use super::{Stage, TransferDest, TransferSource};
 use crate::util::safe_fs;
@@ -31,6 +36,8 @@ pub struct ImportSession {
     pub source: SessionEndpoint,
     pub destination: SessionEndpoint,
     pub counts: ImportSessionCounts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_reason: Option<JobDeferReason>,
     pub rows: Vec<ImportSessionRow>,
 }
 
@@ -42,6 +49,23 @@ pub struct ImportSessionSummary {
     pub source: SessionEndpoint,
     pub destination: SessionEndpoint,
     pub counts: ImportSessionCounts,
+}
+
+/// One persisted import-history record, including incomplete/orphaned records that no
+/// longer have a readable session document. Local Deck uses this lightweight index to keep
+/// every checkpoint/report/journal/summary cleanup target visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportRecordEntry {
+    pub session_id: String,
+    pub updated_at: i64,
+}
+
+/// Exclusive per-job guard shared by every import-history writer and record deletion.
+///
+/// The lock file is deliberately permanent: unlinking a locked inode would let a new caller
+/// create and lock a different inode for the same job while the first guard is still alive.
+pub(crate) struct ImportRecordGuard {
+    _file: File,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +152,7 @@ impl Default for ImportSession {
             source: SessionEndpoint::default(),
             destination: SessionEndpoint::default(),
             counts: ImportSessionCounts::default(),
+            defer_reason: None,
             rows: Vec::new(),
         }
     }
@@ -161,6 +186,7 @@ pub struct ImportSessionCounts {
     pub ambiguous: u32,
     pub not_found: u32,
     pub skipped_local: u32,
+    pub capacity_skipped: u32,
     pub written: u32,
 }
 
@@ -233,6 +259,10 @@ pub struct ImportSessionRow {
     pub reason_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_delta_secs: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executed_probes: Vec<ProbeTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
 }
 
 impl Default for ImportSessionRow {
@@ -274,6 +304,8 @@ impl Default for ImportSessionRow {
             reject_reason: None,
             reason_codes: Vec::new(),
             duration_delta_secs: None,
+            executed_probes: Vec::new(),
+            terminal_reason: None,
         }
     }
 }
@@ -287,6 +319,7 @@ pub enum ImportSessionRowStatus {
     Ambiguous,
     NotFound,
     SkippedLocal,
+    SkippedCapacity,
 }
 
 impl ImportSession {
@@ -304,6 +337,7 @@ impl ImportSession {
                     entry.review_decision.clone(),
                     entry.written,
                     searched_ytm,
+                    cp.match_traces.get(&(idx as u32 + 1)),
                 )
             })
             .collect();
@@ -322,11 +356,23 @@ impl ImportSession {
             source: endpoint_from_source(&cp.spec.source, cp.source_name.clone()),
             destination,
             counts,
+            defer_reason: cp.defer_reason.clone(),
             rows,
         }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        if session_path(&self.session_id).is_none() {
+            return Ok(());
+        }
+        let _guard = ImportRecordGuard::try_acquire(&self.session_id)?;
+        self.save_unlocked()
+    }
+
+    /// Save while the caller already holds this session's [`ImportRecordGuard`].
+    /// Keeping this separate avoids platform-dependent recursive file-lock behavior in
+    /// long-running import/review operations.
+    pub(crate) fn save_unlocked(&self) -> std::io::Result<()> {
         let Some(path) = session_path(&self.session_id) else {
             return Ok(());
         };
@@ -385,9 +431,74 @@ impl ImportSession {
         out.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
         out
     }
+
+    /// List every persisted import-history id, even when only an orphan checkpoint, report,
+    /// journal, or summary remains. Imported Local Deck tracks are merged by the UI separately.
+    pub fn list_record_entries() -> Vec<ImportRecordEntry> {
+        let Some(transfers) = transfers_dir() else {
+            return Vec::new();
+        };
+        let sessions = transfers.join("sessions");
+        let mut records = BTreeMap::<String, i64>::new();
+        collect_record_artifacts(&transfers, RecordArtifactDir::Transfers, &mut records);
+        collect_record_artifacts(&sessions, RecordArtifactDir::Sessions, &mut records);
+        let mut out: Vec<_> = records
+            .into_iter()
+            .map(|(session_id, updated_at)| ImportRecordEntry {
+                session_id,
+                updated_at,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.session_id.cmp(&b.session_id))
+        });
+        out
+    }
+
+    /// Delete the persisted history for one import job without touching any imported audio,
+    /// Local Deck index row, download sidecar, or destination playlist. The session document is
+    /// removed last so an interrupted cleanup remains visible and can be retried.
+    pub fn delete_record(session_id: &str) -> std::io::Result<usize> {
+        let Some(paths) = import_record_paths(session_id) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid import session id",
+            ));
+        };
+        reject_symlinked_record_parents()?;
+        let _guard = ImportRecordGuard::try_acquire(session_id)?;
+        let mut removed = 0;
+        for path in paths {
+            match std::fs::remove_file(path) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn record_exists(session_id: &str) -> bool {
+        import_record_paths(session_id).is_some_and(|paths| {
+            paths
+                .iter()
+                .any(|path| std::fs::symlink_metadata(path).is_ok())
+        })
+    }
 }
 
 pub fn record_download_done(
+    session_id: &str,
+    source_order: u32,
+    local_path: PathBuf,
+) -> anyhow::Result<()> {
+    let _guard = ImportRecordGuard::try_acquire(session_id)?;
+    record_download_done_unlocked(session_id, source_order, local_path)
+}
+
+pub(crate) fn record_download_done_unlocked(
     session_id: &str,
     source_order: u32,
     local_path: PathBuf,
@@ -401,6 +512,15 @@ pub fn record_download_done(
 }
 
 pub fn record_download_error(
+    session_id: &str,
+    source_order: u32,
+    error: &str,
+) -> anyhow::Result<()> {
+    let _guard = ImportRecordGuard::try_acquire(session_id)?;
+    record_download_error_unlocked(session_id, source_order, error)
+}
+
+fn record_download_error_unlocked(
     session_id: &str,
     source_order: u32,
     error: &str,
@@ -435,7 +555,7 @@ fn row_by_source_order_mut(
 fn save_updated_session(mut session: ImportSession) -> anyhow::Result<()> {
     session.updated_at = crate::signals::unix_now();
     session.counts = ImportSessionCounts::from_rows(&session.rows);
-    session.save().map_err(Into::into)
+    session.save_unlocked().map_err(Into::into)
 }
 
 impl ImportSessionCounts {
@@ -451,6 +571,7 @@ impl ImportSessionCounts {
                 ImportSessionRowStatus::Ambiguous => counts.ambiguous += 1,
                 ImportSessionRowStatus::NotFound => counts.not_found += 1,
                 ImportSessionRowStatus::SkippedLocal => counts.skipped_local += 1,
+                ImportSessionRowStatus::SkippedCapacity => counts.capacity_skipped += 1,
             }
             if row.written {
                 counts.written += 1;
@@ -467,6 +588,7 @@ fn row_from_input(
     review_decision: Option<ReviewDecision>,
     written: bool,
     searched_ytm: bool,
+    trace: Option<&MatchTrace>,
 ) -> ImportSessionRow {
     let mut row = ImportSessionRow {
         row_id: format!("row-{:05}", idx + 1),
@@ -545,12 +667,29 @@ fn row_from_input(
             row.warnings
                 .push("spotify local file or episode skipped".to_owned());
         }
+        Some(MatchOutcome::SkippedCapacity) => {
+            row.status = ImportSessionRowStatus::SkippedCapacity;
+            row.warnings
+                .push("destination playlist capacity reached".to_owned());
+        }
         None => {
             row.status = ImportSessionRowStatus::Pending;
         }
     }
-    if searched_ytm && input.known_video_id.is_none() {
-        row.search_queries = super::matching::ytm_query_plan(input);
+    if let Some(trace) = trace {
+        row.executed_probes = trace.probes.clone();
+        row.terminal_reason = trace.terminal_reason.clone();
+        row.search_queries = trace
+            .probes
+            .iter()
+            .map(|probe| probe.query.clone())
+            .filter(|query| !query.is_empty())
+            .collect();
+        if row.candidates.is_empty() {
+            row.candidates = trace.candidates.clone();
+        }
+    } else if !searched_ytm || input.known_video_id.is_some() {
+        row.search_queries.clear();
     }
     row
 }
@@ -686,7 +825,11 @@ fn write_session_summary(session: &ImportSession) -> std::io::Result<()> {
 }
 
 fn sessions_dir() -> Option<PathBuf> {
-    crate::paths::data_dir().map(|d| d.join("transfers").join("sessions"))
+    Some(transfers_dir()?.join("sessions"))
+}
+
+fn transfers_dir() -> Option<PathBuf> {
+    crate::paths::data_dir().map(|d| d.join("transfers"))
 }
 
 fn safe_session_id(session_id: &str) -> Option<&str> {
@@ -695,6 +838,159 @@ fn safe_session_id(session_id: &str) -> Option<&str> {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
     .then_some(session_id)
+}
+
+fn import_record_paths(session_id: &str) -> Option<[PathBuf; 5]> {
+    let safe_id = safe_session_id(session_id)?;
+    let transfers = transfers_dir()?;
+    let sessions = transfers.join("sessions");
+    Some([
+        transfers.join(format!("{safe_id}.json")),
+        transfers.join(format!("{safe_id}.report.json")),
+        transfers.join(format!("{safe_id}.journal.jsonl")),
+        sessions.join(format!("{safe_id}.summary.json")),
+        sessions.join(format!("{safe_id}.json")),
+    ])
+}
+
+impl ImportRecordGuard {
+    pub(crate) fn try_acquire_if_persistable(session_id: &str) -> std::io::Result<Option<Self>> {
+        if safe_session_id(session_id).is_none() || transfers_dir().is_none() {
+            return Ok(None);
+        }
+        Self::try_acquire(session_id).map(Some)
+    }
+
+    pub(crate) fn try_acquire(session_id: &str) -> std::io::Result<Self> {
+        let file = open_record_lock(session_id)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(TryLockError::WouldBlock) => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("import job `{session_id}` is still active"),
+            )),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+}
+
+fn open_record_lock(session_id: &str) -> std::io::Result<File> {
+    let safe_id = safe_session_id(session_id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid import session id",
+        )
+    })?;
+    let transfers = transfers_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no data directory on this platform",
+        )
+    })?;
+    reject_existing_symlink_or_non_directory(&transfers)?;
+    let lock_dir = transfers.join("record-locks");
+    safe_fs::ensure_private_dir(&lock_dir)?;
+    let lock_path = lock_dir.join(format!("{safe_id}.lock"));
+    if std::fs::symlink_metadata(&lock_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing symlink lock file {}", lock_path.display()),
+        ));
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(lock_path)
+}
+
+fn reject_symlinked_record_parents() -> std::io::Result<()> {
+    let transfers = transfers_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no data directory on this platform",
+        )
+    })?;
+    reject_symlinked_record_parents_at(&transfers)
+}
+
+fn reject_symlinked_record_parents_at(transfers: &Path) -> std::io::Result<()> {
+    reject_existing_symlink_or_non_directory(transfers)?;
+    reject_existing_symlink_or_non_directory(&transfers.join("sessions"))
+}
+
+fn reject_existing_symlink_or_non_directory(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing symlink import-record directory {}",
+                path.display()
+            ),
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!(
+                "import-record parent is not a directory: {}",
+                path.display()
+            ),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RecordArtifactDir {
+    Transfers,
+    Sessions,
+}
+
+fn collect_record_artifacts(
+    dir: &Path,
+    kind: RecordArtifactDir,
+    records: &mut BTreeMap<String, i64>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let session_id = match kind {
+            RecordArtifactDir::Transfers => name
+                .strip_suffix(".journal.jsonl")
+                .or_else(|| name.strip_suffix(".report.json"))
+                .or_else(|| name.strip_suffix(".json")),
+            RecordArtifactDir::Sessions => name
+                .strip_suffix(".summary.json")
+                .or_else(|| name.strip_suffix(".json")),
+        };
+        let Some(session_id) = session_id.and_then(safe_session_id) else {
+            continue;
+        };
+        let updated_at = artifact_modified_unix(&path);
+        records
+            .entry(session_id.to_owned())
+            .and_modify(|previous| *previous = (*previous).max(updated_at))
+            .or_insert(updated_at);
+    }
+}
+
+fn artifact_modified_unix(path: &Path) -> i64 {
+    std::fs::symlink_metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -837,6 +1133,7 @@ mod tests {
                 ambiguous: 1,
                 not_found: 1,
                 skipped_local: 1,
+                capacity_skipped: 0,
                 written: 1,
             }
         );
@@ -860,6 +1157,12 @@ mod tests {
         assert!(session_path("UPPER").is_none());
         assert!(session_path("").is_none());
         assert!(session_path("sp2yt-20260708-abcd").is_some());
+        assert_eq!(
+            ImportSession::delete_record("../escape")
+                .expect_err("hostile id must be rejected")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]
@@ -971,5 +1274,163 @@ mod tests {
         assert_eq!(failed.rows[0].local_path, None);
         assert_eq!(failed.rows[0].errors, vec!["network failed"]);
         assert_eq!(failed.counts.written, 0);
+    }
+
+    #[test]
+    fn delete_record_removes_history_artifacts_but_keeps_imported_audio() {
+        let job_id = "sp2yt-session-delete-record";
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some("Imported".to_owned()),
+            }),
+            vec![entry(input("Keep Me", &["Artist"]), None, false)],
+        );
+        cp.save().expect("save checkpoint");
+        cp.append_track_journal(0, false)
+            .expect("append checkpoint journal");
+        super::super::checkpoint::TransferReport {
+            job_id: job_id.to_owned(),
+            ..super::super::checkpoint::TransferReport::default()
+        }
+        .save()
+        .expect("save report");
+
+        let data_dir = crate::paths::data_dir().expect("test data dir");
+        std::fs::create_dir_all(&data_dir).expect("create test data dir");
+        let audio = data_dir.join("kept-import-after-record-delete.m4a");
+        std::fs::write(&audio, b"audio remains").expect("write imported audio fixture");
+        let mut session = ImportSession::from_checkpoint(&cp);
+        session.rows[0].local_path = Some(audio.clone());
+        session.save().expect("save import session");
+
+        let transfers = data_dir.join("transfers");
+        let artifacts = [
+            super::super::checkpoint::checkpoint_path(job_id).expect("checkpoint path"),
+            super::super::checkpoint::report_path(job_id).expect("report path"),
+            transfers.join(format!("{job_id}.journal.jsonl")),
+            session_summary_path(job_id).expect("summary path"),
+            session_path(job_id).expect("session path"),
+        ];
+        assert!(artifacts.iter().all(|path| path.exists()));
+
+        assert_eq!(
+            ImportSession::delete_record(job_id).unwrap(),
+            artifacts.len()
+        );
+        assert!(artifacts.iter().all(|path| !path.exists()));
+        assert!(
+            audio.exists(),
+            "record deletion must not delete imported audio"
+        );
+        assert!(
+            ImportSession::list_all()
+                .into_iter()
+                .all(|summary| summary.session_id != job_id)
+        );
+        let _ = std::fs::remove_file(audio);
+    }
+
+    #[test]
+    fn active_import_record_lock_blocks_delete_until_writer_finishes() {
+        let job_id = "sp2yt-session-delete-active-lock";
+        let session = ImportSession {
+            session_id: job_id.to_owned(),
+            job_id: job_id.to_owned(),
+            ..ImportSession::default()
+        };
+        session.save().expect("save locked deletion fixture");
+
+        let guard = ImportRecordGuard::try_acquire(job_id).expect("hold active writer lock");
+        let error = ImportSession::delete_record(job_id)
+            .expect_err("active writer must prevent record deletion");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(ImportSession::record_exists(job_id));
+
+        let lock_path = transfers_dir()
+            .expect("transfers dir")
+            .join("record-locks")
+            .join(format!("{job_id}.lock"));
+        assert!(lock_path.exists());
+        drop(guard);
+
+        assert_eq!(ImportSession::delete_record(job_id).unwrap(), 2);
+        assert!(!ImportSession::record_exists(job_id));
+        assert!(
+            lock_path.exists(),
+            "the permanent lock inode must never be deleted"
+        );
+    }
+
+    #[test]
+    fn record_entry_index_includes_orphan_history_artifacts() {
+        let transfers = transfers_dir().expect("transfers dir");
+        let sessions = transfers.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("create sessions dir");
+        let fixtures = [
+            (
+                "sp2yt-orphan-checkpoint-only",
+                transfers.join("sp2yt-orphan-checkpoint-only.json"),
+            ),
+            (
+                "sp2yt-orphan-report-only",
+                transfers.join("sp2yt-orphan-report-only.report.json"),
+            ),
+            (
+                "sp2yt-orphan-journal-only",
+                transfers.join("sp2yt-orphan-journal-only.journal.jsonl"),
+            ),
+            (
+                "sp2yt-orphan-summary-only",
+                sessions.join("sp2yt-orphan-summary-only.summary.json"),
+            ),
+        ];
+        for (_, path) in &fixtures {
+            std::fs::write(path, b"orphan").expect("write orphan artifact");
+        }
+
+        let entries = ImportSession::list_record_entries();
+        for (session_id, _) in &fixtures {
+            assert!(
+                entries.iter().any(|entry| entry.session_id == *session_id),
+                "missing orphan record {session_id}"
+            );
+        }
+
+        for (session_id, _) in fixtures {
+            ImportSession::delete_record(session_id).expect("clean orphan fixture");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deletion_rejects_symlinked_transfer_or_session_parent() {
+        use std::os::unix::fs::symlink;
+
+        let root = crate::paths::data_dir()
+            .expect("test data dir")
+            .join("record-delete-symlink-parent-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("real")).expect("create symlink target");
+
+        let transfers_link = root.join("transfers-link");
+        symlink(root.join("real"), &transfers_link).expect("link transfers parent");
+        assert_eq!(
+            reject_symlinked_record_parents_at(&transfers_link)
+                .expect_err("symlinked transfers parent must be rejected")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        let transfers = root.join("transfers");
+        std::fs::create_dir_all(&transfers).expect("create transfers parent");
+        symlink(root.join("real"), transfers.join("sessions")).expect("link sessions parent");
+        assert_eq!(
+            reject_symlinked_record_parents_at(&transfers)
+                .expect_err("symlinked sessions parent must be rejected")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
