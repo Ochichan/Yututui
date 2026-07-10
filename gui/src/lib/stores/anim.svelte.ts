@@ -21,40 +21,29 @@ export const FPS_MIN = 5;
 export const FPS_MAX = 60;
 export const FPS_DEFAULT = 30;
 
-/** The 25 effect flags, in the Settings-grid order (docs/gui/06 §5.1). */
-export const EFFECT_IDS = [
-  // element
-  'title',
-  'heart',
-  'seekbar',
-  'spinner',
-  'eq_bars',
-  'controls',
-  'border',
-  // one-shot
-  'track_intro',
-  'lyrics',
-  'toast',
-  'volume_flash',
-  'like_burst',
-  'seek_flash',
-  // UI-wide
-  'selection',
-  'stagger',
-  'caret',
-  'tabs',
-  'popup_fade',
-  'activity',
-  'about_fx',
-  // filler / terminal-only
-  'visualizer',
-  'rain',
-  'donut',
-  'starfield',
-  'bounce',
+/** Feature groups in typical-use, low-to-high incremental render-cost order. */
+export const EFFECT_GROUPS = [
+  {
+    id: 'oneShot',
+    effects: ['like_burst', 'track_intro', 'seek_flash', 'volume_flash', 'toast'],
+  },
+  {
+    id: 'uiWide',
+    effects: ['about_fx', 'popup_fade', 'tabs', 'stagger', 'activity', 'caret', 'selection'],
+  },
+  {
+    id: 'element',
+    effects: ['heart', 'spinner', 'controls', 'eq_bars', 'seekbar', 'title', 'lyrics', 'border'],
+  },
+  {
+    id: 'filler',
+    effects: ['bounce', 'starfield', 'visualizer', 'rain', 'donut'],
+  },
 ] as const;
 
-export type EffectId = (typeof EFFECT_IDS)[number];
+export type EffectId = (typeof EFFECT_GROUPS)[number]['effects'][number];
+/** The 25 flags flattened in their Settings order (docs/gui/06 §5.1). */
+export const EFFECT_IDS: readonly EffectId[] = EFFECT_GROUPS.flatMap((group) => group.effects);
 export type EffectFlags = Record<EffectId, boolean>;
 
 export interface AnimationsModel extends EffectFlags {

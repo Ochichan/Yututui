@@ -10,6 +10,7 @@ import {
   AnimStore,
   clampFps,
   defaultAnimations,
+  EFFECT_GROUPS,
   EFFECT_IDS,
   FPS_DEFAULT,
   FPS_MAX,
@@ -198,6 +199,21 @@ describe('animation helpers', () => {
     expect(d.pause_unfocused).toBe(true);
     expect(d.fps).toBe(FPS_DEFAULT);
     expect(EFFECT_IDS).toHaveLength(25);
+    expect(new Set(EFFECT_IDS).size).toBe(25);
+    expect(EFFECT_GROUPS.map((group) => [group.id, group.effects.length])).toEqual([
+      ['oneShot', 5],
+      ['uiWide', 7],
+      ['element', 8],
+      ['filler', 5],
+    ]);
+    expect(EFFECT_GROUPS[2].effects).toContain('lyrics');
+    expect(EFFECT_GROUPS[3].effects).toEqual([
+      'bounce',
+      'starfield',
+      'visualizer',
+      'rain',
+      'donut',
+    ]);
     for (const id of EFFECT_IDS) expect(d[id]).toBe(false);
     // 25 effects + master + pause_unfocused + fps.
     expect(Object.keys(d)).toHaveLength(28);

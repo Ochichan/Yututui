@@ -204,6 +204,122 @@ fn volume_change_arms_the_volume_flash_from_any_path() {
 }
 
 #[test]
+fn idle_event_feedback_does_not_keep_the_player_clock_awake() {
+    let mut app = app_playing(1, 0);
+    let a = &mut app.config.animations;
+    a.master = true;
+    a.like_burst = true;
+    a.track_intro = true;
+    a.seek_flash = true;
+    a.volume_flash = true;
+    a.toast = true;
+    assert!(a.active(), "the configured flags are enabled");
+    assert!(!app.fx_active(), "no feedback window is armed");
+    assert!(
+        !app.animation_active(),
+        "idle feedback must not redraw throughout playback"
+    );
+
+    app.config.animations.controls = true;
+    assert!(
+        app.animation_active(),
+        "a continuous player effect wakes it"
+    );
+}
+
+#[test]
+fn turning_the_master_off_cancels_armed_feedback() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.volume_flash = true;
+    app.update(Msg::Resize);
+    app.playback.volume -= 5;
+    app.update(Msg::Resize);
+    assert!(app.fx_active());
+
+    app.toggle_animations();
+    assert!(!app.animations().master);
+    assert!(!app.fx_active());
+    assert!(!app.animation_active());
+
+    app.toggle_animations();
+    assert!(app.animations().master);
+    assert!(!app.fx_active(), "cancelled feedback must not resume");
+    assert!(
+        !app.animation_active(),
+        "idle feedback flag keeps the clock asleep"
+    );
+}
+
+#[test]
+fn volume_edge_flash_blinks_color_without_moving_cells() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.volume_flash = true;
+    let snapshot = |app: &App| {
+        let buf = render_app_buffer(app, 80, 20);
+        let rect = app
+            .hits
+            .regions()
+            .iter()
+            .find(|region| region.target == MouseTarget::VolumeArea)
+            .expect("volume hit area")
+            .rect;
+        let cells = (rect.x..rect.right())
+            .map(|x| {
+                let cell = &buf[(x, rect.y)];
+                (cell.symbol().to_owned(), cell.fg)
+            })
+            .collect::<Vec<_>>();
+        (rect, cells)
+    };
+
+    let channel_delta = |a, b| match (a, b) {
+        (ratatui::style::Color::Rgb(ar, ag, ab), ratatui::style::Color::Rgb(br, bg, bb)) => {
+            ar.abs_diff(br).max(ag.abs_diff(bg)).max(ab.abs_diff(bb))
+        }
+        pair => panic!("expected RGB flash colors, got {pair:?}"),
+    };
+    let mut edge_rect = None;
+    for volume in [0, 100] {
+        app.playback.volume = volume;
+        app.fx.volume = Some(app.anim_frame());
+        let start = snapshot(&app);
+        for _ in 0..app.anim_ms_frames(crate::ui::anim::fx_window::VOLUME_MS) / 2 {
+            app.update(Msg::AnimTick);
+        }
+        let peak = snapshot(&app);
+        assert_eq!(start.0, peak.0, "volume overlay moved at {volume}%");
+        assert_eq!(
+            start.1.iter().map(|(symbol, _)| symbol).collect::<Vec<_>>(),
+            peak.1.iter().map(|(symbol, _)| symbol).collect::<Vec<_>>()
+        );
+        assert_ne!(start.1[0].1, peak.1[0].1, "edge blink did not change color");
+        assert!(
+            channel_delta(start.1[0].1, peak.1[0].1) <= 48,
+            "edge blink is too strong"
+        );
+        if let Some(rect) = edge_rect {
+            assert_eq!(start.0, rect, "endpoint gauge widths differ");
+        } else {
+            edge_rect = Some(start.0);
+        }
+    }
+
+    app.playback.volume = 50;
+    app.fx.volume = Some(app.anim_frame());
+    let start = snapshot(&app);
+    for _ in 0..app.anim_ms_frames(crate::ui::anim::fx_window::VOLUME_MS) / 2 {
+        app.update(Msg::AnimTick);
+    }
+    assert_eq!(
+        start,
+        snapshot(&app),
+        "non-edge volume unexpectedly blinked"
+    );
+}
+
+#[test]
 fn fx_triggers_gate_on_master_and_flag() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Resize);
