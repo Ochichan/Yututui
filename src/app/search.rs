@@ -496,7 +496,7 @@ impl App {
 
     /// Kick the track fetch for a playlist row; `intent` decides what happens when the
     /// tracks arrive ([`Msg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
-    fn fetch_playlist_tracks(
+    pub(in crate::app) fn fetch_playlist_tracks(
         &mut self,
         row: &Song,
         intent: crate::api::PlaylistIntent,

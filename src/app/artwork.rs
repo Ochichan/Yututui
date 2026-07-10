@@ -4,27 +4,28 @@ use super::*;
 
 const ART_REFRESH_OVERLAY_CLEAR_FRAMES: u8 = 3;
 
-pub(in crate::app) const ART_OVERLAY_EQ_BIT: u16 = 1 << 0;
-pub(in crate::app) const ART_OVERLAY_STREAMING_BIT: u16 = 1 << 1;
-pub(in crate::app) const ART_OVERLAY_QUEUE_BIT: u16 = 1 << 2;
-pub(in crate::app) const ART_OVERLAY_HELP_BIT: u16 = 1 << 3;
-pub(in crate::app) const ART_OVERLAY_ABOUT_BIT: u16 = 1 << 4;
-pub(in crate::app) const ART_OVERLAY_WHY_AI_BIT: u16 = 1 << 5;
-pub(in crate::app) const ART_OVERLAY_KEY_CONFLICT_BIT: u16 = 1 << 6;
-pub(in crate::app) const ART_OVERLAY_RADIO_CONFIRM_BIT: u16 = 1 << 7;
-pub(in crate::app) const ART_OVERLAY_SETTINGS_CONFIRM_BIT: u16 = 1 << 8;
-pub(in crate::app) const ART_OVERLAY_LIBRARY_CONFIRM_BIT: u16 = 1 << 9;
-pub(in crate::app) const ART_OVERLAY_NOT_PLAYER_BIT: u16 = 1 << 10;
-pub(in crate::app) const ART_OVERLAY_MOUSE_HELP_BIT: u16 = 1 << 11;
-pub(in crate::app) const ART_OVERLAY_CREATE_PLAYLIST_BIT: u16 = 1 << 12;
-pub(in crate::app) const ART_OVERLAY_DELETE_PLAYLIST_BIT: u16 = 1 << 13;
-pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u16 = 1 << 14;
-pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u16 = 1 << 15;
+pub(in crate::app) const ART_OVERLAY_EQ_BIT: u32 = 1 << 0;
+pub(in crate::app) const ART_OVERLAY_STREAMING_BIT: u32 = 1 << 1;
+pub(in crate::app) const ART_OVERLAY_QUEUE_BIT: u32 = 1 << 2;
+pub(in crate::app) const ART_OVERLAY_HELP_BIT: u32 = 1 << 3;
+pub(in crate::app) const ART_OVERLAY_ABOUT_BIT: u32 = 1 << 4;
+pub(in crate::app) const ART_OVERLAY_WHY_AI_BIT: u32 = 1 << 5;
+pub(in crate::app) const ART_OVERLAY_KEY_CONFLICT_BIT: u32 = 1 << 6;
+pub(in crate::app) const ART_OVERLAY_RADIO_CONFIRM_BIT: u32 = 1 << 7;
+pub(in crate::app) const ART_OVERLAY_SETTINGS_CONFIRM_BIT: u32 = 1 << 8;
+pub(in crate::app) const ART_OVERLAY_LIBRARY_CONFIRM_BIT: u32 = 1 << 9;
+pub(in crate::app) const ART_OVERLAY_NOT_PLAYER_BIT: u32 = 1 << 10;
+pub(in crate::app) const ART_OVERLAY_MOUSE_HELP_BIT: u32 = 1 << 11;
+pub(in crate::app) const ART_OVERLAY_CREATE_PLAYLIST_BIT: u32 = 1 << 12;
+pub(in crate::app) const ART_OVERLAY_DELETE_PLAYLIST_BIT: u32 = 1 << 13;
+pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u32 = 1 << 14;
+pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u32 = 1 << 15;
+pub(in crate::app) const ART_OVERLAY_CONTEXT_MENU_BIT: u32 = 1 << 16;
 
-// INVARIANT(ART-MASK-001): this u16 mask is fully allocated; check the risk map before
-// replacing, sharing, or widening any bit.
+// INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
+// map before replacing, sharing, or widening any allocation.
 #[cfg(test)]
-pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u16)] = &[
+pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u32)] = &[
     ("eq", ART_OVERLAY_EQ_BIT),
     ("streaming", ART_OVERLAY_STREAMING_BIT),
     ("queue", ART_OVERLAY_QUEUE_BIT),
@@ -41,9 +42,10 @@ pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u16)] = &[
     ("delete_playlist", ART_OVERLAY_DELETE_PLAYLIST_BIT),
     ("playlist_picker", ART_OVERLAY_PLAYLIST_PICKER_BIT),
     ("search_filter", ART_OVERLAY_SEARCH_FILTER_BIT),
+    ("context_menu", ART_OVERLAY_CONTEXT_MENU_BIT),
 ];
 
-const fn flag(on: bool, bit: u16) -> u16 {
+const fn flag(on: bool, bit: u32) -> u32 {
     if on { bit } else { 0 }
 }
 
@@ -94,7 +96,7 @@ impl App {
         self.art_active() && self.native_image_protocol_selected()
     }
 
-    fn native_about_icon_touched(&self, previous: u16, next: u16) -> bool {
+    fn native_about_icon_touched(&self, previous: u32, next: u32) -> bool {
         ((previous | next) & ART_OVERLAY_ABOUT_BIT) != 0 && self.native_image_protocol_selected()
     }
 
@@ -313,9 +315,9 @@ impl App {
     /// (minus its bit 10, which is "not on the player screen", not a popup) plus the two
     /// overlays that mask doesn't track. A bit turning on means "a popup just opened".
     fn fx_popup_mask(&self) -> u32 {
-        u32::from(self.art_overlay_mask() & !ART_OVERLAY_NOT_PLAYER_BIT)
-            | ((self.overlays.spotify_picker.is_some() as u32) << 16)
-            | ((self.dropdowns.search_source_open as u32) << 17)
+        (self.art_overlay_mask() & !ART_OVERLAY_NOT_PLAYER_BIT)
+            | ((self.overlays.spotify_picker.is_some() as u32) << 17)
+            | ((self.dropdowns.search_source_open as u32) << 18)
     }
 
     /// Central one-shot trigger detection, called once per [`App::update`] turn after the
@@ -530,7 +532,7 @@ impl App {
     /// A bitmask of visible surfaces that can cover album art. Keeping each popup/modal distinct
     /// lets the render loop notice every transition that can desynchronize native terminal
     /// graphics from ratatui's diff buffer.
-    pub fn art_overlay_mask(&self) -> u16 {
+    pub fn art_overlay_mask(&self) -> u32 {
         flag(self.dropdowns.eq_open, ART_OVERLAY_EQ_BIT)
             | flag(self.dropdowns.streaming_open, ART_OVERLAY_STREAMING_BIT)
             | flag(self.queue_popup.open, ART_OVERLAY_QUEUE_BIT)
@@ -575,6 +577,10 @@ impl App {
                 ART_OVERLAY_PLAYLIST_PICKER_BIT,
             )
             | flag(self.search_filter.open, ART_OVERLAY_SEARCH_FILTER_BIT)
+            | flag(
+                self.overlays.context_menu.is_some(),
+                ART_OVERLAY_CONTEXT_MENU_BIT,
+            )
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

@@ -339,6 +339,7 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::MouseClick { .. }
         | Msg::MouseDoubleClick { .. }
         | Msg::MouseRightClick { .. }
+        | Msg::MouseRightDoubleClick { .. }
         | Msg::MouseDrag { .. }
         | Msg::MouseLeftUp
         | Msg::MouseScroll { .. }

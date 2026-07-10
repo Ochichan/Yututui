@@ -137,10 +137,28 @@ impl App {
             return Vec::new();
         }
 
+        // The row context menu is modal once open. Its own handler preserves Quit, consumes
+        // everything else, and resolves actions against the row snapshot that opened it.
+        if self.overlays.context_menu.is_some() {
+            return self.on_key_context_menu(k);
+        }
+
         // The "add to playlist" picker captures the keyboard while open (list nav + the
         // inline name entry) — before Search-Enter and globals so keys can't leak through.
         if self.playlist_picker.is_some() {
             return self.on_key_playlist_picker(k);
+        }
+
+        // Shift+F10-style accessibility fallback. Resolve it before the search-filter input
+        // captures non-typeable keys; `open_context_menu_for_keyboard` still rejects every
+        // higher-priority modal and unsupported surface.
+        if !(self.in_text_entry() && chord.is_typeable())
+            && matches!(
+                self.keymap.global_action(chord),
+                Some(Action::OpenContextMenu)
+            )
+        {
+            return self.open_context_menu_for_keyboard();
         }
 
         // The search results-filter popup captures the keyboard while open (its query

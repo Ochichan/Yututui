@@ -16,7 +16,7 @@ use futures::{FutureExt, StreamExt};
 use crate::app::Msg;
 use crate::zoom::ZoomHandle;
 
-/// Two left-presses within this window at the same cell count as a double-click.
+/// Two same-button presses within this window at the same cell count as a double-click.
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
 #[derive(Debug)]
@@ -24,6 +24,8 @@ pub struct Translator {
     held_modifiers: KeyModifiers,
     /// The most recent left-button press (time + cell), for double-click detection.
     last_left_down: Option<(Instant, u16, u16)>,
+    /// The most recent right-button press (time + cell), for double-click detection.
+    last_right_down: Option<(Instant, u16, u16)>,
     /// Whether a left-button press has not yet been released. Some terminals report motion
     /// during a press as `Moved` rather than `Drag`, so keep enough state to preserve dragging.
     left_down: bool,
@@ -62,6 +64,7 @@ impl Default for Translator {
         Self {
             held_modifiers: KeyModifiers::NONE,
             last_left_down: None,
+            last_right_down: None,
             left_down: false,
         }
     }
@@ -104,13 +107,11 @@ impl Translator {
                 self.left_down = true;
                 Some(self.classify_left_down(m.column / cs, m.row / rs))
             }
-            // A right-button press is interpreted by the active surface: queue rows delete,
-            // Search/Library rows enqueue.
+            // A right-button press is interpreted by the active surface. As with left clicks,
+            // classify a second press at the same virtual cell separately so bindings can
+            // distinguish single and double clicks.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => {
-                Some(Msg::MouseRightClick {
-                    col: m.column / cs,
-                    row: m.row / rs,
-                })
+                Some(self.classify_right_down(m.column / cs, m.row / rs))
             }
             // Dragging with the left button held extends the queue window's selection.
             Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left) => {
@@ -159,6 +160,7 @@ impl Translator {
                 self.held_modifiers = KeyModifiers::NONE;
                 self.left_down = false;
                 self.last_left_down = None;
+                self.last_right_down = None;
                 Some(Msg::Focus(false))
             }
             _ => None,
@@ -185,6 +187,29 @@ impl Translator {
             Msg::MouseDoubleClick { col, row }
         } else {
             Msg::MouseClick { col, row }
+        }
+    }
+
+    /// Classify a right-button press as a single or double click, updating the timing state.
+    fn classify_right_down(&mut self, col: u16, row: u16) -> Msg {
+        self.classify_right_down_at(Instant::now(), col, row)
+    }
+
+    /// Timing core, split out so tests can supply a deterministic clock.
+    fn classify_right_down_at(&mut self, now: Instant, col: u16, row: u16) -> Msg {
+        let is_double = self.last_right_down.is_some_and(|(t, c, r)| {
+            c == col && r == row && now.duration_since(t) <= DOUBLE_CLICK_WINDOW
+        });
+        // Reset after a double so a third quick press starts a fresh single click.
+        self.last_right_down = if is_double {
+            None
+        } else {
+            Some((now, col, row))
+        };
+        if is_double {
+            Msg::MouseRightDoubleClick { col, row }
+        } else {
+            Msg::MouseRightClick { col, row }
         }
     }
 
@@ -328,6 +353,61 @@ mod tests {
         assert!(matches!(
             t.classify_left_down_at(t0 + Duration::from_millis(650), 11, 5),
             Msg::MouseClick { .. }
+        ));
+    }
+
+    #[test]
+    fn two_quick_right_presses_at_same_cell_are_a_double_click() {
+        let mut t = Translator::default();
+        let t0 = Instant::now();
+        assert!(matches!(
+            t.classify_right_down_at(t0, 10, 5),
+            Msg::MouseRightClick { col: 10, row: 5 }
+        ));
+        assert!(matches!(
+            t.classify_right_down_at(t0 + Duration::from_millis(200), 10, 5),
+            Msg::MouseRightDoubleClick { col: 10, row: 5 }
+        ));
+        // A third quick press starts a new sequence rather than extending the double-click.
+        assert!(matches!(
+            t.classify_right_down_at(t0 + Duration::from_millis(300), 10, 5),
+            Msg::MouseRightClick { col: 10, row: 5 }
+        ));
+    }
+
+    #[test]
+    fn slow_or_moved_right_presses_stay_single_clicks() {
+        let mut t = Translator::default();
+        let t0 = Instant::now();
+        assert!(matches!(
+            t.classify_right_down_at(t0, 10, 5),
+            Msg::MouseRightClick { .. }
+        ));
+        assert!(matches!(
+            t.classify_right_down_at(t0 + Duration::from_millis(600), 10, 5),
+            Msg::MouseRightClick { .. }
+        ));
+        assert!(matches!(
+            t.classify_right_down_at(t0 + Duration::from_millis(650), 11, 5),
+            Msg::MouseRightClick { .. }
+        ));
+    }
+
+    #[test]
+    fn focus_loss_resets_right_double_click_detection() {
+        let mut t = Translator::default();
+        let t0 = Instant::now();
+        assert!(matches!(
+            t.classify_right_down_at(t0, 10, 5),
+            Msg::MouseRightClick { .. }
+        ));
+        assert!(matches!(
+            t.translate(Event::FocusLost, 1, 1),
+            Some(Msg::Focus(false))
+        ));
+        assert!(matches!(
+            t.classify_right_down_at(t0 + Duration::from_millis(200), 10, 5),
+            Msg::MouseRightClick { .. }
         ));
     }
 
@@ -506,6 +586,28 @@ mod tests {
                 2,
             ),
             Some(Msg::MouseDoubleClick { col: 4, row: 2 })
+        ));
+    }
+
+    #[test]
+    fn right_double_clicks_use_the_zoomed_virtual_grid() {
+        let mut t = Translator::default();
+        let down = |column, row| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        // These adjacent physical cells collapse onto the same virtual cell at 2x zoom.
+        assert!(matches!(
+            t.translate(down(9, 5), 2, 2),
+            Some(Msg::MouseRightClick { col: 4, row: 2 })
+        ));
+        assert!(matches!(
+            t.translate(down(8, 4), 2, 2),
+            Some(Msg::MouseRightDoubleClick { col: 4, row: 2 })
         ));
     }
 

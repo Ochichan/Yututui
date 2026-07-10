@@ -17,6 +17,7 @@ use crate::config::{
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
+use crate::mousemap::MouseMap;
 use crate::search_source::SearchConfig;
 use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
@@ -1271,6 +1272,8 @@ pub struct SettingsState {
     /// A working copy of the keymap edited on the Keys tab; committed to `App.keymap` and
     /// persisted when settings closes.
     pub keymap: KeyMap,
+    /// Working copy of the safe mouse gesture presets edited after the keyboard rows.
+    pub mousemap: MouseMap,
     /// The binding being rebound (Keys tab), while waiting to capture its new key.
     pub capturing: Option<(KeyContext, Action)>,
     /// Open Settings dropdown for the Spotify import mode. Holds the highlighted option index.
@@ -1461,6 +1464,7 @@ mod tests {
             editing_text: false,
             secret_restore: None,
             keymap: KeyMap::default(),
+            mousemap: MouseMap::default(),
             capturing: None,
             spotify_import_mode_dropdown: None,
             radio_mode,

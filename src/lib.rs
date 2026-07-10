@@ -25,6 +25,7 @@ pub mod local;
 pub mod logging;
 pub mod lyrics;
 pub mod media;
+pub mod mousemap;
 pub mod notify;
 pub mod paths;
 pub mod persist;

@@ -85,11 +85,36 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         .to_owned()
     } else if st.tab == SettingsTab::Keys {
-        if ko {
+        let mouse_row = st.row >= keymap::editable_entries().len();
+        if ko && mouse_row {
+            format!(
+                "{}/{} 선택  ·  {}/{} 또는 {} 변경  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        } else if ko {
             format!(
                 "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        } else if mouse_row {
+            format!(
+                "{}/{} select  ·  {}/{} or {} change  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
                 k(Action::Confirm),
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
@@ -180,48 +205,121 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EditableBinding {
+    Key {
+        logical: usize,
+        context: KeyContext,
+        action: Action,
+    },
+    Mouse {
+        logical: usize,
+        context: crate::mousemap::MouseContext,
+        gesture: crate::mousemap::MouseGesture,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingGroupKind {
+    Key(KeyContext),
+    Mouse(crate::mousemap::MouseContext),
+}
+
+struct BindingGroup {
+    kind: BindingGroupKind,
+    rows: Vec<EditableBinding>,
+}
+
+impl BindingGroup {
+    fn title(&self) -> String {
+        match self.kind {
+            BindingGroupKind::Key(context) => context.title().to_owned(),
+            BindingGroupKind::Mouse(context) => {
+                format!("{} · {}", t!("Mouse", "마우스"), context.title())
+            }
+        }
+    }
+}
+
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
-/// chord shown is from the *draft* keymap so edits appear immediately; the row being
-/// rebound shows a capture prompt.
+/// chord shown is from the *draft* keymap so edits appear immediately; the row being rebound
+/// shows a capture prompt. Eight safe right-button gesture presets follow the keyboard rows.
 fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
     let entries = keymap::editable_entries();
 
-    // Group consecutive bindings by context; each becomes a titled block. Whole groups are
-    // kept together so a context never straddles the two columns.
-    let mut groups: Vec<(KeyContext, Vec<usize>)> = Vec::new();
-    for (i, &(ctx, _)) in entries.iter().enumerate() {
+    // Group consecutive keyboard bindings by context, then append one two-row mouse group per
+    // semantic surface. Whole groups stay together when the list is balanced into two columns.
+    let mut groups: Vec<BindingGroup> = Vec::new();
+    for (logical, &(context, action)) in entries.iter().enumerate() {
+        let row = EditableBinding::Key {
+            logical,
+            context,
+            action,
+        };
         match groups.last_mut() {
-            Some((c, v)) if *c == ctx => v.push(i),
-            _ => groups.push((ctx, vec![i])),
+            Some(group) if group.kind == BindingGroupKind::Key(context) => group.rows.push(row),
+            _ => groups.push(BindingGroup {
+                kind: BindingGroupKind::Key(context),
+                rows: vec![row],
+            }),
         }
     }
+    let key_count = entries.len();
+    for (context_index, context) in crate::mousemap::MouseContext::ALL.into_iter().enumerate() {
+        let rows = crate::mousemap::MouseGesture::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(gesture_index, gesture)| EditableBinding::Mouse {
+                logical: key_count
+                    + context_index * crate::mousemap::MouseGesture::ALL.len()
+                    + gesture_index,
+                context,
+                gesture,
+            })
+            .collect();
+        groups.push(BindingGroup {
+            kind: BindingGroupKind::Mouse(context),
+            rows,
+        });
+    }
 
-    // The list used to be one tall column that overflowed; lay it out in two side-by-side
-    // columns instead. Break the (whole) groups at the point that best balances the two
-    // columns' heights. A blank line separates groups — counted here and drawn the same way,
-    // so the two columns' rows stay aligned.
-    let height = |g: &(KeyContext, Vec<usize>)| g.1.len() + 2; // header + bindings + gap
+    // Break at the whole-group boundary that most closely balances rendered height. A blank
+    // line separates groups and is counted here exactly as it is drawn below.
+    let height = |group: &BindingGroup| group.rows.len() + 2;
     let total: usize = groups.iter().map(height).sum();
     let (mut split, mut acc, mut best) = (groups.len(), 0usize, usize::MAX);
-    for (gi, g) in groups.iter().enumerate() {
-        acc += height(g);
+    for (group_index, group) in groups.iter().enumerate() {
+        acc += height(group);
         let diff = acc.abs_diff(total - acc);
         if diff < best {
             best = diff;
-            split = gi + 1;
+            split = group_index + 1;
         }
     }
     let split = split.min(groups.len());
+    let label_width = groups
+        .iter()
+        .flat_map(|group| group.rows.iter())
+        .map(|row| match row {
+            EditableBinding::Key {
+                context, action, ..
+            } => UnicodeWidthStr::width(action.human_label_for(*context)),
+            EditableBinding::Mouse { gesture, .. } => UnicodeWidthStr::width(gesture.human_label()),
+        })
+        .max()
+        .unwrap_or(22)
+        .max(22)
+        + 2;
 
     let columns =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
-    for (ci, slice) in [&groups[..split], &groups[split..]].into_iter().enumerate() {
+    for (column_index, slice) in [&groups[..split], &groups[split..]].into_iter().enumerate() {
         let (items, display_to_binding, selected) =
-            build_keys_column(st, theme, slice, &entries, app.retro_mode());
+            build_keys_column(st, theme, slice, app.retro_mode(), label_width);
         // A 2-cell gutter between the columns keeps the left labels off the right block.
-        let col = columns[ci];
-        let col = if ci == 0 {
+        let col = columns[column_index];
+        let col = if column_index == 0 {
             Rect {
                 width: col.width.saturating_sub(2),
                 ..col
@@ -238,95 +336,93 @@ fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▶ ")
-            // Reserve the marker gutter in both columns (even the one with no selection) so
-            // their rows line up — the focused column would otherwise shift 2 cells left.
             .highlight_spacing(HighlightSpacing::Always);
-        // Persist each column's offset (like the field list) so clicking a visible binding
-        // focuses it in place rather than snapping the column. Only the focused column
-        // re-anchors on its cursor (scrolloff=0 → no move for an already-visible row); the
-        // unfocused column keeps whatever position it had.
         let offset = match selected {
-            Some(sel) => app.bridges.settings_keys_scroll[ci].resolve(sel, col.height, len, 0),
-            None => app.bridges.settings_keys_scroll[ci].view(col.height, len),
+            Some(selected) => {
+                app.bridges.settings_keys_scroll[column_index].resolve(selected, col.height, len, 0)
+            }
+            None => app.bridges.settings_keys_scroll[column_index].view(col.height, len),
         };
         let mut state = ListState::default().with_offset(offset);
-        // Only select when this column is focused: ratatui's `ListState::select(None)` resets the
-        // offset to 0, which would throw away the `with_offset` we just pre-seeded for the
-        // unfocused column. `ListState::default()` already carries `selected = None`.
-        if let Some(sel) = selected {
-            state.select(Some(sel));
+        if let Some(selected) = selected {
+            state.select(Some(selected));
         }
         frame.render_stateful_widget(list, col, &mut state);
-        // Clicking a binding row selects that binding; header/blank rows aren't targets.
-        buttons::register_list_rows(app, col, state.offset(), display_to_binding.len(), |d| {
-            display_to_binding.get(d).copied().flatten()
+        buttons::register_list_rows(app, col, state.offset(), display_to_binding.len(), |row| {
+            display_to_binding.get(row).copied().flatten()
         });
     }
 }
 
-/// Build one Keys-tab column from a slice of context groups: the rendered rows, a parallel
-/// `display row -> binding index` map (None for header/blank rows), and the display row to
-/// highlight (`Some` only when the focused binding `st.row` falls in this column).
+/// Build one Keys-tab column: rendered rows, display-row to logical-binding map, and the
+/// highlighted display row when this column owns the cursor.
 fn build_keys_column(
     st: &SettingsState,
     theme: &ThemeConfig,
-    groups: &[(KeyContext, Vec<usize>)],
-    entries: &[(KeyContext, Action)],
+    groups: &[BindingGroup],
     retro: bool,
+    label_width: usize,
 ) -> (Vec<ListItem<'static>>, Vec<Option<usize>>, Option<usize>) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut display_to_binding: Vec<Option<usize>> = Vec::new();
     let mut selected = None;
-    // Pad every action label to the widest one (+2-cell gutter) by terminal *display* width, so
-    // the key column lines up flush across both columns and in any language — long Korean labels
-    // like "자동재생 켜기 / 끄기" (~18 cells) would overflow a fixed width and shove their key
-    // out of alignment.
-    let label_w = entries
-        .iter()
-        .map(|(c, a)| UnicodeWidthStr::width(a.human_label_for(*c)))
-        .max()
-        .unwrap_or(22)
-        .max(22)
-        + 2;
-    for (gi, (ctx, binds)) in groups.iter().enumerate() {
-        // A blank line before every group but the first lets the sections breathe.
-        if gi > 0 {
+    for (group_index, group) in groups.iter().enumerate() {
+        if group_index > 0 {
             items.push(ListItem::new(Line::from("")));
             display_to_binding.push(None);
         }
         items.push(ListItem::new(Line::from(Span::styled(
-            ctx.title().to_owned(),
+            group.title(),
             theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
         ))));
         display_to_binding.push(None);
-        for &i in binds {
-            let (c, action) = entries[i];
-            let focused = i == st.row;
+        for &binding in &group.rows {
+            let logical = match binding {
+                EditableBinding::Key { logical, .. } | EditableBinding::Mouse { logical, .. } => {
+                    logical
+                }
+            };
+            let focused = logical == st.row;
             if focused {
                 selected = Some(items.len());
             }
-            let key = if st.capturing == Some((c, action)) {
-                t!("<press a key…>", "<키 입력 대기…>").to_owned()
-            } else {
-                st.keymap.chord(c, action).map_or_else(
-                    || "—".to_owned(),
-                    |chord| keymap::format_chord_for_display(chord, retro),
-                )
+            let (label, value) = match binding {
+                EditableBinding::Key {
+                    context, action, ..
+                } => {
+                    let value = if st.capturing == Some((context, action)) {
+                        t!("<press a key…>", "<키 입력 대기…>").to_owned()
+                    } else {
+                        st.keymap.chord(context, action).map_or_else(
+                            || "—".to_owned(),
+                            |chord| keymap::format_chord_for_display(chord, retro),
+                        )
+                    };
+                    (action.human_label_for(context), value)
+                }
+                EditableBinding::Mouse {
+                    context, gesture, ..
+                } => (
+                    gesture.human_label(),
+                    st.mousemap
+                        .action(context, gesture)
+                        .human_label()
+                        .to_owned(),
+                ),
             };
-            let key_role = if focused {
+            let value_role = if focused {
                 R::SettingsValueFocused
             } else {
                 R::SettingsValue
             };
-            // Bindings indent one step in from their group header for a clear hierarchy.
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("  {}", pad_to_width(action.human_label_for(c), label_w)),
+                    format!("  {}", pad_to_width(label, label_width)),
                     theme.style(R::SettingsLabel),
                 ),
-                Span::styled(key, theme.style(key_role)),
+                Span::styled(value, theme.style(value_role)),
             ])));
-            display_to_binding.push(Some(i));
+            display_to_binding.push(Some(logical));
         }
     }
     (items, display_to_binding, selected)

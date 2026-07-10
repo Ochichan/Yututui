@@ -10,6 +10,7 @@ impl App {
             mode: Mode::Player,
             authenticated: false,
             keymap: KeyMap::default(),
+            mousemap: MouseMap::default(),
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
             radio_mode: RadioMode::default(),
@@ -108,6 +109,7 @@ impl App {
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
+        self.mousemap = MouseMap::from_config(cfg);
         let normal_theme = cfg.effective_theme();
         // Seed the radio-mode theme stash from its persisted slot. Guarded so a config
         // without one never clobbers a theme picked live earlier in this session.

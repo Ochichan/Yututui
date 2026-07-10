@@ -114,8 +114,8 @@ fn nav_repeat_step_accelerates_a_hold_but_resets_on_gap_or_direction_change() {
 }
 
 #[test]
-fn right_click_on_a_search_row_adds_it_to_the_queue() {
-    // Something is already playing, so the right-click must not interrupt it.
+fn search_row_context_menu_can_add_it_to_the_queue() {
+    // Something is already playing, so opening the menu and enqueueing must not interrupt it.
     let mut app = app_playing(2, 0);
     let playing = app.prefetch.loaded_video_id.clone();
     app.mode = Mode::Search;
@@ -143,12 +143,17 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
         .map(|b| b.rect)
         .expect("a rendered search row rect");
 
-    let cmds = app.update(Msg::MouseRightClick {
+    let open_cmds = app.update(Msg::MouseRightClick {
         col: row1.x,
         row: row1.y,
     });
-    // The row got selected and enqueued without interrupting playback.
+    assert_no_load(&open_cmds);
+    assert!(app.overlays.context_menu.is_some());
     assert_eq!(app.search.selected, 1);
+    assert!(!app.queue.video_ids().any(|v| v == "r1"));
+
+    // Search menus contain "Play now" followed by "Add to queue".
+    let cmds = choose_context_menu_item(&mut app, 1);
     assert_no_load(&cmds);
     assert_eq!(app.prefetch.loaded_video_id, playing);
     assert!(app.queue.video_ids().any(|v| v == "r1"));
@@ -156,7 +161,7 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
 }
 
 #[test]
-fn right_click_on_a_library_delete_cell_adds_that_row_to_the_queue() {
+fn library_delete_cell_context_menu_can_add_that_row_to_the_queue() {
     let mut app = app_playing(1, 0);
     let playing = app.prefetch.loaded_video_id.clone();
     app.mode = Mode::Library;
@@ -165,15 +170,21 @@ fn right_click_on_a_library_delete_cell_adds_that_row_to_the_queue() {
 
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::LibraryDel(0));
-    let cmds = app.update(Msg::MouseRightClick { col, row });
+    let open_cmds = app.update(Msg::MouseRightClick { col, row });
 
     assert_eq!(app.library_ui.selected, 0);
+    assert_no_load(&open_cmds);
+    assert!(app.overlays.context_menu.is_some());
+    assert!(!app.queue.video_ids().any(|v| v == "fav0"));
+
+    // Library-song menus contain "Play now" followed by "Add to queue".
+    let cmds = choose_context_menu_item(&mut app, 1);
     assert_no_load(&cmds);
     assert_eq!(app.prefetch.loaded_video_id, playing);
     assert!(app.queue.video_ids().any(|v| v == "fav0"));
     assert!(
         app.library.favorites.iter().any(|s| s.video_id == "fav0"),
-        "right-clicking the library delete cell must enqueue, not delete"
+        "choosing enqueue from the delete-cell menu must not delete the favorite"
     );
 }
 

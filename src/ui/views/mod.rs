@@ -3,6 +3,7 @@
 
 pub mod about;
 pub mod ai;
+pub mod context_menu;
 pub mod help;
 pub mod library;
 pub mod local;

@@ -23,9 +23,15 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
-    /// A right-click at a cell. Search/Library rows add the song to the queue; queue-window
-    /// rows remove that entry. Ignored elsewhere.
+    /// A right-click at a cell. Supported semantic rows resolve their configured safe mouse
+    /// action (the default opens the in-TUI context menu); ignored elsewhere.
     MouseRightClick {
+        col: u16,
+        row: u16,
+    },
+    /// A right double-click at a cell, inferred by the input translator from two presses at
+    /// the same zoom-adjusted virtual cell within the double-click window.
+    MouseRightDoubleClick {
         col: u16,
         row: u16,
     },
@@ -438,6 +444,8 @@ pub enum ImportReviewAction {
 /// A clickable terminal region's semantic target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseTarget {
+    /// An action row in the open TUI context menu.
+    ContextMenuItem(usize),
     Global(Action),
     Player(Action),
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).

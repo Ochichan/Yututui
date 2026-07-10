@@ -201,8 +201,8 @@ fn filter_button_opens_the_popup_and_clicking_rows_selects_and_plays() {
 }
 
 #[test]
-fn filter_popup_right_click_enqueues_without_closing() {
-    // Something is already playing, so the right-click must not interrupt it.
+fn filter_popup_right_click_menu_can_enqueue_without_closing() {
+    // Something is already playing, so opening the menu and enqueueing must not interrupt it.
     let mut app = app_playing(2, 0);
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
@@ -217,8 +217,18 @@ fn filter_popup_right_click_enqueues_without_closing() {
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::SearchFilterRow(1));
     let before = app.queue.len();
-    app.update(Msg::MouseRightClick { col, row });
-    // The row got enqueued and the popup stayed open for further picks.
+    let open_cmds = app.update(Msg::MouseRightClick { col, row });
+    assert!(open_cmds.is_empty());
+    assert!(app.overlays.context_menu.is_some());
+    assert_eq!(
+        app.queue.len(),
+        before,
+        "opening the menu is side-effect free"
+    );
+
+    // Search menus contain "Play now" followed by "Add to queue".
+    let cmds = choose_context_menu_item(&mut app, 1);
+    assert_no_load(&cmds);
     assert_eq!(app.queue.len(), before + 1);
     assert!(app.search_filter.open);
     assert_eq!(app.search_filter.cursor, 1);
