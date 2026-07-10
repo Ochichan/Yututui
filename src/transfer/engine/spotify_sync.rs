@@ -134,6 +134,26 @@ pub(super) async fn write(
     }
 
     if !state.preview.order_changed {
+        let mut on_page = |_done: u32, _total: u32| {};
+        let actual = ctx
+            .spotify()?
+            .playlist_item_refs(&state.preview.target_id, &mut on_page)
+            .await
+            .map_err(|error| checkpointed(cp, spotify_job_error(error)))?
+            .into_iter()
+            .map(|item| item.uri)
+            .collect::<Vec<_>>();
+        if !ordered_equal(&actual, &desired) {
+            return Err(checkpointed(
+                cp,
+                JobError {
+                    resumable: true,
+                    error: anyhow!(
+                        "Spotify exact sync no-op verification failed; resume generates a fresh preview"
+                    ),
+                },
+            ));
+        }
         finish_verified(cp, &writes, report)?;
         return Ok(());
     }

@@ -59,7 +59,7 @@ pub(super) async fn fetch_source(
                 let spotify = ctx.spotify()?;
                 let mut on_page =
                     |done: u32, total: u32| beat(done, total, "Liked Songs".to_owned());
-                let mut tracks = spotify
+                let (mut tracks, truncated) = spotify
                     .liked_tracks_for_transfer(TRACK_CAP, &mut on_page)
                     .await
                     .map_err(spotify_job_error)?;
@@ -68,7 +68,7 @@ pub(super) async fn fetch_source(
                     "Spotify Liked Songs".to_owned(),
                     tracks.iter().map(TrackInput::from_spotify).collect(),
                     0,
-                    tracks.len() >= TRACK_CAP,
+                    truncated,
                 )
             }
             TransferSource::YtmPlaylist { id } => {

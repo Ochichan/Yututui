@@ -554,9 +554,9 @@ impl SpotifyClient {
         &mut self,
         max_tracks: usize,
         on_page: &mut (dyn FnMut(u32, u32) + Send),
-    ) -> Result<Vec<SpotifyTrack>, SpotifyError> {
+    ) -> Result<(Vec<SpotifyTrack>, bool), SpotifyError> {
         if max_tracks == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
 
         let first_url = format!("{API_BASE}/me/tracks?limit={PAGE_LIMIT}&offset=0");
@@ -570,6 +570,7 @@ impl SpotifyClient {
             )));
         }
         let total = first.total;
+        let truncated = usize::try_from(total).unwrap_or(usize::MAX) > max_tracks;
         if usize::try_from(total).unwrap_or(usize::MAX) <= max_tracks {
             let mut out = Vec::new();
             reserve_reported_total(&mut out, total);
@@ -605,7 +606,7 @@ impl SpotifyClient {
                     "liked_tracks_for_transfer",
                 )?
                 else {
-                    return Ok(out);
+                    return Ok((out, truncated));
                 };
                 page = self.request_json(reqwest::Method::GET, next, None).await?;
             }
@@ -661,7 +662,7 @@ impl SpotifyClient {
             upper = offset;
         }
         oldest_first.reverse();
-        Ok(oldest_first)
+        Ok((oldest_first, truncated))
     }
 
     /// Create a private playlist; returns its id.
