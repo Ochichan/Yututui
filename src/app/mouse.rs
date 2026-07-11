@@ -448,7 +448,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.mode != Mode::Player {
+        if !self.player_controls_live() {
             return Vec::new();
         }
         if let Some(area) = self.hits.seekbar_rect()
@@ -468,6 +468,13 @@ impl App {
         Vec::new()
     }
 
+    /// Whether the player transport/status controls are on screen and may take input:
+    /// always on the Player screen, and on every screen showing the docked control box.
+    /// A control that isn't rendered must never take clicks — and vice versa.
+    fn player_controls_live(&self) -> bool {
+        self.mode == Mode::Player || self.control_box_active()
+    }
+
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
             MouseTarget::ContextMenuItem(_) => Vec::new(),
@@ -481,12 +488,12 @@ impl App {
             // The ✨ at the top-left of the nav bar — same handler as the `A` shortcut.
             MouseTarget::Global(Action::ToggleAnimations) => self.toggle_animations(),
             MouseTarget::Global(_) => Vec::new(),
-            MouseTarget::Player(action) if self.mode == Mode::Player => {
+            MouseTarget::Player(action) if self.player_controls_live() => {
                 self.on_player_action(action)
             }
             MouseTarget::Player(_) => Vec::new(),
             // Toggle the EQ dropdown by clicking its `eq:` label (closes the streaming one).
-            MouseTarget::EqMenu if self.mode == Mode::Player => {
+            MouseTarget::EqMenu if self.player_controls_live() => {
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dropdowns.eq_open = !self.dropdowns.eq_open;
@@ -495,12 +502,12 @@ impl App {
             }
             MouseTarget::EqMenu => Vec::new(),
             // Pick a preset from the open dropdown.
-            MouseTarget::EqSelect(preset) if self.mode == Mode::Player => {
+            MouseTarget::EqSelect(preset) if self.player_controls_live() => {
                 self.select_eq_preset(preset)
             }
             MouseTarget::EqSelect(_) => Vec::new(),
             // Toggle the streaming-mode dropdown by clicking its `streaming:` label (closes the EQ one).
-            MouseTarget::StreamingMenu if self.mode == Mode::Player => {
+            MouseTarget::StreamingMenu if self.player_controls_live() => {
                 self.dropdowns.eq_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dropdowns.streaming_open = !self.dropdowns.streaming_open;
@@ -509,7 +516,7 @@ impl App {
             }
             MouseTarget::StreamingMenu => Vec::new(),
             // Pick a streaming mode from the open dropdown.
-            MouseTarget::StreamingSelect(mode) if self.mode == Mode::Player => {
+            MouseTarget::StreamingSelect(mode) if self.player_controls_live() => {
                 self.select_streaming_mode(mode)
             }
             MouseTarget::StreamingSelect(_) => Vec::new(),
@@ -673,6 +680,13 @@ impl App {
             MouseTarget::QueuePos if self.mode == Mode::Player => {
                 self.open_queue_popup();
                 Vec::new()
+            }
+            // From another screen (docked box) the queue window still lives on the Player
+            // screen — follow the click there instead of opening an invisible popup.
+            MouseTarget::QueuePos if self.control_box_active() => {
+                let cmds = self.navigate_to(Mode::Player);
+                self.open_queue_popup();
+                cmds
             }
             MouseTarget::QueuePos => Vec::new(),
             // Single-click a queue row: select it (and anchor a drag range here).
@@ -974,7 +988,7 @@ impl App {
         // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
         // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
         if self.interaction.seekbar_drag.is_some()
-            && self.mode == Mode::Player
+            && self.player_controls_live()
             && !self.queue_popup.open
         {
             if let Some(area) = self.hits.seekbar_rect()
@@ -1318,7 +1332,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.mode == Mode::Player
+        if self.player_controls_live()
             && self.config.effective_mouse_wheel_volume()
             && matches!(
                 self.mouse_target_at(col, row),

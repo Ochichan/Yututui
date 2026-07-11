@@ -47,6 +47,17 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::Settings => views::settings::render(frame, app, area),
         Mode::Ai => views::ai::render(frame, app, area),
     }
+    // The docked control box's `eq:`/`streaming:` dropdowns, on every screen that shows the
+    // box. The Player screen keeps its own in-view calls (legacy z-order: dropdowns draw
+    // *under* the queue popup there), so this hoist covers only the other screens.
+    if app.mode != Mode::Player && app.control_box_active() {
+        if app.dropdowns.eq_open {
+            control_box::render_eq_dropdown(frame, app, area);
+        }
+        if app.dropdowns.streaming_open {
+            control_box::render_streaming_dropdown(frame, app, area);
+        }
+    }
     // The `?` cheat-sheet draws on top of whatever screen is active.
     if app.overlays.help_visible {
         views::help::render(frame, app, area);

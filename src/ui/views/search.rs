@@ -41,6 +41,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(2), // reserved top band (aligns with Settings/Library tab row + spacer)
         Constraint::Length(3), // input box
         Constraint::Min(0),    // results
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1), // help
     ])
     .split(inner);
@@ -70,8 +71,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_input(frame, app, rows[1]);
     render_results(frame, app, rows[2]);
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
     if app.dropdowns.search_source_open {
         render_source_dropdown(frame, app, inner);
     }

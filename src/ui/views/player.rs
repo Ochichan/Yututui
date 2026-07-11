@@ -40,31 +40,46 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    let rows = Layout::vertical([
-        Constraint::Length(1), // gap (border → title)
-        Constraint::Length(1), // title
-        Constraint::Length(1), // gap (title → seekbar)
-        Constraint::Length(1), // seekbar
-        Constraint::Length(1), // gap (seekbar → controls)
-        Constraint::Length(1), // mouse controls
-        Constraint::Length(1), // gap (controls → status)
-        Constraint::Length(1), // transport status
-        Constraint::Min(0),    // filler
-        Constraint::Length(1), // help
-    ])
-    .split(inner);
+    if app.player_bar_position() == crate::config::PlayerBarPosition::Bottom {
+        // Docked layout: the filler gets the top of the screen and the control block sits
+        // just above the footer, matching the box every other screen shows in this mode.
+        let rows = Layout::vertical([
+            Constraint::Length(1), // gap (border → filler)
+            Constraint::Min(0),    // filler
+            Constraint::Length(crate::ui::control_box::DOCKED_BOX_ROWS),
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
+        render_filler(frame, app, rows[1]);
+        crate::ui::control_box::render_docked(frame, app, rows[2]);
+        buttons::render_help_button(frame, app, rows[3]);
+    } else {
+        let rows = Layout::vertical([
+            Constraint::Length(1), // gap (border → title)
+            Constraint::Length(1), // title
+            Constraint::Length(1), // gap (title → seekbar)
+            Constraint::Length(1), // seekbar
+            Constraint::Length(1), // gap (seekbar → controls)
+            Constraint::Length(1), // mouse controls
+            Constraint::Length(1), // gap (controls → status)
+            Constraint::Length(1), // transport status
+            Constraint::Min(0),    // filler
+            Constraint::Length(1), // help
+        ])
+        .split(inner);
 
-    // Title / seekbar / transport strip / status line — the shared control block
-    // (see `ui::control_box`); the rects are this view's legacy rows, so bytes are unchanged.
-    crate::ui::control_box::render_at(frame, app, rows[1], rows[3], rows[5], rows[7]);
+        // Title / seekbar / transport strip / status line — the shared control block
+        // (see `ui::control_box`); the rects are this view's legacy rows, so bytes are unchanged.
+        crate::ui::control_box::render_at(frame, app, rows[1], rows[3], rows[5], rows[7]);
 
-    // Central filler: album art (top) and/or the lyrics panel (below). With album art off
-    // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
-    render_filler(frame, app, rows[8]);
+        // Central filler: album art (top) and/or the lyrics panel (below). With album art off
+        // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
+        render_filler(frame, app, rows[8]);
 
-    // The full key list lives in the `?` cheat-sheet now; the footer just points to it
-    // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    buttons::render_help_button(frame, app, rows[9]);
+        // The full key list lives in the `?` cheat-sheet now; the footer just points to it
+        // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
+        buttons::render_help_button(frame, app, rows[9]);
+    }
 
     // The status-line dropdowns draw over the screen so their rows win hit-testing.
     if app.dropdowns.eq_open {

@@ -5,13 +5,14 @@
 use std::borrow::Cow;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DownloadState, MouseTarget, StatusKind};
+use crate::app::{App, DownloadState, Mode, MouseTarget, StatusKind};
+use crate::config::PlayerBarPosition;
 use crate::keymap::{Action, KeyContext};
 use crate::queue::Repeat;
 use crate::t;
@@ -30,10 +31,10 @@ pub fn render_at(
     controls: Rect,
     status: Rect,
 ) {
-    render_title_row(frame, app, title);
-    render_seekbar(frame, app, seek);
-    render_controls(frame, app, controls);
-    render_status_line(frame, app, status);
+    render_title_row(frame, app, title, true);
+    render_seekbar(frame, app, seek, true);
+    render_controls(frame, app, controls, true);
+    render_status_line(frame, app, status, true);
 
     // Heart burst around the title when the current track is liked. Skipped while a status
     // message covers the title (nothing to celebrate over) — drawn after the neighbours so the
@@ -49,12 +50,60 @@ pub fn render_at(
     }
 }
 
+/// Rows the docked control box occupies (its separator rule plus the four control rows) on
+/// the current screen — `0` in the legacy `Top` position, where no screen carries docked
+/// chrome and every view's constraints collapse to their pre-dock bytes.
+pub fn docked_rows(app: &App) -> u16 {
+    match app.player_bar_position() {
+        PlayerBarPosition::Bottom => DOCKED_BOX_ROWS,
+        PlayerBarPosition::Top => 0,
+    }
+}
+
+/// Separator rule + title + seekbar + controls + status. The Top layout's gap rows are
+/// deliberately absent: they are top-of-screen airiness, and a docked bar reads better dense.
+pub const DOCKED_BOX_ROWS: u16 = 5;
+
+/// Render the docked control box above a view's footer row. The player animation clock only
+/// ticks on the Player screen, so every other screen gets the static forms — a marquee or
+/// VU bar frozen mid-frame reads as a glitch, not a pause. One-shot effects (status-toast
+/// typewriter, volume flash) stay: their windows are wall-clock-driven and mode-independent.
+pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let animated = app.mode == Mode::Player;
+    let rows = Layout::vertical([
+        Constraint::Length(1), // separator rule
+        Constraint::Length(1), // title
+        Constraint::Length(1), // seekbar
+        Constraint::Length(1), // transport controls
+        Constraint::Length(1), // status line
+    ])
+    .split(area);
+    // The rule is drawn from single-cell glyphs chosen at the source (not left to the retro
+    // scrubber), like every other retro stand-in.
+    let rule = if app.retro_mode() { "-" } else { "─" };
+    frame.render_widget(
+        Paragraph::new(
+            Line::from(rule.repeat(usize::from(area.width)))
+                .style(app.theme.style(R::BorderPrimary)),
+        ),
+        rows[0],
+    );
+    render_title_row(frame, app, rows[1], animated);
+    render_seekbar(frame, app, rows[2], animated);
+    render_controls(frame, app, rows[3], animated);
+    render_status_line(frame, app, rows[4], animated);
+    // No like-burst here: its sparks decorate the blank gap rows the docked box doesn't have.
+}
+
 /// Title (or an error, if playback failed). With the title/heart animations off this is the
 /// plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
 /// scrolling line (and a pulsing ♥), which we render in place of it. A just-changed track's
 /// intro cascade and a just-set status message's typewriter reveal each take precedence for
 /// their short one-shot window, then fall through to these steady-state forms.
-fn render_title_row(frame: &mut Frame, app: &App, area: Rect) {
+fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     if !app.status.text.is_empty() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
             frame.render_widget(Paragraph::new(line), area);
@@ -72,7 +121,7 @@ fn render_title_row(frame: &mut Frame, app: &App, area: Rect) {
                 area,
             );
         }
-    } else if let Some(line) = app.queue.current().and_then(|s| {
+    } else if let Some(line) = app.queue.current().filter(|_| animated).and_then(|s| {
         let title = app.display_title(s);
         let artist = app.display_artist(s);
         let liked = app.library.is_favorite(&s.video_id);
@@ -126,7 +175,7 @@ fn render_title_row(frame: &mut Frame, app: &App, area: Rect) {
 /// seconds), so the gauge glides instead of stepping. A live radio stream has no duration,
 /// so its gauge shows the timeshift state instead (full = live edge, backed off = behind);
 /// the position-interpolating smoother would fight that meaning, so radio skips it.
-fn render_seekbar(frame: &mut Frame, app: &App, area: Rect) {
+fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     let (ratio, label) = if app.current_is_radio_stream() {
         format::radio_seekbar(
             app.playback.time_pos,
@@ -134,10 +183,12 @@ fn render_seekbar(frame: &mut Frame, app: &App, area: Rect) {
             app.radio_live_synced(),
         )
     } else {
-        let ratio = crate::ui::anim::smooth_seek_ratio(
-            app,
-            format::seekbar_ratio(app.playback.time_pos, app.playback.duration),
-        );
+        let raw = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
+        let ratio = if animated {
+            crate::ui::anim::smooth_seek_ratio(app, raw)
+        } else {
+            raw
+        };
         (
             ratio,
             format::seekbar_label(app.playback.time_pos, app.playback.duration),
@@ -153,9 +204,12 @@ fn render_seekbar(frame: &mut Frame, app: &App, area: Rect) {
         .label(label);
     frame.render_widget(seekbar, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
-    // otherwise), and a short ripple marks the head right after a seek.
-    crate::ui::anim::seekbar_overlay(frame, app, area, ratio);
-    crate::ui::anim::seek_flash_overlay(frame, app, area, ratio);
+    // otherwise), and a short ripple marks the head right after a seek. Skipped in the
+    // static (off-Player) forms — a frozen comet is a permanent bright smear.
+    if animated {
+        crate::ui::anim::seekbar_overlay(frame, app, area, ratio);
+        crate::ui::anim::seek_flash_overlay(frame, app, area, ratio);
+    }
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.hits.set_seekbar_rect(area);
 }
@@ -234,7 +288,7 @@ fn resync_glyph(retro: bool) -> &'static str {
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
-fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
+fn render_status_line(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
     // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
     // the `eq:` / `R:` toggles at the tail must stay visible and clickable.
@@ -252,11 +306,11 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(gap, minimal)| {
             (
                 buttons::text_width(gap),
-                status_line_parts_at(app, gap, *minimal),
+                status_line_parts(app, gap, *minimal, animated),
             )
         })
         .find(|(_, parts)| fits(parts))
-        .unwrap_or_else(|| (1, status_line_parts_at(app, " ", true)));
+        .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)));
     // The identify chip (`ID?` / `지듣노`) is the smallest control on the line, and its
     // trailing `?` sits right on its rect's edge — fold up to two cells of the flanking
     // gaps into its hit rect (never more than the gap itself, so it can't annex a
@@ -285,16 +339,19 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 /// The `minimal` variant is the last responsive tier: the playback state shrinks to its
 /// one-cell glyph and purely informational tags (speed, VU bars, download progress)
 /// drop away, so the clickable toggles never fall off the right edge.
-fn status_line_parts_at(
+/// `animated` is false in the docked box's static (off-Player) forms: the clock-driven
+/// decorations (spinner, VU bars) drop instead of freezing mid-frame.
+fn status_line_parts(
     app: &App,
     gap: &'static str,
     minimal: bool,
+    animated: bool,
 ) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
     let retro = app.retro_mode();
     let mut parts: Vec<(Option<MouseTarget>, Cow<'static, str>)> = Vec::with_capacity(16);
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
-    if let Some(spin) = crate::ui::anim::spinner_prefix(app) {
+    if animated && let Some(spin) = crate::ui::anim::spinner_prefix(app) {
         parts.push((None, Cow::Owned(format!("{spin} "))));
     }
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
@@ -388,7 +445,10 @@ fn status_line_parts_at(
         Cow::Owned(format!("eq:{}", app.audio.preset.label())),
     ));
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
-    if !minimal && let Some(bars) = crate::ui::anim::eq_bars(app) {
+    if !minimal
+        && animated
+        && let Some(bars) = crate::ui::anim::eq_bars(app)
+    {
         parts.push((None, Cow::Owned(format!("{gap}{bars}"))));
     }
     if app.streaming_active() {
@@ -435,7 +495,7 @@ fn status_line_parts_at(
 /// Every glyph is a plain non-emoji symbol (EAW-neutral, one cell everywhere) — unlike
 /// the ⏮/⏯ media emoji, which some terminals widen to two cells and so drift the click
 /// rects off the rendered glyph.
-fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
+fn render_controls(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     let toggle = if app.playback.paused {
         " ▸ "
     } else {
@@ -497,12 +557,17 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         height: area.height.min(1),
     };
     app.register_mouse_button(vol_rect, MouseTarget::VolumeArea);
-    let controls = crate::ui::anim::controls_style(
-        app,
-        app.theme
-            .style(R::PlayerControl)
-            .add_modifier(Modifier::BOLD),
-    );
+    let controls_base = app
+        .theme
+        .style(R::PlayerControl)
+        .add_modifier(Modifier::BOLD);
+    // The pulse lerps by the animation clock, which only ticks on the Player screen — the
+    // static forms keep the plain control colour instead of a frozen mid-pulse tint.
+    let controls = if animated {
+        crate::ui::anim::controls_style(app, controls_base)
+    } else {
+        controls_base
+    };
     let labels = app.theme.style(R::PlayerLabel);
     buttons::render_segments(
         frame,
@@ -663,7 +728,7 @@ mod tests {
     #[test]
     fn status_line_always_offers_shuffle_repeat_and_eq() {
         let app = App::new(100);
-        let parts = status_line_parts_at(&app, "    ", false);
+        let parts = status_line_parts(&app, "    ", false, true);
         // Shuffle, repeat and the EQ menu are always present so the line never reflows.
         assert!(has_target(&parts, |t| matches!(
             t,
@@ -757,7 +822,7 @@ mod tests {
                 for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
                     app.queue.shuffle = shuffle;
                     app.queue.repeat = repeat;
-                    let total: usize = status_line_parts_at(&app, "    ", false)
+                    let total: usize = status_line_parts(&app, "    ", false, true)
                         .iter()
                         .map(|(_, s)| UnicodeWidthStr::width(s.as_ref()))
                         .sum();
@@ -788,7 +853,7 @@ mod tests {
     fn radio_stream_swaps_shuffle_repeat_for_live_transport_controls() {
         let mut app = App::new(100);
         app.queue.set(vec![radio_song()], 0);
-        let parts = status_line_parts_at(&app, "    ", false);
+        let parts = status_line_parts(&app, "    ", false, true);
         // The same two actions stay clickable, but read as the live transport.
         let live = parts
             .iter()
@@ -807,7 +872,7 @@ mod tests {
             "music-mode shuffle/repeat labels must not appear on radio"
         );
         // The minimal responsive tier keeps both controls reachable.
-        let parts = status_line_parts_at(&app, " ", true);
+        let parts = status_line_parts(&app, " ", true, true);
         assert!(has_target(&parts, |t| matches!(
             t,
             MouseTarget::Player(Action::ToggleShuffle)
@@ -825,7 +890,7 @@ mod tests {
         // Radio with DJ Gem down: still offered — 지듣노 is ICY-metadata-backed now — and it
         // survives the minimal responsive tier because it's a control.
         for minimal in [false, true] {
-            let parts = status_line_parts_at(&app, " ", minimal);
+            let parts = status_line_parts(&app, " ", minimal, true);
             assert!(has_target(&parts, |t| matches!(
                 t,
                 MouseTarget::Player(Action::IdentifyNowPlaying)
@@ -833,7 +898,7 @@ mod tests {
         }
         // DJ Gem up changes nothing on the radio path — still offered.
         app.ai.available = true;
-        let parts = status_line_parts_at(&app, "    ", false);
+        let parts = status_line_parts(&app, "    ", false, true);
         assert!(has_target(&parts, |t| matches!(
             t,
             MouseTarget::Player(Action::IdentifyNowPlaying)
@@ -842,7 +907,7 @@ mod tests {
         let mut app = App::new(100);
         app.ai.available = true;
         app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
-        let parts = status_line_parts_at(&app, "    ", false);
+        let parts = status_line_parts(&app, "    ", false, true);
         assert!(!has_target(&parts, |t| matches!(
             t,
             MouseTarget::Player(Action::IdentifyNowPlaying)
@@ -904,7 +969,7 @@ mod tests {
                 app.playback.time_pos = pos;
                 app.playback.cache_time = edge;
                 app.playback.cache_time_at = edge.map(|_| std::time::Instant::now());
-                let total: usize = status_line_parts_at(&app, "    ", false)
+                let total: usize = status_line_parts(&app, "    ", false, true)
                     .iter()
                     .map(|(_, s)| UnicodeWidthStr::width(s.as_ref()))
                     .sum();
@@ -921,7 +986,7 @@ mod tests {
     fn status_line_shows_position_and_rating_once_a_track_is_current() {
         let mut app = App::new(100);
         app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
-        let parts = status_line_parts_at(&app, "    ", false);
+        let parts = status_line_parts(&app, "    ", false, true);
         // The clickable N/M position label appears, reading "1/1".
         assert!(
             parts

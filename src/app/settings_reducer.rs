@@ -128,6 +128,7 @@ impl App {
             media_controls: self.config.effective_media_controls(),
             auto_continue_videos: self.config.effective_auto_continue_videos(),
             video_layout: self.config.video_layout,
+            player_bar_position: self.config.effective_player_bar_position(),
             audio_backend: self.config.audio.backend,
             audio_mpv_output: self.config.audio.mpv.output.clone().unwrap_or_default(),
             audio_mpv_device: self.config.audio.mpv.device.clone().unwrap_or_default(),
@@ -677,6 +678,24 @@ impl App {
                 let next = s.draft.video_layout.cycled(dir >= 0);
                 s.draft.video_layout = next;
                 self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
+                Vec::new()
+            }
+            Field::PlayerBarPosition => {
+                let s = self.settings_mut();
+                // Two states, so both cycle directions agree. The draft previews live
+                // (`App::player_bar_position` reads it), so moving the bar relocates the
+                // album-art rect immediately — ask for a native-image clear or the old
+                // anchor cells keep the stale kitty/sixel bytes.
+                let next = s.draft.player_bar_position.toggled();
+                s.draft.player_bar_position = next;
+                if self.art_active() {
+                    self.request_native_image_clear();
+                }
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Player bar position", "플레이어 바 위치"),
+                    next.label()
+                );
                 Vec::new()
             }
             Field::AudioBackend => {

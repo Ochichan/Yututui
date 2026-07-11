@@ -113,6 +113,7 @@ impl SettingsTab {
                 Field::LocalMusicRootRecursive,
                 Field::Mouse,
                 Field::AlbumArt,
+                Field::PlayerBarPosition,
                 Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
@@ -276,6 +277,8 @@ pub enum Field {
     LocalMusicRootRecursive,
     Mouse,
     AlbumArt,
+    /// Where the player control block sits (Top classic / Bottom docked on every screen).
+    PlayerBarPosition,
     AutoplayOnStart,
     /// Manual "add to queue" inserts immediately after the current track instead of at the end.
     EnqueueNext,
@@ -610,6 +613,7 @@ impl Field {
             | Field::DjGemLanguage
             | Field::AudioBackend
             | Field::VideoLayout
+            | Field::PlayerBarPosition
             | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
@@ -689,6 +693,7 @@ impl Field {
             }
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
             Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
+            Field::PlayerBarPosition => t!("Player bar position", "플레이어 바 위치").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
             Field::UpdateCheck => t!("Check for updates", "업데이트 확인").to_owned(),
@@ -814,6 +819,8 @@ pub struct SettingsDraft {
     pub search: SearchConfig,
     pub mouse: bool,
     pub album_art: bool,
+    /// Where the player control block sits (previewed live while Settings is open).
+    pub player_bar_position: crate::config::PlayerBarPosition,
     pub autoplay_on_start: bool,
     pub enqueue_next: bool,
     /// Whether the startup app-update check runs (the About-card update notice).
@@ -968,6 +975,7 @@ impl SettingsDraft {
             Field::LocalMusicRootRecursive => toggle_str(self.local_music_root_recursive),
             Field::Mouse => toggle_str(self.mouse),
             Field::AlbumArt => toggle_str(self.album_art),
+            Field::PlayerBarPosition => self.player_bar_position.label().to_owned(),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::EnqueueNext => toggle_str(self.enqueue_next),
             Field::UpdateCheck => toggle_str(self.update_check_enabled),
@@ -1165,6 +1173,7 @@ impl SettingsDraft {
         cfg.search = self.search.clone().normalized();
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
+        cfg.player_bar_position = Some(self.player_bar_position);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.enqueue_next = Some(self.enqueue_next);
         cfg.speed = Some(self.speed);
@@ -1400,6 +1409,7 @@ mod tests {
             search: SearchConfig::default(),
             mouse: true,
             album_art: false,
+            player_bar_position: crate::config::PlayerBarPosition::Top,
             autoplay_on_start: false,
             enqueue_next: false,
             update_check_enabled: true,
@@ -1677,6 +1687,7 @@ mod tests {
                 Field::LocalMusicRootRecursive,
                 Field::Mouse,
                 Field::AlbumArt,
+                Field::PlayerBarPosition,
                 Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
@@ -1850,6 +1861,7 @@ mod tests {
             },
             mouse: false,
             album_art: true,
+            player_bar_position: crate::config::PlayerBarPosition::Bottom,
             autoplay_on_start: true,
             enqueue_next: true,
             update_check_enabled: false,
@@ -1945,6 +1957,10 @@ mod tests {
         assert_eq!(cfg.search.jamendo_client_id.as_deref(), Some("jam-id"));
         assert_eq!(cfg.mouse, Some(false));
         assert_eq!(cfg.album_art, Some(true));
+        assert_eq!(
+            cfg.player_bar_position,
+            Some(crate::config::PlayerBarPosition::Bottom)
+        );
         assert_eq!(cfg.autoplay_on_start, Some(true));
         assert_eq!(cfg.enqueue_next, Some(true));
         assert!(!cfg.update_check_enabled);

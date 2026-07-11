@@ -49,10 +49,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // tab bar
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // field list
-        Constraint::Length(1), // help
+        Constraint::Length(1),                                        // tab bar
+        Constraint::Length(1),                                        // spacer
+        Constraint::Min(0),                                           // field list
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
+        Constraint::Length(1),                                        // help
     ])
     .split(inner);
 
@@ -62,6 +63,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         render_fields(frame, app, st, rows[2]);
     }
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
     // Footer reflects the *committed* keymap, since that's what operates the screen until
     // the edits are saved.
@@ -180,9 +182,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
     // is visible without leaving Settings; otherwise the keybinding hint shows. Every other view
     // renders `app.status` — Settings must too, or account actions look like silent no-ops.
-    if !app.status.text.is_empty() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[3].width) {
-            frame.render_widget(Paragraph::new(line), rows[3]);
+    // With the docked control box on screen its title row already shows the same status, so
+    // the footer keeps the keybinding hint instead of doubling the message.
+    if !app.status.text.is_empty() && !app.control_box_active() {
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[4].width) {
+            frame.render_widget(Paragraph::new(line), rows[4]);
         } else {
             let role = match app.status.kind {
                 StatusKind::Error => R::Error,
@@ -194,13 +198,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         .style(theme.style(role))
                         .alignment(Alignment::Center),
                 ),
-                rows[3],
+                rows[4],
             );
         }
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
-            rows[3],
+            rows[4],
         );
     }
 }

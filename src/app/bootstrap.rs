@@ -187,4 +187,21 @@ impl App {
             |s| s.draft.retro_mode,
         )
     }
+
+    /// Live player-bar position. Same draft-first rule as [`Self::retro_mode`]: while
+    /// Settings is open the user is looking at the draft, so cycling the row previews the
+    /// layout immediately, before it's committed on close.
+    pub fn player_bar_position(&self) -> crate::config::PlayerBarPosition {
+        self.settings.as_ref().map_or_else(
+            || self.config.effective_player_bar_position(),
+            |s| s.draft.player_bar_position,
+        )
+    }
+
+    /// Whether the docked control box occupies rows on the current screen (Bottom mode).
+    /// Gates both the per-view row reservation and the mouse targets the box publishes —
+    /// a control that isn't rendered must never take clicks.
+    pub fn control_box_active(&self) -> bool {
+        self.player_bar_position() == crate::config::PlayerBarPosition::Bottom
+    }
 }

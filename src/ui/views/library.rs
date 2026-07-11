@@ -36,10 +36,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // tab bar
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // list
-        Constraint::Length(1), // help
+        Constraint::Length(1),                                        // tab bar
+        Constraint::Length(1),                                        // spacer
+        Constraint::Min(0),                                           // list
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
+        Constraint::Length(1),                                        // help
     ])
     .split(inner);
 
@@ -89,8 +90,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         render_list(frame, app, rows[2], &library_rows);
     }
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
