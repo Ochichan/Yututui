@@ -3,6 +3,7 @@
 pub mod anim;
 pub mod ascii_art;
 pub mod buttons;
+pub mod control_box;
 pub mod marquee;
 pub mod mascot;
 pub mod retro;
