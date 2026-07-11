@@ -8,6 +8,7 @@
 1643	src/daemon/mod.rs
 1641	src/app/local.rs
 1600	src/ui/anim.rs
+1596	src/ui/views/settings.rs
 1578	src/api/mod.rs
 1566	src/ai/mod.rs
 1552	src/transfer/matching.rs
