@@ -276,6 +276,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
     let cursor = app.library_ui.selected.min(len - 1);
     let sel_lo = cursor.min(app.library_ui.anchor);
     let sel_hi = cursor.max(app.library_ui.anchor);
+    // Ctrl/Cmd-picked rows override the contiguous range while any exist (they ARE the
+    // effective selection then — see `LibraryView::picked`).
+    let picked = &app.library_ui.picked;
+    let row_selected = |i: usize| {
+        if picked.is_empty() {
+            i >= sel_lo && i <= sel_hi
+        } else {
+            picked.contains(&i)
+        }
+    };
     let deletable = app.library_ui.tab != LibraryTab::All;
     let del_w: u16 = if deletable { 2 } else { 0 };
 
@@ -296,7 +306,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         .enumerate()
     {
         let y = area.y + vis as u16;
-        let selected = i >= sel_lo && i <= sel_hi;
+        let selected = row_selected(i);
         let marker = if i == cursor { "▶ " } else { "  " };
         let heart = if app.library.is_favorite(&song.video_id) {
             "♥ "

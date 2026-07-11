@@ -240,6 +240,7 @@ fn narrow_nav_arrows_navigate_on_click() {
     app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     assert_eq!(app.mode, Mode::Search, "◀ pages to the previous screen");
 }

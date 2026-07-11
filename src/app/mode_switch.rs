@@ -120,6 +120,7 @@ impl App {
         self.search.searching = false;
         self.search.results.clear();
         self.search.selected = 0;
+        self.collapse_search_selection();
         self.dropdowns.search_source_open = false;
         let restore = self.radio_mode.normal_mode_queue.take();
         let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
@@ -140,6 +141,7 @@ impl App {
         self.search.searching = false;
         self.search.results.clear();
         self.search.selected = 0;
+        self.collapse_search_selection();
         self.search.focus = SearchFocus::Input;
         self.bridges.search_scroll.reset();
         self.library_ui.tab = LibraryTab::RadioFavorites;

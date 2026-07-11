@@ -311,6 +311,34 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .then(|| app.search.selected.min(len - 1))
         .filter(|sel| (offset..offset + area.height as usize).contains(sel));
 
+    let highlight = if focused {
+        crate::ui::anim::selection_style(
+            app,
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Style::default()
+            .fg(app.theme.color(R::SelectionInactiveFg))
+            .bg(app.theme.color(R::SelectionInactiveBg))
+    };
+    // The effective multi-selection (drag range, Shift+nav, Ctrl/Cmd picks) highlights
+    // like the Library list; the cursor row additionally gets the ▶ marker below. A
+    // lone cursor row is left to the ListState highlight so wheel-scrolling past it
+    // keeps today's behavior.
+    let selected_rows = app.search_selection_indices();
+    let row_selected =
+        |i: usize| selected_rows.len() > 1 && selected_rows.binary_search(&i).is_ok();
+    // A cursor row that was Ctrl/Cmd-toggled OUT of the picks must not read as selected:
+    // keep its ▶ marker but drop the selection colors (the Library renders the same way).
+    let cursor_style = if selected_rows.binary_search(&app.search.selected).is_ok() {
+        highlight
+    } else {
+        app.theme.style(R::TextPrimary)
+    };
+
     // Fresh results cascade in top-to-bottom while the stagger window runs. New results
     // always land with the viewport at the top, so styling by absolute row index is the
     // visible order.
@@ -337,30 +365,21 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
                 text
             };
             let line = format!("{source}{heart}{text}");
+            let base = if row_selected(i) {
+                highlight
+            } else {
+                app.theme.style(R::TextPrimary)
+            };
             ListItem::new(line).style(crate::ui::anim::stagger_style(
                 app,
                 crate::app::Mode::Search,
                 i,
-                app.theme.style(R::TextPrimary),
+                base,
             ))
         })
         .collect();
-
-    let highlight = if focused {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Style::default()
-            .fg(app.theme.color(R::SelectionInactiveFg))
-            .bg(app.theme.color(R::SelectionInactiveBg))
-    };
     let list = List::new(items)
-        .highlight_style(highlight)
+        .highlight_style(cursor_style)
         .style(app.theme.style(R::TextPrimary))
         .highlight_symbol("▶ ")
         // Reserve the ▶ gutter even while the selection is scrolled off-view

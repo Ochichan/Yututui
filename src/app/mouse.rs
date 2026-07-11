@@ -97,8 +97,10 @@ impl App {
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
     /// seekbar seeks to the matching fraction of the track. Hit rects are published by
-    /// views each render.
-    pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+    /// views each render. `multi` (Ctrl/Cmd held) only changes what a Library/Search
+    /// list-row hit does — toggle the row in/out of the selection — and is ignored by
+    /// every other surface, so a modifier click still presses buttons and closes modals.
+    pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16, multi: bool) -> Vec<Cmd> {
         // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
         // below if this click grabs a track.
@@ -428,6 +430,16 @@ impl App {
         if let Some(region) = self.mouse_region_at(col, row) {
             if let MouseTarget::Scrollbar(surface) = region.target {
                 return self.on_scrollbar_press(surface, region.rect, row);
+            }
+            // Ctrl/Cmd+click on a list row toggles it in/out of the multi-selection.
+            if multi && let MouseTarget::ListRow(i) = region.target {
+                match self.mode {
+                    Mode::Search => return self.search_toggle_pick(i),
+                    Mode::Library if !self.local_dedicated_mode => {
+                        return self.library_toggle_pick(i);
+                    }
+                    _ => {}
+                }
             }
             return self.on_mouse_target(region.target);
         }
@@ -899,7 +911,7 @@ impl App {
             || self.overlays.recordings_browser.is_some()
             || self.overlays.recording_settings.is_some()
         {
-            return self.on_mouse_click(col, row);
+            return self.on_mouse_click(col, row, false);
         }
         // Double-clicking a filter-popup row plays it (the mouse Enter), mirroring the
         // queue window's inside/outside split.
@@ -915,7 +927,7 @@ impl App {
                 }
                 return Vec::new();
             }
-            return self.on_mouse_click(col, row); // outside -> close, same as single click
+            return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
         if self.queue_popup.open {
             let inside = self
@@ -929,7 +941,7 @@ impl App {
                 }
                 return Vec::new();
             }
-            return self.on_mouse_click(col, row); // outside -> close, same as single click
+            return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
         match self.mouse_target_at(col, row) {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
@@ -950,7 +962,7 @@ impl App {
                 self.local_row_activate(i)
             }
             Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
-            _ => self.on_mouse_click(col, row),
+            _ => self.on_mouse_click(col, row, false),
         }
     }
 
@@ -1064,6 +1076,21 @@ impl App {
             if self.library_ui.anchor != anchor || self.library_ui.selected != i {
                 self.library_ui.anchor = anchor;
                 self.library_ui.selected = i;
+                // A drag is a range gesture — discontiguous picks yield to the range.
+                self.library_ui.picked.clear();
+                self.dirty = true;
+            }
+        }
+        // The Search results list drags identically to the Library list above.
+        if self.mode == Mode::Search
+            && let Some(MouseTarget::ListRow(i)) = self.mouse_target_at(col, row)
+        {
+            let anchor = self.drag_anchor(DragSurface::Search, i);
+            if self.search.anchor != anchor || self.search.selected != i {
+                self.search.anchor = anchor;
+                self.search.selected = i;
+                self.search.picked.clear();
+                self.search.focus = SearchFocus::Results;
                 self.dirty = true;
             }
         }
@@ -1380,7 +1407,15 @@ impl App {
         match self.mode {
             Mode::Search if index < self.search.results.len() => {
                 self.search.selected = index;
+                // A fresh single click re-anchors the multi-select range here, exactly
+                // like the Library list below.
+                self.search.anchor = index;
+                self.search.picked.clear();
                 self.search.focus = SearchFocus::Results;
+                self.interaction.drag_selection = Some(DragSelection {
+                    surface: DragSurface::Search,
+                    anchor: index,
+                });
                 self.dirty = true;
             }
             Mode::Library if self.local_dedicated_mode => return self.local_row_click(index),
@@ -1388,6 +1423,7 @@ impl App {
                 self.library_ui.selected = index;
                 // A fresh single click re-anchors the multi-select range here.
                 self.library_ui.anchor = index;
+                self.library_ui.picked.clear();
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Library,
                     anchor: index,

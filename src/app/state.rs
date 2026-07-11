@@ -398,6 +398,15 @@ pub struct SearchState {
     pub results: Vec<Song>,
     /// The highlighted result row.
     pub selected: usize,
+    /// The fixed end of the results list's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `selected`,
+    /// mirroring the Library list's drag-to-select.
+    pub anchor: usize,
+    /// Discontiguous multi-select rows toggled with Ctrl/Cmd+click. When non-empty it
+    /// IS the effective selection (the anchor..=selected range is ignored); cleared by
+    /// any plain click/nav/drag and whenever the result list changes. Consumers clamp
+    /// stale indices, never panic.
+    pub picked: BTreeSet<usize>,
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
     /// Monotonic id of the most recently *submitted* search. Stamped on the request and echoed
@@ -531,6 +540,12 @@ pub struct LibraryView {
     /// click). The selection is the inclusive span between this and `selected`, mirroring
     /// the queue window's drag-to-select.
     pub anchor: usize,
+    /// Discontiguous multi-select rows toggled with Ctrl/Cmd+click. When non-empty it
+    /// IS the effective selection (the anchor..=selected range is ignored); cleared by
+    /// any plain click/nav/drag and by every selection-aware mutation (delete, clamp,
+    /// filter/tab change). Like `anchor`, it can drift if the list shifts underneath
+    /// (e.g. history growing while off-screen) — consumers clamp, never panic.
+    pub picked: BTreeSet<usize>,
     /// Local audio files found in the configured download directory.
     pub downloaded: Vec<Song>,
     /// Mutation counter for `downloaded` (row cache / id-recovery memo key). Bumped at
@@ -648,10 +663,35 @@ pub struct QueuePopup {
     pub scroll: crate::ui::scroll::ScrollState,
 }
 
+/// Row indices of a list's effective multi-selection, ascending and bounded to `len`:
+/// the Ctrl/Cmd-picked set when non-empty, else the inclusive `anchor..=selected` range.
+/// Shared by the Library and Search lists so both resolve selection identically.
+pub(in crate::app) fn effective_selection_indices(
+    picked: &std::collections::BTreeSet<usize>,
+    selected: usize,
+    anchor: usize,
+    len: usize,
+) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if !picked.is_empty() {
+        // BTreeSet iterates ascending; drop indices a stale set might hold past the end.
+        return picked.iter().copied().filter(|&i| i < len).collect();
+    }
+    let lo = selected.min(anchor);
+    if lo >= len {
+        return Vec::new();
+    }
+    let hi = selected.max(anchor).min(len - 1);
+    (lo..=hi).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DragSurface {
     Queue,
     Library,
+    Search,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

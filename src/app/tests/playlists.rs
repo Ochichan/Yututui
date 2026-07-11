@@ -359,6 +359,7 @@ fn p_on_a_search_result_picks_that_result() {
     app.search.results = songs(2);
     app.search.focus = SearchFocus::Results;
     app.search.selected = 1;
+    app.search.anchor = 1;
     app.update(Msg::Key(key(KeyCode::Char('p'))));
     let picker = app.playlist_picker.as_ref().expect("picker open");
     assert_eq!(picker.songs[0].video_id, "id1");

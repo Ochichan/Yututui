@@ -58,7 +58,11 @@ fn outside_left_click_closes_menu_and_is_consumed() {
     open_search_menu(&mut app, 1);
     let (col, row) = button_center(&app, MouseTarget::Nav(Mode::Library));
 
-    let cmds = app.update(Msg::MouseClick { col, row });
+    let cmds = app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
 
     assert!(cmds.is_empty());
     assert!(app.overlays.context_menu.is_none());
@@ -87,7 +91,11 @@ fn queue_right_click_preserves_existing_range_and_menu_removes_it() {
 
     // Queue menus contain "Play now" followed by "Remove".
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(1));
-    let cmds = app.update(Msg::MouseClick { col, row });
+    let cmds = app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
 
     assert_no_load(&cmds);
     assert!(app.overlays.context_menu.is_none());
@@ -123,7 +131,11 @@ fn queue_menu_play_from_here_preserves_the_existing_queue() {
     assert_eq!(menu.items[0].label(menu.target_count()), "Play from here");
 
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(0));
-    let cmds = app.update(Msg::MouseClick { col, row });
+    let cmds = app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
 
     assert_loads_video(&cmds, "id2");
     assert_eq!(current(&app), "id2");
@@ -186,7 +198,11 @@ fn stale_search_identity_prevents_menu_action_and_reports_status() {
     app.search.results[1] = Song::remote("replacement", "Replacement", "A", "0:10");
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(0));
 
-    let cmds = app.update(Msg::MouseClick { col, row });
+    let cmds = app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
 
     assert_no_load(&cmds);
     assert_eq!(app.queue.len(), 0);
@@ -237,7 +253,11 @@ fn paired_left_double_click_does_not_leak_into_menu_opened_picker() {
     // Search track menus: play, enqueue, favorite, add to playlist, download.
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(3));
 
-    app.update(Msg::MouseClick { col, row });
+    app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
     assert!(app.playlist_picker.is_some());
 
     app.update(Msg::MouseDoubleClick { col, row });
@@ -263,6 +283,7 @@ fn outside_menu_press_owns_following_queue_drag_until_button_up() {
     app.update(Msg::MouseClick {
         col: close_col,
         row: close_row,
+        multi: false,
     });
     assert!(app.overlays.context_menu.is_none());
     assert_eq!(app.queue_popup.cursor, 1);

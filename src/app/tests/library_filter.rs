@@ -240,7 +240,11 @@ fn filter_popup_click_outside_closes_it() {
     app.update(Msg::Key(key(KeyCode::Char('/'))));
     render_app(&app);
     // (0, 0) is the screen corner, well outside the centered popup.
-    app.update(Msg::MouseClick { col: 0, row: 0 });
+    app.update(Msg::MouseClick {
+        col: 0,
+        row: 0,
+        multi: false,
+    });
     assert!(!app.search_filter.open);
     assert_eq!(app.mode, Mode::Search);
 }

@@ -173,6 +173,7 @@ fn dragging_ai_transcript_rows_copies_selection() {
     app.update(Msg::MouseClick {
         col: rows[0].x,
         row: rows[0].y,
+        multi: false,
     });
     app.update(Msg::MouseDrag {
         col: rows[1].x,
@@ -211,6 +212,7 @@ fn ai_submit_button_matches_enter_submit() {
     let cmds = app.update(Msg::MouseClick {
         col: button.x,
         row: button.y,
+        multi: false,
     });
     assert_eq!(ask_ai(&cmds), Some("play lofi"));
     assert!(app.ai.thinking);
@@ -301,6 +303,7 @@ fn ai_suggestion_rows_are_clickable_choices() {
     app.update(Msg::MouseClick {
         col: row.x,
         row: row.y,
+        multi: false,
     });
     assert_eq!(app.ai.focus, AiFocus::Suggestions);
     assert_eq!(app.ai.suggestions_selected, 2);

@@ -11,7 +11,11 @@ fn click_on_seekbar_seeks_to_fraction() {
         height: 1,
     });
     // Column 50 of a 100-wide bar → 50% of 200 s → ~100 s.
-    let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 50,
+        row: 5,
+        multi: false,
+    });
     match cmds.as_slice() {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 100.0).abs() < 1.0),
         _ => panic!("expected a SeekAbsolute cmd"),
@@ -28,8 +32,22 @@ fn click_off_seekbar_is_ignored() {
         width: 100,
         height: 1,
     });
-    assert!(app.update(Msg::MouseClick { col: 50, row: 9 }).is_empty()); // wrong row
-    assert!(app.update(Msg::MouseClick { col: 200, row: 5 }).is_empty()); // past the bar
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 50,
+            row: 9,
+            multi: false
+        })
+        .is_empty()
+    ); // wrong row
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 200,
+            row: 5,
+            multi: false
+        })
+        .is_empty()
+    ); // past the bar
 }
 
 #[test]
@@ -43,7 +61,14 @@ fn click_does_nothing_outside_player_mode() {
         height: 1,
     });
     app.mode = Mode::Search;
-    assert!(app.update(Msg::MouseClick { col: 50, row: 5 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 50,
+            row: 5,
+            multi: false
+        })
+        .is_empty()
+    );
 }
 
 #[test]
@@ -57,7 +82,14 @@ fn drag_on_seekbar_scrubs_continuously() {
         height: 1,
     });
     // Press on the bar arms the scrub and seeks (col 25 → 50 s).
-    match app.update(Msg::MouseClick { col: 25, row: 5 }).as_slice() {
+    match app
+        .update(Msg::MouseClick {
+            col: 25,
+            row: 5,
+            multi: false,
+        })
+        .as_slice()
+    {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 50.0).abs() < 1.0),
         _ => panic!("expected a SeekAbsolute from the press"),
     }
@@ -107,7 +139,11 @@ fn click_player_buttons_dispatch_actions() {
         },
         MouseTarget::Player(Action::TogglePause),
     );
-    let cmds = app.update(Msg::MouseClick { col: 12, row: 4 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 12,
+        row: 4,
+        multi: false,
+    });
     assert!(app.playback.paused);
     assert!(matches!(
         cmds.as_slice(),
@@ -124,7 +160,11 @@ fn click_player_buttons_dispatch_actions() {
         },
         MouseTarget::Player(Action::VolUp),
     );
-    let cmds = app.update(Msg::MouseClick { col: 25, row: 4 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 25,
+        row: 4,
+        multi: false,
+    });
     assert_eq!(app.playback.volume, 45);
     assert!(matches!(
         cmds.as_slice(),
@@ -208,7 +248,11 @@ fn click_next_button_loads_next_track() {
         },
         MouseTarget::Player(Action::NextTrack),
     );
-    let cmds = app.update(Msg::MouseClick { col: 3, row: 1 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 3,
+        row: 1,
+        multi: false,
+    });
     assert_eq!(current(&app), "id1");
     assert_loads_video(&cmds, "id1");
 }
@@ -225,7 +269,14 @@ fn click_help_button_opens_cheatsheet() {
         },
         MouseTarget::Global(Action::ToggleHelp),
     );
-    assert!(app.update(Msg::MouseClick { col: 4, row: 9 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 4,
+            row: 9,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(app.overlays.help_visible);
 }
 
@@ -241,7 +292,14 @@ fn click_mouse_help_button_opens_mouse_cheatsheet() {
         },
         MouseTarget::MouseHelp,
     );
-    assert!(app.update(Msg::MouseClick { col: 20, row: 9 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 20,
+            row: 9,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(app.overlays.mouse_help_visible);
     assert!(!app.overlays.help_visible);
 }
@@ -276,7 +334,14 @@ fn click_closes_help_overlay_before_buttons() {
         },
         MouseTarget::Player(Action::VolUp),
     );
-    assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 3,
+            row: 1,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(!app.overlays.help_visible);
     assert_eq!(app.playback.volume, 40);
 }
@@ -295,7 +360,14 @@ fn click_closes_mouse_help_overlay_before_buttons() {
         },
         MouseTarget::Player(Action::VolUp),
     );
-    assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 3,
+            row: 1,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(!app.overlays.mouse_help_visible);
     assert_eq!(app.playback.volume, 40);
 }

@@ -31,6 +31,7 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     app.update(Msg::MouseClick {
         col: r0.x,
         row: r0.y,
+        multi: false,
     });
     assert_eq!((app.library_ui.selected, app.library_ui.anchor), (0, 0));
     app.update(Msg::MouseDrag {
@@ -83,7 +84,11 @@ fn library_drag_after_release_starts_a_fresh_range() {
     let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
     let (c3, r3) = button_center(&app, MouseTarget::ListRow(3));
 
-    app.update(Msg::MouseClick { col: c0, row: r0 });
+    app.update(Msg::MouseClick {
+        col: c0,
+        row: r0,
+        multi: false,
+    });
     assert_eq!((app.library_ui.selected, app.library_ui.anchor), (0, 0));
     app.update(Msg::MouseLeftUp);
 
