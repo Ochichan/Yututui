@@ -127,6 +127,58 @@ fn mini_keeps_settings_import_dropdown_visible_and_keyed() {
 }
 
 #[test]
+fn mini_entry_closes_the_search_results_filter() {
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Search;
+    app.search_filter.open = true; // rendered only by the (suppressed) Search view
+    render_mini(&app, 28, 8);
+    app.update(Msg::Resize);
+    assert!(
+        !app.search_filter.open,
+        "an unrendered filter popup must not keep capturing keys"
+    );
+}
+
+#[test]
+fn mini_hygiene_is_level_triggered_and_covers_the_ai_input() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('g')))); // DJ Gem, input focused
+    assert_eq!(app.mode, Mode::Ai);
+    render_mini(&app, 28, 8);
+    app.update(Msg::Resize);
+    assert!(!app.in_text_entry(), "the hidden DJ Gem input must blur");
+    // Navigating inside mini re-focuses the search input — the hygiene must re-fire on the
+    // next event (level-triggered), not only on the tier transition.
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    assert_eq!(app.mode, Mode::Search);
+    render_mini(&app, 28, 8);
+    app.update(Msg::Resize);
+    assert!(
+        !app.in_text_entry(),
+        "re-focused inputs must blur again while the mini tier holds"
+    );
+}
+
+#[test]
+fn queue_pos_click_opens_the_queue_in_mini_even_with_the_bar_hidden() {
+    let mut app = app_playing(3, 1);
+    // Top layout: control_box_active() is false, but the mini renders the status line and
+    // the queue window itself, so the N/M label must work.
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
+    app.mode = Mode::Search;
+    render_mini(&app, 28, 8);
+    let rect = app
+        .hits
+        .rect_of_target(MouseTarget::QueuePos)
+        .expect("queue position label rendered in mini");
+    app.update(Msg::MouseClick {
+        col: rect.x,
+        row: rect.y,
+    });
+    assert!(app.queue_popup.open, "N/M opens the queue window in place");
+}
+
+#[test]
 fn tier_flip_moves_the_art_geometry_key() {
     let mut app = app_playing(1, 0);
     make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);

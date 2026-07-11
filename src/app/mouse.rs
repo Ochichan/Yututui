@@ -685,6 +685,14 @@ impl App {
                 self.open_queue_popup();
                 Vec::new()
             }
+            // The miniplayer renders the queue window itself, so the `N/M` label opens it
+            // in place — even when the bar is Top or collapsed (the mini is the only UI).
+            MouseTarget::QueuePos
+                if self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini =>
+            {
+                self.open_queue_popup();
+                Vec::new()
+            }
             // From another screen (docked box) the queue window still lives on the Player
             // screen — follow the click there instead of opening an invisible popup.
             MouseTarget::QueuePos if self.control_box_active() => {

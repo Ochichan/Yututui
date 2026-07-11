@@ -1,6 +1,8 @@
 //! The player control box: title, seekbar, transport strip, and status line — the block
-//! every screen's "now playing" chrome is built from. The Player view lays these rows out
-//! at its top (the legacy layout); the docked variants land here in later milestones.
+//! every screen's "now playing" chrome is built from. Three consumers: the Player view's
+//! legacy Top layout (`render_at`, byte-identical rows), the bottom-docked box every
+//! screen shows in Bottom mode (`render_docked`), and the miniplayer's rows
+//! (`ui::views::mini`).
 
 use std::borrow::Cow;
 

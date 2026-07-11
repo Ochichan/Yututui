@@ -35,23 +35,37 @@ impl App {
     /// stay open and operable.
     pub(in crate::app) fn sync_ui_tier(&mut self) {
         let tier = self.bridges.ui_tier.get();
-        if tier == self.fx.last_ui_tier {
-            return;
+        if tier != self.fx.last_ui_tier {
+            self.fx.last_ui_tier = tier;
+            self.dirty = true;
         }
-        self.fx.last_ui_tier = tier;
         if tier != crate::ui::layout::UiTier::Mini {
             return;
         }
+        // Level-triggered, not edge-triggered: navigation inside the miniplayer re-focuses
+        // inputs (`s` → Search focuses its box), which would re-suppress the typeable
+        // globals the entry pass freed. The resets are cheap and idempotent.
         if self.search.focus == SearchFocus::Input {
             self.search.focus = SearchFocus::Results;
             self.search.select_all = false;
+            self.dirty = true;
+        }
+        if self.ai.focus == AiFocus::Input {
+            self.ai.focus = AiFocus::Suggestions;
+            self.dirty = true;
+        }
+        // The results-filter popup renders only inside the (suppressed) Search view and its
+        // key capture runs before the mini routing guard — leaving it open would recreate
+        // the invisible-modal trap this hygiene exists to prevent.
+        if self.search_filter.open {
+            self.search_filter.close();
+            self.dirty = true;
         }
         self.library_ui.filter_editing = false;
         self.local_mode.ui.filter_editing = false;
         if let Some(s) = self.settings.as_mut() {
             s.editing_text = false;
         }
-        self.dirty = true;
     }
 
     /// Collapse or expand the docked control box on non-Player screens (Bottom bar mode
@@ -104,12 +118,6 @@ impl App {
             )
             .to_owned());
             return Vec::new();
-        }
-        // Zoom rescales the virtual grid without a `Msg::Resize`, moving the centered art
-        // band — request the native-image resync here at the source (the render-side tier
-        // bridge would lag one update turn).
-        if self.native_art_active() {
-            self.request_native_image_clear();
         }
         let current = self.zoom.percent();
         let next = self.zoom.step(zoom_in);
