@@ -481,6 +481,11 @@ pub struct ArtState {
     /// Windows Terminal can composite the graphics payload one frame after the text overlay, so the
     /// overlay needs a short reinforcement burst rather than a single clear.
     pub(in crate::app) overlay_refresh_clear_frames: u8,
+    /// Last layout-geometry key observed by the reducer (bar position, lyrics visibility) —
+    /// the inputs that MOVE the art rect within the Player screen. A separate key rather
+    /// than overlay-mask bits: the mask budget is nearly exhausted, and geometry is a
+    /// different axis than occlusion. `None` until the first sync.
+    pub(in crate::app) geometry_key: Option<(crate::config::PlayerBarPosition, bool)>,
 }
 
 /// Streaming autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem

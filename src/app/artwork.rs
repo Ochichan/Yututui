@@ -92,7 +92,7 @@ impl App {
         }
     }
 
-    fn native_art_active(&self) -> bool {
+    pub(in crate::app) fn native_art_active(&self) -> bool {
         self.art_active() && self.native_image_protocol_selected()
     }
 
@@ -636,6 +636,26 @@ impl App {
                 next,
                 "native-image overlay state changed; next frame will clear before draw"
             );
+        }
+    }
+
+    /// Track layout-geometry transitions that MOVE the art rect: the player-bar position
+    /// (top-anchored vs centered filler) and the lyrics panel (centered group re-flows).
+    /// Screen switches are already covered by [`ART_OVERLAY_NOT_PLAYER_BIT`]; resize and
+    /// zoom request their clears at the source (`Msg::Resize`, `zoom_step`) because the
+    /// centered y moves with the grid. Same rationale as [`Self::sync_art_overlay_state`]:
+    /// native protocols park image bytes in anchor cells ratatui's diff won't repaint, so
+    /// any relocation needs one full clear.
+    pub(in crate::app) fn sync_art_geometry(&mut self) {
+        let key = (self.player_bar_position(), self.lyrics.visible);
+        if self.art.geometry_key == Some(key) {
+            return;
+        }
+        let moved = self.art.geometry_key.is_some();
+        self.art.geometry_key = Some(key);
+        if moved && self.native_art_active() {
+            self.request_native_image_clear();
+            tracing::debug!(?key, "art layout geometry changed; next frame will clear");
         }
     }
 

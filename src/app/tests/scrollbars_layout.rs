@@ -64,8 +64,10 @@ fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
     let buf = terminal.backend().buffer();
+    // The docked player bar (default Bottom) reserves 5 rows, so the list bottom sits at
+    // y=12 in an 80x20 frame (border 1 + tab 1 + spacer 1 + list rows .. + bar 5 + help 1).
     assert_eq!(
-        buf.cell((79, 17)).map(|c| c.symbol()),
+        buf.cell((79, 12)).map(|c| c.symbol()),
         Some("█"),
         "at the final page the scrollbar thumb should touch the list bottom"
     );

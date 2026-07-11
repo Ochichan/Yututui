@@ -63,7 +63,9 @@ fn rendering_player_registers_control_buttons() {
 
 #[test]
 fn volume_flash_geometry_is_stable_and_off_mode_keeps_legacy_layout() {
+    // This pins the LEGACY Top-layout bytes/geometry, so opt out of the docked default.
     let mut app = app_playing(2, 0);
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
     let targets = [
         MouseTarget::Player(Action::PrevTrack),
         MouseTarget::Player(Action::TogglePause),
@@ -127,7 +129,8 @@ fn rendering_settings_registers_clickable_controls() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (mode → Settings)
         app.settings.as_mut().unwrap().tab = tab;
-        let backend = TestBackend::new(80, 32);
+        // Tall enough for every General row with the docked player bar reserving 5 rows.
+        let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         app.hits

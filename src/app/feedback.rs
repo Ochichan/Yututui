@@ -40,6 +40,12 @@ impl App {
             .to_owned());
             return Vec::new();
         }
+        // Zoom rescales the virtual grid without a `Msg::Resize`, moving the centered art
+        // band — request the native-image resync here at the source (the render-side tier
+        // bridge would lag one update turn).
+        if self.native_art_active() {
+            self.request_native_image_clear();
+        }
         let current = self.zoom.percent();
         let next = self.zoom.step(zoom_in);
         if next == current {

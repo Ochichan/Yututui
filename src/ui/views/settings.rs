@@ -802,7 +802,17 @@ fn render_spotify_import_mode_dropdown(
         )
         .min(available_width);
     let leading = vx.saturating_sub(area.x) as usize;
-    let start_y = area.y + visible as u16 + 1;
+    // Drop below the row; when the list is short (e.g. the docked player bar shrank it)
+    // and the options wouldn't fit, drop up above the row instead of clipping them away.
+    let modes = crate::config::SpotifyImportMode::ALL.len() as u16;
+    let anchor_y = area.y + visible as u16;
+    let below = area.bottom().saturating_sub(anchor_y + 1);
+    let above = anchor_y.saturating_sub(area.y);
+    let start_y = if below >= modes || above < modes {
+        anchor_y + 1
+    } else {
+        anchor_y - modes
+    };
     for (idx, mode) in crate::config::SpotifyImportMode::ALL
         .iter()
         .copied()

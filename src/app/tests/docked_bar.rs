@@ -47,7 +47,8 @@ fn bottom_mode_docks_player_controls_on_other_screens() {
 #[test]
 fn top_mode_keeps_other_screens_free_of_player_controls() {
     let mut app = app_playing(2, 0);
-    app.mode = Mode::Search; // default position: Top (legacy layout)
+    app.config.player_bar_position = Some(PlayerBarPosition::Top); // legacy layout
+    app.mode = Mode::Search;
     render_at_size(&app, 80, 24);
 
     let buttons = app.hits.regions();
@@ -148,7 +149,7 @@ fn settings_shows_player_bar_position_select() {
         st.fields().contains(&Field::PlayerBarPosition),
         "General tab offers the player-bar position select"
     );
-    assert_eq!(st.draft.player_bar_position, PlayerBarPosition::Top);
+    assert_eq!(st.draft.player_bar_position, PlayerBarPosition::Bottom);
 }
 
 #[test]
@@ -158,18 +159,50 @@ fn cycling_player_bar_position_previews_live_and_persists_on_close() {
     focus_settings_field(&mut app, Field::PlayerBarPosition);
     app.update(Msg::Key(key(KeyCode::Right)));
     // Draft previews live: the whole UI relocates the bar before the value is committed.
-    assert_eq!(app.player_bar_position(), PlayerBarPosition::Bottom);
-    assert!(app.control_box_active());
+    assert_eq!(app.player_bar_position(), PlayerBarPosition::Top);
+    assert!(!app.control_box_active());
     // Closing Settings commits the draft into config.
     app.update(Msg::Key(key(KeyCode::Char('q'))));
-    assert_eq!(
-        app.config.player_bar_position,
-        Some(PlayerBarPosition::Bottom)
-    );
+    assert_eq!(app.config.player_bar_position, Some(PlayerBarPosition::Top));
     assert_eq!(
         app.config.effective_player_bar_position(),
-        PlayerBarPosition::Bottom
+        PlayerBarPosition::Top
     );
+}
+
+#[test]
+fn art_geometry_moves_request_a_native_clear() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    // Seeding the key (first sync after launch) must not clear — nothing moved yet.
+    app.sync_art_geometry();
+    assert!(!app.take_clear_before_draw(), "seeding must not clear");
+    // The lyrics panel re-flows the centered group.
+    app.lyrics.visible = !app.lyrics.visible;
+    app.sync_art_geometry();
+    assert!(
+        app.take_clear_before_draw(),
+        "lyrics toggle moves the art band"
+    );
+    // Moving the bar between Top and Bottom relocates the whole filler.
+    app.config.player_bar_position = Some(PlayerBarPosition::Top);
+    app.sync_art_geometry();
+    assert!(
+        app.take_clear_before_draw(),
+        "bar-position change moves the art band"
+    );
+}
+
+#[test]
+fn resize_with_native_art_requests_a_clear() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    app.update(Msg::Resize);
+    assert!(
+        app.take_clear_before_draw(),
+        "a resize moves the centered band with the grid"
+    );
+    assert!(!app.take_clear_before_draw(), "clear request is one-shot");
 }
 
 fn focus_settings_field(app: &mut App, field: Field) {

@@ -342,13 +342,13 @@ impl VideoOverlay {
 
 /// Where the player control block (title / seekbar / transport / status) sits. `Top` is the
 /// legacy layout: the block heads the Player view and other screens carry no player chrome.
-/// `Bottom` docks the block above the footer on every screen (the Player view centers its
-/// filler in the space above). Persisted in `config.json`.
+/// `Bottom` (the default) docks the block above the footer on every screen, and the Player
+/// view centers its filler in the space above. Persisted in `config.json`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayerBarPosition {
-    #[default]
     Top,
+    #[default]
     Bottom,
 }
 
@@ -538,8 +538,8 @@ pub struct Config {
     /// terminal's graphics protocol is probed unconditionally at startup (the About icon needs
     /// it regardless), so turning this on takes effect live. See [`crate::artwork`].
     pub album_art: Option<bool>,
-    /// Where the player control block sits (see [`PlayerBarPosition`]). `None` → `Top`,
-    /// the legacy layout.
+    /// Where the player control block sits (see [`PlayerBarPosition`]). `None` → `Bottom`,
+    /// the docked layout; `Top` keeps the legacy layout.
     pub player_bar_position: Option<PlayerBarPosition>,
 
     // Playback / EQ -----------------------------------------------------------
@@ -1060,7 +1060,7 @@ impl Config {
         self.album_art.unwrap_or(false)
     }
 
-    /// Where the player control block sits (default `Top`, the legacy layout).
+    /// Where the player control block sits (default `Bottom`, the docked layout).
     pub fn effective_player_bar_position(&self) -> PlayerBarPosition {
         self.player_bar_position.unwrap_or_default()
     }
@@ -2103,18 +2103,19 @@ mod tests {
     }
 
     #[test]
-    fn player_bar_defaults_to_top_and_forward_migrates() {
-        // Legacy config files (no key) keep the classic top layout.
+    fn player_bar_defaults_to_bottom_and_forward_migrates() {
+        // Config files without the key (legacy or fresh) get the new docked layout;
+        // Top stays selectable and round-trips.
         let back: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(back.effective_player_bar_position(), PlayerBarPosition::Top);
-        let bottom = Config {
-            player_bar_position: Some(PlayerBarPosition::Bottom),
-            ..Config::default()
-        };
         assert_eq!(
-            bottom.effective_player_bar_position(),
+            back.effective_player_bar_position(),
             PlayerBarPosition::Bottom
         );
+        let top = Config {
+            player_bar_position: Some(PlayerBarPosition::Top),
+            ..Config::default()
+        };
+        assert_eq!(top.effective_player_bar_position(), PlayerBarPosition::Top);
         assert_eq!(PlayerBarPosition::Top.toggled(), PlayerBarPosition::Bottom);
         assert_eq!(PlayerBarPosition::Bottom.toggled(), PlayerBarPosition::Top);
     }

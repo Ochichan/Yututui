@@ -265,35 +265,92 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
         render_radio_filler(frame, app, area);
         return;
     }
+    let centered = app.player_bar_position() == crate::config::PlayerBarPosition::Bottom;
     match (app.art_active(), app.lyrics.visible) {
-        // Art on top, lyrics right under it. The art is capped so a readable lyrics window
+        // Art with lyrics right under it. The art is capped so a readable lyrics window
         // always remains, then lyrics start one row below the art's actual bottom (not at a
-        // fixed split), so there's no dead gap between them.
+        // fixed split), so there's no dead gap between them. Top mode anchors the pair to
+        // the top of the filler; Bottom mode centers the [art, gap, lyrics] group.
         (true, true) => {
             let after_gap = area.height.saturating_sub(ART_TOP_GAP);
             // ~50% of the filler, but never so tall that lyrics drop below MIN_LYRICS_ROWS.
             let cap = (after_gap / 2).min(after_gap.saturating_sub(MIN_LYRICS_ROWS));
-            let band = art_band(area, ART_TOP_GAP, cap);
+            let band = if centered {
+                // Probe the art's real height first (`art_fit_rect` is a pure query), so
+                // the group's total height is known before anything is drawn. The lyrics
+                // window is capped at 12 rows (~5 lines of context either side of the
+                // current one) so the centered group stays compact and the centering reads.
+                let art_h = app.art_fit_rect(art_band(area, 0, cap)).height;
+                let lyrics_h = area
+                    .height
+                    .saturating_sub(art_h + ART_LYRICS_GAP)
+                    .clamp(MIN_LYRICS_ROWS, 12);
+                let group_h = art_h + ART_LYRICS_GAP + lyrics_h;
+                Rect {
+                    x: area.x,
+                    y: area.y + area.height.saturating_sub(group_h) / 2,
+                    width: area.width,
+                    height: art_h.min(area.height),
+                }
+            } else {
+                art_band(area, ART_TOP_GAP, cap)
+            };
             match draw_art(frame, app, band) {
                 Some(art) => {
                     let lyrics_y = art.bottom().saturating_add(ART_LYRICS_GAP);
+                    let lyrics_bottom = if centered {
+                        // Keep the group's computed window so the centering holds; the
+                        // canvas gets the residual bands.
+                        area.bottom().min(lyrics_y.saturating_add(12))
+                    } else {
+                        area.bottom()
+                    };
                     let lyrics_area = Rect {
                         x: area.x,
                         y: lyrics_y,
                         width: area.width,
-                        height: area.bottom().saturating_sub(lyrics_y),
+                        height: lyrics_bottom.saturating_sub(lyrics_y),
                     };
                     render_lyrics(frame, app, lyrics_area);
                 }
                 None => render_lyrics(frame, app, area),
             }
         }
-        // Art only: medium size, capped to ~55% of the filler height, top-anchored. Canvas
-        // animations fill the blank region below the art's real bottom edge (never over the art).
+        // Art only: medium size, capped to ~55% of the filler height. Top mode anchors it
+        // under the status line; Bottom mode centers it in the filler. Canvas animations
+        // fill the blank region around the art's real edges (never over the art).
         (true, false) => {
             let cap = (u32::from(area.height) * 11 / 20) as u16;
-            let band = art_band(area, ART_TOP_GAP, cap);
+            let band = if centered {
+                // Probe the art's real height (`art_fit_rect` is a pure query) so the band
+                // is sized to it exactly — `draw_art`'s top re-anchor then lands centered.
+                let art_h = app.art_fit_rect(art_band(area, 0, cap)).height;
+                Rect {
+                    x: area.x,
+                    y: area.y + area.height.saturating_sub(art_h) / 2,
+                    width: area.width,
+                    height: art_h.min(area.height),
+                }
+            } else {
+                art_band(area, ART_TOP_GAP, cap)
+            };
             let art = draw_art(frame, app, band);
+            if centered && let Some(art) = art {
+                // Band above the centered art.
+                let above_h = art.y.saturating_sub(area.y).saturating_sub(ART_LYRICS_GAP);
+                if above_h > 0 {
+                    crate::ui::anim::render_canvas(
+                        frame,
+                        app,
+                        Rect {
+                            x: area.x,
+                            y: area.y,
+                            width: area.width,
+                            height: above_h,
+                        },
+                    );
+                }
+            }
             let below = art
                 .map_or(area.y, |r| r.bottom())
                 .saturating_add(ART_LYRICS_GAP);

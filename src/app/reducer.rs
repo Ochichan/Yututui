@@ -60,6 +60,7 @@ impl App {
             self.fx.cancel();
         }
         self.sync_art_overlay_state();
+        self.sync_art_geometry();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
     }
@@ -79,7 +80,14 @@ impl App {
             Msg::MouseScroll { up, col, row, ctrl } => {
                 return self.on_mouse_scroll(up, col, row, ctrl);
             }
-            Msg::Resize => self.dirty = true,
+            Msg::Resize => {
+                // A centered art band moves with the grid height; ratatui's diff can't
+                // repaint parked native-image bytes, so resync with one full clear.
+                if self.native_art_active() {
+                    self.request_native_image_clear();
+                }
+                self.dirty = true;
+            }
             Msg::Quit => self.should_quit = true,
             Msg::Remote(cmd, reply) => {
                 let (resp, cmds) = self.apply_remote(cmd);

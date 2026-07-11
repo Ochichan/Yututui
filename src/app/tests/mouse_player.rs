@@ -34,7 +34,11 @@ fn click_off_seekbar_is_ignored() {
 
 #[test]
 fn click_does_nothing_outside_player_mode() {
+    // Legacy Top layout: no docked box on other screens, so a stale seekbar rect must
+    // not take clicks there. (In the default Bottom layout the docked bar makes this
+    // click live everywhere — covered in `docked_bar`.)
     let mut app = app_playing(1, 0);
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
     app.playback.duration = Some(200.0);
     app.hits.set_seekbar_rect(Rect {
         x: 0,
