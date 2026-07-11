@@ -879,6 +879,84 @@ fn render_spotify_import_mode_dropdown(
     }
 }
 
+pub(super) fn render_spotify_import_mode_dropdown_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(st) = app.settings.as_deref() else {
+        return;
+    };
+    let Some(selected) = st.spotify_import_mode_dropdown else {
+        return;
+    };
+    let popup =
+        crate::ui::centered_list_popup(area, crate::config::SpotifyImportMode::ALL.len(), 3, 32);
+    if popup.is_empty() {
+        return;
+    }
+
+    crate::ui::render_popup_background(frame, app, popup);
+    let block = Block::default()
+        .title(t!(" Spotify import mode ", " Spotify 가져오기 모드 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height < 2 || inner.width < 8 {
+        crate::ui::seal_popup_background(frame, app, popup);
+        crate::ui::mark_art_rows_for_popup(frame, app, popup);
+        return;
+    }
+
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let list_area = sections[0];
+    let row_w = list_area.width as usize;
+    let visible = list_area.height as usize;
+    let start = selected.saturating_sub(visible.saturating_sub(1));
+    for (idx, mode) in crate::config::SpotifyImportMode::ALL
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(start)
+        .take(list_area.height as usize)
+    {
+        let focused = idx == selected;
+        let marker = if focused { "▶ " } else { "  " };
+        let text = pad_to_width(
+            &format!("{marker}{}", mode.label()),
+            row_w.saturating_sub(1),
+        );
+        let style = if focused {
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            crate::ui::popup_style(app, R::TextPrimary)
+        };
+        let row = Rect {
+            x: list_area.x,
+            y: list_area.y + (idx - start) as u16,
+            width: list_area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
+        app.register_mouse_button(row, MouseTarget::SettingsSpotifyImportModeSelect(mode));
+    }
+    frame.render_widget(
+        Paragraph::new(t!(
+            "↑↓ choose · Enter save · Esc close",
+            "↑↓ 선택 · Enter 저장 · Esc 닫기"
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        sections[1],
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
 /// One field row: a left-aligned label and its current value (with a slider bar for numeric
 /// fields, `< … >` arrows for cycles, and a caret for the text field being edited).
 /// `display_row` is the row's position in the rendered list, used by the cascade reveal —

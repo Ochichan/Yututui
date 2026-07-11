@@ -468,7 +468,13 @@ impl App {
     /// to the screen's own handler (see the mini guard in [`Self::on_key`]).
     fn mini_mode_owns_modal(&self) -> bool {
         match self.mode {
-            Mode::Settings => self.overlays.spotify_picker.is_some(),
+            Mode::Settings => {
+                self.overlays.spotify_picker.is_some()
+                    || self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.spotify_import_mode_dropdown.is_some())
+            }
             Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
             _ => false,
         }

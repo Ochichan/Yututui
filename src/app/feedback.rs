@@ -71,6 +71,10 @@ impl App {
         }
         let collapsed = !self.config.control_box_collapsed();
         self.config.control_box_collapsed = Some(collapsed);
+        if collapsed && self.mode != Mode::Player {
+            self.dropdowns.eq_open = false;
+            self.dropdowns.streaming_open = false;
+        }
         // The box moves/vanishes under native art only via screen switches (it never shows
         // on Player), but the Player-screen rect is unaffected — no native clear needed.
         self.set_status_info(if collapsed {

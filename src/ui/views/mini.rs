@@ -49,4 +49,5 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.queue_popup.open {
         super::player::render_queue_popup(frame, app, area);
     }
+    super::settings::render_spotify_import_mode_dropdown_popup(frame, app, area);
 }

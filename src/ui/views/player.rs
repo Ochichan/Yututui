@@ -275,7 +275,7 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
             let after_gap = area.height.saturating_sub(ART_TOP_GAP);
             // ~50% of the filler, but never so tall that lyrics drop below MIN_LYRICS_ROWS.
             let cap = (after_gap / 2).min(after_gap.saturating_sub(MIN_LYRICS_ROWS));
-            let band = if centered {
+            let (band, centered_lyrics_h) = if centered {
                 // Probe the art's real height first (`art_fit_rect` is a pure query), so
                 // the group's total height is known before anything is drawn. The lyrics
                 // window is capped at 12 rows (~5 lines of context either side of the
@@ -286,14 +286,17 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
                     .saturating_sub(art_h + ART_LYRICS_GAP)
                     .clamp(MIN_LYRICS_ROWS, 12);
                 let group_h = art_h + ART_LYRICS_GAP + lyrics_h;
-                Rect {
-                    x: area.x,
-                    y: area.y + area.height.saturating_sub(group_h) / 2,
-                    width: area.width,
-                    height: art_h.min(area.height),
-                }
+                (
+                    Rect {
+                        x: area.x,
+                        y: area.y + area.height.saturating_sub(group_h) / 2,
+                        width: area.width,
+                        height: art_h.min(area.height),
+                    },
+                    lyrics_h,
+                )
             } else {
-                art_band(area, ART_TOP_GAP, cap)
+                (art_band(area, ART_TOP_GAP, cap), 0)
             };
             match draw_art(frame, app, band) {
                 Some(art) => {
@@ -301,7 +304,8 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
                     let lyrics_bottom = if centered {
                         // Keep the group's computed window so the centering holds; the
                         // canvas gets the residual bands.
-                        area.bottom().min(lyrics_y.saturating_add(12))
+                        area.bottom()
+                            .min(lyrics_y.saturating_add(centered_lyrics_h))
                     } else {
                         area.bottom()
                     };

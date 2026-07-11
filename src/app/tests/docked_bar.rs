@@ -215,6 +215,36 @@ fn collapse_toggle_reclaims_rows_and_persists() {
 }
 
 #[test]
+fn collapse_toggle_closes_docked_dropdowns() {
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Library;
+    app.dropdowns.eq_open = true;
+    app.dropdowns.streaming_open = true;
+
+    app.update(Msg::Key(key(KeyCode::Char('B'))));
+
+    assert!(app.config.control_box_collapsed());
+    assert!(!app.dropdowns.eq_open);
+    assert!(!app.dropdowns.streaming_open);
+}
+
+#[test]
+fn status_message_renders_once_when_docked_bar_is_active() {
+    for mode in [Mode::Search, Mode::Library, Mode::Ai] {
+        let mut app = app_playing(1, 0);
+        app.mode = mode;
+        app.set_status_info("Docked toast");
+
+        let buf = render_app_buffer(&app, 100, 24);
+        let occurrences = (0..buf.area.height)
+            .filter(|&y| buffer_row(&buf, y).contains("Docked toast"))
+            .count();
+
+        assert_eq!(occurrences, 1, "{mode:?} should render the status once");
+    }
+}
+
+#[test]
 fn collapsed_screen_matches_the_legacy_top_layout() {
     let mut collapsed = app_playing(2, 0);
     collapsed.config.control_box_collapsed = Some(true);

@@ -106,6 +106,27 @@ fn mini_keeps_mode_owned_modals_operable() {
 }
 
 #[test]
+fn mini_keeps_settings_import_dropdown_visible_and_keyed() {
+    let mut app = app_playing(1, 0);
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Accounts, Field::SpotifyImportMode);
+    app.settings_activate();
+
+    let buf = render_app_buffer(&app, 28, 8);
+    assert_eq!(app.bridges.ui_tier.get(), UiTier::Mini);
+    assert!(
+        buffer_contains(&buf, "Strict playlist"),
+        "settings import dropdown must render over the miniplayer"
+    );
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(
+        app.settings.as_ref().unwrap().spotify_import_mode_dropdown,
+        Some(crate::config::SpotifyImportMode::StrictPlaylist.index())
+    );
+}
+
+#[test]
 fn tier_flip_moves_the_art_geometry_key() {
     let mut app = app_playing(1, 0);
     make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);

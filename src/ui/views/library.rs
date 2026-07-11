@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             library_rows.len()
         };
         render_filter(frame, app, rows[1], matches);
-    } else if !app.status.text.is_empty() {
+    } else if !app.status.text.is_empty() && !app.control_box_active() {
         // A transient status ("Added 2 tracks to …", the create-a-playlist nudge) rides the
         // spacer row so Library actions are visible without leaving the screen. It
         // auto-clears after STATUS_TTL via the global StatusTick, like the Search band — and

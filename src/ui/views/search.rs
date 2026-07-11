@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
     // the search screen. It auto-clears after STATUS_TTL via the global StatusTick. A just-set
     // message types itself in while the toast animation's window runs.
-    if !app.status.text.is_empty() {
+    if !app.status.text.is_empty() && !app.control_box_active() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
             frame.render_widget(Paragraph::new(line), rows[0]);
         } else {

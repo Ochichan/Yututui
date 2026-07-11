@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    if !app.status.text.is_empty() {
+    if !app.status.text.is_empty() && !app.control_box_active() {
         // A just-set message types itself in while the toast animation's window runs.
         if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
             frame.render_widget(Paragraph::new(line), rows[0]);
