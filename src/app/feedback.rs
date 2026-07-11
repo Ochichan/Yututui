@@ -27,6 +27,33 @@ impl App {
         self.dirty = true;
     }
 
+    /// One-shot hygiene when the render pass crosses into the miniplayer tier: drop
+    /// text-entry focus so the invisible inputs can't eat the transport keys (the
+    /// mode-owned modals keep their routing — see `mini_mode_owns_modal`). Uncommitted
+    /// Settings text editing is cancelled (the draft keeps its previous value). Surfaces
+    /// the miniplayer *does* render — the queue window and the status-line dropdowns —
+    /// stay open and operable.
+    pub(in crate::app) fn sync_ui_tier(&mut self) {
+        let tier = self.bridges.ui_tier.get();
+        if tier == self.fx.last_ui_tier {
+            return;
+        }
+        self.fx.last_ui_tier = tier;
+        if tier != crate::ui::layout::UiTier::Mini {
+            return;
+        }
+        if self.search.focus == SearchFocus::Input {
+            self.search.focus = SearchFocus::Results;
+            self.search.select_all = false;
+        }
+        self.library_ui.filter_editing = false;
+        self.local_mode.ui.filter_editing = false;
+        if let Some(s) = self.settings.as_mut() {
+            s.editing_text = false;
+        }
+        self.dirty = true;
+    }
+
     /// Collapse or expand the docked control box on non-Player screens (Bottom bar mode
     /// only — in the Top layout there is nothing to collapse, and the Player screen always
     /// shows its controls). Shared by the `B` shortcut and the ▲/▼ footer button. Persists

@@ -647,7 +647,11 @@ impl App {
     /// native protocols park image bytes in anchor cells ratatui's diff won't repaint, so
     /// any relocation needs one full clear.
     pub(in crate::app) fn sync_art_geometry(&mut self) {
-        let key = (self.player_bar_position(), self.lyrics.visible);
+        let key = (
+            self.player_bar_position(),
+            self.lyrics.visible,
+            self.bridges.ui_tier.get(),
+        );
         if self.art.geometry_key == Some(key) {
             return;
         }

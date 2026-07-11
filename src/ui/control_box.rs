@@ -103,7 +103,7 @@ pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
 /// scrolling line (and a pulsing ♥), which we render in place of it. A just-changed track's
 /// intro cascade and a just-set status message's typewriter reveal each take precedence for
 /// their short one-shot window, then fall through to these steady-state forms.
-fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     if !app.status.text.is_empty() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
             frame.render_widget(Paragraph::new(line), area);
@@ -175,7 +175,7 @@ fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
 /// seconds), so the gauge glides instead of stepping. A live radio stream has no duration,
 /// so its gauge shows the timeshift state instead (full = live edge, backed off = behind);
 /// the position-interpolating smoother would fight that meaning, so radio skips it.
-fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     let (ratio, label) = if app.current_is_radio_stream() {
         format::radio_seekbar(
             app.playback.time_pos,
@@ -288,7 +288,7 @@ fn resync_glyph(retro: bool) -> &'static str {
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
-fn render_status_line(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+pub(in crate::ui) fn render_status_line(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
     // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
     // the `eq:` / `R:` toggles at the tail must stay visible and clickable.
@@ -495,7 +495,7 @@ fn status_line_parts(
 /// Every glyph is a plain non-emoji symbol (EAW-neutral, one cell everywhere) — unlike
 /// the ⏮/⏯ media emoji, which some terminals widen to two cells and so drift the click
 /// rects off the rendered glyph.
-fn render_controls(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     let toggle = if app.playback.paused {
         " ▸ "
     } else {

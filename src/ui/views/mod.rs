@@ -7,6 +7,7 @@ pub mod context_menu;
 pub mod help;
 pub mod library;
 pub mod local;
+pub mod mini;
 pub mod now_playing;
 pub mod player;
 pub mod search;

@@ -25,6 +25,7 @@ mod library_queue_actions;
 mod local;
 mod local_import;
 mod lyrics_art_download;
+mod mini_tier;
 mod mouse_player;
 mod nav_mouse;
 mod now_playing_overlay;

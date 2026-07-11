@@ -41,6 +41,10 @@ pub struct RenderBridges {
     /// Viewport height (rows) of the active Library / Search list, written each render so
     /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
     pub list_viewport_rows: Cell<u16>,
+    /// The responsive tier the last frame rendered at (see [`crate::ui::layout::tier`]).
+    /// Bridged rather than derived from resize events because text zoom rescales the
+    /// virtual grid without one; the reducer reads it for key routing and art geometry.
+    pub ui_tier: Cell<crate::ui::layout::UiTier>,
     /// Decoupled wheel-scroll offset for each browse list (see [`crate::ui::scroll`]). The mouse
     /// wheel moves these directly; the render pass nudges them to keep the keyboard selection
     /// on-screen with a margin. One per list so each keeps its own place.
@@ -123,6 +127,9 @@ pub struct FxState {
     pub(in crate::app) last_volume: i64,
     pub(in crate::app) last_liked: bool,
     pub(in crate::app) last_mode: Mode,
+    /// The responsive tier the reducer last acted on (diffed against the render-side
+    /// bridge to run one-shot mini-entry hygiene; see `App::sync_ui_tier`).
+    pub(in crate::app) last_ui_tier: crate::ui::layout::UiTier,
     pub(in crate::app) last_library_tab: LibraryTab,
     pub(in crate::app) last_settings_tab: Option<SettingsTab>,
     pub(in crate::app) last_open_playlist: Option<String>,
@@ -153,6 +160,7 @@ impl FxState {
             last_volume: volume,
             last_liked: false,
             last_mode: Mode::Player,
+            last_ui_tier: crate::ui::layout::UiTier::default(),
             last_library_tab: LibraryTab::default(),
             last_settings_tab: None,
             last_open_playlist: None,
@@ -485,7 +493,11 @@ pub struct ArtState {
     /// the inputs that MOVE the art rect within the Player screen. A separate key rather
     /// than overlay-mask bits: the mask budget is nearly exhausted, and geometry is a
     /// different axis than occlusion. `None` until the first sync.
-    pub(in crate::app) geometry_key: Option<(crate::config::PlayerBarPosition, bool)>,
+    pub(in crate::app) geometry_key: Option<(
+        crate::config::PlayerBarPosition,
+        bool,
+        crate::ui::layout::UiTier,
+    )>,
 }
 
 /// Streaming autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem

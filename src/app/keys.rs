@@ -441,6 +441,18 @@ impl App {
             return self.on_key_queue(k);
         }
 
+        // Under the miniplayer tier only the transport is on screen, so keys route to the
+        // Player context regardless of the retained mode — a suppressed screen must not
+        // eat keystrokes into an invisible list or input. Two modals render
+        // mode-independently but are keyed inside their owning screen's handler (the
+        // Spotify picker and the create-playlist input); while one is open the normal
+        // dispatch stays so it can be operated and dismissed.
+        if self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
+            && !self.mini_mode_owns_modal()
+        {
+            return self.on_key_player(k);
+        }
+
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search => self.on_key_search(k),
@@ -448,6 +460,17 @@ impl App {
             Mode::Library => self.on_key_library(k),
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),
+        }
+    }
+
+    /// Whether the retained (hidden) screen owns an open modal that renders
+    /// mode-independently — the only cases where mini-tier key routing must fall through
+    /// to the screen's own handler (see the mini guard in [`Self::on_key`]).
+    fn mini_mode_owns_modal(&self) -> bool {
+        match self.mode {
+            Mode::Settings => self.overlays.spotify_picker.is_some(),
+            Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
+            _ => false,
         }
     }
 

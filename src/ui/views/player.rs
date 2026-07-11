@@ -100,7 +100,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 /// selects (drag to extend the selection), double-click jumps playback there — and each
 /// row's trailing `✗` removes that track. Keyboard nav / Delete / Enter operate it while
 /// open (see `App::on_key_queue`). Drawn last over everything so its rects win.
-fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
+pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     let total_len = app.queue.len();
     if total_len == 0 {
         return;

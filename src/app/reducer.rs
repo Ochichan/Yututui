@@ -61,6 +61,7 @@ impl App {
         }
         self.sync_art_overlay_state();
         self.sync_art_geometry();
+        self.sync_ui_tier();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
     }

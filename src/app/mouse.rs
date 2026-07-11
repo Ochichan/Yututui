@@ -472,7 +472,9 @@ impl App {
     /// always on the Player screen, and on every screen showing the docked control box.
     /// A control that isn't rendered must never take clicks — and vice versa.
     fn player_controls_live(&self) -> bool {
-        self.mode == Mode::Player || self.control_box_active()
+        self.mode == Mode::Player
+            || self.control_box_active()
+            || self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
     }
 
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
