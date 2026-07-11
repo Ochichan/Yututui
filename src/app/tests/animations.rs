@@ -179,7 +179,7 @@ fn all_animations_on_render_every_view_without_panic() {
             app.fx.list = Some((0, mode));
             for _ in 0..4 {
                 // A few frames into every window (advances anim_frame via the real tick).
-                app.update(Msg::AnimTick(1));
+                app.update(Msg::AnimTick);
                 let _ = render_app_buffer(&app, 80, 24);
                 let _ = render_app_buffer(&app, 34, 10);
                 let _ = render_app_buffer(&app, 12, 4);
@@ -333,7 +333,7 @@ fn volume_edge_flash_blinks_color_without_moving_cells() {
         app.fx.volume = Some(app.anim_frame());
         let start = snapshot(&app);
         for _ in 0..app.anim_ms_frames(crate::ui::anim::fx_window::VOLUME_MS) / 2 {
-            app.update(Msg::AnimTick(1));
+            app.update(Msg::AnimTick);
         }
         let peak = snapshot(&app);
         assert_eq!(start.0, peak.0, "volume overlay moved at {volume}%");
@@ -357,7 +357,7 @@ fn volume_edge_flash_blinks_color_without_moving_cells() {
     app.fx.volume = Some(app.anim_frame());
     let start = snapshot(&app);
     for _ in 0..app.anim_ms_frames(crate::ui::anim::fx_window::VOLUME_MS) / 2 {
-        app.update(Msg::AnimTick(1));
+        app.update(Msg::AnimTick);
     }
     assert_eq!(
         start,
@@ -505,7 +505,7 @@ fn ambient_effects_draw_at_a_lower_cadence_than_one_shots() {
 }
 
 #[test]
-fn canvas_variable_wakes_preserve_30_to_20_legacy_due_times_and_frames() {
+fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
     let mut app = app_playing(1, 0);
     app.playback.paused = false;
     app.config.animations.master = true;
@@ -515,21 +515,18 @@ fn canvas_variable_wakes_preserve_30_to_20_legacy_due_times_and_frames() {
     assert_eq!(app.animation_tick_fps(), 30);
     assert_eq!(app.animation_draw_fps(), 20);
 
-    let mut due_ms = 0;
-    let expected = [(66, 2), (99, 3), (165, 5), (198, 6), (264, 8), (297, 9)];
-    for (expected_due_ms, expected_frame) in expected {
-        let logical_ticks = app.animation_ticks_until_next_draw();
-        due_ms += logical_ticks * 33;
+    let mut redraws = 0;
+    for expected_frame in 1..=30 {
         app.dirty = false;
-        app.update(Msg::AnimTick(logical_ticks));
-        assert_eq!(due_ms, expected_due_ms);
+        app.update(Msg::AnimTick);
         assert_eq!(app.anim.anim_frame, expected_frame);
-        assert!(app.dirty, "every timer wake must be an actual draw");
+        redraws += usize::from(app.dirty);
     }
+    assert_eq!(redraws, 20);
 }
 
 #[test]
-fn mascot_and_marquee_wakes_keep_their_legacy_integer_due_times() {
+fn ai_mascot_animation_redraws_only_when_pose_can_change() {
     let mut app = app_playing(1, 0);
     app.mode = Mode::Ai;
     app.playback.paused = false;
@@ -540,130 +537,122 @@ fn mascot_and_marquee_wakes_keep_their_legacy_integer_due_times() {
     assert_eq!(app.animation_tick_fps(), 30);
     assert_eq!(app.animation_draw_fps(), 3);
 
-    let mut due_ms = 0;
-    for (expected_due_ms, expected_frame) in [(330, 10), (660, 20), (990, 30)] {
-        let logical_ticks = app.animation_ticks_until_next_draw();
-        due_ms += logical_ticks * 33;
+    let mut redraws = 0;
+    for _ in 0..30 {
         app.dirty = false;
-        app.update(Msg::AnimTick(logical_ticks));
-        assert_eq!(due_ms, expected_due_ms);
-        assert_eq!(app.anim.anim_frame, expected_frame);
-        assert!(app.dirty);
+        app.update(Msg::AnimTick);
+        redraws += usize::from(app.dirty);
     }
+    assert_eq!(redraws, 3);
+}
 
+#[test]
+fn marquee_animation_advances_every_tick_but_redraws_only_on_steps() {
     let mut marquee = App::new(100);
     marquee.config.animations.fps = 30;
     marquee.bridges.marquee_ran.set(true);
     assert_eq!(marquee.animation_draw_fps(), 5);
-    let mut due_ms = 0;
-    for (expected_due_ms, expected_frame) in [(198, 6), (396, 12), (594, 18)] {
-        let logical_ticks = marquee.animation_ticks_until_next_draw();
-        due_ms += logical_ticks * 33;
+
+    let mut redraws = 0;
+    for expected_frame in 1..=30 {
         marquee.dirty = false;
-        marquee.update(Msg::AnimTick(logical_ticks));
-        assert_eq!(due_ms, expected_due_ms);
+        marquee.update(Msg::AnimTick);
         assert_eq!(marquee.anim_frame(), expected_frame);
-        assert!(marquee.dirty);
+        redraws += usize::from(marquee.dirty);
     }
+    assert_eq!(redraws, 5);
 }
 
 #[test]
-fn ambient_draw_sequences_stay_stable_at_5_30_and_60_configured_fps() {
-    for (fps, expected_frames) in [
-        (5, vec![1, 2, 3, 4, 5]),
-        (30, vec![3, 5, 8, 10, 13, 15, 18, 20, 23, 25, 28, 30]),
-        (60, vec![5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]),
-    ] {
+fn inactive_to_active_transition_retains_fractional_draw_credit() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.config.animations.master = true;
+    app.config.animations.caret = true;
+    app.config.animations.fps = 30;
+    assert_eq!(app.animation_draw_fps(), 12);
+
+    // Two delivered ticks leave 24/30 credit without drawing.
+    for _ in 0..2 {
+        app.dirty = false;
+        app.update(Msg::AnimTick);
+        assert!(!app.dirty);
+    }
+    assert_eq!(app.anim.anim_draw_credit, 24);
+
+    // Focus parking is only an Interval polling gate. It must not reset the reducer's cadence.
+    app.update(Msg::Focus(false));
+    app.update(Msg::Focus(true));
+    app.dirty = false;
+    app.update(Msg::AnimTick);
+    assert_eq!(app.anim_frame(), 3);
+    assert_eq!(app.anim.anim_draw_credit, 6);
+    assert!(app.dirty, "the retained 24/30 credit makes tick three draw");
+}
+
+#[tokio::test]
+async fn delayed_interval_skip_matches_one_tick_oracle_for_canvas_marquee_and_fx() {
+    async fn assert_matches_one_tick(mut actual: App, mut oracle: App, label: &str) {
+        oracle.dirty = false;
+        oracle.update(Msg::AnimTick);
+        let oracle_dirty = oracle.dirty;
+        let oracle_frame = oracle.anim_frame();
+        let oracle_buffer = render_app_buffer(&oracle, 80, 24);
+
+        let period = std::time::Duration::from_millis(33);
+        let first_due = tokio::time::Instant::now() - std::time::Duration::from_millis(200);
+        let mut interval = tokio::time::interval_at(first_due, period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        actual.dirty = false;
+        let delivered_due = interval.tick().await;
+        assert_eq!(delivered_due, first_due, "{label}: overdue first deadline");
+        actual.update(Msg::AnimTick);
+
+        assert_eq!(actual.anim_frame(), oracle_frame, "{label}: frame");
+        assert_eq!(actual.dirty, oracle_dirty, "{label}: draw credit");
+        assert_eq!(
+            render_app_buffer(&actual, 80, 24),
+            oracle_buffer,
+            "{label}: rendered buffer"
+        );
+    }
+
+    fn canvas_app() -> App {
+        let mut app = app_playing(1, 0);
+        app.playback.paused = false;
+        app.config.animations.master = true;
+        app.config.animations.rain = true;
+        app.config.animations.fps = 30;
+        assert_eq!(app.animation_draw_fps(), 20);
+        app
+    }
+
+    fn marquee_app() -> App {
+        let mut app = App::new(100);
+        app.config.animations.fps = 30;
+        app.bridges.marquee_ran.set(true);
+        assert_eq!(app.animation_draw_fps(), 5);
+        app
+    }
+
+    fn fx_app() -> App {
         let mut app = App::new(100);
         app.mode = Mode::Search;
         app.config.animations.master = true;
-        app.config.animations.caret = true;
-        app.config.animations.fps = fps;
-        for expected_frame in expected_frames {
-            let logical_ticks = app.animation_ticks_until_next_draw();
-            app.dirty = false;
-            app.update(Msg::AnimTick(logical_ticks));
-            assert_eq!(app.anim.anim_frame, expected_frame, "configured fps {fps}");
-            assert!(app.dirty);
-        }
+        app.config.animations.toast = true;
+        app.update(Msg::ApiModeResolved {
+            mode: ApiMode::Anonymous,
+            had_cookie: true,
+        });
+        assert!(app.fx_active());
+        assert_eq!(app.animation_draw_fps(), app.animation_tick_fps());
+        app
     }
-}
 
-#[test]
-fn delayed_wake_catches_up_to_latest_visible_phase_without_backlog_draws() {
-    let mut between_draws = app_playing(1, 0);
-    between_draws.playback.paused = false;
-    between_draws.config.animations.master = true;
-    between_draws.config.animations.rain = true;
-    between_draws.config.animations.fps = 30;
-
-    // Four logical deadlines have elapsed at 150 ms (33/66/99/132), but frame 4 was not a
-    // legacy draw. One wake must land on frame 3, the newest actually-visible phase.
-    let logical_ticks = between_draws.animation_ticks_through_latest_draw(150 / 33);
-    assert_eq!(logical_ticks, 3);
-    between_draws.dirty = false;
-    between_draws.update(Msg::AnimTick(logical_ticks));
-    assert_eq!(between_draws.anim_frame(), 3);
-    assert!(between_draws.dirty);
-    assert_eq!(between_draws.animation_ticks_until_next_draw(), 2);
-    assert_eq!(3 * 33 + 2 * 33, 165);
-
-    // A 200 ms stall crosses four draw deadlines. Catch up all four in the same reducer turn and
-    // render only the newest frame, then continue on the legacy grid at 264 ms.
-    let mut many_draws = app_playing(1, 0);
-    many_draws.playback.paused = false;
-    many_draws.config.animations.master = true;
-    many_draws.config.animations.rain = true;
-    many_draws.config.animations.fps = 30;
-    let logical_ticks = many_draws.animation_ticks_through_latest_draw(200 / 33);
-    assert_eq!(logical_ticks, 6);
-    many_draws.dirty = false;
-    many_draws.update(Msg::AnimTick(logical_ticks));
-    assert_eq!(many_draws.anim_frame(), 6);
-    assert!(many_draws.dirty);
-    assert_eq!(many_draws.animation_ticks_until_next_draw(), 2);
-    assert_eq!(6 * 33 + 2 * 33, 264);
-}
-
-#[test]
-fn variable_wakes_match_legacy_visible_buffers_at_fixed_wall_clock_checkpoints() {
-    for checkpoint_ms in [
-        0_u64, 32, 33, 65, 66, 98, 99, 131, 132, 150, 164, 165, 197, 198, 231, 990, 1024,
-    ] {
-        let mut legacy = app_playing(1, 0);
-        legacy.playback.paused = false;
-        legacy.config.animations.master = true;
-        legacy.config.animations.rain = true;
-        legacy.config.animations.fps = 30;
-        let mut legacy_visible = render_app_buffer(&legacy, 80, 24);
-        legacy.dirty = false;
-        for _ in 0..checkpoint_ms / 33 {
-            legacy.update(Msg::AnimTick(1));
-            if legacy.dirty {
-                legacy_visible = render_app_buffer(&legacy, 80, 24);
-                legacy.dirty = false;
-            }
-        }
-
-        let mut variable = app_playing(1, 0);
-        variable.playback.paused = false;
-        variable.config.animations.master = true;
-        variable.config.animations.rain = true;
-        variable.config.animations.fps = 30;
-        let mut variable_visible = render_app_buffer(&variable, 80, 24);
-        variable.dirty = false;
-        let logical_ticks = variable.animation_ticks_through_latest_draw(checkpoint_ms / 33);
-        if logical_ticks > 0 {
-            variable.update(Msg::AnimTick(logical_ticks));
-            assert!(variable.dirty);
-            variable_visible = render_app_buffer(&variable, 80, 24);
-        }
-
-        assert_eq!(
-            variable_visible, legacy_visible,
-            "visible buffer diverged at {checkpoint_ms} ms"
-        );
-    }
+    assert_matches_one_tick(canvas_app(), canvas_app(), "canvas").await;
+    assert_matches_one_tick(marquee_app(), marquee_app(), "marquee").await;
+    assert_matches_one_tick(fx_app(), fx_app(), "one-shot fx").await;
 }
 
 #[test]

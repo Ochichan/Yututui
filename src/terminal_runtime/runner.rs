@@ -20,73 +20,43 @@ use crate::{
 use super::art::log_art_picker;
 use super::startup::StartupTrace;
 
-/// The historical logical animation-tick period. Keep the integer-millisecond division from
-/// `origin/main`: visible phase was defined on this grid (`30 fps` means 33 ms logical ticks).
+/// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
+/// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
 fn anim_tick_period(fps: u16) -> Duration {
     Duration::from_millis((1000 / u64::from(fps.max(1))).max(1))
 }
 
-fn logical_tick_span(period: Duration, ticks: u64) -> Duration {
-    const NANOS_PER_SECOND: u128 = 1_000_000_000;
-    let total_nanos = period.as_nanos().saturating_mul(u128::from(ticks));
-    let seconds = total_nanos / NANOS_PER_SECOND;
-    let Ok(seconds) = u64::try_from(seconds) else {
-        return Duration::MAX;
-    };
-    let nanos = u32::try_from(total_nanos % NANOS_PER_SECOND).unwrap_or(0);
-    Duration::new(seconds, nanos)
+/// Build the animation tick for `fps`. The first tick is scheduled one full period out (via
+/// `interval_at`) instead of firing immediately, so rebuilding the interval when the rate changes
+/// in Settings doesn't emit a spurious extra frame on the very next loop iteration. `Skip` drops
+/// missed frames so a busy moment can't back up a redraw backlog.
+fn anim_interval(fps: u16) -> tokio::time::Interval {
+    let period = anim_tick_period(fps);
+    anim_interval_at(tokio::time::Instant::now() + period, fps)
 }
 
-/// Variable animation deadline anchored to the legacy logical-tick grid. Only draw-due logical
-/// ticks become timer wakes; the ticks between them exist as time/credit math, not reducer turns.
-struct AnimationSchedule {
-    tick_period: Duration,
-    last_applied_tick_due: Instant,
-    next_draw_due: Instant,
+fn anim_interval_at(first_tick: tokio::time::Instant, fps: u16) -> tokio::time::Interval {
+    let mut tick = tokio::time::interval_at(first_tick, anim_tick_period(fps));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    tick
 }
 
-impl AnimationSchedule {
-    fn new(now: Instant, tick_fps: u16, ticks_until_draw: u64) -> Self {
-        let mut schedule = Self {
-            tick_period: anim_tick_period(tick_fps),
-            last_applied_tick_due: now,
-            next_draw_due: now,
-        };
-        schedule.arm_next(ticks_until_draw);
-        schedule
+/// Rebuild the long-lived interval only when the configured logical FPS changes. Animation
+/// activation and draw-cadence changes deliberately do not call this path, preserving the
+/// existing timer grid and reducer draw credit across a guarded (inactive) period.
+fn sync_animation_interval(
+    app: &mut App,
+    anim_fps: &mut u16,
+    anim_tick: &mut tokio::time::Interval,
+) -> bool {
+    let new_fps = app.animation_tick_fps();
+    if new_fps == *anim_fps {
+        return false;
     }
-
-    fn reset(&mut self, now: Instant, tick_fps: u16, ticks_until_draw: u64) {
-        self.tick_period = anim_tick_period(tick_fps);
-        self.last_applied_tick_due = now;
-        self.arm_next(ticks_until_draw);
-    }
-
-    fn deadline(&self) -> Instant {
-        self.next_draw_due
-    }
-
-    /// Logical deadlines elapsed since the newest logical tick already applied to `App`.
-    fn available_ticks(&self, now: Instant) -> u64 {
-        let elapsed = now.saturating_duration_since(self.last_applied_tick_due);
-        let ticks = elapsed.as_nanos() / self.tick_period.as_nanos();
-        u64::try_from(ticks).unwrap_or(u64::MAX)
-    }
-
-    fn consume_ticks(&mut self, ticks: u64) {
-        let advanced = self
-            .last_applied_tick_due
-            .checked_add(logical_tick_span(self.tick_period, ticks));
-        self.last_applied_tick_due = advanced.unwrap_or(self.next_draw_due);
-    }
-
-    fn arm_next(&mut self, ticks_until_draw: u64) {
-        let span = logical_tick_span(self.tick_period, ticks_until_draw.max(1));
-        self.next_draw_due = self
-            .last_applied_tick_due
-            .checked_add(span)
-            .unwrap_or(self.last_applied_tick_due);
-    }
+    *anim_fps = new_fps;
+    app.reset_animation_cadence();
+    *anim_tick = anim_interval(new_fps);
+    true
 }
 
 const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
@@ -149,7 +119,7 @@ impl ObserverPlan {
         };
         if progress(first) && paired.is_none_or(progress) {
             Self::PROGRESS
-        } else if paired.is_none() && matches!(first, Msg::AnimTick(_) | Msg::StatusTick) {
+        } else if paired.is_none() && matches!(first, Msg::AnimTick | Msg::StatusTick) {
             Self::INERT
         } else {
             Self::PROJECTED
@@ -702,17 +672,15 @@ pub async fn run(
     // ticks). Drives the max-duration force-split.
     let mut recording_tick = tokio::time::interval(Duration::from_secs(1));
     recording_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // Drive optional animations only at the historical draw-due logical ticks. The deadline moves
-    // by a variable number of the original integer logical periods, so canvas/ambient/mascot/
-    // marquee modes avoid intermediate wakes without changing visible due times or phase.
-    let mut anim_tick_fps = app.animation_tick_fps();
-    let mut anim_draw_fps = app.animation_draw_fps();
-    let mut anim_schedule = AnimationSchedule::new(
-        Instant::now(),
-        anim_tick_fps,
-        app.animation_ticks_until_next_draw(),
-    );
-    let mut anim_was_active = false;
+    // Drives the optional player-view animations at the configured frame rate - but only ticks
+    // while `app.animation_active()` holds (player view, master + an effect enabled, a track
+    // playing, focused unless the user opted out of focus-pausing). With every animation toggle
+    // off (the default) the guard is false, this timer never wakes, and the loop stays exactly as
+    // light as before.
+    // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
+    // is rebuilt below whenever the user changes the rate in Settings.
+    let mut anim_fps = app.animation_tick_fps();
+    let mut anim_tick = anim_interval(anim_fps);
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
     // than during setup) means a `ytt -r` that discovers the descriptor is guaranteed something
@@ -734,7 +702,7 @@ pub async fn run(
     // terminal matches all reducer-owned state, the IME clock must take the normal draw path.
     let mut reducer_turn_unrendered = true;
 
-    'main_loop: while !app.should_quit {
+    while !app.should_quit {
         if app.dirty {
             draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)?;
             perf.maybe_log(&app);
@@ -742,30 +710,6 @@ pub async fn run(
                 continue;
             }
         }
-
-        // A render can start/stop a selected-row marquee, and reducer turns can change the active
-        // effect mix or configured FPS. Activation/tick-rate changes start a new logical grid;
-        // draw-rate changes keep that grid and only reset credit. The common active path is three
-        // scalar comparisons, and the inactive path never polls the timer.
-        let animation_active = app.animation_active();
-        let new_tick_fps = app.animation_tick_fps();
-        let new_draw_fps = app.animation_draw_fps();
-        if animation_active && (!anim_was_active || new_tick_fps != anim_tick_fps) {
-            app.reset_animation_cadence();
-            anim_schedule.reset(
-                Instant::now(),
-                new_tick_fps,
-                app.animation_ticks_until_next_draw(),
-            );
-        } else if animation_active && new_draw_fps != anim_draw_fps {
-            // The legacy logical timer did not move when the active effect mix changed its draw
-            // credit. Reset only that credit and keep the next wake on the existing tick grid.
-            app.reset_animation_cadence();
-            anim_schedule.arm_next(app.animation_ticks_until_next_draw());
-        }
-        anim_was_active = animation_active;
-        anim_tick_fps = new_tick_fps;
-        anim_draw_fps = new_draw_fps;
 
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
@@ -868,26 +812,7 @@ pub async fn run(
                     continue;
                 },
                 _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(anim_schedule.deadline())),
-                    if app.animation_active() => {
-                    let now = Instant::now();
-                    let available = anim_schedule.available_ticks(now);
-                    let logical_ticks = app.animation_ticks_through_latest_draw(available);
-                    if logical_ticks == 0 {
-                        // `sleep_until` cannot normally complete early. If the platform clock
-                        // conversion ever rounds across the boundary, re-arm instead of drawing a
-                        // phase that was not visible on the legacy logical-tick grid.
-                        app.reset_animation_cadence();
-                        anim_schedule.reset(
-                            now,
-                            app.animation_tick_fps(),
-                            app.animation_ticks_until_next_draw(),
-                        );
-                        continue 'main_loop;
-                    }
-                    anim_schedule.consume_ticks(logical_ticks);
-                    Msg::AnimTick(logical_ticks)
-                },
+                _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
                 _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
                 _ = media_pump.tick(), if media.wants_pump() => {
                     media.pump();
@@ -896,19 +821,6 @@ pub async fn run(
             }
         };
 
-        let animation_wake = matches!(&msg, Msg::AnimTick(_));
-        if !animation_wake && animation_active {
-            // The old loop advanced logical phase even on ticks that did not redraw. Lazily apply
-            // those elapsed ticks before an unrelated event can trigger a render or arm an FX;
-            // this adds no timer wake and keeps interaction-time phase/duration unchanged.
-            let available = anim_schedule.available_ticks(Instant::now());
-            if available > 0 {
-                let cmds = app.update(Msg::AnimTick(available));
-                debug_assert!(cmds.is_empty(), "animation phase sync emitted commands");
-                anim_schedule.consume_ticks(available);
-                anim_schedule.arm_next(app.animation_ticks_until_next_draw());
-            }
-        }
         let paired_progress = take_adjacent_player_progress_pair(&msg, &mut pending_worker_msgs);
         let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
 
@@ -931,12 +843,15 @@ pub async fn run(
                 handles.dispatch(&mut app, cmd);
             }
         }
-        if animation_wake {
-            anim_schedule.arm_next(app.animation_ticks_until_next_draw());
-        }
         if resized_artwork {
             perf.record_art_resize();
         }
+
+        // The frame rate may have changed in Settings (committed to `config.animations` on close).
+        // Rebuild the tick so the new rate applies without a relaunch - only when it actually
+        // changed, so the common path costs one `u16` compare. Kept before the draw so the new
+        // cadence is in force for this iteration.
+        let _fps_changed = sync_animation_interval(&mut app, &mut anim_fps, &mut anim_tick);
 
         // Draw first, so the keypress lands on screen with the least latency. Everything below
         // is pure output bookkeeping - it reads post-update state but feeds no rendering - so
@@ -1027,7 +942,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
-    use crate::app::{App, Msg, PlayerMsg};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::app::{App, Mode, Msg, PlayerMsg};
 
     use super::*;
 
@@ -1068,47 +985,135 @@ mod tests {
         assert_eq!(stats.ime_fast_scrubs, 0);
     }
 
-    #[test]
-    fn animation_schedule_uses_the_legacy_integer_tick_grid() {
+    #[tokio::test]
+    async fn animation_interval_uses_the_legacy_period_and_skip_policy() {
         assert_eq!(anim_tick_period(0), Duration::from_millis(1000));
         assert_eq!(anim_tick_period(1), Duration::from_millis(1000));
         assert_eq!(anim_tick_period(60), Duration::from_millis(16));
         assert_eq!(anim_tick_period(2_000), Duration::from_millis(1));
 
-        let base = Instant::now();
-        let mut schedule = AnimationSchedule::new(base, 30, 2);
+        let interval = anim_interval(30);
+        assert_eq!(interval.period(), Duration::from_millis(33));
         assert_eq!(
-            schedule.deadline().saturating_duration_since(base),
-            Duration::from_millis(66)
-        );
-        assert_eq!(
-            schedule.available_ticks(base + Duration::from_millis(65)),
-            1
-        );
-        assert_eq!(
-            schedule.available_ticks(base + Duration::from_millis(66)),
-            2
+            interval.missed_tick_behavior(),
+            MissedTickBehavior::Skip,
+            "busy periods must collapse into one delivered tick"
         );
 
-        schedule.consume_ticks(2);
-        schedule.arm_next(1);
-        assert_eq!(
-            schedule.deadline().saturating_duration_since(base),
-            Duration::from_millis(99)
+        // A 1 Hz interval whose first deadline is 2.5 s overdue has two missed deadlines behind
+        // it. Skip delivers the first poll immediately, then jumps to the next future grid point;
+        // Burst would make this second poll immediately ready too.
+        let first_due = tokio::time::Instant::now() - Duration::from_millis(2_500);
+        let mut delayed = anim_interval_at(first_due, 1);
+        assert_eq!(delayed.tick().await, first_due);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), delayed.tick())
+                .await
+                .is_err(),
+            "Skip must drop the overdue backlog instead of replaying a second tick"
         );
+    }
 
-        // If that wake is delivered at 150 ms, the app selects frame 3 as the newest visible
-        // phase. Consuming its three logical ticks and re-arming two more stays on 165 ms.
-        let mut delayed = AnimationSchedule::new(base, 30, 2);
+    #[tokio::test]
+    async fn delayed_200ms_first_poll_advances_exactly_one_frame() {
+        let first_due = tokio::time::Instant::now() - Duration::from_millis(200);
+        let mut interval = anim_interval_at(first_due, 30);
+        let mut app = App::new(100);
+
+        let delivered_due = interval.tick().await;
+        assert_eq!(delivered_due, first_due);
+        app.update(Msg::AnimTick);
+
         assert_eq!(
-            delayed.available_ticks(base + Duration::from_millis(150)),
-            4
+            app.anim_frame(),
+            1,
+            "missed deadlines are never batch-applied"
         );
-        delayed.consume_ticks(3);
-        delayed.arm_next(2);
+    }
+
+    fn ambient_animation_app() -> App {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.config.animations.master = true;
+        app.config.animations.caret = true;
+        app.config.animations.fps = 30;
+        app
+    }
+
+    #[tokio::test]
+    async fn inactive_overdue_tick_is_immediate_and_retains_draw_credit() {
+        let mut app = ambient_animation_app();
+        assert!(app.animation_active());
+        assert_eq!(app.animation_draw_fps(), 12);
+
+        // At 30→12 fps, two delivered ticks bank 24/30 credit without redrawing.
+        for _ in 0..2 {
+            app.dirty = false;
+            app.update(Msg::AnimTick);
+            assert!(!app.dirty);
+        }
+
+        // Construct one already-overdue interval before parking. The exact same object survives
+        // both focus transitions and is polled only after reactivation.
+        let first_due = tokio::time::Instant::now() - Duration::from_millis(2_500);
+        let mut interval = anim_interval_at(first_due, 30);
+        app.update(Msg::Focus(false));
+        assert!(!app.animation_active());
+
+        // The interval remained overdue while its select branch was guarded. Reactivation polls
+        // the same interval and therefore gets exactly one immediate Skip tick on existing state.
+        app.update(Msg::Focus(true));
+        app.dirty = false;
+        let delivered_due = tokio::time::timeout(Duration::from_millis(50), interval.tick())
+            .await
+            .expect("an overdue interval tick must be immediately ready");
+        assert_eq!(delivered_due, first_due);
+        app.update(Msg::AnimTick);
+
+        assert_eq!(app.anim_frame(), 3);
+        assert!(app.dirty, "retained 24/30 credit makes the third tick draw");
+    }
+
+    #[tokio::test]
+    async fn reactivation_before_deadline_keeps_the_existing_interval_grid() {
+        let mut app = ambient_animation_app();
+        // A distant first deadline makes this structural test independent of wall-clock load.
+        let first_due = tokio::time::Instant::now() + Duration::from_secs(3_600);
+        let mut interval = anim_interval_at(first_due, 30);
+        let mut fps = 30;
+
+        app.update(Msg::Focus(false));
+        assert!(!sync_animation_interval(&mut app, &mut fps, &mut interval));
+        app.update(Msg::Focus(true));
+        assert!(!sync_animation_interval(&mut app, &mut fps, &mut interval));
+        assert_eq!(interval.period(), Duration::from_millis(33));
+        assert_eq!(app.anim_frame(), 0);
+
+        // The same synchronization seam does rebuild on the sole approved trigger.
+        app.config.animations.fps = 60;
+        assert!(sync_animation_interval(&mut app, &mut fps, &mut interval));
+        assert_eq!(fps, 60);
+        assert_eq!(interval.period(), Duration::from_millis(16));
+    }
+
+    #[tokio::test]
+    async fn input_without_a_delivered_timer_does_not_advance_animation() {
+        let mut app = ambient_animation_app();
+        let before = app.anim_frame();
+        // Even an overdue clock has no reducer effect until its `tick()` future is delivered by
+        // select. This is the exact ordering that the removed input-time phase sync violated.
+        let _undelivered_interval =
+            anim_interval_at(tokio::time::Instant::now() - Duration::from_millis(200), 30);
+
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )));
+
         assert_eq!(
-            delayed.deadline().saturating_duration_since(base),
-            Duration::from_millis(165)
+            app.anim_frame(),
+            before,
+            "input handling must not pre-apply elapsed animation ticks"
         );
     }
 

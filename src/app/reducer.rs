@@ -113,10 +113,11 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::AnimTick(logical_ticks) => {
-                // One reducer turn per actual draw. The variable timer batches exactly the legacy
-                // logical ticks ending at the newest draw-due frame.
-                self.advance_animation(logical_ticks);
+            Msg::AnimTick => {
+                // Advance the logical animation phase on every configured tick, but only request
+                // an actual terminal redraw when the active effect mix is due. This keeps visual
+                // timing stable while cutting the expensive render/terminal/compositor path.
+                self.advance_animation();
             }
             Msg::Focus(f) => {
                 // Terminal focus toggled. `animation_active()` reads `focused` to park the ~30 fps

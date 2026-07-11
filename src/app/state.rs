@@ -816,20 +816,18 @@ pub struct LocalMode {
     pub(in crate::app) next_import_review_op_id: u64,
 }
 
-/// Animation clock and redraw-coalescing counters: the monotonic logical frame counter that drives
-/// every effect's phase, the legacy fractional draw-credit scheduler, and the last whole second /
-/// cache second rendered (so sub-second mpv position spam is coalesced). The one-shot [`FxState`]
-/// feedback and the `focused` gate live separately on [`App`].
+/// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every
+/// effect's phase, the fractional draw-credit scheduler and its last cadence, and the last whole
+/// second / cache second rendered (so sub-second mpv position spam is coalesced). The one-shot
+/// [`FxState`] feedback and the `focused` gate live separately on [`App`].
 pub struct Animation {
-    /// Monotonic logical animation frame counter. A variable-wake [`Msg::AnimTick`] can advance it
-    /// by multiple configured-FPS ticks at once. Drives every effect's phase; wraps harmlessly.
-    /// `0` at rest.
+    /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
+    /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
     pub(in crate::app) anim_frame: u64,
-    /// Fractional redraw scheduler in logical-frame units. It preserves the exact historical
-    /// visible frame sequence when one draw-cadence wake replaces several logical ticks.
+    /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
+    /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
+    /// forcing the terminal compositor to repaint every logical tick.
     pub(in crate::app) anim_draw_credit: u16,
-    /// Last logical cadence used to interpret [`Self::anim_draw_credit`].
-    pub(in crate::app) anim_last_tick_fps: u16,
     /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
     /// mix moves between cheap element effects, canvas effects, and the DJ Gem mascot.
     pub(in crate::app) anim_last_draw_fps: u16,
@@ -846,7 +844,6 @@ impl Default for Animation {
         Self {
             anim_frame: 0,
             anim_draw_credit: 0,
-            anim_last_tick_fps: 0,
             anim_last_draw_fps: 0,
             last_shown_sec: -1,
             last_shown_cache_sec: -1,
