@@ -51,6 +51,7 @@ Assert-File "ytt-process-before.txt" | Out-Null
 Assert-File "mpv-process-before.txt" | Out-Null
 Assert-File "ytt-version.txt" | Out-Null
 Assert-File "yututray-version.txt" | Out-Null
+Assert-File "yututray-help.txt" | Out-Null
 Assert-File "startup-status-before.txt" | Out-Null
 Assert-File "startup-uninstall-before.txt" | Out-Null
 Assert-File "startup-install.txt" | Out-Null
@@ -60,7 +61,12 @@ Assert-File "startup-uninstall-after.txt" | Out-Null
 Assert-File "startup-status-after-uninstall.txt" | Out-Null
 Assert-File "open-tui-plan.txt" | Out-Null
 Assert-File "tray-process-start.txt" | Out-Null
+Assert-File "activate-bare-intent.txt" | Out-Null
+Assert-File "activate-background-intent.txt" | Out-Null
+Assert-File "activate-mini-intent.txt" | Out-Null
 Assert-File "mini-player-disconnected.png" | Out-Null
+Assert-File "activate-main-window-intent.txt" | Out-Null
+Assert-File "main-window.png" | Out-Null
 Assert-File "tray-process-idle.txt" | Out-Null
 Assert-File "tray-visual-check.png" | Out-Null
 Assert-File "tray-scale-100.png" | Out-Null
@@ -89,10 +95,21 @@ Assert-True ($results.ytt_tray_subsystem -eq 2) "yututray.exe was not recorded a
 Assert-ResultTrue -Results $results -Name "startup_roundtrip"
 Assert-ResultTrue -Results $results -Name "no_console_window"
 Assert-ResultTrue -Results $results -Name "notification_icon_visible"
-Assert-ResultTrue -Results $results -Name "left_click_menu_opens"
+Assert-ResultTrue -Results $results -Name "background_starts_tray_only"
+Assert-ResultTrue -Results $results -Name "bare_secondary_opens_mini_player"
+Assert-ResultTrue -Results $results -Name "secondary_background_raises_no_window"
+Assert-ResultTrue -Results $results -Name "left_click_toggles_mini_player"
 Assert-ResultTrue -Results $results -Name "right_click_menu_opens"
 Assert-ResultTrue -Results $results -Name "mini_player_opens"
 Assert-ResultTrue -Results $results -Name "mini_player_disconnected_state"
+Assert-ResultTrue -Results $results -Name "mini_player_absent_from_taskbar"
+Assert-ResultTrue -Results $results -Name "mini_player_absent_from_alt_tab"
+Assert-ResultTrue -Results $results -Name "mini_player_toolwindow_style"
+Assert-ResultTrue -Results $results -Name "main_window_opens_from_intent"
+Assert-ResultTrue -Results $results -Name "main_window_present_in_taskbar"
+Assert-ResultTrue -Results $results -Name "main_window_present_in_alt_tab"
+Assert-ResultTrue -Results $results -Name "main_window_appwindow_style"
+Assert-ResultTrue -Results $results -Name "hidden_main_leaves_task_switchers"
 Assert-ResultTrue -Results $results -Name "open_tui_launches_terminal"
 Assert-ResultTrue -Results $results -Name "ytt_taskbar_clicks_do_not_crash"
 Assert-ResultTrue -Results $results -Name "shortcut_icon_correct"
@@ -116,6 +133,11 @@ foreach ($scale in @("100", "150", "200")) {
 
 $openPlan = Get-Content -LiteralPath (Join-Path $EvidenceDir "open-tui-plan.txt") -Raw
 Assert-True ($openPlan.Contains("ytt.exe")) "open TUI plan did not include ytt.exe"
+
+$trayHelp = Read-TextEvidence "yututray-help.txt"
+foreach ($option in @("--background", "--mini", "--main-window")) {
+    Assert-True ($trayHelp.Contains($option)) "yututray --help did not include $option"
+}
 
 $trayBefore = Read-TextEvidence "tray-process-before.txt"
 Assert-True (-not $trayBefore.Contains("Id")) "yututray.exe was already running before manual QA"
