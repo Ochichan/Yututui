@@ -259,8 +259,8 @@ impl App {
     /// Actual redraw cadence for the active animation mix. One-shot feedback effects and cheap
     /// element effects keep the configured FPS; full-cell canvas effects cap repaint work;
     /// ambient UI effects (caret blink, selection breathing, activity dots, About sparkles) are
-    /// slow breathers that look identical at ~12 fps; the DJ Gem mascot only needs to redraw
-    /// when its pose can change.
+    /// slow breathers that look identical at ~12 fps; the AI mascot only needs to redraw when
+    /// its pose can change.
     pub fn animation_draw_fps(&self) -> u16 {
         let fps = self.animation_tick_fps();
         let a = self.animations();
@@ -288,7 +288,11 @@ impl App {
             return fps.min(12);
         }
         if self.ai_mascot_active() {
-            return (fps / 10).max(1);
+            return fps.min(
+                crate::ui::mascot::generated::cat_laptop::CAT_LAPTOP_GROOVE
+                    .fps
+                    .max(1),
+            );
         }
         if self.bridges.marquee_ran.get() {
             // Only the marquee is awake (both masters may be off): it advances one column
