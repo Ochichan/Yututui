@@ -64,6 +64,32 @@ describe('UiStore WebView snapshot', () => {
     scrollTo.mockRestore();
   });
 
+  it('keeps restored scroll and draft entries for inactive views', () => {
+    document.body.innerHTML = `
+      <div data-ui-scroll-key="search-results"></div>
+      <input data-ui-draft-key="search-query" value="old" />
+    `;
+    const results = document.querySelector<HTMLElement>('[data-ui-scroll-key]')!;
+    const query = document.querySelector<HTMLInputElement>('[data-ui-draft-key]')!;
+    const ui = new UiStore({
+      view: 'search',
+      queueOpen: false,
+      settingsTab: 'general',
+      libraryTab: 'all',
+      scrollY: 0,
+      scrollPositions: { 'search-results': 321, 'queue-list': 88 },
+      drafts: { 'search-query': 'restored', 'ai-prompt': 'saved prompt' },
+    });
+
+    results.scrollTop = 654;
+    query.value = 'next draft';
+    expect(ui.snapshot().scrollPositions).toEqual({ 'search-results': 654, 'queue-list': 88 });
+    expect(ui.snapshot().drafts).toEqual({
+      'search-query': 'next draft',
+      'ai-prompt': 'saved prompt',
+    });
+  });
+
   it('rejects oversized nested snapshot state as one unit', () => {
     const ui = new UiStore({
       view: 'search',

@@ -79,16 +79,21 @@
     }, 100);
   }
 
+  function persistBeforePageHide() {
+    playback.flushVolume();
+    persistUiNow();
+  }
+
   $effect(() => {
     // Element scroll events do not bubble. Capture scroll and opted-in draft input at the
     // document boundary so the host receives the last small snapshot before idle teardown.
     document.addEventListener('scroll', persistUiSoon, true);
     document.addEventListener('input', persistUiSoon, true);
-    window.addEventListener('pagehide', persistUiNow);
+    window.addEventListener('pagehide', persistBeforePageHide);
     return () => {
       document.removeEventListener('scroll', persistUiSoon, true);
       document.removeEventListener('input', persistUiSoon, true);
-      window.removeEventListener('pagehide', persistUiNow);
+      window.removeEventListener('pagehide', persistBeforePageHide);
       if (persistUiTimer) clearTimeout(persistUiTimer);
     };
   });

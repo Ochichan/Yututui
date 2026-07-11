@@ -40,6 +40,8 @@ export class UiStore {
   queueOpen = $state(true);
   settingsTab = $state<SettingsTab>('general');
   libraryTab = $state<LibraryTab>('all');
+  #scrollPositions: Record<string, number> = {};
+  #drafts: Record<string, string> = {};
 
   constructor(snapshot?: unknown) {
     const restored = parseUiSnapshot(snapshot);
@@ -48,6 +50,8 @@ export class UiStore {
     this.queueOpen = restored.queueOpen;
     this.settingsTab = restored.settingsTab;
     this.libraryTab = restored.libraryTab;
+    this.#scrollPositions = { ...(restored.scrollPositions ?? {}) };
+    this.#drafts = { ...(restored.drafts ?? {}) };
   }
 
   setView(v: View): void {
@@ -73,20 +77,33 @@ export class UiStore {
 
   snapshot(): UiSnapshot {
     const active = document.activeElement instanceof HTMLElement ? document.activeElement.id : '';
-    const scrollPositions: Record<string, number> = {};
+    const scrollPositions: Record<string, number> = { ...this.#scrollPositions };
     for (const element of document.querySelectorAll<HTMLElement>('[data-ui-scroll-key]')) {
       const key = element.dataset.uiScrollKey;
-      if (!key || Object.keys(scrollPositions).length >= MAX_SCROLL_POSITIONS) continue;
+      if (
+        !key ||
+        (!Object.hasOwn(scrollPositions, key) &&
+          Object.keys(scrollPositions).length >= MAX_SCROLL_POSITIONS)
+      ) {
+        continue;
+      }
       scrollPositions[key] = boundedScroll(element.scrollTop);
     }
-    const drafts: Record<string, string> = {};
+    const drafts: Record<string, string> = { ...this.#drafts };
     for (const element of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
       '[data-ui-draft-key]',
     )) {
       const key = element.dataset.uiDraftKey;
-      if (!key || Object.keys(drafts).length >= MAX_DRAFTS || isSensitiveInput(element)) continue;
+      if (!key) continue;
+      if (isSensitiveInput(element)) {
+        delete drafts[key];
+        continue;
+      }
+      if (!Object.hasOwn(drafts, key) && Object.keys(drafts).length >= MAX_DRAFTS) continue;
       drafts[key] = truncateDraft(element.value);
     }
+    this.#scrollPositions = scrollPositions;
+    this.#drafts = drafts;
     return {
       view: this.view,
       queueOpen: this.queueOpen,
@@ -102,6 +119,8 @@ export class UiStore {
   restoreDocument(snapshot: unknown): void {
     const restored = parseUiSnapshot(snapshot);
     if (!restored) return;
+    this.#scrollPositions = { ...(restored.scrollPositions ?? {}) };
+    this.#drafts = { ...(restored.drafts ?? {}) };
     window.scrollTo({ top: restored.scrollY, behavior: 'instant' });
     for (const element of document.querySelectorAll<HTMLElement>('[data-ui-scroll-key]')) {
       const key = element.dataset.uiScrollKey;
