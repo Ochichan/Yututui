@@ -1,6 +1,6 @@
 //! Cached Local Deck row projections and sparse formatted values.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::super::local_format::*;
 use super::super::local_import_helpers::import_session_row_status_label;
 use super::super::*;
-use super::import_fingerprint::local_import_files_fingerprint;
+use super::import_fingerprint::{local_import_files_fingerprint, stable_import_cache_key};
 
 const MISSING_LOCAL_TRACK_INDEX: usize = usize::MAX;
 const LOCAL_VISIBLE_VALUE_CACHE_CAP: usize = 512;
@@ -96,6 +96,8 @@ pub(in crate::app) struct LocalRowsCache {
     config: u64,
     romanize: u64,
     import_files: Option<u64>,
+    /// Set only after a full terminal draw successfully presented this exact cached projection.
+    rendered: Cell<bool>,
     data: Rc<LocalRowsData>,
     total_len: usize,
 }
@@ -106,6 +108,11 @@ impl App {
         let section = self.local_mode.ui.section;
         let drill = self.local_mode.ui.drill.as_slice();
         let query = self.local_mode.ui.filter_query.as_str();
+        let import_before = local_rows_read_import_files(section, drill.last()).then(|| {
+            local_import_files_fingerprint(
+                &mut self.local_mode.import_files_fingerprint_cache.borrow_mut(),
+            )
+        });
         let korean = crate::i18n::is_korean();
         let index = local_index_rows_fingerprint(&self.local_mode.index.index);
         let downloads = local_download_rows_fingerprint(
@@ -118,12 +125,6 @@ impl App {
         );
         let config = local_config_rows_fingerprint(&self.config);
         let romanize = self.romanization.cache.rev();
-        let reads_import_files = local_rows_read_import_files(section, drill.last());
-        let import_files = reads_import_files.then(|| {
-            local_import_files_fingerprint(
-                &mut self.local_mode.import_files_fingerprint_cache.borrow_mut(),
-            )
-        });
 
         if let Some(cache) = self.local_mode.rows_cache.borrow().as_ref()
             && cache.revision == revision
@@ -136,7 +137,8 @@ impl App {
             && cache.errors == errors
             && cache.config == config
             && cache.romanize == romanize
-            && cache.import_files == import_files
+            && import_before.is_none_or(|fingerprint| fingerprint.reliable())
+            && cache.import_files == import_before.map(|fingerprint| fingerprint.digest())
         {
             return LocalRowsSnapshot {
                 data: Rc::clone(&cache.data),
@@ -144,28 +146,16 @@ impl App {
             };
         }
 
-        let rows = self.local_rows_for_query(query);
-        let total_len = if query.is_empty() {
-            rows.len()
-        } else {
-            self.local_rows_for_query("").len()
-        };
-        let kind = self.local_rows_kind(&rows);
-        let data = Rc::new(LocalRowsData {
-            rows: Arc::from(rows),
-            kind,
-            row_text: RefCell::new(HashMap::new()),
-            row_details: RefCell::new(HashMap::new()),
-            import_deletable: RefCell::new(HashMap::new()),
-            import_action_hint: RefCell::new(HashMap::new()),
-        });
-        // A recovering import read can atomically rewrite a session while constructing rows. Store
-        // the post-build filesystem signature so the freshly built entry is not needlessly stale.
-        let import_files = reads_import_files.then(|| {
+        let snapshot = self.build_local_rows_snapshot(query);
+        let import_after = import_before.map(|_| {
             local_import_files_fingerprint(
                 &mut self.local_mode.import_files_fingerprint_cache.borrow_mut(),
             )
         });
+        let Some(import_files) = stable_import_cache_key(import_before, import_after) else {
+            self.local_mode.rows_cache.borrow_mut().take();
+            return snapshot;
+        };
         *self.local_mode.rows_cache.borrow_mut() = Some(LocalRowsCache {
             revision,
             section,
@@ -178,10 +168,110 @@ impl App {
             config,
             romanize,
             import_files,
-            data: Rc::clone(&data),
-            total_len,
+            rendered: Cell::new(false),
+            data: Rc::clone(&snapshot.data),
+            total_len: snapshot.total_len,
         });
-        LocalRowsSnapshot { data, total_len }
+        snapshot
+    }
+
+    /// Record that the current import-backed Local rows cache reached the terminal in a successful
+    /// full draw. This intentionally does not touch the filesystem again: the fast-path freshness
+    /// probe compares the recorded cache digest with a new reliable fingerprint immediately before
+    /// every scrub, catching writes performed later in the same render (such as action hints).
+    pub(crate) fn mark_local_rows_rendered(&self) {
+        if !self.local_import_rows_view_active() {
+            return;
+        }
+        let cache = self.local_mode.rows_cache.borrow();
+        let Some(cache) = cache.as_ref() else {
+            return;
+        };
+        if cache.import_files.is_some()
+            && self.local_rows_cache_matches_current_state(cache, cache.import_files)
+        {
+            cache.rendered.set(true);
+        }
+    }
+
+    /// Whether terminal-only IME scrubbing may reuse the currently displayed Local projection.
+    /// Import artifacts are external mutable state, so this fails closed unless a reliable current
+    /// fingerprint matches a row cache that a successful full draw has already presented. The
+    /// runner calls this only after its reducer-turn/dirty/clear gates prove owner-loop state could
+    /// not have changed, avoiding repeated in-memory projection fingerprints on the 80 ms clock.
+    pub(crate) fn ime_scrub_local_projection_fresh(&self) -> bool {
+        if !self.local_import_rows_view_active() {
+            return true;
+        }
+        let fingerprint = local_import_files_fingerprint(
+            &mut self.local_mode.import_files_fingerprint_cache.borrow_mut(),
+        );
+        if !fingerprint.reliable() {
+            return false;
+        }
+        self.local_mode
+            .rows_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.rendered.get() && cache.import_files == Some(fingerprint.digest())
+            })
+    }
+
+    fn local_import_rows_view_active(&self) -> bool {
+        self.local_dedicated_mode
+            && self.mode == Mode::Library
+            && local_rows_read_import_files(
+                self.local_mode.ui.section,
+                self.local_mode.ui.drill.last(),
+            )
+    }
+
+    fn local_rows_cache_matches_current_state(
+        &self,
+        cache: &LocalRowsCache,
+        import_files: Option<u64>,
+    ) -> bool {
+        cache.revision == self.local_mode.rows_revision.get()
+            && cache.section == self.local_mode.ui.section
+            && cache.drill.as_slice() == self.local_mode.ui.drill.as_slice()
+            && cache.query == self.local_mode.ui.filter_query
+            && cache.korean == crate::i18n::is_korean()
+            && cache.index == local_index_rows_fingerprint(&self.local_mode.index.index)
+            && cache.downloads
+                == local_download_rows_fingerprint(
+                    self.library_ui.downloaded_rev,
+                    &self.library_ui.downloaded,
+                )
+            && cache.errors
+                == local_error_rows_fingerprint(
+                    &self.local_mode.index.load_errors,
+                    &self.local_mode.index.errors,
+                )
+            && cache.config == local_config_rows_fingerprint(&self.config)
+            && cache.romanize == self.romanization.cache.rev()
+            && cache.import_files == import_files
+    }
+
+    fn build_local_rows_snapshot(&self, query: &str) -> LocalRowsSnapshot {
+        let rows = self.local_rows_for_query(query);
+        let total_len = if query.is_empty() {
+            rows.len()
+        } else {
+            self.local_rows_for_query("").len()
+        };
+        let kind = self.local_rows_kind(&rows);
+        LocalRowsSnapshot {
+            data: Rc::new(LocalRowsData {
+                rows: Arc::from(rows),
+                kind,
+                row_text: RefCell::new(HashMap::new()),
+                row_details: RefCell::new(HashMap::new()),
+                import_deletable: RefCell::new(HashMap::new()),
+                import_action_hint: RefCell::new(HashMap::new()),
+            }),
+            total_len,
+        }
     }
 
     pub(crate) fn local_visible_rows(&self) -> Arc<[crate::local::LocalRowId]> {

@@ -12,11 +12,13 @@ use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListSta
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind, StatusKind};
+use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let favorite_lookup = search_favorite_lookup(app);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
@@ -69,7 +71,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     render_input(frame, app, rows[1]);
-    render_results(frame, app, rows[2]);
+    render_results(frame, app, rows[2], favorite_lookup.as_ref());
 
     buttons::render_help_button(frame, app, rows[3]);
     if app.dropdowns.search_source_open {
@@ -79,8 +81,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // overlays, like the queue window on the player). Its rect is a per-frame output.
     app.search_filter.rect.set(None);
     if app.search_filter.open {
-        render_filter_popup(frame, app, inner);
+        render_filter_popup(frame, app, inner, favorite_lookup.as_ref());
     }
+}
+
+fn search_favorite_lookup(app: &App) -> Option<FavoriteLookup<'_>> {
+    (!app.search.results.is_empty() || app.search_filter.open)
+        .then(|| app.library.favorite_lookup())
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -255,14 +262,18 @@ fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
 /// the fixed-width heart gutter, and the un-marqueed `title — artist (dur)` body — so the
 /// results list and the filter popup format rows identically and never drift. Each caller
 /// applies its own leading marker and marquee/truncation on top.
-fn result_row_cells(app: &App, song: &crate::api::Song) -> (String, &'static str, String) {
+fn result_row_cells(
+    app: &App,
+    song: &crate::api::Song,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) -> (String, &'static str, String) {
     // Fixed-width heart slot (like the library lists) so favoriting a row never shifts its
     // title relative to its neighbors.
-    let heart = if app.library.is_favorite(&song.video_id) {
-        "♥ "
-    } else {
-        "  "
-    };
+    let is_favorite = favorite_lookup.map_or_else(
+        || app.library.is_favorite(&song.video_id),
+        |lookup| lookup.is_favorite(&song.video_id),
+    );
+    let heart = if is_favorite { "♥ " } else { "  " };
     // Playlist rows get their own tag so they read as containers, not tracks. Codes vary in
     // width ([YT] vs [RAD]); pad to a fixed column so titles align across mixed-source results.
     let source = if song.youtube_playlist_id().is_some() {
@@ -281,7 +292,12 @@ fn result_row_cells(app: &App, song: &crate::api::Song) -> (String, &'static str
     (source, heart, text)
 }
 
-fn render_results(frame: &mut Frame, app: &App, area: Rect) {
+fn render_results(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
 
@@ -322,7 +338,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .skip(offset)
         .take(area.height as usize)
         .map(|(i, s)| {
-            let (source, heart, text) = result_row_cells(app, s);
+            let (source, heart, text) = result_row_cells(app, s, favorite_lookup);
             // The focused, visible cursor row marquees when clipped — the source tag and
             // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
             // Suppressed while the filter popup is open: its cursor row marquees instead,
@@ -505,7 +521,12 @@ fn render_dropdown(
 /// live filter input and the narrowed result rows. Typing edits the query, ↑↓/PgUp/PgDn/
 /// Home/End move within the matches, Enter or a double-click plays the highlighted one, a
 /// right-click enqueues it (popup stays open), Esc or a click outside closes.
-fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
+fn render_filter_popup(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) {
     let rows_all = app.search_filter_rows();
     let total = app.search.results.len();
 
@@ -602,7 +623,7 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
             let y = list_area.y + vis as u16;
             let selected = display_idx == cursor;
             let marker = if selected { "▶ " } else { "  " };
-            let (source, heart, text) = result_row_cells(app, song);
+            let (source, heart, text) = result_row_cells(app, song, favorite_lookup);
             // The cursor row marquees when clipped, keyed by the *original* row index so
             // retyping (which shifts display positions) doesn't restart a crawl that is
             // still on the same song. The marker/source/heart gutter (10 cols) stays put.
@@ -670,4 +691,42 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn favorite_lookup_is_skipped_only_for_an_empty_closed_search() {
+        let mut app = App::new(100);
+        assert!(search_favorite_lookup(&app).is_none());
+
+        app.search_filter.open = true;
+        assert!(search_favorite_lookup(&app).is_some());
+
+        app.search_filter.open = false;
+        app.search
+            .results
+            .push(crate::api::Song::local_file(PathBuf::from("result.mp3")));
+        assert!(search_favorite_lookup(&app).is_some());
+    }
+
+    #[test]
+    fn lazy_favorite_lookup_preserves_result_row_output() {
+        let mut app = App::new(100);
+        let favorite = crate::api::Song::remote("favorite", "Favorite", "Artist", "3:00");
+        let other = crate::api::Song::remote("other", "Other", "Artist", "2:00");
+        app.library.toggle_favorite(&favorite);
+
+        let lookup = app.library.favorite_lookup();
+        for song in [&favorite, &other] {
+            assert_eq!(
+                result_row_cells(&app, song, None),
+                result_row_cells(&app, song, Some(&lookup))
+            );
+        }
+    }
 }

@@ -870,7 +870,7 @@ fn orphan_report_without_session_document_is_visible_and_deletable() {
 }
 
 #[test]
-fn external_import_artifact_change_invalidates_cached_rows_without_changing_membership() {
+fn external_import_artifact_change_is_immediately_visible_without_changing_membership() {
     let session_id = "sp2yt-local-cache-external-change";
     let report_path = crate::transfer::checkpoint::report_path(session_id).expect("report path");
     std::fs::create_dir_all(report_path.parent().expect("report parent"))

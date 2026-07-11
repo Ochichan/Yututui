@@ -1,10 +1,16 @@
-//! Bounded latest-state delivery shared by the Linux and Windows media workers.
+//! Bounded ordered media-event delivery shared by Linux and Windows workers.
 //!
-//! Ordinary progress replaces one scalar clock slot, while metadata-bearing state
-//! replaces one snapshot slot and ORs its [`MediaChanges`]. Position discontinuities
-//! are different: every epoch is retained in a compact bounded queue. If that queue
-//! fills, the producer applies backpressure instead of losing a `Seeked`/timeline
-//! event or growing memory without bound.
+//! Metadata, status, option, capability, feedback, and position-discontinuity
+//! publications retain a complete snapshot in FIFO order. Pure playback progress
+//! replaces one compact scalar clock. Both platforms bound total pending work
+//! (ordered events plus the progress slot) at 256 items.
+//!
+//! If the ordered FIFO is full, a newer ordered publication replaces the tail
+//! snapshot and ORs its changed facets into that tail. This bounded coalescing may
+//! omit intermediate events, but it always retains a coherent newest external
+//! state without waiting for a future progress publication. A receiver removes
+//! one item per lock acquisition, so producer contention is independent of queue
+//! length.
 
 #![cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 
@@ -14,62 +20,32 @@ use std::time::Instant;
 
 use super::{MediaChanges, MediaPlaybackStatus, MediaSnapshot};
 
-/// Compact discontinuity capacity. This matches the old Linux snapshot-channel
-/// depth while retaining only scalar clocks (rather than up to 256 full metadata
-/// snapshots); normal state/progress always occupies one latest-value slot.
-pub(super) const MAX_PENDING_DISCONTINUITIES: usize = 256;
+/// Total pending-work capacity for both platform workers.
+pub(super) const MAX_PENDING_UPDATES: usize = 256;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PositionClock {
-    #[cfg(any(windows, test))]
-    sequence: u64,
     pub(super) position_epoch: u64,
     position: f64,
     captured_at: Instant,
     rate: f64,
     volume: f64,
     status: MediaPlaybackStatus,
-    duration: Option<f64>,
-    #[cfg(windows)]
-    is_live: bool,
 }
 
 impl PositionClock {
-    fn from_snapshot(snapshot: &MediaSnapshot, sequence: u64) -> Self {
-        #[cfg(not(any(windows, test)))]
-        let _ = sequence;
+    fn from_snapshot(snapshot: &MediaSnapshot) -> Self {
         Self {
-            #[cfg(any(windows, test))]
-            sequence,
             position_epoch: snapshot.position_epoch,
             position: snapshot.position,
             captured_at: snapshot.captured_at,
             rate: snapshot.rate,
             volume: snapshot.volume,
             status: snapshot.status,
-            duration: snapshot.track.as_ref().and_then(|track| track.duration),
-            #[cfg(windows)]
-            is_live: snapshot.track.as_ref().is_some_and(|track| track.is_live),
         }
     }
 
-    pub(super) fn position_now(self) -> f64 {
-        let mut position = self.position;
-        if self.status == MediaPlaybackStatus::Playing {
-            position += self.captured_at.elapsed().as_secs_f64() * self.rate;
-        }
-        if let Some(duration) = self.duration {
-            position = position.min(duration);
-        }
-        position.max(0.0)
-    }
-
-    #[cfg(windows)]
-    pub(super) fn timeline_duration(self) -> Option<f64> {
-        self.duration.filter(|_| !self.is_live)
-    }
-
-    fn apply_to(self, snapshot: &mut MediaSnapshot) {
+    pub(super) fn apply_to(self, snapshot: &mut MediaSnapshot) {
         snapshot.position = self.position;
         snapshot.captured_at = self.captured_at;
         snapshot.rate = self.rate;
@@ -79,52 +55,32 @@ impl PositionClock {
     }
 }
 
+/// One logical non-progress publication. Snapshot and changes remain coupled so
+/// metadata and position can never come from different core publications.
 #[derive(Debug)]
-pub(super) struct DeliveryBatch {
-    /// Present only when a non-position facet changed. Progress-only publications
-    /// therefore never clone track strings or paths.
-    pub(super) snapshot: Option<MediaSnapshot>,
-    pub(super) clock: PositionClock,
+pub(super) struct OrderedMediaEvent {
+    pub(super) snapshot: MediaSnapshot,
     pub(super) changes: MediaChanges,
-    /// Every position discontinuity, in publication order.
-    pub(super) discontinuities: Vec<PositionClock>,
-    /// Sequence of the newest coalesced update that requires an immediate SMTC
-    /// timeline push for reasons other than a discontinuity (status/options/track).
-    #[cfg(any(windows, test))]
-    timeline_sequence: Option<u64>,
 }
 
-impl DeliveryBatch {
-    /// Install the newest scalar clock into the optional full snapshot before a
-    /// consumer publishes it or moves it into its shared current-state slot.
-    pub(super) fn prepare_snapshot(&mut self) {
-        if let Some(snapshot) = self.snapshot.as_mut() {
-            self.clock.apply_to(snapshot);
-        }
-    }
-
-    pub(super) fn apply_clock_to(&self, snapshot: &mut MediaSnapshot) {
-        self.clock.apply_to(snapshot);
-    }
-
-    /// SMTC pushes every discontinuity. A separate final push is needed only when
-    /// a later coalesced status/options update occurred after the last one.
-    #[cfg(any(windows, test))]
-    pub(super) fn needs_final_timeline(&self) -> bool {
-        self.timeline_sequence.is_some_and(|sequence| {
-            self.discontinuities
-                .last()
-                .is_none_or(|position| sequence > position.sequence)
-        })
-    }
+/// Exactly one item crosses the receiver lock per call. This enum deliberately
+/// keeps the hot ordered event inline: boxing every event would add one allocation
+/// merely to silence a size lint, while at most one item is in flight.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub(super) enum DeliveryItem {
+    Ordered(OrderedMediaEvent),
+    Progress(PositionClock),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SubmitOutcome {
-    /// The pending slot was empty; the platform worker must be woken.
+    /// Pending work was previously empty and fully observed; wake the worker.
     Wake,
-    /// A wake is already pending; this update was coalesced into it.
+    /// The worker is already awake or has not yet observed the queue as empty.
     Coalesced,
+    /// A pure-progress update could not claim a new slot at total capacity.
+    Dropped,
     /// The receiver has gone away or this sender was closed.
     Closed,
 }
@@ -140,50 +96,37 @@ pub(super) struct LatestMediaReceiver {
 struct Inner {
     pending: Mutex<Pending>,
     ready: Condvar,
-    space: Condvar,
-    discontinuity_capacity: usize,
+    capacity: usize,
 }
 
 struct Pending {
-    snapshot: Option<MediaSnapshot>,
-    clock: Option<PositionClock>,
-    /// A platform wake has been requested for the current pending slot. This is separate from
-    /// `clock`: a consumer clears it when taking a batch, and Windows can clear it after a failed
-    /// `PostThreadMessageW` so the next update retries instead of coalescing forever.
+    events: VecDeque<OrderedMediaEvent>,
+    progress: Option<PositionClock>,
+    /// One platform wake covers all work until the receiver observes the queue
+    /// completely empty while holding this mutex.
     wake_pending: bool,
-    changes: MediaChanges,
-    discontinuities: VecDeque<PositionClock>,
-    #[cfg(any(windows, test))]
-    timeline_sequence: Option<u64>,
-    next_sequence: u64,
     sender_open: bool,
     receiver_open: bool,
 }
 
-pub(super) fn latest_media_channel() -> (LatestMediaSender, LatestMediaReceiver) {
-    latest_media_channel_with_capacity(MAX_PENDING_DISCONTINUITIES)
+/// Both platform workers use the same bounded total-work policy.
+pub(super) fn latest_media_channel_bounded() -> (LatestMediaSender, LatestMediaReceiver) {
+    latest_media_channel_with_capacity(MAX_PENDING_UPDATES)
 }
 
-fn latest_media_channel_with_capacity(
-    discontinuity_capacity: usize,
-) -> (LatestMediaSender, LatestMediaReceiver) {
-    assert!(discontinuity_capacity > 0);
+fn latest_media_channel_with_capacity(capacity: usize) -> (LatestMediaSender, LatestMediaReceiver) {
+    assert!(capacity > 0);
     let inner = Arc::new(Inner {
         pending: Mutex::new(Pending {
-            snapshot: None,
-            clock: None,
+            // Do not reserve 256 large snapshot slots for the common one-item case.
+            events: VecDeque::new(),
+            progress: None,
             wake_pending: false,
-            changes: MediaChanges::default(),
-            discontinuities: VecDeque::with_capacity(discontinuity_capacity),
-            #[cfg(any(windows, test))]
-            timeline_sequence: None,
-            next_sequence: 1,
             sender_open: true,
             receiver_open: true,
         }),
         ready: Condvar::new(),
-        space: Condvar::new(),
-        discontinuity_capacity,
+        capacity,
     });
     (
         LatestMediaSender {
@@ -194,59 +137,62 @@ fn latest_media_channel_with_capacity(
 }
 
 impl LatestMediaSender {
-    /// Publish one logical media update. Only a full-queue discontinuity can block:
-    /// scalar progress and metadata always replace their single latest-value slots.
+    /// Publish one logical media update without waiting for consumer capacity.
     pub(super) fn submit(&self, snapshot: &MediaSnapshot, changes: MediaChanges) -> SubmitOutcome {
         let mut pending = self.inner.lock();
-        while changes.position
-            && pending.discontinuities.len() == self.inner.discontinuity_capacity
-            && pending.sender_open
-            && pending.receiver_open
-        {
-            pending = self
-                .inner
-                .space
-                .wait(pending)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
         if !pending.sender_open || !pending.receiver_open {
             return SubmitOutcome::Closed;
         }
 
         let needs_wake = !pending.wake_pending;
+        if changes == MediaChanges::default() {
+            if pending.progress.is_none() && pending.len() >= self.inner.capacity {
+                // The new progress value is dropped, but after a failed platform
+                // wake this submit must still re-arm delivery of existing work.
+                if needs_wake {
+                    pending.wake_pending = true;
+                    drop(pending);
+                    self.inner.ready.notify_one();
+                    return SubmitOutcome::Wake;
+                }
+                return SubmitOutcome::Dropped;
+            }
+            pending.progress = Some(PositionClock::from_snapshot(snapshot));
+        } else {
+            // The complete ordered snapshot is newer than any scalar progress and
+            // can reuse that slot before checking the ordered capacity.
+            pending.progress = None;
+            if pending.events.len() >= self.inner.capacity {
+                let tail = pending
+                    .events
+                    .back_mut()
+                    .expect("positive capacity and a full queue imply a tail");
+                tail.snapshot = snapshot.clone();
+                merge_changes(&mut tail.changes, changes);
+            } else {
+                pending.events.push_back(OrderedMediaEvent {
+                    snapshot: snapshot.clone(),
+                    changes,
+                });
+            }
+        }
+
         pending.wake_pending = true;
-        let sequence = pending.next_sequence;
-        pending.next_sequence = pending.next_sequence.wrapping_add(1);
-        let clock = PositionClock::from_snapshot(snapshot, sequence);
-
-        if requires_snapshot(changes) {
-            pending.snapshot = Some(snapshot.clone());
-        }
-        pending.clock = Some(clock);
-        merge_changes(&mut pending.changes, changes);
-        if changes.position {
-            pending.discontinuities.push_back(clock);
-        }
-        #[cfg(any(windows, test))]
-        if changes.track || changes.status || changes.options {
-            pending.timeline_sequence = Some(sequence);
-        }
         drop(pending);
-        self.inner.ready.notify_one();
-
         if needs_wake {
+            self.inner.ready.notify_one();
             SubmitOutcome::Wake
         } else {
             SubmitOutcome::Coalesced
         }
     }
 
-    /// Re-arm wake delivery after a platform notification failed. Pending state remains intact;
-    /// a later publication will return [`SubmitOutcome::Wake`] and retry the platform signal.
+    /// Re-arm wake delivery after a platform notification failed. Pending work
+    /// remains intact; a later publication requests another platform wake.
     #[cfg(any(windows, test))]
     pub(super) fn wake_failed(&self) {
         let mut pending = self.inner.lock();
-        if pending.clock.is_some() {
+        if pending.has_work() {
             pending.wake_pending = false;
         }
     }
@@ -259,7 +205,6 @@ impl LatestMediaSender {
         pending.sender_open = false;
         drop(pending);
         self.inner.ready.notify_all();
-        self.inner.space.notify_all();
     }
 }
 
@@ -270,47 +215,48 @@ impl Drop for LatestMediaSender {
 }
 
 impl LatestMediaReceiver {
-    pub(super) fn try_take(&self) -> Option<DeliveryBatch> {
-        let mut pending = self.inner.lock();
-        take_batch(&mut pending).inspect(|_| self.inner.space.notify_all())
+    pub(super) fn try_take(&self) -> Option<DeliveryItem> {
+        take_next(&mut self.inner.lock())
     }
 
     #[cfg(target_os = "linux")]
     pub(super) fn is_closed(&self) -> bool {
         let pending = self.inner.lock();
-        !pending.sender_open && pending.clock.is_none()
+        !pending.sender_open && !pending.has_work()
     }
 
     #[cfg(test)]
-    fn recv_blocking(&self) -> Option<DeliveryBatch> {
+    fn recv_blocking(&self) -> Option<DeliveryItem> {
         let mut pending = self.inner.lock();
-        while pending.clock.is_none() && pending.sender_open {
+        loop {
+            if let Some(item) = take_next(&mut pending) {
+                return Some(item);
+            }
+            if !pending.sender_open {
+                return None;
+            }
             pending = self
                 .inner
                 .ready
                 .wait(pending)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
-        take_batch(&mut pending).inspect(|_| self.inner.space.notify_all())
     }
 
     #[cfg(test)]
-    fn pending_shape(&self) -> (bool, bool, usize) {
+    fn pending_shape(&self) -> PendingShape {
         let pending = self.inner.lock();
-        (
-            pending.snapshot.is_some(),
-            pending.clock.is_some(),
-            pending.discontinuities.len(),
-        )
+        PendingShape {
+            events: pending.events.len(),
+            progress: pending.progress.is_some(),
+            wake_pending: pending.wake_pending,
+        }
     }
 }
 
 impl Drop for LatestMediaReceiver {
     fn drop(&mut self) {
-        let mut pending = self.inner.lock();
-        pending.receiver_open = false;
-        drop(pending);
-        self.inner.space.notify_all();
+        self.inner.lock().receiver_open = false;
     }
 }
 
@@ -322,26 +268,28 @@ impl Inner {
     }
 }
 
-fn take_batch(pending: &mut Pending) -> Option<DeliveryBatch> {
-    let clock = pending.clock.take()?;
-    pending.wake_pending = false;
-    Some(DeliveryBatch {
-        snapshot: pending.snapshot.take(),
-        clock,
-        changes: std::mem::take(&mut pending.changes),
-        discontinuities: pending.discontinuities.drain(..).collect(),
-        #[cfg(any(windows, test))]
-        timeline_sequence: pending.timeline_sequence.take(),
-    })
+impl Pending {
+    fn has_work(&self) -> bool {
+        !self.events.is_empty() || self.progress.is_some()
+    }
+
+    fn len(&self) -> usize {
+        self.events.len() + usize::from(self.progress.is_some())
+    }
 }
 
-fn requires_snapshot(changes: MediaChanges) -> bool {
-    changes.track
-        || changes.artwork
-        || changes.status
-        || changes.options
-        || changes.caps
-        || changes.feedback
+/// Pop exactly one item while holding the mutex. `wake_pending` deliberately
+/// remains set after the last item is removed: a submit racing before the next
+/// empty observation coalesces into the worker that is already draining.
+fn take_next(pending: &mut Pending) -> Option<DeliveryItem> {
+    if let Some(event) = pending.events.pop_front() {
+        return Some(DeliveryItem::Ordered(event));
+    }
+    if let Some(progress) = pending.progress.take() {
+        return Some(DeliveryItem::Progress(progress));
+    }
+    pending.wake_pending = false;
+    None
 }
 
 fn merge_changes(into: &mut MediaChanges, update: MediaChanges) {
@@ -355,19 +303,28 @@ fn merge_changes(into: &mut MediaChanges, update: MediaChanges) {
 }
 
 #[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingShape {
+    events: usize,
+    progress: bool,
+    wake_pending: bool,
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::media::{MediaCaps, MediaTrack};
     use crate::queue::Repeat;
+    use std::time::Duration;
 
     fn snapshot(title: &str, epoch: u64) -> MediaSnapshot {
         MediaSnapshot {
             track: Some(MediaTrack {
-                key: "track".to_owned(),
+                key: format!("track-{title}"),
                 title: title.to_owned(),
-                artist: "artist".to_owned(),
-                album: None,
-                duration: Some(180.0),
+                artist: format!("artist-{title}"),
+                album: Some(format!("album-{title}")),
+                duration: Some(180.0 + epoch as f64),
                 is_live: false,
                 url: None,
                 art_remote_url: None,
@@ -388,56 +345,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn slow_consumer_gets_newest_metadata_and_every_aggregated_facet() {
-        let (sender, receiver) = latest_media_channel_with_capacity(4);
-        let facets = [
-            MediaChanges {
-                track: true,
-                position: true,
-                ..MediaChanges::default()
-            },
-            MediaChanges {
-                artwork: true,
-                status: true,
-                ..MediaChanges::default()
-            },
-            MediaChanges {
-                options: true,
-                caps: true,
-                feedback: true,
-                ..MediaChanges::default()
-            },
-        ];
+    fn track_seek() -> MediaChanges {
+        MediaChanges {
+            track: true,
+            position: true,
+            ..MediaChanges::default()
+        }
+    }
 
-        assert_eq!(
-            sender.submit(&snapshot("old", 1), facets[0]),
-            SubmitOutcome::Wake
-        );
-        assert_eq!(
-            sender.submit(&snapshot("middle", 1), facets[1]),
-            SubmitOutcome::Coalesced
-        );
-        assert_eq!(
-            sender.submit(&snapshot("newest", 1), facets[2]),
-            SubmitOutcome::Coalesced
-        );
+    fn ordered(item: DeliveryItem) -> OrderedMediaEvent {
+        match item {
+            DeliveryItem::Ordered(event) => event,
+            DeliveryItem::Progress(_) => panic!("expected ordered event"),
+        }
+    }
 
-        let mut batch = receiver.try_take().expect("one coalesced batch");
-        batch.prepare_snapshot();
-        let state = batch.snapshot.expect("metadata-bearing latest snapshot");
-        assert_eq!(state.track.as_ref().unwrap().title, "newest");
-        assert_eq!(batch.changes, MediaChanges::all());
-        assert_eq!(batch.discontinuities.len(), 1);
+    fn progress(item: DeliveryItem) -> PositionClock {
+        match item {
+            DeliveryItem::Progress(clock) => clock,
+            DeliveryItem::Ordered(_) => panic!("expected scalar progress"),
+        }
     }
 
     #[test]
-    fn scalar_progress_occupies_one_slot_and_never_clones_full_state() {
-        let (sender, receiver) = latest_media_channel_with_capacity(2);
+    fn slow_consumer_keeps_uncoalesced_track_and_seek_events_in_exact_order() {
+        let (sender, receiver) = latest_media_channel_with_capacity(4);
+        sender.submit(&snapshot("A", 11), track_seek());
+        sender.submit(&snapshot("A-progress", 12), MediaChanges::default());
+        sender.submit(&snapshot("B", 21), track_seek());
+
+        let a = ordered(receiver.try_take().unwrap());
+        let b = ordered(receiver.try_take().unwrap());
+        assert_eq!(a.snapshot.track.as_ref().unwrap().title, "A");
+        assert_eq!(a.snapshot.position_epoch, 11);
+        assert_eq!(a.changes, track_seek());
+        assert_eq!(b.snapshot.track.as_ref().unwrap().title, "B");
+        assert_eq!(b.snapshot.position_epoch, 21);
+        assert_eq!(b.changes, track_seek());
+        assert!(receiver.try_take().is_none());
+    }
+
+    #[test]
+    fn scalar_progress_occupies_one_slot_for_fifty_thousand_updates() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
         for epoch in 0..50_000 {
-            let outcome = sender.submit(&snapshot("unchanged", epoch), MediaChanges::default());
             assert_eq!(
-                outcome,
+                sender.submit(&snapshot("unchanged", epoch), MediaChanges::default()),
                 if epoch == 0 {
                     SubmitOutcome::Wake
                 } else {
@@ -445,183 +398,276 @@ mod tests {
                 }
             );
         }
-        assert_eq!(receiver.pending_shape(), (false, true, 0));
-
-        let batch = receiver.try_take().expect("latest scalar clock");
-        assert!(batch.snapshot.is_none());
-        assert_eq!(batch.clock.position_epoch, 49_999);
-        assert_eq!(batch.changes, MediaChanges::default());
-    }
-
-    #[test]
-    fn failed_platform_wake_is_retried_without_losing_pending_state() {
-        let (sender, receiver) = latest_media_channel_with_capacity(2);
         assert_eq!(
-            sender.submit(&snapshot("first", 1), MediaChanges::default()),
-            SubmitOutcome::Wake
-        );
-
-        // Model a failed Windows PostThreadMessageW. The first snapshot stays pending, but the
-        // next publication must request another wake instead of being coalesced into a wake that
-        // never reached the worker.
-        sender.wake_failed();
-        assert_eq!(
-            sender.submit(&snapshot("latest", 2), MediaChanges::default()),
-            SubmitOutcome::Wake
-        );
-
-        let batch = receiver
-            .try_take()
-            .expect("latest state remains deliverable");
-        assert_eq!(batch.clock.position_epoch, 2);
-        assert!(receiver.try_take().is_none());
-
-        assert_eq!(
-            sender.submit(&snapshot("after-drain", 3), MediaChanges::default()),
-            SubmitOutcome::Wake,
-            "taking a batch also re-arms the next platform wake"
-        );
-    }
-
-    #[test]
-    fn bounded_slow_consumer_preserves_every_discontinuity_in_order() {
-        let (sender, receiver) = latest_media_channel_with_capacity(2);
-        let (filled_tx, filled_rx) = std::sync::mpsc::channel();
-        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
-        let producer = std::thread::spawn(move || {
-            for epoch in 1..=20 {
-                assert_ne!(
-                    sender.submit(
-                        &snapshot("same", epoch),
-                        MediaChanges {
-                            position: true,
-                            ..MediaChanges::default()
-                        }
-                    ),
-                    SubmitOutcome::Closed
-                );
-                if epoch == 2 {
-                    filled_tx.send(()).unwrap();
-                    continue_rx.recv().unwrap();
-                }
+            receiver.pending_shape(),
+            PendingShape {
+                events: 0,
+                progress: true,
+                wake_pending: true,
             }
-        });
-
-        filled_rx.recv().unwrap();
-        assert_eq!(receiver.pending_shape(), (false, true, 2));
-        continue_tx.send(()).unwrap();
-
-        let mut epochs = Vec::new();
-        while let Some(batch) = receiver.recv_blocking() {
-            assert!(batch.discontinuities.len() <= 2);
-            epochs.extend(
-                batch
-                    .discontinuities
-                    .into_iter()
-                    .map(|clock| clock.position_epoch),
-            );
-        }
-        producer.join().unwrap();
-        assert_eq!(epochs, (1..=20).collect::<Vec<_>>());
+        );
+        assert_eq!(
+            progress(receiver.try_take().unwrap()).position_epoch,
+            49_999
+        );
     }
 
     #[test]
-    fn dedicated_consumer_releases_backpressure_from_a_current_thread_runtime() {
-        let (sender, receiver) = latest_media_channel_with_capacity(1);
-        let (first_pending_tx, first_pending_rx) = std::sync::mpsc::channel();
-        let (drained_tx, drained_rx) = std::sync::mpsc::channel();
+    fn total_capacity_counts_events_and_progress_but_allows_progress_replacement() {
+        let (sender, receiver) = latest_media_channel_with_capacity(2);
+        sender.submit(&snapshot("A", 1), track_seek());
+        sender.submit(&snapshot("A", 2), MediaChanges::default());
+        assert_eq!(
+            receiver.pending_shape(),
+            PendingShape {
+                events: 1,
+                progress: true,
+                wake_pending: true,
+            }
+        );
+        assert_eq!(
+            sender.submit(&snapshot("A", 3), MediaChanges::default()),
+            SubmitOutcome::Coalesced
+        );
+        assert_eq!(receiver.pending_shape().events, 1);
+        assert!(receiver.pending_shape().progress);
+    }
 
-        // Mirrors MPRIS's dedicated worker: it can drain independently even while the daemon's
-        // single-thread runtime is synchronously submitting the second lossless discontinuity.
-        let consumer = std::thread::spawn(move || {
-            first_pending_rx.recv().unwrap();
-            let batch = receiver.recv_blocking().expect("first discontinuity");
-            assert_eq!(batch.discontinuities[0].position_epoch, 1);
-            drained_tx.send(()).unwrap();
-            receiver
-        });
-
+    #[test]
+    fn progress_at_full_capacity_drops_without_waiting() {
+        let (sender, _receiver) = latest_media_channel_with_capacity(1);
+        sender.submit(&snapshot("A", 1), track_seek());
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let producer = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
+            done_tx
+                .send(sender.submit(&snapshot("progress", 2), MediaChanges::default()))
                 .unwrap();
-            runtime.block_on(async move {
-                let position_change = MediaChanges {
-                    position: true,
-                    ..MediaChanges::default()
-                };
-                assert_eq!(
-                    sender.submit(&snapshot("same", 1), position_change),
-                    SubmitOutcome::Wake
-                );
-                first_pending_tx.send(()).unwrap();
-                assert_ne!(
-                    sender.submit(&snapshot("same", 2), position_change),
-                    SubmitOutcome::Closed
-                );
-                done_tx.send(()).unwrap();
-            });
         });
-
-        done_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("dedicated consumer must prevent single-thread runtime deadlock");
-        drained_rx.recv().unwrap();
-        producer.join().unwrap();
-        let receiver = consumer.join().unwrap();
         assert_eq!(
-            receiver
-                .try_take()
-                .expect("second discontinuity remains pending")
-                .discontinuities[0]
-                .position_epoch,
-            2
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            SubmitOutcome::Dropped
         );
+        producer.join().unwrap();
     }
 
     #[test]
-    fn final_timeline_is_needed_only_after_the_last_discontinuity() {
-        let (sender, receiver) = latest_media_channel_with_capacity(4);
+    fn capacity_one_coalesces_a_into_coherent_newest_b() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
+        let a_changes = MediaChanges {
+            track: true,
+            position: true,
+            ..MediaChanges::default()
+        };
+        let b_changes = MediaChanges {
+            status: true,
+            options: true,
+            caps: true,
+            ..MediaChanges::default()
+        };
+        sender.submit(&snapshot("A", 1), a_changes);
+        sender.submit(&snapshot("B", 2), b_changes);
+
+        let event = ordered(receiver.try_take().unwrap());
+        assert_eq!(event.snapshot.track.as_ref().unwrap().title, "B");
+        assert_eq!(event.snapshot.position_epoch, 2);
+        assert_eq!(
+            event.changes,
+            MediaChanges {
+                track: true,
+                status: true,
+                position: true,
+                options: true,
+                caps: true,
+                ..MediaChanges::default()
+            }
+        );
+        assert!(receiver.try_take().is_none());
+    }
+
+    #[test]
+    fn full_queue_retains_final_ordered_snapshot_without_a_future_submit() {
+        let (sender, receiver) = latest_media_channel_with_capacity(3);
+        for epoch in 0..3 {
+            sender.submit(&snapshot(&format!("old-{epoch}"), epoch), track_seek());
+        }
+        let final_changes = MediaChanges {
+            status: true,
+            options: true,
+            ..MediaChanges::default()
+        };
+        sender.submit(&snapshot("final-B", 99), final_changes);
+
+        assert_eq!(
+            ordered(receiver.try_take().unwrap())
+                .snapshot
+                .position_epoch,
+            0
+        );
+        assert_eq!(
+            ordered(receiver.try_take().unwrap())
+                .snapshot
+                .position_epoch,
+            1
+        );
+        let final_event = ordered(receiver.try_take().unwrap());
+        assert_eq!(
+            final_event.snapshot.track.as_ref().unwrap().title,
+            "final-B"
+        );
+        assert_eq!(final_event.snapshot.position_epoch, 99);
+        assert!(final_event.changes.track);
+        assert!(final_event.changes.position);
+        assert!(final_event.changes.status);
+        assert!(final_event.changes.options);
+        assert!(receiver.try_take().is_none());
+    }
+
+    #[test]
+    fn accepted_ordered_event_clears_older_progress_and_uses_its_slot() {
+        let (sender, receiver) = latest_media_channel_with_capacity(2);
+        sender.submit(&snapshot("A", 1), track_seek());
+        sender.submit(&snapshot("A", 2), MediaChanges::default());
         sender.submit(
-            &snapshot("same", 1),
+            &snapshot("C", 3),
             MediaChanges {
                 status: true,
                 ..MediaChanges::default()
             },
         );
-        sender.submit(
-            &snapshot("same", 2),
-            MediaChanges {
-                position: true,
-                ..MediaChanges::default()
-            },
+        assert_eq!(
+            receiver.pending_shape(),
+            PendingShape {
+                events: 2,
+                progress: false,
+                wake_pending: true,
+            }
         );
-        assert!(!receiver.try_take().unwrap().needs_final_timeline());
-
-        sender.submit(
-            &snapshot("same", 3),
-            MediaChanges {
-                position: true,
-                ..MediaChanges::default()
-            },
+        assert_eq!(
+            ordered(receiver.try_take().unwrap())
+                .snapshot
+                .position_epoch,
+            1
         );
-        sender.submit(
-            &snapshot("same", 3),
-            MediaChanges {
-                options: true,
-                ..MediaChanges::default()
-            },
+        assert_eq!(
+            ordered(receiver.try_take().unwrap())
+                .snapshot
+                .position_epoch,
+            3
         );
-        assert!(receiver.try_take().unwrap().needs_final_timeline());
     }
 
     #[test]
-    fn close_wakes_a_blocking_receiver_without_fabricating_state() {
+    fn shared_default_capacity_never_exceeds_256_total_items() {
+        let (sender, receiver) = latest_media_channel_bounded();
+        for epoch in 0..(MAX_PENDING_UPDATES - 1) as u64 {
+            sender.submit(&snapshot("accepted", epoch), track_seek());
+        }
+        sender.submit(&snapshot("progress", 999), MediaChanges::default());
+        assert_eq!(receiver.pending_shape().events, MAX_PENDING_UPDATES - 1);
+        assert!(receiver.pending_shape().progress);
+
+        // Ordered work reuses the progress slot, reaching exactly 256 events.
+        sender.submit(&snapshot("ordered", 1_000), track_seek());
+        assert_eq!(receiver.pending_shape().events, MAX_PENDING_UPDATES);
+        assert!(!receiver.pending_shape().progress);
+        // A further ordered event replaces the tail instead of growing the queue.
+        sender.submit(&snapshot("tail", 1_001), track_seek());
+        assert_eq!(receiver.pending_shape().events, MAX_PENDING_UPDATES);
+    }
+
+    #[test]
+    fn submit_after_last_take_coalesces_until_empty_is_observed() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
+        assert_eq!(
+            sender.submit(&snapshot("first", 1), MediaChanges::default()),
+            SubmitOutcome::Wake
+        );
+        assert_eq!(progress(receiver.try_take().unwrap()).position_epoch, 1);
+        assert_eq!(
+            sender.submit(&snapshot("racing", 2), MediaChanges::default()),
+            SubmitOutcome::Coalesced
+        );
+        assert_eq!(progress(receiver.try_take().unwrap()).position_epoch, 2);
+    }
+
+    #[test]
+    fn submit_after_empty_observation_requests_a_new_wake() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
+        sender.submit(&snapshot("first", 1), MediaChanges::default());
+        let _ = receiver.try_take().unwrap();
+        assert!(receiver.try_take().is_none());
+        assert_eq!(
+            sender.submit(&snapshot("after-empty", 2), MediaChanges::default()),
+            SubmitOutcome::Wake
+        );
+    }
+
+    #[test]
+    fn failed_platform_wake_is_retried_without_losing_pending_work() {
+        let (sender, receiver) = latest_media_channel_with_capacity(2);
+        sender.submit(&snapshot("first", 1), track_seek());
+        sender.wake_failed();
+        assert_eq!(
+            sender.submit(&snapshot("latest", 2), MediaChanges::default()),
+            SubmitOutcome::Wake
+        );
+        assert_eq!(
+            ordered(receiver.try_take().unwrap())
+                .snapshot
+                .position_epoch,
+            1
+        );
+        assert_eq!(progress(receiver.try_take().unwrap()).position_epoch, 2);
+        assert!(receiver.try_take().is_none());
+    }
+
+    #[test]
+    fn full_queue_failed_wake_is_rearmed_even_when_progress_drops() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
+        sender.submit(&snapshot("pending", 1), track_seek());
+        sender.wake_failed();
+        assert_eq!(
+            sender.submit(&snapshot("dropped-progress", 2), MediaChanges::default()),
+            SubmitOutcome::Wake
+        );
+        let event = ordered(receiver.try_take().unwrap());
+        assert_eq!(event.snapshot.track.unwrap().title, "pending");
+        assert!(receiver.try_take().is_none());
+    }
+
+    #[test]
+    fn close_drains_every_item_before_reporting_closed() {
+        let (sender, receiver) = latest_media_channel_with_capacity(2);
+        sender.submit(&snapshot("pending", 1), track_seek());
+        sender.submit(&snapshot("pending", 2), MediaChanges::default());
+        sender.close();
+
+        assert!(matches!(
+            receiver.recv_blocking(),
+            Some(DeliveryItem::Ordered(_))
+        ));
+        assert!(matches!(
+            receiver.recv_blocking(),
+            Some(DeliveryItem::Progress(_))
+        ));
+        assert!(receiver.recv_blocking().is_none());
+    }
+
+    #[test]
+    fn close_wakes_blocking_receiver_without_fabricating_work() {
         let (sender, receiver) = latest_media_channel_with_capacity(1);
         let waiter = std::thread::spawn(move || receiver.recv_blocking().is_none());
         sender.close();
         assert!(waiter.join().unwrap());
+    }
+
+    #[test]
+    fn receiver_close_makes_later_submit_nonblocking_and_closed() {
+        let (sender, receiver) = latest_media_channel_with_capacity(1);
+        drop(receiver);
+        assert_eq!(
+            sender.submit(&snapshot("closed", 1), track_seek()),
+            SubmitOutcome::Closed
+        );
     }
 }

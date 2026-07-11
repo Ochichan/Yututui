@@ -5,10 +5,10 @@
 //! runtime: the facade forwards diffed snapshots over a channel; the worker keeps
 //! the latest snapshot in shared state
 //! (so property *reads* — including the un-signalled, interpolated `Position` —
-//! answer instantly), coalesces changed properties into one `PropertiesChanged`
-//! per worker wake (L-6/S-4), and emits `Seeked` once for every position
-//! discontinuity (L-7). Inbound calls only forward a [`MediaCommand`] and return
-//! (C-1).
+//! answer instantly), applies retained logical events in publication order, and
+//! emits `Seeked` for retained position discontinuities (L-7). At the shared
+//! bounded-delivery limit, the newest complete state is coalesced into the FIFO
+//! tail. Inbound calls only forward a [`MediaCommand`] and return (C-1).
 //!
 //! No session bus (SSH/headless/container) is non-fatal: the facade logs one
 //! warning and the app runs without media controls (spec A-2).
@@ -24,7 +24,8 @@ use mpris_server::{
 use tokio::sync::Notify;
 
 use super::delivery::{
-    DeliveryBatch, LatestMediaReceiver, LatestMediaSender, SubmitOutcome, latest_media_channel,
+    DeliveryItem, LatestMediaReceiver, LatestMediaSender, SubmitOutcome,
+    latest_media_channel_bounded,
 };
 use super::{CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot};
 use crate::config::{SPEED_MAX, SPEED_MIN};
@@ -46,12 +47,12 @@ pub struct Backend {
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        let (updates, rx) = latest_media_channel();
+        let (updates, rx) = latest_media_channel_bounded();
         let wake = Arc::new(Notify::new());
         let worker_wake = Arc::clone(&wake);
-        // `submit` applies bounded backpressure only after 256 retained discontinuities. The
-        // daemon uses a single-thread Tokio runtime, so this consumer must not share that runtime:
-        // otherwise a full queue could block the only thread capable of making queue space.
+        // Keep zbus on a dedicated small-stack worker. Submission never waits:
+        // the shared delivery queue bounds total pending work and coalesces a
+        // saturated ordered tail to retain the newest complete external state.
         let worker = std::thread::Builder::new()
             .name("mpris-worker".to_owned())
             .stack_size(1024 * 1024)
@@ -131,8 +132,8 @@ async fn run_server(rx: LatestMediaReceiver, wake: Arc<Notify>, sink: CommandSin
     tracing::info!(bus_name = %server.bus_name(), "media controls: MPRIS session ready");
 
     loop {
-        while let Some(batch) = rx.try_take() {
-            apply_batch(&server, &state, batch).await;
+        while let Some(item) = rx.try_take() {
+            apply_item(&server, &state, item).await;
         }
         if rx.is_closed() {
             break;
@@ -144,38 +145,45 @@ async fn run_server(rx: LatestMediaReceiver, wake: Arc<Notify>, sink: CommandSin
     let _ = server.release_bus_name().await;
 }
 
-async fn apply_batch(
+async fn apply_item(
     server: &Server<Player>,
     state: &Arc<Mutex<MediaSnapshot>>,
-    mut batch: DeliveryBatch,
+    item: DeliveryItem,
 ) {
-    batch.prepare_snapshot();
-    let properties = batch
-        .snapshot
-        .as_ref()
-        .map(|snapshot| changed_properties(snapshot, batch.changes))
-        .unwrap_or_default();
-
-    // Move metadata-bearing state into the property-read slot. Progress-only
-    // updates mutate scalar fields and never clone track strings a second time.
-    if let Some(snapshot) = batch.snapshot.take() {
-        *state.lock().unwrap() = snapshot;
-    } else {
-        batch.apply_clock_to(&mut state.lock().unwrap());
+    match item {
+        DeliveryItem::Ordered(event) => {
+            apply_snapshot_event(server, state, event.snapshot, event.changes).await;
+        }
+        DeliveryItem::Progress(progress) => {
+            progress.apply_to(&mut state.lock().unwrap());
+        }
     }
+}
 
-    // One PropertiesChanged per drained/coalesced logical batch (L-6/S-4).
+async fn apply_snapshot_event(
+    server: &Server<Player>,
+    state: &Arc<Mutex<MediaSnapshot>>,
+    snapshot: MediaSnapshot,
+    changes: MediaChanges,
+) {
+    let properties = changed_properties(&snapshot, changes);
+    let seeked = changes.position;
+
+    // Install event A before emitting any facet of A. The receiver does not
+    // expose B until this call returns, preserving logical order.
+    *state.lock().unwrap() = snapshot;
     if !properties.is_empty()
         && let Err(e) = server.properties_changed(properties).await
     {
         tracing::debug!(error = %e, "MPRIS properties_changed failed");
     }
-    // Every compact discontinuity survives coalescing — user seeks, SetPosition,
-    // and track (re)starts each emit their own Seeked signal (L-7/L-8).
-    for position in batch.discontinuities {
+    if seeked {
+        // Match origin timing: interpolate after PropertiesChanged completes
+        // while state still contains this exact event.
+        let position = state.lock().unwrap().position_now();
         if let Err(e) = server
             .emit(Signal::Seeked {
-                position: Time::from_micros((position.position_now() * 1e6) as i64),
+                position: Time::from_micros((position * 1e6) as i64),
             })
             .await
         {
@@ -517,6 +525,7 @@ impl mpris_server::PlayerInterface for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::{MediaCaps, MediaTrack};
 
     #[test]
     fn track_id_escapes_per_spec() {
@@ -541,5 +550,84 @@ mod tests {
                 assert_eq!(track_key_from_path(&path).as_deref(), Some(key));
             }
         }
+    }
+
+    #[test]
+    fn coalesced_facets_map_to_all_external_mpris_properties() {
+        let mut snapshot = MediaSnapshot::idle();
+        snapshot.track = Some(MediaTrack {
+            key: "track-key".to_owned(),
+            title: "Title".to_owned(),
+            artist: "Artist".to_owned(),
+            album: Some("Album".to_owned()),
+            duration: Some(180.0),
+            is_live: false,
+            url: Some("https://music.youtube.com/watch?v=track-key".to_owned()),
+            art_remote_url: None,
+            art_file: None,
+            art_query: None,
+            liked: false,
+            disliked: false,
+        });
+        snapshot.status = MediaPlaybackStatus::Playing;
+        snapshot.rate = 1.25;
+        snapshot.volume = 0.75;
+        snapshot.shuffle = true;
+        snapshot.repeat = Repeat::All;
+        snapshot.caps = MediaCaps {
+            can_next: true,
+            can_previous: true,
+            can_seek: true,
+            can_play: true,
+            can_pause: true,
+        };
+
+        let properties = changed_properties(
+            &snapshot,
+            MediaChanges {
+                track: true,
+                status: true,
+                options: true,
+                caps: true,
+                ..MediaChanges::default()
+            },
+        );
+
+        assert_eq!(properties.len(), 11);
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::Metadata(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::PlaybackStatus(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::Rate(_))));
+        assert!(properties.iter().any(|p| matches!(p, Property::Volume(_))));
+        assert!(properties.iter().any(|p| matches!(p, Property::Shuffle(_))));
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::LoopStatus(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanGoNext(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanGoPrevious(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::CanPlay(_))));
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanPause(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::CanSeek(_))));
     }
 }

@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
+use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -87,7 +88,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if playlists_root {
         render_playlist_list(frame, app, rows[2]);
     } else {
-        render_list(frame, app, rows[2], library_rows_len);
+        let favorite_lookup = app.library.favorite_lookup();
+        render_list(frame, app, rows[2], library_rows_len, &favorite_lookup);
     }
 
     buttons::render_help_button(frame, app, rows[3]);
@@ -189,7 +191,13 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_list(frame: &mut Frame, app: &App, area: Rect, len: usize) {
+fn render_list(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    len: usize,
+    favorite_lookup: &FavoriteLookup<'_>,
+) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
 
@@ -296,7 +304,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, len: usize) {
         let y = area.y + vis as u16;
         let selected = i >= sel_lo && i <= sel_hi;
         let marker = if i == cursor { "▶ " } else { "  " };
-        let heart = if app.library.is_favorite(&song.video_id) {
+        let heart = if favorite_lookup.is_favorite(&song.video_id) {
             "♥ "
         } else {
             "  "

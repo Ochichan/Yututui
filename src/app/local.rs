@@ -11,6 +11,10 @@ mod rows_cache;
 use super::*;
 use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
 pub(in crate::app) use import_fingerprint::LocalImportFilesFingerprintCache;
+#[cfg(test)]
+pub(in crate::app) use import_fingerprint::{
+    local_import_files_fingerprint_for_test, stable_import_cache_key_for_test,
+};
 pub(in crate::app) use rows_cache::{LocalRowsCache, LocalRowsData};
 
 impl App {

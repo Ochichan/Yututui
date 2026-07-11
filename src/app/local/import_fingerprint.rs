@@ -1,14 +1,126 @@
-//! Bounded filesystem fingerprints for Local Deck import artifacts.
+//! Metadata-only invalidation for persisted Local Deck import projections.
 
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-/// Enough for hundreds of import sessions while keeping retained path/signature state below a
-/// small, fixed ceiling even if the transfers directory is unexpectedly large.
-const LOCAL_IMPORT_CONTENT_CACHE_CAP: usize = 4096;
+const LOCAL_IMPORT_RETAINED_PATH_CAP: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LocalImportFilesFingerprint {
+    digest: u64,
+    reliable: bool,
+}
+
+impl LocalImportFilesFingerprint {
+    pub(super) fn digest(self) -> u64 {
+        self.digest
+    }
+
+    pub(super) fn reliable(self) -> bool {
+        self.reliable
+    }
+}
+
+pub(super) fn stable_import_cache_key(
+    before: Option<LocalImportFilesFingerprint>,
+    after: Option<LocalImportFilesFingerprint>,
+) -> Option<Option<u64>> {
+    match (before, after) {
+        (None, None) => Some(None),
+        (Some(before), Some(after))
+            if before.reliable && after.reliable && before.digest == after.digest =>
+        {
+            Some(Some(after.digest))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::app) struct LocalImportFingerprintProbe {
+    pub directory_metadata_stats: u64,
+    pub directory_generation_queries: u64,
+    pub read_dir_calls: u64,
+    pub read_dir_errors: u64,
+    pub directory_entries_visited: u64,
+    pub artifact_metadata_stats: u64,
+}
+
+#[derive(Default)]
+struct CachedImportDirectory {
+    path: Option<PathBuf>,
+    metadata: Option<ImportMetadataState>,
+    retained_paths: Vec<PathBuf>,
+    recognized_count: usize,
+    membership_valid: bool,
+    overflow: bool,
+    #[cfg(windows)]
+    directory_change_time: Option<i64>,
+    #[cfg(test)]
+    next_read_dir_error: Option<std::io::ErrorKind>,
+}
+
+/// One LocalMode-owned cache. Directory membership is retained only while it is reliable and
+/// bounded; overflow/error states deliberately rescan on every lookup rather than missing writes.
+#[derive(Default)]
+pub(in crate::app) struct LocalImportFilesFingerprintCache {
+    transfers: CachedImportDirectory,
+    sessions: CachedImportDirectory,
+    force_full_scan: bool,
+    #[cfg(test)]
+    probe: LocalImportFingerprintProbe,
+    #[cfg(test)]
+    data_dir_override: Option<PathBuf>,
+}
+
+impl LocalImportFilesFingerprintCache {
+    #[cfg(test)]
+    pub(in crate::app) fn set_data_dir_for_test(&mut self, data_dir: PathBuf) {
+        *self = Self {
+            data_dir_override: Some(data_dir),
+            ..Self::default()
+        };
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn reset_probe(&mut self) {
+        self.probe = LocalImportFingerprintProbe::default();
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn probe(&self) -> LocalImportFingerprintProbe {
+        self.probe
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn fail_next_transfers_read_dir_for_test(
+        &mut self,
+        kind: std::io::ErrorKind,
+    ) {
+        self.transfers.membership_valid = false;
+        self.transfers.next_read_dir_error = Some(kind);
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn retained_path_count_for_test(&self) -> usize {
+        self.transfers.retained_paths.len() + self.sessions.retained_paths.len()
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn retained_path_capacity_for_test(&self) -> usize {
+        self.transfers.retained_paths.capacity() + self.sessions.retained_paths.capacity()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ImportArtifactDirectory {
+    Transfers,
+    Sessions,
+}
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum ImportModifiedTimeSignature {
@@ -34,6 +146,7 @@ struct ImportPlatformMetadataSignature {
     attributes: u32,
     creation_time: u64,
     last_write_time: u64,
+    artifact_change_time: Option<i64>,
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -41,224 +154,397 @@ struct ImportPlatformMetadataSignature {
 struct ImportPlatformMetadataSignature;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct ImportFileMetadataSignature {
+struct ImportMetadataSignature {
     len: u64,
     is_file: bool,
     is_dir: bool,
+    is_symlink: bool,
     readonly: bool,
     modified: ImportModifiedTimeSignature,
     platform: ImportPlatformMetadataSignature,
 }
 
-struct CachedImportFileDigest {
-    metadata: ImportFileMetadataSignature,
-    content_digest: u64,
-    seen_generation: u64,
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum ImportMetadataState {
+    Present(ImportMetadataSignature),
+    Error(std::io::ErrorKind),
 }
 
-/// Persistent metadata-to-content-digest memoization owned by one `LocalMode`. Metadata is still
-/// sampled on every import render; only files whose signatures changed are opened and re-hashed.
-pub(in crate::app) struct LocalImportFilesFingerprintCache {
-    files: HashMap<PathBuf, CachedImportFileDigest>,
-    generation: u64,
-    capacity: usize,
+#[derive(Default)]
+struct ImportEntryAccumulator {
+    count: u64,
+    sum: u64,
+    xor: u64,
+}
+
+impl ImportEntryAccumulator {
+    fn push(&mut self, value: u64) {
+        self.count = self.count.wrapping_add(1);
+        self.sum = self.sum.wrapping_add(value);
+        self.xor ^= value.rotate_left((value & 63) as u32);
+    }
+
+    fn hash_into(&self, hasher: &mut impl Hasher) {
+        self.count.hash(hasher);
+        self.sum.hash(hasher);
+        self.xor.hash(hasher);
+    }
+}
+
+pub(super) fn local_import_files_fingerprint(
+    cache: &mut LocalImportFilesFingerprintCache,
+) -> LocalImportFilesFingerprint {
     #[cfg(test)]
-    content_open_attempts: u64,
-    #[cfg(test)]
-    content_bytes_read: u64,
-}
-
-impl Default for LocalImportFilesFingerprintCache {
-    fn default() -> Self {
-        Self {
-            files: HashMap::new(),
-            generation: 0,
-            capacity: LOCAL_IMPORT_CONTENT_CACHE_CAP,
-            #[cfg(test)]
-            content_open_attempts: 0,
-            #[cfg(test)]
-            content_bytes_read: 0,
-        }
-    }
-}
-
-impl LocalImportFilesFingerprintCache {
-    fn begin_scan(&mut self) {
-        if self.generation == u64::MAX {
-            for cached in self.files.values_mut() {
-                cached.seen_generation = 0;
-            }
-            self.generation = 1;
-        } else {
-            self.generation += 1;
-        }
-    }
-
-    fn finish_scan(&mut self) {
-        let generation = self.generation;
-        self.files
-            .retain(|_, cached| cached.seen_generation == generation);
-    }
-
-    fn reusable_digest(
-        &mut self,
-        path: &Path,
-        metadata: ImportFileMetadataSignature,
-    ) -> Option<u64> {
-        let cached = self.files.get_mut(path)?;
-        if cached.metadata != metadata {
-            return None;
-        }
-        cached.seen_generation = self.generation;
-        Some(cached.content_digest)
-    }
-
-    fn remove(&mut self, path: &Path) {
-        self.files.remove(path);
-    }
-
-    fn store(&mut self, path: PathBuf, metadata: ImportFileMetadataSignature, content_digest: u64) {
-        if self.capacity == 0 {
-            return;
-        }
-        if self.files.len() >= self.capacity
-            && let Some(stale) = self.files.iter().find_map(|(path, cached)| {
-                (cached.seen_generation != self.generation).then(|| path.clone())
-            })
-        {
-            self.files.remove(&stale);
-        }
-        if self.files.len() < self.capacity {
-            self.files.insert(
-                path,
-                CachedImportFileDigest {
-                    metadata,
-                    content_digest,
-                    seen_generation: self.generation,
-                },
-            );
-        }
-    }
-
-    fn record_content_open(&mut self) {
-        #[cfg(test)]
-        {
-            self.content_open_attempts = self.content_open_attempts.wrapping_add(1);
-        }
-    }
-
-    fn record_content_bytes(&mut self, bytes: usize) {
-        #[cfg(not(test))]
-        let _ = bytes;
-        #[cfg(test)]
-        {
-            self.content_bytes_read = self.content_bytes_read.wrapping_add(bytes as u64);
-        }
-    }
-
-    #[cfg(test)]
-    fn set_capacity(&mut self, capacity: usize) {
-        self.capacity = capacity;
-        while self.files.len() > capacity {
-            let Some(path) = self.files.keys().next().cloned() else {
-                break;
-            };
-            self.files.remove(&path);
-        }
-    }
-}
-
-pub(super) fn local_import_files_fingerprint(cache: &mut LocalImportFilesFingerprintCache) -> u64 {
-    let Some(data_dir) = crate::paths::data_dir() else {
-        return fingerprint_import_directories(std::iter::empty::<&Path>(), cache);
+    let data_dir = cache
+        .data_dir_override
+        .clone()
+        .or_else(crate::paths::data_dir);
+    #[cfg(not(test))]
+    let data_dir = crate::paths::data_dir();
+    let Some(data_dir) = data_dir else {
+        return LocalImportFilesFingerprint {
+            digest: 0,
+            reliable: true,
+        };
     };
     let transfers = data_dir.join("transfers");
     let sessions = transfers.join("sessions");
-    fingerprint_import_directories([transfers.as_path(), sessions.as_path()], cache)
-}
-
-fn fingerprint_import_directories<'a>(
-    paths: impl IntoIterator<Item = &'a Path>,
-    cache: &mut LocalImportFilesFingerprintCache,
-) -> u64 {
-    cache.begin_scan();
+    let force_full_scan = cache.force_full_scan;
+    let transfers_budget =
+        LOCAL_IMPORT_RETAINED_PATH_CAP.saturating_sub(cache.sessions.retained_paths.len());
+    let transfers_fingerprint = fingerprint_import_directory(
+        &transfers,
+        ImportArtifactDirectory::Transfers,
+        &mut cache.transfers,
+        transfers_budget,
+        force_full_scan,
+        #[cfg(test)]
+        &mut cache.probe,
+    );
+    let sessions_budget =
+        LOCAL_IMPORT_RETAINED_PATH_CAP.saturating_sub(cache.transfers.retained_paths.len());
+    let sessions_fingerprint = fingerprint_import_directory(
+        &sessions,
+        ImportArtifactDirectory::Sessions,
+        &mut cache.sessions,
+        sessions_budget,
+        force_full_scan,
+        #[cfg(test)]
+        &mut cache.probe,
+    );
+    let combined_count = cache
+        .transfers
+        .recognized_count
+        .saturating_add(cache.sessions.recognized_count);
+    let global_overflow = combined_count > LOCAL_IMPORT_RETAINED_PATH_CAP;
+    cache.force_full_scan = global_overflow || cache.transfers.overflow || cache.sessions.overflow;
     let mut hasher = DefaultHasher::new();
-    for path in paths {
-        hash_import_directory(path, &mut hasher, cache);
+    0_u8.hash(&mut hasher);
+    transfers_fingerprint.digest.hash(&mut hasher);
+    1_u8.hash(&mut hasher);
+    sessions_fingerprint.digest.hash(&mut hasher);
+    LocalImportFilesFingerprint {
+        digest: hasher.finish(),
+        reliable: transfers_fingerprint.reliable
+            && sessions_fingerprint.reliable
+            && !global_overflow,
     }
-    cache.finish_scan();
-    hasher.finish()
 }
 
-fn hash_import_directory(
-    path: &Path,
-    hasher: &mut impl Hasher,
+#[cfg(test)]
+pub(in crate::app) fn local_import_files_fingerprint_for_test(
     cache: &mut LocalImportFilesFingerprintCache,
-) {
-    path.hash(hasher);
-    let Ok(entries) = std::fs::read_dir(path) else {
-        0_u8.hash(hasher);
-        return;
+) -> (u64, bool) {
+    let fingerprint = local_import_files_fingerprint(cache);
+    (fingerprint.digest, fingerprint.reliable)
+}
+
+#[cfg(test)]
+pub(in crate::app) fn stable_import_cache_key_for_test(
+    before: Option<(u64, bool)>,
+    after: Option<(u64, bool)>,
+) -> Option<Option<u64>> {
+    let fingerprint = |(digest, reliable)| LocalImportFilesFingerprint { digest, reliable };
+    stable_import_cache_key(before.map(fingerprint), after.map(fingerprint))
+}
+
+fn fingerprint_import_directory(
+    path: &Path,
+    kind: ImportArtifactDirectory,
+    cache: &mut CachedImportDirectory,
+    retained_path_budget: usize,
+    force_scan: bool,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> LocalImportFilesFingerprint {
+    let metadata = directory_metadata_state(
+        path,
+        #[cfg(test)]
+        probe,
+    );
+    let path_changed = cache.path.as_deref() != Some(path);
+    let metadata_changed = cache.metadata != Some(metadata);
+    if path_changed {
+        *cache = CachedImportDirectory::default();
+        cache.path = Some(path.to_path_buf());
+    }
+    cache.metadata = Some(metadata);
+
+    let ImportMetadataState::Present(signature) = metadata else {
+        cache.retained_paths = Vec::new();
+        cache.recognized_count = 0;
+        cache.membership_valid = matches!(
+            metadata,
+            ImportMetadataState::Error(std::io::ErrorKind::NotFound)
+        );
+        cache.overflow = false;
+        #[cfg(windows)]
+        {
+            cache.directory_change_time = None;
+        }
+        return hash_import_directory_state(
+            path,
+            &ImportEntryAccumulator::default(),
+            cache.membership_valid,
+        );
     };
-    let mut entry_count = 0_u64;
-    let mut entry_sum = 0_u64;
-    let mut entry_xor = 0_u64;
-    for entry in entries.flatten() {
-        let mut entry_hasher = DefaultHasher::new();
-        entry.file_name().hash(&mut entry_hasher);
-        match entry.metadata() {
-            Ok(metadata) => {
-                let metadata_signature = import_file_metadata_signature(&metadata);
-                metadata_signature.hash(&mut entry_hasher);
-                if metadata.is_file() {
-                    let entry_path = entry.path();
-                    if let Some(content_digest) =
-                        cache.reusable_digest(&entry_path, metadata_signature)
-                    {
-                        2_u8.hash(&mut entry_hasher);
-                        content_digest.hash(&mut entry_hasher);
-                    } else {
-                        // Failed opens/reads are deliberately not memoized: an unchanged metadata
-                        // signature must not hide recovery from a transient permission or I/O error.
-                        cache.remove(&entry_path);
-                        match read_import_file_digest(&entry_path, cache) {
-                            ImportFileDigestRead::Complete(content_digest) => {
-                                2_u8.hash(&mut entry_hasher);
-                                content_digest.hash(&mut entry_hasher);
-                                cache.store(entry_path, metadata_signature, content_digest);
-                            }
-                            ImportFileDigestRead::ReadError {
-                                partial_digest,
-                                kind,
-                            } => {
-                                2_u8.hash(&mut entry_hasher);
-                                partial_digest.hash(&mut entry_hasher);
-                                3_u8.hash(&mut entry_hasher);
-                                kind.hash(&mut entry_hasher);
-                            }
-                            ImportFileDigestRead::OpenError(kind) => {
-                                4_u8.hash(&mut entry_hasher);
-                                kind.hash(&mut entry_hasher);
-                            }
-                        }
-                    }
-                }
+    if !signature.is_dir {
+        cache.retained_paths = Vec::new();
+        cache.recognized_count = 0;
+        cache.membership_valid = true;
+        cache.overflow = false;
+        #[cfg(windows)]
+        {
+            cache.directory_change_time = None;
+        }
+        return hash_import_directory_state(path, &ImportEntryAccumulator::default(), true);
+    }
+
+    #[cfg(windows)]
+    let (membership_changed, generation_reliable) = {
+        if metadata_changed {
+            cache.directory_change_time = None;
+        }
+        match windows_directory_change_time(
+            path,
+            #[cfg(test)]
+            probe,
+        ) {
+            Ok(change_time) => {
+                let previous = cache.directory_change_time.replace(change_time);
+                (previous != Some(change_time), true)
             }
-            Err(error) => {
-                error.kind().hash(&mut entry_hasher);
+            Err(_) => {
+                cache.directory_change_time = None;
+                (true, false)
             }
         }
-        let fingerprint = entry_hasher.finish();
-        entry_count += 1;
-        entry_sum = entry_sum.wrapping_add(fingerprint);
-        entry_xor ^= fingerprint.rotate_left((fingerprint & 63) as u32);
-    }
-    entry_count.hash(hasher);
-    entry_sum.hash(hasher);
-    entry_xor.hash(hasher);
+    };
+    #[cfg(not(windows))]
+    let (membership_changed, generation_reliable) = (metadata_changed, true);
+
+    let mut fingerprint = if force_scan
+        || path_changed
+        || membership_changed
+        || !cache.membership_valid
+        || cache.overflow
+    {
+        scan_import_directory(
+            path,
+            kind,
+            cache,
+            retained_path_budget,
+            #[cfg(test)]
+            probe,
+        )
+    } else {
+        fingerprint_retained_import_paths(
+            path,
+            cache,
+            #[cfg(test)]
+            probe,
+        )
+    };
+    fingerprint.reliable &= generation_reliable;
+    fingerprint
 }
 
-fn import_file_metadata_signature(metadata: &std::fs::Metadata) -> ImportFileMetadataSignature {
+fn scan_import_directory(
+    path: &Path,
+    kind: ImportArtifactDirectory,
+    cache: &mut CachedImportDirectory,
+    retained_path_budget: usize,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> LocalImportFilesFingerprint {
+    #[cfg(test)]
+    {
+        probe.read_dir_calls = probe.read_dir_calls.wrapping_add(1);
+    }
+    #[cfg(test)]
+    let read_dir = match cache.next_read_dir_error.take() {
+        Some(kind) => Err(std::io::Error::from(kind)),
+        None => std::fs::read_dir(path),
+    };
+    #[cfg(not(test))]
+    let read_dir = std::fs::read_dir(path);
+    let entries = match read_dir {
+        Ok(entries) => entries,
+        Err(error) => {
+            #[cfg(test)]
+            {
+                probe.read_dir_errors = probe.read_dir_errors.wrapping_add(1);
+            }
+            cache.retained_paths = Vec::new();
+            cache.recognized_count = 0;
+            cache.membership_valid = false;
+            cache.overflow = false;
+            let mut accumulator = ImportEntryAccumulator::default();
+            accumulator.push(hash_value(&(0_u8, error.kind())));
+            return hash_import_directory_state(path, &accumulator, false);
+        }
+    };
+
+    let mut accumulator = ImportEntryAccumulator::default();
+    let mut retained = Vec::new();
+    let mut recognized_count = 0_usize;
+    let mut overflow = false;
+    let mut reliable = true;
+    for entry in entries {
+        #[cfg(test)]
+        {
+            probe.directory_entries_visited = probe.directory_entries_visited.wrapping_add(1);
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                reliable = false;
+                accumulator.push(hash_value(&(1_u8, error.kind())));
+                continue;
+            }
+        };
+        let file_name = entry.file_name();
+        if !is_recognized_import_artifact(&file_name, kind) {
+            continue;
+        }
+        recognized_count = recognized_count.saturating_add(1);
+        let entry_path = entry.path();
+        let artifact_metadata = artifact_metadata_state(
+            &entry_path,
+            #[cfg(test)]
+            probe,
+        );
+        if matches!(artifact_metadata, ImportMetadataState::Error(_)) {
+            reliable = false;
+        }
+        accumulator.push(hash_import_entry(&file_name, artifact_metadata));
+        if !overflow && retained.len() < retained_path_budget {
+            retained.push(entry_path);
+        } else {
+            overflow = true;
+            retained = Vec::new();
+        }
+    }
+    retained.sort_unstable();
+    cache.retained_paths = retained;
+    cache.recognized_count = recognized_count;
+    cache.membership_valid = reliable;
+    cache.overflow = overflow;
+    hash_import_directory_state(path, &accumulator, reliable && !overflow)
+}
+
+fn fingerprint_retained_import_paths(
+    path: &Path,
+    cache: &mut CachedImportDirectory,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> LocalImportFilesFingerprint {
+    let mut accumulator = ImportEntryAccumulator::default();
+    let mut reliable = true;
+    for entry_path in &cache.retained_paths {
+        let metadata = artifact_metadata_state(
+            entry_path,
+            #[cfg(test)]
+            probe,
+        );
+        if matches!(metadata, ImportMetadataState::Error(_)) {
+            reliable = false;
+        }
+        let Some(file_name) = entry_path.file_name() else {
+            reliable = false;
+            continue;
+        };
+        accumulator.push(hash_import_entry(file_name, metadata));
+    }
+    if !reliable {
+        cache.membership_valid = false;
+    } else {
+        cache.recognized_count = cache.retained_paths.len();
+    }
+    hash_import_directory_state(path, &accumulator, reliable)
+}
+
+fn hash_import_directory_state(
+    path: &Path,
+    entries: &ImportEntryAccumulator,
+    reliable: bool,
+) -> LocalImportFilesFingerprint {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    entries.hash_into(&mut hasher);
+    LocalImportFilesFingerprint {
+        digest: hasher.finish(),
+        reliable,
+    }
+}
+
+fn directory_metadata_state(
+    path: &Path,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> ImportMetadataState {
+    #[cfg(test)]
+    {
+        probe.directory_metadata_stats = probe.directory_metadata_stats.wrapping_add(1);
+    }
+    metadata_state(std::fs::metadata(path))
+}
+
+fn artifact_metadata_state(
+    path: &Path,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> ImportMetadataState {
+    #[cfg(test)]
+    {
+        probe.artifact_metadata_stats = probe.artifact_metadata_stats.wrapping_add(1);
+    }
+    let metadata = std::fs::symlink_metadata(path);
+    #[cfg(windows)]
+    {
+        match metadata {
+            Ok(metadata) => match crate::util::safe_fs::windows_file_change_time(path) {
+                Ok(change_time) => ImportMetadataState::Present(import_metadata_signature(
+                    &metadata,
+                    Some(change_time),
+                )),
+                Err(error) => ImportMetadataState::Error(error.kind()),
+            },
+            Err(error) => ImportMetadataState::Error(error.kind()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        metadata_state(metadata)
+    }
+}
+
+fn metadata_state(result: std::io::Result<std::fs::Metadata>) -> ImportMetadataState {
+    match result {
+        Ok(metadata) => ImportMetadataState::Present(import_metadata_signature(&metadata, None)),
+        Err(error) => ImportMetadataState::Error(error.kind()),
+    }
+}
+
+fn import_metadata_signature(
+    metadata: &std::fs::Metadata,
+    artifact_change_time: Option<i64>,
+) -> ImportMetadataSignature {
     let modified = match metadata.modified() {
         Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
             Ok(duration) => ImportModifiedTimeSignature::SinceEpoch {
@@ -272,19 +558,21 @@ fn import_file_metadata_signature(metadata: &std::fs::Metadata) -> ImportFileMet
         },
         Err(error) => ImportModifiedTimeSignature::Unavailable(error.kind()),
     };
-    ImportFileMetadataSignature {
+    ImportMetadataSignature {
         len: metadata.len(),
         is_file: metadata.is_file(),
         is_dir: metadata.is_dir(),
+        is_symlink: metadata.file_type().is_symlink(),
         readonly: metadata.permissions().readonly(),
         modified,
-        platform: import_platform_metadata_signature(metadata),
+        platform: import_platform_metadata_signature(metadata, artifact_change_time),
     }
 }
 
 #[cfg(unix)]
 fn import_platform_metadata_signature(
     metadata: &std::fs::Metadata,
+    _artifact_change_time: Option<i64>,
 ) -> ImportPlatformMetadataSignature {
     use std::os::unix::fs::MetadataExt;
 
@@ -301,6 +589,7 @@ fn import_platform_metadata_signature(
 #[cfg(windows)]
 fn import_platform_metadata_signature(
     metadata: &std::fs::Metadata,
+    artifact_change_time: Option<i64>,
 ) -> ImportPlatformMetadataSignature {
     use std::os::windows::fs::MetadataExt;
 
@@ -308,186 +597,44 @@ fn import_platform_metadata_signature(
         attributes: metadata.file_attributes(),
         creation_time: metadata.creation_time(),
         last_write_time: metadata.last_write_time(),
+        artifact_change_time,
     }
 }
 
 #[cfg(not(any(unix, windows)))]
 fn import_platform_metadata_signature(
     _metadata: &std::fs::Metadata,
+    _artifact_change_time: Option<i64>,
 ) -> ImportPlatformMetadataSignature {
     ImportPlatformMetadataSignature
 }
 
-enum ImportFileDigestRead {
-    Complete(u64),
-    ReadError {
-        partial_digest: u64,
-        kind: std::io::ErrorKind,
-    },
-    OpenError(std::io::ErrorKind),
-}
-
-fn read_import_file_digest(
-    path: &Path,
-    cache: &mut LocalImportFilesFingerprintCache,
-) -> ImportFileDigestRead {
-    cache.record_content_open();
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) => return ImportFileDigestRead::OpenError(error.kind()),
+fn is_recognized_import_artifact(name: &OsStr, kind: ImportArtifactDirectory) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
     };
-    let mut content_hasher = DefaultHasher::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        match file.read(&mut buffer) {
-            Ok(0) => return ImportFileDigestRead::Complete(content_hasher.finish()),
-            Ok(read) => {
-                cache.record_content_bytes(read);
-                content_hasher.write(&buffer[..read]);
-            }
-            Err(error) => {
-                return ImportFileDigestRead::ReadError {
-                    partial_digest: content_hasher.finish(),
-                    kind: error.kind(),
-                };
-            }
-        }
-    }
+    name.ends_with(".json")
+        || matches!(kind, ImportArtifactDirectory::Transfers) && name.ends_with(".journal.jsonl")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+fn hash_import_entry(name: &OsStr, metadata: ImportMetadataState) -> u64 {
+    hash_value(&(name, metadata))
+}
 
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "yututui-import-fingerprint-{}-{sequence}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).expect("create import fingerprint test directory");
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
+#[cfg(windows)]
+fn windows_directory_change_time(
+    path: &Path,
+    #[cfg(test)] probe: &mut LocalImportFingerprintProbe,
+) -> std::io::Result<i64> {
+    #[cfg(test)]
+    {
+        probe.directory_generation_queries = probe.directory_generation_queries.wrapping_add(1);
     }
+    crate::util::safe_fs::windows_directory_change_time(path)
+}
 
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn fingerprint(path: &Path, cache: &mut LocalImportFilesFingerprintCache) -> u64 {
-        fingerprint_import_directories([path], cache)
-    }
-
-    #[test]
-    fn unchanged_import_artifact_reuses_digest_with_zero_content_io() {
-        let directory = TestDirectory::new();
-        let artifact = directory.path().join("session.report.json");
-        let initial = vec![b'a'; 16_385];
-        std::fs::write(&artifact, &initial).expect("write initial artifact");
-        let mut cache = LocalImportFilesFingerprintCache::default();
-
-        let first = fingerprint(directory.path(), &mut cache);
-        assert_eq!(cache.content_open_attempts, 1);
-        assert_eq!(cache.content_bytes_read, initial.len() as u64);
-        assert_eq!(cache.files.len(), 1);
-        let io_after_first_scan = (cache.content_open_attempts, cache.content_bytes_read);
-
-        let unchanged = fingerprint(directory.path(), &mut cache);
-        assert_eq!(unchanged, first);
-        assert_eq!(
-            (cache.content_open_attempts, cache.content_bytes_read),
-            io_after_first_scan,
-            "an unchanged metadata signature must cause zero opens and zero content bytes read"
-        );
-
-        let modified = vec![b'b'; initial.len() + 1];
-        std::fs::write(&artifact, &modified).expect("modify artifact");
-        let after_modify = fingerprint(directory.path(), &mut cache);
-        assert_ne!(after_modify, unchanged);
-        assert_eq!(cache.content_open_attempts, io_after_first_scan.0 + 1);
-        assert_eq!(
-            cache.content_bytes_read,
-            io_after_first_scan.1 + modified.len() as u64
-        );
-
-        let io_after_modify = (cache.content_open_attempts, cache.content_bytes_read);
-        assert_eq!(fingerprint(directory.path(), &mut cache), after_modify);
-        assert_eq!(
-            (cache.content_open_attempts, cache.content_bytes_read),
-            io_after_modify,
-            "the digest recalculated after a modification must also be reusable"
-        );
-
-        std::fs::remove_file(&artifact).expect("delete artifact");
-        assert_ne!(fingerprint(directory.path(), &mut cache), after_modify);
-        assert!(cache.files.is_empty(), "deleted artifacts must be pruned");
-        assert_eq!(
-            (cache.content_open_attempts, cache.content_bytes_read),
-            io_after_modify,
-            "deletion invalidation only needs directory metadata, not a content read"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_change_identity_catches_same_size_rewrite_with_restored_mtime() {
-        let directory = TestDirectory::new();
-        let artifact = directory.path().join("session.report.json");
-        std::fs::write(&artifact, b"{}").expect("write initial artifact");
-        let mut cache = LocalImportFilesFingerprintCache::default();
-        let before = fingerprint(directory.path(), &mut cache);
-        let original_modified = std::fs::metadata(&artifact)
-            .and_then(|metadata| metadata.modified())
-            .expect("read original timestamp");
-
-        std::fs::write(&artifact, b"[]").expect("rewrite artifact at the same size");
-        std::fs::File::options()
-            .write(true)
-            .open(&artifact)
-            .and_then(|file| {
-                file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
-            })
-            .expect("restore original mtime");
-
-        let after = fingerprint(directory.path(), &mut cache);
-        assert_ne!(after, before);
-        assert_eq!(cache.content_open_attempts, 2);
-        assert_eq!(cache.content_bytes_read, 4);
-    }
-
-    #[test]
-    fn import_digest_cache_is_bounded_and_prunes_unseen_paths() {
-        let directory = TestDirectory::new();
-        for index in 0..3 {
-            std::fs::write(
-                directory.path().join(format!("{index}.json")),
-                [index as u8],
-            )
-            .expect("write bounded-cache artifact");
-        }
-        let mut cache = LocalImportFilesFingerprintCache::default();
-        cache.set_capacity(2);
-
-        fingerprint(directory.path(), &mut cache);
-        assert_eq!(cache.files.len(), 2);
-
-        for index in 0..3 {
-            std::fs::remove_file(directory.path().join(format!("{index}.json")))
-                .expect("remove bounded-cache artifact");
-        }
-        fingerprint(directory.path(), &mut cache);
-        assert!(cache.files.is_empty());
-    }
+fn hash_value(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }

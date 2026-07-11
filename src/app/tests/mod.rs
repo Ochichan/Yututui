@@ -23,6 +23,7 @@ mod library_filter;
 mod library_queue_actions;
 mod local;
 mod local_import;
+mod local_import_rows_cache;
 mod lyrics_art_download;
 mod mouse_player;
 mod nav_mouse;

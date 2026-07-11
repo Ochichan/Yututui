@@ -223,12 +223,12 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(vis, line)| {
             let abs = offset + vis;
             if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
-                Line::from(line.copy.as_str()).style(selection_style)
+                Line::from(line.text.as_ref()).style(selection_style)
             } else {
                 Line::from(
-                    line.spans
+                    line.styles
                         .iter()
-                        .map(|(text, style)| Span::styled(text.as_str(), *style))
+                        .map(|range| Span::styled(&line.text[range.start..range.end], range.style))
                         .collect::<Vec<Span>>(),
                 )
             }
@@ -255,11 +255,23 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
 #[derive(Debug, Clone)]
 struct TranscriptLine {
-    /// The plain rendered text — markdown markers already stripped — so drag-copy and
-    /// the selection highlight yield exactly what's on screen.
-    copy: String,
-    /// The same text split into styled runs (their concatenation equals `copy`).
-    spans: Vec<(String, Style)>,
+    /// The only retained copy of this rendered row. Markdown markers are already
+    /// stripped; rendering, selection highlighting, and drag-copy all share it.
+    text: Arc<str>,
+    /// Styled runs as UTF-8 byte ranges into `text`, never duplicated strings.
+    styles: Vec<StyleRange>,
+}
+
+#[derive(Debug, Clone)]
+struct StyleRange {
+    start: usize,
+    end: usize,
+    style: Style,
+}
+
+struct TranscriptLineBuilder {
+    text: String,
+    styles: Vec<StyleRange>,
 }
 
 struct TranscriptCache {
@@ -272,7 +284,7 @@ struct TranscriptCache {
     #[cfg(test)]
     fixture_messages: Vec<(AiRole, String)>,
     lines: Arc<[TranscriptLine]>,
-    copy_lines: Arc<[String]>,
+    copy_lines: Arc<[Arc<str>]>,
 }
 
 thread_local! {
@@ -282,15 +294,53 @@ thread_local! {
 impl TranscriptLine {
     fn blank() -> Self {
         Self {
-            copy: String::new(),
-            spans: Vec::new(),
+            text: Arc::from(""),
+            styles: Vec::new(),
         }
     }
 
     fn plain(text: String, style: Style) -> Self {
+        let mut line = TranscriptLineBuilder::new(text.len());
+        line.push_str(&text, style);
+        line.finish()
+    }
+}
+
+impl TranscriptLineBuilder {
+    fn new(text_capacity: usize) -> Self {
         Self {
-            spans: vec![(text.clone(), style)],
-            copy: text,
+            text: String::with_capacity(text_capacity),
+            styles: Vec::new(),
+        }
+    }
+
+    fn push_str(&mut self, text: &str, style: Style) {
+        if text.is_empty() {
+            return;
+        }
+        let start = self.text.len();
+        self.text.push_str(text);
+        self.extend_style(start, style);
+    }
+
+    fn push_char(&mut self, ch: char, style: Style) {
+        let start = self.text.len();
+        self.text.push(ch);
+        self.extend_style(start, style);
+    }
+
+    fn extend_style(&mut self, start: usize, style: Style) {
+        let end = self.text.len();
+        match self.styles.last_mut() {
+            Some(range) if range.end == start && range.style == style => range.end = end,
+            _ => self.styles.push(StyleRange { start, end, style }),
+        }
+    }
+
+    fn finish(self) -> TranscriptLine {
+        TranscriptLine {
+            text: Arc::from(self.text),
+            styles: self.styles,
         }
     }
 }
@@ -359,7 +409,7 @@ fn transcript_thinking_text(app: &App) -> Option<String> {
     })
 }
 
-fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, Arc<[String]>) {
+fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, Arc<[Arc<str>]>) {
     let thinking_text = transcript_thinking_text(app);
     let korean = crate::i18n::is_korean();
     let styles = [
@@ -394,9 +444,9 @@ fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, A
         }
 
         let lines = build_transcript_lines_with_thinking(app, width, thinking_text.as_deref());
-        let copy_lines: Arc<[String]> = lines
+        let copy_lines: Arc<[Arc<str>]> = lines
             .iter()
-            .map(|line| line.copy.clone())
+            .map(|line| Arc::clone(&line.text))
             .collect::<Vec<_>>()
             .into();
         let lines: Arc<[TranscriptLine]> = lines.into();
@@ -452,34 +502,23 @@ fn push_wrapped_styled(
     let chip_style = prefix_style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
     let mut first = true;
     for segment in wrap_styled_cells(chars, body_w) {
-        let mut spans: Vec<(String, Style)> = Vec::with_capacity(4);
+        let mut line = TranscriptLineBuilder::new(prefix.len() + segment.len());
         if first {
             if !chip.is_empty() {
-                spans.push((chip.to_owned(), chip_style));
+                line.push_str(chip, chip_style);
             }
             if !pad.is_empty() {
-                spans.push((pad.to_owned(), prefix_style));
+                line.push_str(pad, prefix_style);
             }
         } else {
-            spans.push((indent.clone(), prefix_style));
+            line.push_str(&indent, prefix_style);
         }
-        spans.extend(group_style_runs(&segment));
-        let copy: String = spans.iter().map(|(text, _)| text.as_str()).collect();
-        out.push(TranscriptLine { copy, spans });
+        for &(ch, style) in &segment {
+            line.push_char(ch, style);
+        }
+        out.push(line.finish());
         first = false;
     }
-}
-
-/// Collapse per-char styles into contiguous `(text, style)` runs.
-fn group_style_runs(chars: &[(char, Style)]) -> Vec<(String, Style)> {
-    let mut out: Vec<(String, Style)> = Vec::new();
-    for &(c, style) in chars {
-        match out.last_mut() {
-            Some((text, s)) if *s == style => text.push(c),
-            _ => out.push((c.to_string(), style)),
-        }
-    }
-    out
 }
 
 /// Markdown-lite styling for assistant replies — the subset Gemini actually emits:
@@ -906,6 +945,21 @@ mod tests {
     }
 
     #[test]
+    fn copy_bridge_shares_every_transcript_line_payload_arc() {
+        let mut app = App::new(100);
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: "**shared** UTF-8 줄 with enough words to wrap".to_owned(),
+        });
+
+        let (lines, copy_lines) = cached_transcript_lines(&app, 16);
+        assert_eq!(lines.len(), copy_lines.len());
+        for (line, copy) in lines.iter().zip(copy_lines.iter()) {
+            assert!(Arc::ptr_eq(&line.text, copy));
+        }
+    }
+
+    #[test]
     fn reducer_append_advances_revision_and_rebuilds_cached_transcript() {
         let mut app = App::new(100);
         let before_revision = app.ai.transcript_revision;
@@ -1001,31 +1055,34 @@ mod tests {
 
         // Message, blank separator, message.
         assert_eq!(lines.len(), 3);
-        assert!(lines[1].copy.is_empty() && lines[1].spans.is_empty());
+        assert!(lines[1].text.is_empty() && lines[1].styles.is_empty());
 
         // The role tag renders as a reversed chip; its text stays in the copy line.
-        assert_eq!(lines[0].copy, "you who sings this?");
-        assert_eq!(lines[0].spans[0].0, "you");
-        assert!(
-            lines[0].spans[0]
-                .1
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
+        assert_eq!(lines[0].text.as_ref(), "you who sings this?");
+        let first_range = &lines[0].styles[0];
+        assert_eq!(&lines[0].text[first_range.start..first_range.end], "you");
+        assert!(first_range.style.add_modifier.contains(Modifier::REVERSED));
 
         // Markdown markers are stripped from both the render and the drag-copy text.
-        assert_eq!(lines[2].copy, "Gem It's YOASOBI.");
-        assert!(
-            lines[2]
-                .spans
-                .iter()
-                .any(|(text, style)| text.contains("YOASOBI")
-                    && style.add_modifier.contains(Modifier::BOLD))
-        );
-        // Spans always reassemble exactly into the copy text.
+        assert_eq!(lines[2].text.as_ref(), "Gem It's YOASOBI.");
+        assert!(lines[2].styles.iter().any(|range| {
+            lines[2].text[range.start..range.end].contains("YOASOBI")
+                && range.style.add_modifier.contains(Modifier::BOLD)
+        }));
+        // Byte ranges are contiguous, valid UTF-8 slices, and cover the one text payload.
         for line in &lines {
-            let joined: String = line.spans.iter().map(|(t, _)| t.as_str()).collect();
-            assert_eq!(joined, line.copy);
+            let mut next = 0;
+            let joined: String = line
+                .styles
+                .iter()
+                .map(|range| {
+                    assert_eq!(range.start, next);
+                    next = range.end;
+                    &line.text[range.start..range.end]
+                })
+                .collect();
+            assert_eq!(next, line.text.len());
+            assert_eq!(joined, line.text.as_ref());
         }
     }
 
@@ -1039,7 +1096,7 @@ mod tests {
         // Width 14 = 4 ("Gem " chip+pad) + 10 body cells: the bold pair fills line one,
         // and the continuation hang-indents under the body, not under the chip.
         let lines = build_transcript_lines(&app, 14);
-        assert_eq!(lines[0].copy, "Gem alpha beta");
-        assert_eq!(lines[1].copy, "    gamma");
+        assert_eq!(lines[0].text.as_ref(), "Gem alpha beta");
+        assert_eq!(lines[1].text.as_ref(), "    gamma");
     }
 }

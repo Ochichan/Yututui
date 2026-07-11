@@ -5,10 +5,10 @@
 //! (`ISystemMediaTransportControlsInterop::GetForWindow`) requires one owned by the
 //! calling thread — so a dedicated "smtc-worker" thread creates an invisible
 //! top-level window (a real one, not message-only, which has known compatibility
-//! problems) and runs the message pump SMTC needs. Snapshot diffs coalesce in a
-//! bounded latest-state slot (the pump is woken with a posted thread message);
-//! WinRT event handlers only forward a [`MediaCommand`] through the sink and return
-//! (spec C-1).
+//! problems) and runs the message pump SMTC needs. Complete snapshot diffs retain
+//! publication order while pure progress coalesces to one scalar clock (the pump
+//! is woken with a posted thread message); WinRT event handlers only forward a
+//! [`MediaCommand`] through the sink and return (spec C-1).
 //!
 //! SMTC does not interpolate playback position: the worker re-pushes timeline
 //! properties every ~5s while playing (spec W-3) from the snapshot's position
@@ -46,8 +46,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, w};
 
 use super::delivery::{
-    DeliveryBatch, LatestMediaReceiver, LatestMediaSender, PositionClock, SubmitOutcome,
-    latest_media_channel,
+    DeliveryItem, LatestMediaReceiver, LatestMediaSender, SubmitOutcome,
+    latest_media_channel_bounded,
 };
 use super::{
     CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus as Status, MediaSnapshot,
@@ -72,7 +72,7 @@ pub struct Backend {
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        let (updates, rx) = latest_media_channel();
+        let (updates, rx) = latest_media_channel_bounded();
         let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<u32, String>>();
         let join = std::thread::Builder::new()
             .name("smtc-worker".to_owned())
@@ -167,8 +167,8 @@ fn worker(
             if msg.hwnd == HWND::default() {
                 match msg.message {
                     WM_APP_UPDATE => {
-                        while let Some(batch) = rx.try_take() {
-                            session.apply(batch);
+                        while let Some(item) = rx.try_take() {
+                            session.apply(item);
                         }
                         continue;
                     }
@@ -353,29 +353,30 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
 }
 
 impl Session {
-    fn apply(&mut self, mut batch: DeliveryBatch) {
-        batch.prepare_snapshot();
-        if let Some(snapshot) = batch.snapshot.take() {
-            self.snapshot = snapshot;
-        } else {
-            batch.apply_clock_to(&mut self.snapshot);
-        }
-        let needs_final_timeline = batch.needs_final_timeline();
-        if let Err(e) = self.apply_facets(batch.changes) {
-            tracing::debug!(error = %e, "SMTC update failed");
-        }
-        // Keep every position epoch even when metadata/progress coalesced while the
-        // message pump was busy. Each clock also retains its own track duration/live
-        // semantics, so a rapid track transition cannot reuse the newest duration.
-        for position in batch.discontinuities {
-            if let Err(e) = self.push_timeline_clock(position) {
-                tracing::debug!(error = %e, epoch = position.position_epoch, "SMTC discontinuity timeline update failed");
+    fn apply(&mut self, item: DeliveryItem) {
+        match item {
+            DeliveryItem::Ordered(event) => {
+                self.snapshot = event.snapshot;
+                if let Err(e) = self.apply_event(event.changes) {
+                    tracing::debug!(error = %e, "SMTC update failed");
+                }
+            }
+            DeliveryItem::Progress(progress) => {
+                progress.apply_to(&mut self.snapshot);
+                self.manage_timer();
             }
         }
-        if needs_final_timeline && let Err(e) = self.push_timeline() {
-            tracing::debug!(error = %e, "SMTC final timeline update failed");
+    }
+
+    /// Apply one logical event completely before the next snapshot is installed.
+    /// The facet/timeline/timer order mirrors `origin/main`'s `apply_inner`.
+    fn apply_event(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
+        self.apply_facets(changes)?;
+        if changes.track || changes.position || changes.status || changes.options {
+            self.push_timeline()?;
         }
         self.manage_timer();
+        Ok(())
     }
 
     fn apply_facets(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
@@ -463,10 +464,6 @@ impl Session {
             .and_then(|t| t.duration)
             .filter(|_| !track.is_some_and(|t| t.is_live));
         self.update_timeline(duration, self.snapshot.position_now())
-    }
-
-    fn push_timeline_clock(&self, clock: PositionClock) -> windows::core::Result<()> {
-        self.update_timeline(clock.timeline_duration(), clock.position_now())
     }
 
     fn update_timeline(&self, duration: Option<f64>, position: f64) -> windows::core::Result<()> {

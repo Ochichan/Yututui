@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event as TerminalEvent, EventStream};
-use futures::{FutureExt, StreamExt};
+use crossterm::event::EventStream;
+use futures::StreamExt;
 use ratatui_image::thread::ResizeRequest;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -90,63 +90,14 @@ impl AnimationSchedule {
 }
 
 const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
-const IME_SCRUB_TICKS: u8 = 8;
 
-/// A short, event-triggered repaint window that clears terminal-owned IME preedit text.
-///
-/// Some terminals paint preedit text without sending it through the application's buffer. A
-/// repaint removes that residue, but polling forever at 12.5 fps burns CPU while the UI is idle.
-/// Re-arm this burst for terminal activity that can leave preedit behind; after eight 80 ms ticks
-/// (640 ms) the interval is parked again.
-struct ImeScrubBurst {
-    interval: tokio::time::Interval,
-    remaining: u8,
-}
-
-impl ImeScrubBurst {
-    fn new() -> Self {
-        let mut interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + IME_SCRUB_PERIOD,
-            IME_SCRUB_PERIOD,
-        );
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        Self {
-            interval,
-            remaining: 0,
-        }
-    }
-
-    fn arm(&mut self) {
-        self.remaining = IME_SCRUB_TICKS;
-        self.interval
-            .reset_at(tokio::time::Instant::now() + IME_SCRUB_PERIOD);
-    }
-
-    fn active(&self) -> bool {
-        self.remaining > 0
-    }
-
-    async fn tick(&mut self) {
-        self.interval.tick().await;
-    }
-
-    fn consume_tick(&mut self) {
-        self.remaining = self.remaining.saturating_sub(1);
-    }
-}
-
-/// Terminal activity that can leave terminal-owned preedit outside an application text field.
-/// Focus gain and resize always arm a cleanup window; keyboard/mouse/paste activity does so only
-/// when the application is not deliberately displaying editable text.
-fn terminal_event_arms_ime_scrub(event: &TerminalEvent, outside_text_entry: bool) -> bool {
-    matches!(
-        event,
-        TerminalEvent::FocusGained | TerminalEvent::Resize(_, _)
-    ) || (outside_text_entry
-        && matches!(
-            event,
-            TerminalEvent::Key(_) | TerminalEvent::Mouse(_) | TerminalEvent::Paste(_)
-        ))
+/// Permanent low-rate repaint clock for terminal-owned IME preedit text. The select branch is
+/// guarded while an application text field is active, but the clock itself never expires: some
+/// terminals repaint preedit without sending any event that could re-arm a bounded timer.
+fn ime_scrub_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(IME_SCRUB_PERIOD);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval
 }
 
 /// Take only an immediately-adjacent time/cache pair. Both messages still pass through
@@ -210,6 +161,7 @@ struct PerfStats {
     enabled: bool,
     last_log: Instant,
     frames: u64,
+    ime_fast_scrubs: u64,
     draw_total: Duration,
     draw_max: Duration,
     art_resizes: u64,
@@ -222,6 +174,7 @@ impl PerfStats {
             enabled,
             last_log: Instant::now(),
             frames: 0,
+            ime_fast_scrubs: 0,
             draw_total: Duration::ZERO,
             draw_max: Duration::ZERO,
             art_resizes: 0,
@@ -240,6 +193,12 @@ impl PerfStats {
     fn record_art_resize(&mut self) {
         if self.enabled {
             self.art_resizes += 1;
+        }
+    }
+
+    fn record_ime_fast_scrub(&mut self) {
+        if self.enabled {
+            self.ime_fast_scrubs += 1;
         }
     }
 
@@ -272,7 +231,8 @@ impl PerfStats {
         .count();
         tracing::info!(
             target: "ytt::perf",
-            frames = self.frames,
+            full_frames = self.frames,
+            ime_fast_scrubs = self.ime_fast_scrubs,
             avg_draw_ms,
             max_draw_ms = self.draw_max.as_secs_f64() * 1000.0,
             art_resizes = self.art_resizes,
@@ -285,6 +245,7 @@ impl PerfStats {
         );
         self.last_log = Instant::now();
         self.frames = 0;
+        self.ime_fast_scrubs = 0;
         self.draw_total = Duration::ZERO;
         self.draw_max = Duration::ZERO;
         self.art_resizes = 0;
@@ -302,6 +263,7 @@ fn draw_app_frame(
     let res = tui::draw_frame(terminal, synchronized, clear_before, |f| ui::render(f, app));
     match res {
         Ok(()) => {
+            app.mark_local_rows_rendered();
             if let Some(start) = start {
                 perf.record_draw(start.elapsed());
             }
@@ -321,6 +283,52 @@ fn draw_app_frame(
 
 fn finish_draw_cycle(app: &mut App) {
     app.dirty = app.clear_before_draw_pending();
+}
+
+/// Attempt the normal render lifecycle while keeping IME freshness fail-closed. A transient full
+/// draw failure may clear `app.dirty`, so the separate flag is set before touching the terminal and
+/// is cleared only after both a successful draw and the normal finish step.
+fn draw_full_app_frame(
+    terminal: &mut tui::AppTerminal,
+    app: &mut App,
+    perf: &mut PerfStats,
+    reducer_turn_unrendered: &mut bool,
+) -> std::io::Result<bool> {
+    *reducer_turn_unrendered = true;
+    let rendered = draw_app_frame(terminal, app, perf)?;
+    if rendered {
+        finish_draw_cycle(app);
+        *reducer_turn_unrendered = false;
+    }
+    Ok(rendered)
+}
+
+fn ime_scrub_state_requires_full_draw(
+    reducer_turn_unrendered: bool,
+    dirty: bool,
+    clear_before_draw_pending: bool,
+    animation_active: bool,
+    radio_stream_active: bool,
+) -> bool {
+    reducer_turn_unrendered
+        || dirty
+        || clear_before_draw_pending
+        || animation_active
+        || radio_stream_active
+}
+
+fn ime_scrub_requires_full_draw(app: &App, reducer_turn_unrendered: bool) -> bool {
+    ime_scrub_state_requires_full_draw(
+        reducer_turn_unrendered,
+        app.dirty,
+        app.clear_before_draw_pending(),
+        // Active animation renders can depend on wall-clock interpolation between reducer ticks.
+        // Keep origin's 80 ms full redraw in those windows so visible timing remains exact.
+        app.animation_active(),
+        // Live-radio rendering reads `cache_time_at.elapsed()` for its stale-edge verdict, even
+        // when the stream was started outside dedicated Radio mode.
+        app.current_is_radio_stream(),
+    ) || !app.ime_scrub_local_projection_fresh()
 }
 
 #[cfg(windows)]
@@ -684,7 +692,7 @@ pub async fn run(
 
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
-    let mut ime_scrub = ImeScrubBurst::new();
+    let mut ime_scrub = ime_scrub_interval();
     // Only polled while a transient status is covering the song title; lets the reducer
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
@@ -722,12 +730,13 @@ pub async fn run(
     };
 
     let mut pending_worker_msgs: VecDeque<Msg> = VecDeque::new();
+    // Startup mutates App after the first paint. Until a later successful full render proves the
+    // terminal matches all reducer-owned state, the IME clock must take the normal draw path.
+    let mut reducer_turn_unrendered = true;
 
     'main_loop: while !app.should_quit {
         if app.dirty {
-            if draw_app_frame(terminal, &mut app, &mut perf)? {
-                finish_draw_cycle(&mut app);
-            }
+            draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)?;
             perf.maybe_log(&app);
             if app.dirty {
                 continue;
@@ -758,29 +767,18 @@ pub async fn run(
         anim_tick_fps = new_tick_fps;
         anim_draw_fps = new_draw_fps;
 
-        // Mostly blocks until input or a worker message arrives. A bounded repaint burst after
-        // relevant terminal activity scrubs IME preedit text that some terminals paint without
-        // sending it through the app, then parks completely at idle.
+        // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
+        // a low-rate redraw scrubs IME preedit text that some terminals paint without
+        // sending an input event to the app.
         let msg = if !pending_worker_msgs.is_empty() {
-            loop {
-                match events.next().now_or_never() {
-                    Some(Some(Ok(ev))) => {
-                        if terminal_event_arms_ime_scrub(&ev, app.should_scrub_ime_preedit()) {
-                            ime_scrub.arm();
-                        }
-                        let (cs, rs) = zoom.mouse_scale();
-                        if let Some(msg) = input.translate(ev, cs, rs) {
-                            break msg;
-                        }
-                    }
-                    Some(Some(Err(_))) => continue,
-                    Some(None) => break 'main_loop,
-                    None => {
-                        break pending_worker_msgs
-                            .pop_front()
-                            .expect("pending worker message");
-                    }
-                }
+            let mut polled_input = None;
+            match event::poll_terminal_input_now(&mut events, &mut input, &zoom, &mut polled_input)
+            {
+                event::InputPoll::Ready => polled_input.expect("ready input message"),
+                event::InputPoll::Empty => pending_worker_msgs
+                    .pop_front()
+                    .expect("pending worker message"),
+                event::InputPoll::Closed => break,
             }
         } else {
             tokio::select! {
@@ -789,12 +787,6 @@ pub async fn run(
                     // virtual grid, so hit-testing (and double-click identity) stay correct
                     // while the UI is scaled.
                     Some(Ok(ev)) => {
-                        if terminal_event_arms_ime_scrub(
-                            &ev,
-                            app.should_scrub_ime_preedit(),
-                        ) {
-                            ime_scrub.arm();
-                        }
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate(ev, cs, rs) {
                             Some(m) => m,
@@ -827,18 +819,50 @@ pub async fn run(
                 },
                 Some(result) = player_ready_rx.recv() => {
                     handles.handle_player_ready(result, &player_runtime, &mut app);
+                    reducer_turn_unrendered = true;
                     if app.dirty {
-                        if draw_app_frame(terminal, &mut app, &mut perf)? {
-                            finish_draw_cycle(&mut app);
-                        }
+                        draw_full_app_frame(
+                            terminal,
+                            &mut app,
+                            &mut perf,
+                            &mut reducer_turn_unrendered,
+                        )?;
                         perf.maybe_log(&app);
                     }
                     continue;
                 },
-                _ = ime_scrub.tick(), if ime_scrub.active() && app.should_scrub_ime_preedit() => {
-                    ime_scrub.consume_tick();
-                    if draw_app_frame(terminal, &mut app, &mut perf)? {
-                        finish_draw_cycle(&mut app);
+                _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
+                    let fast_succeeded = if ime_scrub_requires_full_draw(
+                        &app,
+                        reducer_turn_unrendered,
+                    ) {
+                        false
+                    } else {
+                        match tui::scrub_ime_preedit(
+                            terminal,
+                            app.synchronized_draw_active(),
+                        ) {
+                            Ok(tui::ImeScrubResult::Fast) => {
+                                perf.record_ime_fast_scrub();
+                                true
+                            }
+                            Ok(tui::ImeScrubResult::Resized) => false,
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "IME terminal scrub failed; retrying with a full draw"
+                                );
+                                false
+                            }
+                        }
+                    };
+                    if !fast_succeeded {
+                        draw_full_app_frame(
+                            terminal,
+                            &mut app,
+                            &mut perf,
+                            &mut reducer_turn_unrendered,
+                        )?;
                     }
                     perf.maybe_log(&app);
                     continue;
@@ -887,7 +911,6 @@ pub async fn run(
         }
         let paired_progress = take_adjacent_player_progress_pair(&msg, &mut pending_worker_msgs);
         let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
-        let was_in_text_entry = !app.should_scrub_ime_preedit();
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_))
             || matches!(&paired_progress, Some(Msg::ArtworkResized(_)));
@@ -895,6 +918,7 @@ pub async fn run(
         // facet: OS media and remote clients interpolate elapsed independently, while seeks bump
         // `position_epoch` through a different message. Skip both hashes on this high-rate path.
         let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
+        reducer_turn_unrendered = true;
         for msg in std::iter::once(msg).chain(paired_progress) {
             for cmd in app.update(msg) {
                 // Desktop notifications are handled here (not in `RuntimeHandles`) because the
@@ -910,9 +934,6 @@ pub async fn run(
         if animation_wake {
             anim_schedule.arm_next(app.animation_ticks_until_next_draw());
         }
-        if was_in_text_entry && app.should_scrub_ime_preedit() {
-            ime_scrub.arm();
-        }
         if resized_artwork {
             perf.record_art_resize();
         }
@@ -921,8 +942,8 @@ pub async fn run(
         // is pure output bookkeeping - it reads post-update state but feeds no rendering - so
         // running it *after* the frame lags the OS/remote surfaces by well under one frame while
         // leaving the resting on-screen output identical.
-        if app.dirty && draw_app_frame(terminal, &mut app, &mut perf)? {
-            finish_draw_cycle(&mut app);
+        if app.dirty {
+            draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)?;
         }
 
         // Only a turn that can mutate projected state may toggle/rebuild OS metadata. Progress
@@ -1006,8 +1027,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
     use crate::app::{App, Msg, PlayerMsg};
 
     use super::*;
@@ -1018,29 +1037,35 @@ mod tests {
             enabled: false,
             last_log: Instant::now() - Duration::from_secs(10),
             frames: 0,
+            ime_fast_scrubs: 0,
             draw_total: Duration::ZERO,
             draw_max: Duration::ZERO,
             art_resizes: 0,
         };
         stats.record_draw(Duration::from_millis(7));
         stats.record_art_resize();
+        stats.record_ime_fast_scrub();
         assert_eq!(stats.frames, 0);
         assert_eq!(stats.art_resizes, 0);
+        assert_eq!(stats.ime_fast_scrubs, 0);
 
         stats.enabled = true;
         stats.record_draw(Duration::from_millis(7));
         stats.record_draw(Duration::from_millis(11));
         stats.record_art_resize();
+        stats.record_ime_fast_scrub();
         assert_eq!(stats.frames, 2);
         assert_eq!(stats.draw_total, Duration::from_millis(18));
         assert_eq!(stats.draw_max, Duration::from_millis(11));
         assert_eq!(stats.art_resizes, 1);
+        assert_eq!(stats.ime_fast_scrubs, 1);
 
         stats.maybe_log(&App::new(100));
         assert_eq!(stats.frames, 0);
         assert_eq!(stats.draw_total, Duration::ZERO);
         assert_eq!(stats.draw_max, Duration::ZERO);
         assert_eq!(stats.art_resizes, 0);
+        assert_eq!(stats.ime_fast_scrubs, 0);
     }
 
     #[test]
@@ -1088,49 +1113,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ime_scrub_burst_parks_after_exactly_640_ms_worth_of_ticks() {
-        assert_eq!(
-            IME_SCRUB_PERIOD * u32::from(IME_SCRUB_TICKS),
-            Duration::from_millis(640)
-        );
+    async fn ime_scrub_clock_retains_the_permanent_origin_period() {
+        let mut interval = ime_scrub_interval();
+        assert_eq!(IME_SCRUB_PERIOD, Duration::from_millis(80));
+        assert_eq!(interval.period(), Duration::from_millis(80));
 
-        let mut burst = ImeScrubBurst::new();
-        assert!(!burst.active());
-        assert_eq!(burst.interval.period(), IME_SCRUB_PERIOD);
-
-        burst.arm();
-        for _ in 0..IME_SCRUB_TICKS - 1 {
-            assert!(burst.active());
-            burst.consume_tick();
+        // The removed burst stopped after eight ticks. Reaching ten ticks without any event-based
+        // re-arming proves the scrub clock remains capable of repainting terminal-owned preedit.
+        for _ in 0..10 {
+            tokio::time::timeout(Duration::from_millis(250), interval.tick())
+                .await
+                .expect("permanent IME scrub clock must not expire");
         }
-        assert!(burst.active());
-        burst.consume_tick();
-        assert!(!burst.active());
-
-        // A new terminal event restores the whole window rather than continuing a stale one.
-        burst.arm();
-        assert_eq!(burst.remaining, IME_SCRUB_TICKS);
     }
 
     #[test]
-    fn ime_scrub_arming_events_respect_text_entry() {
-        let key = TerminalEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        let paste = TerminalEvent::Paste("x".to_owned());
-        let resize = TerminalEvent::Resize(120, 40);
+    fn ime_scrub_gate_fails_closed_for_state_and_wall_clock_rendering() {
+        assert!(!ime_scrub_state_requires_full_draw(
+            false, false, false, false, false
+        ));
+        assert!(ime_scrub_state_requires_full_draw(
+            true, false, false, false, false
+        ));
+        assert!(ime_scrub_state_requires_full_draw(
+            false, true, false, false, false
+        ));
+        assert!(
+            ime_scrub_state_requires_full_draw(false, false, true, false, false),
+            "a pending native-image clear must go through the consuming full-draw path"
+        );
+        assert!(
+            ime_scrub_state_requires_full_draw(false, false, false, true, false),
+            "animation-active views retain origin's wall-clock full draws"
+        );
+        assert!(
+            ime_scrub_state_requires_full_draw(false, false, false, false, true),
+            "live-radio stale-edge rendering retains origin's wall-clock full draws"
+        );
+    }
 
-        assert!(terminal_event_arms_ime_scrub(&key, true));
-        assert!(!terminal_event_arms_ime_scrub(&key, false));
-        assert!(terminal_event_arms_ime_scrub(&paste, true));
-        assert!(!terminal_event_arms_ime_scrub(&paste, false));
-        assert!(terminal_event_arms_ime_scrub(&resize, false));
-        assert!(terminal_event_arms_ime_scrub(
-            &TerminalEvent::FocusGained,
-            false
-        ));
-        assert!(!terminal_event_arms_ime_scrub(
-            &TerminalEvent::FocusLost,
-            true
-        ));
+    #[test]
+    fn reducer_turn_gate_catches_visible_updates_that_do_not_set_dirty() {
+        let mut app = App::new(100);
+        app.dirty = false;
+        let status = crate::update::UpdateStatus {
+            current: "1.0.0".to_owned(),
+            latest: "v1.0.1".to_owned(),
+            available: true,
+            first_seen: false,
+            method: crate::update::InstallMethod::Cargo,
+        };
+
+        let _ = app.update(Msg::UpdateChecked(status));
+
+        assert!(
+            !app.dirty,
+            "this persistent surface update intentionally skips dirty"
+        );
+        assert!(app.overlays.update_status.is_some());
+        assert!(ime_scrub_requires_full_draw(&app, true));
+        assert!(
+            !ime_scrub_requires_full_draw(&app, false),
+            "after a successful full draw the same stable non-Local state may use the fast path"
+        );
     }
 
     #[test]

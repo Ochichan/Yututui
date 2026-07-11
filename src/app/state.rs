@@ -49,7 +49,7 @@ pub struct RenderBridges {
     pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
     /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
     /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
-    pub ai_transcript_copy_lines: RefCell<Arc<[String]>>,
+    pub ai_transcript_copy_lines: RefCell<Arc<[Arc<str>]>>,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// The Settings field list keeps its own persistent offset too, so a mouse click on a
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
@@ -800,9 +800,8 @@ pub struct LocalMode {
     /// A single entry is enough: only the active section/query/drill path is rendered, and
     /// replacing it promptly releases potentially large row/id and derived-metadata arrays.
     pub(in crate::app) rows_cache: RefCell<Option<super::local::LocalRowsCache>>,
-    /// Import artifact metadata and content digests persist independently of the one-row-projection
-    /// entry so unchanged files are never opened from the render path. The cache prunes missing
-    /// paths after each scan and enforces a fixed entry ceiling.
+    /// Recognized import-artifact paths and metadata used to invalidate the row cache without
+    /// opening persisted JSON or rescanning unchanged directories from the render path.
     pub(in crate::app) import_files_fingerprint_cache:
         RefCell<super::local::LocalImportFilesFingerprintCache>,
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,

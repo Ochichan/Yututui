@@ -17,7 +17,9 @@ use serde_json::{Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 
 #[cfg(unix)]
 const PRIVATE_DIR_MODE: u32 = 0o700;
@@ -99,6 +101,79 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+#[cfg(any(windows, test))]
+fn validate_windows_change_time(change_time: i64) -> io::Result<i64> {
+    if change_time > 0 {
+        Ok(change_time)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "filesystem did not provide a usable change time",
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn windows_change_time(file: &File) -> io::Result<i64> {
+    use std::mem::{MaybeUninit, size_of};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
+    };
+
+    let mut info = MaybeUninit::<FILE_BASIC_INFO>::uninit();
+    // SAFETY: `file` owns a valid handle, `info` points to writable storage of exactly the size
+    // passed, and the buffer is read only after Win32 reports success.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            info.as_mut_ptr().cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a nonzero result guarantees Win32 initialized the FILE_BASIC_INFO buffer.
+    let change_time = unsafe { info.assume_init() }.ChangeTime;
+    validate_windows_change_time(change_time)
+}
+
+/// Query the Windows change timestamp for the directory currently bound to `path`. The handle is
+/// deliberately transient: retaining a share-delete handle can keep observing an old directory
+/// after an ancestor of `path` is atomically replaced.
+#[cfg(windows)]
+pub(crate) fn windows_directory_change_time(path: &Path) -> io::Result<i64> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    windows_change_time(&file)
+}
+
+/// Query one artifact's Windows change timestamp through a transient handle. The handle is
+/// dropped before this function returns, so fingerprinting never pins imported files open.
+#[cfg(windows)]
+pub(crate) fn windows_file_change_time(path: &Path) -> io::Result<i64> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    windows_change_time(&file)
+}
 
 #[cfg(windows)]
 fn is_windows_reparse_point(meta: &fs::Metadata) -> bool {
@@ -812,6 +887,33 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!("yututui-{name}-{}-{suffix}", std::process::id()))
+    }
+
+    #[test]
+    fn windows_change_time_requires_a_positive_generation() {
+        assert_eq!(validate_windows_change_time(1).unwrap(), 1);
+        assert_eq!(
+            validate_windows_change_time(0).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            validate_windows_change_time(-1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_change_time_uses_a_transient_handle() {
+        let dir = temp_root("file-change-time");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("artifact.json");
+        fs::write(&path, b"{}").unwrap();
+
+        assert!(windows_file_change_time(&path).unwrap() > 0);
+        // The helper's local handle has already been dropped, so the artifact is not pinned.
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
