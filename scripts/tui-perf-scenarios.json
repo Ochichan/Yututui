@@ -11,7 +11,11 @@
     "interval_ms": 1000,
     "cpu_unit": "percent_of_one_logical_core",
     "resident_memory_unit": "bytes",
-    "process_scope": "ytt_and_recursive_descendants"
+    "process_scope": "ytt_and_recursive_descendants",
+    "measurement_kind": "sampled_process_tree",
+    "limitations": [
+      "sampled process tree; sub-interval descendants may be missed"
+    ]
   },
   "fixture": {
     "duration_s": 1080,
@@ -90,6 +94,20 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": {
+          "config_present": true,
+          "cache_forward": { "present": true, "value": "32MiB" },
+          "cache_back": { "present": true, "value": "8MiB" },
+          "_cache_defaults_revision": { "present": false, "value": null }
+        }
+      },
       "controller": true,
       "controller_load": "resume-session",
       "pause_policy": "pause-resume",
@@ -137,6 +155,20 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": {
+          "config_present": true,
+          "cache_forward": { "present": false, "value": null },
+          "cache_back": { "present": false, "value": null },
+          "_cache_defaults_revision": { "present": false, "value": null }
+        }
+      },
       "controller": true,
       "controller_load": "resume-session",
       "pause_policy": "pause-resume",
@@ -172,6 +204,15 @@
       "geometry": [[80, 24]],
       "traffic_profile": "outage",
       "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
       "controller": true,
       "controller_load": "resume-session",
       "pause_policy": "none",
@@ -305,8 +346,8 @@
     },
     {
       "id": "memory_soak",
-      "description": "One 15-minute steady playback soak per binary and OS",
-      "pairs": 1,
+      "description": "Three alternating 15-minute steady playback pairs per OS",
+      "pairs": 3,
       "candidate_repeats": 0,
       "min_improved_pairs": 0,
       "warmup_s": 90,
@@ -314,11 +355,22 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
       "controller": true,
       "controller_load": "resume-session",
       "pause_policy": "none",
       "pause_hold_ms": 0,
       "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
       "metrics": {
         "tree.peak_rss_bytes": {
           "comparison": "ratio",
@@ -342,11 +394,22 @@
       "geometry": [[100, 30], [160, 50]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
       "controller": true,
       "controller_load": "resume-session",
       "pause_policy": "none",
       "pause_hold_ms": 0,
       "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
       "metrics": {
         "tree.mean_cpu_percent": {
           "comparison": "ratio",

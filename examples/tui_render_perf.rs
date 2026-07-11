@@ -171,6 +171,12 @@ fn usage() -> &'static str {
 }
 
 #[derive(Serialize)]
+struct LatencyBucket {
+    ns: u128,
+    count: usize,
+}
+
+#[derive(Serialize)]
 struct BatchReport {
     batch: usize,
     draws: usize,
@@ -179,6 +185,7 @@ struct BatchReport {
     p50_draw_ns: u128,
     p95_draw_ns: u128,
     max_draw_ns: u128,
+    latency_histogram: Vec<LatencyBucket>,
     allocations: u64,
     reallocations: u64,
     allocated_bytes: u64,
@@ -195,7 +202,12 @@ struct CaseReport {
     height: u16,
     warmup_draws: usize,
     measured_draws: usize,
+    total_draw_ns: u128,
+    mean_draw_ns: f64,
+    p50_draw_ns: u128,
     p95_draw_ns: u128,
+    max_draw_ns: u128,
+    latency_histogram: Vec<LatencyBucket>,
     batches: Vec<BatchReport>,
     buffer_style_digest: String,
     hit_map_digest: String,
@@ -208,6 +220,9 @@ struct Report {
     binary: PathBuf,
     binary_sha256: String,
     scenario_sha256: Option<String>,
+    run_id: String,
+    started_unix_ns: u128,
+    finished_unix_ns: u128,
     os: &'static str,
     arch: &'static str,
     batches_per_case: usize,
@@ -232,6 +247,11 @@ fn main() {
         std::process::exit(2);
     });
     let selected = args.case.as_deref();
+    let run_id = std::env::var("TUI_PERF_RUN_ID").unwrap_or_else(|_| {
+        eprintln!("tui_render_perf: TUI_PERF_RUN_ID is required");
+        std::process::exit(2);
+    });
+    let started_unix_ns = unix_time_ns();
     let specs = case_specs();
     if let Some(case) = selected
         && !specs.iter().any(|spec| spec.name == case)
@@ -255,6 +275,9 @@ fn main() {
         binary,
         binary_sha256,
         scenario_sha256: std::env::var("TUI_PERF_SCENARIO_SHA256").ok(),
+        run_id,
+        started_unix_ns,
+        finished_unix_ns: unix_time_ns(),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         batches_per_case: args.batches,
@@ -284,6 +307,16 @@ fn main() {
             println!();
         }
     }
+}
+
+fn unix_time_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_else(|error| {
+            eprintln!("tui_render_perf: system clock before Unix epoch: {error}");
+            std::process::exit(2);
+        })
+        .as_nanos()
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -438,10 +471,9 @@ fn run_case(
     let mut batches = Vec::with_capacity(batch_count);
     let mut case_latencies = Vec::with_capacity(batch_count.saturating_mul(draws_per_batch));
     for batch in 0..batch_count {
+        let mut latencies = Vec::with_capacity(draws_per_batch);
         let before = AllocSnapshot::now();
         WINDOW_PEAK.store(before.live, Ordering::Relaxed);
-        let batch_started = Instant::now();
-        let mut latencies = Vec::with_capacity(draws_per_batch);
         for draw in 0..draws_per_batch {
             let latency = measure_update_to_draw(|| {
                 (spec.update)(&mut app, batch * draws_per_batch + draw);
@@ -452,7 +484,7 @@ fn run_case(
             })?;
             latencies.push(latency);
         }
-        let total_ns = batch_started.elapsed().as_nanos();
+        let total_ns = latencies.iter().sum::<u128>();
         let after = AllocSnapshot::now();
         case_latencies.extend_from_slice(&latencies);
         latencies.sort_unstable();
@@ -464,6 +496,7 @@ fn run_case(
             p50_draw_ns: percentile(&latencies, 0.50),
             p95_draw_ns: percentile(&latencies, 0.95),
             max_draw_ns: *latencies.last().unwrap_or(&0),
+            latency_histogram: latency_histogram(&latencies),
             allocations: after.allocs.saturating_sub(before.allocs),
             reallocations: after.reallocs.saturating_sub(before.reallocs),
             allocated_bytes: after.allocated.saturating_sub(before.allocated),
@@ -478,6 +511,7 @@ fn run_case(
     let buffer_style_digest = digest(terminal.backend().buffer());
     let hit_map_digest = digest_hit_map(&app, spec.width, spec.height);
     case_latencies.sort_unstable();
+    let total_draw_ns = case_latencies.iter().sum::<u128>();
     Ok(CaseReport {
         name: spec.name.to_string(),
         update_path: spec.update_path,
@@ -485,11 +519,30 @@ fn run_case(
         height: spec.height,
         warmup_draws: warmup,
         measured_draws: case_latencies.len(),
+        total_draw_ns,
+        mean_draw_ns: total_draw_ns as f64 / case_latencies.len().max(1) as f64,
+        p50_draw_ns: percentile(&case_latencies, 0.50),
         p95_draw_ns: percentile(&case_latencies, 0.95),
+        max_draw_ns: *case_latencies.last().unwrap_or(&0),
+        latency_histogram: latency_histogram(&case_latencies),
         batches,
         buffer_style_digest,
         hit_map_digest,
     })
+}
+
+fn latency_histogram(sorted: &[u128]) -> Vec<LatencyBucket> {
+    let mut histogram: Vec<LatencyBucket> = Vec::new();
+    for &ns in sorted {
+        if let Some(last) = histogram.last_mut()
+            && last.ns == ns
+        {
+            last.count += 1;
+            continue;
+        }
+        histogram.push(LatencyBucket { ns, count: 1 });
+    }
+    histogram
 }
 
 fn percentile(sorted: &[u128], quantile: f64) -> u128 {
