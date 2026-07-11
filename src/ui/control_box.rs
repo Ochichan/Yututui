@@ -656,9 +656,16 @@ fn render_dropdown(
 
     let box_w = dropdown_width(rows.iter().map(|(l, _, _)| l.as_str()));
     let box_h = rows.len() as u16 + 2;
-    // Drop below the label; clamp against the right/bottom edges so the box stays on screen.
+    // Drop below the label; when the anchor sits low (the docked box's status line) and
+    // there's room above, drop up instead — bottom-clamping would smother the very line
+    // the menu was opened from. Clamp against the screen edges either way.
     let x = anchor.x.min(area.right().saturating_sub(box_w));
-    let y = (anchor.y + 1).min(area.bottom().saturating_sub(box_h));
+    let below_room = area.bottom().saturating_sub(anchor.y + 1);
+    let y = if below_room >= box_h || anchor.y.saturating_sub(area.y) < box_h {
+        (anchor.y + 1).min(area.bottom().saturating_sub(box_h))
+    } else {
+        anchor.y - box_h
+    };
     let popup = Rect {
         x,
         y,

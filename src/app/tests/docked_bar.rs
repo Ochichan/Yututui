@@ -259,6 +259,67 @@ fn footer_toggle_hidden_on_player_and_in_top_mode() {
 }
 
 #[test]
+fn eq_dropdown_drops_up_from_the_docked_status_line() {
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Search; // default Bottom: status line near the screen bottom
+    render_at_size(&app, 80, 24);
+    let anchor = app
+        .hits
+        .rect_of_target(MouseTarget::EqMenu)
+        .expect("eq: registered in the docked box");
+    app.update(Msg::MouseClick {
+        col: anchor.x,
+        row: anchor.y,
+    });
+    assert!(app.dropdowns.eq_open);
+    render_at_size(&app, 80, 24);
+    let first_preset = app
+        .hits
+        .regions()
+        .iter()
+        .filter(|b| matches!(b.target, MouseTarget::EqSelect(_)))
+        .map(|b| b.rect.y)
+        .max()
+        .expect("dropdown rows registered");
+    assert!(
+        first_preset < anchor.y,
+        "menu rows (bottom at y={first_preset}) must open above the low anchor (y={})",
+        anchor.y
+    );
+}
+
+#[test]
+fn returning_to_player_replays_the_title_intro_only_when_enabled() {
+    // Flags off (the default test config): the off-mode byte-identity contract — a mode
+    // switch must arm nothing.
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Library;
+    app.update(Msg::Resize); // pump detect_fx with mode=Library as the anchor
+    app.update(Msg::Key(ctrl(KeyCode::Char('h')))); // Home → Player
+    assert_eq!(app.mode, Mode::Player);
+    assert!(
+        app.fx.track_intro.is_none(),
+        "animations off: no intro may arm"
+    );
+
+    // Master + track_intro on: returning to Player replays the cascade.
+    let mut app = app_playing(2, 0);
+    app.config.animations.master = true;
+    app.config.animations.track_intro = true;
+    app.update(Msg::Resize); // consume the initial track-change arm
+    app.fx.track_intro = None;
+    app.mode = Mode::Library;
+    app.update(Msg::Resize);
+    app.fx.track_intro = None;
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert_eq!(app.mode, Mode::Player);
+    assert!(
+        app.fx.track_intro.is_some(),
+        "animations on: returning to Player replays the title intro"
+    );
+}
+
+#[test]
 fn art_geometry_moves_request_a_native_clear() {
     let mut app = app_playing(1, 0);
     make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);

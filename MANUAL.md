@@ -48,6 +48,19 @@ YuTuTui! is five screens, each one key away:
 
 `Esc` generally backs you out of wherever you are. The mouse works everywhere too — click anything, scroll the wheel to change volume.
 
+### The player bar follows you
+
+The now-playing controls — title, progress bar, transport, status — live in a bar docked to
+the bottom of **every** screen, so you can pause or seek from Search or Library without
+leaving. Press `B` (or click the `▼` / `▲` next to the footer's mouse hint) to tuck the bar
+away on those screens and reclaim the rows; the Player screen always keeps it. If you
+prefer the classic look with the controls at the top of the Player screen only, switch
+*Settings › General › Player bar position* to **Top**.
+
+Shrink the window far enough (below ~32×11 cells) and the whole app becomes a tiny
+miniplayer — title, progress, transport — then springs back to the full layout as soon as
+the window grows again. Nothing to configure; it just follows the window.
+
 ---
 
 ## 2. Everyday music (the normal mode)

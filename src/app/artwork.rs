@@ -404,7 +404,11 @@ impl App {
             self.fx.toast = Some(self.fx_arm(w::toast_ms(cols)));
         }
 
-        // Screen switch → nav-tab pop + the new view's list cascade.
+        // Screen switch → nav-tab pop + the new view's list cascade. Returning to the
+        // Player screen additionally replays the title letter-cascade as a light "welcome
+        // back" intro over the (re-centered) now-playing block — the existing one-shot
+        // window, no new fx state, and gated like every trigger so `off` mode stays
+        // byte-identical.
         if self.mode != self.fx.last_mode {
             self.fx.last_mode = self.mode;
             if on(a.tabs) {
@@ -412,6 +416,13 @@ impl App {
             }
             if on(a.stagger) {
                 self.fx.list = Some((self.fx_arm(w::LIST_MS), self.mode));
+            }
+            if self.mode == Mode::Player
+                && on(a.track_intro)
+                && self.queue.current().is_some()
+                && !track_changed
+            {
+                self.fx.track_intro = Some(self.fx_arm(w::TRACK_INTRO_MS));
             }
         }
 
