@@ -328,7 +328,18 @@ pub fn read_to_string_no_symlink(path: &Path) -> io::Result<String> {
 pub fn read_no_symlink_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     let file = open_no_symlink(path)?;
     let meta = file.metadata()?;
-    if !meta.is_file() {
+    if !meta.is_file()
+        || cfg!(windows) && {
+            #[cfg(windows)]
+            {
+                is_windows_reparse_point(&meta)
+            }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        }
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("not a regular file: {}", path.display()),
@@ -341,6 +352,97 @@ pub fn read_no_symlink_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8
         ));
     }
     let mut out = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut out)?;
+    if out.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file too large: {}", path.display()),
+        ));
+    }
+    Ok(out)
+}
+
+/// Read a bounded private file without repairing or creating any part of its path.
+///
+/// On Unix the already-existing parent must be a current-user `0700` directory and the opened
+/// final inode must be a current-user `0600` regular file. The final open uses `O_NOFOLLOW`, and
+/// ownership/mode/size checks are made against that opened inode. Windows applies the equivalent
+/// no-reparse-point and regular-file checks available to this module. This is intentionally a
+/// validator only: unlike [`ensure_private_dir`], it never changes permissions.
+pub(crate) fn read_private_file_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("private file has no parent: {}", path.display()),
+        )
+    })?;
+    let parent_meta = fs::symlink_metadata(parent)?;
+
+    #[cfg(unix)]
+    if !parent_meta.is_dir()
+        || parent_meta.file_type().is_symlink()
+        || !is_owned_by_current_user(&parent_meta)
+        || parent_meta.permissions().mode() & 0o7777 != private_dir_mode()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "private parent is not current-user 0700: {}",
+                parent.display()
+            ),
+        ));
+    }
+
+    #[cfg(windows)]
+    if !parent_meta.is_dir() || is_windows_reparse_point(&parent_meta) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing non-private parent: {}", parent.display()),
+        ));
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    if !parent_meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing non-directory parent: {}", parent.display()),
+        ));
+    }
+
+    let file = open_no_symlink(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("not a private regular file: {}", path.display()),
+        ));
+    }
+
+    #[cfg(windows)]
+    if is_windows_reparse_point(&meta) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing private file reparse point: {}", path.display()),
+        ));
+    }
+
+    #[cfg(unix)]
+    if !is_owned_by_current_user(&meta) || meta.permissions().mode() & 0o7777 != private_file_mode()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("private file is not current-user 0600: {}", path.display()),
+        ));
+    }
+
+    if meta.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file too large: {}", path.display()),
+        ));
+    }
+    let mut out = Vec::with_capacity(meta.len() as usize);
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut out)?;
     if out.len() as u64 > max_bytes {
@@ -847,6 +949,26 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             private_file_mode()
         );
+        assert_eq!(read_private_file_limited(&path, 16).unwrap(), b"{}");
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(
+            read_private_file_limited(&path, 16).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(private_file_mode())).unwrap();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+        assert_eq!(
+            read_private_file_limited(&path, 16).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o1700)).unwrap();
+        assert_eq!(
+            read_private_file_limited(&path, 16).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        fs::set_permissions(&dir, fs::Permissions::from_mode(private_dir_mode())).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -22,19 +22,21 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::api::Song;
-use crate::app::{App, Msg};
+use crate::app::{App, Cmd, Msg};
 use crate::config::Config;
 use crate::library::Library;
-use crate::queue::{Queue, QueueSnapshot};
+use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
-    InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse, RemoteSettingChange,
-    ToggleState,
+    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse,
+    RemoteSettingChange, ToggleState,
 };
 use crate::remote::publish;
 use crate::signals::Signals;
 use crate::station::StationStore;
 
 use super::engine::{DaemonEngine, EngineState};
+
+const RNG_SEED: u64 = 20260703;
 
 fn song(id: &str) -> Song {
     Song::remote(id, format!("title-{id}"), format!("artist-{id}"), "3:45")
@@ -60,7 +62,6 @@ fn hermetic_pair() -> (App, DaemonEngine) {
         },
         Arc::new(|_event| {}),
     );
-    const RNG_SEED: u64 = 20260703;
     engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
 
     let mut app = App::new(Config::default().volume);
@@ -78,11 +79,16 @@ fn hermetic_pair() -> (App, DaemonEngine) {
 
 /// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`).
 fn app_apply(app: &mut App, cmd: RemoteCommand) -> RemoteResponse {
+    app_apply_with_cmds(app, cmd).0
+}
+
+fn app_apply_with_cmds(app: &mut App, cmd: RemoteCommand) -> (RemoteResponse, Vec<Cmd>) {
     let (tx, mut rx) = oneshot::channel();
-    // Side-effect Cmds are deliberately dropped: parity compares state projections;
-    // effect parity (which PlayerCmds each owner emits) is an S1 extension.
-    let _cmds = app.update(Msg::Remote(cmd, tx));
-    rx.try_recv().expect("apply_remote replies synchronously")
+    let cmds = app.update(Msg::Remote(cmd, tx));
+    (
+        rx.try_recv().expect("apply_remote replies synchronously"),
+        cmds,
+    )
 }
 
 fn models_of(view: &publish::CoreView<'_>) -> (PlayerModel, QueueModel) {
@@ -106,6 +112,32 @@ fn assert_parity(step: &str, app: &App, engine: &DaemonEngine) {
     normalize(&mut eng_player, &mut eng_queue);
     assert_eq!(app_player, eng_player, "PlayerModel diverged after {step}");
     assert_eq!(app_queue, eng_queue, "QueueModel diverged after {step}");
+}
+
+async fn engine_with_modes(repeat: Repeat, streaming: bool) -> DaemonEngine {
+    let (_, mut engine) = hermetic_pair();
+    if streaming {
+        let (response, shutdown, _) = engine
+            .handle_remote(RemoteCommand::Streaming {
+                state: ToggleState::On,
+            })
+            .await;
+        assert!(response.ok && !shutdown, "test setup must enable streaming");
+    }
+    let mut snapshot = seed_snapshot();
+    snapshot.repeat = repeat;
+    engine.restore_queue_snapshot(snapshot, RNG_SEED);
+    engine
+}
+
+fn gui_repeat(repeat: Repeat) -> RemoteCommand {
+    RemoteCommand::Apply {
+        change: GuiSettingChange {
+            group: "playback".to_owned(),
+            field: "repeat".to_owned(),
+            value: serde_json::to_value(repeat).unwrap(),
+        },
+    }
 }
 
 /// The B0 shared command script: settings, toggles, and queue membership — everything
@@ -134,11 +166,19 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::Streaming {
             state: ToggleState::On,
         },
+        RemoteCommand::SetSetting {
+            change: RemoteSettingChange::AutoplayStreaming { value: true },
+        },
+        RemoteCommand::CycleRepeat, // One → Off: disabling repeat remains allowed
         RemoteCommand::Streaming {
-            state: ToggleState::Toggle,
+            state: ToggleState::On,
+        },
+        RemoteCommand::CycleRepeat, // rejected while streaming is on
+        RemoteCommand::Streaming {
+            state: ToggleState::Toggle, // On → Off: disabling streaming remains allowed
         },
         RemoteCommand::ToggleShuffle, // back to natural order
-        RemoteCommand::CycleRepeat,   // Off → All → One → Off completes
+        RemoteCommand::CycleRepeat,   // Off → All remains allowed after streaming is off
     ]
 }
 
@@ -150,8 +190,8 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
     for (index, cmd) in b0_script().into_iter().enumerate() {
         let step = format!("step {index}: {cmd:?}");
 
-        let app_resp = app_apply(&mut app, cmd.clone());
-        let (engine_resp, shutdown, _effects) = engine.handle_remote(cmd).await;
+        let (app_resp, app_cmds) = app_apply_with_cmds(&mut app, cmd.clone());
+        let (engine_resp, shutdown, engine_effects) = engine.handle_remote(cmd).await;
         assert!(!shutdown, "{step}: script must not shut the engine down");
 
         assert_eq!(
@@ -162,8 +202,90 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
             app_resp.reason, engine_resp.reason,
             "{step}: owners disagree on the machine reason code"
         );
+        if app_resp.reason.as_deref() == Some("repeat_streaming_conflict") {
+            assert!(app_cmds.is_empty(), "{step}: App rejection emitted effects");
+            assert!(
+                engine_effects.is_empty(),
+                "{step}: daemon rejection emitted effects"
+            );
+        }
 
         assert_parity(&step, &app, &engine);
+    }
+}
+
+#[tokio::test]
+async fn daemon_conflicts_reject_without_state_or_effects() {
+    for command in [
+        RemoteCommand::Streaming {
+            state: ToggleState::On,
+        },
+        RemoteCommand::Streaming {
+            state: ToggleState::Toggle,
+        },
+        RemoteCommand::SetSetting {
+            change: RemoteSettingChange::AutoplayStreaming { value: true },
+        },
+    ] {
+        let mut engine = engine_with_modes(Repeat::All, false).await;
+        let before = engine.status();
+        let (response, shutdown, effects) = engine.handle_remote(command).await;
+        assert!(!response.ok && !shutdown);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("repeat_streaming_conflict")
+        );
+        assert!(effects.is_empty());
+        assert_eq!(engine.status(), before, "rejection mutated daemon state");
+    }
+
+    for (repeat, streaming, command) in [
+        (Repeat::Off, true, RemoteCommand::CycleRepeat),
+        (Repeat::Off, true, gui_repeat(Repeat::All)),
+    ] {
+        let mut engine = engine_with_modes(repeat, streaming).await;
+        let before = engine.status();
+        let (response, shutdown, effects) = engine.handle_remote(command).await;
+        assert!(!response.ok && !shutdown);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("repeat_streaming_conflict")
+        );
+        assert!(effects.is_empty());
+        assert_eq!(engine.status(), before, "rejection mutated daemon state");
+    }
+}
+
+#[tokio::test]
+async fn daemon_conflict_disables_remain_allowed() {
+    for command in [
+        RemoteCommand::Streaming {
+            state: ToggleState::Off,
+        },
+        RemoteCommand::Streaming {
+            state: ToggleState::Toggle,
+        },
+        RemoteCommand::SetSetting {
+            change: RemoteSettingChange::AutoplayStreaming { value: false },
+        },
+    ] {
+        let mut engine = engine_with_modes(Repeat::One, true).await;
+        let (response, shutdown, effects) = engine.handle_remote(command).await;
+        let status = engine.status();
+        assert!(response.ok && !shutdown);
+        assert!(effects.is_empty());
+        assert!(!status.streaming);
+        assert_eq!(status.repeat, Repeat::One);
+    }
+
+    for command in [RemoteCommand::CycleRepeat, gui_repeat(Repeat::Off)] {
+        let mut engine = engine_with_modes(Repeat::One, true).await;
+        let (response, shutdown, effects) = engine.handle_remote(command).await;
+        let status = engine.status();
+        assert!(response.ok && !shutdown);
+        assert!(effects.is_empty());
+        assert!(status.streaming);
+        assert_eq!(status.repeat, Repeat::Off);
     }
 }
 

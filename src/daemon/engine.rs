@@ -354,7 +354,7 @@ impl DaemonEngine {
                 // Music-mode invariant (mirrors the App reducer for parity): refuse turning
                 // repeat on while autoplay streaming is on. Off→All is the only enabling step.
                 if self.queue.repeat.cycle_blocked_by_streaming(self.streaming) {
-                    RemoteResponse::status(self.status())
+                    RemoteResponse::err("repeat_streaming_conflict")
                 } else {
                     self.queue.cycle_repeat();
                     self.config.repeat = self.queue.repeat;
@@ -538,7 +538,9 @@ impl DaemonEngine {
             ("playback", "repeat") => {
                 match serde_json::from_value::<crate::queue::Repeat>(value.clone()) {
                     // Music-mode invariant: can't enable repeat while autoplay streaming is on.
-                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => ok(self),
+                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => {
+                        (RemoteResponse::err("repeat_streaming_conflict"), Vec::new())
+                    }
                     Ok(repeat) => {
                         self.queue.repeat = repeat;
                         self.config.repeat = repeat;
@@ -1727,11 +1729,11 @@ impl DaemonEngine {
     }
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
-        let mut on = state.resolve(self.streaming);
-        // Music-mode invariant (mirrors the App reducer for parity): never enable autoplay while
-        // repeat is on. Clamping to `false` keeps the response identical to a normal "off".
+        let on = state.resolve(self.streaming);
+        // Music-mode invariant (mirrors the App reducer for parity): reject the enable before
+        // changing or persisting state, and without emitting any engine/player effects.
         if on && self.queue.repeat.is_on() {
-            on = false;
+            return (RemoteResponse::err("repeat_streaming_conflict"), Vec::new());
         }
         self.streaming = on;
         self.config.autoplay_streaming = Some(self.streaming);
@@ -3037,32 +3039,6 @@ mod tests {
         assert!(shutdown);
         assert!(effects.is_empty());
         assert!(engine.loaded_video_id.is_none());
-    }
-
-    #[tokio::test]
-    async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
-        let mut engine = engine_with_queue(&["seed"]);
-        engine.streaming = true;
-        engine.queue.repeat = crate::queue::Repeat::Off;
-
-        let (response, _, effects) = engine.handle_remote(RemoteCommand::CycleRepeat).await;
-
-        assert!(response.ok);
-        assert!(effects.is_empty());
-        assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
-
-        engine.streaming = false;
-        engine.queue.repeat = crate::queue::Repeat::All;
-        let (response, _, effects) = engine
-            .handle_remote(RemoteCommand::Streaming {
-                state: ToggleState::On,
-            })
-            .await;
-
-        assert!(response.ok);
-        assert!(effects.is_empty());
-        assert!(!engine.streaming);
-        assert_eq!(engine.config.autoplay_streaming, Some(false));
     }
 
     #[tokio::test]

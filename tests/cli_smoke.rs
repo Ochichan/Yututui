@@ -1,5 +1,14 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use yututui::remote::proto::{InstanceFile, InstanceMode, PROTOCOL_VERSION};
+
+const CHILD_TIMEOUT: Duration = Duration::from_secs(10);
+const DESCRIPTOR_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ytt"))
@@ -22,6 +31,7 @@ fn isolated_command(root: &Path, args: &[&str]) -> Command {
             .expect("isolated runtime dir should be private");
     }
 
+    let user_tag = isolated_user_tag(root);
     let mut command = Command::new(env!("CARGO_BIN_EXE_ytt"));
     command
         .args(args)
@@ -35,11 +45,134 @@ fn isolated_command(root: &Path, args: &[&str]) -> Command {
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("XDG_RUNTIME_DIR", runtime)
         .env("YTM_TOOLS_DIR", root.join("tools"))
+        .env("USER", &user_tag)
+        .env("USERNAME", user_tag)
         .env("LANG", "C")
         .env("LC_ALL", "C")
         .env_remove("YTM_YTDLP")
         .env_remove("YTM_MPV");
     command
+}
+
+fn isolated_user_tag(root: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    format!("smoke{:x}", hasher.finish())
+        .chars()
+        .take(16)
+        .collect()
+}
+
+#[cfg(unix)]
+fn remote_app_dir(root: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+
+    let runtime = root.join("runtime");
+    std::fs::create_dir_all(&runtime).expect("isolated runtime dir should be creatable");
+    let uid = std::fs::metadata(&runtime)
+        .expect("isolated runtime metadata should be readable")
+        .uid();
+    runtime.join(format!("yututui-{uid}"))
+}
+
+#[cfg(not(unix))]
+fn remote_app_dir(root: &Path) -> PathBuf {
+    std::env::temp_dir().join(format!("yututui-{}", isolated_user_tag(root)))
+}
+
+#[cfg(unix)]
+fn canonical_remote_endpoint(root: &Path) -> String {
+    remote_app_dir(root)
+        .join(format!("yututui-remote-{}.sock", isolated_user_tag(root)))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(not(unix))]
+fn canonical_remote_endpoint(root: &Path) -> String {
+    format!(r"\\.\pipe\yututui-remote-{}", isolated_user_tag(root))
+}
+
+fn current_descriptor_path(root: &Path) -> PathBuf {
+    remote_app_dir(root).join(format!("yututui-remote-{}.json", isolated_user_tag(root)))
+}
+
+fn write_current_descriptor(root: &Path, instance: &InstanceFile) {
+    assert_eq!(instance.endpoint, canonical_remote_endpoint(root));
+    let runtime = root.join("runtime");
+    std::fs::create_dir_all(&runtime).expect("isolated runtime dir should be creatable");
+    let app_dir = remote_app_dir(root);
+    std::fs::create_dir_all(&app_dir).expect("private remote app dir should be creatable");
+    let path = current_descriptor_path(root);
+    std::fs::write(&path, serde_json::to_vec(instance).unwrap())
+        .expect("current descriptor should be writable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&app_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn isolated_instance(root: &Path, protocol_version: u8, capabilities: Vec<String>) -> InstanceFile {
+    InstanceFile {
+        app_pid: 4_242,
+        endpoint: canonical_remote_endpoint(root),
+        token: DESCRIPTOR_TOKEN.to_owned(),
+        created_unix: 123,
+        mode: InstanceMode::Daemon,
+        protocol_version,
+        capabilities,
+    }
+}
+
+fn clean_isolated_remote(root: &Path) {
+    let _ = std::fs::remove_dir_all(remote_app_dir(root));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn run_isolated_with_timeout(root: &Path, args: &[&str]) -> std::process::Output {
+    output_with_timeout(isolated_command(root, args), CHILD_TIMEOUT)
+}
+
+fn output_with_timeout(mut command: Command, timeout: Duration) -> std::process::Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().expect("ytt command should spawn");
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child
+            .try_wait()
+            .expect("ytt child status should be readable")
+        {
+            Some(status) => break status,
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("ytt command exceeded {timeout:?}");
+            }
+        }
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("ytt stdout should be captured")
+        .read_to_end(&mut stdout)
+        .unwrap();
+    child
+        .stderr
+        .take()
+        .expect("ytt stderr should be captured")
+        .read_to_end(&mut stderr)
+        .unwrap();
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 fn stdout(output: &std::process::Output) -> String {
@@ -434,4 +567,617 @@ fn transfer_and_auth_one_shots_report_setup_failures_without_tui_startup() {
         "stdout={}",
         stdout(&spotify_logout)
     );
+}
+
+#[test]
+fn new_remote_commands_fail_cleanly_without_an_owner() {
+    let root = isolated_root("remote-no-instance");
+    clean_isolated_remote(&root);
+
+    for args in [
+        &["-r", "info"][..],
+        &["-r", "queue-list"][..],
+        &["-r", "settings-show"][..],
+        &["-r", "queue-play", "1"][..],
+        &["-r", "watch"][..],
+    ] {
+        let output = run_isolated_with_timeout(&root, args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: stdout={}, stderr={}",
+            stdout(&output),
+            stderr(&output)
+        );
+        assert!(stdout(&output).is_empty(), "{args:?}: unexpected stdout");
+        assert!(
+            stderr(&output).contains("ytt -r:"),
+            "{args:?}: stderr={}",
+            stderr(&output)
+        );
+    }
+
+    clean_isolated_remote(&root);
+}
+
+#[test]
+fn new_remote_parser_rejects_bad_arity_before_connecting() {
+    let root = isolated_root("remote-bad-arity");
+    clean_isolated_remote(&root);
+
+    for args in [
+        &["-r", "info", "extra"][..],
+        &["-r", "queue-list", "extra"][..],
+        &["-r", "settings-show", "extra"][..],
+        &["-r", "queue-play"][..],
+        &["-r", "queue-play", "0"][..],
+        &["-r", "queue-play", "-1"][..],
+        &["-r", "queue-play", "1", "extra"][..],
+        &["-r", "queue-play", "184467440737095516160"][..],
+        &["-r", "watch", "player", "queue"][..],
+    ] {
+        let output = run_isolated_with_timeout(&root, args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: stdout={}, stderr={}",
+            stdout(&output),
+            stderr(&output)
+        );
+        assert!(stdout(&output).is_empty(), "{args:?}: unexpected stdout");
+        assert!(
+            stderr(&output).contains("ytt -r:"),
+            "{args:?}: stderr={}",
+            stderr(&output)
+        );
+    }
+
+    clean_isolated_remote(&root);
+}
+
+#[test]
+fn watch_rejects_unsupported_descriptor_protocol_and_capability() {
+    let root = isolated_root("remote-watch-unsupported");
+    clean_isolated_remote(&root);
+
+    let protocol_instance =
+        isolated_instance(&root, PROTOCOL_VERSION - 1, vec!["events-v8".to_owned()]);
+    write_current_descriptor(&root, &protocol_instance);
+    let protocol = run_isolated_with_timeout(&root, &["-r", "watch"]);
+    assert_eq!(protocol.status.code(), Some(2), "{}", stderr(&protocol));
+    assert!(stderr(&protocol).contains("requires protocol 8"));
+    assert!(!stderr(&protocol).contains(DESCRIPTOR_TOKEN));
+    assert!(!stderr(&protocol).contains(&protocol_instance.endpoint));
+
+    let capability_instance = isolated_instance(
+        &root,
+        PROTOCOL_VERSION,
+        vec!["remote-control".to_owned(), "status".to_owned()],
+    );
+    write_current_descriptor(&root, &capability_instance);
+    let capability = run_isolated_with_timeout(&root, &["-r", "watch"]);
+    assert_eq!(capability.status.code(), Some(2), "{}", stderr(&capability));
+    assert!(stderr(&capability).contains("does not support watch events"));
+    assert!(!stderr(&capability).contains(DESCRIPTOR_TOKEN));
+    assert!(!stderr(&capability).contains(&capability_instance.endpoint));
+
+    clean_isolated_remote(&root);
+}
+
+#[cfg(any(unix, windows))]
+mod remote_owner {
+    use super::*;
+    use std::sync::mpsc;
+
+    use interprocess::local_socket::tokio::prelude::*;
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use yututui::remote::proto::{
+        ClientFrame, ClientOp, HelloAck, HelloRequest, PushEvent, QueueItemSnapshot, RemoteCommand,
+        RemoteRequest, RemoteResponse, ServerFrame, SettingsSnapshot, StatusSnapshot, Topic,
+    };
+    use yututui::search_source::SearchSource;
+    use yututui::streaming::StreamingMode;
+
+    const OWNER_IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+    struct Exchange {
+        command: RemoteCommand,
+        response: RemoteResponse,
+    }
+
+    #[cfg(unix)]
+    fn short_root(label: &str) -> PathBuf {
+        PathBuf::from("/tmp").join(format!("ytt-r-{label}-{}", std::process::id()))
+    }
+
+    #[cfg(windows)]
+    fn short_root(label: &str) -> PathBuf {
+        isolated_root(label)
+    }
+
+    fn spawn_fake_owner(endpoint: String, exchanges: Vec<Exchange>) -> std::thread::JoinHandle<()> {
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("fake owner runtime should build");
+            runtime.block_on(async move {
+                let _ = std::fs::remove_file(&endpoint);
+                let name = endpoint
+                    .as_str()
+                    .to_fs_name::<GenericFilePath>()
+                    .expect("canonical endpoint should be a filesystem socket name");
+                let listener = match ListenerOptions::new()
+                    .name(name)
+                    .reclaim_name(false)
+                    .create_tokio()
+                {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                ready_tx.send(Ok(())).unwrap();
+
+                for exchange in exchanges {
+                    let conn = tokio::time::timeout(OWNER_IO_TIMEOUT, listener.accept())
+                        .await
+                        .expect("timed out waiting for ytt remote connection")
+                        .expect("fake owner should accept ytt connection");
+                    let mut request_line = String::new();
+                    {
+                        let mut reader = BufReader::new(&conn);
+                        tokio::time::timeout(OWNER_IO_TIMEOUT, reader.read_line(&mut request_line))
+                            .await
+                            .expect("timed out reading ytt request")
+                            .expect("fake owner should read ytt request");
+                    }
+                    let request: RemoteRequest = serde_json::from_str(request_line.trim())
+                        .expect("ytt should send a valid one-shot request");
+                    assert_eq!(request.version, PROTOCOL_VERSION);
+                    assert_eq!(request.token, DESCRIPTOR_TOKEN);
+                    assert_eq!(request.command, exchange.command);
+
+                    let mut response = serde_json::to_vec(&exchange.response).unwrap();
+                    response.push(b'\n');
+                    let mut writer = &conn;
+                    tokio::time::timeout(OWNER_IO_TIMEOUT, writer.write_all(&response))
+                        .await
+                        .expect("timed out writing fake-owner response")
+                        .expect("fake owner should write response");
+                    tokio::time::timeout(OWNER_IO_TIMEOUT, writer.flush())
+                        .await
+                        .expect("timed out flushing fake-owner response")
+                        .expect("fake owner should flush response");
+                }
+            });
+        });
+
+        match ready_rx.recv_timeout(CHILD_TIMEOUT) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("fake owner could not bind: {error}"),
+            Err(error) => panic!("fake owner did not become ready: {error}"),
+        }
+        handle
+    }
+
+    fn spawn_watch_owner(endpoint: String) -> std::thread::JoinHandle<()> {
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("fake watch owner runtime should build");
+            runtime.block_on(async move {
+                let _ = std::fs::remove_file(&endpoint);
+                let name = endpoint
+                    .as_str()
+                    .to_fs_name::<GenericFilePath>()
+                    .expect("canonical endpoint should be a local socket name");
+                let listener = match ListenerOptions::new()
+                    .name(name)
+                    .reclaim_name(false)
+                    .create_tokio()
+                {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                ready_tx.send(Ok(())).unwrap();
+
+                let conn = tokio::time::timeout(OWNER_IO_TIMEOUT, listener.accept())
+                    .await
+                    .expect("timed out waiting for ytt watch connection")
+                    .expect("fake watch owner should accept ytt connection");
+                let mut reader = BufReader::new(&conn);
+                let mut writer = &conn;
+
+                let mut line = String::new();
+                tokio::time::timeout(OWNER_IO_TIMEOUT, reader.read_line(&mut line))
+                    .await
+                    .expect("timed out reading watch Hello")
+                    .expect("fake watch owner should read Hello");
+                let hello: HelloRequest =
+                    serde_json::from_str(line.trim()).expect("ytt watch should send a valid Hello");
+                assert_eq!(hello.version, PROTOCOL_VERSION);
+                assert_eq!(hello.token, DESCRIPTOR_TOKEN);
+                assert_eq!(hello.hello.client, "ytt-cli-watch");
+                assert_eq!(hello.hello.min_version, PROTOCOL_VERSION);
+
+                write_owner_line(
+                    &mut writer,
+                    &HelloAck {
+                        ok: true,
+                        version: PROTOCOL_VERSION,
+                        session_id: 99,
+                        capabilities: vec!["events-v8".to_owned()],
+                        owner_mode: InstanceMode::Daemon,
+                        reason: None,
+                    },
+                )
+                .await;
+
+                line.clear();
+                tokio::time::timeout(OWNER_IO_TIMEOUT, reader.read_line(&mut line))
+                    .await
+                    .expect("timed out reading watch subscription")
+                    .expect("fake watch owner should read subscription");
+                let subscribe: ClientFrame = serde_json::from_str(line.trim())
+                    .expect("ytt watch should send a valid subscription");
+                assert_eq!(subscribe.id, 1);
+                assert_eq!(
+                    subscribe.op,
+                    ClientOp::Subscribe {
+                        topics: vec![Topic::System]
+                    }
+                );
+
+                write_owner_line(
+                    &mut writer,
+                    &ServerFrame::Event {
+                        seq: 1,
+                        topic: Topic::System,
+                        event: PushEvent::OwnerChanged {
+                            mode: InstanceMode::Daemon,
+                        },
+                    },
+                )
+                .await;
+                write_owner_line(
+                    &mut writer,
+                    &ServerFrame::Reply {
+                        id: 1,
+                        resp: RemoteResponse::ok("subscribed".to_owned()),
+                    },
+                )
+                .await;
+                write_owner_line(
+                    &mut writer,
+                    &ServerFrame::Goodbye {
+                        reason: "shutting_down".to_owned(),
+                    },
+                )
+                .await;
+            });
+        });
+
+        match ready_rx.recv_timeout(CHILD_TIMEOUT) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("fake watch owner could not bind: {error}"),
+            Err(error) => panic!("fake watch owner did not become ready: {error}"),
+        }
+        handle
+    }
+
+    async fn write_owner_line<W, T>(writer: &mut W, value: &T)
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+        T: serde::Serialize,
+    {
+        let mut bytes = serde_json::to_vec(value).expect("fake owner frame should serialize");
+        bytes.push(b'\n');
+        tokio::time::timeout(OWNER_IO_TIMEOUT, writer.write_all(&bytes))
+            .await
+            .expect("timed out writing fake-owner frame")
+            .expect("fake owner should write frame");
+        tokio::time::timeout(OWNER_IO_TIMEOUT, writer.flush())
+            .await
+            .expect("timed out flushing fake-owner frame")
+            .expect("fake owner should flush frame");
+    }
+
+    fn snapshot(queue: Vec<QueueItemSnapshot>, settings: SettingsSnapshot) -> StatusSnapshot {
+        let position = queue
+            .iter()
+            .position(|item| item.current)
+            .map_or(0, |index| index + 1);
+        StatusSnapshot {
+            title: None,
+            artist: None,
+            paused: true,
+            volume: 50,
+            position,
+            total: queue.len(),
+            streaming: settings.autoplay_streaming,
+            owner_mode: InstanceMode::Daemon,
+            settings,
+            queue,
+            shuffle: false,
+            repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
+            artwork: None,
+        }
+    }
+
+    fn assert_credentials_hidden(output: &std::process::Output, endpoint: &str) {
+        for text in [stdout(output), stderr(output)] {
+            assert!(
+                !text.contains(DESCRIPTOR_TOKEN),
+                "credential leaked: {text}"
+            );
+            assert!(!text.contains(endpoint), "endpoint leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn actual_ytt_remote_cli_projects_owner_status_and_converts_queue_index() {
+        let root = short_root("ok");
+        clean_isolated_remote(&root);
+        let instance = isolated_instance(
+            &root,
+            PROTOCOL_VERSION,
+            vec![
+                "status".to_owned(),
+                "events-v8".to_owned(),
+                "remote-control".to_owned(),
+            ],
+        );
+        #[cfg(unix)]
+        assert!(
+            instance.endpoint.len() < 100,
+            "Unix socket path is too long for macOS sun_path: {}",
+            instance.endpoint
+        );
+        write_current_descriptor(&root, &instance);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(remote_app_dir(&root))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(current_descriptor_path(&root))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let info_response = RemoteResponse::status(snapshot(Vec::new(), Default::default()));
+        let empty_response = RemoteResponse::status(snapshot(Vec::new(), Default::default()));
+        let queue_response = RemoteResponse::status(snapshot(
+            vec![
+                QueueItemSnapshot {
+                    title: "첫 곡\n\u{1b}[31m".to_owned(),
+                    artist: "가수\r이름".to_owned(),
+                    duration: "3:14\t".to_owned(),
+                    current: true,
+                },
+                QueueItemSnapshot {
+                    title: "第二曲\u{202e}".to_owned(),
+                    artist: "Artist".to_owned(),
+                    duration: "4:00".to_owned(),
+                    current: false,
+                },
+            ],
+            Default::default(),
+        ));
+        let settings_response = RemoteResponse::status(snapshot(
+            Vec::new(),
+            SettingsSnapshot {
+                autoplay_streaming: true,
+                streaming_mode: StreamingMode::Discovery,
+                streaming_source: SearchSource::InternetArchive,
+                speed_tenths: 15,
+                seek_seconds: 12,
+                normalize: true,
+                gapless: false,
+                ai_enabled: true,
+                radio_mode: false,
+            },
+        ));
+        let queue_json_expected = serde_json::to_value(&queue_response).unwrap();
+        let settings_json_expected = serde_json::to_value(&settings_response).unwrap();
+        let owner = spawn_fake_owner(
+            instance.endpoint.clone(),
+            vec![
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: info_response.clone(),
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: info_response,
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: empty_response,
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: queue_response.clone(),
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: queue_response,
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: settings_response.clone(),
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: settings_response,
+                },
+                Exchange {
+                    command: RemoteCommand::QueuePlay { position: 0 },
+                    response: RemoteResponse::ok("played queue item 1".to_owned()),
+                },
+            ],
+        );
+
+        let info = run_isolated_with_timeout(&root, &["-r", "info"]);
+        assert!(info.status.success(), "{}", stderr(&info));
+        let info_text = stdout(&info);
+        assert!(info_text.contains("pid 4242"), "{info_text}");
+        assert!(info_text.contains("mode daemon"), "{info_text}");
+        assert!(info_text.contains("protocol 8"), "{info_text}");
+        assert!(
+            info_text.contains("events-v8,remote-control,status"),
+            "{info_text}"
+        );
+        assert_credentials_hidden(&info, &instance.endpoint);
+
+        let info_json = run_isolated_with_timeout(&root, &["-r", "info", "--json"]);
+        assert!(info_json.status.success(), "{}", stderr(&info_json));
+        let info_value: serde_json::Value = serde_json::from_slice(&info_json.stdout).unwrap();
+        let info_object = info_value.as_object().unwrap();
+        assert_eq!(info_object.len(), 5);
+        assert_eq!(info_object["app_pid"], 4_242);
+        assert_eq!(info_object["created_unix"], 123);
+        assert_eq!(info_object["mode"], "daemon");
+        assert_eq!(info_object["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(
+            info_object["capabilities"],
+            serde_json::json!(["events-v8", "remote-control", "status"])
+        );
+        assert!(!info_object.contains_key("endpoint"));
+        assert!(!info_object.contains_key("token"));
+        assert_credentials_hidden(&info_json, &instance.endpoint);
+
+        let empty = run_isolated_with_timeout(&root, &["-r", "queue-list"]);
+        assert!(empty.status.success(), "{}", stderr(&empty));
+        assert_eq!(stdout(&empty), "queue empty\n");
+        assert_credentials_hidden(&empty, &instance.endpoint);
+
+        let queue = run_isolated_with_timeout(&root, &["-r", "queue-list"]);
+        assert!(queue.status.success(), "{}", stderr(&queue));
+        let queue_text = stdout(&queue);
+        assert!(queue_text.starts_with("> 1. 첫 곡 [31m — 가수 이름  [3:14]"));
+        assert!(queue_text.contains("  2. 第二曲 — Artist  [4:00]"));
+        assert_eq!(queue_text.lines().count(), 2);
+        assert!(!queue_text.contains('\u{1b}'));
+        assert!(!queue_text.contains('\r'));
+        assert!(!queue_text.contains('\u{202e}'));
+        assert_credentials_hidden(&queue, &instance.endpoint);
+
+        let queue_json = run_isolated_with_timeout(&root, &["-r", "queue-list", "--json"]);
+        assert!(queue_json.status.success(), "{}", stderr(&queue_json));
+        let queue_value: serde_json::Value = serde_json::from_slice(&queue_json.stdout).unwrap();
+        assert_eq!(queue_value, queue_json_expected);
+        assert!(queue_value.get("ok").is_some());
+        assert!(queue_value.get("reason").is_some());
+        assert!(queue_value.get("message").is_some());
+        assert!(queue_value.get("status").is_some());
+        assert_credentials_hidden(&queue_json, &instance.endpoint);
+
+        let settings = run_isolated_with_timeout(&root, &["-r", "settings-show"]);
+        assert!(settings.status.success(), "{}", stderr(&settings));
+        assert_eq!(
+            stdout(&settings).trim(),
+            "autoplay=on  •  source=internet_archive  •  mode=discovery  •  speed=1.5x  •  seek=12s  •  normalize=on  •  gapless=off  •  ai=on  •  radio-mode=off"
+        );
+        assert_credentials_hidden(&settings, &instance.endpoint);
+
+        let settings_json = run_isolated_with_timeout(&root, &["-r", "settings-show", "--json"]);
+        assert!(settings_json.status.success(), "{}", stderr(&settings_json));
+        let settings_value: serde_json::Value =
+            serde_json::from_slice(&settings_json.stdout).unwrap();
+        assert_eq!(settings_value, settings_json_expected);
+        assert!(settings_value.get("ok").is_some());
+        assert!(settings_value.get("reason").is_some());
+        assert!(settings_value.get("message").is_some());
+        assert!(settings_value.get("status").is_some());
+        assert_credentials_hidden(&settings_json, &instance.endpoint);
+
+        let queue_play = run_isolated_with_timeout(&root, &["-r", "queue-play", "1"]);
+        assert!(queue_play.status.success(), "{}", stderr(&queue_play));
+        assert_eq!(stdout(&queue_play), "played queue item 1\n");
+        assert_credentials_hidden(&queue_play, &instance.endpoint);
+
+        owner.join().expect("fake owner thread should complete");
+        clean_isolated_remote(&root);
+    }
+
+    #[test]
+    fn actual_ytt_watch_json_accepts_initial_event_before_reply_and_exits_on_goodbye() {
+        let root = short_root("watch");
+        clean_isolated_remote(&root);
+        let instance = isolated_instance(
+            &root,
+            PROTOCOL_VERSION,
+            vec!["events-v8".to_owned(), "status".to_owned()],
+        );
+        #[cfg(unix)]
+        assert!(
+            instance.endpoint.len() < 100,
+            "Unix socket path is too long for macOS sun_path: {}",
+            instance.endpoint
+        );
+        write_current_descriptor(&root, &instance);
+        let owner = spawn_watch_owner(instance.endpoint.clone());
+
+        let output = run_isolated_with_timeout(&root, &["-r", "watch", "system", "--json"]);
+        assert!(output.status.success(), "stderr={}", stderr(&output));
+        assert!(stderr(&output).is_empty(), "stderr={}", stderr(&output));
+        assert_credentials_hidden(&output, &instance.endpoint);
+
+        let output_text = stdout(&output);
+        let lines: Vec<_> = output_text.lines().collect();
+        assert_eq!(lines.len(), 2, "stdout={output_text}");
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains(r#"\"frame\":\"reply\""#)),
+            "subscribe Reply must stay hidden: {output_text}"
+        );
+        let frames: Vec<ServerFrame> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("watch stdout should be NDJSON frames"))
+            .collect();
+        assert_eq!(
+            frames[0],
+            ServerFrame::Event {
+                seq: 1,
+                topic: Topic::System,
+                event: PushEvent::OwnerChanged {
+                    mode: InstanceMode::Daemon
+                }
+            }
+        );
+        assert_eq!(
+            frames[1],
+            ServerFrame::Goodbye {
+                reason: "shutting_down".to_owned()
+            }
+        );
+
+        owner
+            .join()
+            .expect("fake watch owner thread should complete");
+        clean_isolated_remote(&root);
+    }
 }

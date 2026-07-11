@@ -329,9 +329,19 @@ ytt -r seek-to 90          # 1:30 へジャンプ
 ytt -r streaming on        # 無限ストリーミング: on / off / toggle
 ytt -r play "lofi"         # デーモン: 検索して最初の結果を再生
 ytt -r status              # 一行の「再生中」(--json はスクリプト用)
+ytt -r info                # owner 種別、プロトコル、capability（トークンは非表示）
+ytt -r queue-list          # 番号付きキュー; 現在の曲は > で表示
+ytt -r queue-play 2        # 2番目を再生（キュー番号は1から）
+ytt -r settings-show       # 秘密情報を含まない簡潔な設定一覧
+ytt -r watch --json        # 既定の player/queue/system イベントを NDJSON で購読
+ytt -r watch all           # 現在提供中の全て: player, queue, settings, system
 ```
 
 i3 / sway のメディアキー割り当て: `bindsym XF86AudioPlay exec ytt -r pp`。
+
+リモート操作は同じマシン上の現在の OS ユーザーだけが使える非公開 Unix ソケットまたは
+Windows named pipe に限定されます。LAN/HTTP リモートではないため、runtime ディレクトリを
+共有・公開しないでください。`queue-list` のキュー番号は1から始まります。
 
 ターミナルなしの再生は headless デーモンで:
 

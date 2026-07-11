@@ -329,9 +329,19 @@ ytt -r seek-to 90          # jump to 1:30
 ytt -r streaming on        # endless streaming: on / off / toggle
 ytt -r play "lofi"         # daemon: search and play the first result
 ytt -r status              # one-line "now playing" (--json for scripts)
+ytt -r info                # owner mode, protocol and capabilities (never the token)
+ytt -r queue-list          # numbered queue; the current row starts with >
+ytt -r queue-play 2        # play queue row 2 (queue numbers start at 1)
+ytt -r settings-show       # compact, non-secret settings summary
+ytt -r watch --json        # live player/queue/system events as NDJSON (the default topics)
+ytt -r watch all           # all published topics: player, queue, settings, system
 ```
 
 Media keys on i3 / sway: `bindsym XF86AudioPlay exec ytt -r pp`.
+
+Remote control stays on the same machine and is scoped to the current OS user through a private
+Unix socket or Windows named pipe. It is not a LAN/HTTP remote: never share or expose its runtime
+directory. Queue numbers shown by `queue-list` are 1-based.
 
 For terminal-free playback, run the headless daemon:
 

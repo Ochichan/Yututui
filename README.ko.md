@@ -329,9 +329,19 @@ ytt -r seek-to 90          # 1:30 지점으로 점프
 ytt -r streaming on        # 무한 스트리밍: on / off / toggle
 ytt -r play "lofi"         # 데몬: 검색해서 첫 결과 재생
 ytt -r status              # 한 줄 "지금 재생 중" (--json 스크립트용)
+ytt -r info                # owner 종류, 프로토콜, capability (토큰은 표시 안 함)
+ytt -r queue-list          # 번호가 붙은 큐; 현재 곡은 >로 표시
+ytt -r queue-play 2        # 2번 곡 재생 (큐 번호는 1부터)
+ytt -r settings-show       # 비밀값 없는 간단한 설정 요약
+ytt -r watch --json        # 기본 player/queue/system 이벤트를 NDJSON으로 구독
+ytt -r watch all           # 제공 중인 전체: player, queue, settings, system
 ```
 
 i3 / sway 미디어 키 연결: `bindsym XF86AudioPlay exec ytt -r pp`.
+
+원격 제어는 같은 컴퓨터의 현재 OS 사용자에게만 열리는 비공개 Unix 소켓 또는 Windows
+named pipe를 사용합니다. LAN/HTTP remote가 아니므로 runtime 디렉터리를 공유하거나 외부에
+노출하지 마세요. `queue-list`에 표시되는 큐 번호는 1부터 시작합니다.
 
 터미널 없는 재생은 headless 데몬으로:
 
