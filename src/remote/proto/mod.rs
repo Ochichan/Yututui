@@ -178,11 +178,31 @@ pub struct StatusSnapshot {
     /// Current track length in milliseconds; `None` for live streams / unknown.
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// Whether the current item is a genuine endless live stream. Duration absence is
+    /// deliberately not sufficient: a normal track may have no measured duration while loading.
+    /// Omitted when false so existing v7 status bytes remain unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_live: bool,
+    /// Revision of the queue snapshot used to render row positions. Newer clients attach it to
+    /// destructive/indexed commands; absent means an older v7 owner without revision support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_rev: Option<u64>,
+    /// Stable identity of the current track. Unlike title/artist, this does not change for ICY
+    /// metadata and does distinguish different tracks with identical display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_id: Option<String>,
+    /// Discontinuity counter for seek/track restarts. Omitted at zero to preserve legacy bytes.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub position_epoch: u64,
     /// Current track's cached artwork file, when the media-art cache has resolved
     /// one for it. Additive since v8; skip-serialized so pre-artwork shapes (and
     /// the freeze goldens) stay byte-identical when it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork: Option<ArtworkRef>,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A queue row in the currently effective play order.
@@ -332,6 +352,34 @@ mod tests {
     }
 
     #[test]
+    fn revision_checked_queue_commands_are_additive_v8_shapes() {
+        let cases = [
+            (
+                RemoteCommand::QueuePlayIfRevision {
+                    position: 3,
+                    expected_rev: 41,
+                },
+                r#"{"cmd":"queue_play_if_revision","position":3,"expected_rev":41}"#,
+            ),
+            (
+                RemoteCommand::QueueRemoveIfRevision {
+                    position: 0,
+                    expected_rev: 42,
+                },
+                r#"{"cmd":"queue_remove_if_revision","position":0,"expected_rev":42}"#,
+            ),
+        ];
+        for (command, expected) in cases {
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(line, expected);
+            assert_eq!(
+                serde_json::from_str::<RemoteCommand>(&line).unwrap(),
+                command
+            );
+        }
+    }
+
+    #[test]
     fn legacy_status_without_position_fields_still_parses() {
         // A v7 server predating elapsed_ms/duration_ms: the fields default to None.
         let line = r#"{"title":"Song","artist":"A","paused":false,"volume":50,"position":1,"total":2,"streaming":false}"#;
@@ -377,6 +425,10 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         };
         let line = snap.human_line();
@@ -401,6 +453,10 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();

@@ -19,6 +19,12 @@ impl App {
         &mut self,
         cmd: RemoteCommand,
     ) -> (RemoteResponse, Vec<Cmd>) {
+        if cmd
+            .expected_queue_rev()
+            .is_some_and(|rev| rev != self.queue.rev())
+        {
+            return (RemoteResponse::err("stale_rev"), Vec::new());
+        }
         match cmd {
             RemoteCommand::Next => {
                 let cmds = self.on_player_action(Action::NextTrack);
@@ -104,10 +110,13 @@ impl App {
                 )
             }
             RemoteCommand::CycleRepeat => {
-                // Music-mode invariant: refuse turning repeat on while autoplay is on (mirrors
+                // Music-mode invariant: reject turning repeat on while autoplay is on (mirrors
                 // the daemon engine so parity holds). Off→All is the only enabling transition.
                 if self.queue.repeat == crate::queue::Repeat::Off && self.autoplay_streaming {
-                    return (RemoteResponse::status(self.status_snapshot()), Vec::new());
+                    return (
+                        RemoteResponse::err("incompatible_playback_modes"),
+                        Vec::new(),
+                    );
                 }
                 self.queue.cycle_repeat();
                 self.dirty = true;
@@ -116,25 +125,13 @@ impl App {
                     vec![self.save_playback_modes_cmd()],
                 )
             }
-            RemoteCommand::QueuePlay { position } => {
-                if position >= self.queue.len() {
-                    (RemoteResponse::err("queue_index"), Vec::new())
-                } else {
-                    let mut cmds = self.queue_popup_play(position);
-                    // Parity with the daemon owner: a remote queue mutation may leave the queue
-                    // low, so top up streaming (guarded/idempotent) rather than gapping.
-                    cmds.extend(self.maybe_autoplay_extend());
-                    (RemoteResponse::status(self.status_snapshot()), cmds)
-                }
+            RemoteCommand::QueuePlay { position }
+            | RemoteCommand::QueuePlayIfRevision { position, .. } => {
+                self.remote_queue_play(position)
             }
-            RemoteCommand::QueueRemove { position } => {
-                if position >= self.queue.len() {
-                    (RemoteResponse::err("queue_index"), Vec::new())
-                } else {
-                    let mut cmds = self.remove_queue_range(position, position);
-                    cmds.extend(self.maybe_autoplay_extend());
-                    (RemoteResponse::status(self.status_snapshot()), cmds)
-                }
+            RemoteCommand::QueueRemove { position }
+            | RemoteCommand::QueueRemoveIfRevision { position, .. } => {
+                self.remote_queue_remove(position)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
@@ -145,6 +142,26 @@ impl App {
                 (RemoteResponse::ok("quitting ytt".to_string()), cmds)
             }
         }
+    }
+
+    fn remote_queue_play(&mut self, position: usize) -> (RemoteResponse, Vec<Cmd>) {
+        if position >= self.queue.len() {
+            return (RemoteResponse::err("queue_index"), Vec::new());
+        }
+        let mut cmds = self.queue_popup_play(position);
+        // Parity with the daemon owner: a remote queue mutation may leave the queue low,
+        // so top up streaming (guarded/idempotent) rather than gapping.
+        cmds.extend(self.maybe_autoplay_extend());
+        (RemoteResponse::status(self.status_snapshot()), cmds)
+    }
+
+    fn remote_queue_remove(&mut self, position: usize) -> (RemoteResponse, Vec<Cmd>) {
+        if position >= self.queue.len() {
+            return (RemoteResponse::err("queue_index"), Vec::new());
+        }
+        let mut cmds = self.remove_queue_range(position, position);
+        cmds.extend(self.maybe_autoplay_extend());
+        (RemoteResponse::status(self.status_snapshot()), cmds)
     }
 
     fn remote_resume_session(&mut self) -> (RemoteResponse, Vec<Cmd>) {
@@ -165,12 +182,14 @@ impl App {
     /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
     /// an immediate top-up when enabling, so a low queue doesn't gap before the next track).
     fn remote_set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
-        let mut on = state.resolve(self.autoplay_streaming);
-        // Music-mode invariant: never enable autoplay while repeat is on. Clamping to `false`
-        // keeps the response shape identical to a normal "off" so app↔daemon parity holds
-        // (mirror of the daemon engine's `set_streaming`).
+        let on = state.resolve(self.autoplay_streaming);
+        // Never silently change the requested mode. A correlated desktop/API caller needs a
+        // stable error code it can explain and surface as a toast.
         if on && self.queue.repeat.is_on() {
-            on = false;
+            return (
+                RemoteResponse::err("incompatible_playback_modes"),
+                Vec::new(),
+            );
         }
         self.set_autoplay_streaming(on);
         self.status.text = format!(
@@ -401,6 +420,10 @@ impl App {
             duration_ms: cur
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            is_live: cur.is_some_and(|song| song.is_radio_station()),
+            queue_rev: Some(self.queue.rev()),
+            track_id: cur.map(|song| crate::api::sanitize_provider_id(&song.video_id)),
+            position_epoch: self.playback.position_epoch,
             // Same current-track gate as the OS media snapshot (media_reducer): stale
             // art from the previous track never rides a status reply.
             artwork: cur.and_then(|song| {
@@ -496,6 +519,38 @@ mod tests {
         app
     }
 
+    fn live_radio(id: &str) -> Song {
+        let mut song = Song::remote(id, "Live station", "Station", "");
+        song.playable = Some(crate::api::PlayableRef::RadioStream {
+            url: format!("https://radio.example/{id}.mp3"),
+        });
+        song
+    }
+
+    #[test]
+    fn status_distinguishes_unknown_duration_from_genuine_live_stream() {
+        let mut app = App::new(50);
+        app.queue
+            .set(vec![Song::remote("loading", "Loading", "Artist", "")], 0);
+
+        let (unknown_response, _) = app.apply_remote(RemoteCommand::Status);
+        let unknown = unknown_response.status.expect("status snapshot");
+        assert_eq!(unknown.duration_ms, None);
+        assert!(!unknown.is_live);
+        assert_eq!(unknown.queue_rev, Some(app.queue.rev()));
+        assert_eq!(unknown.track_id.as_deref(), Some("loading"));
+        assert_eq!(unknown.position_epoch, app.playback.position_epoch);
+
+        app.queue.set(vec![live_radio("station")], 0);
+        let (live_response, _) = app.apply_remote(RemoteCommand::Status);
+        let live = live_response.status.expect("status snapshot");
+        assert_eq!(live.duration_ms, None);
+        assert!(live.is_live);
+        assert_eq!(live.queue_rev, Some(app.queue.rev()));
+        assert_eq!(live.track_id.as_deref(), Some("station"));
+        assert_eq!(live.position_epoch, app.playback.position_epoch);
+    }
+
     #[test]
     fn next_advances_even_in_search_mode() {
         let mut app = two_track_app();
@@ -545,8 +600,8 @@ mod tests {
         let (resp, _) = app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::On,
         });
-        // Clamped to off so the response still reads as a normal "off" (keeps app↔daemon parity).
-        assert!(resp.ok);
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("incompatible_playback_modes"));
         assert!(
             !app.autoplay_streaming,
             "streaming stays off while repeat is on"
@@ -557,7 +612,13 @@ mod tests {
     fn remote_cycle_repeat_refused_while_streaming_on() {
         let mut app = App::new(50);
         app.autoplay_streaming = true;
-        app.apply_remote(RemoteCommand::CycleRepeat);
+        let (response, commands) = app.apply_remote(RemoteCommand::CycleRepeat);
+        assert!(!response.ok);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("incompatible_playback_modes")
+        );
+        assert!(commands.is_empty());
         assert_eq!(
             app.queue.repeat,
             crate::queue::Repeat::Off,
@@ -911,6 +972,42 @@ mod tests {
                 Cmd::Player(crate::player::PlayerCmd::Load(url)) if url.contains("id1")
             )
         }));
+    }
+
+    #[test]
+    fn revision_checked_queue_play_accepts_the_rendered_snapshot() {
+        let mut app = two_track_app();
+        let expected_rev = app.queue.rev();
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::QueuePlayIfRevision {
+            position: 1,
+            expected_rev,
+        });
+
+        assert!(resp.ok);
+        assert_eq!(app.queue.current().unwrap().video_id, "id1");
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::Player(crate::player::PlayerCmd::Load(url)) if url.contains("id1")
+        )));
+    }
+
+    #[test]
+    fn revision_checked_queue_remove_rejects_a_stale_snapshot_without_mutating() {
+        let mut app = two_track_app();
+        let rev_before = app.queue.rev();
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::QueueRemoveIfRevision {
+            position: 0,
+            expected_rev: u64::MAX,
+        });
+
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("stale_rev"));
+        assert!(cmds.is_empty());
+        assert_eq!(app.queue.rev(), rev_before);
+        assert_eq!(app.queue.len(), 2);
+        assert_eq!(app.queue.current().unwrap().video_id, "id0");
     }
 
     #[test]

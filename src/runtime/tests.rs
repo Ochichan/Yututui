@@ -122,7 +122,7 @@ fn runtime_event_policy_covers_representative_events() {
     assert_eq!(
         RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
             RemoteCommand::TogglePause,
-            reply,
+            reply.into(),
         ))
         .policy(),
         EventPolicy::MustReplyOrBusy {
@@ -412,7 +412,7 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
 fn app_message_policy_covers_backpressure_lanes() {
     let (reply, _reply_rx) = tokio::sync::oneshot::channel();
     assert_eq!(
-        app_msg_policy(&Msg::Remote(RemoteCommand::TogglePause, reply)),
+        app_msg_policy(&Msg::Remote(RemoteCommand::TogglePause, reply.into())),
         EventPolicy::MustReplyOrBusy {
             lane: EventLane::RemoteCommand,
         }
@@ -620,7 +620,7 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
 
     let (reply, _reply_rx) = tokio::sync::oneshot::channel();
     let msg = Msg::from(RuntimeEvent::Remote(
-        crate::remote::server::RemoteEvent::Command(RemoteCommand::Next, reply),
+        crate::remote::server::RemoteEvent::Command(RemoteCommand::Next, reply.into()),
     ));
     assert!(matches!(msg, Msg::Remote(RemoteCommand::Next, _)));
 
@@ -944,7 +944,7 @@ fn remote_runtime_event_reports_full_to_callers() {
         &tx,
         RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
             RemoteCommand::TogglePause,
-            reply,
+            reply.into(),
         ))
     ));
 }

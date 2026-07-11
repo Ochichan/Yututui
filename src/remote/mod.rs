@@ -22,6 +22,8 @@ pub mod server;
 mod sessions;
 
 pub use sessions::{RemoteSessionHub, RemoteSessionRef};
+#[cfg(test)]
+pub(crate) use sessions::{SessionLine, SessionTuning, test_command_reply, test_register};
 
 pub use server::{BindOutcome, RemoteServer, bind_or_detect};
 
@@ -39,6 +41,8 @@ pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
         | RemoteCommand::Enqueue { .. }
         | RemoteCommand::QueuePlay { .. }
         | RemoteCommand::QueueRemove { .. }
+        | RemoteCommand::QueuePlayIfRevision { .. }
+        | RemoteCommand::QueueRemoveIfRevision { .. }
         | RemoteCommand::ResumeSession
         | RemoteCommand::PlayTracks { .. }
         | RemoteCommand::EnqueueTracks { .. } => PLAYBACK_REPLY_TIMEOUT,

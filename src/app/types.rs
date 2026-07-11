@@ -162,13 +162,13 @@ pub enum Msg {
     /// suggestions, autoplay, station-profile shaping, playlist mutations, the feedback-summary
     /// station patch, and batch romanized titles. See [`AiMsg`].
     Ai(AiMsg),
-    /// A command from a `ytt -r <cmd>` client, with a oneshot channel to reply on. Applied
-    /// through the same reducer path as a keypress (see [`App::apply_remote`]) so it is
-    /// independent of the current input mode; the computed response is sent back over the
-    /// channel for the control socket to write to the client.
+    /// A command from a one-shot or persistent remote client. Applied through the same reducer
+    /// path as a keypress (see [`App::apply_remote`]) so it is independent of the current input
+    /// mode. For v8 sessions, sending this reply directly enqueues it before the run loop's
+    /// same-turn publisher observation.
     Remote(
         crate::remote::proto::RemoteCommand,
-        tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>,
+        crate::remote::server::RemoteReply,
     ),
     /// A command from the OS media session (media keys, Now Playing / SMTC / MPRIS
     /// surfaces, Bluetooth AVRCP). Applied through the same reducer paths as a keypress

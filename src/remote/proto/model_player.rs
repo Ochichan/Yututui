@@ -27,7 +27,7 @@ pub struct PlayerModel {
     /// Sampled at emit; interpolate while playing.
     #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub elapsed_ms: Option<u64>,
-    /// `None` ⇒ live stream ("ON AIR" mode).
+    /// `None` means live or not yet measured; use `track.is_live` for "ON AIR".
     #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub duration_ms: Option<u64>,
     /// Discontinuity counter — rebase interpolation when it changes.
