@@ -522,16 +522,22 @@ fn ai_empty_state_while_playing_renders_groove_frame() {
     let mut app = app_playing(1, 0);
     app.mode = Mode::Ai;
     app.config.animations.master = true;
+    // Pin the tick rate: frame_index_for_tick(10, fps=30) must land on the cat
+    // asset's frame 1 regardless of future FPS_DEFAULT changes.
+    app.config.animations.fps = 30;
     app.anim.anim_frame = 10;
 
     assert!(app.ai_mascot_active());
 
     let buf = render_app_buffer(&app, 100, 30);
     assert!(
-        buffer_contains(&buf, "*/ DJ"),
+        buffer_contains(&buf, "⠩⠳⢯⣀⣴⠟"),
         "playing AI empty state should render a non-idle groove pose"
     );
-    assert!(buffer_contains(&buf, "GEM"));
+    assert!(
+        buffer_contains(&buf, "⢻⣶⠤⣄"),
+        "groove pose should be the cat_laptop mascot"
+    );
 }
 
 #[test]
