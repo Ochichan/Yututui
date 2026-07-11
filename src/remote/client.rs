@@ -64,6 +64,52 @@ impl ClientError {
     }
 }
 
+/// A descriptor exists, but its owner predates a caller-required additive capability.
+/// Kept separate from [`ClientError`] so adding capability discovery does not add a variant to
+/// the established transport-error enum and break exhaustive downstream matches.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MissingCapability {
+    capability: String,
+}
+
+/// Personal-export owner discovery must fail closed when the descriptor exists but cannot be
+/// trusted; only a genuinely absent descriptor permits an offline disk snapshot.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CapabilityLookupError {
+    Missing(MissingCapability),
+    InvalidDescriptor,
+    UnpublishedOwner,
+    OwnerProbeFailed,
+}
+
+impl CapabilityLookupError {
+    pub fn human_message(&self) -> String {
+        match self {
+            Self::Missing(error) => error.human_message(),
+            Self::InvalidDescriptor => "the ytt instance descriptor is unreadable or corrupt \
+                 — restart ytt before exporting; refusing a possibly stale disk fallback."
+                .to_string(),
+            Self::UnpublishedOwner => "a primary ytt control socket is running without a usable \
+                 instance descriptor — quit or restart ytt before exporting; refusing a stale \
+                 disk fallback."
+                .to_string(),
+            Self::OwnerProbeFailed => "could not safely rule out a running primary ytt instance \
+                 — quit or restart ytt before exporting, then retry."
+                .to_string(),
+        }
+    }
+}
+
+impl MissingCapability {
+    pub fn human_message(&self) -> String {
+        format!(
+            "the running ytt instance does not support `{}` \
+             — restart it with this ytt version, then retry.",
+            self.capability
+        )
+    }
+}
+
 /// Entry point from `main` for `ytt -r …`. Parses args, runs the exchange on a tiny
 /// current-thread runtime, and returns the process exit code. Never returns to the normal
 /// TUI startup path.
@@ -102,10 +148,111 @@ pub async fn send(command: RemoteCommand) -> Result<RemoteResponse, ClientError>
     let Some(instance) = endpoint::read_instance() else {
         return Err(ClientError::NoRunningInstance);
     };
-    send_to_instance(instance, command).await
+    send_to(instance, command).await
 }
 
-async fn send_to_instance(
+/// Resolve the advertised owner only when it explicitly supports `capability`.
+///
+/// `Ok(None)` is the only discovery result that directly permits an offline disk fallback. A
+/// present-but-old descriptor is an error. A later transport failure from [`send_to`] does not by
+/// itself permit fallback: stale-descriptor recovery must also hold the exclusive data guard and
+/// use [`prove_primary_endpoints_absent`] before reading persisted state.
+pub async fn instance_with_capability(
+    capability: &str,
+) -> Result<Option<InstanceFile>, CapabilityLookupError> {
+    let Some(instance) = endpoint::read_current_instance_checked()
+        .map_err(|_| CapabilityLookupError::InvalidDescriptor)?
+    else {
+        prove_primary_endpoints_absent().await?;
+        return Ok(None);
+    };
+    require_capability(instance, capability)
+        .map(Some)
+        .map_err(CapabilityLookupError::Missing)
+}
+
+/// Prove that neither the current nor legacy primary control endpoint has a listener.
+///
+/// This intentionally ignores the instance descriptor: callers use it only after a connection
+/// to an otherwise valid advertised owner failed. `Ok(())` means every canonical endpoint
+/// returned an OS error that proves absence; live, malformed, timed-out, permission-denied, and
+/// otherwise ambiguous endpoints fail closed. The descriptor is never removed or rewritten.
+pub async fn prove_primary_endpoints_absent() -> Result<(), CapabilityLookupError> {
+    let primary =
+        endpoint::socket_endpoint().map_err(|_| CapabilityLookupError::OwnerProbeFailed)?;
+    let legacy = endpoint::legacy_primary_endpoint_for_probe();
+    let endpoints = if legacy == primary {
+        vec![primary]
+    } else {
+        vec![primary, legacy]
+    };
+    probe_primary_endpoints(&endpoints).await
+}
+
+async fn probe_primary_endpoints(endpoints: &[String]) -> Result<(), CapabilityLookupError> {
+    for endpoint in endpoints {
+        let name = endpoint
+            .as_str()
+            .to_fs_name::<GenericFilePath>()
+            .map_err(|_| CapabilityLookupError::OwnerProbeFailed)?;
+        match timeout(CONNECT_TIMEOUT, Stream::connect(name)).await {
+            Ok(Ok(connection)) => {
+                drop(connection);
+                return Err(CapabilityLookupError::UnpublishedOwner);
+            }
+            Ok(Err(error)) if probe_error_proves_absence(endpoint, &error) => {}
+            // A timeout, permission failure, busy named pipe, or any other ambiguous result is
+            // not evidence that persisted state has no live owner. Personal export fails closed.
+            _ => return Err(CapabilityLookupError::OwnerProbeFailed),
+        }
+    }
+    Ok(())
+}
+
+fn probe_error_proves_absence(_endpoint: &str, error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    ) {
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        // GenericFilePath uses the endpoint verbatim. A NUL-free absolute filesystem path that
+        // the OS rejects as InvalidInput (not PermissionDenied/TimedOut) cannot fit in sockaddr_un
+        // and therefore cannot be the name of a live listener. The server uses the same mapping.
+        if error.kind() == std::io::ErrorKind::InvalidInput
+            && std::path::Path::new(_endpoint).is_absolute()
+            && !_endpoint.as_bytes().contains(&0)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn require_capability(
+    instance: InstanceFile,
+    capability: &str,
+) -> Result<InstanceFile, MissingCapability> {
+    if instance
+        .capabilities
+        .iter()
+        .any(|advertised| advertised == capability)
+    {
+        Ok(instance)
+    } else {
+        Err(MissingCapability {
+            capability: capability.to_string(),
+        })
+    }
+}
+
+/// Send to a descriptor already selected by the caller. This keeps capability selection and
+/// the exchange tied to the same owner descriptor instead of re-reading it between the checks.
+pub async fn send_to(
     instance: InstanceFile,
     command: RemoteCommand,
 ) -> Result<RemoteResponse, ClientError> {
@@ -235,6 +382,16 @@ mod tests {
         writer.flush().await.unwrap();
     }
 
+    async fn accept_one_request_without_response(listener: Listener) {
+        let conn = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(&conn);
+        let mut request = String::new();
+        reader.read_line(&mut request).await.unwrap();
+        assert!(request.contains("\"version\""));
+        // Dropping the connection without a reply must remain `NoResponse`; callers cannot know
+        // whether the owner completed a side effect and therefore must not retry offline.
+    }
+
     #[tokio::test]
     async fn send_to_instance_round_trips_status_response() {
         let endpoint = test_endpoint("status");
@@ -259,7 +416,7 @@ mod tests {
         let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
         let server = tokio::spawn(serve_one_response(listener, response));
 
-        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Status)
+        let resp = send_to(test_instance(endpoint.clone()), RemoteCommand::Status)
             .await
             .unwrap();
         server.await.unwrap();
@@ -276,7 +433,7 @@ mod tests {
         let response = serde_json::to_string(&RemoteResponse::err("queue_empty")).unwrap();
         let server = tokio::spawn(serve_one_response(listener, response));
 
-        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Next)
+        let resp = send_to(test_instance(endpoint.clone()), RemoteCommand::Next)
             .await
             .unwrap();
         server.await.unwrap();
@@ -292,13 +449,104 @@ mod tests {
         let listener = bind_test_listener(&endpoint);
         let server = tokio::spawn(serve_one_response(listener, "{not json}".to_string()));
 
-        let err = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Status)
+        let err = send_to(test_instance(endpoint.clone()), RemoteCommand::Status)
             .await
             .unwrap_err();
         server.await.unwrap();
         let _ = std::fs::remove_file(endpoint);
 
         assert_eq!(err, ClientError::MalformedResponse);
+    }
+
+    #[tokio::test]
+    async fn send_to_instance_preserves_no_response() {
+        let endpoint = test_endpoint("no-response");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(accept_one_request_without_response(listener));
+
+        let err = send_to(test_instance(endpoint.clone()), RemoteCommand::Status)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::NoResponse);
+    }
+
+    #[tokio::test]
+    async fn send_to_instance_rejects_a_malformed_endpoint_before_connecting() {
+        let err = send_to(
+            test_instance("invalid\0endpoint".to_string()),
+            RemoteCommand::Status,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, ClientError::MalformedEndpoint);
+    }
+
+    #[tokio::test]
+    async fn primary_probe_rejects_a_live_socket_without_a_descriptor() {
+        let endpoint = test_endpoint("owner-without-descriptor");
+        let listener = bind_test_listener(&endpoint);
+
+        let error = probe_primary_endpoints(std::slice::from_ref(&endpoint))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, CapabilityLookupError::UnpublishedOwner);
+        drop(listener);
+        let _ = std::fs::remove_file(endpoint);
+    }
+
+    #[tokio::test]
+    async fn primary_probe_accepts_only_a_definitely_absent_socket() {
+        let endpoint = test_endpoint("absent-owner");
+        let _ = std::fs::remove_file(&endpoint);
+
+        probe_primary_endpoints(std::slice::from_ref(&endpoint))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_probe_accepts_an_unbindable_overlong_filesystem_path() {
+        let endpoint = std::env::temp_dir()
+            .join("x".repeat(512))
+            .to_string_lossy()
+            .into_owned();
+
+        probe_primary_endpoints(std::slice::from_ref(&endpoint))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_probe_fails_closed_for_an_invalid_endpoint() {
+        let endpoint = "invalid\0endpoint".to_string();
+
+        let error = probe_primary_endpoints(std::slice::from_ref(&endpoint))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, CapabilityLookupError::OwnerProbeFailed);
+    }
+
+    #[test]
+    fn capability_gate_distinguishes_old_and_capable_instances() {
+        let mut old = test_instance("unused".to_string());
+        let error =
+            require_capability(old.clone(), super::super::PERSONAL_EXPORT_CAPABILITY).unwrap_err();
+        assert_eq!(
+            error,
+            MissingCapability {
+                capability: super::super::PERSONAL_EXPORT_CAPABILITY.to_string()
+            }
+        );
+
+        old.capabilities
+            .push(super::super::PERSONAL_EXPORT_CAPABILITY.to_string());
+        assert!(require_capability(old, super::super::PERSONAL_EXPORT_CAPABILITY).is_ok());
     }
 }
 

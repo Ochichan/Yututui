@@ -121,11 +121,13 @@ fn search_filter_rejects_over_cap_input() {
 #[test]
 fn download_scan_truncation_is_user_visible() {
     let mut app = App::new(100);
-    app.update(Msg::DownloadsScanned(crate::library::DownloadScan {
-        songs: vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))],
-        truncated: true,
-        limit: 999,
-    }));
+    app.update(Msg::Data(DataMsg::DownloadsScanned(
+        crate::library::DownloadScan {
+            songs: vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))],
+            truncated: true,
+            limit: 999,
+        },
+    )));
     assert_eq!(app.library_ui.downloaded.len(), 1);
     assert!(app.status.text.contains("999"));
     assert!(app.status.text.contains("hidden") || app.status.text.contains("숨김"));

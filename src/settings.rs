@@ -23,6 +23,9 @@ use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
+mod actions;
+pub use actions::{FieldKind, PersonalDataExportStatus};
+
 #[cfg(test)]
 mod spotify_tests;
 
@@ -117,6 +120,7 @@ impl SettingsTab {
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
                 Field::UpdateCheck,
+                Field::ExportPersonalData,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ],
@@ -281,6 +285,8 @@ pub enum Field {
     EnqueueNext,
     /// Check GitHub on startup for a newer YuTuTui! release (the About-card update notice).
     UpdateCheck,
+    /// A non-destructive button that exports the portable personal-data snapshot to Downloads.
+    ExportPersonalData,
     /// A button (not a value): restores all keybindings to their built-in defaults.
     ResetKeybindings,
     /// A button (not a value): activates "reset every setting to defaults".
@@ -400,21 +406,6 @@ pub enum Field {
     SpotifyImportMode,
     /// A button: list Spotify playlists and import the picked one.
     SpotifyImport,
-}
-
-/// How a field is edited / rendered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldKind {
-    /// Free text edited in-place (paths). Enter toggles edit mode.
-    Text,
-    /// On/off, flipped with ←/→ or Enter.
-    Toggle,
-    /// A value cycled through a set with ←/→.
-    Select,
-    /// A numeric value nudged with ←/→.
-    Slider,
-    /// A pressable action (no value); Enter/Confirm triggers it.
-    Button,
 }
 
 /// Settings actions that require an explicit confirmation before mutating state.
@@ -615,7 +606,8 @@ impl Field {
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
             }
-            Field::ResetKeybindings
+            Field::ExportPersonalData
+            | Field::ResetKeybindings
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
             | Field::RadioRecording
@@ -692,6 +684,9 @@ impl Field {
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
             Field::UpdateCheck => t!("Check for updates", "업데이트 확인").to_owned(),
+            Field::ExportPersonalData => {
+                t!("Export personal data", "개인 데이터 내보내기").to_owned()
+            }
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
             Field::BigText => t!("Large text", "큰 글자 모드").to_owned(),
@@ -976,6 +971,7 @@ impl SettingsDraft {
             Field::BigText => toggle_str(self.big_text),
             Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
             // Buttons, not values: these rows show how to trigger them.
+            Field::ExportPersonalData => PersonalDataExportStatus::Idle.value_display(),
             Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
                 t!("↵ press Enter", "↵ Enter로 실행").to_owned()
             }
@@ -1279,6 +1275,8 @@ pub struct SettingsState {
     pub capturing: Option<(KeyContext, Action)>,
     /// Open Settings dropdown for the Spotify import mode. Holds the highlighted option index.
     pub spotify_import_mode_dropdown: Option<usize>,
+    /// Progress/result for the non-destructive personal-data export button.
+    pub personal_data_export: PersonalDataExportStatus,
     /// Whether the user was in a radio context when Settings opened — dedicated Radio mode OR
     /// a radio station currently loaded/playing. Gates the radio-only `RadioRecording` item's
     /// visibility. Captured once at open (neither input can change while Settings is open), so
@@ -1468,6 +1466,7 @@ mod tests {
             mousemap: MouseMap::default(),
             capturing: None,
             spotify_import_mode_dropdown: None,
+            personal_data_export: PersonalDataExportStatus::Idle,
             radio_mode,
         }
     }
@@ -1681,10 +1680,12 @@ mod tests {
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
                 Field::UpdateCheck,
+                Field::ExportPersonalData,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ]
         );
+        assert_eq!(Field::ExportPersonalData.kind(), FieldKind::Button);
         assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
         assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
         assert_eq!(Field::SearchSource.kind(), FieldKind::Select);

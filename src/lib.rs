@@ -11,6 +11,8 @@ pub mod artwork;
 pub mod auth_cli;
 pub mod config;
 pub mod daemon;
+pub mod data_export;
+pub mod data_ownership;
 pub mod deps;
 pub mod doctor;
 pub mod download;

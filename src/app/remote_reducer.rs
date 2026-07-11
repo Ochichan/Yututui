@@ -50,6 +50,11 @@ impl App {
             | RemoteCommand::ResetAllSettings => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
+            // Intercepted by the top-level reducer before this playback/settings dispatcher so
+            // the reply can stay open until the blocking writer finishes.
+            RemoteCommand::ExportPersonalData { .. } => {
+                (RemoteResponse::err("invalid_export_dispatch"), Vec::new())
+            }
             RemoteCommand::VolumeUp => {
                 let cmds = self.on_player_action(Action::VolUp);
                 (RemoteResponse::ok(self.vol_line()), cmds)

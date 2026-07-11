@@ -24,6 +24,10 @@ pub const REMOTE_MAX_GEMINI_KEY_BYTES: usize = 256;
 pub const REMOTE_MAX_SETTING_NAME_BYTES: usize = 64;
 /// Paths and provider app ids may be user-entered, but should never be frame-sized blobs.
 pub const REMOTE_MAX_SETTING_STRING_BYTES: usize = 4096;
+/// Export destinations travel inside the 4 KiB one-shot request frame. Keep enough headroom
+/// for the request envelope, authentication token, and worst-case JSON escaping while supporting
+/// long platform paths.
+pub const REMOTE_MAX_EXPORT_DIRECTORY_BYTES: usize = 1536;
 /// Session subscribe/unsubscribe frames should name each topic at most once.
 pub const REMOTE_MAX_TOPICS: usize = 16;
 
@@ -117,6 +121,11 @@ pub enum RemoteCommand {
     },
     /// Danger zone: reset the whole config to defaults (the GUI double-confirms).
     ResetAllSettings,
+    /// Write a portable, credential-free snapshot to this existing absolute directory.
+    /// Additive since v8 and capability-gated by `personal-export-v1`.
+    ExportPersonalData {
+        directory: String,
+    },
 }
 
 impl RemoteCommand {
@@ -129,6 +138,7 @@ impl RemoteCommand {
             | RemoteCommand::EnqueueTracks { video_ids } => validate_track_ids(video_ids),
             RemoteCommand::Apply { change } => validate_gui_setting_change(change),
             RemoteCommand::SetGeminiKey { key } => validate_gemini_key(key),
+            RemoteCommand::ExportPersonalData { directory } => validate_export_directory(directory),
             _ => Ok(()),
         }
     }
@@ -187,6 +197,22 @@ fn validate_gemini_key(key: &str) -> Result<(), RemoteCommandValidationError> {
     }
     if key.chars().any(forbidden_command_char) {
         return Err(validation_error("bad_request"));
+    }
+    Ok(())
+}
+
+fn validate_export_directory(directory: &str) -> Result<(), RemoteCommandValidationError> {
+    if directory.is_empty() {
+        return Err(validation_error("empty_export_directory"));
+    }
+    if directory.len() > REMOTE_MAX_EXPORT_DIRECTORY_BYTES {
+        return Err(validation_error("export_directory_too_long"));
+    }
+    if directory.chars().any(forbidden_command_char) {
+        return Err(validation_error("bad_export_directory"));
+    }
+    if !std::path::Path::new(directory).is_absolute() {
+        return Err(validation_error("export_directory_not_absolute"));
     }
     Ok(())
 }
@@ -360,6 +386,35 @@ mod tests {
             .reason(),
             "too_many_tracks"
         );
+    }
+
+    #[test]
+    fn export_command_round_trips_and_requires_a_bounded_absolute_directory() {
+        let directory = std::env::temp_dir().to_string_lossy().into_owned();
+        let command = RemoteCommand::ExportPersonalData {
+            directory: directory.clone(),
+        };
+        assert!(command.validate().is_ok());
+
+        let line = serde_json::to_string(&command).unwrap();
+        let back: RemoteCommand = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, command);
+        assert!(line.contains(r#""cmd":"export_personal_data""#));
+
+        for (directory, reason) in [
+            (String::new(), "empty_export_directory"),
+            ("relative/path".to_string(), "export_directory_not_absolute"),
+            ("bad\npath".to_string(), "bad_export_directory"),
+            (
+                format!("/{}", "x".repeat(REMOTE_MAX_EXPORT_DIRECTORY_BYTES)),
+                "export_directory_too_long",
+            ),
+        ] {
+            let error = RemoteCommand::ExportPersonalData { directory }
+                .validate()
+                .unwrap_err();
+            assert_eq!(error.reason(), reason);
+        }
     }
 
     #[test]

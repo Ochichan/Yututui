@@ -33,7 +33,8 @@ use crate::queue::{Queue, QueueSnapshot};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::settings::{
-    self, Field, FieldKind, SettingsConfirm, SettingsDraft, SettingsState, SettingsTab,
+    self, Field, FieldKind, PersonalDataExportStatus, SettingsConfirm, SettingsDraft,
+    SettingsState, SettingsTab,
 };
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
@@ -46,6 +47,7 @@ mod types;
 pub use types::*;
 
 mod bootstrap;
+mod data_export;
 mod feedback;
 mod helpers;
 pub(crate) use helpers::open_in_browser;
@@ -209,6 +211,8 @@ pub struct App {
     pub overlays: Overlays,
     /// A transfer job is running (guards double-starts; progress rides the status line).
     pub transfer_running: bool,
+    /// Portable personal-data export state shared by Settings and authenticated remote requests.
+    pub(crate) personal_export: PersonalDataExportState,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed

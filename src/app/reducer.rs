@@ -82,9 +82,22 @@ impl App {
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Remote(cmd, reply) => {
-                let (resp, cmds) = self.apply_remote(cmd);
-                let _ = reply.send(resp);
-                return cmds;
+                return match cmd {
+                    crate::remote::proto::RemoteCommand::ExportPersonalData { directory } => {
+                        self.start_personal_export(PathBuf::from(directory), Some(reply))
+                    }
+                    other => {
+                        let (resp, cmds) = self.apply_remote(other);
+                        let _ = reply.send(resp);
+                        cmds
+                    }
+                };
+            }
+            Msg::Data(DataMsg::PersonalDataExport(PersonalDataExportMsg::Finished {
+                result,
+                reply,
+            })) => {
+                return self.finish_personal_export(result, reply);
             }
             Msg::Media(cmd) => return self.apply_media(cmd),
             Msg::MediaArtworkReady(ready) => {
@@ -355,7 +368,7 @@ impl App {
                 self.status.text = format!("{}: {error}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
-            Msg::DownloadsScanned(scan) => {
+            Msg::Data(DataMsg::DownloadsScanned(scan)) => {
                 self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
                 let truncated = scan.truncated;
                 let limit = scan.limit;

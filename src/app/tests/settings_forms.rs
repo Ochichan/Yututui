@@ -96,7 +96,7 @@ fn settings_text_fields_persist_provider_ids_and_download_dir() {
     );
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::ScanDownloads(path) if path == &new_dir))
+            .any(|c| matches!(c, Cmd::Data(DataCmd::ScanDownloads(path)) if path == &new_dir))
     );
     let saved = save_config(&cmds).expect("download directory change saves config");
     assert_eq!(saved.download_dir.as_deref(), Some(new_dir.as_path()));

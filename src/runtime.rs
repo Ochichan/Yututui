@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 use ratatui_image::thread::ResizeResponse;
 use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError};
 
-use crate::app::{AiMsg, App, Cmd, Msg, PersistCmd, PlayerMsg, StreamingMsg};
+use crate::app::{
+    AiMsg, App, Cmd, DataCmd, DataMsg, Msg, PersistCmd, PersonalDataExportCmd, PlayerMsg,
+    StreamingMsg,
+};
 use crate::config::PlayerRuntimeConfig;
 use crate::player::{PlayerCmd, PlayerHandle};
 use crate::util::event_policy::{
@@ -18,6 +21,7 @@ use crate::util::event_policy::{
 };
 
 mod must_deliver;
+mod personal_export;
 
 pub enum RuntimeEvent {
     App(Msg),
@@ -281,6 +285,9 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::Remote(_, _) => EventPolicy::MustReplyOrBusy {
             lane: Lane::RemoteCommand,
         },
+        Msg::Data(_) => EventPolicy::MustDeliver {
+            lane: Lane::WorkResult,
+        },
         Msg::Player(player) => app_player_msg_policy(player),
         Msg::ArtworkResized(_) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
@@ -350,7 +357,6 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::Recorder(_)
         | Msg::PlaylistTracks { .. }
         | Msg::PlaylistTracksError { .. }
-        | Msg::DownloadsScanned(_)
         | Msg::Local(_)
         | Msg::DownloadDone { .. }
         | Msg::DownloadError { .. }
@@ -1114,20 +1120,30 @@ impl RuntimeHandles {
                     .persist
                     .save(crate::persist::Snapshot::Station(app.station.clone())),
             },
-            Cmd::ScanDownloads(dir) => {
-                // Directory scan does per-file IO — keep it off the loop task too.
-                let tx = self.worker_tx.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = crate::util::blocking::spawn_io(move || {
-                        let scan = crate::library::scan_downloads(&dir);
-                        emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
-                    })
-                    .await
-                    {
-                        tracing::warn!(%error, "download scan task failed");
-                    }
-                });
-            }
+            Cmd::Data(cmd) => match cmd {
+                DataCmd::PersonalDataExport(PersonalDataExportCmd::Export {
+                    directory,
+                    sources,
+                    reply,
+                }) => personal_export::spawn(self.worker_tx.clone(), directory, sources, reply),
+                DataCmd::ScanDownloads(dir) => {
+                    // Directory scan does per-file IO — keep it off the loop task too.
+                    let tx = self.worker_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::util::blocking::spawn_io(move || {
+                            let scan = crate::library::scan_downloads(&dir);
+                            emit(
+                                &tx,
+                                RuntimeEvent::App(Msg::Data(DataMsg::DownloadsScanned(scan))),
+                            );
+                        })
+                        .await
+                        {
+                            tracing::warn!(%error, "download scan task failed");
+                        }
+                    });
+                }
+            },
             Cmd::Local(cmd) => match cmd {
                 crate::app::LocalCmd::LoadIndex { index_path } => {
                     let tx = self.worker_tx.clone();

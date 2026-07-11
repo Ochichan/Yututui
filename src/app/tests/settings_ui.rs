@@ -858,6 +858,91 @@ fn settings_mpv_overlay_key_capture_rejects_unsupported_keys() {
     );
 }
 
+#[test]
+fn personal_data_export_button_sets_busy_and_carries_live_sources_once() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    focus_current_settings_field(&mut app, Field::ExportPersonalData);
+    let row = app.settings.as_ref().unwrap().row;
+    {
+        let draft = &mut app.settings.as_mut().unwrap().draft;
+        draft.autoplay_on_start = true;
+        draft.speed = 1.7;
+    }
+    app.playback.volume = 37;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let [Cmd::Data(DataCmd::PersonalDataExport(PersonalDataExportCmd::Export { sources, .. }))] =
+        cmds.as_slice()
+    else {
+        panic!("export must carry owned source state to the worker");
+    };
+    assert!(app.personal_export.in_progress);
+    assert_eq!(sources.config.autoplay_on_start, Some(true));
+    assert_eq!(sources.config.speed, Some(1.7));
+    assert_eq!(sources.config.volume, 37);
+    assert_eq!(sources.library.favorites.len(), app.library.favorites.len());
+    assert_eq!(
+        sources.playlists.playlists.len(),
+        app.playlists.playlists.len()
+    );
+    assert_eq!(
+        sources.station.active.is_some(),
+        app.station.active.is_some()
+    );
+    assert_eq!(app.mode, Mode::Settings);
+    let settings = app.settings.as_ref().unwrap();
+    assert_eq!(settings.row, row);
+    assert_eq!(
+        settings.personal_data_export,
+        PersonalDataExportStatus::Exporting
+    );
+    assert!(app.status.text.contains("Exporting personal data"));
+
+    let duplicate = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        duplicate.is_empty(),
+        "busy Enter must not start another export"
+    );
+    assert_eq!(app.settings.as_ref().unwrap().row, row);
+}
+
+#[test]
+fn personal_data_export_mouse_activation_focuses_the_row_and_starts_export() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let row = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    app.register_mouse_button(
+        ratatui::layout::Rect {
+            x: 30,
+            y: 4,
+            width: 8,
+            height: 1,
+        },
+        MouseTarget::SettingsActivate(row),
+    );
+
+    let cmds = app.update(Msg::MouseClick { col: 32, row: 4 });
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Data(DataCmd::PersonalDataExport(
+            PersonalDataExportCmd::Export { .. }
+        ))]
+    ));
+    assert_eq!(app.mode, Mode::Settings);
+    let settings = app.settings.as_ref().unwrap();
+    assert_eq!(settings.row, row);
+    assert_eq!(
+        settings.personal_data_export,
+        PersonalDataExportStatus::Exporting
+    );
+}
+
 /// Move the General-tab cursor onto the Reset-all button.
 
 #[test]

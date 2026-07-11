@@ -1,5 +1,6 @@
 //! Blocking disk work for the recorder, run off the main loop via `spawn_blocking`
-//! (mirrors `Cmd::ScanDownloads`). The reducer decides *what* to do (drop/keep/save); this
+//! (mirrors `Cmd::Data(DataCmd::ScanDownloads)`). The reducer decides *what* to do
+//! (drop/keep/save); this
 //! module only moves bytes: size-stabilize the mpv temp file, copy it into the recordings
 //! folder, and best-effort tag it. Failures come back as [`RecorderEvent::SaveFailed`] and
 //! never panic the app.

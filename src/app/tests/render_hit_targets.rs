@@ -174,17 +174,99 @@ fn rendering_settings_registers_clickable_controls() {
         "speed › arrow"
     );
 
-    // General's Reset buttons (no value) activate on click.
+    // General's non-destructive export and destructive Reset buttons activate on click.
     let general = render_targets(SettingsTab::General);
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|f| *f == Field::ExportPersonalData)
+        .unwrap();
     let reset_all = SettingsTab::General
         .fields()
         .iter()
         .position(|f| *f == Field::ResetAll)
         .unwrap();
     assert!(
+        has(&general, MouseTarget::SettingsActivate(export)),
+        "personal-data export button"
+    );
+    assert!(
         has(&general, MouseTarget::SettingsActivate(reset_all)),
         "reset-all button"
     );
+}
+
+#[test]
+fn exporting_personal_data_disables_its_mouse_action_without_breaking_narrow_rendering() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.row = export;
+        st.personal_data_export = crate::settings::PersonalDataExportStatus::Exporting;
+    }
+
+    const WIDTH: u16 = 48;
+    let backend = TestBackend::new(WIDTH, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    assert!(buffer_contains(&buffer, "Exporting…"));
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .all(|button| button.target != MouseTarget::SettingsActivate(export)),
+        "busy export must not publish a second activation target"
+    );
+}
+
+#[test]
+fn personal_data_export_row_renders_idle_and_result_states() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    app.settings.as_mut().unwrap().row = export;
+
+    let warning = render_app_buffer(&app, 80, 32);
+    assert!(buffer_contains(
+        &warning,
+        "unencrypted JSON · includes private listening history"
+    ));
+
+    for (status, text) in [
+        (
+            crate::settings::PersonalDataExportStatus::Idle,
+            "↵ Export to Downloads",
+        ),
+        (
+            crate::settings::PersonalDataExportStatus::Succeeded,
+            "✓ Exported",
+        ),
+        (
+            crate::settings::PersonalDataExportStatus::Failed,
+            "Failed · ↵ retry",
+        ),
+    ] {
+        app.settings.as_mut().unwrap().personal_data_export = status;
+        let buffer = render_app_buffer(&app, 80, 32);
+        assert!(
+            buffer_contains(&buffer, text),
+            "missing export state: {text}"
+        );
+    }
 }
 
 #[test]

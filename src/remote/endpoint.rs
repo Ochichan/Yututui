@@ -95,16 +95,45 @@ pub fn write_instance(file: &InstanceFile) -> io::Result<()> {
 }
 
 /// Read the published descriptor, if any (absent / corrupt → `None`).
+///
+/// General remote-control probes retain the historic best-effort behavior. Callers that must
+/// distinguish a genuinely absent owner from an unreadable descriptor should use
+/// [`read_instance_checked`].
 pub fn read_instance() -> Option<InstanceFile> {
-    let data = instance_path()
-        .ok()
-        .and_then(|path| read_instance_bytes(path.as_path()))
-        .or_else(|| read_instance_bytes(legacy_instance_path().as_path()))?;
-    serde_json::from_slice(&data).ok()
+    read_instance_checked().ok().flatten()
 }
 
-fn read_instance_bytes(path: &Path) -> Option<Vec<u8>> {
-    safe_fs::read_no_symlink_limited(path, 8 * 1024).ok()
+/// Read the descriptor without collapsing corrupt, unreadable, oversized, or unsafe files into
+/// absence. Personal-data export uses this to avoid falling back to a stale disk snapshot while
+/// a live owner's descriptor is damaged.
+pub fn read_instance_checked() -> io::Result<Option<InstanceFile>> {
+    if let Some(instance) = read_current_instance_checked()? {
+        return Ok(Some(instance));
+    }
+    read_instance_file(&legacy_instance_path())
+}
+
+/// Read only the descriptor published in the current private runtime directory.
+///
+/// New capability-gated operations use this entry point. A current owner never publishes a
+/// descriptor in the shared legacy location, so accepting a capability advertisement from there
+/// would extend a compatibility fallback into a new trust boundary.
+pub fn read_current_instance_checked() -> io::Result<Option<InstanceFile>> {
+    read_instance_file(&instance_path()?)
+}
+
+fn read_instance_file(path: &Path) -> io::Result<Option<InstanceFile>> {
+    let data = match safe_fs::read_no_symlink_limited(path, 8 * 1024) {
+        Ok(data) => data,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    serde_json::from_slice(&data).map(Some).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "instance descriptor is malformed",
+        )
+    })
 }
 
 /// Best-effort removal of the descriptor on shutdown.
@@ -141,6 +170,32 @@ mod tests {
         let t = gen_token().unwrap();
         assert_eq!(t.len(), 32);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn checked_descriptor_read_distinguishes_absent_from_malformed() {
+        let root = std::env::temp_dir().join(format!(
+            "yututui-instance-check-{}-{}",
+            std::process::id(),
+            gen_token().expect("random suffix")
+        ));
+        std::fs::create_dir(&root).expect("test directory");
+        let path = root.join("instance.json");
+
+        assert!(
+            read_instance_file(&path)
+                .expect("absent descriptor")
+                .is_none()
+        );
+        std::fs::write(&path, b"{not-json}").expect("malformed descriptor fixture");
+        assert_eq!(
+            read_instance_file(&path)
+                .expect_err("malformed descriptor")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        std::fs::remove_dir_all(root).expect("cleanup test directory");
     }
 
     #[test]

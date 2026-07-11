@@ -29,6 +29,7 @@ fn isolated_command(root: &Path, args: &[&str]) -> Command {
         .env("APPDATA", root.join("config"))
         .env("LOCALAPPDATA", root.join("local"))
         .env("YTM_CONFIG_DIR", root.join("config"))
+        .env("YTM_DATA_DIR", root.join("data"))
         .env("YTM_CACHE_DIR", root.join("cache"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
@@ -71,6 +72,8 @@ fn one_shot_subcommands_handle_help_and_parse_errors_without_launching_tui() {
         &["tools", "--help"][..],
         &["tools", "status", "--help"][..],
         &["transfer", "--help"][..],
+        &["data", "--help"][..],
+        &["data", "export", "--help"][..],
         &["auth", "--help"][..],
         &["daemon", "--help"][..],
         &["update", "--help"][..],
@@ -93,6 +96,9 @@ fn one_shot_subcommands_handle_help_and_parse_errors_without_launching_tui() {
         &["tools", "reset"][..],
         &["transfer"][..],
         &["transfer", "unknown"][..],
+        &["data"][..],
+        &["data", "unknown"][..],
+        &["data", "export", "--to"][..],
         &["auth"][..],
         &["auth", "unknown"][..],
         &["daemon", "unknown"][..],
@@ -107,6 +113,151 @@ fn one_shot_subcommands_handle_help_and_parse_errors_without_launching_tui() {
             stderr(&output)
         );
     }
+}
+
+#[test]
+fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
+    let root = isolated_root("personal-export");
+    let _ = std::fs::remove_dir_all(&root);
+    let config_dir = root.join("config");
+    let data_dir = root.join("data");
+    let export_dir = root.join("exports");
+    for directory in [&config_dir, &data_dir, &export_dir] {
+        std::fs::create_dir_all(directory).expect("isolated export directory");
+    }
+
+    const SECRET: &str = "cli-export-secret-sentinel";
+    const PRIVATE_PATH: &str = "/Users/alice/private/music.flac";
+    std::fs::write(
+        config_dir.join("config.json"),
+        format!(
+            r#"{{"cookie":"{SECRET}","gemini_api_key":"{SECRET}","download_dir":"{PRIVATE_PATH}","volume":42}}"#
+        ),
+    )
+    .expect("write isolated config");
+    std::fs::write(
+        data_dir.join("library.json"),
+        r#"{"favorites":[{"video_id":"dQw4w9WgXcQ","title":"Portable song","artist":"Safe artist","duration":"3:32"}]}"#,
+    )
+    .expect("write isolated library");
+
+    let output = isolated_command(
+        &root,
+        &["data", "export", "--to", export_dir.to_str().unwrap()],
+    )
+    .output()
+    .expect("ytt data export should run");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("Exported personal data to"), "{out}");
+    assert!(
+        out.contains("Private listening history is included"),
+        "{out}"
+    );
+
+    let files: Vec<PathBuf> = std::fs::read_dir(&export_dir)
+        .expect("list exports")
+        .map(|entry| entry.expect("export entry").path())
+        .collect();
+    assert_eq!(files.len(), 1, "expected one final export: {files:?}");
+    let bytes = std::fs::read(&files[0]).expect("read export");
+    let text = String::from_utf8(bytes.clone()).expect("export is UTF-8");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse export");
+    assert_eq!(json["kind"], "yututui_personal_data_export");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["settings"]["general"]["volume"], 42);
+    assert_eq!(json["library"]["favorites"][0]["title"], "Portable song");
+    for forbidden in [SECRET, PRIVATE_PATH, "gemini_api_key", "cookies_file"] {
+        assert!(!text.contains(forbidden), "export leaked {forbidden:?}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&files[0])
+                .expect("export metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    std::fs::remove_dir_all(root).expect("cleanup isolated export");
+}
+
+#[cfg(unix)]
+#[test]
+fn personal_data_export_recovers_from_a_stale_descriptor_without_deleting_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const USER_TAG: &str = "staleexporttest";
+
+    let root = isolated_root("stale-personal-export");
+    let _ = std::fs::remove_dir_all(&root);
+    let export_dir = root.join("exports");
+    std::fs::create_dir_all(&export_dir).expect("isolated export directory");
+
+    // A one-shot remote probe creates the same private runtime directory that the later export
+    // will use, without starting the TUI or publishing an instance descriptor.
+    let probe = isolated_command(&root, &["-r", "status"])
+        .env("USER", USER_TAG)
+        .output()
+        .expect("isolated remote probe should run");
+    assert_eq!(probe.status.code(), Some(1), "stderr: {}", stderr(&probe));
+
+    let runtime = root.join("runtime");
+    let app_dirs: Vec<PathBuf> = std::fs::read_dir(&runtime)
+        .expect("list isolated runtime")
+        .filter_map(|entry| {
+            let path = entry.expect("runtime entry").path();
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("yututui-"))
+                .then_some(path)
+        })
+        .collect();
+    assert_eq!(app_dirs.len(), 1, "private runtime dir: {app_dirs:?}");
+    let app_dir = &app_dirs[0];
+    let endpoint = app_dir.join(format!("yututui-remote-{USER_TAG}.sock"));
+    let descriptor = app_dir.join(format!("yututui-remote-{USER_TAG}.json"));
+    let contents = serde_json::json!({
+        "app_pid": u32::MAX,
+        "endpoint": endpoint,
+        "token": "00000000000000000000000000000000",
+        "created_unix": 1,
+        "mode": "standalone_tui",
+        "protocol_version": 8,
+        "capabilities": ["remote-control", "status", "personal-export-v1"]
+    });
+    std::fs::write(
+        &descriptor,
+        serde_json::to_vec(&contents).expect("serialize stale descriptor"),
+    )
+    .expect("write stale descriptor");
+    std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o600))
+        .expect("make stale descriptor private");
+
+    let output = isolated_command(
+        &root,
+        &["data", "export", "--to", export_dir.to_str().unwrap()],
+    )
+    .env("USER", USER_TAG)
+    .output()
+    .expect("ytt data export should recover from the stale descriptor");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("Exported personal data to"), "{out}");
+    assert!(out.contains("--new-instance"), "{out}");
+    assert!(descriptor.exists(), "stale descriptor must not be deleted");
+    assert_eq!(
+        std::fs::read_dir(&export_dir)
+            .expect("list recovered export")
+            .count(),
+        1
+    );
+
+    std::fs::remove_dir_all(root).expect("cleanup isolated stale export");
 }
 
 #[test]

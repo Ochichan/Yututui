@@ -27,9 +27,10 @@ mod model_settings;
 mod session;
 
 pub use command::{
-    GuiSettingChange, REMOTE_MAX_GEMINI_KEY_BYTES, REMOTE_MAX_QUERY_BYTES,
-    REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES, REMOTE_MAX_TOPICS,
-    REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
+    GuiSettingChange, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_GEMINI_KEY_BYTES,
+    REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES,
+    REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand,
+    RemoteSettingChange,
 };
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
@@ -133,6 +134,18 @@ impl RemoteResponse {
             ok: false,
             reason: Some(reason.to_string()),
             message: None,
+            status: None,
+        }
+    }
+
+    /// A semantic rejection with sanitized, actionable text for human-facing one-shot clients.
+    /// `reason` remains the stable machine contract; `message` is deliberately optional on the
+    /// wire, so adding it does not change how older clients parse errors.
+    pub fn err_with_message(reason: &str, message: String) -> Self {
+        Self {
+            ok: false,
+            reason: Some(reason.to_string()),
+            message: Some(message),
             status: None,
         }
     }
@@ -332,6 +345,16 @@ mod tests {
     }
 
     #[test]
+    fn personal_export_command_is_an_additive_round_trip() {
+        let command = RemoteCommand::ExportPersonalData {
+            directory: std::env::temp_dir().to_string_lossy().into_owned(),
+        };
+        let line = serde_json::to_string(&command).unwrap();
+        let back: RemoteCommand = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, command);
+    }
+
+    #[test]
     fn legacy_status_without_position_fields_still_parses() {
         // A v7 server predating elapsed_ms/duration_ms: the fields default to None.
         let line = r#"{"title":"Song","artist":"A","paused":false,"volume":50,"position":1,"total":2,"streaming":false}"#;
@@ -358,6 +381,19 @@ mod tests {
         assert!(line.contains("queue_empty"));
         assert!(!line.contains("message"));
         assert!(!line.contains("status"));
+    }
+
+    #[test]
+    fn response_error_message_is_additive_and_keeps_machine_reason() {
+        let response = RemoteResponse::err_with_message(
+            "personal_export_failed",
+            "destination is not writable".to_string(),
+        );
+        let line = serde_json::to_string(&response).unwrap();
+        assert!(line.contains(r#""reason":"personal_export_failed""#));
+        assert!(line.contains(r#""message":"destination is not writable""#));
+        let back: RemoteResponse = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, response);
     }
 
     #[test]
