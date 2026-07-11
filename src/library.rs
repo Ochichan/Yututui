@@ -8,7 +8,8 @@
 //! sessions) and de-duplicated by `video_id`. Persistence mirrors [`crate::config`]:
 //! pretty JSON written atomically (temp file + rename).
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +25,9 @@ const RADIO_FAVORITES_MAX: usize = 999;
 const RADIOS_MAX: usize = 999;
 const DOWNLOADS_MAX: usize = 999;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
+/// Linear scans beat hashing for the small favorite collections common on fresh installs while
+/// the lazy membership index keeps large library renders from becoming quadratic.
+const FAVORITE_MEMBERSHIP_LINEAR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Default)]
 pub struct DownloadScan {
@@ -33,7 +37,7 @@ pub struct DownloadScan {
 }
 
 /// Saved tracks and play history, persisted to `<data dir>/library.json`.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Library {
     /// Saved tracks, most-recently-favorited first.
@@ -49,6 +53,37 @@ pub struct Library {
     /// caches also keying on collection lengths.
     #[serde(skip)]
     pub(crate) rev: u64,
+    /// Lazily rebuilt membership sets for the render/media hot paths. The persisted vectors remain
+    /// authoritative; this cache is skipped by serde and invalidated by every production mutation.
+    /// Lengths are part of the key so direct test-fixture pushes also rebuild on first lookup.
+    #[serde(skip)]
+    pub(crate) favorite_membership: RefCell<FavoriteMembership>,
+}
+
+impl Clone for Library {
+    fn clone(&self) -> Self {
+        Self {
+            favorites: self.favorites.clone(),
+            history: self.history.clone(),
+            radio_favorites: self.radio_favorites.clone(),
+            radios: self.radios.clone(),
+            rev: self.rev,
+            // This is a derived hot-path cache, not persisted state. Persist snapshots clone the
+            // Library frequently, so copying up to ~2,000 owned IDs and both hash tables would
+            // turn the optimization into extra work. The clone rebuilds lazily if queried.
+            favorite_membership: RefCell::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FavoriteMembership {
+    favorites_len: usize,
+    radio_favorites_len: usize,
+    initialized: bool,
+    /// `false` is a normal track and `true` is a radio station. A single map avoids retaining a
+    /// second copy of every radio ID while still answering both membership queries in O(1).
+    entries: HashMap<String, bool>,
 }
 
 impl Library {
@@ -81,20 +116,75 @@ impl Library {
     }
 
     pub fn is_favorite(&self, video_id: &str) -> bool {
-        self.favorites.iter().any(|s| s.video_id == video_id) || self.is_radio_favorite(video_id)
+        let favorite_count = self.favorites.len() + self.radio_favorites.len();
+        if favorite_count == 0 {
+            return false;
+        }
+        if favorite_count <= FAVORITE_MEMBERSHIP_LINEAR_LIMIT {
+            return self.favorites.iter().any(|song| song.video_id == video_id)
+                || self
+                    .radio_favorites
+                    .iter()
+                    .any(|song| song.video_id == video_id);
+        }
+        self.indexed_favorite_kind(video_id).is_some()
     }
 
     pub fn is_radio_favorite(&self, video_id: &str) -> bool {
-        self.radio_favorites.iter().any(|s| s.video_id == video_id)
+        if self.radio_favorites.is_empty() {
+            return false;
+        }
+        if self.radio_favorites.len() <= FAVORITE_MEMBERSHIP_LINEAR_LIMIT {
+            return self
+                .radio_favorites
+                .iter()
+                .any(|song| song.video_id == video_id);
+        }
+        self.indexed_favorite_kind(video_id).unwrap_or(false)
+    }
+
+    fn indexed_favorite_kind(&self, video_id: &str) -> Option<bool> {
+        {
+            let membership = self.favorite_membership.borrow();
+            if membership.initialized
+                && membership.favorites_len == self.favorites.len()
+                && membership.radio_favorites_len == self.radio_favorites.len()
+            {
+                return membership.entries.get(video_id).copied();
+            }
+        }
+
+        let mut membership = self.favorite_membership.borrow_mut();
+        membership.entries.clear();
+        membership
+            .entries
+            .reserve(self.favorites.len() + self.radio_favorites.len());
+        membership.entries.extend(
+            self.favorites
+                .iter()
+                .map(|song| (song.video_id.clone(), false)),
+        );
+        for song in &self.radio_favorites {
+            membership.entries.insert(song.video_id.clone(), true);
+        }
+        membership.favorites_len = self.favorites.len();
+        membership.radio_favorites_len = self.radio_favorites.len();
+        membership.initialized = true;
+        membership.entries.get(video_id).copied()
     }
 
     fn touch(&mut self) {
         self.rev = self.rev.wrapping_add(1);
     }
 
+    fn touch_favorites(&mut self) {
+        self.touch();
+        self.favorite_membership.get_mut().initialized = false;
+    }
+
     /// Toggle `song`'s favorite status. Returns `true` if it is now a favorite.
     pub fn toggle_favorite(&mut self, song: &Song) -> bool {
-        self.touch();
+        self.touch_favorites();
         if song.is_radio_station() {
             return self.toggle_radio_favorite(song);
         }
@@ -114,7 +204,7 @@ impl Library {
 
     /// Toggle a live radio station's favorite status, separate from track favorites.
     pub fn toggle_radio_favorite(&mut self, song: &Song) -> bool {
-        self.touch();
+        self.touch_favorites();
         if !song.is_radio_station() {
             return false;
         }
@@ -136,7 +226,7 @@ impl Library {
     /// Remove the favorite at `index` (position in [`Self::favorites`]). Returns whether a
     /// track was removed — `false` for an out-of-range index. Powers the library's delete.
     pub fn remove_favorite_at(&mut self, index: usize) -> bool {
-        self.touch();
+        self.touch_favorites();
         if index < self.favorites.len() {
             self.favorites.remove(index);
             true
@@ -154,7 +244,7 @@ impl Library {
 
     /// Remove a station from radio favorites only, leaving its recent-play entry intact.
     pub fn remove_radio_favorite_by_id(&mut self, video_id: &str) -> bool {
-        self.touch();
+        self.touch_favorites();
         let before = self.radio_favorites.len();
         self.radio_favorites.retain(|s| s.video_id != video_id);
         self.radio_favorites.len() != before
@@ -185,7 +275,7 @@ impl Library {
 
     /// Record a live radio station in its own list, de-duped by id and kept out of song lists.
     pub fn record_radio(&mut self, song: &Song) {
-        self.touch();
+        self.touch_favorites();
         if !song.is_radio_station() {
             return;
         }
@@ -400,6 +490,69 @@ mod tests {
         lib.toggle_favorite(&song("b"));
         assert_eq!(lib.favorites[0].video_id, "b");
         assert_eq!(lib.favorites[1].video_id, "a");
+    }
+
+    #[test]
+    fn favorite_membership_rebuilds_after_mutation_and_direct_fixture_push() {
+        let mut lib = Library::default();
+        assert!(!lib.is_favorite("a")); // prime the empty membership cache
+
+        assert!(lib.toggle_favorite(&song("a")));
+        assert!(lib.is_favorite("a"));
+        assert!(!lib.is_radio_favorite("a"));
+
+        let station = radio("direct");
+        let station_id = station.video_id.clone();
+        lib.radio_favorites.push(station); // test fixtures sometimes mutate public vectors
+        assert!(lib.is_favorite(&station_id));
+        assert!(lib.is_radio_favorite(&station_id));
+
+        assert!(!lib.toggle_favorite(&song("a")));
+        assert!(!lib.is_favorite("a"));
+        assert!(lib.is_favorite(&station_id));
+    }
+
+    #[test]
+    fn cloning_library_does_not_deep_clone_derived_membership_cache() {
+        let mut lib = Library::default();
+        for index in 0..=FAVORITE_MEMBERSHIP_LINEAR_LIMIT {
+            assert!(lib.toggle_favorite(&song(&format!("favorite-{index}"))));
+        }
+        assert!(lib.is_favorite("favorite-0"));
+        assert!(lib.favorite_membership.borrow().initialized);
+
+        let cloned = lib.clone();
+        assert!(!cloned.favorite_membership.borrow().initialized);
+        assert!(cloned.favorite_membership.borrow().entries.is_empty());
+        assert!(cloned.is_favorite("favorite-0"));
+    }
+
+    #[test]
+    fn small_favorite_collections_skip_the_membership_index() {
+        let mut lib = Library::default();
+        for index in 0..FAVORITE_MEMBERSHIP_LINEAR_LIMIT {
+            assert!(lib.toggle_favorite(&song(&format!("favorite-{index}"))));
+        }
+
+        assert!(lib.is_favorite("favorite-0"));
+        assert!(!lib.is_favorite("missing"));
+        assert!(!lib.favorite_membership.borrow().initialized);
+    }
+
+    #[test]
+    fn history_only_mutations_preserve_large_favorite_membership_index() {
+        let mut lib = Library::default();
+        for index in 0..=FAVORITE_MEMBERSHIP_LINEAR_LIMIT {
+            assert!(lib.toggle_favorite(&song(&format!("favorite-{index}"))));
+        }
+        assert!(lib.is_favorite("favorite-0"));
+        assert!(lib.favorite_membership.borrow().initialized);
+
+        lib.record_play(&song("history"));
+        assert!(lib.favorite_membership.borrow().initialized);
+        assert!(lib.is_favorite("favorite-0"));
+        assert!(lib.remove_history_at(0));
+        assert!(lib.favorite_membership.borrow().initialized);
     }
 
     #[test]

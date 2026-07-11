@@ -87,7 +87,7 @@ impl App {
     /// themselves (retro ASCII art) instead of through the terminal-graphics protocol.
     pub fn art_source_image(&self) -> Option<(&str, &DynamicImage)> {
         match (self.art.video_id.as_deref(), self.art.source.as_ref()) {
-            (Some(id), Some(img)) => Some((id, img)),
+            (Some(id), Some(img)) => Some((id, img.as_ref())),
             _ => None,
         }
     }
@@ -300,26 +300,70 @@ impl App {
 
     pub fn reset_animation_cadence(&mut self) {
         self.anim.anim_draw_credit = 0;
+        self.anim.anim_last_tick_fps = 0;
         self.anim.anim_last_draw_fps = 0;
     }
 
-    pub(in crate::app) fn advance_animation(&mut self) {
-        self.anim.anim_frame = self.anim.anim_frame.wrapping_add(1);
-
+    /// Logical ticks required for the next draw under the historical per-tick credit scheduler.
+    /// The runtime multiplies this by the same integer logical-tick period as `origin/main`, which
+    /// preserves both visible frame numbers and their original (possibly uneven) due times.
+    pub(crate) fn animation_ticks_until_next_draw(&self) -> u64 {
         let tick_fps = self.animation_tick_fps().max(1);
         let draw_fps = self.animation_draw_fps().clamp(1, tick_fps);
-        if self.anim.anim_last_draw_fps != draw_fps {
+        let credit = if self.anim.anim_last_tick_fps == tick_fps
+            && self.anim.anim_last_draw_fps == draw_fps
+        {
+            self.anim.anim_draw_credit
+        } else {
+            0
+        };
+        u64::from(tick_fps - credit).div_ceil(u64::from(draw_fps))
+    }
+
+    /// From all logical ticks whose legacy deadlines have elapsed, return the prefix ending on the
+    /// newest tick that would actually have dirtied the screen. This is the delayed-wake seam: one
+    /// reducer turn catches up to the exact buffer visible at that wall-clock checkpoint, while a
+    /// trailing non-draw logical tick is left for the next variable deadline.
+    pub(crate) fn animation_ticks_through_latest_draw(&self, available_ticks: u64) -> u64 {
+        let tick_fps = self.animation_tick_fps().max(1);
+        let draw_fps = self.animation_draw_fps().clamp(1, tick_fps);
+        let credit = if self.anim.anim_last_tick_fps == tick_fps
+            && self.anim.anim_last_draw_fps == draw_fps
+        {
+            self.anim.anim_draw_credit
+        } else {
+            0
+        };
+        let total_credit =
+            u128::from(credit).saturating_add(u128::from(available_ticks) * u128::from(draw_fps));
+        let draws_due = total_credit / u128::from(tick_fps);
+        if draws_due == 0 {
+            return 0;
+        }
+        let latest_draw_credit = draws_due * u128::from(tick_fps);
+        let ticks = (latest_draw_credit - u128::from(credit)).div_ceil(u128::from(draw_fps));
+        u64::try_from(ticks).unwrap_or(u64::MAX)
+    }
+
+    /// Apply batched legacy logical ticks. `logical_ticks` normally ends exactly on a draw-due
+    /// frame (as selected by [`Self::animation_ticks_through_latest_draw`]); applying the credit
+    /// in one multiplication is equivalent to running the old reducer once per logical tick.
+    pub(in crate::app) fn advance_animation(&mut self, logical_ticks: u64) {
+        let tick_fps = self.animation_tick_fps().max(1);
+        let draw_fps = self.animation_draw_fps().clamp(1, tick_fps);
+        if self.anim.anim_last_tick_fps != tick_fps || self.anim.anim_last_draw_fps != draw_fps {
+            self.anim.anim_last_tick_fps = tick_fps;
             self.anim.anim_last_draw_fps = draw_fps;
             self.anim.anim_draw_credit = 0;
         }
-        if draw_fps >= tick_fps {
-            self.dirty = true;
-            return;
-        }
 
-        self.anim.anim_draw_credit = self.anim.anim_draw_credit.saturating_add(draw_fps);
-        if self.anim.anim_draw_credit >= tick_fps {
-            self.anim.anim_draw_credit -= tick_fps;
+        let total_credit = u128::from(self.anim.anim_draw_credit)
+            .saturating_add(u128::from(logical_ticks) * u128::from(draw_fps));
+        self.anim.anim_frame = self.anim.anim_frame.wrapping_add(logical_ticks);
+        self.anim.anim_draw_credit = (total_credit % u128::from(tick_fps))
+            .try_into()
+            .unwrap_or(0);
+        if total_credit >= u128::from(tick_fps) {
             self.dirty = true;
         }
     }
@@ -676,11 +720,12 @@ impl App {
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art.picker.as_ref()) {
             (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {
+                let img = Arc::new(img);
                 self.art.dims = (img.width(), img.height());
                 let tx = self.art.resize_tx.as_ref().expect("checked above").clone();
                 *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
                     tx,
-                    Some(picker.new_resize_protocol(img.clone())),
+                    Some(picker.new_resize_protocol_shared(Arc::clone(&img))),
                 ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);

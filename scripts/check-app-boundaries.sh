@@ -24,12 +24,20 @@ BAD
 fi
 
 # INVARIANT(PLAY-EPOCH-001): position discontinuities must go through named helpers.
+# The exact media helper below only copies a core-authored epoch into retained
+# backend state; it never creates a discontinuity or increments the token.
+grep -qE 'fn copy_delivery_clock_from_core\(&mut self, core_position_epoch: u64\)' \
+  src/media/mod.rs \
+  || fail "media delivery epoch-copy helper is missing"
+[ "$(grep -cE '^[[:space:]]*self\.position_epoch = core_position_epoch;$' src/media/mod.rs)" -eq 1 ] \
+  || fail "media delivery epoch copy must have exactly one reviewed assignment"
 position_hits=$(grep -RInE 'position_epoch[[:space:]]*=|position_epoch\.wrapping_add\(1\)' src/app src/daemon src/media \
   | grep -Ev 'src/app/mod.rs:[0-9]+:.*fn bump_position_epoch' \
   | grep -Ev 'src/app/mod.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
   | grep -Ev 'src/daemon/engine.rs:[0-9]+:.*fn bump_position_epoch' \
   | grep -Ev 'src/daemon/engine.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
   | grep -Ev 'src/daemon/parity_tests.rs:[0-9]+:.*position_epoch = 0' \
+  | grep -Ev 'src/media/mod.rs:[0-9]+:[[:space:]]*self\.position_epoch = core_position_epoch;$' \
   | grep -Ev 'src/media/mod.rs:[0-9]+:.*position_epoch \+=' \
   || true)
 if [ -n "$position_hits" ]; then

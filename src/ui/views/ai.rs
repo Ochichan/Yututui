@@ -4,6 +4,9 @@
 //! When no API key is configured the transcript area shows an onboarding block instead;
 //! the input still works (submitting yields an inline error pointing at settings).
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -184,7 +187,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::TextMuted)),
         ];
-        app.bridges.ai_transcript_copy_lines.borrow_mut().clear();
+        *app.bridges.ai_transcript_copy_lines.borrow_mut() = Arc::default();
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), padded);
         return;
     }
@@ -193,8 +196,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         width: padded.width.saturating_sub(1),
         ..padded
     };
-    let lines = build_transcript_lines(app, text_area.width as usize);
-    let copy_lines: Vec<String> = lines.iter().map(|line| line.copy.clone()).collect();
+    let (lines, copy_lines) = cached_transcript_lines(app, text_area.width as usize);
     *app.bridges.ai_transcript_copy_lines.borrow_mut() = copy_lines;
 
     let len = lines.len();
@@ -221,12 +223,12 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(vis, line)| {
             let abs = offset + vis;
             if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
-                Line::from(line.copy.clone()).style(selection_style)
+                Line::from(line.copy.as_str()).style(selection_style)
             } else {
                 Line::from(
                     line.spans
                         .iter()
-                        .map(|(text, style)| Span::styled(text.clone(), *style))
+                        .map(|(text, style)| Span::styled(text.as_str(), *style))
                         .collect::<Vec<Span>>(),
                 )
             }
@@ -260,6 +262,23 @@ struct TranscriptLine {
     spans: Vec<(String, Style)>,
 }
 
+struct TranscriptCache {
+    owner: Arc<()>,
+    revision: u64,
+    width: usize,
+    korean: bool,
+    thinking_text: Option<String>,
+    styles: [Style; 6],
+    #[cfg(test)]
+    fixture_messages: Vec<(AiRole, String)>,
+    lines: Arc<[TranscriptLine]>,
+    copy_lines: Arc<[String]>,
+}
+
+thread_local! {
+    static TRANSCRIPT_CACHE: RefCell<Option<TranscriptCache>> = const { RefCell::new(None) };
+}
+
 impl TranscriptLine {
     fn blank() -> Self {
         Self {
@@ -276,7 +295,17 @@ impl TranscriptLine {
     }
 }
 
+#[cfg(test)]
 fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
+    let thinking = transcript_thinking_text(app);
+    build_transcript_lines_with_thinking(app, width, thinking.as_deref())
+}
+
+fn build_transcript_lines_with_thinking(
+    app: &App,
+    width: usize,
+    thinking_text: Option<&str>,
+) -> Vec<TranscriptLine> {
     let mut lines = Vec::new();
     let width = width.max(1);
     let accent = app.theme.style(R::Accent);
@@ -299,15 +328,10 @@ fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
         };
         push_wrapped_styled(&mut lines, prefix, base, &chars, width);
     }
-    if app.ai.thinking {
+    if let Some(text) = thinking_text {
         if !lines.is_empty() {
             lines.push(TranscriptLine::blank());
         }
-        // Animated dots while a request is in flight (the static text when the flag is off).
-        let text = match crate::ui::anim::activity_dots(app) {
-            Some(dots) => format!("{}{dots}", t!("…thinking", "…생각 중")),
-            None => t!("…thinking", "…생각 중").to_owned(),
-        };
         let style = app.theme.style(R::AiThinking);
         let chars: Vec<(char, Style)> = text.chars().map(|c| (c, style)).collect();
         push_wrapped_styled(&mut lines, t!("Gem ", "Gem   "), style, &chars, width);
@@ -323,6 +347,91 @@ fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
         ));
     }
     lines
+}
+
+fn transcript_thinking_text(app: &App) -> Option<String> {
+    app.ai.thinking.then(|| {
+        // Animated dots while a request is in flight (the static text when the flag is off).
+        match crate::ui::anim::activity_dots(app) {
+            Some(dots) => format!("{}{dots}", t!("…thinking", "…생각 중")),
+            None => t!("…thinking", "…생각 중").to_owned(),
+        }
+    })
+}
+
+fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, Arc<[String]>) {
+    let thinking_text = transcript_thinking_text(app);
+    let korean = crate::i18n::is_korean();
+    let styles = [
+        R::Accent,
+        R::AiUser,
+        R::AiAssistant,
+        R::AiError,
+        R::AiThinking,
+        R::TextMuted,
+    ]
+    .map(|role| app.theme.style(role));
+    #[cfg(test)]
+    let fixture_messages = app
+        .ai
+        .messages
+        .iter()
+        .map(|message| (message.role, message.text.clone()))
+        .collect::<Vec<_>>();
+
+    TRANSCRIPT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(cached) = cache.as_ref()
+            && Arc::ptr_eq(&cached.owner, &app.ai.transcript_cache_token)
+            && cached.revision == app.ai.transcript_revision
+            && cached.width == width
+            && cached.korean == korean
+            && cached.thinking_text == thinking_text
+            && cached.styles == styles
+            && fixture_messages_match(cached, app)
+        {
+            return (Arc::clone(&cached.lines), Arc::clone(&cached.copy_lines));
+        }
+
+        let lines = build_transcript_lines_with_thinking(app, width, thinking_text.as_deref());
+        let copy_lines: Arc<[String]> = lines
+            .iter()
+            .map(|line| line.copy.clone())
+            .collect::<Vec<_>>()
+            .into();
+        let lines: Arc<[TranscriptLine]> = lines.into();
+        *cache = Some(TranscriptCache {
+            owner: Arc::clone(&app.ai.transcript_cache_token),
+            revision: app.ai.transcript_revision,
+            width,
+            korean,
+            thinking_text,
+            styles,
+            #[cfg(test)]
+            fixture_messages,
+            lines: Arc::clone(&lines),
+            copy_lines: Arc::clone(&copy_lines),
+        });
+        (lines, copy_lines)
+    })
+}
+
+#[cfg(not(test))]
+fn fixture_messages_match(_cached: &TranscriptCache, _app: &App) -> bool {
+    true
+}
+
+/// UI tests intentionally build fixtures by mutating `messages` directly instead of going through
+/// the private reducer helper. Keep that test seam exact without making production redraws hash or
+/// compare the full transcript; production invalidation is the monotonic revision above.
+#[cfg(test)]
+fn fixture_messages_match(cached: &TranscriptCache, app: &App) -> bool {
+    cached.fixture_messages.len() == app.ai.messages.len()
+        && cached
+            .fixture_messages
+            .iter()
+            .zip(&app.ai.messages)
+            .all(|((role, text), message)| *role == message.role && text == &message.text)
 }
 
 /// Wrap one styled message under its role tag. The tag renders as a reversed-video chip
@@ -735,7 +844,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
-    use crate::app::AiMessage;
+    use crate::app::{AiMessage, AiMsg, Msg};
 
     #[test]
     fn wraps_on_words_when_possible() {
@@ -775,6 +884,60 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("DJ"));
         assert!(text.contains("GEM"));
+    }
+
+    #[test]
+    fn unchanged_transcript_reuses_wrapped_and_copy_storage() {
+        let mut app = App::new(100);
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: "**cached** transcript line with enough words to wrap".to_owned(),
+        });
+
+        let (first_lines, first_copy) = cached_transcript_lines(&app, 18);
+        let (same_lines, same_copy) = cached_transcript_lines(&app, 18);
+        assert!(Arc::ptr_eq(&first_lines, &same_lines));
+        assert!(Arc::ptr_eq(&first_copy, &same_copy));
+
+        app.ai.messages[0].text.push('!');
+        let (changed_lines, changed_copy) = cached_transcript_lines(&app, 18);
+        assert!(!Arc::ptr_eq(&first_lines, &changed_lines));
+        assert!(!Arc::ptr_eq(&first_copy, &changed_copy));
+    }
+
+    #[test]
+    fn reducer_append_advances_revision_and_rebuilds_cached_transcript() {
+        let mut app = App::new(100);
+        let before_revision = app.ai.transcript_revision;
+        let _ = app.update(Msg::Ai(AiMsg::Chat("first reply".to_owned())));
+        assert_eq!(app.ai.transcript_revision, before_revision.wrapping_add(1));
+        let (first_lines, first_copy) = cached_transcript_lines(&app, 18);
+
+        let _ = app.update(Msg::Ai(AiMsg::Chat("second reply".to_owned())));
+        let (changed_lines, changed_copy) = cached_transcript_lines(&app, 18);
+        assert!(!Arc::ptr_eq(&first_lines, &changed_lines));
+        assert!(!Arc::ptr_eq(&first_copy, &changed_copy));
+    }
+
+    #[test]
+    fn transcript_cache_invalidates_for_presentation_and_app_identity() {
+        let mut app = App::new(100);
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: "one transcript owned by one app".to_owned(),
+        });
+        let (first_lines, _) = cached_transcript_lines(&app, 18);
+
+        let (different_width, _) = cached_transcript_lines(&app, 19);
+        assert!(!Arc::ptr_eq(&first_lines, &different_width));
+
+        app.ai.thinking = true;
+        let (with_thinking, _) = cached_transcript_lines(&app, 19);
+        assert!(!Arc::ptr_eq(&different_width, &with_thinking));
+
+        let other_app = App::new(100);
+        let (other_owner, _) = cached_transcript_lines(&other_app, 19);
+        assert!(!Arc::ptr_eq(&with_thinking, &other_owner));
     }
 
     fn plain_text(chars: &[(char, Style)]) -> String {

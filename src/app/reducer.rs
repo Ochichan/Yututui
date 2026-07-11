@@ -113,11 +113,10 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::AnimTick => {
-                // Advance the logical animation phase on every configured tick, but only request
-                // an actual terminal redraw when the active effect mix is due. This keeps visual
-                // timing stable while cutting the expensive render/terminal/compositor path.
-                self.advance_animation();
+            Msg::AnimTick(logical_ticks) => {
+                // One reducer turn per actual draw. The variable timer batches exactly the legacy
+                // logical ticks ending at the newest draw-due frame.
+                self.advance_animation(logical_ticks);
             }
             Msg::Focus(f) => {
                 // Terminal focus toggled. `animation_active()` reads `focused` to park the ~30 fps
@@ -139,11 +138,15 @@ impl App {
                     if t > 0.0 {
                         self.consecutive_play_errors = 0;
                     }
-                    // Redraw at most once per second; mpv emits `time-pos` far more often.
+                    // Keep the whole-second anchor current in every mode, but only redraw when
+                    // the Player view that renders the scalar is visible. Navigation back to the
+                    // Player already requests a frame, which reads the latest stored position.
                     let sec = t as i64;
                     if sec != self.anim.last_shown_sec {
                         self.anim.last_shown_sec = sec;
-                        self.dirty = true;
+                        if matches!(self.mode, Mode::Player) {
+                            self.dirty = true;
+                        }
                         tracing::debug!(time_pos = t, "progress");
                     }
                 }
@@ -156,12 +159,14 @@ impl App {
                     let had = self.playback.cache_time.is_some();
                     self.playback.cache_time = t;
                     self.playback.cache_time_at = t.map(|_| Instant::now());
-                    // Redraw at most once per second (mpv reports far more often), plus on
-                    // Some↔None transitions so the live-sync glyph never shows stale state.
+                    // Track whole seconds and Some↔None transitions in every mode. Only the
+                    // Player renders the live-sync state, and returning there requests a frame.
                     let sec = t.map_or(-1, |v| v as i64);
                     if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
                         self.anim.last_shown_cache_sec = sec;
-                        self.dirty = true;
+                        if matches!(self.mode, Mode::Player) {
+                            self.dirty = true;
+                        }
                     }
                 }
                 PlayerMsg::AudioCodec(codec) => {

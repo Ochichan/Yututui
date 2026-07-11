@@ -330,7 +330,7 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::ResolveFailed { .. } => EventPolicy::DropIfStale {
             stale_key: Key::ResolverVideo,
         },
-        Msg::Noop | Msg::StatusTick | Msg::AnimTick | Msg::RecordingTick => {
+        Msg::Noop | Msg::StatusTick | Msg::AnimTick(_) | Msg::RecordingTick => {
             EventPolicy::BestEffort {
                 reason: "loop-owned ticks and inert messages are redraw/status hints",
             }

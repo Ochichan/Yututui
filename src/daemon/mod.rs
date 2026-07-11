@@ -21,6 +21,7 @@ use crate::util::process::{self, ProcessProfile};
 
 mod engine;
 mod must_deliver;
+mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 
@@ -556,6 +557,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
+        let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => {
                 let (response, shutdown, effects) = engine.handle_remote(command).await;
@@ -613,12 +615,30 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             DaemonEvent::Signal => break,
             DaemonEvent::TelemetryWake => unreachable!("telemetry wake is handled before dispatch"),
         }
-        // Mirror the post-event state to the OS session (diff-based inside); the
-        // scrobbler taps the same snapshot first (it ignores media-controls enablement).
-        let snapshot = engine.media_snapshot();
-        scrobble.observe(&snapshot);
-        media.publish(snapshot);
-        // v8 push: fingerprint-diffed; time-tick events change nothing it watches.
+        // Preserve origin/main's platform-clock correction cadence on progress turns.
+        let media_progress_publish_due = media_position_turn
+            && engine
+                .media_position_update()
+                .is_some_and(|(position, captured_at)| {
+                    media.rebase_position(position, captured_at)
+                });
+
+        // Build the owned OS/scrobble projection only when a projected facet changed or the
+        // active scrobble clock needs its ~1 Hz heartbeat. Ordinary API/remote events and
+        // high-rate telemetry otherwise stay allocation-free here.
+        let media_changed = media_before.is_some_and(|before| before != engine.media_fingerprint());
+        let scrobble_due = observer_plan.drive_scrobble_heartbeat
+            && engine.media_scrobble_heartbeat_active()
+            && scrobble.heartbeat_due();
+        if media_changed || scrobble_due || media_progress_publish_due {
+            let snapshot = engine.media_snapshot();
+            scrobble.observe(&snapshot);
+            if media_changed || media_progress_publish_due {
+                media.publish(snapshot);
+            }
+        }
+        // Preserve origin's baseline-refresh/event ordering on every dispatched daemon event.
+        // The view is borrowed and unchanged topics do not allocate or serialize models.
         publisher.observe(&engine.core_view());
     }
     // A `Signal`/media-quit exit reaches here without the remote-Quit goodbye above;

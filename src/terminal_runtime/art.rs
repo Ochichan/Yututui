@@ -93,8 +93,7 @@ fn store_halfblocks_art_picker_cache() {
 }
 
 fn art_picker_cache_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.cache_dir().join("art-picker.cache"))
+    crate::paths::cache_dir().map(|dir| dir.join("art-picker.cache"))
 }
 
 fn terminal_probe_cache_key() -> u64 {

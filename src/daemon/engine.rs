@@ -32,6 +32,8 @@ use crate::playback_policy::{
     STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, VOLUME_MAX, VOLUME_STEP,
 };
 
+mod media_projection;
+
 const SESSION_EVENTS_CAP: usize = 20;
 
 pub struct EngineOptions {
@@ -575,8 +577,10 @@ impl DaemonEngine {
             },
             ("audio", "mpv_cache_forward") => match as_str() {
                 Some(value) => {
-                    self.config.audio.mpv.cache_forward = crate::settings::blank_to_none(&value)
-                        .unwrap_or_else(|| crate::config::MPV_CACHE_FORWARD_DEFAULT.to_owned());
+                    self.config
+                        .audio
+                        .mpv
+                        .set_cache_forward(crate::settings::blank_to_none(&value));
                     self.save_config("daemon mpv forward-cache setting");
                     ok(self)
                 }
@@ -584,8 +588,10 @@ impl DaemonEngine {
             },
             ("audio", "mpv_cache_back") => match as_str() {
                 Some(value) => {
-                    self.config.audio.mpv.cache_back = crate::settings::blank_to_none(&value)
-                        .unwrap_or_else(|| crate::config::MPV_CACHE_BACK_DEFAULT.to_owned());
+                    self.config
+                        .audio
+                        .mpv
+                        .set_cache_back(crate::settings::blank_to_none(&value));
                     self.save_config("daemon mpv back-cache setting");
                     ok(self)
                 }
@@ -1371,7 +1377,7 @@ impl DaemonEngine {
             radio_mode: self.last_mode == LastMode::Radio,
             stream_now_playing: None,
             owner_mode: crate::remote::proto::InstanceMode::Daemon,
-            eq_preset: self.config.eq_preset.label().to_string(),
+            eq_preset: self.config.eq_preset.label(),
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
             config: &self.config,
@@ -1381,9 +1387,9 @@ impl DaemonEngine {
                 self.media_art
                     .as_ref()
                     .filter(|art| art.key == song.video_id)
-                    .map(|art| ArtworkRef {
-                        key: art.key.clone(),
-                        path: Some(art.path.to_string_lossy().into_owned()),
+                    .map(|art| crate::remote::publish::CoreArtwork {
+                        key: &art.key,
+                        path: Some(art.path.as_path()),
                         mime: None,
                     })
             }),
@@ -2415,6 +2421,8 @@ mod tests {
 
     use serde_json::json;
 
+    mod perf;
+
     fn song(id: &str) -> Song {
         Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
     }
@@ -2541,6 +2549,20 @@ mod tests {
         assert_eq!(engine.config.media_controls, Some(false));
         assert_eq!(engine.playback.volume, VOLUME_MAX);
         assert!(engine.queue.shuffle);
+
+        engine.config.audio.mpv.cache_defaults_revision = 0;
+        apply_gui_ok(&mut engine, "audio", "mpv_cache_forward", json!("64MiB"));
+        apply_gui_ok(&mut engine, "audio", "mpv_cache_back", json!("16MiB"));
+        assert_eq!(engine.config.audio.mpv.cache_forward, "64MiB");
+        assert_eq!(engine.config.audio.mpv.cache_back, "16MiB");
+        assert_eq!(
+            engine.config.audio.mpv.cache_defaults_revision,
+            crate::config::MPV_CACHE_DEFAULTS_REVISION
+        );
+        engine.config.audio.mpv.cache_defaults_revision = u64::MAX;
+        apply_gui_ok(&mut engine, "audio", "mpv_cache_forward", json!("80MiB"));
+        assert_eq!(engine.config.audio.mpv.cache_forward, "80MiB");
+        assert_eq!(engine.config.audio.mpv.cache_defaults_revision, u64::MAX);
 
         apply_gui_ok(&mut engine, "eq", "preset", json!("rock"));
         apply_gui_ok(
@@ -2726,6 +2748,7 @@ mod tests {
     #[tokio::test]
     async fn player_events_normalize_transport_state_without_player_runtime() {
         let mut engine = engine_with_queue(&["seed"]);
+        let epoch = engine.playback.position_epoch;
 
         assert!(
             engine
@@ -2734,6 +2757,10 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(engine.playback.time_pos, Some(0.0));
+        assert_eq!(
+            engine.playback.position_epoch, epoch,
+            "ordinary progress must not masquerade as a seek discontinuity"
+        );
         engine
             .handle_player_event(PlayerEvent::Duration(Some(f64::INFINITY)))
             .await;
@@ -2753,6 +2780,7 @@ mod tests {
         engine
             .handle_player_event(PlayerEvent::CacheTime(None))
             .await;
+        assert_eq!(engine.playback.position_epoch, epoch);
         engine
             .handle_player_event(PlayerEvent::AudioCodec(Some("aac".to_owned())))
             .await;
@@ -2891,10 +2919,7 @@ mod tests {
         assert_eq!(core.position_epoch, 7);
         assert!(core.streaming);
         assert_eq!(core.owner_mode, InstanceMode::Daemon);
-        assert_eq!(
-            core.artwork.as_ref().map(|art| art.key.as_str()),
-            Some("seed")
-        );
+        assert_eq!(core.artwork.as_ref().map(|art| art.key), Some("seed"));
 
         let media = engine.media_snapshot();
         assert_eq!(media.status, crate::media::MediaPlaybackStatus::Playing);

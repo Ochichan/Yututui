@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::EventStream;
-use futures::StreamExt;
+use crossterm::event::{Event as TerminalEvent, EventStream};
+use futures::{FutureExt, StreamExt};
 use ratatui_image::thread::ResizeRequest;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -20,21 +20,190 @@ use crate::{
 use super::art::log_art_picker;
 use super::startup::StartupTrace;
 
-/// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
-/// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
+/// The historical logical animation-tick period. Keep the integer-millisecond division from
+/// `origin/main`: visible phase was defined on this grid (`30 fps` means 33 ms logical ticks).
 fn anim_tick_period(fps: u16) -> Duration {
     Duration::from_millis((1000 / u64::from(fps.max(1))).max(1))
 }
 
-/// Build the animation tick for `fps`. The first tick is scheduled one full period out (via
-/// `interval_at`) instead of firing immediately, so rebuilding the interval when the rate changes
-/// in Settings doesn't emit a spurious extra frame on the very next loop iteration. `Skip` drops
-/// missed frames so a busy moment can't back up a redraw backlog.
-fn anim_interval(fps: u16) -> tokio::time::Interval {
-    let period = anim_tick_period(fps);
-    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    tick
+fn logical_tick_span(period: Duration, ticks: u64) -> Duration {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let total_nanos = period.as_nanos().saturating_mul(u128::from(ticks));
+    let seconds = total_nanos / NANOS_PER_SECOND;
+    let Ok(seconds) = u64::try_from(seconds) else {
+        return Duration::MAX;
+    };
+    let nanos = u32::try_from(total_nanos % NANOS_PER_SECOND).unwrap_or(0);
+    Duration::new(seconds, nanos)
+}
+
+/// Variable animation deadline anchored to the legacy logical-tick grid. Only draw-due logical
+/// ticks become timer wakes; the ticks between them exist as time/credit math, not reducer turns.
+struct AnimationSchedule {
+    tick_period: Duration,
+    last_applied_tick_due: Instant,
+    next_draw_due: Instant,
+}
+
+impl AnimationSchedule {
+    fn new(now: Instant, tick_fps: u16, ticks_until_draw: u64) -> Self {
+        let mut schedule = Self {
+            tick_period: anim_tick_period(tick_fps),
+            last_applied_tick_due: now,
+            next_draw_due: now,
+        };
+        schedule.arm_next(ticks_until_draw);
+        schedule
+    }
+
+    fn reset(&mut self, now: Instant, tick_fps: u16, ticks_until_draw: u64) {
+        self.tick_period = anim_tick_period(tick_fps);
+        self.last_applied_tick_due = now;
+        self.arm_next(ticks_until_draw);
+    }
+
+    fn deadline(&self) -> Instant {
+        self.next_draw_due
+    }
+
+    /// Logical deadlines elapsed since the newest logical tick already applied to `App`.
+    fn available_ticks(&self, now: Instant) -> u64 {
+        let elapsed = now.saturating_duration_since(self.last_applied_tick_due);
+        let ticks = elapsed.as_nanos() / self.tick_period.as_nanos();
+        u64::try_from(ticks).unwrap_or(u64::MAX)
+    }
+
+    fn consume_ticks(&mut self, ticks: u64) {
+        let advanced = self
+            .last_applied_tick_due
+            .checked_add(logical_tick_span(self.tick_period, ticks));
+        self.last_applied_tick_due = advanced.unwrap_or(self.next_draw_due);
+    }
+
+    fn arm_next(&mut self, ticks_until_draw: u64) {
+        let span = logical_tick_span(self.tick_period, ticks_until_draw.max(1));
+        self.next_draw_due = self
+            .last_applied_tick_due
+            .checked_add(span)
+            .unwrap_or(self.last_applied_tick_due);
+    }
+}
+
+const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
+const IME_SCRUB_TICKS: u8 = 8;
+
+/// A short, event-triggered repaint window that clears terminal-owned IME preedit text.
+///
+/// Some terminals paint preedit text without sending it through the application's buffer. A
+/// repaint removes that residue, but polling forever at 12.5 fps burns CPU while the UI is idle.
+/// Re-arm this burst for terminal activity that can leave preedit behind; after eight 80 ms ticks
+/// (640 ms) the interval is parked again.
+struct ImeScrubBurst {
+    interval: tokio::time::Interval,
+    remaining: u8,
+}
+
+impl ImeScrubBurst {
+    fn new() -> Self {
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + IME_SCRUB_PERIOD,
+            IME_SCRUB_PERIOD,
+        );
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        Self {
+            interval,
+            remaining: 0,
+        }
+    }
+
+    fn arm(&mut self) {
+        self.remaining = IME_SCRUB_TICKS;
+        self.interval
+            .reset_at(tokio::time::Instant::now() + IME_SCRUB_PERIOD);
+    }
+
+    fn active(&self) -> bool {
+        self.remaining > 0
+    }
+
+    async fn tick(&mut self) {
+        self.interval.tick().await;
+    }
+
+    fn consume_tick(&mut self) {
+        self.remaining = self.remaining.saturating_sub(1);
+    }
+}
+
+/// Terminal activity that can leave terminal-owned preedit outside an application text field.
+/// Focus gain and resize always arm a cleanup window; keyboard/mouse/paste activity does so only
+/// when the application is not deliberately displaying editable text.
+fn terminal_event_arms_ime_scrub(event: &TerminalEvent, outside_text_entry: bool) -> bool {
+    matches!(
+        event,
+        TerminalEvent::FocusGained | TerminalEvent::Resize(_, _)
+    ) || (outside_text_entry
+        && matches!(
+            event,
+            TerminalEvent::Key(_) | TerminalEvent::Mouse(_) | TerminalEvent::Paste(_)
+        ))
+}
+
+/// Take only an immediately-adjacent time/cache pair. Both messages still pass through
+/// `App::update` in their original order; sharing the post-update draw/observer work is safe while
+/// skipping over any intervening message would not be.
+fn take_adjacent_player_progress_pair(first: &Msg, pending: &mut VecDeque<Msg>) -> Option<Msg> {
+    let complementary = matches!(
+        (first, pending.front()),
+        (
+            Msg::Player(app::PlayerMsg::TimePos(_)),
+            Some(Msg::Player(app::PlayerMsg::CacheTime(_)))
+        ) | (
+            Msg::Player(app::PlayerMsg::CacheTime(_)),
+            Some(Msg::Player(app::PlayerMsg::TimePos(_)))
+        )
+    );
+    complementary.then(|| pending.pop_front().expect("front checked above"))
+}
+
+/// Post-reducer observer work for one owner-loop turn. Progress is deliberately separate: mpv's
+/// high-rate clocks still feed the 1 Hz scrobbler, but elapsed time is not an OS/remote change and
+/// must not trigger media fingerprints, `CoreView`, topic hashes, models, or serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObserverPlan {
+    project_state: bool,
+    drive_scrobble_heartbeat: bool,
+}
+
+impl ObserverPlan {
+    const INERT: Self = Self {
+        project_state: false,
+        drive_scrobble_heartbeat: false,
+    };
+    const PROGRESS: Self = Self {
+        project_state: false,
+        drive_scrobble_heartbeat: true,
+    };
+    const PROJECTED: Self = Self {
+        project_state: true,
+        drive_scrobble_heartbeat: true,
+    };
+
+    fn for_messages(first: &Msg, paired: Option<&Msg>) -> Self {
+        let progress = |msg: &Msg| {
+            matches!(
+                msg,
+                Msg::Player(app::PlayerMsg::TimePos(_)) | Msg::Player(app::PlayerMsg::CacheTime(_))
+            )
+        };
+        if progress(first) && paired.is_none_or(progress) {
+            Self::PROGRESS
+        } else if paired.is_none() && matches!(first, Msg::AnimTick(_) | Msg::StatusTick) {
+            Self::INERT
+        } else {
+            Self::PROJECTED
+        }
+    }
 }
 
 struct PerfStats {
@@ -107,6 +276,7 @@ impl PerfStats {
             avg_draw_ms,
             max_draw_ms = self.draw_max.as_secs_f64() * 1000.0,
             art_resizes = self.art_resizes,
+            dropped_log_lines = logging::dropped_lines(),
             active_effects,
             tick_fps = app.animation_tick_fps(),
             draw_fps = app.animation_draw_fps(),
@@ -174,16 +344,16 @@ pub async fn run(
     zoom: zoom::ZoomHandle,
     current_version: &'static str,
 ) -> Result<()> {
-    // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
-    let dirs = directories::ProjectDirs::from("", "", "yututui");
-    let _log_guard = dirs.as_ref().and_then(|d| {
-        let dir = d.cache_dir();
+    // Use the centralized paths so verification/perf runs honor YTM_* overrides all the way
+    // through logging and the mpv lifetime registry. Both degrade gracefully if unavailable.
+    let cache_dir = crate::paths::cache_dir();
+    let _log_guard = cache_dir.as_ref().and_then(|dir| {
         std::fs::create_dir_all(dir).ok()?;
         logging::init(dir)
     });
     startup.mark("logging_init_called");
     startup.enable_logging();
-    let data_dir = dirs.as_ref().map(|d| d.data_dir().to_path_buf());
+    let data_dir = crate::paths::data_dir();
     if let Some(dir) = &data_dir {
         let _ = std::fs::create_dir_all(dir);
         // Reap any mpv leaked by a prior run that died uncatchably (SIGKILL/power loss).
@@ -232,8 +402,8 @@ pub async fn run(
     // render (`recorder.supported` is only consulted when the user opens/uses the recorder),
     // and the probe is an `mpv --version` fork/exec (~40-60ms) that must run *after*
     // `tools::init` sets `mpv_program()`, so it probes the selected mpv, not the fallback.
-    if let Some(d) = dirs.as_ref() {
-        app.recorder.temp_dir = d.cache_dir().join("recordings");
+    if let Some(dir) = cache_dir.as_ref() {
+        app.recorder.temp_dir = dir.join("recordings");
     }
     // Zoom wiring before `apply_config`, which restores the persisted scale (the handle
     // carries the probed mode, so an unsupported terminal never sees a scale above 1).
@@ -316,7 +486,7 @@ pub async fn run(
     // Runs after `tools::init` so the capability probe hits the *selected* mpv (via
     // `mpv_program()`), and before the event loop starts, so a recording (an explicit user
     // action) can never race the temp-dir wipe.
-    if dirs.is_some() {
+    if cache_dir.is_some() {
         let temp_dir = app.recorder.temp_dir.clone();
         let _ = std::fs::remove_dir_all(&temp_dir);
         let _ = std::fs::create_dir_all(&temp_dir);
@@ -514,8 +684,7 @@ pub async fn run(
 
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
-    let mut ime_scrub = tokio::time::interval(Duration::from_millis(80));
-    ime_scrub.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut ime_scrub = ImeScrubBurst::new();
     // Only polled while a transient status is covering the song title; lets the reducer
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
@@ -525,15 +694,17 @@ pub async fn run(
     // ticks). Drives the max-duration force-split.
     let mut recording_tick = tokio::time::interval(Duration::from_secs(1));
     recording_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // Drives the optional player-view animations at the configured frame rate - but only ticks
-    // while `app.animation_active()` holds (player view, master + an effect enabled, a track
-    // playing, focused unless the user opted out of focus-pausing). With every animation toggle
-    // off (the default) the guard is false, this timer never wakes, and the loop stays exactly as
-    // light as before.
-    // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
-    // is rebuilt below whenever the user changes the rate in Settings.
-    let mut anim_fps = app.animation_tick_fps();
-    let mut anim_tick = anim_interval(anim_fps);
+    // Drive optional animations only at the historical draw-due logical ticks. The deadline moves
+    // by a variable number of the original integer logical periods, so canvas/ambient/mascot/
+    // marquee modes avoid intermediate wakes without changing visible due times or phase.
+    let mut anim_tick_fps = app.animation_tick_fps();
+    let mut anim_draw_fps = app.animation_draw_fps();
+    let mut anim_schedule = AnimationSchedule::new(
+        Instant::now(),
+        anim_tick_fps,
+        app.animation_ticks_until_next_draw(),
+    );
+    let mut anim_was_active = false;
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
     // than during setup) means a `ytt -r` that discovers the descriptor is guaranteed something
@@ -552,7 +723,7 @@ pub async fn run(
 
     let mut pending_worker_msgs: VecDeque<Msg> = VecDeque::new();
 
-    while !app.should_quit {
+    'main_loop: while !app.should_quit {
         if app.dirty {
             if draw_app_frame(terminal, &mut app, &mut perf)? {
                 finish_draw_cycle(&mut app);
@@ -563,18 +734,53 @@ pub async fn run(
             }
         }
 
-        // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
-        // a low-rate redraw scrubs IME preedit text that some terminals paint without
-        // sending an input event to the app.
+        // A render can start/stop a selected-row marquee, and reducer turns can change the active
+        // effect mix or configured FPS. Activation/tick-rate changes start a new logical grid;
+        // draw-rate changes keep that grid and only reset credit. The common active path is three
+        // scalar comparisons, and the inactive path never polls the timer.
+        let animation_active = app.animation_active();
+        let new_tick_fps = app.animation_tick_fps();
+        let new_draw_fps = app.animation_draw_fps();
+        if animation_active && (!anim_was_active || new_tick_fps != anim_tick_fps) {
+            app.reset_animation_cadence();
+            anim_schedule.reset(
+                Instant::now(),
+                new_tick_fps,
+                app.animation_ticks_until_next_draw(),
+            );
+        } else if animation_active && new_draw_fps != anim_draw_fps {
+            // The legacy logical timer did not move when the active effect mix changed its draw
+            // credit. Reset only that credit and keep the next wake on the existing tick grid.
+            app.reset_animation_cadence();
+            anim_schedule.arm_next(app.animation_ticks_until_next_draw());
+        }
+        anim_was_active = animation_active;
+        anim_tick_fps = new_tick_fps;
+        anim_draw_fps = new_draw_fps;
+
+        // Mostly blocks until input or a worker message arrives. A bounded repaint burst after
+        // relevant terminal activity scrubs IME preedit text that some terminals paint without
+        // sending it through the app, then parks completely at idle.
         let msg = if !pending_worker_msgs.is_empty() {
-            let mut polled_input = None;
-            match event::poll_terminal_input_now(&mut events, &mut input, &zoom, &mut polled_input)
-            {
-                event::InputPoll::Ready => polled_input.expect("ready input message"),
-                event::InputPoll::Empty => pending_worker_msgs
-                    .pop_front()
-                    .expect("pending worker message"),
-                event::InputPoll::Closed => break,
+            loop {
+                match events.next().now_or_never() {
+                    Some(Some(Ok(ev))) => {
+                        if terminal_event_arms_ime_scrub(&ev, app.should_scrub_ime_preedit()) {
+                            ime_scrub.arm();
+                        }
+                        let (cs, rs) = zoom.mouse_scale();
+                        if let Some(msg) = input.translate(ev, cs, rs) {
+                            break msg;
+                        }
+                    }
+                    Some(Some(Err(_))) => continue,
+                    Some(None) => break 'main_loop,
+                    None => {
+                        break pending_worker_msgs
+                            .pop_front()
+                            .expect("pending worker message");
+                    }
+                }
             }
         } else {
             tokio::select! {
@@ -583,6 +789,12 @@ pub async fn run(
                     // virtual grid, so hit-testing (and double-click identity) stay correct
                     // while the UI is scaled.
                     Some(Ok(ev)) => {
+                        if terminal_event_arms_ime_scrub(
+                            &ev,
+                            app.should_scrub_ime_preedit(),
+                        ) {
+                            ime_scrub.arm();
+                        }
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate(ev, cs, rs) {
                             Some(m) => m,
@@ -623,7 +835,8 @@ pub async fn run(
                     }
                     continue;
                 },
-                _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
+                _ = ime_scrub.tick(), if ime_scrub.active() && app.should_scrub_ime_preedit() => {
+                    ime_scrub.consume_tick();
                     if draw_app_frame(terminal, &mut app, &mut perf)? {
                         finish_draw_cycle(&mut app);
                     }
@@ -631,7 +844,26 @@ pub async fn run(
                     continue;
                 },
                 _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
-                _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(anim_schedule.deadline())),
+                    if app.animation_active() => {
+                    let now = Instant::now();
+                    let available = anim_schedule.available_ticks(now);
+                    let logical_ticks = app.animation_ticks_through_latest_draw(available);
+                    if logical_ticks == 0 {
+                        // `sleep_until` cannot normally complete early. If the platform clock
+                        // conversion ever rounds across the boundary, re-arm instead of drawing a
+                        // phase that was not visible on the legacy logical-tick grid.
+                        app.reset_animation_cadence();
+                        anim_schedule.reset(
+                            now,
+                            app.animation_tick_fps(),
+                            app.animation_ticks_until_next_draw(),
+                        );
+                        continue 'main_loop;
+                    }
+                    anim_schedule.consume_ticks(logical_ticks);
+                    Msg::AnimTick(logical_ticks)
+                },
                 _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
                 _ = media_pump.tick(), if media.wants_pump() => {
                     media.pump();
@@ -640,35 +872,49 @@ pub async fn run(
             }
         };
 
-        let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
-        // AnimTick/StatusTick only advance animations / expire the toast - they can't touch
-        // anything a media snapshot reads, so skip rebuilding it (snapshot construction
-        // allocates ~10 Strings, and AnimTick fires at up to the configured FPS).
-        let media_inert = matches!(&msg, Msg::AnimTick | Msg::StatusTick);
-        let media_before = (!media_inert).then(|| app.media_fingerprint());
-        for cmd in app.update(msg) {
-            // Desktop notifications are handled here (not in `RuntimeHandles`) because the OSC
-            // path writes to the terminal's stdout, which this scope owns; do it between frames
-            // (before the draw below) so it never interleaves with a partial frame.
-            if let Cmd::DesktopNotify { title, body } = cmd {
-                notifier.emit(&title, &body);
-                continue;
+        let animation_wake = matches!(&msg, Msg::AnimTick(_));
+        if !animation_wake && animation_active {
+            // The old loop advanced logical phase even on ticks that did not redraw. Lazily apply
+            // those elapsed ticks before an unrelated event can trigger a render or arm an FX;
+            // this adds no timer wake and keeps interaction-time phase/duration unchanged.
+            let available = anim_schedule.available_ticks(Instant::now());
+            if available > 0 {
+                let cmds = app.update(Msg::AnimTick(available));
+                debug_assert!(cmds.is_empty(), "animation phase sync emitted commands");
+                anim_schedule.consume_ticks(available);
+                anim_schedule.arm_next(app.animation_ticks_until_next_draw());
             }
-            handles.dispatch(&mut app, cmd);
+        }
+        let paired_progress = take_adjacent_player_progress_pair(&msg, &mut pending_worker_msgs);
+        let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
+        let was_in_text_entry = !app.should_scrub_ime_preedit();
+
+        let resized_artwork = matches!(&msg, Msg::ArtworkResized(_))
+            || matches!(&paired_progress, Some(Msg::ArtworkResized(_)));
+        // Progress updates only interpolation/live-sync clocks. Neither clock is a projected
+        // facet: OS media and remote clients interpolate elapsed independently, while seeks bump
+        // `position_epoch` through a different message. Skip both hashes on this high-rate path.
+        let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
+        for msg in std::iter::once(msg).chain(paired_progress) {
+            for cmd in app.update(msg) {
+                // Desktop notifications are handled here (not in `RuntimeHandles`) because the
+                // OSC path writes to the terminal's stdout, which this scope owns; do it between
+                // frames (before the draw below) so it never interleaves with a partial frame.
+                if let Cmd::DesktopNotify { title, body } = cmd {
+                    notifier.emit(&title, &body);
+                    continue;
+                }
+                handles.dispatch(&mut app, cmd);
+            }
+        }
+        if animation_wake {
+            anim_schedule.arm_next(app.animation_ticks_until_next_draw());
+        }
+        if was_in_text_entry && app.should_scrub_ime_preedit() {
+            ime_scrub.arm();
         }
         if resized_artwork {
             perf.record_art_resize();
-        }
-
-        // The frame rate may have changed in Settings (committed to `config.animations` on close).
-        // Rebuild the tick so the new rate applies without a relaunch - only when it actually
-        // changed, so the common path costs one `u16` compare. Kept before the draw so the new
-        // cadence is in force for this iteration.
-        let new_fps = app.animation_tick_fps();
-        if new_fps != anim_fps {
-            anim_fps = new_fps;
-            app.reset_animation_cadence();
-            anim_tick = anim_interval(anim_fps);
         }
 
         // Draw first, so the keypress lands on screen with the least latency. Everything below
@@ -679,21 +925,22 @@ pub async fn run(
             finish_draw_cycle(&mut app);
         }
 
-        // Mirror the post-update state to the OS media session: the facade diffs, so
-        // this is one comparison when nothing media-visible changed. The enabled flag
-        // tracks the Settings toggle live. The scrobbler taps the same snapshot first -
-        // it must keep working when media controls are disabled (publish early-returns).
-        // Scrobble cadence is unaffected by the inert skip: elapsed time is credited from
-        // the 1 Hz PlayerTimePos observations, which always take this path.
-        let media_enabled = app.config.effective_media_controls();
-        let media_enabled_changed = media.set_enabled(media_enabled);
-        let media_observed_turn = media_before.is_some();
+        // Only a turn that can mutate projected state may toggle/rebuild OS metadata. Progress
+        // still checks the independent heartbeat gate below, so scrobbling remains ~1 Hz even
+        // when media controls are disabled or no remote topic is subscribed.
+        let (media_enabled_changed, media_enable_publish_due) = if observer_plan.project_state {
+            let media_enabled = app.config.effective_media_controls();
+            let changed = media.set_enabled(media_enabled);
+            (changed, changed && media_enabled)
+        } else {
+            (false, false)
+        };
         let media_changed = media_before.is_some_and(|before| before != app.media_fingerprint());
-        let scrobble_due = media_observed_turn
+        let scrobble_due = observer_plan.drive_scrobble_heartbeat
             && app.media_scrobble_heartbeat_active()
             && handles.scrobble_heartbeat_due();
-        let publish_due = media_changed || (media_enabled_changed && media_enabled);
-        if media_changed || scrobble_due || publish_due {
+        let publish_due = media_changed || media_enable_publish_due;
+        if scrobble_due || publish_due {
             let snapshot = app.media_snapshot();
             if media_changed || scrobble_due {
                 handles.scrobble_observe(&snapshot);
@@ -702,9 +949,10 @@ pub async fn run(
                 media.publish(snapshot);
             }
         }
-        // v8 push: fingerprint-diffed internally. Avoid building the borrowed core view
-        // on idle standalone turns after the publisher has primed its baselines.
-        if !media_inert
+        // Remote elapsed remains outside the player fingerprint. Match origin's observer call
+        // gates so late subscriptions and follow-up snapshot ordering stay byte-for-byte stable;
+        // unchanged turns perform only borrowed comparisons and never build owned models.
+        if observer_plan != ObserverPlan::INERT
             && let Some(publisher) = publisher.as_mut()
             && publisher.should_observe(media_changed || media_enabled_changed)
         {
@@ -755,9 +1003,12 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::time::{Duration, Instant};
 
-    use crate::app::App;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::app::{App, Msg, PlayerMsg};
 
     use super::*;
 
@@ -792,15 +1043,155 @@ mod tests {
         assert_eq!(stats.art_resizes, 0);
     }
 
-    #[tokio::test]
-    async fn animation_tick_period_clamps_extreme_frame_rates() {
+    #[test]
+    fn animation_schedule_uses_the_legacy_integer_tick_grid() {
         assert_eq!(anim_tick_period(0), Duration::from_millis(1000));
         assert_eq!(anim_tick_period(1), Duration::from_millis(1000));
         assert_eq!(anim_tick_period(60), Duration::from_millis(16));
         assert_eq!(anim_tick_period(2_000), Duration::from_millis(1));
 
-        let interval = anim_interval(30);
-        assert_eq!(interval.period(), Duration::from_millis(33));
+        let base = Instant::now();
+        let mut schedule = AnimationSchedule::new(base, 30, 2);
+        assert_eq!(
+            schedule.deadline().saturating_duration_since(base),
+            Duration::from_millis(66)
+        );
+        assert_eq!(
+            schedule.available_ticks(base + Duration::from_millis(65)),
+            1
+        );
+        assert_eq!(
+            schedule.available_ticks(base + Duration::from_millis(66)),
+            2
+        );
+
+        schedule.consume_ticks(2);
+        schedule.arm_next(1);
+        assert_eq!(
+            schedule.deadline().saturating_duration_since(base),
+            Duration::from_millis(99)
+        );
+
+        // If that wake is delivered at 150 ms, the app selects frame 3 as the newest visible
+        // phase. Consuming its three logical ticks and re-arming two more stays on 165 ms.
+        let mut delayed = AnimationSchedule::new(base, 30, 2);
+        assert_eq!(
+            delayed.available_ticks(base + Duration::from_millis(150)),
+            4
+        );
+        delayed.consume_ticks(3);
+        delayed.arm_next(2);
+        assert_eq!(
+            delayed.deadline().saturating_duration_since(base),
+            Duration::from_millis(165)
+        );
+    }
+
+    #[tokio::test]
+    async fn ime_scrub_burst_parks_after_exactly_640_ms_worth_of_ticks() {
+        assert_eq!(
+            IME_SCRUB_PERIOD * u32::from(IME_SCRUB_TICKS),
+            Duration::from_millis(640)
+        );
+
+        let mut burst = ImeScrubBurst::new();
+        assert!(!burst.active());
+        assert_eq!(burst.interval.period(), IME_SCRUB_PERIOD);
+
+        burst.arm();
+        for _ in 0..IME_SCRUB_TICKS - 1 {
+            assert!(burst.active());
+            burst.consume_tick();
+        }
+        assert!(burst.active());
+        burst.consume_tick();
+        assert!(!burst.active());
+
+        // A new terminal event restores the whole window rather than continuing a stale one.
+        burst.arm();
+        assert_eq!(burst.remaining, IME_SCRUB_TICKS);
+    }
+
+    #[test]
+    fn ime_scrub_arming_events_respect_text_entry() {
+        let key = TerminalEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let paste = TerminalEvent::Paste("x".to_owned());
+        let resize = TerminalEvent::Resize(120, 40);
+
+        assert!(terminal_event_arms_ime_scrub(&key, true));
+        assert!(!terminal_event_arms_ime_scrub(&key, false));
+        assert!(terminal_event_arms_ime_scrub(&paste, true));
+        assert!(!terminal_event_arms_ime_scrub(&paste, false));
+        assert!(terminal_event_arms_ime_scrub(&resize, false));
+        assert!(terminal_event_arms_ime_scrub(
+            &TerminalEvent::FocusGained,
+            false
+        ));
+        assert!(!terminal_event_arms_ime_scrub(
+            &TerminalEvent::FocusLost,
+            true
+        ));
+    }
+
+    #[test]
+    fn only_adjacent_time_and_cache_messages_share_an_owner_turn() {
+        let first = Msg::Player(PlayerMsg::TimePos(7.0));
+        let mut adjacent = VecDeque::from([Msg::Player(PlayerMsg::CacheTime(Some(9.0)))]);
+        assert!(matches!(
+            take_adjacent_player_progress_pair(&first, &mut adjacent),
+            Some(Msg::Player(PlayerMsg::CacheTime(Some(9.0))))
+        ));
+        assert!(adjacent.is_empty());
+
+        let mut intervening = VecDeque::from([
+            Msg::Player(PlayerMsg::Duration(Some(180.0))),
+            Msg::Player(PlayerMsg::CacheTime(Some(9.0))),
+        ]);
+        assert!(take_adjacent_player_progress_pair(&first, &mut intervening).is_none());
+        assert!(matches!(
+            intervening.front(),
+            Some(Msg::Player(PlayerMsg::Duration(Some(180.0))))
+        ));
+
+        let reverse = Msg::Player(PlayerMsg::CacheTime(Some(9.0)));
+        let mut adjacent = VecDeque::from([Msg::Player(PlayerMsg::TimePos(7.0))]);
+        assert!(matches!(
+            take_adjacent_player_progress_pair(&reverse, &mut adjacent),
+            Some(Msg::Player(PlayerMsg::TimePos(7.0)))
+        ));
+    }
+
+    #[test]
+    fn progress_turns_skip_media_and_remote_projection_but_keep_scrobble_heartbeat() {
+        for first in [
+            Msg::Player(PlayerMsg::TimePos(7.0)),
+            Msg::Player(PlayerMsg::CacheTime(Some(9.0))),
+        ] {
+            let plan = ObserverPlan::for_messages(&first, None);
+            assert!(!plan.project_state, "progress must skip projection");
+            assert!(
+                plan.drive_scrobble_heartbeat,
+                "progress must retain the 1 Hz scrobble clock"
+            );
+        }
+
+        let first = Msg::Player(PlayerMsg::TimePos(7.0));
+        let paired = Msg::Player(PlayerMsg::CacheTime(Some(9.0)));
+        assert_eq!(
+            ObserverPlan::for_messages(&first, Some(&paired)),
+            ObserverPlan::PROGRESS,
+            "coalescing the two clocks must not re-enable projection"
+        );
+
+        assert_eq!(
+            ObserverPlan::for_messages(&Msg::StatusTick, None),
+            ObserverPlan::INERT
+        );
+        assert_eq!(
+            ObserverPlan::for_messages(&Msg::Player(PlayerMsg::Duration(Some(180.0))), None,),
+            ObserverPlan::PROJECTED,
+            "a real media facet still runs media/remote observers"
+        );
     }
 
     #[test]

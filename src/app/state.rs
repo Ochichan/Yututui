@@ -49,7 +49,7 @@ pub struct RenderBridges {
     pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
     /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
     /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
-    pub ai_transcript_copy_lines: RefCell<Vec<String>>,
+    pub ai_transcript_copy_lines: RefCell<Arc<[String]>>,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// The Settings field list keeps its own persistent offset too, so a mouse click on a
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
@@ -418,6 +418,12 @@ pub struct AiState {
     pub model: GeminiModel,
     /// The chat transcript (user prompts, assistant replies, errors).
     pub messages: Vec<AiMessage>,
+    /// Production mutation generation for the wrapped-transcript render cache. Every reducer
+    /// append (including history trimming) advances it exactly once.
+    pub(crate) transcript_revision: u64,
+    /// Stable owner identity prevents a thread-local cache entry from one `App` being reused by a
+    /// different instance that happens to have the same revision and presentation settings.
+    pub(crate) transcript_cache_token: Arc<()>,
     /// The DJ Gem prompt being typed.
     pub input: String,
     /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
@@ -461,7 +467,7 @@ pub struct ArtState {
     pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::Sender<ResizeRequest>>,
     /// The decoded source image kept alongside the protocol for stale-result checks and future
     /// resize/protocol rebuilds. Reducer-only (was a private App field) — `pub(in crate::app)`.
-    pub(in crate::app) source: Option<DynamicImage>,
+    pub(in crate::app) source: Option<Arc<DynamicImage>>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub dims: (u32, u32),
     /// `video_id` the held art belongs to (guards against a stale image lingering).
@@ -763,6 +769,25 @@ pub struct LocalIndexRuntime {
     pub errors: Vec<crate::local::ScanError>,
 }
 
+/// One immutable view of the Local Deck rows used by a render pass. The backing row slice and
+/// its compact derived metadata are shared with the single-entry cache, so the header, body, and
+/// details panes never rebuild (or independently clone) the same row set within a frame.
+#[derive(Clone)]
+pub(crate) struct LocalRowsSnapshot {
+    pub(in crate::app) data: std::rc::Rc<super::local::LocalRowsData>,
+    pub(in crate::app) total_len: usize,
+}
+
+impl LocalRowsSnapshot {
+    pub(crate) fn rows(&self) -> &[crate::local::LocalRowId] {
+        self.data.rows.as_ref()
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.total_len
+    }
+}
+
 /// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
 /// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
 /// pending enter/leave confirmation.
@@ -770,6 +795,16 @@ pub struct LocalIndexRuntime {
 pub struct LocalMode {
     pub ui: LocalUi,
     pub index: LocalIndexRuntime,
+    /// Explicit production mutation generation for the Local Deck derived-row cache.
+    pub(in crate::app) rows_revision: Cell<u64>,
+    /// A single entry is enough: only the active section/query/drill path is rendered, and
+    /// replacing it promptly releases potentially large row/id and derived-metadata arrays.
+    pub(in crate::app) rows_cache: RefCell<Option<super::local::LocalRowsCache>>,
+    /// Import artifact metadata and content digests persist independently of the one-row-projection
+    /// entry so unchanged files are never opened from the render path. The cache prunes missing
+    /// paths after each scan and enforces a fixed entry ceiling.
+    pub(in crate::app) import_files_fingerprint_cache:
+        RefCell<super::local::LocalImportFilesFingerprintCache>,
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
@@ -782,18 +817,20 @@ pub struct LocalMode {
     pub(in crate::app) next_import_review_op_id: u64,
 }
 
-/// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every
-/// effect's phase, the fractional draw-credit scheduler and its last cadence, and the last whole
-/// second / cache second rendered (so sub-second mpv position spam is coalesced). The one-shot
-/// [`FxState`] feedback and the `focused` gate live separately on [`App`].
+/// Animation clock and redraw-coalescing counters: the monotonic logical frame counter that drives
+/// every effect's phase, the legacy fractional draw-credit scheduler, and the last whole second /
+/// cache second rendered (so sub-second mpv position spam is coalesced). The one-shot [`FxState`]
+/// feedback and the `focused` gate live separately on [`App`].
 pub struct Animation {
-    /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
-    /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
+    /// Monotonic logical animation frame counter. A variable-wake [`Msg::AnimTick`] can advance it
+    /// by multiple configured-FPS ticks at once. Drives every effect's phase; wraps harmlessly.
+    /// `0` at rest.
     pub(in crate::app) anim_frame: u64,
-    /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
-    /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
-    /// forcing the terminal compositor to repaint every logical tick.
+    /// Fractional redraw scheduler in logical-frame units. It preserves the exact historical
+    /// visible frame sequence when one draw-cadence wake replaces several logical ticks.
     pub(in crate::app) anim_draw_credit: u16,
+    /// Last logical cadence used to interpret [`Self::anim_draw_credit`].
+    pub(in crate::app) anim_last_tick_fps: u16,
     /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
     /// mix moves between cheap element effects, canvas effects, and the DJ Gem mascot.
     pub(in crate::app) anim_last_draw_fps: u16,
@@ -810,6 +847,7 @@ impl Default for Animation {
         Self {
             anim_frame: 0,
             anim_draw_credit: 0,
+            anim_last_tick_fps: 0,
             anim_last_draw_fps: 0,
             last_shown_sec: -1,
             last_shown_cache_sec: -1,

@@ -73,11 +73,11 @@ pub enum Msg {
     /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
     /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
     StatusTick,
-    /// Animation frame tick (~30 fps), driven by the main loop **only** while
-    /// [`App::animation_active`] holds — i.e. on the player view, master on, a track playing,
-    /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
-    /// animation toggles are off the main loop never arms this, so it costs literally nothing.
-    AnimTick,
+    /// Animation draw wake, driven by the main loop **only** while [`App::animation_active`]
+    /// holds. The payload is the number of legacy configured-FPS logical ticks ending at the
+    /// newest draw-due frame. A delayed wake can therefore catch up phase in one reducer turn
+    /// without replaying intermediate draws. When no effect is visible the timer is fully parked.
+    AnimTick(u64),
     /// A player/playback runtime message — mpv property changes (position, duration, pause,
     /// volume, metadata, cache-time, codec, format), EOF, playback errors, and video-overlay
     /// IPC events. See [`PlayerMsg`].
@@ -119,7 +119,7 @@ pub enum Msg {
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,
-        lines: Vec<LyricLine>,
+        lines: std::sync::Arc<[LyricLine]>,
     },
     /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
     ArtworkResult {
@@ -805,7 +805,7 @@ pub enum Mode {
 /// Synced lyrics for one track (held while it's the current track).
 pub struct TrackLyrics {
     pub video_id: String,
-    pub lines: Vec<LyricLine>,
+    pub lines: std::sync::Arc<[LyricLine]>,
 }
 
 /// The lists in the library view.

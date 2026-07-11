@@ -27,7 +27,8 @@ mod recovery;
 mod spotify;
 pub use audio::{
     AudioBackend, AudioConfig, AudioRuntimeConfig, MPV_CACHE_BACK_DEFAULT,
-    MPV_CACHE_FORWARD_DEFAULT, MpvAudioConfig, MpvAudioRuntimeConfig,
+    MPV_CACHE_BACK_LEGACY_DEFAULT, MPV_CACHE_DEFAULTS_REVISION, MPV_CACHE_FORWARD_DEFAULT,
+    MPV_CACHE_FORWARD_LEGACY_DEFAULT, MpvAudioConfig, MpvAudioRuntimeConfig,
 };
 pub use spotify::SpotifyImportMode;
 
@@ -1460,6 +1461,8 @@ fn parse_netscape_cookies(content: &str) -> String {
 }
 
 #[cfg(test)]
+mod cache_policy_tests;
+#[cfg(test)]
 mod hardening_tests;
 
 #[cfg(test)]
@@ -1714,6 +1717,7 @@ mod tests {
             audio: AudioConfig {
                 backend: AudioBackend::Mpv,
                 mpv: MpvAudioConfig {
+                    cache_defaults_revision: MPV_CACHE_DEFAULTS_REVISION,
                     output: Some("pipewire".to_owned()),
                     device: Some("alsa/default".to_owned()),
                     cache_forward: "64MiB".to_owned(),

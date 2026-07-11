@@ -1,13 +1,14 @@
 //! Linux MPRIS adapter (`org.mpris.MediaPlayer2.ytmtui` on the session bus), per
 //! the media-controls spec §3, built on `mpris-server` (zbus).
 //!
-//! The D-Bus server runs on its own tokio task: the facade forwards diffed
-//! snapshots over a channel; the task keeps the latest snapshot in shared state
+//! The D-Bus server runs on its own small-stack worker thread and current-thread
+//! runtime: the facade forwards diffed snapshots over a channel; the worker keeps
+//! the latest snapshot in shared state
 //! (so property *reads* — including the un-signalled, interpolated `Position` —
-//! answer instantly), batches changed properties into a single
-//! `PropertiesChanged` per logical event (L-6/S-4), and emits `Seeked` exactly on
-//! position discontinuities (L-7). Inbound calls only forward a [`MediaCommand`]
-//! and return (C-1).
+//! answer instantly), coalesces changed properties into one `PropertiesChanged`
+//! per worker wake (L-6/S-4), and emits `Seeked` once for every position
+//! discontinuity (L-7). Inbound calls only forward a [`MediaCommand`] and return
+//! (C-1).
 //!
 //! No session bus (SSH/headless/container) is non-fatal: the facade logs one
 //! warning and the app runs without media controls (spec A-2).
@@ -20,8 +21,11 @@ use mpris_server::{
     Volume,
     zbus::{self, fdo},
 };
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
+use super::delivery::{
+    DeliveryBatch, LatestMediaReceiver, LatestMediaSender, SubmitOutcome, latest_media_channel,
+};
 use super::{CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot};
 use crate::config::{SPEED_MAX, SPEED_MIN};
 use crate::queue::Repeat;
@@ -35,27 +39,59 @@ pub const EAGER: bool = true;
 const BUS_SUFFIX: &str = "ytmtui";
 
 pub struct Backend {
-    tx: mpsc::Sender<(MediaSnapshot, MediaChanges)>,
+    updates: LatestMediaSender,
+    wake: Arc<Notify>,
+    _worker: std::thread::JoinHandle<()>,
 }
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        // Bounded with a generous cap; the zbus server task drains it. A permanently stalled
-        // D-Bus consumer drops new snapshots (`try_send` in `apply`) instead of growing the
-        // queue without bound — snapshots are frequent, so the next one re-conveys state.
-        let (tx, rx) = mpsc::channel(256);
-        tokio::spawn(run_server(rx, sink));
-        Ok(Self { tx })
+        let (updates, rx) = latest_media_channel();
+        let wake = Arc::new(Notify::new());
+        let worker_wake = Arc::clone(&wake);
+        // `submit` applies bounded backpressure only after 256 retained discontinuities. The
+        // daemon uses a single-thread Tokio runtime, so this consumer must not share that runtime:
+        // otherwise a full queue could block the only thread capable of making queue space.
+        let worker = std::thread::Builder::new()
+            .name("mpris-worker".to_owned())
+            .stack_size(1024 * 1024)
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "media controls: MPRIS runtime failed");
+                        return;
+                    }
+                };
+                runtime.block_on(run_server(rx, worker_wake, sink));
+            })?;
+        Ok(Self {
+            updates,
+            wake,
+            _worker: worker,
+        })
     }
 
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
-        // Dropping the Backend closes the channel; the server task then winds down
-        // and releases the bus name (no ghost player in desktop widgets).
-        let _ = self.tx.try_send((snapshot.clone(), changes));
+        if self.updates.submit(snapshot, changes) == SubmitOutcome::Wake {
+            self.wake.notify_one();
+        }
     }
 }
 
-async fn run_server(mut rx: mpsc::Receiver<(MediaSnapshot, MediaChanges)>, sink: CommandSink) {
+impl Drop for Backend {
+    fn drop(&mut self) {
+        // Wake the task after closing so it releases the bus name even when no
+        // media update is pending (no ghost player in desktop widgets).
+        self.updates.close();
+        self.wake.notify_one();
+    }
+}
+
+async fn run_server(rx: LatestMediaReceiver, wake: Arc<Notify>, sink: CommandSink) {
     let state = Arc::new(Mutex::new(MediaSnapshot::idle()));
     // Bus-name collision (a second instance) retries with a PID-qualified suffix,
     // as the MPRIS spec prescribes (spec L-2).
@@ -94,49 +130,82 @@ async fn run_server(mut rx: mpsc::Receiver<(MediaSnapshot, MediaChanges)>, sink:
     };
     tracing::info!(bus_name = %server.bus_name(), "media controls: MPRIS session ready");
 
-    while let Some((snapshot, changes)) = rx.recv().await {
-        *state.lock().unwrap() = snapshot.clone();
-        let mut properties = Vec::new();
-        if changes.track || changes.artwork {
-            properties.push(Property::Metadata(build_metadata(&snapshot)));
+    loop {
+        while let Some(batch) = rx.try_take() {
+            apply_batch(&server, &state, batch).await;
         }
-        if changes.status {
-            properties.push(Property::PlaybackStatus(playback_status(&snapshot)));
+        if rx.is_closed() {
+            break;
         }
-        if changes.options {
-            properties.push(Property::Rate(snapshot.rate));
-            properties.push(Property::Volume(snapshot.volume));
-            properties.push(Property::Shuffle(snapshot.shuffle));
-            properties.push(Property::LoopStatus(loop_status(snapshot.repeat)));
-        }
-        if changes.caps {
-            properties.push(Property::CanGoNext(snapshot.caps.can_next));
-            properties.push(Property::CanGoPrevious(snapshot.caps.can_previous));
-            properties.push(Property::CanPlay(snapshot.caps.can_play));
-            properties.push(Property::CanPause(snapshot.caps.can_pause));
-            properties.push(Property::CanSeek(snapshot.caps.can_seek));
-        }
-        // One PropertiesChanged per logical event (L-6/S-4).
-        if !properties.is_empty()
-            && let Err(e) = server.properties_changed(properties).await
-        {
-            tracing::debug!(error = %e, "MPRIS properties_changed failed");
-        }
-        // Seeked fires on every discontinuity — user seek, SetPosition, and track
-        // (re)starts as Seeked(0) (L-7); never on plain progress (L-8).
-        if changes.position
-            && let Err(e) = server
-                .emit(Signal::Seeked {
-                    position: Time::from_micros((snapshot.position_now() * 1e6) as i64),
-                })
-                .await
-        {
-            tracing::debug!(error = %e, "MPRIS Seeked emit failed");
-        }
+        wake.notified().await;
     }
     // Facade dropped the sender (disable/quit): release the bus name explicitly so
     // desktop widgets drop the entry immediately (L-3).
     let _ = server.release_bus_name().await;
+}
+
+async fn apply_batch(
+    server: &Server<Player>,
+    state: &Arc<Mutex<MediaSnapshot>>,
+    mut batch: DeliveryBatch,
+) {
+    batch.prepare_snapshot();
+    let properties = batch
+        .snapshot
+        .as_ref()
+        .map(|snapshot| changed_properties(snapshot, batch.changes))
+        .unwrap_or_default();
+
+    // Move metadata-bearing state into the property-read slot. Progress-only
+    // updates mutate scalar fields and never clone track strings a second time.
+    if let Some(snapshot) = batch.snapshot.take() {
+        *state.lock().unwrap() = snapshot;
+    } else {
+        batch.apply_clock_to(&mut state.lock().unwrap());
+    }
+
+    // One PropertiesChanged per drained/coalesced logical batch (L-6/S-4).
+    if !properties.is_empty()
+        && let Err(e) = server.properties_changed(properties).await
+    {
+        tracing::debug!(error = %e, "MPRIS properties_changed failed");
+    }
+    // Every compact discontinuity survives coalescing — user seeks, SetPosition,
+    // and track (re)starts each emit their own Seeked signal (L-7/L-8).
+    for position in batch.discontinuities {
+        if let Err(e) = server
+            .emit(Signal::Seeked {
+                position: Time::from_micros((position.position_now() * 1e6) as i64),
+            })
+            .await
+        {
+            tracing::debug!(error = %e, "MPRIS Seeked emit failed");
+        }
+    }
+}
+
+fn changed_properties(snapshot: &MediaSnapshot, changes: MediaChanges) -> Vec<Property> {
+    let mut properties = Vec::new();
+    if changes.track || changes.artwork {
+        properties.push(Property::Metadata(build_metadata(snapshot)));
+    }
+    if changes.status {
+        properties.push(Property::PlaybackStatus(playback_status(snapshot)));
+    }
+    if changes.options {
+        properties.push(Property::Rate(snapshot.rate));
+        properties.push(Property::Volume(snapshot.volume));
+        properties.push(Property::Shuffle(snapshot.shuffle));
+        properties.push(Property::LoopStatus(loop_status(snapshot.repeat)));
+    }
+    if changes.caps {
+        properties.push(Property::CanGoNext(snapshot.caps.can_next));
+        properties.push(Property::CanGoPrevious(snapshot.caps.can_previous));
+        properties.push(Property::CanPlay(snapshot.caps.can_play));
+        properties.push(Property::CanPause(snapshot.caps.can_pause));
+        properties.push(Property::CanSeek(snapshot.caps.can_seek));
+    }
+    properties
 }
 
 /// `Arc`-clone helper so each `Server::new` attempt gets its own `Player`.

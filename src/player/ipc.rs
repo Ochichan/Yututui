@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::time::Instant;
 
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
@@ -31,6 +32,100 @@ struct DispatchState {
     /// keeping repeated nulls (a stream that never had one) silent.
     duration_known: bool,
     pending: HashMap<u64, String>,
+    /// Raw mpv numeric-property traffic for the opt-in `YTM_PERF` trace. Kept behind an
+    /// `Option` so normal runs pay only one predictable branch per incoming IPC line.
+    numeric_perf: Option<NumericPerfWindow>,
+}
+
+struct NumericPerfWindow {
+    started: Instant,
+    raw_time_pos: u64,
+    raw_cache_time: u64,
+    borrowed_fast_path: u64,
+    generic_fallback: u64,
+    forwarded_time_pos: u64,
+    forwarded_cache_time: u64,
+}
+
+impl NumericPerfWindow {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            raw_time_pos: 0,
+            raw_cache_time: 0,
+            borrowed_fast_path: 0,
+            generic_fallback: 0,
+            forwarded_time_pos: 0,
+            forwarded_cache_time: 0,
+        }
+    }
+
+    fn reset(&mut self, now: Instant) {
+        self.started = now;
+        self.raw_time_pos = 0;
+        self.raw_cache_time = 0;
+        self.borrowed_fast_path = 0;
+        self.generic_fallback = 0;
+        self.forwarded_time_pos = 0;
+        self.forwarded_cache_time = 0;
+    }
+}
+
+const NUMERIC_PERF_WINDOW: Duration = Duration::from_secs(5);
+
+fn record_numeric_input(state: &mut DispatchState, name: &str, borrowed: bool) {
+    let Some(perf) = state.numeric_perf.as_mut() else {
+        return;
+    };
+    match name {
+        "time-pos" => perf.raw_time_pos += 1,
+        "demuxer-cache-time" => perf.raw_cache_time += 1,
+        _ => return,
+    }
+    if borrowed {
+        perf.borrowed_fast_path += 1;
+    } else {
+        perf.generic_fallback += 1;
+    }
+}
+
+fn record_numeric_forward(state: &mut DispatchState, name: &str) {
+    let Some(perf) = state.numeric_perf.as_mut() else {
+        return;
+    };
+    match name {
+        "time-pos" => perf.forwarded_time_pos += 1,
+        "demuxer-cache-time" => perf.forwarded_cache_time += 1,
+        _ => {}
+    }
+}
+
+fn log_numeric_perf(state: &mut DispatchState, force: bool) {
+    let Some(perf) = state.numeric_perf.as_mut() else {
+        return;
+    };
+    let now = Instant::now();
+    let elapsed = now.saturating_duration_since(perf.started);
+    if !force && elapsed < NUMERIC_PERF_WINDOW {
+        return;
+    }
+    let raw_total = perf.raw_time_pos + perf.raw_cache_time;
+    if raw_total > 0 {
+        let seconds = elapsed.as_secs_f64().max(f64::EPSILON);
+        tracing::info!(
+            target: "ytt::perf",
+            window_ms = elapsed.as_millis() as u64,
+            raw_time_pos_lines = perf.raw_time_pos,
+            raw_cache_time_lines = perf.raw_cache_time,
+            raw_numeric_hz = raw_total as f64 / seconds,
+            borrowed_numeric_lines = perf.borrowed_fast_path,
+            generic_numeric_lines = perf.generic_fallback,
+            forwarded_time_pos = perf.forwarded_time_pos,
+            forwarded_cache_time = perf.forwarded_cache_time,
+            "mpv numeric IPC window"
+        );
+    }
+    perf.reset(now);
 }
 
 /// Clear the per-file dedup/latch state when a file ends for ANY reason, so the next
@@ -77,6 +172,9 @@ pub async fn run_actor(
     emit: EventSink,
 ) {
     let mut state = DispatchState::default();
+    if std::env::var_os("YTM_PERF").is_some() {
+        state.numeric_perf = Some(NumericPerfWindow::new());
+    }
 
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
     for (id, prop) in [
@@ -135,6 +233,7 @@ pub async fn run_actor(
             },
         }
     }
+    log_numeric_perf(&mut state, true);
 }
 
 async fn dispatch_command(
@@ -216,34 +315,64 @@ pub(super) async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
     writer.flush().await
 }
 
-/// Borrowed view of the one high-rate mpv line: a `time-pos` property-change. Parsing
-/// into this (zero-copy `&str` fields, `data` as a plain number) skips the full
-/// `serde_json::Value` tree that `proto::parse_line` builds — and time-pos arrives many
-/// times a second during playback, then is deduped to 1/sec anyway.
+/// Borrowed view of the two high-rate numeric mpv properties. Parsing into this (zero-copy
+/// `&str` fields, `data` as a plain optional number) skips the full `serde_json::Value` tree that
+/// `proto::parse_line` builds. `None` deliberately covers both JSON null and a missing `data`
+/// field, matching the general parser's `Value::Null` fallback.
 #[derive(serde::Deserialize)]
-struct TimePosLine<'a> {
+struct NumericPropertyLine<'a> {
     event: &'a str,
     name: &'a str,
-    data: f64,
+    data: Option<f64>,
 }
 
 /// Translate one mpv line into a player event for the runtime.
 fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
-    // Fast path: dedup time-pos before allocating anything. A borrow-mode parse fails on
-    // any other event shape (missing fields, null/escaped data) and falls through to the
-    // general path below, so behavior is unchanged — e.g. `data:null` still ends up in
-    // the `as_f64() == None` arm there and emits nothing.
-    if let Ok(tp) = serde_json::from_str::<TimePosLine>(line.trim())
-        && tp.event == "property-change"
-        && tp.name == "time-pos"
+    // Flush the previous complete measurement window before accounting this line, so forwarded
+    // counts and raw counts always describe the same set of fully-dispatched events.
+    log_numeric_perf(state, false);
+    // Fast path: normalize and dedup the two high-rate progress properties before allocating.
+    // Other property shapes fail or fall through to the general parser unchanged.
+    if let Ok(property) = serde_json::from_str::<NumericPropertyLine>(line.trim())
+        && property.event == "property-change"
     {
-        let t = crate::playback_policy::norm_position(tp.data);
-        let sec = t as i64;
-        if state.last_sent_time_sec != Some(sec) {
-            state.last_sent_time_sec = Some(sec);
-            emit(PlayerEvent::TimePos(t));
+        match property.name {
+            "time-pos" => {
+                record_numeric_input(state, property.name, true);
+                if let Some(t) = property.data {
+                    let t = crate::playback_policy::norm_position(t);
+                    let sec = t as i64;
+                    if state.last_sent_time_sec != Some(sec) {
+                        state.last_sent_time_sec = Some(sec);
+                        emit(PlayerEvent::TimePos(t));
+                        record_numeric_forward(state, property.name);
+                    }
+                }
+                return;
+            }
+            "demuxer-cache-time" => {
+                record_numeric_input(state, property.name, true);
+                match property.data {
+                    Some(t) => {
+                        let t = crate::playback_policy::norm_position(t);
+                        let sec = t as i64;
+                        if state.last_sent_cache_sec != Some(sec) {
+                            state.last_sent_cache_sec = Some(sec);
+                            emit(PlayerEvent::CacheTime(Some(t)));
+                            record_numeric_forward(state, property.name);
+                        }
+                    }
+                    None => {
+                        if state.last_sent_cache_sec.take().is_some() {
+                            emit(PlayerEvent::CacheTime(None));
+                            record_numeric_forward(state, property.name);
+                        }
+                    }
+                }
+                return;
+            }
+            _ => {}
         }
-        return;
     }
     let Some(incoming) = proto::parse_line(line) else {
         return;
@@ -251,12 +380,14 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
     match incoming {
         MpvIncoming::PropertyChange { name, value, .. } => match name.as_str() {
             "time-pos" => {
+                record_numeric_input(state, &name, false);
                 if let Some(t) = value.as_f64() {
                     let t = crate::playback_policy::norm_position(t);
                     let sec = t as i64;
                     if state.last_sent_time_sec != Some(sec) {
                         state.last_sent_time_sec = Some(sec);
                         emit(PlayerEvent::TimePos(t));
+                        record_numeric_forward(state, &name);
                     }
                 }
             }
@@ -297,18 +428,22 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             "demuxer-cache-time" => match value.as_f64() {
                 // High-rate like time-pos → dedup to whole seconds.
                 Some(t) => {
+                    record_numeric_input(state, &name, false);
                     let t = crate::playback_policy::norm_position(t);
                     let sec = t as i64;
                     if state.last_sent_cache_sec != Some(sec) {
                         state.last_sent_cache_sec = Some(sec);
                         emit(PlayerEvent::CacheTime(Some(t)));
+                        record_numeric_forward(state, &name);
                     }
                 }
                 // Unlike time-pos, a null here is a signal the reducer needs: the
                 // property became unavailable (stream teardown, cache-less demuxer).
                 None => {
+                    record_numeric_input(state, &name, false);
                     if state.last_sent_cache_sec.take().is_some() {
                         emit(PlayerEvent::CacheTime(None));
+                        record_numeric_forward(state, &name);
                     }
                 }
             },
@@ -402,6 +537,43 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(PlayerEvent::TimePos(t)) if t == 1.1));
         assert!(matches!(rx.try_recv(), Ok(PlayerEvent::TimePos(t)) if t == 2.0));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn numeric_perf_window_counts_raw_fast_fallback_and_forwarded_lines() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.try_send(event);
+        });
+        let mut state = DispatchState {
+            numeric_perf: Some(NumericPerfWindow::new()),
+            ..DispatchState::default()
+        };
+
+        for line in [
+            r#"{"event":"property-change","name":"time-pos","data":1.1}"#,
+            r#"{"event":"property-change","name":"time-pos","data":1.8}"#,
+            r#"{"event":"property-change","name":"demuxer-cache-time","data":100.2}"#,
+            r#"{"event":"property-change","name":"demuxer-cache-time","data":null}"#,
+            // An escaped property name cannot be borrowed by the fast-path struct, but the
+            // allocating generic parser still recognizes it and must be represented in stats.
+            r#"{"event":"property-change","name":"time-\u0070os","data":2.0}"#,
+        ] {
+            dispatch_incoming(line, &emit, &mut state);
+        }
+
+        let perf = state.numeric_perf.as_ref().expect("perf counters enabled");
+        assert_eq!(perf.raw_time_pos, 3);
+        assert_eq!(perf.raw_cache_time, 2);
+        assert_eq!(perf.borrowed_fast_path, 4);
+        assert_eq!(perf.generic_fallback, 1);
+        assert_eq!(perf.forwarded_time_pos, 2);
+        assert_eq!(perf.forwarded_cache_time, 2);
+        let mut forwarded = 0;
+        while rx.try_recv().is_ok() {
+            forwarded += 1;
+        }
+        assert_eq!(forwarded, 4);
     }
 
     #[test]

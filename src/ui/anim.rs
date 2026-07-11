@@ -1302,7 +1302,7 @@ mod tests {
 
     fn advance_frames(app: &mut App, frames: u64) {
         for _ in 0..frames {
-            app.update(Msg::AnimTick);
+            app.update(Msg::AnimTick(1));
         }
     }
 

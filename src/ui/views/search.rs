@@ -319,6 +319,8 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .results
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(area.height as usize)
         .map(|(i, s)| {
             let (source, heart, text) = result_row_cells(app, s);
             // The focused, visible cursor row marquees when clipped — the source tag and
@@ -369,15 +371,16 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         // viewport and snaps back when it returns.
         .highlight_spacing(HighlightSpacing::Always);
 
-    // Pre-seed the wheel offset so ratatui honors it; only highlight the selection while
-    // it is actually visible, so the wheel can scroll past it.
-    let mut state = ListState::default().with_offset(offset);
+    // Only the visible window is formatted above, so its local list offset is zero. Keep all
+    // hit targets, selection, animation indices, and scrollbar positions in absolute result
+    // coordinates to preserve the existing interaction semantics.
+    let mut state = ListState::default();
     if let Some(sel) = visible_sel {
-        state.select(Some(sel));
+        state.select(Some(sel - offset));
     }
     frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.
-    buttons::register_list_rows(app, area, state.offset(), len, Some);
+    buttons::register_list_rows(app, area, offset, len, Some);
     // Scrollbar on the right border, tracking the viewport position; hidden when results fit.
     buttons::render_list_scrollbar(
         frame,
@@ -390,7 +393,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         },
         ScrollSurface::Search,
         len,
-        state.offset(),
+        offset,
         area.height as usize,
     );
 }

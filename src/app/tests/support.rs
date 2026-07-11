@@ -426,7 +426,7 @@ pub(super) fn open_library_tab(app: &mut App, tab: LibraryTab) {
     }
 }
 
-pub(super) fn lyric_lines() -> Vec<LyricLine> {
+pub(super) fn lyric_lines() -> std::sync::Arc<[LyricLine]> {
     vec![
         LyricLine {
             time: 0.0,
@@ -437,6 +437,7 @@ pub(super) fn lyric_lines() -> Vec<LyricLine> {
             text: "two".to_owned(),
         },
     ]
+    .into()
 }
 
 pub(super) fn resolve_cmd<'a>(cmds: &'a [Cmd], id: &str) -> Option<&'a str> {

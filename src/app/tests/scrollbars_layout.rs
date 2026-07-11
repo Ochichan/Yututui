@@ -144,6 +144,82 @@ fn dragging_search_scrollbar_moves_the_viewport() {
 }
 
 #[test]
+fn scrolled_search_rows_keep_absolute_hit_indices() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.results = songs(40);
+    app.search.selected = 0;
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    app.bridges
+        .search_scroll
+        .wheel(false, 8, app.search.results.len());
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    let offset = app.bridges.search_scroll.offset();
+    assert!(offset > 0);
+    let mut visible_rows: Vec<_> = app
+        .hits
+        .regions()
+        .iter()
+        .filter_map(|region| match region.target {
+            MouseTarget::ListRow(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    visible_rows.sort_unstable();
+    visible_rows.dedup();
+    assert_eq!(visible_rows.first().copied(), Some(offset));
+    assert!(!visible_rows.contains(&0));
+}
+
+#[test]
+fn filtered_playlist_bottom_window_keeps_absolute_hit_indices() {
+    let mut app = App::new(100);
+    let playlist_id = app.playlists.create("Window").unwrap();
+    for i in 0..40 {
+        let title = if i % 2 == 0 {
+            format!("Keep {i}")
+        } else {
+            format!("Skip {i}")
+        };
+        app.playlists.add(
+            &playlist_id,
+            Song::remote(format!("id{i}"), title, "Artist", "0:10"),
+        );
+    }
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Playlists;
+    app.library_ui.open_playlist = Some(playlist_id);
+    app.library_ui.filter_query = "keep".to_owned();
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let len = app.library_len();
+    app.bridges.library_scroll.wheel(false, 999, len);
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    let offset = app.bridges.library_scroll.offset();
+    assert!(offset > 0);
+    let mut visible_rows: Vec<_> = app
+        .hits
+        .regions()
+        .iter()
+        .filter_map(|region| match region.target {
+            MouseTarget::ListRow(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    visible_rows.sort_unstable();
+    visible_rows.dedup();
+    assert_eq!(visible_rows.first().copied(), Some(offset));
+    assert_eq!(visible_rows.last().copied(), Some(len - 1));
+}
+
+#[test]
 fn ai_suggestions_scrollbar_renders_inside_borderless_list() {
     let mut app = App::new(100);
     app.mode = Mode::Ai;

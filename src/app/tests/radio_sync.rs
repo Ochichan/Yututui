@@ -26,6 +26,65 @@ fn cache_time_updates_playback_and_coalesces_redraws() {
 }
 
 #[test]
+fn offscreen_progress_updates_state_without_redrawing_or_bumping_epoch() {
+    for mode in [Mode::Search, Mode::Library, Mode::Ai, Mode::Settings] {
+        let mut app = radio_playing("groove");
+        app.mode = mode;
+        app.dirty = false;
+        let epoch = app.playback.position_epoch;
+
+        app.update(PlayerMsg::TimePos(75.4));
+        assert_eq!(app.playback.time_pos, Some(75.4), "mode={mode:?}");
+        assert!(app.playback.time_pos_at.is_some(), "mode={mode:?}");
+        assert!(!app.dirty, "offscreen time-pos redrew mode={mode:?}");
+
+        app.update(PlayerMsg::CacheTime(Some(135.9)));
+        assert_eq!(app.playback.cache_time, Some(135.9), "mode={mode:?}");
+        assert!(app.playback.cache_time_at.is_some(), "mode={mode:?}");
+        assert_eq!(
+            app.radio_behind_secs().map(|behind| behind as i64),
+            Some(60),
+            "mode={mode:?}"
+        );
+        assert_eq!(app.media_snapshot().position, 75.4, "mode={mode:?}");
+        assert!(
+            app.core_view()
+                .elapsed_ms
+                .is_some_and(|elapsed| elapsed >= 75_400),
+            "remote observer did not see latest position in mode={mode:?}"
+        );
+        assert!(app.media_scrobble_heartbeat_active(), "mode={mode:?}");
+        assert!(!app.dirty, "offscreen cache-time redrew mode={mode:?}");
+
+        app.update(PlayerMsg::CacheTime(None));
+        assert_eq!(app.playback.cache_time, None, "mode={mode:?}");
+        assert!(app.playback.cache_time_at.is_none(), "mode={mode:?}");
+        assert_eq!(app.radio_live_synced(), None, "mode={mode:?}");
+        assert!(!app.dirty, "offscreen cache Some→None redrew mode={mode:?}");
+        assert_eq!(app.playback.position_epoch, epoch, "mode={mode:?}");
+    }
+}
+
+#[test]
+fn returning_to_player_renders_latest_offscreen_progress() {
+    let mut app = radio_playing("groove");
+    app.mode = Mode::Search;
+    app.dirty = false;
+
+    app.update(PlayerMsg::TimePos(75.4));
+    app.update(PlayerMsg::CacheTime(Some(135.9)));
+    assert!(!app.dirty);
+
+    assert!(app.navigate_to(Mode::Player).is_empty());
+    assert!(app.dirty, "mode transition must request the catch-up frame");
+    let buffer = render_app_buffer(&app, 100, 30);
+    assert!(
+        buffer_contains(&buffer, "1:15 · -60s"),
+        "Player did not render the latest offscreen time/cache state"
+    );
+}
+
+#[test]
 fn radio_live_sync_verdict_follows_behind_distance() {
     let mut app = radio_playing("groove");
     app.update(PlayerMsg::TimePos(100.0));

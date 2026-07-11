@@ -459,19 +459,27 @@ fn write_journal_intent(intent: &JournalIntent) -> std::io::Result<()> {
     let Some(sidecar_path) = intent_sidecar_path(&intent.path) else {
         return Ok(());
     };
-    crate::util::safe_fs::write_private_atomic(&sidecar_path, &intent.bytes)?;
     let sidecar = sidecar_path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| std::io::Error::other("invalid intent sidecar name"))?;
-    let record = serde_json::json!({
+    let record = journal_record(intent.kind, sidecar, &intent.bytes);
+    // Append the durable record before replacing the shared latest sidecar. If the process dies
+    // between these two operations, replay skips the new record's checksum mismatch and can still
+    // use the previous record with the previous sidecar. Replacing the sidecar first would make
+    // every older committed record mismatch during that crash window.
+    crate::util::safe_fs::append_private_jsonl_durable(&journal_path, &record.to_string())?;
+    crate::util::safe_fs::write_private_atomic(&sidecar_path, &intent.bytes)
+}
+
+fn journal_record(kind: StoreKind, sidecar: &str, bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({
         "v": 1,
         "op": "replace",
-        "kind": intent.kind.label(),
+        "kind": kind.label(),
         "sidecar": sidecar,
-        "sha256": sha256_hex(&intent.bytes),
-    });
-    crate::util::safe_fs::append_private_jsonl_durable(&journal_path, &record.to_string())
+        "sha256": sha256_hex(bytes),
+    })
 }
 
 fn clear_store_journal_for_kind(kind: StoreKind) {
@@ -518,16 +526,31 @@ pub(crate) fn replay_journaled_snapshot<T>(
 where
     T: DeserializeOwned,
 {
+    replay_journaled_snapshot_with_status(kind, path, current, max_bytes).0
+}
+
+/// Replay the newest valid intent and report whether the returned value came from its sidecar.
+/// Config recovery uses the status to atomically install a migrated replay before clearing the
+/// journal; all other stores keep the existing value-only interface above.
+pub(crate) fn replay_journaled_snapshot_with_status<T>(
+    kind: StoreKind,
+    path: &Path,
+    current: T,
+    max_bytes: u64,
+) -> (T, bool)
+where
+    T: DeserializeOwned,
+{
     let Some(journal_path) = intent_journal_path(path) else {
-        return current;
+        return (current, false);
     };
     let Ok(bytes) =
         crate::util::safe_fs::read_no_symlink_limited(&journal_path, INTENT_JOURNAL_MAX_BYTES)
     else {
-        return current;
+        return (current, false);
     };
     let Ok(text) = String::from_utf8(bytes) else {
-        return current;
+        return (current, false);
     };
     for line in text.lines().rev() {
         let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -563,7 +586,7 @@ where
         match serde_json::from_slice::<T>(&snapshot_bytes) {
             Ok(snapshot) => {
                 tracing::info!(store = kind.label(), "replayed pending persistence intent");
-                return snapshot;
+                return (snapshot, true);
             }
             Err(error) => {
                 tracing::warn!(
@@ -574,7 +597,27 @@ where
             }
         }
     }
-    current
+    (current, false)
+}
+
+/// Remove a replayed intent only after its snapshot has been successfully installed at `path`.
+pub(crate) fn clear_journaled_snapshot(path: &Path) {
+    clear_store_journal(path);
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_journaled_snapshot(
+    kind: StoreKind,
+    path: PathBuf,
+    bytes: Vec<u8>,
+) -> std::io::Result<()> {
+    write_journal_intent(&JournalIntent { kind, path, bytes })
+}
+
+#[cfg(test)]
+pub(crate) fn test_journal_exists(path: &Path) -> bool {
+    intent_journal_path(path).is_some_and(|journal| journal.exists())
+        || intent_sidecar_path(path).is_some_and(|sidecar| sidecar.exists())
 }
 
 fn intent_journal_path(path: &Path) -> Option<PathBuf> {
@@ -789,12 +832,81 @@ mod tests {
         })
         .unwrap();
 
-        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
+        let (replayed, from_journal) = replay_journaled_snapshot_with_status(
+            StoreKind::Config,
+            &path,
+            Tiny { value: 1 },
+            1024,
+        );
+        assert_eq!(replayed, Tiny { value: 7 });
+        assert!(from_journal);
+        assert!(test_journal_exists(&path));
+
+        clear_journaled_snapshot(&path);
+        let (replayed, from_journal) = replay_journaled_snapshot_with_status(
+            StoreKind::Config,
+            &path,
+            Tiny { value: 1 },
+            1024,
+        );
+        assert_eq!(replayed, Tiny { value: 1 });
+        assert!(!from_journal);
+        assert!(!test_journal_exists(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sidecar_replacement_crash_windows_keep_the_last_committed_intent() {
+        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+        struct Tiny {
+            value: u8,
+        }
+
+        let dir = temp_dir("intent-replace-order");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.json");
+        let old_bytes = serde_json::to_vec_pretty(&Tiny { value: 7 }).unwrap();
+        write_journal_intent(&JournalIntent {
+            kind: StoreKind::Config,
+            path: path.clone(),
+            bytes: old_bytes,
+        })
+        .unwrap();
+
+        let journal_path = intent_journal_path(&path).unwrap();
+        let sidecar_path = intent_sidecar_path(&path).unwrap();
+        let sidecar_name = sidecar_path.file_name().unwrap().to_str().unwrap();
+        let new_bytes = serde_json::to_vec_pretty(&Tiny { value: 9 }).unwrap();
+        let new_record = journal_record(StoreKind::Config, sidecar_name, &new_bytes);
+
+        // Crash after the new record is durable but before its sidecar replacement: the newest
+        // checksum mismatches, so replay must fall back to the older committed pair.
+        crate::util::safe_fs::append_private_jsonl_durable(&journal_path, &new_record.to_string())
+            .unwrap();
+        let (replayed, from_journal) = replay_journaled_snapshot_with_status(
+            StoreKind::Config,
+            &path,
+            Tiny { value: 1 },
+            1024,
+        );
+        assert!(from_journal);
         assert_eq!(replayed, Tiny { value: 7 });
 
-        clear_store_journal(&path);
-        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
-        assert_eq!(replayed, Tiny { value: 1 });
+        // Once the atomic sidecar replacement lands, the same durable record becomes the newest
+        // valid pair. Replaying it repeatedly is safe until the installed store is cleared.
+        crate::util::safe_fs::write_private_atomic(&sidecar_path, &new_bytes).unwrap();
+        for _ in 0..2 {
+            let (replayed, from_journal) = replay_journaled_snapshot_with_status(
+                StoreKind::Config,
+                &path,
+                Tiny { value: 1 },
+                1024,
+            );
+            assert!(from_journal);
+            assert_eq!(replayed, Tiny { value: 9 });
+        }
+
+        clear_journaled_snapshot(&path);
         let _ = std::fs::remove_dir_all(dir);
     }
 
