@@ -1,0 +1,92 @@
+    /* Catppuccin Macchiato — official palette (github.com/catppuccin/catppuccin) */
+    :root {
+      --rosewater: #f4dbd6;
+      --flamingo: #f0c6c6;
+      --pink: #f5bde6;
+      --mauve: #c6a0f6;
+      --red: #ed8796;
+      --maroon: #ee99a0;
+      --peach: #f5a97f;
+      --yellow: #eed49f;
+      --green: #a6da95;
+      --teal: #8bd5ca;
+      --sky: #91d7e3;
+      --sapphire: #7dc4e4;
+      --blue: #8aadf4;
+      --lavender: #b7bdf8;
+      --text: #cad3f5;
+      --subtext1: #b8c0e0;
+      --subtext0: #a5adcb;
+      --overlay2: #939ab7;
+      --overlay1: #8087a2;
+      --overlay0: #6e738d;
+      --surface2: #5b6078;
+      --surface1: #494d64;
+      --surface0: #363a4f;
+      --base: #24273a;
+      --mantle: #1e2030;
+      --crust: #181926;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      color: var(--text);
+      font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI Variable Text",
+        "Segoe UI", system-ui, sans-serif;
+      font-size: 12px;
+      user-select: none;
+      cursor: default;
+    }
+
+    body {
+      padding: 13px;
+    }
+
+    .sr-only {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+
+    .svg-sprite {
+      position: absolute;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+    }
+
+    .icon {
+      width: 1.1em;
+      height: 1.1em;
+      flex: none;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+
+    .icon-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 0;
+    }

@@ -1,9 +1,7 @@
 //! Opt-in desktop startup helpers for the tray companion.
 
 use std::fmt;
-use std::path::Path;
-#[cfg(target_os = "macos")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 const RUN_VALUE_NAME: &str = "YuTuTray!";
@@ -60,11 +58,91 @@ pub fn self_heal() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let want = startup_command_for(&exe);
     if let Ok(StartupStatus::Enabled { command }) = status()
-        && command != want
+        && let Some(registration) = parse_startup_command(&command)
+        && should_self_heal(&exe, &registration)
     {
         let _ = install();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartupRegistration {
+    executable: PathBuf,
+    args: Vec<String>,
+}
+
+/// Parse the display command emitted by both startup backends without evaluating a shell.
+/// Generated entries contain only a quoted executable plus plain arguments; accepting both
+/// quote styles also makes macOS' plist display form compare semantically with Windows' form.
+fn parse_startup_command(command: &str) -> Option<StartupRegistration> {
+    let mut chars = command.trim().chars().peekable();
+    let mut words = Vec::new();
+    while chars.peek().is_some() {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        let Some(first) = chars.next() else {
+            break;
+        };
+        let quote = matches!(first, '\'' | '"').then_some(first);
+        let mut word = String::new();
+        if quote.is_none() {
+            word.push(first);
+        }
+        let mut closed = quote.is_none();
+        for ch in chars.by_ref() {
+            if quote == Some(ch) {
+                closed = true;
+                break;
+            }
+            if quote.is_none() && ch.is_whitespace() {
+                closed = true;
+                break;
+            }
+            word.push(ch);
+        }
+        if !closed || word.is_empty() {
+            return None;
+        }
+        words.push(word);
+    }
+    let executable = PathBuf::from(words.first()?);
+    Some(StartupRegistration {
+        executable,
+        args: words.into_iter().skip(1).collect(),
+    })
+}
+
+fn should_self_heal(current_exe: &Path, registration: &StartupRegistration) -> bool {
+    if registration.args.as_slice() != ["--background"]
+        || same_executable(current_exe, &registration.executable)
+    {
+        return false;
+    }
+    // A valid alternate installation/portable copy is user-owned. Only repair a path that no
+    // longer exists, or the retired `ytt-tray` binary name from before the desktop rename.
+    !registration.executable.exists()
+        || registration
+            .executable
+            .file_stem()
+            .is_some_and(|stem| stem.to_string_lossy().eq_ignore_ascii_case("ytt-tray"))
+}
+
+fn same_executable(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => {
+            #[cfg(windows)]
+            {
+                left.to_string_lossy()
+                    .eq_ignore_ascii_case(&right.to_string_lossy())
+            }
+            #[cfg(not(windows))]
+            {
+                left == right
+            }
+        }
     }
 }
 
@@ -506,6 +584,52 @@ mod tests {
             command,
             r#""C:\Program Files\YuTuTui!\yututray.exe" --background"#
         );
+    }
+
+    #[test]
+    fn startup_command_parser_compares_quote_styles_semantically() {
+        assert_eq!(
+            parse_startup_command(r#""C:\Program Files\YuTuTui!\yututray.exe" --background"#),
+            Some(StartupRegistration {
+                executable: PathBuf::from(r"C:\Program Files\YuTuTui!\yututray.exe"),
+                args: vec!["--background".to_string()],
+            })
+        );
+        assert_eq!(
+            parse_startup_command(
+                "'/Applications/YuTuTray!.app/Contents/MacOS/yututray' --background"
+            ),
+            Some(StartupRegistration {
+                executable: PathBuf::from("/Applications/YuTuTray!.app/Contents/MacOS/yututray"),
+                args: vec!["--background".to_string()],
+            })
+        );
+        assert_eq!(parse_startup_command("'unterminated"), None);
+    }
+
+    #[test]
+    fn self_heal_does_not_take_over_a_valid_alternate_install() {
+        let dir = std::env::temp_dir().join(format!(
+            "ytt-startup-registration-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("current-yututray");
+        let alternate = dir.join("alternate-yututray");
+        std::fs::write(&current, b"current").unwrap();
+        std::fs::write(&alternate, b"alternate").unwrap();
+        let alternate_registration = StartupRegistration {
+            executable: alternate,
+            args: vec!["--background".to_string()],
+        };
+        assert!(!should_self_heal(&current, &alternate_registration));
+
+        let missing_registration = StartupRegistration {
+            executable: dir.join("missing-yututray"),
+            args: vec!["--background".to_string()],
+        };
+        assert!(should_self_heal(&current, &missing_registration));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(target_os = "macos")]

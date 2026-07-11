@@ -7,12 +7,21 @@ use std::error::Error;
 
 use yututui::desktop::launch;
 use yututui::desktop::menu_model::{self, MenuEntry};
+use yututui::desktop::single_instance::ActivationIntent;
 use yututui::desktop::startup::{self, StartupStatus};
 use yututui::desktop::status;
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 use yututui::desktop::status::PollConfig;
+use yututui::{config::Config, i18n};
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    if let Err(error) = try_main() {
+        yututui::desktop::native_error::show("YuTuTui! Desktop", &error.to_string());
+        std::process::exit(1);
+    }
+}
+
+fn try_main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The release binary is a GUI-subsystem executable (no console), which makes
     // every CLI verb print into the void when run from a terminal. Re-attach to the
@@ -21,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(windows)]
     if !matches!(
         args.first().map(String::as_str),
-        None | Some("--background") | Some("--main-window")
+        None | Some("--background") | Some("--mini") | Some("--main-window")
     ) {
         attach_parent_console();
     }
@@ -32,8 +41,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("--help") | Some("-h") => print_help(),
         // Default to tray-only. The main window is still experimental and must be
         // opened explicitly so package-manager users do not see an unfinished GUI.
-        Some("--background") => run_default(false)?,
-        Some("--main-window") => run_default(true)?,
+        Some("--background") => {
+            run_default(ActivationIntent::EnsureTray, ActivationIntent::EnsureTray)?
+        }
+        Some("--mini") => run_default(ActivationIntent::ShowMini, ActivationIntent::ShowMini)?,
+        Some("--main-window") => {
+            run_default(ActivationIntent::ShowMain, ActivationIntent::ShowMain)?
+        }
         Some("--once") => block_on(print_once()),
         Some("--install-startup") => install_startup(),
         Some("--uninstall-startup") => uninstall_startup(),
@@ -57,7 +71,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("yututray: unknown option `{other}` (try `yututray --help`)");
             std::process::exit(2);
         }
-        None => run_default(false)?,
+        // Compatibility: the first ordinary launch remains tray-only, while a second
+        // ordinary launch surfaces the existing instance's mini player.
+        None => run_default(ActivationIntent::EnsureTray, ActivationIntent::ShowMini)?,
     }
     Ok(())
 }
@@ -71,6 +87,7 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("      --background Run the tray companion from a startup entry (tray only)");
+    println!("      --mini       Open the tray mini player");
     println!("      --main-window");
     println!("                   Open the experimental main window");
     println!("      --install-startup");
@@ -124,20 +141,25 @@ async fn print_once() {
     print_menu_update(&update);
 }
 
-fn run_default(open_main: bool) -> Result<(), Box<dyn Error>> {
-    // Heal a stale login-startup entry (e.g. a prior `yututray` install) on every launch.
-    startup::self_heal();
+fn run_default(
+    initial_intent: ActivationIntent,
+    secondary_intent: ActivationIntent,
+) -> Result<(), Box<dyn Error>> {
+    // Tray/menu/panel must have a useful locale even before a core session is online.
+    // A v8 settings snapshot may refine this later, but local config is authoritative offline.
+    let config = Config::load();
+    i18n::set_language(config.effective_language());
     #[cfg(target_os = "macos")]
     {
-        yututui::desktop::platform::macos::run(open_main)
+        yututui::desktop::platform::macos::run(initial_intent, secondary_intent)
     }
     #[cfg(target_os = "windows")]
     {
-        yututui::desktop::platform::windows::run(open_main)
+        yututui::desktop::platform::windows::run(initial_intent, secondary_intent)
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
-        let _ = open_main;
+        let _ = (initial_intent, secondary_intent);
         block_on(run_polling());
         Ok(())
     }
@@ -192,12 +214,22 @@ fn print_menu_update(update: &status::PollUpdate) {
     if let Some(error) = &update.error {
         println!("error: {error}");
     }
-    for entry in &model.entries {
+    print_menu_entries(&model.entries, 0);
+}
+
+fn print_menu_entries(entries: &[MenuEntry], depth: usize) {
+    let indent = "  ".repeat(depth);
+    for entry in entries {
         match entry {
-            MenuEntry::Separator => println!("---"),
+            MenuEntry::Separator => println!("{indent}---"),
             MenuEntry::Item(item) => {
                 let marker = if item.enabled { " " } else { "x" };
-                println!("[{marker}] {}", item.label);
+                println!("{indent}[{marker}] {}", item.label);
+            }
+            MenuEntry::Submenu(submenu) => {
+                let marker = if submenu.enabled { " " } else { "x" };
+                println!("{indent}[{marker}] {}:", submenu.label);
+                print_menu_entries(&submenu.entries, depth + 1);
             }
         }
     }

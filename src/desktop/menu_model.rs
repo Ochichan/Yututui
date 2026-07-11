@@ -16,13 +16,17 @@ pub enum TrayStateKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayState {
     Connected(StatusSnapshot),
-    Disconnected,
+    Disconnected { resume_available: bool },
 }
 
 impl TrayState {
+    pub const fn disconnected(resume_available: bool) -> Self {
+        Self::Disconnected { resume_available }
+    }
+
     pub fn kind(&self) -> TrayStateKind {
         match self {
-            TrayState::Disconnected => TrayStateKind::Disconnected,
+            TrayState::Disconnected { .. } => TrayStateKind::Disconnected,
             TrayState::Connected(status) if is_idle(status) => TrayStateKind::ConnectedIdle,
             TrayState::Connected(status) if status.paused => TrayStateKind::ConnectedPaused,
             TrayState::Connected(_) => TrayStateKind::ConnectedPlaying,
@@ -32,7 +36,26 @@ impl TrayState {
     pub fn status(&self) -> Option<&StatusSnapshot> {
         match self {
             TrayState::Connected(status) => Some(status),
-            TrayState::Disconnected => None,
+            TrayState::Disconnected { .. } => None,
+        }
+    }
+
+    pub fn resume_available(&self) -> bool {
+        match self {
+            TrayState::Connected(status) => !is_idle(status),
+            TrayState::Disconnected { resume_available } => *resume_available,
+        }
+    }
+
+    /// Merge a fresh projection into the desktop process's offline recovery capability cache.
+    /// An idle connected snapshot cannot prove the persisted cache is empty, so it preserves the
+    /// last known value; a playable snapshot proves resumability and an offline snapshot carries
+    /// the disk-verified answer.
+    pub fn update_known_resume_available(&self, known: &mut bool) {
+        match self {
+            TrayState::Connected(status) if !is_idle(status) => *known = true,
+            TrayState::Disconnected { resume_available } => *known = *resume_available,
+            TrayState::Connected(_) => {}
         }
     }
 }
@@ -49,7 +72,9 @@ impl TrayState {
 /// added).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuSignature {
-    Disconnected,
+    Disconnected {
+        resume_available: bool,
+    },
     Connected {
         title: Option<String>,
         artist: Option<String>,
@@ -62,7 +87,9 @@ pub enum MenuSignature {
 
 pub fn menu_signature(state: &TrayState) -> MenuSignature {
     match state {
-        TrayState::Disconnected => MenuSignature::Disconnected,
+        TrayState::Disconnected { resume_available } => MenuSignature::Disconnected {
+            resume_available: *resume_available,
+        },
         TrayState::Connected(s) => MenuSignature::Connected {
             title: s.title.clone(),
             artist: s.artist.clone(),
@@ -88,6 +115,7 @@ pub enum MenuAction {
     ResumeDaemon,
     StopDaemon,
     ShowMiniPlayer,
+    OpenMainWindow,
     OpenTui,
     Refresh,
     ToggleStartup,
@@ -113,6 +141,7 @@ impl MenuAction {
             | MenuAction::ResumeDaemon
             | MenuAction::StopDaemon
             | MenuAction::ShowMiniPlayer
+            | MenuAction::OpenMainWindow
             | MenuAction::OpenTui
             | MenuAction::Refresh
             | MenuAction::ToggleStartup
@@ -128,9 +157,33 @@ pub struct MenuItem {
     pub action: Option<MenuAction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MenuSubmenuId {
+    Session,
+    Playback,
+}
+
+impl MenuSubmenuId {
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Playback => "playback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuSubmenu {
+    pub id: MenuSubmenuId,
+    pub label: String,
+    pub enabled: bool,
+    pub entries: Vec<MenuEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuEntry {
     Item(MenuItem),
+    Submenu(MenuSubmenu),
     Separator,
 }
 
@@ -146,20 +199,50 @@ impl MenuModel {
         let track = self
             .entries
             .iter()
-            .filter_map(|entry| match entry {
+            .find_map(|entry| match entry {
                 MenuEntry::Item(item) => Some(item.label.as_str()),
-                MenuEntry::Separator => None,
+                MenuEntry::Submenu(_) | MenuEntry::Separator => None,
             })
-            .nth(1)
             .unwrap_or("yututui");
         format!("{:?}: {track}", self.state)
     }
 
     pub fn action_item(&self, action: MenuAction) -> Option<&MenuItem> {
-        self.entries.iter().find_map(|entry| match entry {
-            MenuEntry::Item(item) if item.action == Some(action) => Some(item),
-            _ => None,
-        })
+        find_action_item(&self.entries, action)
+    }
+
+    pub fn submenu(&self, id: MenuSubmenuId) -> Option<&MenuSubmenu> {
+        find_submenu(&self.entries, id)
+    }
+
+    pub fn visit_items(&self, mut visitor: impl FnMut(&MenuItem)) {
+        visit_items(&self.entries, &mut visitor);
+    }
+}
+
+fn find_action_item(entries: &[MenuEntry], action: MenuAction) -> Option<&MenuItem> {
+    entries.iter().find_map(|entry| match entry {
+        MenuEntry::Item(item) if item.action == Some(action) => Some(item),
+        MenuEntry::Submenu(submenu) => find_action_item(&submenu.entries, action),
+        MenuEntry::Item(_) | MenuEntry::Separator => None,
+    })
+}
+
+fn find_submenu(entries: &[MenuEntry], id: MenuSubmenuId) -> Option<&MenuSubmenu> {
+    entries.iter().find_map(|entry| match entry {
+        MenuEntry::Submenu(submenu) if submenu.id == id => Some(submenu),
+        MenuEntry::Submenu(submenu) => find_submenu(&submenu.entries, id),
+        MenuEntry::Item(_) | MenuEntry::Separator => None,
+    })
+}
+
+fn visit_items(entries: &[MenuEntry], visitor: &mut impl FnMut(&MenuItem)) {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => visitor(item),
+            MenuEntry::Submenu(submenu) => visit_items(&submenu.entries, visitor),
+            MenuEntry::Separator => {}
+        }
     }
 }
 
@@ -176,34 +259,100 @@ pub fn build_menu(state: &TrayState) -> MenuModel {
         MenuAction::PlayPause
     };
 
+    let session = submenu(
+        MenuSubmenuId::Session,
+        crate::t!("Session", "세션"),
+        true,
+        vec![daemon_action_item(state, 0), daemon_action_item(state, 1)],
+    );
+    let playback = submenu(
+        MenuSubmenuId::Playback,
+        crate::t!("Playback", "재생"),
+        connected,
+        vec![
+            item(
+                crate::t!("Seek Back", "뒤로 탐색"),
+                has_track,
+                Some(MenuAction::SeekBack),
+            ),
+            item(
+                crate::t!("Seek Forward", "앞으로 탐색"),
+                has_track,
+                Some(MenuAction::SeekForward),
+            ),
+            MenuEntry::Separator,
+            item(
+                crate::t!("Volume Down", "볼륨 낮추기"),
+                connected,
+                Some(MenuAction::VolumeDown),
+            ),
+            item(
+                crate::t!("Volume Up", "볼륨 높이기"),
+                connected,
+                Some(MenuAction::VolumeUp),
+            ),
+            item(
+                autoplay_label(state),
+                connected,
+                Some(MenuAction::ToggleStreaming),
+            ),
+        ],
+    );
+
     let entries = vec![
-        item("YuTuTray!", false, None),
         item(track_label(state), false, None),
         item(state_label(state), false, None),
         MenuEntry::Separator,
-        daemon_action_item(state, 0),
-        daemon_action_item(state, 1),
-        MenuEntry::Separator,
-        item("Play / Pause", has_track, Some(MenuAction::PlayPause)),
-        item("Next", has_track, Some(MenuAction::Next)),
-        item("Previous", has_track, Some(MenuAction::Previous)),
-        item("Seek Back", has_track, Some(MenuAction::SeekBack)),
-        item("Seek Forward", has_track, Some(MenuAction::SeekForward)),
-        MenuEntry::Separator,
-        item("Volume Up", connected, Some(MenuAction::VolumeUp)),
-        item("Volume Down", connected, Some(MenuAction::VolumeDown)),
         item(
-            streaming_label(state),
-            connected,
-            Some(MenuAction::ToggleStreaming),
+            crate::t!("Previous", "이전 곡"),
+            has_track,
+            Some(MenuAction::Previous),
+        ),
+        item(
+            crate::t!("Play / Pause", "재생 / 일시정지"),
+            has_track,
+            Some(MenuAction::PlayPause),
+        ),
+        item(
+            crate::t!("Next", "다음 곡"),
+            has_track,
+            Some(MenuAction::Next),
         ),
         MenuEntry::Separator,
-        item("Show Mini Player", true, Some(MenuAction::ShowMiniPlayer)),
-        item("Open TUI", true, Some(MenuAction::OpenTui)),
-        item("Refresh", true, Some(MenuAction::Refresh)),
-        item("Open at Login", true, Some(MenuAction::ToggleStartup)),
-        item("Quit Player", connected, Some(MenuAction::QuitPlayer)),
-        item("Quit Tray", true, Some(MenuAction::QuitTray)),
+        item(
+            crate::t!("Show Mini Player", "미니플레이어 열기"),
+            true,
+            Some(MenuAction::ShowMiniPlayer),
+        ),
+        session,
+        playback,
+        MenuEntry::Separator,
+        item(
+            crate::t!("Open TUI", "TUI 열기"),
+            true,
+            Some(MenuAction::OpenTui),
+        ),
+        item(
+            crate::t!("Open Main Window", "메인 창 열기"),
+            true,
+            Some(MenuAction::OpenMainWindow),
+        ),
+        item(
+            crate::t!("Open at Login", "로그인 시 열기"),
+            true,
+            Some(MenuAction::ToggleStartup),
+        ),
+        MenuEntry::Separator,
+        item(
+            crate::t!("Quit Player", "플레이어 종료"),
+            connected,
+            Some(MenuAction::QuitPlayer),
+        ),
+        item(
+            crate::t!("Quit Tray", "트레이 종료"),
+            true,
+            Some(MenuAction::QuitTray),
+        ),
     ];
 
     MenuModel {
@@ -221,20 +370,34 @@ fn item(label: impl Into<String>, enabled: bool, action: Option<MenuAction>) -> 
     })
 }
 
+fn submenu(
+    id: MenuSubmenuId,
+    label: impl Into<String>,
+    enabled: bool,
+    entries: Vec<MenuEntry>,
+) -> MenuEntry {
+    MenuEntry::Submenu(MenuSubmenu {
+        id,
+        label: label.into(),
+        enabled,
+        entries,
+    })
+}
+
 fn is_idle(status: &StatusSnapshot) -> bool {
     status.total == 0 && status.title.as_deref().unwrap_or_default().is_empty()
 }
 
 fn track_label(state: &TrayState) -> String {
     let Some(status) = state.status() else {
-        return "YuTuTui! is not running".to_string();
+        return crate::t!("YuTuTui! is not running", "YuTuTui!가 실행 중이 아닙니다").to_string();
     };
     match (status.artist.as_deref(), status.title.as_deref()) {
         (Some(artist), Some(title)) if !artist.is_empty() && !title.is_empty() => {
             format!("{artist} - {title}")
         }
         (_, Some(title)) if !title.is_empty() => title.to_string(),
-        _ => "Nothing playing".to_string(),
+        _ => crate::t!("Nothing playing", "재생 중인 곡 없음").to_string(),
     }
 }
 
@@ -243,46 +406,75 @@ fn daemon_action_item(state: &TrayState, index: usize) -> MenuEntry {
         .status()
         .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
     let daemon_idle = daemon_owner && state.status().is_some_and(is_idle);
-    let disconnected = matches!(state, TrayState::Disconnected);
+    let disconnected = matches!(state, TrayState::Disconnected { .. });
+    let resume_available = state.resume_available();
     match (daemon_owner, daemon_idle, disconnected, index) {
-        (true, _, _, 0) => item("Stop Music Daemon", true, Some(MenuAction::StopDaemon)),
-        (true, true, _, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
-        (true, false, _, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
-        (false, _, true, 0) => item("Start Music Daemon", true, Some(MenuAction::StartDaemon)),
-        (false, _, true, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
-        (false, _, false, 0) => item("Start Music Daemon", false, Some(MenuAction::StartDaemon)),
-        (false, _, false, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
+        (true, _, _, 0) => item(
+            crate::t!("Stop Music Daemon", "음악 데몬 중지"),
+            true,
+            Some(MenuAction::StopDaemon),
+        ),
+        (true, true, _, _) => item(
+            crate::t!("Resume Last Session", "이전 세션 재개"),
+            true,
+            Some(MenuAction::ResumeDaemon),
+        ),
+        (true, false, _, _) => item(
+            crate::t!("Resume Last Session", "이전 세션 재개"),
+            false,
+            Some(MenuAction::ResumeDaemon),
+        ),
+        (false, _, true, 0) => item(
+            crate::t!("Start Music Daemon", "음악 데몬 시작"),
+            true,
+            Some(MenuAction::StartDaemon),
+        ),
+        (false, _, true, _) => item(
+            crate::t!("Resume Last Session", "이전 세션 재개"),
+            resume_available,
+            Some(MenuAction::ResumeDaemon),
+        ),
+        (false, _, false, 0) => item(
+            crate::t!("Start Music Daemon", "음악 데몬 시작"),
+            false,
+            Some(MenuAction::StartDaemon),
+        ),
+        (false, _, false, _) => item(
+            crate::t!("Resume Last Session", "이전 세션 재개"),
+            false,
+            Some(MenuAction::ResumeDaemon),
+        ),
     }
 }
 
 fn state_label(state: &TrayState) -> String {
     match state {
-        TrayState::Disconnected => "Disconnected".to_string(),
+        TrayState::Disconnected { .. } => crate::t!("Disconnected", "연결 끊김").to_string(),
         TrayState::Connected(status) => {
             let owner = match status.owner_mode {
-                InstanceMode::StandaloneTui => "Standalone TUI",
-                InstanceMode::Daemon => "Daemon",
+                InstanceMode::StandaloneTui => crate::t!("Standalone TUI", "독립형 TUI"),
+                InstanceMode::Daemon => crate::t!("Daemon", "데몬"),
             };
             let state = match state.kind() {
-                TrayStateKind::ConnectedPlaying => "Playing",
-                TrayStateKind::ConnectedPaused => "Paused",
-                TrayStateKind::ConnectedIdle => "Idle",
-                TrayStateKind::Disconnected => "Disconnected",
+                TrayStateKind::ConnectedPlaying => crate::t!("Playing", "재생 중"),
+                TrayStateKind::ConnectedPaused => crate::t!("Paused", "일시정지"),
+                TrayStateKind::ConnectedIdle => crate::t!("Idle", "대기 중"),
+                TrayStateKind::Disconnected => crate::t!("Disconnected", "연결 끊김"),
             };
             format!("{owner}: {state}")
         }
     }
 }
 
-fn streaming_label(state: &TrayState) -> String {
+fn autoplay_label(state: &TrayState) -> String {
     let on = state
         .status()
         .map(|status| status.streaming)
         .unwrap_or(false);
     if on {
-        "Streaming: On".to_string()
+        crate::t!("Autoplay: On", "자동재생: 켬").to_string()
     } else {
-        "Streaming: Off".to_string()
+        crate::t!("Autoplay: Off", "자동재생: 끔").to_string()
     }
 }
 
@@ -305,6 +497,10 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         }
     }
@@ -356,11 +552,33 @@ mod tests {
             assert_ne!(sig, menu_signature(&TrayState::Connected(s)));
         }
         // Disconnected is its own signature.
-        assert_ne!(sig, menu_signature(&TrayState::Disconnected));
+        assert_ne!(sig, menu_signature(&TrayState::disconnected(false)));
+        assert_ne!(
+            menu_signature(&TrayState::disconnected(false)),
+            menu_signature(&TrayState::disconnected(true))
+        );
+    }
+
+    #[test]
+    fn resume_capability_cache_survives_idle_but_accepts_offline_disk_truth() {
+        let mut known = false;
+        TrayState::Connected(playing_status()).update_known_resume_available(&mut known);
+        assert!(known);
+
+        let mut idle = playing_status();
+        idle.title = None;
+        idle.artist = None;
+        idle.total = 0;
+        TrayState::Connected(idle).update_known_resume_available(&mut known);
+        assert!(known, "an idle push cannot disprove the persisted session");
+
+        TrayState::disconnected(false).update_known_resume_available(&mut known);
+        assert!(!known, "the offline disk check is authoritative");
     }
 
     #[test]
     fn playing_menu_has_expected_labels_and_primary_action() {
+        let _guard = crate::i18n::lock_for_test();
         let model = build_menu(&TrayState::Connected(playing_status()));
         assert_eq!(model.state, TrayStateKind::ConnectedPlaying);
         assert_eq!(model.primary_action, MenuAction::PlayPause);
@@ -370,21 +588,149 @@ mod tests {
                 .action_item(MenuAction::ToggleStreaming)
                 .unwrap()
                 .label,
-            "Streaming: On"
+            "Autoplay: On"
         );
         assert!(model.action_item(MenuAction::Next).unwrap().enabled);
     }
 
     #[test]
-    fn disconnected_menu_keeps_open_and_quit_tray_available() {
-        let model = build_menu(&TrayState::Disconnected);
+    fn native_menu_uses_the_product_structure_and_nested_sections() {
+        let _guard = crate::i18n::lock_for_test();
+        let model = build_menu(&TrayState::Connected(playing_status()));
+        assert_eq!(model.entries.len(), 17);
+        assert!(matches!(
+            &model.entries[0],
+            MenuEntry::Item(item) if item.label == "Artist - Song" && item.action.is_none()
+        ));
+        assert!(matches!(
+            &model.entries[1],
+            MenuEntry::Item(item) if item.label == "Standalone TUI: Playing" && item.action.is_none()
+        ));
+        for index in [2, 6, 10, 14] {
+            assert!(matches!(&model.entries[index], MenuEntry::Separator));
+        }
+        assert_eq!(
+            model
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MenuEntry::Item(item) => item.action,
+                    MenuEntry::Submenu(_) | MenuEntry::Separator => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                MenuAction::Previous,
+                MenuAction::PlayPause,
+                MenuAction::Next,
+                MenuAction::ShowMiniPlayer,
+                MenuAction::OpenTui,
+                MenuAction::OpenMainWindow,
+                MenuAction::ToggleStartup,
+                MenuAction::QuitPlayer,
+                MenuAction::QuitTray,
+            ]
+        );
+        assert!(matches!(
+            &model.entries[8],
+            MenuEntry::Submenu(submenu) if submenu.id == MenuSubmenuId::Session
+        ));
+        assert!(matches!(
+            &model.entries[9],
+            MenuEntry::Submenu(submenu) if submenu.id == MenuSubmenuId::Playback
+        ));
+
+        let session = model.submenu(MenuSubmenuId::Session).unwrap();
+        assert_eq!(session.label, "Session");
+        assert_eq!(
+            session
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MenuEntry::Item(item) => item.action,
+                    MenuEntry::Submenu(_) | MenuEntry::Separator => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![MenuAction::StartDaemon, MenuAction::ResumeDaemon]
+        );
+
+        let playback = model.submenu(MenuSubmenuId::Playback).unwrap();
+        assert_eq!(playback.label, "Playback");
+        assert_eq!(
+            playback
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    MenuEntry::Item(item) => item.action,
+                    MenuEntry::Submenu(_) | MenuEntry::Separator => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                MenuAction::SeekBack,
+                MenuAction::SeekForward,
+                MenuAction::VolumeDown,
+                MenuAction::VolumeUp,
+                MenuAction::ToggleStreaming,
+            ]
+        );
+        assert!(model.action_item(MenuAction::Refresh).is_none());
+    }
+
+    #[test]
+    fn model_lookup_and_visit_recurse_through_nested_submenus() {
+        let nested = MenuModel {
+            state: TrayStateKind::Disconnected,
+            primary_action: MenuAction::OpenTui,
+            entries: vec![submenu(
+                MenuSubmenuId::Session,
+                "Session",
+                true,
+                vec![submenu(
+                    MenuSubmenuId::Playback,
+                    "Playback",
+                    true,
+                    vec![item(
+                        "Nested action",
+                        true,
+                        Some(MenuAction::ToggleStreaming),
+                    )],
+                )],
+            )],
+        };
+
+        assert_eq!(
+            nested
+                .action_item(MenuAction::ToggleStreaming)
+                .map(|item| item.label.as_str()),
+            Some("Nested action")
+        );
+        assert_eq!(
+            nested
+                .submenu(MenuSubmenuId::Playback)
+                .map(|submenu| submenu.label.as_str()),
+            Some("Playback")
+        );
+        let mut visited = Vec::new();
+        nested.visit_items(|item| visited.push(item.action));
+        assert_eq!(visited, vec![Some(MenuAction::ToggleStreaming)]);
+    }
+
+    #[test]
+    fn disconnected_menu_only_offers_resume_when_a_session_is_available() {
+        let _guard = crate::i18n::lock_for_test();
+        let model = build_menu(&TrayState::disconnected(false));
         assert_eq!(model.state, TrayStateKind::Disconnected);
         assert_eq!(model.primary_action, MenuAction::OpenTui);
         assert!(!model.action_item(MenuAction::PlayPause).unwrap().enabled);
         assert!(!model.action_item(MenuAction::QuitPlayer).unwrap().enabled);
         assert!(model.action_item(MenuAction::StartDaemon).unwrap().enabled);
-        assert!(model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+        assert!(!model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
         assert!(model.action_item(MenuAction::OpenTui).unwrap().enabled);
+        assert!(
+            model
+                .action_item(MenuAction::OpenMainWindow)
+                .unwrap()
+                .enabled
+        );
         assert!(
             model
                 .action_item(MenuAction::ToggleStartup)
@@ -392,10 +738,19 @@ mod tests {
                 .enabled
         );
         assert!(model.action_item(MenuAction::QuitTray).unwrap().enabled);
+
+        let resumable = build_menu(&TrayState::disconnected(true));
+        assert!(
+            resumable
+                .action_item(MenuAction::ResumeDaemon)
+                .unwrap()
+                .enabled
+        );
     }
 
     #[test]
     fn idle_connected_menu_prefers_open_tui() {
+        let _guard = crate::i18n::lock_for_test();
         let mut status = playing_status();
         status.title = None;
         status.artist = None;
@@ -409,6 +764,7 @@ mod tests {
 
     #[test]
     fn daemon_connected_menu_identifies_daemon_owner() {
+        let _guard = crate::i18n::lock_for_test();
         let mut status = playing_status();
         status.owner_mode = InstanceMode::Daemon;
         status.title = None;
@@ -429,9 +785,40 @@ mod tests {
 
     #[test]
     fn standalone_connected_menu_does_not_start_a_second_owner() {
+        let _guard = crate::i18n::lock_for_test();
         let model = build_menu(&TrayState::Connected(playing_status()));
         assert!(!model.action_item(MenuAction::StartDaemon).unwrap().enabled);
         assert!(!model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+    }
+
+    #[test]
+    fn korean_language_localizes_native_recovery_and_playback_labels() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::Korean);
+        let disconnected = build_menu(&TrayState::disconnected(true));
+        assert_eq!(
+            disconnected.submenu(MenuSubmenuId::Session).unwrap().label,
+            "세션"
+        );
+        assert_eq!(
+            disconnected
+                .action_item(MenuAction::ResumeDaemon)
+                .unwrap()
+                .label,
+            "이전 세션 재개"
+        );
+        let playing = build_menu(&TrayState::Connected(playing_status()));
+        assert_eq!(
+            playing.submenu(MenuSubmenuId::Playback).unwrap().label,
+            "재생"
+        );
+        assert_eq!(
+            playing
+                .action_item(MenuAction::ToggleStreaming)
+                .unwrap()
+                .label,
+            "자동재생: 켬"
+        );
     }
 
     #[test]
@@ -449,6 +836,7 @@ mod tests {
         );
         assert_eq!(MenuAction::OpenTui.remote_command(), None);
         assert_eq!(MenuAction::ShowMiniPlayer.remote_command(), None);
+        assert_eq!(MenuAction::OpenMainWindow.remote_command(), None);
         assert_eq!(MenuAction::StartDaemon.remote_command(), None);
         assert_eq!(MenuAction::StopDaemon.remote_command(), None);
         assert_eq!(MenuAction::ToggleStartup.remote_command(), None);

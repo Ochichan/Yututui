@@ -1,6 +1,7 @@
 //! Status polling for desktop companion surfaces.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::sleep;
@@ -38,8 +39,12 @@ impl PollUpdate {
     }
 
     pub fn disconnected(error: ControlError) -> Self {
+        Self::disconnected_with_resume(error, false)
+    }
+
+    pub fn disconnected_with_resume(error: ControlError, resume_available: bool) -> Self {
         Self {
-            state: TrayState::Disconnected,
+            state: TrayState::disconnected(resume_available),
             error: Some(error),
         }
     }
@@ -48,12 +53,41 @@ impl PollUpdate {
 pub async fn poll_once() -> PollUpdate {
     match control::status().await {
         Ok(status) => PollUpdate::connected(status),
-        Err(error) => PollUpdate::disconnected(error),
+        Err(error) => {
+            PollUpdate::disconnected_with_resume(error, crate::session::resume_available())
+        }
     }
 }
 
+/// Process-local serialization gate for the legacy v7 request/response socket. A status request
+/// is a one-shot connection, but callers from the periodic fallback and lifecycle command lane
+/// must still not overlap and race their projections.
+#[derive(Clone)]
+pub struct PollLane(Arc<tokio::sync::Mutex<()>>);
+
+impl Default for PollLane {
+    fn default() -> Self {
+        static PROCESS_LANE: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> =
+            std::sync::OnceLock::new();
+        Self(Arc::clone(
+            PROCESS_LANE.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))),
+        ))
+    }
+}
+
+impl PollLane {
+    pub async fn poll_once(&self) -> PollUpdate {
+        let _guard = self.0.lock().await;
+        poll_once().await
+    }
+}
+
+pub async fn poll_once_exclusive() -> PollUpdate {
+    PollLane::default().poll_once().await
+}
+
 pub fn next_delay(config: PollConfig, update: &PollUpdate) -> Duration {
-    if matches!(update.state, TrayState::Disconnected) {
+    if matches!(update.state, TrayState::Disconnected { .. }) {
         config.disconnected_interval
     } else {
         config.connected_interval
@@ -67,7 +101,34 @@ where
 {
     tokio::pin!(shutdown);
     loop {
-        let update = poll_once().await;
+        let update = tokio::select! {
+            update = poll_once() => update,
+            _ = &mut shutdown => break,
+        };
+        let delay = next_delay(config, &update);
+        emit(update);
+        tokio::select! {
+            _ = sleep(delay) => {}
+            _ = &mut shutdown => break,
+        }
+    }
+}
+
+pub async fn run_until_shutdown_with_lane<F, S>(
+    config: PollConfig,
+    lane: PollLane,
+    mut emit: F,
+    shutdown: S,
+) where
+    F: FnMut(PollUpdate),
+    S: Future<Output = ()>,
+{
+    tokio::pin!(shutdown);
+    loop {
+        let update = tokio::select! {
+            update = lane.poll_once() => update,
+            _ = &mut shutdown => break,
+        };
         let delay = next_delay(config, &update);
         emit(update);
         tokio::select! {
@@ -112,8 +173,30 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         });
         assert_eq!(next_delay(config, &update), Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_poll_waiting_for_the_exclusive_lane() {
+        let lane = PollLane(Arc::new(tokio::sync::Mutex::new(())));
+        let _held = lane.0.lock().await;
+        let runner_lane = lane.clone();
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            run_until_shutdown_with_lane(
+                PollConfig::default(),
+                runner_lane,
+                |_| panic!("a blocked poll must not emit"),
+                async {},
+            ),
+        )
+        .await
+        .expect("shutdown should cancel the lane wait immediately");
     }
 }

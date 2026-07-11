@@ -201,11 +201,25 @@ macro_rules! t {
 /// language to English, making them deterministic regardless of scheduling. Poison is ignored
 /// (a panicking test only leaves the unit `()` behind).
 #[cfg(test)]
-pub(crate) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) struct TestLanguageGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for TestLanguageGuard {
+    fn drop(&mut self) {
+        // Tests frequently switch to Korean and rely on the guard for isolation. Restore on
+        // release as well as acquire so an unrelated unlocked reader cannot inherit it.
+        set_language(Language::English);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_for_test() -> TestLanguageGuard {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_language(Language::English);
-    guard
+    TestLanguageGuard { _lock: guard }
 }
 
 #[cfg(test)]
