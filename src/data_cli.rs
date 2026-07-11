@@ -106,13 +106,7 @@ fn run_export(args: &[String]) -> i32 {
     };
 
     let result = if let Some(instance) = instance {
-        match export_through_owner(&runtime, instance, &directory) {
-            Ok(path) => Ok(path),
-            Err(error) if permits_stale_descriptor_recovery(&error) => {
-                export_offline_after_stale_descriptor(&runtime, &directory)
-            }
-            Err(error) => Err(owner_export_error_message(error, &directory)),
-        }
+        export_through_owner_or_recover_stale(&runtime, instance, &directory)
     } else {
         export_offline_with_guard(&runtime, &directory)
     };
@@ -169,8 +163,7 @@ fn export_offline_with_guard(
     )) {
         Ok(Some(instance)) => {
             drop(guard);
-            export_through_owner(runtime, instance, directory)
-                .map_err(|error| owner_export_error_message(error, directory))
+            export_through_owner_or_recover_stale(runtime, instance, directory)
         }
         Ok(None) => {
             let result = yututui::data_export::export_from_disk(directory)
@@ -303,6 +296,20 @@ fn permits_stale_descriptor_recovery(error: &OwnerExportError) -> bool {
         error,
         OwnerExportError::Transport(remote::client::ClientError::ConnectFailed)
     )
+}
+
+fn export_through_owner_or_recover_stale(
+    runtime: &tokio::runtime::Runtime,
+    instance: remote::proto::InstanceFile,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    match export_through_owner(runtime, instance, directory) {
+        Ok(path) => Ok(path),
+        Err(error) if permits_stale_descriptor_recovery(&error) => {
+            export_offline_after_stale_descriptor(runtime, directory)
+        }
+        Err(error) => Err(owner_export_error_message(error, directory)),
+    }
 }
 
 fn owner_export_error_message(error: OwnerExportError, directory: &Path) -> String {
