@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Native Unix launcher for paired ytt TUI performance runs. Real TUI binaries always run inside
+# a unique tmux server with a fake home and null audio, matching the repository verify contract.
+# Cleanup is confined to that tmux server and the exact PID recorded by the Rust sampler.
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+python_tool="$repo_dir/scripts/tui-perf.py"
+scenarios="$repo_dir/scripts/tui-perf-scenarios.json"
+scenario=""
+baseline_binary=""
+candidate_binary=""
+baseline_render=""
+candidate_render=""
+baseline_source_root=""
+candidate_source_root="$repo_dir"
+baseline_build_command=""
+candidate_build_command=""
+sampler="$repo_dir/target/release/examples/tui_perf_sampler"
+controller="$repo_dir/target/release/examples/tui_perf_control"
+output=""
+seed_home=""
+baseline_seed_home=""
+candidate_seed_home=""
+build_harness=true
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/tui-perf.sh --scenario ID --output DIR [options]
+
+Process-tree scenarios:
+  --baseline-binary PATH       Exact origin/main ytt binary
+  --candidate-binary PATH      Candidate ytt binary
+  --seed-home DIR              Isolated HOME template (required for playback scenarios).
+                               Persisted state must live under stores/{config,data,cache}.
+                               Resumed Song.local_path must be {{TUI_PERF_PLAYLIST}}.
+  --baseline-seed-home DIR     Baseline-specific template; falls back to --seed-home.
+  --candidate-seed-home DIR    Candidate-specific template; falls back to --seed-home.
+
+Render scenario:
+  --baseline-render PATH       Baseline tui_render_perf built from a throwaway harness copy
+  --candidate-render PATH      Candidate tui_render_perf (defaults to target/release/examples)
+  --baseline-source-root PATH  Git root used to build the baseline binary (auto-detected when possible)
+  --candidate-source-root PATH Git root used to build candidate binaries (defaults to this repo)
+  --baseline-build-command CMD Exact baseline build command recorded in evidence (required)
+  --candidate-build-command CMD Exact candidate build command recorded in evidence (required)
+
+Harness options:
+  --sampler PATH               Override tui_perf_sampler
+  --controller PATH            Override tui_perf_control
+  --scenarios PATH             Override scenario JSON
+  --no-build                   Use already-built harness examples
+
+The output directory retains every fake home, raw NDJSON, and paired report. Never point it at a
+real profile. The script alternates AB/BA order and never uses process-name-wide termination.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --scenario) scenario=${2:?}; shift 2 ;;
+    --output) output=${2:?}; shift 2 ;;
+    --baseline-binary) baseline_binary=${2:?}; shift 2 ;;
+    --candidate-binary) candidate_binary=${2:?}; shift 2 ;;
+    --baseline-render) baseline_render=${2:?}; shift 2 ;;
+    --candidate-render) candidate_render=${2:?}; shift 2 ;;
+    --baseline-source-root) baseline_source_root=${2:?}; shift 2 ;;
+    --candidate-source-root) candidate_source_root=${2:?}; shift 2 ;;
+    --baseline-build-command) baseline_build_command=${2:?}; shift 2 ;;
+    --candidate-build-command) candidate_build_command=${2:?}; shift 2 ;;
+    --sampler) sampler=${2:?}; shift 2 ;;
+    --controller) controller=${2:?}; shift 2 ;;
+    --seed-home) seed_home=${2:?}; shift 2 ;;
+    --baseline-seed-home) baseline_seed_home=${2:?}; shift 2 ;;
+    --candidate-seed-home) candidate_seed_home=${2:?}; shift 2 ;;
+    --scenarios) scenarios=${2:?}; shift 2 ;;
+    --no-build) build_harness=false; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'tui-perf.sh: unknown argument %q\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$scenario" ]] || { echo "tui-perf.sh: --scenario is required" >&2; exit 2; }
+[[ -n "$output" ]] || { echo "tui-perf.sh: --output is required" >&2; exit 2; }
+[[ ! -e "$output" ]] || {
+  echo "tui-perf.sh: --output must name a new path; existing evidence is never reused" >&2
+  exit 2
+}
+[[ -n "$baseline_build_command" ]] || { echo "tui-perf.sh: --baseline-build-command is required" >&2; exit 2; }
+[[ -n "$candidate_build_command" ]] || { echo "tui-perf.sh: --candidate-build-command is required" >&2; exit 2; }
+command -v python3 >/dev/null || { echo "tui-perf.sh: python3 is required" >&2; exit 2; }
+python3 "$python_tool" validate --scenarios "$scenarios" >/dev/null
+scenario_hash=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field sha256)
+pairs=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field pairs)
+candidate_repeats=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field candidate_repeats)
+geometry_count=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field geometry.length)
+requires_mpv=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field requires_mpv)
+traffic_profile=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field traffic_profile)
+fixture_seconds=$(python3 "$python_tool" setting --scenarios "$scenarios" --field fixture.duration_s)
+fixture_sample_rate=$(python3 "$python_tool" setting --scenarios "$scenarios" --field fixture.sample_rate_hz)
+is_render=false
+[[ "$scenario" == "render_and_interaction" ]] && is_render=true
+baseline_seed_home=${baseline_seed_home:-$seed_home}
+candidate_seed_home=${candidate_seed_home:-$seed_home}
+
+if $build_harness; then
+  (
+    cd "$repo_dir"
+    cargo build --release \
+      --locked \
+      --example tui_perf_sampler \
+      --example tui_perf_control \
+      --example tui_render_perf
+  )
+fi
+
+if $is_render; then
+  candidate_render=${candidate_render:-$repo_dir/target/release/examples/tui_render_perf}
+  [[ -x "$baseline_render" ]] || {
+    echo "tui-perf.sh: --baseline-render must be an executable for render_and_interaction" >&2
+    exit 2
+  }
+  [[ -x "$candidate_render" ]] || { echo "tui-perf.sh: candidate render harness not executable" >&2; exit 2; }
+else
+  command -v tmux >/dev/null || { echo "tui-perf.sh: tmux is required for real TUI runs" >&2; exit 2; }
+  [[ -x "$baseline_binary" ]] || { echo "tui-perf.sh: --baseline-binary is not executable" >&2; exit 2; }
+  [[ -x "$candidate_binary" ]] || { echo "tui-perf.sh: --candidate-binary is not executable" >&2; exit 2; }
+  [[ -x "$sampler" ]] || { echo "tui-perf.sh: sampler is not executable" >&2; exit 2; }
+  [[ -x "$controller" ]] || { echo "tui-perf.sh: controller is not executable" >&2; exit 2; }
+  if [[ "$requires_mpv" == true ]]; then
+    for seed_role in baseline candidate; do
+      if [[ "$seed_role" == baseline ]]; then
+        role_seed_home=$baseline_seed_home
+      else
+        role_seed_home=$candidate_seed_home
+      fi
+      [[ -d "$role_seed_home" ]] || {
+        echo "tui-perf.sh: playback scenarios require a $seed_role seed home" >&2
+        exit 2
+      }
+      for store in config data cache; do
+        [[ -d "$role_seed_home/stores/$store" ]] || {
+          echo "tui-perf.sh: $seed_role seed home must contain stores/$store" >&2
+          exit 2
+        }
+      done
+    done
+  fi
+fi
+
+command -v git >/dev/null || { echo "tui-perf.sh: git is required for source identity" >&2; exit 2; }
+if [[ -z "$baseline_source_root" ]]; then
+  if $is_render; then
+    baseline_source_root=$(git -C "$(dirname -- "$baseline_render")" rev-parse --show-toplevel 2>/dev/null) || {
+      echo "tui-perf.sh: cannot infer --baseline-source-root from $baseline_render" >&2
+      exit 2
+    }
+  else
+    baseline_source_root=$(git -C "$(dirname -- "$baseline_binary")" rev-parse --show-toplevel 2>/dev/null) || {
+      echo "tui-perf.sh: cannot infer --baseline-source-root from $baseline_binary" >&2
+      exit 2
+    }
+  fi
+fi
+[[ -d "$baseline_source_root" ]] || { echo "tui-perf.sh: baseline source root is not a directory" >&2; exit 2; }
+[[ -d "$candidate_source_root" ]] || { echo "tui-perf.sh: candidate source root is not a directory" >&2; exit 2; }
+
+mkdir -p "$output"
+output=$(cd "$output" && pwd)
+active_socket=""
+active_server_pid=""
+fixture_file="$output/fixture/silence-${fixture_seconds}s.wav"
+if [[ "$requires_mpv" == true ]]; then
+  mkdir -p "$(dirname "$fixture_file")"
+  if [[ ! -f "$fixture_file" ]]; then
+    python3 "$python_tool" fixture \
+      --output "$fixture_file" \
+      --manifest "$output/fixture/manifest.json" \
+      --seconds "$fixture_seconds" \
+      --sample-rate "$fixture_sample_rate" >/dev/null
+  fi
+fi
+
+manifest_args=(
+  manifest
+  --scenarios "$scenarios"
+  --scenario "$scenario"
+  --output "$output/host-manifest.json"
+  --source-root "baseline=$baseline_source_root"
+  --source-root "candidate=$candidate_source_root"
+  --build-command "baseline=$baseline_build_command"
+  --build-command "candidate=$candidate_build_command"
+)
+if $is_render; then
+  manifest_args+=(--binary "baseline_render=$baseline_render")
+  manifest_args+=(--binary "candidate_render=$candidate_render")
+else
+  manifest_args+=(--binary "baseline_ytt=$baseline_binary")
+  manifest_args+=(--binary "candidate_ytt=$candidate_binary")
+  manifest_args+=(--binary "sampler=$sampler")
+  manifest_args+=(--binary "controller=$controller")
+fi
+python3 "$python_tool" "${manifest_args[@]}" >/dev/null
+
+cleanup() {
+  if [[ -n "$active_socket" ]]; then
+    tmux -S "$active_socket" kill-server 2>/dev/null || true
+  fi
+  if [[ -n "$active_server_pid" ]]; then
+    kill "$active_server_pid" 2>/dev/null || true
+    wait "$active_server_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+json_array_to_csv() {
+  python3 -c 'import json,sys; print(",".join(str(v) for v in json.loads(sys.argv[1])))' "$1"
+}
+
+run_render() {
+  local role=$1 binary=$2 run_dir=$3
+  mkdir -p "$run_dir"
+  TUI_PERF_SCENARIO_SHA256="$scenario_hash" \
+    "$binary" \
+      --output "$run_dir/render.json" \
+      --warmup "$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field warmup_draws)" \
+      --batches "$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field batches)" \
+      --draws "$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field draws_per_batch)"
+}
+
+run_process() {
+  local role=$1 binary=$2 run_root=$3 width=$4 height=$5 label=$6
+  local role_seed_home=$candidate_seed_home
+  [[ "$role" == baseline ]] && role_seed_home=$baseline_seed_home
+  local run_dir="$run_root"
+  if ((geometry_count > 1)); then
+    run_dir="$run_root/geometry-${width}x${height}"
+  fi
+  local home="$run_dir/home"
+  local runtime="$run_dir/runtime"
+  local tmp="$run_dir/tmp"
+  local config_store="$home/stores/config"
+  local data_store="$home/stores/data"
+  local cache_store="$home/stores/cache"
+  local samples="$run_dir/samples.ndjson"
+  local pid_file="$run_dir/ytt.pid"
+  local socket="$run_dir/tmux.sock"
+  mkdir -p "$home" "$runtime" "$tmp" "$config_store" "$data_store" "$cache_store"
+  chmod 700 "$runtime"
+  if [[ -n "$role_seed_home" ]]; then
+    cp -R "$role_seed_home"/. "$home"/
+  fi
+  if [[ "$requires_mpv" == true ]]; then
+    local ready_file="$run_dir/http-ready.json"
+    local throttle outage_every outage_ms disconnect_every fixture_url
+    rm -f -- "$ready_file"
+    throttle=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field throttle_bps)
+    outage_every=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field outage_every_bytes)
+    outage_ms=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field outage_ms)
+    disconnect_every=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field disconnect_every_bytes)
+    python3 "$python_tool" serve \
+      --file "$fixture_file" \
+      --ready-file "$ready_file" \
+      --throttle-bps "$throttle" \
+      --outage-every-bytes "$outage_every" \
+      --outage-ms "$outage_ms" \
+      --disconnect-every-bytes "$disconnect_every" \
+      >"$run_dir/http-server.log" 2>&1 &
+    active_server_pid=$!
+    local server_deadline=$((SECONDS + 10))
+    until [[ -s "$ready_file" ]]; do
+      if ((SECONDS >= server_deadline)) || ! kill -0 "$active_server_pid" 2>/dev/null; then
+        echo "tui-perf.sh: fixture server failed for $label" >&2
+        return 1
+      fi
+      sleep 0.05
+    done
+    fixture_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$ready_file")
+    python3 "$python_tool" materialize \
+      --root "$home" \
+      --home "$home" \
+      --fixture-url "$fixture_url" \
+      --seed-label "$role" \
+      --manifest "$run_dir/materialize.json" >/dev/null
+  fi
+  local warmup sample interval require_arg=""
+  warmup=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field warmup_s)
+  sample=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field sample_s)
+  interval=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sampling"]["interval_ms"])' "$scenarios")
+  [[ "$requires_mpv" == true ]] && require_arg="--require-silent-mpv"
+
+  local -a isolated_env=(
+    "HOME=$home"
+    "XDG_CONFIG_HOME=$home/.config"
+    "XDG_DATA_HOME=$home/.local/share"
+    "XDG_CACHE_HOME=$home/.cache"
+    "XDG_STATE_HOME=$home/.local/state"
+    "XDG_RUNTIME_DIR=$runtime"
+    "YTM_CONFIG_DIR=$config_store"
+    "YTM_DATA_DIR=$data_store"
+    "YTM_CACHE_DIR=$cache_store"
+    "TMPDIR=$tmp"
+    "TEMP=$tmp"
+    "TMP=$tmp"
+    "TERM=xterm-256color"
+    "YTM_MPV_EXTRA=--ao=null --volume=0 --audio-display=no"
+    "YTM_PERF=1"
+    "TUI_PERF_SCENARIO_SHA256=$scenario_hash"
+  )
+  mkdir -p "$home/.config" "$home/.local/share" "$home/.cache" "$home/.local/state"
+
+  local -a sampler_cmd=(
+    env "${isolated_env[@]}" "$sampler"
+    --output "$samples"
+    --pid-file "$pid_file"
+    --binary "$binary"
+    --warmup-secs "$warmup"
+    --duration-secs "$sample"
+    --interval-ms "$interval"
+  )
+  [[ -n "$require_arg" ]] && sampler_cmd+=("$require_arg")
+  local controller_enabled
+  controller_enabled=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field controller)
+  # Non-controller runs do not need a discoverable primary endpoint. Controller runs omit
+  # --new-instance so ytt publishes its descriptor inside this run's unique XDG_RUNTIME_DIR;
+  # every other profile/runtime path is isolated above, so this cannot address the user's ytt.
+  if [[ "$controller_enabled" != true ]]; then
+    sampler_cmd+=(-- --new-instance)
+  fi
+  local shell_command
+  printf -v shell_command '%q ' "${sampler_cmd[@]}"
+  rm -f -- "$pid_file"
+  active_socket=$socket
+  tmux -S "$socket" new-session -d -x "$width" -y "$height" "$shell_command"
+
+  local ready_deadline=$((SECONDS + 30))
+  until [[ -s "$pid_file" ]]; do
+    if ((SECONDS >= ready_deadline)) || ! tmux -S "$socket" has-session 2>/dev/null; then
+      echo "tui-perf.sh: $label failed before publishing its PID" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  if [[ "$controller_enabled" == true ]]; then
+    local load seeks_json seeks_csv pause_policy pause_hold_ms
+    load=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field controller_load)
+    seeks_json=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field seeks_s)
+    seeks_csv=$(json_array_to_csv "$seeks_json")
+    pause_policy=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field pause_policy)
+    pause_hold_ms=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field pause_hold_ms)
+    local -a control_cmd=(
+      env "${isolated_env[@]}" "$controller"
+      --output "$run_dir/control.ndjson"
+      --wait-secs 45
+      --observe-secs "$(python3 -c 'import sys; print(float(sys.argv[1])+float(sys.argv[2]))' "$warmup" "$sample")"
+      --close-grace-secs 15
+      --load "$load"
+    )
+    [[ -n "$seeks_csv" ]] && control_cmd+=(--seeks "$seeks_csv")
+    if [[ "$pause_policy" == pause-resume ]]; then
+      control_cmd+=(--pause-hold-ms "$pause_hold_ms")
+    else
+      control_cmd+=(--no-pause)
+    fi
+    "${control_cmd[@]}"
+  fi
+
+  local finish_deadline
+  finish_deadline=$(python3 -c 'import math,sys; print(int(math.ceil(float(sys.argv[1])+float(sys.argv[2])+90)))' "$warmup" "$sample")
+  finish_deadline=$((SECONDS + finish_deadline))
+  while tmux -S "$socket" has-session 2>/dev/null; do
+    if ((SECONDS >= finish_deadline)); then
+      echo "tui-perf.sh: timed out waiting for $label" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  active_socket=""
+  local -a check_args=(
+    check --samples "$samples" --scenario-sha256 "$scenario_hash"
+  )
+  [[ "$requires_mpv" == true ]] && check_args+=(--require-silent-mpv)
+  if [[ "$controller_enabled" == true ]]; then
+    check_args+=(--control "$run_dir/control.ndjson" --require-observer-close)
+  fi
+  python3 "$python_tool" "${check_args[@]}" >/dev/null
+  if [[ -n "$active_server_pid" ]]; then
+    kill "$active_server_pid" 2>/dev/null || true
+    wait "$active_server_pid" 2>/dev/null || true
+    active_server_pid=""
+  fi
+}
+
+run_process_geometries() {
+  local role=$1 binary=$2 run_root=$3 label=$4
+  local geometry_index width height
+  for ((geometry_index=0; geometry_index<geometry_count; geometry_index++)); do
+    width=$(python3 "$python_tool" scenario \
+      --scenarios "$scenarios" --id "$scenario" --field "geometry.$geometry_index.0")
+    height=$(python3 "$python_tool" scenario \
+      --scenarios "$scenarios" --id "$scenario" --field "geometry.$geometry_index.1")
+    run_process "$role" "$binary" "$run_root" "$width" "$height" \
+      "$label geometry ${width}x${height}"
+  done
+}
+
+baseline_runs=()
+candidate_runs=()
+for ((pair=1; pair<=pairs; pair++)); do
+  if ((pair % 2 == 1)); then
+    order=(baseline candidate)
+  else
+    order=(candidate baseline)
+  fi
+  for role in "${order[@]}"; do
+    if $is_render; then
+      [[ "$role" == baseline ]] && binary=$baseline_render || binary=$candidate_render
+      run_render "$role" "$binary" "$output/pair-$(printf '%02d' "$pair")/$role"
+    else
+      [[ "$role" == baseline ]] && binary=$baseline_binary || binary=$candidate_binary
+      run_process_geometries "$role" "$binary" \
+        "$output/pair-$(printf '%02d' "$pair")/$role" "$role pair $pair"
+    fi
+  done
+  baseline_runs+=(--baseline-run "$output/pair-$(printf '%02d' "$pair")/baseline")
+  candidate_runs+=(--candidate-run "$output/pair-$(printf '%02d' "$pair")/candidate")
+done
+
+candidate_repeat_runs=()
+for ((repeat=1; repeat<=candidate_repeats; repeat++)); do
+  repeat_dir="$output/candidate-repeat-$(printf '%02d' "$repeat")"
+  if $is_render; then
+    run_render candidate "$candidate_render" "$repeat_dir"
+  else
+    run_process_geometries candidate "$candidate_binary" "$repeat_dir" \
+      "candidate diagnostic repeat $repeat"
+  fi
+  candidate_repeat_runs+=(--candidate-repeat-run "$repeat_dir")
+done
+
+compare_args=(
+  compare
+  --scenarios "$scenarios"
+  --scenario "$scenario"
+  --host-manifest "$output/host-manifest.json"
+  "${baseline_runs[@]}"
+  "${candidate_runs[@]}"
+)
+# Bash 3.2 on macOS treats expansion of a declared-but-empty array as an unbound variable under
+# `set -u`. Only expand the diagnostic-repeat array when the scenario actually requested entries.
+if ((candidate_repeats > 0)); then
+  compare_args+=("${candidate_repeat_runs[@]}")
+fi
+compare_args+=(
+  --output-json "$output/report.json"
+  --output-markdown "$output/report.md"
+)
+compare_status=0
+python3 "$python_tool" "${compare_args[@]}" || compare_status=$?
+python3 "$python_tool" checksums \
+  --root "$output" \
+  --output "$output/SHA256SUMS" >/dev/null
+exit "$compare_status"

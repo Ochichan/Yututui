@@ -1,5 +1,7 @@
 /target
 /dist
+__pycache__/
+*.py[cod]
 
 # Frontend workspace: deps and build output are never vendored (package-lock.json is
 # the reproducibility stance; gui/src/generated/ IS committed and drift-gated).
