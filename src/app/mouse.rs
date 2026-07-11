@@ -1406,11 +1406,19 @@ impl App {
     pub(in crate::app) fn on_list_row_click(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
             Mode::Search if index < self.search.results.len() => {
+                let keep_selection = {
+                    let selection = self.search_selection_indices();
+                    (selection.len() > 1 && selection.contains(&index)).then_some(selection)
+                };
                 self.search.selected = index;
-                // A fresh single click re-anchors the multi-select range here, exactly
-                // like the Library list below.
+                // A click inside a multi-selection keeps it intact so a paired
+                // double-click can activate all selected rows.
                 self.search.anchor = index;
-                self.search.picked.clear();
+                if let Some(selection) = keep_selection {
+                    self.search.picked = selection.into_iter().collect();
+                } else {
+                    self.search.picked.clear();
+                }
                 self.search.focus = SearchFocus::Results;
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Search,
@@ -1420,10 +1428,19 @@ impl App {
             }
             Mode::Library if self.local_dedicated_mode => return self.local_row_click(index),
             Mode::Library if index < self.library_len() => {
+                let keep_selection = {
+                    let selection = self.library_selection_indices();
+                    (selection.len() > 1 && selection.contains(&index)).then_some(selection)
+                };
                 self.library_ui.selected = index;
-                // A fresh single click re-anchors the multi-select range here.
+                // A click inside a multi-selection keeps it intact so a paired
+                // double-click can activate all selected rows.
                 self.library_ui.anchor = index;
-                self.library_ui.picked.clear();
+                if let Some(selection) = keep_selection {
+                    self.library_ui.picked = selection.into_iter().collect();
+                } else {
+                    self.library_ui.picked.clear();
+                }
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Library,
                     anchor: index,
@@ -1462,7 +1479,12 @@ impl App {
         match self.mode {
             // The shared activation path, so a double-clicked playlist row fetches its
             // tracks first (like Enter) instead of trying to play the row itself.
-            Mode::Search if index < self.search.results.len() => self.activate_search_index(index),
+            Mode::Search if index < self.search.results.len() => {
+                match self.multi_selected_search_songs() {
+                    Some(songs) => self.play_now_many(songs),
+                    None => self.activate_search_index(index),
+                }
+            }
             Mode::Library if self.local_dedicated_mode => self.local_row_activate(index),
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
@@ -1472,10 +1494,7 @@ impl App {
                     self.library_ui.anchor = index;
                     return self.open_selected_playlist();
                 }
-                match self.selected_library_song() {
-                    Some(song) => self.play_now(song),
-                    None => Vec::new(),
-                }
+                self.play_now_many(self.selected_library_songs())
             }
             _ => self.on_list_row_click(index),
         }

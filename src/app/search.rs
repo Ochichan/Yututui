@@ -39,7 +39,7 @@ impl App {
     /// selection stays authoritative (a mixed pick of one song + playlist rows must act
     /// on that song, not fall back to whatever the cursor row is). `None` means "use the
     /// single-row path".
-    fn multi_selected_search_songs(&self) -> Option<Vec<Song>> {
+    pub(in crate::app) fn multi_selected_search_songs(&self) -> Option<Vec<Song>> {
         if self.search_selection_indices().len() <= 1 {
             return None;
         }

@@ -341,3 +341,111 @@ fn search_right_click_inside_the_selection_targets_all_picked_rows() {
         "the menu acts on both picked rows, not just the clicked one"
     );
 }
+
+#[test]
+fn search_context_menu_preserves_mixed_selection_when_target_filters_playlists() {
+    let mut app = app_with_search_results(0);
+    app.search.results = vec![
+        Song::remote("id0", "t0", "a", "0:10"),
+        Song::remote("ytpl:PLabcdefgh1234", "Mix", "a", "10 tracks"),
+        Song::remote("id2", "t2", "a", "0:10"),
+    ];
+    render_app(&app);
+    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
+    let (c1, r1) = button_center(&app, MouseTarget::ListRow(1));
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
+    app.update(Msg::MouseClick {
+        col: c0,
+        row: r0,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseClick {
+        col: c1,
+        row: r1,
+        multi: true,
+    });
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: true,
+    });
+    assert_eq!(app.search_selection_indices(), vec![0, 1, 2]);
+
+    app.update(Msg::MouseRightClick { col: c2, row: r2 });
+    let menu = app
+        .overlays
+        .context_menu
+        .as_ref()
+        .expect("a context menu over the picked rows");
+    assert_eq!(menu.target_count(), 2, "playlist rows are not bulk targets");
+    assert_eq!(
+        app.search_selection_indices(),
+        vec![0, 1, 2],
+        "opening the menu must not shrink the visible selection"
+    );
+}
+
+#[test]
+fn double_click_inside_multi_selection_plays_all_selected_rows() {
+    let mut app = app_with_search_results(4);
+    render_app(&app);
+    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
+    app.update(Msg::MouseClick {
+        col: c0,
+        row: r0,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: true,
+    });
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    let queued: Vec<&str> = app
+        .queue
+        .ordered_iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(queued, ["id0", "id2"]);
+
+    let mut app = app_with_four_favorites();
+    render_app(&app);
+    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
+    app.update(Msg::MouseClick {
+        col: c0,
+        row: r0,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: true,
+    });
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    let queued: Vec<&str> = app
+        .queue
+        .ordered_iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(queued, ["a", "c"]);
+}

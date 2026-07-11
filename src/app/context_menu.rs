@@ -546,10 +546,14 @@ impl App {
             ContextTarget::Search {
                 rows, filter_row, ..
             } => {
-                // A click inside the current selection targets it as-is — leave the
-                // selection state untouched so cancelling the menu changes nothing.
+                // A click inside the current selection may target a filtered subset
+                // (song rows only, or a playlist row). Leave the selection untouched
+                // so cancelling the menu changes nothing.
                 if let Some((&first, &last)) = rows.first().zip(rows.last())
-                    && *rows != self.search_selection_indices()
+                    && {
+                        let selection = self.search_selection_indices();
+                        *rows != selection && !rows.iter().all(|row| selection.contains(row))
+                    }
                 {
                     if rows.len() > 1 {
                         self.search.picked = rows.iter().copied().collect();
