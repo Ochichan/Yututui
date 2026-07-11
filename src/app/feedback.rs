@@ -27,6 +27,40 @@ impl App {
         self.dirty = true;
     }
 
+    /// Collapse or expand the docked control box on non-Player screens (Bottom bar mode
+    /// only — in the Top layout there is nothing to collapse, and the Player screen always
+    /// shows its controls). Shared by the `B` shortcut and the ▲/▼ footer button. Persists
+    /// like every other Settings-backed preference and shows a transient toast.
+    pub(in crate::app) fn toggle_control_box(&mut self) -> Vec<Cmd> {
+        if self.player_bar_position() != crate::config::PlayerBarPosition::Bottom {
+            self.set_status_info(
+                t!(
+                    "Player bar is in the classic Top layout — nothing to collapse",
+                    "플레이어 바가 클래식 상단 배치예요 — 접을 것이 없어요"
+                )
+                .to_owned(),
+            );
+            return Vec::new();
+        }
+        let collapsed = !self.config.control_box_collapsed();
+        self.config.control_box_collapsed = Some(collapsed);
+        // The box moves/vanishes under native art only via screen switches (it never shows
+        // on Player), but the Player-screen rect is unaffected — no native clear needed.
+        self.set_status_info(if collapsed {
+            t!(
+                "Player bar collapsed on other screens (B to expand)",
+                "다른 화면에서 플레이어 바를 접었어요 (B로 펼치기)"
+            )
+            .to_owned()
+        } else {
+            t!("Player bar expanded", "플레이어 바를 펼쳤어요").to_owned()
+        });
+        self.dirty = true;
+        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))]
+    }
+
     /// Step the text zoom one notch up or down (Ctrl+wheel / Ctrl+-/=). On terminals
     /// without the text sizing protocol this explains itself in a toast instead of
     /// silently doing nothing - the keys are advertised in the cheat-sheet, so a dead

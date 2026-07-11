@@ -171,6 +171,94 @@ fn cycling_player_bar_position_previews_live_and_persists_on_close() {
 }
 
 #[test]
+fn collapse_toggle_reclaims_rows_and_persists() {
+    let mut app = app_playing(2, 0);
+    // Library, not Search: the search input owns typeable keys, so `B` would be text there
+    // (the footer click still works — same rule as every typeable global like `A`).
+    app.mode = Mode::Library; // default Bottom layout
+    render_at_size(&app, 80, 24);
+    assert!(
+        app.hits
+            .rect_of_target(MouseTarget::Global(Action::ToggleControlBox))
+            .is_some(),
+        "footer offers the ▼ toggle on non-Player screens"
+    );
+
+    // `B` collapses: the box's rows and controls vanish from non-Player screens…
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('B'))));
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::Persist(_))),
+        "collapse persists like any preference"
+    );
+    assert!(app.config.control_box_collapsed());
+    assert!(!app.control_box_active());
+    render_at_size(&app, 80, 24);
+    assert!(
+        !app.hits
+            .regions()
+            .iter()
+            .any(|b| matches!(b.target, MouseTarget::Player(_))),
+        "collapsed box must not take clicks"
+    );
+    assert!(app.hits.seekbar_rect().is_none());
+    // …but the Player screen always keeps its controls.
+    app.mode = Mode::Player;
+    assert!(app.control_box_active());
+    render_at_size(&app, 80, 24);
+    assert!(app.hits.seekbar_rect().is_some());
+
+    // And `B` again expands.
+    app.mode = Mode::Library;
+    app.update(Msg::Key(key(KeyCode::Char('B'))));
+    assert!(!app.config.control_box_collapsed());
+    assert!(app.control_box_active());
+}
+
+#[test]
+fn collapsed_screen_matches_the_legacy_top_layout() {
+    let mut collapsed = app_playing(2, 0);
+    collapsed.config.control_box_collapsed = Some(true);
+    collapsed.mode = Mode::Library;
+    let mut top = app_playing(2, 0);
+    top.config.player_bar_position = Some(PlayerBarPosition::Top);
+    top.mode = Mode::Library;
+    // Byte-identity except the footer (which carries the ▲ affordance in Bottom mode):
+    // the body must reclaim every reserved row exactly.
+    let buf_collapsed = render_app_buffer(&collapsed, 80, 24);
+    let buf_top = render_app_buffer(&top, 80, 24);
+    for y in 0..22 {
+        let row =
+            |b: &ratatui::buffer::Buffer| (0..80).map(|x| b[(x, y)].symbol()).collect::<String>();
+        assert_eq!(
+            row(&buf_collapsed),
+            row(&buf_top),
+            "collapsed body row {y} must match the legacy layout"
+        );
+    }
+}
+
+#[test]
+fn footer_toggle_hidden_on_player_and_in_top_mode() {
+    let mut app = app_playing(2, 0);
+    render_at_size(&app, 80, 24); // Player, Bottom
+    assert!(
+        app.hits
+            .rect_of_target(MouseTarget::Global(Action::ToggleControlBox))
+            .is_none(),
+        "the Player screen's box is not collapsible"
+    );
+    app.config.player_bar_position = Some(PlayerBarPosition::Top);
+    app.mode = Mode::Search;
+    render_at_size(&app, 80, 24);
+    assert!(
+        app.hits
+            .rect_of_target(MouseTarget::Global(Action::ToggleControlBox))
+            .is_none(),
+        "the legacy Top footer stays byte-identical"
+    );
+}
+
+#[test]
 fn art_geometry_moves_request_a_native_clear() {
     let mut app = app_playing(1, 0);
     make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);

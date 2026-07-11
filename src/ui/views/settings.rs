@@ -207,6 +207,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             rows[4],
         );
     }
+    // Settings rolls its own footer (no `render_help_button`), so the docked-bar collapse
+    // toggle rides the row's right edge here — same target and glyphs as the shared footer.
+    if app.player_bar_position() == crate::config::PlayerBarPosition::Bottom && rows[4].width >= 2 {
+        let glyph = match (app.config.control_box_collapsed(), app.retro_mode()) {
+            (false, false) => "▼",
+            (true, false) => "▲",
+            (false, true) => "v",
+            (true, true) => "^",
+        };
+        let rect = Rect {
+            x: rows[4].right().saturating_sub(2),
+            y: rows[4].y,
+            width: 2,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(glyph).style(theme.style(R::TextMuted))),
+            rect,
+        );
+        app.register_mouse_button(rect, MouseTarget::Global(Action::ToggleControlBox));
+    }
 }
 
 #[derive(Clone, Copy)]

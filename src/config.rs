@@ -541,6 +541,9 @@ pub struct Config {
     /// Where the player control block sits (see [`PlayerBarPosition`]). `None` → `Bottom`,
     /// the docked layout; `Top` keeps the legacy layout.
     pub player_bar_position: Option<PlayerBarPosition>,
+    /// Whether the docked control box is collapsed on non-Player screens (the ▲/▼ footer
+    /// toggle / `B`). The Player screen always shows the box — it IS the player. `None` → false.
+    pub control_box_collapsed: Option<bool>,
 
     // Playback / EQ -----------------------------------------------------------
     /// Selected equalizer preset.
@@ -801,6 +804,7 @@ impl Default for Config {
             mouse: None,
             album_art: None,
             player_bar_position: None,
+            control_box_collapsed: None,
             eq_preset: EqPreset::default(),
             eq_bands: None,
             normalize: None,
@@ -1063,6 +1067,11 @@ impl Config {
     /// Where the player control block sits (default `Bottom`, the docked layout).
     pub fn effective_player_bar_position(&self) -> PlayerBarPosition {
         self.player_bar_position.unwrap_or_default()
+    }
+
+    /// Whether the docked control box is collapsed on non-Player screens (default false).
+    pub fn control_box_collapsed(&self) -> bool {
+        self.control_box_collapsed.unwrap_or(false)
     }
 
     /// Whether to publish playback to the OS media session (macOS Now Playing,
@@ -1687,6 +1696,7 @@ mod tests {
             mouse: Some(false),
             album_art: Some(true),
             player_bar_position: Some(PlayerBarPosition::Bottom),
+            control_box_collapsed: Some(true),
             eq_preset: EqPreset::BassBoost,
             eq_bands: Some([1.0; eq::BANDS]),
             normalize: Some(true),
@@ -1793,6 +1803,7 @@ mod tests {
         assert_eq!(back.mouse, Some(false));
         assert_eq!(back.album_art, Some(true));
         assert_eq!(back.player_bar_position, Some(PlayerBarPosition::Bottom));
+        assert_eq!(back.control_box_collapsed, Some(true));
         assert_eq!(back.eq_preset, EqPreset::BassBoost);
         assert_eq!(back.eq_bands, Some([1.0; eq::BANDS]));
         assert_eq!(back.normalize, Some(true));

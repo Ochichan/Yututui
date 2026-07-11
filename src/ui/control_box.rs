@@ -12,7 +12,6 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DownloadState, Mode, MouseTarget, StatusKind};
-use crate::config::PlayerBarPosition;
 use crate::keymap::{Action, KeyContext};
 use crate::queue::Repeat;
 use crate::t;
@@ -54,9 +53,10 @@ pub fn render_at(
 /// the current screen — `0` in the legacy `Top` position, where no screen carries docked
 /// chrome and every view's constraints collapse to their pre-dock bytes.
 pub fn docked_rows(app: &App) -> u16 {
-    match app.player_bar_position() {
-        PlayerBarPosition::Bottom => DOCKED_BOX_ROWS,
-        PlayerBarPosition::Top => 0,
+    if app.control_box_active() {
+        DOCKED_BOX_ROWS
+    } else {
+        0
     }
 }
 

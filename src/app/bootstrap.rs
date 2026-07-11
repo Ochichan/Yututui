@@ -198,10 +198,12 @@ impl App {
         )
     }
 
-    /// Whether the docked control box occupies rows on the current screen (Bottom mode).
-    /// Gates both the per-view row reservation and the mouse targets the box publishes —
-    /// a control that isn't rendered must never take clicks.
+    /// Whether the docked control box occupies rows on the current screen: Bottom mode,
+    /// and either the Player screen (it IS the player, never collapsible) or the collapse
+    /// toggle off. Gates both the per-view row reservation and the mouse targets the box
+    /// publishes — a control that isn't rendered must never take clicks.
     pub fn control_box_active(&self) -> bool {
         self.player_bar_position() == crate::config::PlayerBarPosition::Bottom
+            && (self.mode == Mode::Player || !self.config.control_box_collapsed())
     }
 }

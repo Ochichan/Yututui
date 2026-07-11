@@ -386,6 +386,7 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
+                Action::ToggleControlBox => return self.toggle_control_box(),
                 Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
                 Action::ToggleStreaming => {
                     // Radio mode: autoplay is meaningless — keep whatever the stored preference

@@ -487,6 +487,8 @@ impl App {
             }
             // The ✨ at the top-left of the nav bar — same handler as the `A` shortcut.
             MouseTarget::Global(Action::ToggleAnimations) => self.toggle_animations(),
+            // The ▲/▼ at the right of the footer hint — same handler as the `B` shortcut.
+            MouseTarget::Global(Action::ToggleControlBox) => self.toggle_control_box(),
             MouseTarget::Global(_) => Vec::new(),
             MouseTarget::Player(action) if self.player_controls_live() => {
                 self.on_player_action(action)

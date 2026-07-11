@@ -580,11 +580,29 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("🖱 {}", t!("mouse", "마우스"))
     };
-    let segs = [
+    let mut segs = vec![
         Seg::button(MouseTarget::Global(Action::ToggleHelp), key_label.as_str()),
         Seg::label("   "),
         Seg::button(MouseTarget::MouseHelp, mouse_label.as_str()),
     ];
+    // The docked-bar collapse/expand toggle, right of the mouse hint — only where it can
+    // act (Bottom bar mode, off the Player screen), so the legacy Top footer stays
+    // byte-identical. Retro stand-ins are chosen at the source, like the mouse label.
+    if app.player_bar_position() == crate::config::PlayerBarPosition::Bottom
+        && app.mode != Mode::Player
+    {
+        let glyph = match (app.config.control_box_collapsed(), app.retro_mode()) {
+            (false, false) => "▼",
+            (true, false) => "▲",
+            (false, true) => "v",
+            (true, true) => "^",
+        };
+        segs.push(Seg::label("   "));
+        segs.push(Seg::button(
+            MouseTarget::Global(Action::ToggleControlBox),
+            glyph,
+        ));
+    }
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

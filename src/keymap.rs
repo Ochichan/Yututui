@@ -102,6 +102,8 @@ pub enum Action {
     OpenContextMenu,
     ToggleAbout,
     ToggleAnimations,
+    /// Collapse/expand the docked control box on non-Player screens (Bottom bar mode).
+    ToggleControlBox,
     WhyAi,
     TextZoomIn,
     TextZoomOut,
@@ -439,6 +441,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "toggle_animations",
         "Toggle animations",
         "애니메이션 켜기 / 끄기",
+    ),
+    (
+        Action::ToggleControlBox,
+        "toggle_control_box",
+        "Collapse / expand player bar",
+        "플레이어 바 접기 / 펼치기",
     ),
     (
         Action::WhyAi,
@@ -1207,6 +1215,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::OpenContextMenu, shift(KeyCode::F(10))),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
+        (C::Global, A::ToggleControlBox, ch('B')),
         (C::Global, A::WhyAi, ch('w')),
         // Browser-style text zoom (`=` is the unshifted `+` key). Works only on terminals
         // with the text sizing protocol; elsewhere the reducer answers with a hint toast.
