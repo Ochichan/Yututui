@@ -122,7 +122,12 @@
     {/if}
   </div>
 
-  <VolumeBar volume={playback.volume} {disabled} onvolume={(v) => playback.setVolume(v)} />
+  <VolumeBar
+    volume={playback.volume}
+    {disabled}
+    onvolume={(v) => playback.setVolume(v)}
+    onvolumeend={() => playback.flushVolume()}
+  />
 
   <button
     class="queue-btn"

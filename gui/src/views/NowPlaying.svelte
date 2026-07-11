@@ -62,7 +62,7 @@
       <div class="scrim"></div>
     </div>
 
-    <div class="stage" class:with-lyrics={lyrics.lines.length > 0}>
+    <div class="stage" class:with-lyrics={lyrics.lines.length > 0} data-ui-scroll-key="now-stage">
       <section class="main">
         <AlbumArt {track} size="min(300px, 32vw)" radius="var(--radius-l)" elevated />
         <div class="title-block">
@@ -170,7 +170,12 @@
       </section>
 
       {#if lyrics.lines.length > 0}
-        <aside class="lyrics" bind:this={lyricsPane} aria-label={t('np.lyrics')}>
+        <aside
+          class="lyrics"
+          bind:this={lyricsPane}
+          aria-label={t('np.lyrics')}
+          data-ui-scroll-key="now-lyrics"
+        >
           {#each lyrics.lines as line, i (i)}
             <button
               class="line"

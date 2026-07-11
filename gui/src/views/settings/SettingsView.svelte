@@ -41,7 +41,7 @@
     {/each}
   </div>
 
-  <div class="pane">
+  <div class="pane" data-ui-scroll-key="settings-pane">
     {#if ui.settingsTab === 'general'}
       <GeneralTab {ctx} />
     {:else if ui.settingsTab === 'playback'}

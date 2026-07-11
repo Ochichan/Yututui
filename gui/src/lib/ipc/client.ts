@@ -80,6 +80,14 @@ export class Client {
     }
   }
 
+  /** Force a fresh snapshot while preserving the long-lived subscription. The native gateway
+   * serializes unsubscribe+subscribe as one command so backpressure cannot strand the topic. */
+  refresh(topics: Topic[]): void {
+    if (topics.length) {
+      this.#transport.send({ v: 1, kind: 'sub', name: 'refresh', payload: topics });
+    }
+  }
+
   /** Subscribe to a topic's decoded payloads. Returns an unsubscribe fn. */
   on(topic: Topic, cb: TopicHandler): Unsub {
     let set = this.#handlers.get(topic);
@@ -98,7 +106,7 @@ export class Client {
     return () => this.#connListeners.delete(cb);
   }
 
-  /** Native window op (drag/hide/openDevtools/copyText/openUrl) — handled in the tao loop. */
+  /** Native window op (drag/hide/frontendReady/copyText/openUrl) — handled in the tao loop. */
   win(name: string, payload?: unknown): void {
     this.#transport.send({ v: 1, kind: 'win', name, payload });
   }

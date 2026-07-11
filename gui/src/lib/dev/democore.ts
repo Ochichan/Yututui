@@ -425,6 +425,36 @@ export class DemoCoreTransport implements Transport {
       case 'req':
         if (env.name === 'ping') {
           this.#emit({ v: 1, id: env.id, kind: 'res', payload: 'pong (demo)' });
+        } else if (env.name === 'apply') {
+          const change = ((env.payload ?? {}) as Record<string, unknown>).change as
+            Record<string, unknown> | undefined;
+          const applied = change
+            ? this.#applySetting(
+                String(change.group ?? '') as SettingGroup,
+                String(change.field ?? ''),
+                change.value,
+                false,
+              )
+            : false;
+          if (!applied) {
+            this.#emit({ v: 1, id: env.id, kind: 'err', payload: { reason: 'bad_setting' } });
+          } else {
+            // Match the native owner lane: correlated acknowledgement is queued before the
+            // authoritative settings snapshot that confirms the optimistic overlay.
+            this.#emit({ v: 1, id: env.id, kind: 'res', payload: { ok: true } });
+            this.#pushSettings();
+          }
+        } else if (
+          env.name === 'queue_play_if_revision' ||
+          env.name === 'queue_remove_if_revision'
+        ) {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          if (Number(p.expected_rev) !== this.#rev) {
+            this.#emit({ v: 1, id: env.id, kind: 'err', payload: { reason: 'stale_rev' } });
+          } else {
+            this.#command(env.name === 'queue_play_if_revision' ? 'queue_play' : 'queue_remove', p);
+            this.#emit({ v: 1, id: env.id, kind: 'res', payload: { ok: true } });
+          }
         } else if (env.name === 'clear_romanization_cache') {
           const cleared = this.#romanizationCache;
           this.#romanizationCache = 0;
@@ -1023,9 +1053,9 @@ export class DemoCoreTransport implements Transport {
   // ── settings ─────────────────────────────────────────────────────────────────────────
 
   /** Uniform provisional mutation: set model[group][field], then push. Cf. §13.3. */
-  #applySetting(group: SettingGroup, field: string, value: unknown): void {
+  #applySetting(group: SettingGroup, field: string, value: unknown, push = true): boolean {
     const block = (this.#settings as unknown as Record<string, Record<string, unknown>>)[group];
-    if (!block || typeof block !== 'object') return;
+    if (!block || typeof block !== 'object' || !field) return false;
     block[field] = value;
     // EQ preset and manual band edits keep each other honest, like the real af chain.
     if (group === 'eq' && field === 'preset') {
@@ -1041,7 +1071,8 @@ export class DemoCoreTransport implements Transport {
       };
     }
     this.#settings.rev++;
-    this.#pushSettings();
+    if (push) this.#pushSettings();
+    return true;
   }
 
   /** Per-role override: hold it and bake it into the resolved roles (settings.theme-editor). */

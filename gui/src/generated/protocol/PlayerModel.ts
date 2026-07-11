@@ -23,7 +23,7 @@ speed_tenths: number,
  */
 elapsed_ms: number | null, 
 /**
- * `None` ⇒ live stream ("ON AIR" mode).
+ * `None` means live or not yet measured; use `track.is_live` for "ON AIR".
  */
 duration_ms: number | null, 
 /**

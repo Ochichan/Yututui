@@ -52,9 +52,9 @@ const ctx: AppCtx = {
   demo: !transport.live,
   connection,
   theme,
-  ui: new UiStore(),
+  ui: new UiStore(boot.uiState),
   playback: new PlaybackStore(client),
-  queue: new QueueStore(client),
+  queue: new QueueStore(client, (message) => toasts.show('error', message)),
   search: new SearchStore(client),
   library: new LibraryStore(client),
   ai: new AiStore(client),
@@ -62,7 +62,7 @@ const ctx: AppCtx = {
   playlists: new PlaylistsStore(client),
   transfer: new TransferStore(client),
   accounts: new AccountsStore(client),
-  settings: new SettingsStore(client),
+  settings: new SettingsStore(client, (message) => toasts.show('error', message)),
   anim: new AnimStore(client),
   keymap: new KeymapStore(client),
   lyrics: new LyricsStore(client),
@@ -88,9 +88,16 @@ client.sub([
   'system',
 ]);
 
+// Unlike evaluate_script during document bootstrap, this explicit handshake can only run after
+// WryTransport installed window.__ytm.receive and all stores registered their topic handlers.
+// The host responds by replaying its latest connection and compact v8 snapshots.
+if (transport.live) client.win('frontendReady');
+
 const app = mount(App, {
   target: document.getElementById('app')!,
   props: { ctx },
 });
+
+requestAnimationFrame(() => ctx.ui.restoreDocument(boot.uiState));
 
 export default app;

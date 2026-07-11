@@ -156,6 +156,14 @@ export class PlaybackStore {
     }, VOLUME_SEND_DEBOUNCE_MS);
   }
 
+  /** Pointer-up/unload boundary: the last local value is never left behind in the debounce. */
+  flushVolume(): void {
+    if (this.#localVolume == null || !this.#volumeTimer) return;
+    clearTimeout(this.#volumeTimer);
+    this.#volumeTimer = null;
+    this.#client.cmd('set_volume', { percent: this.#localVolume });
+  }
+
   // ── push intake ───────────────────────────────────────────────────────────────────
 
   #onPush(ev: PushEvent): void {
