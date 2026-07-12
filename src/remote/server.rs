@@ -367,10 +367,16 @@ async fn probe_alive(endpoint_name: &str) -> bool {
 /// unlink the *new* instance's socket. [`InstanceGuard`] is the single cleanup path instead.
 fn bind(endpoint_name: &str) -> io::Result<Listener> {
     let name = endpoint_name.to_fs_name::<GenericFilePath>()?;
-    ListenerOptions::new()
+    let mut listener = ListenerOptions::new()
         .name(name)
         .reclaim_name(false)
-        .create_tokio()
+        .create_tokio()?;
+    // Keep this explicit on the constructed listener as well as on the builder. The Unix
+    // backends differ in how the sync listener's reclamation guard is transferred into Tokio;
+    // disabling it after construction guarantees a retired accept owner cannot unlink a fast
+    // successor that rebound the same pathname.
+    listener.do_not_reclaim_name_on_drop();
+    Ok(listener)
 }
 
 /// Decide whether to run as the controllable instance, and bind the socket if so.
