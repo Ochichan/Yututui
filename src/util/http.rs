@@ -95,7 +95,6 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            stream.shutdown().await.unwrap();
         });
         let client =
             build_no_redirect_client("yututui-test", std::time::Duration::from_secs(1)).unwrap();
@@ -123,7 +122,6 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            stream.shutdown().await.unwrap();
         });
         let client =
             build_no_redirect_client("yututui-test", std::time::Duration::from_secs(1)).unwrap();
