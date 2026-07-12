@@ -772,6 +772,7 @@ where
         if final_source.len() != initial.len() || modified_changed {
             return Err(io::Error::other("downloaded audio changed while staged"));
         }
+        drop(original_file);
 
         rewrite_and_validate(&mut stage_file, &stage)?;
         stage_file.flush()?;

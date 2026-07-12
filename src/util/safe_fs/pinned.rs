@@ -242,6 +242,18 @@ impl PinnedDir {
         }
     }
 
+    /// Reopen a journal-owned Windows stage while preserving its recoverable residence marker.
+    #[cfg(windows)]
+    pub(crate) fn open_existing_recoverable_child(
+        &self,
+        basename: &OsStr,
+        expected: FileObjectId,
+    ) -> io::Result<OwnedGeneration> {
+        let mut generation = self.open_existing_child(basename, expected)?;
+        generation.residence = GenerationResidence::NamedRecoverable;
+        Ok(generation)
+    }
+
     /// Open one existing child read-only only if it is the exact persisted kernel object.
     pub(crate) fn open_existing_child_readonly(
         &self,
