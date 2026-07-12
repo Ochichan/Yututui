@@ -93,6 +93,49 @@ pub struct LyricLineModel {
     pub text: String,
 }
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryPageModel {
+    pub scope: String,
+    pub filter: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub offset: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub total: u64,
+    pub tracks: Vec<TrackModel>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistSummaryModel {
+    pub id: String,
+    pub name: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub count: u64,
+    pub description: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistDetailModel {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub tracks: Vec<TrackModel>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +193,29 @@ mod tests {
             mime: None,
         };
         assert_eq!(serde_json::to_string(&pending).unwrap(), r#"{"key":"vid"}"#);
+    }
+
+    #[test]
+    fn playlist_descriptions_serialize_absence_as_null() {
+        let summary = PlaylistSummaryModel {
+            id: "mix".to_owned(),
+            name: "Mix".to_owned(),
+            count: 0,
+            description: None,
+        };
+        assert_eq!(
+            serde_json::to_value(summary).unwrap()["description"],
+            serde_json::Value::Null
+        );
+        let detail = PlaylistDetailModel {
+            id: "mix".to_owned(),
+            name: "Mix".to_owned(),
+            description: None,
+            tracks: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(detail).unwrap()["description"],
+            serde_json::Value::Null
+        );
     }
 }

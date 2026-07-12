@@ -33,7 +33,10 @@ pub use command::{
     REMOTE_MAX_SETTING_STRING_BYTES, REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_ID_BYTES,
     REMOTE_MAX_TRACK_IDS, RateChange, RemoteCommand, RemoteSettingChange,
 };
-pub use model::{ArtworkRef, LyricLineModel, TrackModel};
+pub use model::{
+    ArtworkRef, LibraryPageModel, LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel,
+    TrackModel,
+};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
@@ -150,7 +153,11 @@ pub struct RemoteResponse {
 #[serde(untagged)]
 pub enum ResponseData {
     /// `clear_romanization_cache` → `{ cleared }` (wired in the settings stream).
-    Cleared { cleared: u64 },
+    Cleared {
+        cleared: u64,
+    },
+    LibraryPage(LibraryPageModel),
+    PlaylistDetail(PlaylistDetailModel),
 }
 
 impl RemoteResponse {

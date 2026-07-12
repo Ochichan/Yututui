@@ -120,6 +120,15 @@ impl DaemonEngine {
         }
     }
 
+    pub(super) fn save_playlists(&mut self, context: &str) {
+        if self.should_skip_remote_save() {
+            return;
+        }
+        if let Err(error) = save_store(StoreKind::Playlists, || self.playlists.save()) {
+            self.record_persistence_failure(context, error);
+        }
+    }
+
     pub(super) fn save_signals(&mut self, context: &str) {
         if self.should_skip_remote_save() {
             return;

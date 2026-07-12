@@ -2,6 +2,7 @@
 import type { InstanceMode } from "./InstanceMode";
 import type { LyricLineModel } from "./LyricLineModel";
 import type { PlayerModel } from "./PlayerModel";
+import type { PlaylistSummaryModel } from "./PlaylistSummaryModel";
 import type { QueueModel } from "./QueueModel";
 import type { SearchGroup } from "./SearchGroup";
 import type { SearchSource } from "./SearchSource";
@@ -12,4 +13,4 @@ import type { SettingsModelV8 } from "./SettingsModelV8";
  * event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
  * invalidations, ticketed results, …).
  */
-export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, page_id?: string, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, } | { "kind": "lyrics_snapshot", video_id: string | null, lines: Array<LyricLineModel>, };
+export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, page_id?: string, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, } | { "kind": "lyrics_snapshot", video_id: string | null, lines: Array<LyricLineModel>, } | { "kind": "library_invalidated" } | { "kind": "playlists_snapshot", items: Array<PlaylistSummaryModel>, };

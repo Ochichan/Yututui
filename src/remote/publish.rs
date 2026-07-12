@@ -25,8 +25,8 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    EqModel, InstanceMode, PlayerModel, PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic,
-    TrackModel,
+    EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel, PushEvent, QueueModel,
+    RemoteResponse, ServerFrame, Topic, TrackModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -162,6 +162,7 @@ pub struct Publisher {
     /// lyrics never ride `observe`: the host publishes explicitly on track change and
     /// fetch completion (B1, docs/gui/02 §7).
     last_lyrics: Option<Arc<Vec<u8>>>,
+    last_playlists: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -184,6 +185,7 @@ impl Publisher {
             last_settings: None,
             settings_rev: 0,
             last_lyrics: None,
+            last_playlists: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -345,6 +347,7 @@ impl Publisher {
                         // Event-driven lane: serve the retained payload (None before the
                         // host's first publish — the client's empty default covers that).
                         Topic::Lyrics => self.last_lyrics.clone(),
+                        Topic::Playlists => self.last_playlists.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
                         _ => None,
@@ -409,6 +412,25 @@ impl Publisher {
         self.last_lyrics = Some(Arc::clone(&payload));
         if self.hub.any_subscribed(Topic::Lyrics) {
             self.hub.broadcast(Topic::Lyrics, &payload);
+        }
+    }
+
+    pub fn playlists_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Playlists)
+    }
+
+    pub fn publish_playlists(&mut self, items: Vec<PlaylistSummaryModel>) {
+        let payload = event_payload(&PushEvent::PlaylistsSnapshot { items });
+        self.last_playlists = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Playlists) {
+            self.hub.broadcast(Topic::Playlists, &payload);
+        }
+    }
+
+    pub fn publish_library_invalidated(&self) {
+        if self.hub.any_subscribed(Topic::Library) {
+            let payload = event_payload(&PushEvent::LibraryInvalidated);
+            self.hub.broadcast(Topic::Library, &payload);
         }
     }
 
@@ -646,7 +668,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
 
 /// Project a [`Song`] to the wire track shape. B0 carries what the `Song` itself knows;
 /// favorite/disliked/display/artwork enrichment lands with its milestone (B1/B2).
-fn track_model(song: &Song) -> TrackModel {
+pub(crate) fn track_model(song: &Song) -> TrackModel {
     TrackModel {
         video_id: crate::api::sanitize_provider_id(&song.video_id),
         title: crate::api::sanitize_title(&song.title),
@@ -1308,6 +1330,66 @@ mod tests {
         publisher.publish_lyrics(Some("v2".to_owned()), Vec::new());
         let lines = drain(&mut rx);
         assert_eq!(kinds(&lines), vec!["event:lyrics"]);
+    }
+
+    #[test]
+    fn playlists_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let queue = Queue::default();
+        let item = PlaylistSummaryModel {
+            id: "mix".to_owned(),
+            name: "Mix".to_owned(),
+            count: 2,
+            description: None,
+        };
+
+        assert!(!publisher.playlists_subscribed());
+        publisher.publish_playlists(vec![item.clone()]);
+        assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Playlists]);
+        let lines = drain(&mut rx);
+        assert_eq!(kinds(&lines), vec!["event:playlists", "raw:frame"]);
+        let SessionLine::Event { payload, .. } = &lines[0] else {
+            panic!("expected retained playlists snapshot");
+        };
+        match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+            PushEvent::PlaylistsSnapshot { items } => assert_eq!(items, vec![item]),
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(publisher.playlists_subscribed());
+
+        publisher.publish_playlists(Vec::new());
+        assert_eq!(kinds(&drain(&mut rx)), vec!["event:playlists"]);
+    }
+
+    #[test]
+    fn library_invalidated_is_gated_and_has_no_subscribe_snapshot() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let queue = Queue::default();
+
+        publisher.publish_library_invalidated();
+        assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Library]);
+        assert_eq!(
+            kinds(&drain(&mut rx)),
+            vec!["raw:frame"],
+            "library has no initial snapshot"
+        );
+
+        publisher.publish_library_invalidated();
+        let lines = drain(&mut rx);
+        assert_eq!(kinds(&lines), vec!["event:library"]);
+        let SessionLine::Event { payload, .. } = &lines[0] else {
+            panic!("expected library invalidation");
+        };
+        assert_eq!(
+            serde_json::from_slice::<PushEvent>(payload).unwrap(),
+            PushEvent::LibraryInvalidated
+        );
     }
 
     #[test]

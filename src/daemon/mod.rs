@@ -321,6 +321,8 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // Lyrics topic host (B1): keeps the session `lyrics` topic tracking the current
     // song; fetches only while a lyrics subscriber exists.
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
+    let mut published_playlists_rev = None;
+    let mut published_library_invalidations = engine.library_invalidations();
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -701,6 +703,16 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         let view = engine.core_view();
         publisher.observe(&view);
         lyrics_host.observe(&mut publisher, view.queue.current());
+        let playlists_rev = engine.playlists_rev();
+        if published_playlists_rev != Some(playlists_rev) {
+            publisher.publish_playlists(engine.playlists_models());
+            published_playlists_rev = Some(playlists_rev);
+        }
+        let library_invalidations = engine.library_invalidations();
+        if published_library_invalidations != library_invalidations {
+            publisher.publish_library_invalidated();
+            published_library_invalidations = library_invalidations;
+        }
     }
     shutdown.trigger();
     engine.suppress_transport_recovery_for_shutdown();

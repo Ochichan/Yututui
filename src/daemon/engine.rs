@@ -26,6 +26,7 @@ use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
 mod delivery;
+mod gui_library;
 mod gui_search;
 mod persistence_gate;
 mod personal_export;
@@ -64,6 +65,7 @@ pub(crate) struct EngineState {
     pub config: Config,
     pub station: StationStore,
     pub library: Library,
+    pub playlists: crate::playlists::Playlists,
     pub signals: Signals,
 }
 
@@ -116,6 +118,9 @@ pub struct DaemonEngine {
     playback: DaemonPlayback,
     config: Config,
     library: Library,
+    playlists: crate::playlists::Playlists,
+    playlists_rev: u64,
+    library_invalidations: u64,
     signals: Signals,
     station: StationStore,
     loaded_video_id: Option<String>,
@@ -221,6 +226,7 @@ impl DaemonEngine {
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
         let crate::persist::StartupStoreSet {
             library,
+            playlists,
             session_cache,
             signals,
             station,
@@ -230,6 +236,7 @@ impl DaemonEngine {
             config,
             station,
             library,
+            playlists,
             signals,
         };
         crate::persist::ensure_startup_recovery_coherent().map_err(EngineError::from)?;
@@ -269,6 +276,7 @@ impl DaemonEngine {
             mut config,
             station,
             library,
+            playlists,
             signals,
         } = state;
         if let Some(profile) = &station.active {
@@ -301,6 +309,9 @@ impl DaemonEngine {
             ),
             config,
             library,
+            playlists,
+            playlists_rev: 0,
+            library_invalidations: 0,
             signals,
             station,
             loaded_video_id: None,
@@ -581,6 +592,37 @@ impl DaemonEngine {
                 RemoteResponse::status(self.status())
             }
             RemoteCommand::PlayVideo { video_id } => self.play_video(requester.as_ref(), video_id),
+            RemoteCommand::LibraryPlay { scope, filter } => {
+                self.gui_library_play(&scope, &filter).await
+            }
+            RemoteCommand::LibraryEnqueue { scope, filter } => {
+                self.gui_library_enqueue(&scope, &filter).await
+            }
+            RemoteCommand::LibraryRemove { scope, video_id } => {
+                self.gui_library_remove(&scope, &video_id)
+            }
+            RemoteCommand::FetchLibraryPage {
+                scope,
+                filter,
+                offset,
+                limit,
+            } => self.gui_fetch_library_page(&scope, &filter, offset, limit),
+            RemoteCommand::PlaylistCreate { name } => self.gui_playlist_create(&name),
+            RemoteCommand::PlaylistDelete { playlist_id } => self.gui_playlist_delete(&playlist_id),
+            RemoteCommand::PlaylistAddTracks {
+                playlist_id,
+                video_ids,
+            } => self.gui_playlist_add_tracks(requester.as_ref(), &playlist_id, &video_ids),
+            RemoteCommand::PlaylistRemoveTrack {
+                playlist_id,
+                video_id,
+            } => self.gui_playlist_remove_track(&playlist_id, &video_id),
+            RemoteCommand::PlaylistPlay { playlist_id } => {
+                self.gui_playlist_play(&playlist_id).await
+            }
+            RemoteCommand::FetchPlaylistDetail { playlist_id } => {
+                self.gui_fetch_playlist_detail(&playlist_id)
+            }
             // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
             // gateway stops answering bad_command; each stream replaces its arms with
             // real dispatch. Until then the reason is an honest not_supported (the
@@ -588,10 +630,6 @@ impl DaemonEngine {
             RemoteCommand::Rate { .. }
             | RemoteCommand::QueueRemoveMany { .. }
             | RemoteCommand::AskAi { .. }
-            | RemoteCommand::LibraryPlay { .. }
-            | RemoteCommand::LibraryEnqueue { .. }
-            | RemoteCommand::LibraryRemove { .. }
-            | RemoteCommand::FetchLibraryPage { .. }
             | RemoteCommand::Download { .. }
             | RemoteCommand::DeleteDownload { .. }
             | RemoteCommand::KeymapBind { .. }
@@ -600,12 +638,6 @@ impl DaemonEngine {
             | RemoteCommand::ThemeSetOverride { .. }
             | RemoteCommand::ThemeClearOverride { .. }
             | RemoteCommand::ClearRomanizationCache
-            | RemoteCommand::PlaylistCreate { .. }
-            | RemoteCommand::PlaylistDelete { .. }
-            | RemoteCommand::PlaylistAddTracks { .. }
-            | RemoteCommand::PlaylistRemoveTrack { .. }
-            | RemoteCommand::PlaylistPlay { .. }
-            | RemoteCommand::FetchPlaylistDetail { .. }
             | RemoteCommand::FetchWhyGem { .. }
             | RemoteCommand::TransferListSpotify
             | RemoteCommand::TransferStart { .. }
@@ -1620,6 +1652,7 @@ impl DaemonEngine {
             if like {
                 self.library.toggle_favorite(&song);
                 self.save_library("daemon radio favorite");
+                self.library_invalidations = self.library_invalidations.wrapping_add(1);
             }
             return;
         }
@@ -1655,6 +1688,8 @@ impl DaemonEngine {
         }
         self.save_library("daemon media rating library");
         self.save_signals("daemon media rating signals");
+        // Favorites membership changed: a subscribed GUI's paged library view is stale.
+        self.library_invalidations = self.library_invalidations.wrapping_add(1);
     }
 
     /// The v8 publisher's read view of this owner (the daemon analog of

@@ -242,6 +242,12 @@ pub enum PushEvent {
         video_id: Option<String>,
         lines: Vec<super::model::LyricLineModel>,
     },
+    /// `library` topic: a mutation invalidated the client's paged library cache.
+    LibraryInvalidated,
+    /// `playlists` topic: the retained full playlist summary list.
+    PlaylistsSnapshot {
+        items: Vec<super::model::PlaylistSummaryModel>,
+    },
 }
 
 /// One catalog's slice of a completed search: a concrete source (never `all`), its

@@ -200,7 +200,9 @@ pub enum RemoteCommand {
         #[serde(default)]
         filter: String,
     },
-    /// Remove one track from a library scope (favorites/history/…).
+    /// Remove one track from a library scope (favorites/history/…). Unlike the read
+    /// commands, `scope` must be concrete — removing from the synthetic `all` scope is
+    /// ambiguous and rejected as `bad_request` (the GUI hides remove on the All tab).
     LibraryRemove {
         scope: String,
         video_id: String,
