@@ -67,10 +67,7 @@ then dissolves without a frontend release.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`artwork.live` · `core.v8-commands`
-
-(artwork.live is a B1 reconcile — the store already consumes the shape riding the player
-snapshot; it can only be _verified/aligned_ against a real core push once B1-B lands.)
+`core.v8-commands`
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
@@ -80,7 +77,13 @@ registry. `lyrics.live` rides the real B1 daemon wire: `PushEvent::LyricsSnapsho
 `LyricLineModel` (generated types), published by `src/daemon/lyrics_host.rs`, retained
 as the subscribe snapshot in `src/remote/publish.rs`, fetch gated on a live `lyrics`
 subscriber. Daemon-owner only — a standalone TUI owner keeps its own lyrics panel and
-pushes nothing on the topic.)
+pushes nothing on the topic. `artwork.live` needed **no new PushEvent**: art rides the
+player snapshot (`TrackModel.artwork` ← `CoreView::artwork`, whose arrival re-pushes via
+the fingerprint's `artwork_key`), the shell already serves `ytm://app/art/<key>`, and the
+missing half was only that `MediaSession::publish` gated `request_artwork` behind the
+platform-session gates — it now runs ahead of them, so disabled/not-yet-activated owners
+(headless daemon, paused-at-rest restore) still populate the cache. The `artwork` Topic
+enum slot stays reserved, unused.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring

@@ -16,7 +16,7 @@
 //
 // Full handoff narrative: gui/WIRING.md.
 
-export type FeatureId = 'artwork.live' | 'core.v8-commands';
+export type FeatureId = 'core.v8-commands';
 
 export interface WiringSpec {
   /** Human title shown in the not-wired-yet modal. */
@@ -36,14 +36,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'artwork.live': {
-    title: 'Artwork pipeline',
-    milestone: 'B1',
-    brief: 'docs/gui/02-remote-protocol-v8.md §12 + docs/gui/04 §art',
-    protocol:
-      '`artwork` topic + ytm://app/art/<key> custom-scheme serving (already implemented shell-side in src/desktop/assets.rs)',
-    seam: 'gui/src/lib/components/AlbumArt.svelte already resolves ArtworkRef → URL; verify against a real core push, then delete the generated-placeholder fallback note',
-  },
   'core.v8-commands': {
     title: 'Deferred v8 core commands',
     milestone: 'B2',

@@ -96,9 +96,9 @@ describe('App against the demo core', () => {
     render(App, { props: { ctx } });
     await settle();
 
-    ctx.wip.gate('artwork.live');
+    ctx.wip.gate('core.v8-commands');
     await settle();
-    expect(ctx.wip.active).toBe('artwork.live');
+    expect(ctx.wip.active).toBe('core.v8-commands');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
   });
