@@ -1286,6 +1286,11 @@ $ ytt</span>
       <div class="r"><code>ytt -r seek-to 90</code><span class="desc" data-i18n="rem.seek">Jump to a timestamp</span></div>
       <div class="r"><code>ytt -r streaming on</code><span class="desc" data-i18n="rem.streaming">Switch endless streaming on</span></div>
       <div class="r"><code>ytt -r status --json</code><span class="desc" data-i18n="rem.status">Now-playing snapshot, script-ready</span></div>
+      <div class="r"><code>ytt -r info</code><span class="desc" data-i18n="rem.info">Owner mode, protocol and safe capabilities</span></div>
+      <div class="r"><code>ytt -r queue-list</code><span class="desc" data-i18n="rem.queue">Numbered queue (1-based)</span></div>
+      <div class="r"><code>ytt -r queue-play 2</code><span class="desc" data-i18n="rem.queueplay">Play the second queue row</span></div>
+      <div class="r"><code>ytt -r settings-show</code><span class="desc" data-i18n="rem.settings">Compact, non-secret settings summary</span></div>
+      <div class="r"><code>ytt -r watch --json</code><span class="desc" data-i18n="rem.watch">Player/queue/system events; all adds settings</span></div>
       <div class="r"><code>ytt daemon start --resume</code><span class="desc" data-i18n="rem.daemon">Headless: restore the saved queue and play</span></div>
       <div class="r"><code>ytt -r play "lofi"</code><span class="desc" data-i18n="rem.play">Daemon: search and play the first hit</span></div>
       <div class="r"><code>ytt daemon stop</code><span class="desc" data-i18n="rem.stopdaemon">Stop the daemon and reap mpv</span></div>
@@ -1302,6 +1307,7 @@ $ ytt</span>
         <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
       </div>
       <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice never starts a second player — it just hands you the controls. The daemon restores queue, cursor, shuffle/repeat and streaming state, and keeps scrobbling.</p>
+      <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.local">Remote control is same-machine, same-OS-user IPC only — never expose its runtime directory as a LAN or HTTP remote.</p>
     </div>
   </div>
 
@@ -1565,9 +1571,11 @@ var KO = {
   "rem.sub": "<code>ytt</code> 가 재생 중이면 — 터미널 없는 headless 데몬이어도 — 아무 셸, 미디어 키, Control Center, 트레이에서 부릴 수 있어요. 명령 하나, 깔끔한 한 줄 응답.",
   "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.vol": "볼륨을 바로 지정",
   "rem.seek": "원하는 시점으로 점프", "rem.streaming": "무한 스트리밍 켜기", "rem.status": "지금 재생 정보, 스크립트에 바로",
+  "rem.info": "owner 종류, 프로토콜, 안전한 capability", "rem.queue": "번호가 붙은 큐 (1부터)", "rem.queueplay": "큐의 두 번째 곡 재생", "rem.settings": "비밀값 없는 간단한 설정 요약", "rem.watch": "player/queue/system 이벤트; all은 settings도 포함",
   "rem.daemon": "headless: 저장된 큐를 복원해 재생", "rem.play": "데몬: 검색해서 첫 곡 재생", "rem.stopdaemon": "데몬 중지 및 mpv 정리",
   "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
   "rem.single": "<code>ytt</code> 를 두 번 실행해도 두 번째 플레이어는 생기지 않아요 — 조종간만 넘겨줄 뿐. 데몬은 큐·커서·셔플/반복·스트리밍 상태를 복원하고, 그동안 스크로블도 계속합니다.",
+  "rem.local": "원격 제어는 같은 컴퓨터·같은 OS 사용자의 IPC 전용입니다. runtime 디렉터리를 LAN 또는 HTTP remote로 노출하지 마세요.",
 
   "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 좋아요 버튼까지 — 같은 미니 플레이어가 메뉴 바에도, macOS 빌드에 동봉된 <code>yututray</code> 로.",
   "os.win.tray": "트레이 미니 플레이어",
@@ -1730,9 +1738,11 @@ var JA = {
   "rem.sub": "<code>ytt</code> が再生中なら — ターミナルなしの headless デーモンでも — どのシェルからでも、メディアキーでも、コントロールセンターでも、トレイからでも。コマンド一つ、返事は一行。",
   "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.vol": "音量を直接指定",
   "rem.seek": "好きな時点へジャンプ", "rem.streaming": "無限ストリーミングをオン", "rem.status": "再生情報をスクリプトへそのまま",
+  "rem.info": "owner 種別、プロトコル、安全な capability", "rem.queue": "番号付きキュー（1から）", "rem.queueplay": "キューの2番目を再生", "rem.settings": "秘密値を含まない簡潔な設定概要", "rem.watch": "player/queue/system イベント; all は settings も含む",
   "rem.daemon": "headless: 保存したキューを復元して再生", "rem.play": "デーモン: 検索して最初の一曲を再生", "rem.stopdaemon": "デーモン停止と mpv の後始末",
   "rem.wire": "# メディアキーに割り当て (i3 / sway)",
   "rem.single": "<code>ytt</code> を二度起動しても二つ目のプレイヤーは生まれません — 操作を渡すだけ。デーモンはキュー・カーソル・シャッフル/リピート・ストリーミング状態を復元し、その間もスクロブルを続けます。",
+  "rem.local": "リモート操作は同じマシン・同じ OS ユーザーの IPC 専用です。runtime ディレクトリを LAN や HTTP remote として公開しないでください。",
 
   "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、Like ボタンまで — 同じミニプレイヤーはメニューバーにも、macOS ビルド同梱の <code>yututray</code> で。",
   "os.win.tray": "トレイ・ミニプレイヤー",

@@ -20,6 +20,7 @@ pub mod proto;
 pub mod publish;
 pub mod server;
 mod sessions;
+pub mod watch;
 
 pub use sessions::{RemoteSessionHub, RemoteSessionRef};
 

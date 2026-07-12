@@ -11,11 +11,57 @@
 //! form): on Linux the abstract namespace bypasses filesystem permissions, which would
 //! let any local user connect — the `0700` dir is exactly the boundary we want.
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(all(test, unix))]
+use std::os::unix::fs::PermissionsExt;
+
 use super::proto::InstanceFile;
 use crate::util::{runtime, safe_fs};
+
+const MAX_INSTANCE_BYTES: u64 = 8 * 1024;
+
+/// Fail-closed errors from the current (non-legacy) instance descriptor.
+///
+/// Messages deliberately omit paths, endpoint names, and tokens so callers can safely print
+/// them without disclosing control-channel credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentInstanceError {
+    NotFound,
+    Unreadable,
+    UnsafePermissions,
+    Malformed,
+    UnexpectedEndpoint,
+    InvalidToken,
+}
+
+impl fmt::Display for CurrentInstanceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            CurrentInstanceError::NotFound => {
+                "no running ytt instance found — start one with `ytt`."
+            }
+            CurrentInstanceError::Unreadable => {
+                "could not safely read the current ytt instance descriptor."
+            }
+            CurrentInstanceError::UnsafePermissions => {
+                "refusing a current ytt instance descriptor that is not private."
+            }
+            CurrentInstanceError::Malformed => "malformed current ytt instance descriptor.",
+            CurrentInstanceError::UnexpectedEndpoint => {
+                "current ytt instance descriptor names an unexpected endpoint."
+            }
+            CurrentInstanceError::InvalidToken => {
+                "current ytt instance descriptor contains an invalid token."
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for CurrentInstanceError {}
 
 fn user_tag() -> String {
     runtime::filesystem_user_tag()
@@ -57,6 +103,24 @@ pub fn instance_path() -> io::Result<PathBuf> {
     Ok(runtime::app_runtime_dir()?.join(format!("yututui-remote-{}.json", user_tag())))
 }
 
+fn current_socket_endpoint_path() -> String {
+    #[cfg(windows)]
+    {
+        windows_socket_endpoint(&user_tag())
+    }
+    #[cfg(unix)]
+    {
+        runtime::app_runtime_dir_path()
+            .join(format!("yututui-remote-{}.sock", user_tag()))
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn current_instance_path() -> PathBuf {
+    runtime::app_runtime_dir_path().join(format!("yututui-remote-{}.json", user_tag()))
+}
+
 fn legacy_socket_endpoint() -> String {
     #[cfg(windows)]
     {
@@ -96,44 +160,76 @@ pub fn write_instance(file: &InstanceFile) -> io::Result<()> {
 
 /// Read the published descriptor, if any (absent / corrupt → `None`).
 ///
-/// General remote-control probes retain the historic best-effort behavior. Callers that must
-/// distinguish a genuinely absent owner from an unreadable descriptor should use
-/// [`read_instance_checked`].
+/// General remote-control probes retain the historic best-effort behavior and the legacy
+/// shared-runtime fallback. Capability-gated operations must use [`read_current_instance`]
+/// instead so they can distinguish absence from a damaged or untrusted descriptor.
 pub fn read_instance() -> Option<InstanceFile> {
-    read_instance_checked().ok().flatten()
+    let data = instance_path()
+        .ok()
+        .and_then(|path| read_instance_bytes(path.as_path()))
+        .or_else(|| read_instance_bytes(legacy_instance_path().as_path()))?;
+    serde_json::from_slice(&data).ok()
 }
 
-/// Read the descriptor without collapsing corrupt, unreadable, oversized, or unsafe files into
-/// absence. Personal-data export uses this to avoid falling back to a stale disk snapshot while
-/// a live owner's descriptor is damaged.
-pub fn read_instance_checked() -> io::Result<Option<InstanceFile>> {
-    if let Some(instance) = read_current_instance_checked()? {
-        return Ok(Some(instance));
-    }
-    read_instance_file(&legacy_instance_path())
-}
-
-/// Read only the descriptor published in the current private runtime directory.
+/// Read only the current private descriptor and validate its local trust boundary.
 ///
-/// New capability-gated operations use this entry point. A current owner never publishes a
-/// descriptor in the shared legacy location, so accepting a capability advertisement from there
-/// would extend a compatibility fallback into a new trust boundary.
-pub fn read_current_instance_checked() -> io::Result<Option<InstanceFile>> {
-    read_instance_file(&instance_path()?)
+/// Unlike [`read_instance`], this never falls back to the legacy shared-runtime path. The
+/// endpoint must be the exact canonical primary endpoint produced by this build, the token must
+/// retain its generated 128-bit hex shape, and Unix reads require a current-user `0700` parent
+/// plus a current-user `0600` regular descriptor. New remote surfaces use this stricter reader;
+/// legacy one-shot commands keep their compatibility fallback.
+pub fn read_current_instance() -> Result<InstanceFile, CurrentInstanceError> {
+    // Resolve only: unlike the server/write path, a strict read must not create the runtime
+    // directory or repair unsafe modes before validating them.
+    let path = current_instance_path();
+    let expected_endpoint = current_socket_endpoint_path();
+    read_current_instance_at(&path, &expected_endpoint)
 }
 
-fn read_instance_file(path: &Path) -> io::Result<Option<InstanceFile>> {
-    let data = match safe_fs::read_no_symlink_limited(path, 8 * 1024) {
-        Ok(data) => data,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    serde_json::from_slice(&data).map(Some).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "instance descriptor is malformed",
-        )
-    })
+fn read_current_instance_at(
+    path: &Path,
+    expected_endpoint: &str,
+) -> Result<InstanceFile, CurrentInstanceError> {
+    let data = read_private_current_bytes(path)?;
+    let instance: InstanceFile =
+        serde_json::from_slice(&data).map_err(|_| CurrentInstanceError::Malformed)?;
+    validate_current_instance(instance, expected_endpoint)
+}
+
+fn validate_current_instance(
+    instance: InstanceFile,
+    expected_endpoint: &str,
+) -> Result<InstanceFile, CurrentInstanceError> {
+    if instance.endpoint != expected_endpoint {
+        return Err(CurrentInstanceError::UnexpectedEndpoint);
+    }
+    if instance.token.len() != 32 || !instance.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CurrentInstanceError::InvalidToken);
+    }
+    Ok(instance)
+}
+
+fn read_private_current_bytes(path: &Path) -> Result<Vec<u8>, CurrentInstanceError> {
+    safe_fs::read_private_file_limited(path, MAX_INSTANCE_BYTES).map_err(map_current_read_error)
+}
+
+fn map_current_read_error(error: io::Error) -> CurrentInstanceError {
+    #[cfg(unix)]
+    let symlink_loop = error.raw_os_error() == Some(libc::ELOOP);
+    #[cfg(not(unix))]
+    let symlink_loop = false;
+
+    if error.kind() == io::ErrorKind::NotFound {
+        CurrentInstanceError::NotFound
+    } else if error.kind() == io::ErrorKind::PermissionDenied || symlink_loop {
+        CurrentInstanceError::UnsafePermissions
+    } else {
+        CurrentInstanceError::Unreadable
+    }
+}
+
+fn read_instance_bytes(path: &Path) -> Option<Vec<u8>> {
+    safe_fs::read_no_symlink_limited(path, MAX_INSTANCE_BYTES).ok()
 }
 
 /// Best-effort removal of the descriptor on shutdown.
@@ -164,38 +260,13 @@ pub fn legacy_primary_endpoint_for_probe() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::proto::{InstanceMode, PROTOCOL_VERSION};
 
     #[test]
     fn token_is_32_hex_chars() {
         let t = gen_token().unwrap();
         assert_eq!(t.len(), 32);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn checked_descriptor_read_distinguishes_absent_from_malformed() {
-        let root = std::env::temp_dir().join(format!(
-            "yututui-instance-check-{}-{}",
-            std::process::id(),
-            gen_token().expect("random suffix")
-        ));
-        std::fs::create_dir(&root).expect("test directory");
-        let path = root.join("instance.json");
-
-        assert!(
-            read_instance_file(&path)
-                .expect("absent descriptor")
-                .is_none()
-        );
-        std::fs::write(&path, b"{not-json}").expect("malformed descriptor fixture");
-        assert_eq!(
-            read_instance_file(&path)
-                .expect_err("malformed descriptor")
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
-
-        std::fs::remove_dir_all(root).expect("cleanup test directory");
     }
 
     #[test]
@@ -235,5 +306,123 @@ mod tests {
         let tag = user_tag();
         assert!(!tag.is_empty());
         assert!(tag.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    fn instance_for(endpoint: &str, token: &str) -> InstanceFile {
+        InstanceFile {
+            app_pid: 7,
+            endpoint: endpoint.to_string(),
+            token: token.to_string(),
+            created_unix: 1,
+            mode: InstanceMode::Daemon,
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: vec!["status".to_string()],
+        }
+    }
+
+    #[test]
+    fn current_descriptor_requires_canonical_endpoint_and_hex_token() {
+        let endpoint = socket_endpoint().unwrap();
+        let valid = instance_for(&endpoint, "0123456789abcdef0123456789ABCDEF");
+        assert!(validate_current_instance(valid, &endpoint).is_ok());
+
+        let redirected = instance_for("unexpected", "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            validate_current_instance(redirected, &endpoint).unwrap_err(),
+            CurrentInstanceError::UnexpectedEndpoint
+        );
+
+        for token in [
+            "short",
+            "0123456789abcdef0123456789abcdeg",
+            "0123456789abcdef0123456789abcdef0",
+        ] {
+            let invalid = instance_for(&endpoint, token);
+            assert_eq!(
+                validate_current_instance(invalid, &endpoint).unwrap_err(),
+                CurrentInstanceError::InvalidToken
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn private_test_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yututui-current-instance-{label}-{}-{}",
+            std::process::id(),
+            gen_token().unwrap()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn write_test_descriptor(path: &Path, instance: &InstanceFile) {
+        std::fs::write(path, serde_json::to_vec(instance).unwrap()).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_descriptor_read_enforces_private_unix_modes() {
+        let dir = private_test_dir("modes");
+        let path = dir.join("instance.json");
+        let endpoint = dir.join("remote.sock").to_string_lossy().into_owned();
+        let instance = instance_for(&endpoint, "0123456789abcdef0123456789abcdef");
+        write_test_descriptor(&path, &instance);
+
+        let read = read_current_instance_at(&path, &endpoint).unwrap();
+        assert_eq!(read.app_pid, 7);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            read_current_instance_at(&path, &endpoint).unwrap_err(),
+            CurrentInstanceError::UnsafePermissions
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            read_current_instance_at(&path, &endpoint).unwrap_err(),
+            CurrentInstanceError::UnsafePermissions
+        );
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
+            0o755,
+            "strict reads must not repair an unsafe runtime directory"
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_descriptor_read_rejects_symlink_and_malformed_file() {
+        use std::os::unix::fs::symlink;
+
+        let dir = private_test_dir("shape");
+        let target = dir.join("target.json");
+        let link = dir.join("instance.json");
+        let endpoint = dir.join("remote.sock").to_string_lossy().into_owned();
+        let instance = instance_for(&endpoint, "0123456789abcdef0123456789abcdef");
+        write_test_descriptor(&target, &instance);
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            read_current_instance_at(&link, &endpoint).unwrap_err(),
+            CurrentInstanceError::UnsafePermissions
+        );
+
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, b"{not json}").unwrap();
+        std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            read_current_instance_at(&link, &endpoint).unwrap_err(),
+            CurrentInstanceError::Malformed
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

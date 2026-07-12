@@ -111,8 +111,18 @@ impl App {
             RemoteCommand::CycleRepeat => {
                 // Music-mode invariant: refuse turning repeat on while autoplay is on (mirrors
                 // the daemon engine so parity holds). Off→All is the only enabling transition.
-                if self.queue.repeat == crate::queue::Repeat::Off && self.autoplay_streaming {
-                    return (RemoteResponse::status(self.status_snapshot()), Vec::new());
+                if self
+                    .queue
+                    .repeat
+                    .cycle_blocked_by_streaming(self.autoplay_streaming)
+                {
+                    self.status.text = t!(
+                        "Can't use repeat while autoplay is on",
+                        "자동재생 중에는 반복을 켤 수 없어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return (RemoteResponse::err("repeat_streaming_conflict"), Vec::new());
                 }
                 self.queue.cycle_repeat();
                 self.dirty = true;
@@ -170,12 +180,17 @@ impl App {
     /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
     /// an immediate top-up when enabling, so a low queue doesn't gap before the next track).
     fn remote_set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
-        let mut on = state.resolve(self.autoplay_streaming);
-        // Music-mode invariant: never enable autoplay while repeat is on. Clamping to `false`
-        // keeps the response shape identical to a normal "off" so app↔daemon parity holds
-        // (mirror of the daemon engine's `set_streaming`).
+        let on = state.resolve(self.autoplay_streaming);
+        // Music-mode invariant: reject the enable without changing playback/config state or
+        // emitting effects. The TUI still surfaces the same localized notice as its key path.
         if on && self.queue.repeat.is_on() {
-            on = false;
+            self.status.text = t!(
+                "Can't use autoplay while repeat is on",
+                "반복 재생 중에는 자동재생을 켤 수 없어요"
+            )
+            .to_owned();
+            self.dirty = true;
+            return (RemoteResponse::err("repeat_streaming_conflict"), Vec::new());
         }
         self.set_autoplay_streaming(on);
         self.status.text = format!(
@@ -544,30 +559,107 @@ mod tests {
     }
 
     #[test]
-    fn remote_streaming_refused_while_repeat_on() {
-        let mut app = App::new(50);
-        app.queue.repeat = crate::queue::Repeat::One;
-        let (resp, _) = app.apply_remote(RemoteCommand::Streaming {
-            state: ToggleState::On,
-        });
-        // Clamped to off so the response still reads as a normal "off" (keeps app↔daemon parity).
-        assert!(resp.ok);
-        assert!(
-            !app.autoplay_streaming,
-            "streaming stays off while repeat is on"
-        );
+    fn remote_streaming_enables_reject_without_state_or_effects() {
+        for command in [
+            RemoteCommand::Streaming {
+                state: ToggleState::On,
+            },
+            RemoteCommand::Streaming {
+                state: ToggleState::Toggle,
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::AutoplayStreaming { value: true },
+            },
+        ] {
+            let mut app = App::new(50);
+            app.queue.repeat = crate::queue::Repeat::One;
+            app.config.repeat = crate::queue::Repeat::One;
+            app.config.autoplay_streaming = Some(false);
+            app.streaming.consecutive_failures = 2;
+            app.status.text = "before".to_owned();
+            app.dirty = false;
+
+            let (resp, cmds) = app.apply_remote(command);
+
+            assert!(!resp.ok);
+            assert_eq!(resp.reason.as_deref(), Some("repeat_streaming_conflict"));
+            assert!(cmds.is_empty(), "a rejection must emit no effects");
+            assert!(!app.autoplay_streaming);
+            assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
+            assert_eq!(app.config.autoplay_streaming, Some(false));
+            assert_eq!(app.config.repeat, crate::queue::Repeat::One);
+            assert_eq!(app.streaming.consecutive_failures, 2);
+            assert!(matches!(
+                app.status.text.as_str(),
+                "Can't use autoplay while repeat is on"
+                    | "반복 재생 중에는 자동재생을 켤 수 없어요"
+            ));
+            assert!(app.dirty, "the localized rejection notice must redraw");
+        }
     }
 
     #[test]
-    fn remote_cycle_repeat_refused_while_streaming_on() {
+    fn remote_cycle_repeat_rejects_without_state_or_effects() {
         let mut app = App::new(50);
         app.autoplay_streaming = true;
-        app.apply_remote(RemoteCommand::CycleRepeat);
-        assert_eq!(
-            app.queue.repeat,
-            crate::queue::Repeat::Off,
-            "repeat stays off while streaming is on"
-        );
+        app.config.autoplay_streaming = Some(true);
+        app.streaming.consecutive_failures = 2;
+        app.status.text = "before".to_owned();
+        app.dirty = false;
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::CycleRepeat);
+
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("repeat_streaming_conflict"));
+        assert!(cmds.is_empty(), "a rejection must emit no effects");
+        assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
+        assert_eq!(app.config.repeat, crate::queue::Repeat::Off);
+        assert_eq!(app.config.autoplay_streaming, Some(true));
+        assert_eq!(app.streaming.consecutive_failures, 2);
+        assert!(matches!(
+            app.status.text.as_str(),
+            "Can't use repeat while autoplay is on" | "자동재생 중에는 반복을 켤 수 없어요"
+        ));
+        assert!(app.dirty, "the localized rejection notice must redraw");
+    }
+
+    #[test]
+    fn repeat_streaming_disables_remain_allowed() {
+        for command in [
+            RemoteCommand::Streaming {
+                state: ToggleState::Off,
+            },
+            RemoteCommand::Streaming {
+                state: ToggleState::Toggle,
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::AutoplayStreaming { value: false },
+            },
+        ] {
+            let mut app = App::new(50);
+            app.autoplay_streaming = true;
+            app.queue.repeat = crate::queue::Repeat::One;
+
+            let (resp, cmds) = app.apply_remote(command);
+
+            assert!(resp.ok);
+            assert!(!app.autoplay_streaming);
+            assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
+            assert!(cmds.iter().any(|cmd| matches!(
+                cmd,
+                Cmd::Persist(PersistCmd::Config(config))
+                    if config.autoplay_streaming == Some(false)
+            )));
+        }
+
+        let mut app = App::new(50);
+        app.autoplay_streaming = true;
+        app.queue.repeat = crate::queue::Repeat::One;
+        let (resp, cmds) = app.apply_remote(RemoteCommand::CycleRepeat);
+        assert!(resp.ok);
+        assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
+        assert!(app.autoplay_streaming);
+        assert!(!cmds.is_empty(), "the allowed repeat change is persisted");
     }
 
     #[test]
