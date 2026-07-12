@@ -348,9 +348,10 @@ impl OwnedGeneration {
 
     /// Publish this open generation under a new name in `destination` without replacing a name.
     ///
-    /// Linux and Windows create a hard link from the open file object; macOS uses
-    /// `fclonefileat`, whose source is likewise the open handle. Unsupported filesystems fail
-    /// closed. The owned source generation is intentionally retained.
+    /// Linux creates a hard link from the open file object; macOS uses `fclonefileat`, whose
+    /// source is likewise the open handle. Unsupported filesystems fail closed. The owned source
+    /// generation is intentionally retained.
+    #[cfg(not(windows))]
     pub(crate) fn publish_noreplace(
         &self,
         destination: &PinnedDir,
@@ -976,11 +977,11 @@ mod platform {
     use windows_sys::Wdk::Storage::FileSystem::{
         FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
         FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
-        FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS, FILE_LINK_INFORMATION,
-        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-        FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileDispositionInformation,
-        FileDispositionInformationEx, FileLinkInformation, FileRenameInformation,
-        FileRenameInformationEx, NtCreateFile, NtFlushBuffersFileEx, NtSetInformationFile,
+        FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS, FILE_NON_DIRECTORY_FILE,
+        FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_WRITE_THROUGH, FileDispositionInformation, FileDispositionInformationEx,
+        FileRenameInformation, FileRenameInformationEx, NtCreateFile, NtFlushBuffersFileEx,
+        NtSetInformationFile,
     };
     use windows_sys::Win32::Foundation::{
         HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
@@ -1130,47 +1131,6 @@ mod platform {
                 )
             };
         }
-        nt_result(status)
-    }
-
-    pub(super) fn publish_file_at(
-        source: &File,
-        destination: &File,
-        name: &OsStr,
-    ) -> io::Result<()> {
-        let wide: Vec<u16> = name.encode_wide().collect();
-        let name_bytes = u32::from(unicode_length(&wide)?);
-        let offset = std::mem::offset_of!(FILE_LINK_INFORMATION, FileName);
-        let byte_len = offset
-            .checked_add(wide.len() * std::mem::size_of::<u16>())
-            .ok_or_else(|| super::invalid_input("Windows link information is too long"))?;
-        let words = byte_len.div_ceil(std::mem::size_of::<usize>());
-        let mut storage = vec![0_usize; words];
-        let information = storage.as_mut_ptr().cast::<FILE_LINK_INFORMATION>();
-        // SAFETY: `storage` is suitably aligned and large enough for the fixed header plus every
-        // UTF-16 code unit. All pointers and both handles remain live through NtSetInformationFile.
-        unsafe {
-            (*information).Anonymous.Flags = 0;
-            (*information).RootDirectory = destination.as_raw_handle() as HANDLE;
-            (*information).FileNameLength = name_bytes;
-            ptr::copy_nonoverlapping(
-                wide.as_ptr(),
-                ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
-                wide.len(),
-            );
-        }
-        let mut io_status = IO_STATUS_BLOCK::default();
-        // SAFETY: the source was opened with DELETE access and the aligned link-information
-        // buffer remains valid for this synchronous call. Flags zero means no replacement.
-        let status = unsafe {
-            NtSetInformationFile(
-                source.as_raw_handle() as HANDLE,
-                &mut io_status,
-                information.cast(),
-                u32::try_from(byte_len).expect("bounded link information fits u32"),
-                FileLinkInformation,
-            )
-        };
         nt_result(status)
     }
 
