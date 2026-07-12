@@ -62,6 +62,8 @@ impl App {
                 focus: SearchFocus::Input,
                 results: Vec::new(),
                 selected: 0,
+                anchor: 0,
+                picked: BTreeSet::new(),
                 kind: SearchKind::default(),
                 searching: false,
                 request_id: 0,

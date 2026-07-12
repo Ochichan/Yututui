@@ -825,7 +825,11 @@ fn import_delete_mouse_target_keeps_rendered_session_id_after_rows_change() {
     // Simulate an async refresh/re-sort between the last render and delivery of that frame's
     // click. The hit target must retain the rendered id instead of resolving display index 0.
     app.local_mode.ui.filter_query = now_visible_id.to_owned();
-    let cmds = app.update(Msg::MouseClick { col, row });
+    let cmds = app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    });
     assert!(cmds.is_empty());
     assert_eq!(
         app.local_mode.pending_import_record_delete.as_deref(),

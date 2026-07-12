@@ -19,6 +19,13 @@ use crate::zoom::ZoomHandle;
 /// Two same-button presses within this window at the same cell count as a double-click.
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
+/// Modifiers that turn a left click into a multi-select toggle: Ctrl on Windows/Linux,
+/// Cmd on macOS. Terminals disagree on whether Cmd arrives as SUPER or META, and
+/// accepting Ctrl everywhere costs nothing, so all three count on every platform.
+const MULTI_SELECT_MODIFIERS: KeyModifiers = KeyModifiers::CONTROL
+    .union(KeyModifiers::SUPER)
+    .union(KeyModifiers::META);
+
 #[derive(Debug)]
 pub struct Translator {
     held_modifiers: KeyModifiers,
@@ -102,10 +109,23 @@ impl Translator {
             }
             // A left-button press may hit a UI button or the player's seekbar. A second
             // press at the same cell within the double-click window plays a song row /
-            // queue entry instead of merely selecting it.
+            // queue entry instead of merely selecting it. With the multi-select modifier
+            // held (Ctrl, or Cmd on macOS — some terminals encode it in the mouse report,
+            // others only as modifier key events, so honour both like Ctrl+wheel) the press
+            // is always a single toggle click: it must never chain into a double-click,
+            // so the timing state is reset instead of recorded.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.left_down = true;
-                Some(self.classify_left_down(m.column / cs, m.row / rs))
+                if (m.modifiers | self.held_modifiers).intersects(MULTI_SELECT_MODIFIERS) {
+                    self.last_left_down = None;
+                    Some(Msg::MouseClick {
+                        col: m.column / cs,
+                        row: m.row / rs,
+                        multi: true,
+                    })
+                } else {
+                    Some(self.classify_left_down(m.column / cs, m.row / rs))
+                }
             }
             // A right-button press is interpreted by the active surface. As with left clicks,
             // classify a second press at the same virtual cell separately so bindings can
@@ -186,7 +206,11 @@ impl Translator {
         if is_double {
             Msg::MouseDoubleClick { col, row }
         } else {
-            Msg::MouseClick { col, row }
+            Msg::MouseClick {
+                col,
+                row,
+                multi: false,
+            }
         }
     }
 
@@ -246,6 +270,10 @@ fn modifier_key(code: KeyCode) -> Option<KeyModifiers> {
         ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift => KeyModifiers::SHIFT,
         ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl => KeyModifiers::CONTROL,
         ModifierKeyCode::LeftAlt | ModifierKeyCode::RightAlt => KeyModifiers::ALT,
+        // Cmd on macOS (enhanced-keyboard terminals report it only as key events, never in
+        // the SGR mouse report) — tracked so Cmd+click can resolve as a multi-select toggle.
+        ModifierKeyCode::LeftSuper | ModifierKeyCode::RightSuper => KeyModifiers::SUPER,
+        ModifierKeyCode::LeftMeta | ModifierKeyCode::RightMeta => KeyModifiers::META,
         _ => return None,
     })
 }
@@ -322,7 +350,11 @@ mod tests {
         let t0 = Instant::now();
         assert!(matches!(
             t.classify_left_down_at(t0, 10, 5),
-            Msg::MouseClick { col: 10, row: 5 }
+            Msg::MouseClick {
+                col: 10,
+                row: 5,
+                multi: false
+            }
         ));
         // Within the window, same cell -> double click.
         assert!(matches!(
@@ -556,6 +588,93 @@ mod tests {
     }
 
     #[test]
+    fn modifier_click_becomes_a_toggle_click_and_never_a_double_click() {
+        let mut t = Translator::default();
+        let down = |modifiers| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 10,
+                row: 5,
+                modifiers,
+            })
+        };
+        // Ctrl encoded in the SGR mouse report itself.
+        assert!(matches!(
+            t.translate(down(KeyModifiers::CONTROL), 1, 1),
+            Some(Msg::MouseClick {
+                col: 10,
+                row: 5,
+                multi: true
+            })
+        ));
+        // A second quick modifier press at the same cell stays a toggle click — a
+        // Ctrl/Cmd click sequence must never be promoted to a double-click…
+        assert!(matches!(
+            t.translate(down(KeyModifiers::CONTROL), 1, 1),
+            Some(Msg::MouseClick { multi: true, .. })
+        ));
+        // …and a quick plain press right after starts a fresh single click too.
+        assert!(matches!(
+            t.translate(down(KeyModifiers::NONE), 1, 1),
+            Some(Msg::MouseClick { multi: false, .. })
+        ));
+    }
+
+    #[test]
+    fn held_cmd_key_flags_the_next_click_as_a_toggle() {
+        // Cmd known only from a held-Super key event (enhanced keyboard protocol) —
+        // macOS terminals never encode Cmd in the SGR mouse report.
+        let mut t = Translator::default();
+        assert!(
+            t.translate(
+                key(
+                    KeyCode::Modifier(ModifierKeyCode::LeftSuper),
+                    KeyModifiers::SUPER,
+                    KeyEventKind::Press,
+                ),
+                1,
+                1,
+            )
+            .is_none()
+        );
+        let down = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(
+            t.translate(down.clone(), 1, 1),
+            Some(Msg::MouseClick {
+                col: 3,
+                row: 4,
+                multi: true
+            })
+        ));
+        // Releasing Cmd restores plain clicks.
+        assert!(
+            t.translate(
+                key(
+                    KeyCode::Modifier(ModifierKeyCode::LeftSuper),
+                    KeyModifiers::SUPER,
+                    KeyEventKind::Release,
+                ),
+                1,
+                1,
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            t.translate(down, 1, 1),
+            Some(Msg::MouseClick {
+                col: 3,
+                row: 4,
+                multi: false
+            })
+        ));
+    }
+
+    #[test]
     fn mouse_cells_map_onto_the_zoomed_virtual_grid() {
         let mut t = Translator::default();
         // Physical cell (9, 5) at scale 2 → virtual cell (4, 2).
@@ -570,7 +689,11 @@ mod tests {
                 2,
                 2,
             ),
-            Some(Msg::MouseClick { col: 4, row: 2 })
+            Some(Msg::MouseClick {
+                col: 4,
+                row: 2,
+                multi: false
+            })
         ));
         // A second press one physical cell over lands in the same virtual cell and must
         // count as a double-click — the whole point of dividing in the translator.
@@ -630,7 +753,11 @@ mod tests {
         // Physical (40, 10) → virtual (40, 5): column unchanged, only the row halved.
         assert!(matches!(
             t.translate(down(40, 10), 1, 2),
-            Some(Msg::MouseClick { col: 40, row: 5 })
+            Some(Msg::MouseClick {
+                col: 40,
+                row: 5,
+                multi: false
+            })
         ));
         // A second press on the other physical half of the same virtual row (row 11 → 5) at
         // the same column is a double-click — proof that only the row collapses.

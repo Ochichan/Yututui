@@ -667,7 +667,11 @@ pub(super) fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
 pub(super) fn click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
     render_app(app);
     let (col, row) = button_center(app, target);
-    app.update(Msg::MouseClick { col, row })
+    app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    })
 }
 
 pub(super) fn double_click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {

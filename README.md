@@ -251,7 +251,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `o` | Settings |
 | `Ctrl+Q` | Quit |
 
-> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume.
+> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume. Drag across rows to select a range — in Search results just like the Library — and `Ctrl`+click (`⌘`+click on macOS) toggles single rows in and out of the selection. The footer **mouse** button opens the full mouse cheat sheet.
 
 ## Troubleshooting
 

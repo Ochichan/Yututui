@@ -321,22 +321,25 @@ impl App {
         self.library_songs().get(self.library_ui.selected).cloned()
     }
 
-    /// Tracks in the current library drag/selection range, in visible row order.
+    /// Row indices of the effective library selection: the Ctrl/Cmd-picked rows when any
+    /// exist, else the inclusive drag/selection range between the anchor and the cursor.
+    pub(in crate::app) fn library_selection_indices(&self) -> Vec<usize> {
+        effective_selection_indices(
+            &self.library_ui.picked,
+            self.library_ui.selected,
+            self.library_ui.anchor,
+            self.library_len(),
+        )
+    }
+
+    /// Tracks in the current library selection (picked rows or the drag range), in
+    /// visible row order.
     pub(in crate::app) fn selected_library_songs(&self) -> Vec<Song> {
         let songs = self.library_songs();
-        if songs.is_empty() {
-            return Vec::new();
-        }
-        let lo = self.library_ui.selected.min(self.library_ui.anchor);
-        if lo >= songs.len() {
-            return Vec::new();
-        }
-        let hi = self
-            .library_ui
-            .selected
-            .max(self.library_ui.anchor)
-            .min(songs.len() - 1);
-        songs[lo..=hi].to_vec()
+        self.library_selection_indices()
+            .into_iter()
+            .filter_map(|i| songs.get(i).cloned())
+            .collect()
     }
 
     /// Queue the current library tab (starting at the cursor) and start playing.
@@ -355,36 +358,49 @@ impl App {
         cmds
     }
 
-    /// Delete the library list's current selection — the inclusive range between the drag
-    /// anchor and the cursor — using the active tab's delete semantics.
+    /// Delete the library list's current selection — the Ctrl/Cmd-picked rows, or the
+    /// inclusive range between the drag anchor and the cursor — using the active tab's
+    /// delete semantics.
     pub(in crate::app) fn library_delete_selection(&mut self) -> Vec<Cmd> {
-        let lo = self.library_ui.selected.min(self.library_ui.anchor);
-        let hi = self.library_ui.selected.max(self.library_ui.anchor);
-        self.library_delete_rows(lo, hi)
+        let rows = self.library_selection_indices();
+        self.library_delete_indices(&rows)
     }
 
-    /// Delete library rows `lo..=hi` (positions in the current tab) with per-tab meaning:
-    /// Favorites un-favorites, History forgets, Radio Favorites un-favorites radio stations,
-    /// Radio forgets recently played stations, Downloads asks before deleting the files on disk,
-    /// and All is an aggregate view so it's read-only. Clamps the selection afterward.
+    /// Delete library rows `lo..=hi` (positions in the current tab); see
+    /// [`Self::library_delete_indices`].
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        let rows: Vec<usize> = (lo..=hi).collect();
+        self.library_delete_indices(&rows)
+    }
+
+    /// Delete the library rows at `indices` (ascending positions in the current tab) with
+    /// per-tab meaning: Favorites un-favorites, History forgets, Radio Favorites un-favorites
+    /// radio stations, Radio forgets recently played stations, Downloads asks before deleting
+    /// the files on disk, and All is an aggregate view so it's read-only. Clamps the
+    /// selection afterward.
+    fn library_delete_indices(&mut self, indices: &[usize]) -> Vec<Cmd> {
         // The Playlists root lists playlists, not songs — the song-target resolution below
         // would bail on its empty song list, so route to the delete-confirm modal first.
-        // Deleting is deliberately single-row (`lo`): dropping several whole playlists in
-        // one keypress is too destructive for a range gesture.
+        // Deleting is deliberately single-row (the first index): dropping several whole
+        // playlists in one keypress is too destructive for a range gesture.
         if self.playlists_root() {
-            self.request_playlist_delete(lo);
+            if let Some(&first) = indices.first() {
+                self.request_playlist_delete(first);
+            }
             return Vec::new();
         }
         // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
         // by identity. Under an active filter the row positions no longer map to the raw
         // collection indices, so an index-based removal would hit the wrong tracks.
-        let targets = self.library_songs();
-        if lo >= targets.len() {
+        let songs = self.library_songs();
+        let targets: Vec<Song> = indices
+            .iter()
+            .filter_map(|&i| songs.get(i).cloned())
+            .collect();
+        if targets.is_empty() {
             return Vec::new();
         }
-        let hi = hi.min(targets.len() - 1);
-        let targets = &targets[lo..=hi];
+        let targets = &targets[..];
         match self.library_ui.tab {
             // Aggregate view — a row may live in several tabs, so deleting from here is
             // ambiguous. Manage tracks from their own tab instead.
@@ -515,11 +531,14 @@ impl App {
         ]
     }
 
-    /// Clamp the library cursor and the drag anchor into the current tab's row count.
+    /// Clamp the library cursor and the drag anchor into the current tab's row count, and
+    /// drop any Ctrl/Cmd-picked rows — the list just mutated, so their indices no longer
+    /// name the rows the user picked.
     pub(in crate::app) fn clamp_library_selection(&mut self) {
         let last = self.library_len().saturating_sub(1);
         self.library_ui.selected = self.library_ui.selected.min(last);
         self.library_ui.anchor = self.library_ui.anchor.min(last);
+        self.library_ui.picked.clear();
     }
 }
 

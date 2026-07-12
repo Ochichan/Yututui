@@ -12,7 +12,76 @@ impl App {
         self.search.results.get(self.search.selected).cloned()
     }
 
-    /// Move the search-results cursor up/down by `lines`, clamped.
+    /// Row indices of the effective results selection: the Ctrl/Cmd-picked rows when any
+    /// exist, else the inclusive drag/selection range between the anchor and the cursor —
+    /// the Library list's model exactly. Ascending; `pub(crate)` because the results
+    /// render highlights these rows.
+    pub(crate) fn search_selection_indices(&self) -> Vec<usize> {
+        effective_selection_indices(
+            &self.search.picked,
+            self.search.selected,
+            self.search.anchor,
+            self.search.results.len(),
+        )
+    }
+
+    /// Tracks in the current results selection, in visible row order.
+    pub(in crate::app) fn selected_search_songs(&self) -> Vec<Song> {
+        self.search_selection_indices()
+            .into_iter()
+            .filter_map(|i| self.search.results.get(i).cloned())
+            .collect()
+    }
+
+    /// The multi-selected result *songs*, only when more than one row is effectively
+    /// selected. Playlist rows are skipped — every per-track bulk action (play, enqueue,
+    /// playlist, download) is undefined for them — but as long as any song remains the
+    /// selection stays authoritative (a mixed pick of one song + playlist rows must act
+    /// on that song, not fall back to whatever the cursor row is). `None` means "use the
+    /// single-row path".
+    pub(in crate::app) fn multi_selected_search_songs(&self) -> Option<Vec<Song>> {
+        if self.search_selection_indices().len() <= 1 {
+            return None;
+        }
+        let songs: Vec<Song> = self
+            .selected_search_songs()
+            .into_iter()
+            .filter(|song| song.youtube_playlist_id().is_none())
+            .collect();
+        if songs.is_empty() { None } else { Some(songs) }
+    }
+
+    /// Ctrl/Cmd+click on a results row: toggle it in/out of the discontiguous selection
+    /// (see [`Self::library_toggle_pick`] — identical semantics).
+    pub(in crate::app) fn search_toggle_pick(&mut self, index: usize) -> Vec<Cmd> {
+        let len = self.search.results.len();
+        if index >= len {
+            return Vec::new();
+        }
+        if self.search.picked.is_empty() {
+            let lo = self.search.selected.min(self.search.anchor).min(len - 1);
+            let hi = self.search.selected.max(self.search.anchor).min(len - 1);
+            self.search.picked.extend(lo..=hi);
+        }
+        if !self.search.picked.remove(&index) {
+            self.search.picked.insert(index);
+        }
+        self.search.selected = index;
+        self.search.anchor = index;
+        self.search.focus = SearchFocus::Results;
+        self.interaction.drag_selection = None;
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Collapse the results multi-select onto the cursor (plain click/nav semantics).
+    pub(in crate::app) fn collapse_search_selection(&mut self) {
+        self.search.anchor = self.search.selected;
+        self.search.picked.clear();
+    }
+
+    /// Move the search-results cursor up/down by `lines`, clamped, collapsing the
+    /// multi-select range onto the cursor (like keyboard nav in the Library).
     pub(in crate::app) fn move_search_cursor(&mut self, up: bool, lines: usize) {
         let len = self.search.results.len();
         if len == 0 {
@@ -23,6 +92,24 @@ impl App {
         } else {
             (self.search.selected + lines).min(len - 1)
         };
+        self.collapse_search_selection();
+        self.dirty = true;
+    }
+
+    /// Move the results cursor **without** collapsing the multi-select anchor — the
+    /// keyboard mirror of a mouse drag-select (Shift+nav), like the Library's.
+    fn extend_search_cursor(&mut self, up: bool, lines: usize) {
+        let len = self.search.results.len();
+        if len == 0 {
+            return;
+        }
+        self.search.selected = if up {
+            self.search.selected.saturating_sub(lines)
+        } else {
+            (self.search.selected + lines).min(len - 1)
+        };
+        // Extending is a range gesture — discontiguous picks yield to the range.
+        self.search.picked.clear();
         self.dirty = true;
     }
 
@@ -120,8 +207,13 @@ impl App {
             }
             // Enter plays the highlighted result right now, keeping the existing queue
             // intact. A playlist row fetches its tracks first, then replaces the queue.
+            // With a multi-selection (drag / Shift+nav / Ctrl+click) it plays the whole
+            // selection, mirroring the Library's Enter.
             SearchFocus::Results if k.code == KeyCode::Enter => {
-                self.activate_search_index(self.search.selected)
+                match self.multi_selected_search_songs() {
+                    Some(songs) => self.play_now_many(songs),
+                    None => self.activate_search_index(self.search.selected),
+                }
             }
             SearchFocus::Results
                 if matches!(
@@ -140,16 +232,18 @@ impl App {
                 // `/` opens the results-filter popup (like the Library filter, but as its
                 // own window over the list).
                 Some(Action::SearchFilter) => self.open_search_filter(),
-                // `\` adds the highlighted result to the queue without interrupting playback.
-                // A playlist row appends its whole track list.
-                Some(Action::Enqueue) => match self.selected_search_song() {
-                    Some(song) => match song.youtube_playlist_id() {
-                        Some(_) => {
-                            self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue)
-                        }
-                        None => self.enqueue(song),
+                // `\` adds the highlighted result — or the whole multi-selection — to the
+                // queue without interrupting playback. A playlist row appends its track list.
+                Some(Action::Enqueue) => match self.multi_selected_search_songs() {
+                    Some(songs) => self.enqueue_many(songs),
+                    None => match self.selected_search_song() {
+                        Some(song) => match song.youtube_playlist_id() {
+                            Some(_) => self
+                                .fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue),
+                            None => self.enqueue(song),
+                        },
+                        None => Vec::new(),
                     },
-                    None => Vec::new(),
                 },
                 Some(Action::Back) => {
                     self.mode = Mode::Player;
@@ -159,18 +253,16 @@ impl App {
                 Some(Action::MoveUp) => {
                     if self.search.selected == 0 {
                         self.search.focus = SearchFocus::Input;
+                        self.dirty = true;
                     } else {
                         let step = self.nav_repeat_step(Action::MoveUp);
-                        self.search.selected = self.search.selected.saturating_sub(step);
+                        self.move_search_cursor(true, step);
                     }
-                    self.dirty = true;
                     Vec::new()
                 }
                 Some(Action::MoveDown) => {
                     let step = self.nav_repeat_step(Action::MoveDown);
-                    let last = self.search.results.len().saturating_sub(1);
-                    self.search.selected = (self.search.selected + step).min(last);
-                    self.dirty = true;
+                    self.move_search_cursor(false, step);
                     Vec::new()
                 }
                 Some(Action::PageUp) => {
@@ -183,12 +275,42 @@ impl App {
                 }
                 Some(Action::JumpTop) => {
                     self.search.selected = 0;
+                    self.collapse_search_selection();
                     self.dirty = true;
                     Vec::new()
                 }
                 Some(Action::JumpBottom) => {
                     self.search.selected = self.search.results.len().saturating_sub(1);
+                    self.collapse_search_selection();
                     self.dirty = true;
+                    Vec::new()
+                }
+                // Shift+nav extends the multi-select range (keyboard mirror of a mouse
+                // drag), exactly like the Library list.
+                Some(Action::SelectUp) => {
+                    let step = self.nav_repeat_step(Action::SelectUp);
+                    self.extend_search_cursor(true, step);
+                    Vec::new()
+                }
+                Some(Action::SelectDown) => {
+                    let step = self.nav_repeat_step(Action::SelectDown);
+                    self.extend_search_cursor(false, step);
+                    Vec::new()
+                }
+                Some(Action::SelectPageUp) => {
+                    self.extend_search_cursor(true, self.page_step());
+                    Vec::new()
+                }
+                Some(Action::SelectPageDown) => {
+                    self.extend_search_cursor(false, self.page_step());
+                    Vec::new()
+                }
+                Some(Action::SelectToTop) => {
+                    self.extend_search_cursor(true, self.search.results.len());
+                    Vec::new()
+                }
+                Some(Action::SelectToBottom) => {
+                    self.extend_search_cursor(false, self.search.results.len());
                     Vec::new()
                 }
                 // Favorite the highlighted result (♥ appears on the row).
@@ -203,18 +325,25 @@ impl App {
                     }
                     Vec::new()
                 }
-                Some(Action::Download) => {
-                    match self.search.results.get(self.search.selected).cloned() {
+                // `d` downloads the highlighted result; a multi-selection goes behind the
+                // "Download N songs?" confirm popup, like the Library's range download.
+                Some(Action::Download) => match self.multi_selected_search_songs() {
+                    Some(songs) => self.open_confirm_download(songs),
+                    None => match self.search.results.get(self.search.selected).cloned() {
                         Some(song) if song.youtube_playlist_id().is_some() => {
                             self.playlist_row_hint()
                         }
                         Some(song) => self.start_download(song),
                         None => Vec::new(),
-                    }
-                }
-                // `p` opens the add-to-playlist picker for the highlighted result. A
-                // playlist row instead imports the whole playlist as a local one.
+                    },
+                },
+                // `p` opens the add-to-playlist picker for the highlighted result or the
+                // multi-selection. A playlist row instead imports it as a local playlist.
                 Some(Action::AddToPlaylist) => {
+                    if let Some(songs) = self.multi_selected_search_songs() {
+                        self.open_playlist_picker(songs);
+                        return Vec::new();
+                    }
                     if let Some(song) = self.search.results.get(self.search.selected).cloned() {
                         if song.youtube_playlist_id().is_some() {
                             return self
@@ -280,6 +409,7 @@ impl App {
             return Vec::new();
         };
         self.search.selected = idx;
+        self.collapse_search_selection();
         self.search.focus = SearchFocus::Results;
         self.dirty = true;
         match song.youtube_playlist_id() {

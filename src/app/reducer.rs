@@ -68,7 +68,7 @@ impl App {
         match msg {
             Msg::Noop => return Vec::new(),
             Msg::Key(k) => return self.on_key(k),
-            Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
+            Msg::MouseClick { col, row, multi } => return self.on_mouse_click(col, row, multi),
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseRightDoubleClick { col, row } => {
@@ -341,6 +341,8 @@ impl App {
                         format!("No results for \"{query}\"")
                     };
                     self.search.results.clear();
+                    self.search.selected = 0;
+                    self.collapse_search_selection();
                 } else {
                     // A partial result set (the operation deadline dropped a slow source) gets a
                     // subtle note so it doesn't read as the complete set; a full result clears it.
@@ -351,6 +353,7 @@ impl App {
                     };
                     self.search.results = songs;
                     self.search.selected = 0;
+                    self.collapse_search_selection();
                     self.bridges.search_scroll.reset();
                     self.search.focus = SearchFocus::Results;
                 }

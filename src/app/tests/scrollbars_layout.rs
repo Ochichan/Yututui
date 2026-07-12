@@ -99,6 +99,7 @@ fn dragging_library_scrollbar_moves_the_viewport() {
     app.update(Msg::MouseClick {
         col: bar.x,
         row: bar.y,
+        multi: false,
     });
     app.update(Msg::MouseDrag {
         col: bar.x,
@@ -131,6 +132,7 @@ fn dragging_search_scrollbar_moves_the_viewport() {
     app.update(Msg::MouseClick {
         col: bar.x,
         row: bar.y,
+        multi: false,
     });
     app.update(Msg::MouseDrag {
         col: bar.x,

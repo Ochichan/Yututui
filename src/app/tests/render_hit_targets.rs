@@ -361,7 +361,14 @@ fn clicking_eq_label_toggles_dropdown() {
         },
         MouseTarget::EqMenu,
     );
-    assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 32,
+            row: 4,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(app.dropdowns.eq_open);
     // Clicking it again closes it.
     app.register_mouse_button(
@@ -373,7 +380,14 @@ fn clicking_eq_label_toggles_dropdown() {
         },
         MouseTarget::EqMenu,
     );
-    assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 32,
+            row: 4,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(!app.dropdowns.eq_open);
 }
 
@@ -390,7 +404,11 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
         },
         MouseTarget::EqSelect(EqPreset::Vocal),
     );
-    let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 33,
+        row: 6,
+        multi: false,
+    });
     assert_eq!(app.audio.preset, EqPreset::Vocal);
     assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
     assert!(!app.dropdowns.eq_open);
@@ -412,7 +430,11 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
         height: 1,
     });
     // A click on the seekbar with the dropdown open just closes it (no seek emitted).
-    let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 50,
+        row: 5,
+        multi: false,
+    });
     assert!(!app.dropdowns.eq_open);
     assert!(cmds.is_empty());
 }

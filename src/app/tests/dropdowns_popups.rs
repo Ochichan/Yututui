@@ -93,7 +93,14 @@ fn clicking_streaming_label_closes_eq_and_opens_streaming_dropdown() {
         },
         MouseTarget::StreamingMenu,
     );
-    assert!(app.update(Msg::MouseClick { col: 42, row: 4 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 42,
+            row: 4,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(app.dropdowns.streaming_open);
     assert!(!app.dropdowns.eq_open);
 }
@@ -112,7 +119,11 @@ fn selecting_streaming_mode_applies_and_persists() {
         },
         MouseTarget::StreamingSelect(StreamingMode::Discovery),
     );
-    let cmds = app.update(Msg::MouseClick { col: 43, row: 6 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 43,
+        row: 6,
+        multi: false,
+    });
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
     assert!(!app.dropdowns.streaming_open);
     assert!(

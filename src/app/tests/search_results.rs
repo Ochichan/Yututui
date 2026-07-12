@@ -108,6 +108,7 @@ fn enter_on_search_result_queues_only_the_selected_song() {
     });
     app.search.focus = SearchFocus::Results;
     app.search.selected = 1;
+    app.search.anchor = 1;
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.mode, Mode::Player);
     // Only the picked track lands in the queue — not the whole result list. Nothing was

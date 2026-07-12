@@ -181,7 +181,11 @@ fn clicking_outside_the_queue_window_closes_it() {
     app.update(Msg::Key(key(KeyCode::Char('c'))));
     render_app(&app); // publishes queue_popup.rect
     // Top-left corner is well outside the centered popup.
-    let cmds = app.update(Msg::MouseClick { col: 1, row: 1 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 1,
+        row: 1,
+        multi: false,
+    });
     assert!(!app.queue_popup.open);
     assert!(cmds.is_empty());
 }
@@ -195,6 +199,7 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     app.update(Msg::MouseClick {
         col: start_col,
         row: start_row,
+        multi: false,
     });
     // Drag down to row 2: anchor stays at 0, so the selection spans 0..=2.
     let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
@@ -273,7 +278,11 @@ fn queue_drag_after_release_starts_a_fresh_range() {
     let (c2, r2) = button_center(&app, MouseTarget::QueueRow(2));
     let (c4, r4) = button_center(&app, MouseTarget::QueueRow(4));
 
-    app.update(Msg::MouseClick { col: c0, row: r0 });
+    app.update(Msg::MouseClick {
+        col: c0,
+        row: r0,
+        multi: false,
+    });
     assert_eq!((app.queue_popup.cursor, app.queue_popup.anchor), (0, 0));
     app.update(Msg::MouseLeftUp);
 

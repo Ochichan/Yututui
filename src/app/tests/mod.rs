@@ -25,6 +25,7 @@ mod local;
 mod local_import;
 mod lyrics_art_download;
 mod mouse_player;
+mod multi_select;
 mod nav_mouse;
 mod now_playing_overlay;
 mod playback_auto_advance;

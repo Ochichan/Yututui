@@ -13,9 +13,14 @@ pub enum Msg {
     Noop,
     Key(KeyEvent),
     /// A left-click at a terminal cell (1-based crossterm coords); may hit the seekbar.
+    /// `multi` is set when the multi-select modifier was held (Ctrl, or Cmd on macOS):
+    /// on a Library/Search list row that toggles the row in/out of the selection instead
+    /// of re-anchoring it; everywhere else the click behaves as plain. The input
+    /// translator never chains a modifier click into a double-click.
     MouseClick {
         col: u16,
         row: u16,
+        multi: bool,
     },
     /// A left double-click at a cell — plays a song row / queue entry (vs. single-click,
     /// which selects). Falls back to single-click behavior off a list row.

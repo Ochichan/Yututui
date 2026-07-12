@@ -674,6 +674,7 @@ fn spotify_import_mode_dropdown_mouse_targets_select_and_dismiss() {
     let cmds = app.update(Msg::MouseClick {
         col: other_control.0,
         row: other_control.1,
+        multi: false,
     });
     assert!(cmds.is_empty());
     let st = app.settings.as_ref().unwrap();
