@@ -94,9 +94,11 @@ describe('demo core radio mode', () => {
     return { t, frames };
   }
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('set_setting radio_mode flips player.radio_mode', () => {
     const { t, frames } = boot();

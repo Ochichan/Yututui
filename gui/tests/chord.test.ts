@@ -3,11 +3,7 @@
 // rule. These cases mirror the keymap.rs normalization the demo bindings assume.
 
 import { describe, expect, it } from 'vitest';
-import {
-  chordFromEvent,
-  chordFromCapture,
-  isPlainTypeable,
-} from '../src/lib/keyboard/chord';
+import { chordFromEvent, chordFromCapture, isPlainTypeable } from '../src/lib/keyboard/chord';
 
 function ev(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent('keydown', init);
@@ -18,7 +14,11 @@ describe('chordFromEvent (key-first)', () => {
     ['plain letter', { key: 'a' }, 'a'],
     ['shifted letter → uppercase, no Shift token', { key: 'A', shiftKey: true }, 'A'],
     ['Ctrl+letter lowercases the base', { key: 'u', ctrlKey: true }, 'Ctrl+u'],
-    ['Ctrl+Shift+letter keeps mods, base lowercased', { key: 'U', ctrlKey: true, shiftKey: true }, 'Ctrl+Shift+u'],
+    [
+      'Ctrl+Shift+letter keeps mods, base lowercased',
+      { key: 'U', ctrlKey: true, shiftKey: true },
+      'Ctrl+Shift+u',
+    ],
     ['Shift+Tab → BackTab', { key: 'Tab', shiftKey: true }, 'BackTab'],
     ['plain Tab', { key: 'Tab' }, 'Tab'],
     ['arrow', { key: 'ArrowLeft' }, 'Left'],
