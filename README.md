@@ -91,7 +91,7 @@ same one-line instruction; extra shots are welcome — just copy a slot block. -
 
 ### The player — real album art & time-synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath.
+Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×11 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:

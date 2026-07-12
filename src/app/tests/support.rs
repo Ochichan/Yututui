@@ -465,10 +465,20 @@ pub(super) fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect 
         .find(|b| b.target == MouseTarget::MouseHelp)
         .map(|b| b.rect)
         .expect("rendered mouse help button");
+    // The footer may carry the docked-bar ▼/▲ toggle right of the mouse hint — the
+    // centering contract covers the whole rendered cluster.
+    let collapse = buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Global(Action::ToggleControlBox))
+        .map(|b| b.rect);
     let left = key.left().min(mouse.left());
     let top = key.top().min(mouse.top());
-    let right = key.right().max(mouse.right());
-    let bottom = key.bottom().max(mouse.bottom());
+    let mut right = key.right().max(mouse.right());
+    let mut bottom = key.bottom().max(mouse.bottom());
+    if let Some(c) = collapse {
+        right = right.max(c.right());
+        bottom = bottom.max(c.bottom());
+    }
     Rect {
         x: left,
         y: top,

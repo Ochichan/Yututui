@@ -327,6 +327,12 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "이 마우스 치트시트를 엽니다. 별도 단축키는 없습니다.",
                 ),
                 mouse_row(
+                    "Footer ▼/▲",
+                    "하단 ▼/▲",
+                    "Collapse or expand the docked player bar on non-Player screens (Bottom bar layout).",
+                    "하단 배치에서 Player 외 화면의 도킹 플레이어 바를 접거나 펼칩니다.",
+                ),
+                mouse_row(
                     "Wheel / scrollbar",
                     "휠 / 스크롤바",
                     "Scroll the visible list; on Player volume, wheel changes volume.",

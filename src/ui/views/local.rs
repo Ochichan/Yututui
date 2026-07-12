@@ -37,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1),
     ])
     .split(inner);
@@ -44,7 +45,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_header(frame, app, rows[0]);
     render_status(frame, app, rows[1]);
     render_body(frame, app, rows[2]);
-    buttons::render_help_button(frame, app, rows[3]);
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {

@@ -41,6 +41,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(2), // reserved top band (aligns with Settings/Library tab row + spacer)
         Constraint::Length(3), // input box
         Constraint::Min(0),    // results
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1), // help
     ])
     .split(inner);
@@ -49,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
     // the search screen. It auto-clears after STATUS_TTL via the global StatusTick. A just-set
     // message types itself in while the toast animation's window runs.
-    if !app.status.text.is_empty() {
+    if !app.status.text.is_empty() && !app.control_box_active() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
             frame.render_widget(Paragraph::new(line), rows[0]);
         } else {
@@ -70,8 +71,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_input(frame, app, rows[1]);
     render_results(frame, app, rows[2]);
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
     if app.dropdowns.search_source_open {
         render_source_dropdown(frame, app, inner);
     }

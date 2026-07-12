@@ -54,11 +54,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Min(0),    // transcript
         Constraint::Length(suggestions_rows), // suggestions (0 when none)
         Constraint::Length(3), // input box
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1), // help
     ])
     .split(inner);
 
-    if !app.status.text.is_empty() {
+    if !app.status.text.is_empty() && !app.control_box_active() {
         // A just-set message types itself in while the toast animation's window runs.
         if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
             frame.render_widget(Paragraph::new(line), rows[0]);
@@ -83,8 +84,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         render_suggestions(frame, app, rows[2]);
     }
     render_input(frame, app, rows[3]);
+    crate::ui::control_box::render_docked(frame, app, rows[4]);
 
-    render_footer(frame, app, rows[4]);
+    render_footer(frame, app, rows[5]);
 
     // DJ Gem mascot sits in the upper-center-right while the start screen shows.
     // Drawn last so it overlays cleanly; it hides once a conversation begins.

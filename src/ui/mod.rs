@@ -3,6 +3,8 @@
 pub mod anim;
 pub mod ascii_art;
 pub mod buttons;
+pub mod control_box;
+pub mod layout;
 pub mod marquee;
 pub mod mascot;
 pub mod retro;
@@ -38,13 +40,35 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The selected-row marquee flag is a per-frame output too: a list view sets it while it
     // renders a scrolling cursor row; `animation_active` reads the latest frame's verdict.
     app.bridges.marquee_ran.set(false);
-    match app.mode {
-        Mode::Player => views::player::render(frame, app, area),
-        Mode::Search => views::search::render(frame, app, area),
-        Mode::Library if app.local_dedicated_mode => views::local::render(frame, app, area),
-        Mode::Library => views::library::render(frame, app, area),
-        Mode::Settings => views::settings::render(frame, app, area),
-        Mode::Ai => views::ai::render(frame, app, area),
+    // The responsive tier is decided from the real cell grid each frame and bridged back
+    // to the reducer (text zoom rescales the grid without a resize event, so only the
+    // render pass knows it). Below the mini thresholds the whole UI is the miniplayer;
+    // the overlay stack below still runs either way — modals capture keys, so they must
+    // stay visible.
+    let tier = layout::tier(area);
+    app.bridges.ui_tier.set(tier);
+    if tier == layout::UiTier::Mini {
+        views::mini::render(frame, app, area);
+    } else {
+        match app.mode {
+            Mode::Player => views::player::render(frame, app, area),
+            Mode::Search => views::search::render(frame, app, area),
+            Mode::Library if app.local_dedicated_mode => views::local::render(frame, app, area),
+            Mode::Library => views::library::render(frame, app, area),
+            Mode::Settings => views::settings::render(frame, app, area),
+            Mode::Ai => views::ai::render(frame, app, area),
+        }
+        // The docked control box's `eq:`/`streaming:` dropdowns, on every screen that shows
+        // the box. The Player screen keeps its own in-view calls (legacy z-order: dropdowns
+        // draw *under* the queue popup there), so this hoist covers only the other screens.
+        if app.mode != Mode::Player && app.control_box_active() {
+            if app.dropdowns.eq_open {
+                control_box::render_eq_dropdown(frame, app, area);
+            }
+            if app.dropdowns.streaming_open {
+                control_box::render_streaming_dropdown(frame, app, area);
+            }
+        }
     }
     // The `?` cheat-sheet draws on top of whatever screen is active.
     if app.overlays.help_visible {

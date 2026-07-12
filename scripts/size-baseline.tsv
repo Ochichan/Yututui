@@ -1,13 +1,14 @@
 3520	src/daemon/engine.rs
 2389	src/api/ytmusic.rs
-2295	src/config.rs
-2229	src/app/settings_reducer.rs
-2081	src/settings.rs
+2356	src/config.rs
+2272	src/app/settings_reducer.rs
+2121	src/settings.rs
 1710	src/keymap.rs
 1691	src/ui/views/player.rs
 1643	src/daemon/mod.rs
 1641	src/app/local.rs
 1600	src/ui/anim.rs
+1596	src/ui/views/settings.rs
 1578	src/api/mod.rs
 1566	src/ai/mod.rs
 1552	src/transfer/matching.rs

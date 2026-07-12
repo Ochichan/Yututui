@@ -340,6 +340,36 @@ impl VideoOverlay {
     }
 }
 
+/// Where the player control block (title / seekbar / transport / status) sits. `Top` is the
+/// legacy layout: the block heads the Player view and other screens carry no player chrome.
+/// `Bottom` (the default) docks the block above the footer on every screen, and the Player
+/// view centers its filler in the space above. Persisted in `config.json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerBarPosition {
+    Top,
+    #[default]
+    Bottom,
+}
+
+impl PlayerBarPosition {
+    /// The other position (for the Settings `< >` cycle — two states, so both directions agree).
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
+        }
+    }
+
+    /// Short human label for the Settings row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Top => t!("Top (classic)", "상단 (클래식)"),
+            Self::Bottom => t!("Bottom (docked)", "하단 (도킹)"),
+        }
+    }
+}
+
 /// Scrobbling accounts (the **Accounts** settings tab) plus shared behavior, grouped under
 /// one JSON key (`"scrobble"`). Every field is `#[serde(default)]` so older config files
 /// forward-migrate cleanly.
@@ -508,6 +538,12 @@ pub struct Config {
     /// terminal's graphics protocol is probed unconditionally at startup (the About icon needs
     /// it regardless), so turning this on takes effect live. See [`crate::artwork`].
     pub album_art: Option<bool>,
+    /// Where the player control block sits (see [`PlayerBarPosition`]). `None` → `Bottom`,
+    /// the docked layout; `Top` keeps the legacy layout.
+    pub player_bar_position: Option<PlayerBarPosition>,
+    /// Whether the docked control box is collapsed on non-Player screens (the ▲/▼ footer
+    /// toggle / `B`). The Player screen always shows the box — it IS the player. `None` → false.
+    pub control_box_collapsed: Option<bool>,
 
     // Playback / EQ -----------------------------------------------------------
     /// Selected equalizer preset.
@@ -767,6 +803,8 @@ impl Default for Config {
             download_concurrency: None,
             mouse: None,
             album_art: None,
+            player_bar_position: None,
+            control_box_collapsed: None,
             eq_preset: EqPreset::default(),
             eq_bands: None,
             normalize: None,
@@ -1024,6 +1062,16 @@ impl Config {
     /// Whether to show album art / thumbnails in the player view (default off; opt-in).
     pub fn effective_album_art(&self) -> bool {
         self.album_art.unwrap_or(false)
+    }
+
+    /// Where the player control block sits (default `Bottom`, the docked layout).
+    pub fn effective_player_bar_position(&self) -> PlayerBarPosition {
+        self.player_bar_position.unwrap_or_default()
+    }
+
+    /// Whether the docked control box is collapsed on non-Player screens (default false).
+    pub fn control_box_collapsed(&self) -> bool {
+        self.control_box_collapsed.unwrap_or(false)
     }
 
     /// Whether to publish playback to the OS media session (macOS Now Playing,
@@ -1647,6 +1695,8 @@ mod tests {
             download_concurrency: Some(2),
             mouse: Some(false),
             album_art: Some(true),
+            player_bar_position: Some(PlayerBarPosition::Bottom),
+            control_box_collapsed: Some(true),
             eq_preset: EqPreset::BassBoost,
             eq_bands: Some([1.0; eq::BANDS]),
             normalize: Some(true),
@@ -1752,6 +1802,8 @@ mod tests {
         assert_eq!(back.local.import_path_template(), "{artist}/{title}");
         assert_eq!(back.mouse, Some(false));
         assert_eq!(back.album_art, Some(true));
+        assert_eq!(back.player_bar_position, Some(PlayerBarPosition::Bottom));
+        assert_eq!(back.control_box_collapsed, Some(true));
         assert_eq!(back.eq_preset, EqPreset::BassBoost);
         assert_eq!(back.eq_bands, Some([1.0; eq::BANDS]));
         assert_eq!(back.normalize, Some(true));
@@ -2059,6 +2111,24 @@ mod tests {
             ..Config::default()
         };
         assert!(on.effective_album_art());
+    }
+
+    #[test]
+    fn player_bar_defaults_to_bottom_and_forward_migrates() {
+        // Config files without the key (legacy or fresh) get the new docked layout;
+        // Top stays selectable and round-trips.
+        let back: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            back.effective_player_bar_position(),
+            PlayerBarPosition::Bottom
+        );
+        let top = Config {
+            player_bar_position: Some(PlayerBarPosition::Top),
+            ..Config::default()
+        };
+        assert_eq!(top.effective_player_bar_position(), PlayerBarPosition::Top);
+        assert_eq!(PlayerBarPosition::Top.toggled(), PlayerBarPosition::Bottom);
+        assert_eq!(PlayerBarPosition::Bottom.toggled(), PlayerBarPosition::Top);
     }
 
     #[test]
