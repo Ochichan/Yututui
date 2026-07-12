@@ -801,6 +801,13 @@ where
                 "audio staging name no longer binds the rewritten generation",
             ));
         }
+        // Windows cannot replace a destination while these validation handles still reference
+        // its current generation, even though every open permits delete sharing. The durable
+        // backup name already retains that exact object for recovery.
+        drop(current_stage);
+        drop(current);
+        drop(original);
+        drop(backup_generation);
         drop(stage_file);
 
         safe_fs::atomic_replace(&stage, audio_path)?;
@@ -817,7 +824,6 @@ where
                 ),
             ));
         }
-        drop(backup_generation);
         safe_fs::remove_private_file_durable(&backup)
     })();
 

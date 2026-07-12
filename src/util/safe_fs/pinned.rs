@@ -376,7 +376,10 @@ impl OwnedGeneration {
         self.verify()?;
         self.file.sync_all()?;
 
-        if self.residence == GenerationResidence::Named && !self.parent.inner.private_namespace {
+        if self.residence == GenerationResidence::Named
+            && !self.parent.inner.private_namespace
+            && !cfg!(windows)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "named no-replace promotion requires an app-owned private source namespace",
