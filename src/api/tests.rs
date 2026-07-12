@@ -342,7 +342,12 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
     let (handle, mut interactive_rx, mut bulk_rx) = test_api_handle(8, 8);
 
     handle
-        .gui_search(7, "gui", SearchSource::All, SearchConfig::default())
+        .gui_search(
+            GuiSearchRequestId::new(3, 7),
+            "gui",
+            SearchSource::All,
+            SearchConfig::default(),
+        )
         .unwrap();
     handle
         .streaming(
@@ -371,14 +376,14 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         .playlist_tracks("PL123", "Roadtrip", PlaylistIntent::Import)
         .unwrap();
 
-    assert!(matches!(
-        interactive_rx.try_recv().unwrap(),
-        ApiCmd::GuiSearch {
-            ticket: 7,
-            source: SearchSource::All,
-            ..
-        }
-    ));
+    let ApiCmd::GuiSearch {
+        request_id, source, ..
+    } = interactive_rx.try_recv().unwrap()
+    else {
+        panic!("GUI search should use the interactive lane");
+    };
+    assert_eq!(request_id.parts(), (3, 7));
+    assert_eq!(source, SearchSource::All);
     assert!(matches!(
         interactive_rx.try_recv().unwrap(),
         ApiCmd::ResolveTrack { seq: 9, .. }

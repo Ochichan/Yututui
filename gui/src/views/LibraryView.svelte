@@ -89,11 +89,13 @@
     </div>
     <div class="actions">
       <input
+        id="library-filter"
         class="ti filter"
         type="search"
         placeholder={t('library.filterPlaceholder')}
         bind:value={filter}
         aria-label={t('library.filterLabel')}
+        data-ui-draft-key="library-filter"
       />
       {#if isScope(tab)}
         <button class="act" onclick={playAll}>▶ {t('library.playAll')}</button>
@@ -102,7 +104,7 @@
     </div>
   </header>
 
-  <div class="body">
+  <div class="body" data-ui-scroll-key="library-body">
     {#if tab === 'downloads'}
       {#if downloads.items.length === 0}
         <div class="center"><p class="hint">{EMPTY_BODY.downloads}</p></div>

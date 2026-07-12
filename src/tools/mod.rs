@@ -220,12 +220,9 @@ pub fn ytdlp_command() -> tokio::process::Command {
 /// arguments as the process-wide selection.
 pub(crate) fn ytdlp_command_for(program: &str) -> tokio::process::Command {
     let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
-    // Every yt-dlp invocation is transient (download / resolve / probe) and must never outlive
-    // the future driving it: if that future is dropped on error or app shutdown, SIGKILL the
-    // child so a stuck yt-dlp can't linger (mpv already does the same at its spawn site). This
-    // reaps yt-dlp itself; a short-lived ffmpeg grandchild started for post-processing is not
-    // in the same kill, but the download timeout path already accepts that same bound.
-    cmd.kill_on_drop(true);
+    // `process::tokio_command` installs the direct-child kill-on-drop fallback. The bounded
+    // runner (and the streaming download path) additionally attaches the shared platform
+    // child-tree guard immediately after spawn, so ffmpeg/JS-runtime descendants cannot escape.
     // App-owned invocations are machine-parsed (`-g` first line, `--dump-single-json`,
     // `--print after_move:filepath`), so the user's ~/.config/yt-dlp/config — default format,
     // forced prints, plugins — must not leak into them. mpv's ytdl_hook path is unaffected

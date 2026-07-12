@@ -43,13 +43,19 @@ thread_local! {
 /// Draw `img` as ASCII art filling `rect`. `id` names the image (track id, asset name); the
 /// cell grid is rebuilt only when it or the rect size changes.
 pub fn render_image(frame: &mut Frame, slot: Slot, id: &str, img: &DynamicImage, rect: Rect) {
-    render_cached(frame, slot, id, rect, || Some(img.clone()));
+    render_cached(frame, slot, id, rect, || {
+        Some(build(img, rect.width, rect.height))
+    });
 }
 
 /// Like [`render_image`], but decodes `png` lazily — only when the cache slot is stale — so
 /// an embedded asset isn't re-decoded per frame.
 pub fn render_png(frame: &mut Frame, slot: Slot, id: &str, png: &[u8], rect: Rect) {
-    render_cached(frame, slot, id, rect, || image::load_from_memory(png).ok());
+    render_cached(frame, slot, id, rect, || {
+        image::load_from_memory(png)
+            .ok()
+            .map(|img| build(&img, rect.width, rect.height))
+    });
 }
 
 fn render_cached(
@@ -57,7 +63,7 @@ fn render_cached(
     slot: Slot,
     id: &str,
     rect: Rect,
-    source: impl FnOnce() -> Option<DynamicImage>,
+    source: impl FnOnce() -> Option<Vec<(char, Color)>>,
 ) {
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -68,7 +74,7 @@ fn render_cached(
             .get(&slot)
             .is_none_or(|c| c.id != id || c.width != rect.width || c.height != rect.height);
         if stale {
-            let Some(img) = source() else {
+            let Some(cells) = source() else {
                 return;
             };
             cache.insert(
@@ -77,7 +83,7 @@ fn render_cached(
                     id: id.to_owned(),
                     width: rect.width,
                     height: rect.height,
-                    cells: build(&img, rect.width, rect.height),
+                    cells,
                 },
             );
         }

@@ -1,10 +1,191 @@
 use yututui::{
-    auth_cli, config, daemon, doctor, i18n, media, remote,
+    auth_cli, daemon, doctor, i18n, media, persist, remote,
     terminal_runtime::{self, StartupTrace},
     tools, transfer, tui, update, zoom,
 };
 
 use anyhow::Result;
+use std::time::Duration;
+
+/// The owner loop already gives tracked blocking work 3.5 seconds to finish. This small outer
+/// grace only prevents a timed-out `spawn_blocking` closure from making `Runtime::drop` wait
+/// without a bound; normal shutdown should have no work left by the time it starts.
+const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CliPersistence {
+    None,
+    Reader,
+    Writer,
+}
+
+fn initialize_cli_persistence(command: &str, mode: CliPersistence) -> bool {
+    let initialized = match mode {
+        CliPersistence::None => return true,
+        CliPersistence::Reader => persist::initialize_persistence_reader(),
+        CliPersistence::Writer => persist::initialize_persistence_writer(false),
+    };
+    match initialized {
+        Ok(_) => {
+            if mode == CliPersistence::Writer
+                && let Err(error) = persist::preflight_all_startup_stores()
+            {
+                eprintln!("ytt {command}: {error}");
+                return false;
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!("ytt {command}: {error}");
+            false
+        }
+    }
+}
+
+fn initialize_interactive_persistence(
+    new_instance: bool,
+) -> std::io::Result<persist::PersistenceAccess> {
+    match interactive_persistence_mode(new_instance) {
+        CliPersistence::Reader => {
+            // `--new-instance` is an explicit observational secondary, even when no primary happens
+            // to be alive. Never opportunistically promote it to the shared-root writer: doing so
+            // makes the same command mutate or migrate state depending on startup timing.
+            persist::initialize_persistence_reader()
+        }
+        CliPersistence::Writer => persist::initialize_persistence_writer(false),
+        CliPersistence::None => unreachable!("interactive startup always resolves persistence"),
+    }
+}
+
+fn interactive_persistence_mode(new_instance: bool) -> CliPersistence {
+    if new_instance {
+        CliPersistence::Reader
+    } else {
+        CliPersistence::Writer
+    }
+}
+
+fn auth_persistence(args: &[String]) -> CliPersistence {
+    match args.first().map(String::as_str) {
+        Some("lastfm" | "listenbrainz") => CliPersistence::Writer,
+        Some("spotify") => spotify_auth_persistence(&args[1..]),
+        _ => CliPersistence::None,
+    }
+}
+
+fn spotify_auth_persistence(args: &[String]) -> CliPersistence {
+    let mut it = args.iter().map(String::as_str);
+    while let Some(arg) = it.next() {
+        match arg {
+            // The command parser consumes the next token even when it looks like a flag.
+            "--client-id" if it.next().is_some() => {}
+            "--client-id" => return CliPersistence::None,
+            "--status" | "--logout" => {}
+            "--help" | "-h" => return CliPersistence::None,
+            // Unknown flags are rejected before Config/token access.
+            _ => return CliPersistence::None,
+        }
+    }
+    // Status can refresh credentials, logout removes them, and the default connect path may save
+    // both config and token state. Those valid or otherwise ambiguous forms require the writer.
+    CliPersistence::Writer
+}
+
+fn transfer_persistence(args: &[String]) -> CliPersistence {
+    match args.first().map(String::as_str) {
+        Some("list" | "jobs" | "sessions" | "session" | "report") => CliPersistence::Reader,
+        Some("review") => review_persistence(&args[1..]),
+        // This surface only builds and prints a plan; the parser requires `--dry-run` and has no
+        // apply path. Keeping even malformed invocations observational also preserves usage exits
+        // when another process owns the writer lease.
+        Some("download") => CliPersistence::Reader,
+        Some("organize") => organize_persistence(&args[1..]),
+        Some("import" | "export" | "backup" | "resume") => CliPersistence::Writer,
+        None | Some("--help" | "-h" | "help") => CliPersistence::None,
+        Some(_) => CliPersistence::None,
+    }
+}
+
+fn review_persistence(args: &[String]) -> CliPersistence {
+    let Some(_) = args.first() else {
+        return CliPersistence::None;
+    };
+    match args.get(1).map(String::as_str) {
+        None
+        | Some("--all" | "--review" | "--accepted" | "--rejected" | "--skipped" | "--undecided") => {
+            CliPersistence::Reader
+        }
+        // Known actions mutate, and an unrecognized second token enters the action parser. Keep
+        // that ambiguous path fail-closed under the writer lease rather than guessing from flags.
+        Some(_) => CliPersistence::Writer,
+    }
+}
+
+fn organize_persistence(args: &[String]) -> CliPersistence {
+    let mut dry_run = false;
+    let mut apply = false;
+    let mut has_session_id = false;
+    let mut has_root = false;
+    let mut invalid = false;
+    let mut it = args.iter().map(String::as_str);
+    while let Some(arg) = it.next() {
+        match arg {
+            "--dry-run" => dry_run = true,
+            "--apply" => apply = true,
+            "--yes" => {}
+            "--root" => {
+                if it.next().is_some() {
+                    has_root = true;
+                } else {
+                    invalid = true;
+                }
+            }
+            "--template" => {
+                if it.next().is_none() {
+                    invalid = true;
+                }
+            }
+            "--help" | "-h" => invalid = true,
+            other if other.starts_with('-') => invalid = true,
+            _ if has_session_id => invalid = true,
+            _ => has_session_id = true,
+        }
+    }
+
+    if !invalid && has_session_id && has_root && dry_run && !apply {
+        CliPersistence::Reader
+    } else {
+        // `--apply` is mutating. Malformed or otherwise ambiguous forms retain the conservative
+        // writer classification instead of duplicating the command parser's full validation here.
+        CliPersistence::Writer
+    }
+}
+
+fn tools_persistence(args: &[String]) -> CliPersistence {
+    match args.first().map(String::as_str) {
+        None | Some("status") => CliPersistence::Reader,
+        // These two parsers reject the missing-argument form before loading or saving state. Do
+        // not let writer-lease contention turn their stable usage exit (2) into an I/O exit (1).
+        Some("use" | "reset") if args.len() == 1 => CliPersistence::None,
+        Some("use" | "unpin" | "update" | "reset" | "diagnose") => CliPersistence::Writer,
+        Some(_) => CliPersistence::None,
+    }
+}
+
+fn doctor_persistence(args: &[String]) -> CliPersistence {
+    if matches!(args, [command, flag] if command == "privacy" && flag == "--cleanup") {
+        CliPersistence::Writer
+    } else if matches!(
+        args.first().map(String::as_str),
+        Some("--help" | "-h" | "help")
+    ) {
+        CliPersistence::None
+    } else {
+        CliPersistence::Reader
+    }
+}
+
+mod data_cli;
 
 fn cli_identity() -> (&'static str, &'static str) {
     match option_env!("CARGO_BIN_NAME") {
@@ -40,6 +221,7 @@ fn main() -> Result<()> {
                 println!(
                     "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
+                println!("       {bin} data <cmd>       Export portable personal data");
                 println!("       {bin} doctor [-v]      Check your environment and exit");
                 println!("       {bin} doctor audio [-v]");
                 println!("       {bin} doctor privacy [--cleanup]");
@@ -87,6 +269,9 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                if !initialize_cli_persistence("auth", auth_persistence(&rest)) {
+                    std::process::exit(1);
+                }
                 std::process::exit(auth_cli::run(&rest));
             }
             // Playlist transfer (Spotify ↔ YTM ↔ files) - batch jobs, never the TUI.
@@ -95,7 +280,19 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                if !initialize_cli_persistence("transfer", transfer_persistence(&rest)) {
+                    std::process::exit(1);
+                }
                 std::process::exit(transfer::cli::run(&rest));
+            }
+            // Portable settings/library export. This one-shot path never initializes the TUI;
+            // it delegates to a capable live owner or snapshots persisted state when offline.
+            "data" => {
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
+                std::process::exit(data_cli::run(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
@@ -105,6 +302,9 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                if !initialize_cli_persistence("doctor", doctor_persistence(&rest)) {
+                    std::process::exit(1);
+                }
                 std::process::exit(doctor::run_with_args(&rest));
             }
             // Managed yt-dlp maintenance (status / forced update) - same one-shot,
@@ -114,6 +314,9 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                if !initialize_cli_persistence("tools", tools_persistence(&rest)) {
+                    std::process::exit(1);
+                }
                 std::process::exit(tools::cli::run(&rest));
             }
             // App update check - reports whether a newer YuTuTui! release exists and how to
@@ -123,6 +326,9 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                if !initialize_cli_persistence("update", CliPersistence::Reader) {
+                    std::process::exit(1);
+                }
                 std::process::exit(update::cli::run(&rest));
             }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
@@ -151,22 +357,16 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
     startup.mark("runtime_built");
-    rt.block_on(async_main(new_instance, startup))
+    let result = rt.block_on(async_main(new_instance, startup));
+    rt.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+    result
 }
 
 async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {
-    // Load config before terminal init so mouse capture reflects it.
-    let cfg = config::Config::load();
-    startup.mark("config_loaded");
-    // Apply the saved UI language before anything renders, so the first frame is already
-    // translated. The Settings dropdown updates this global live as the user changes it.
-    i18n::set_language(cfg.effective_language());
-    let mouse = cfg.effective_mouse();
-
     // Single-instance guard + control socket. Done BEFORE the terminal is touched so the
-    // "already running" notice prints to a clean screen and we never enter the alternate
-    // screen just to bow out. `--new-instance` skips the guard and binds a private socket;
-    // a bind failure degrades to running without remote control rather than refusing to start.
+    // "already running" notice prints to a clean screen and, critically, before any config
+    // loader can migrate or repair state. `--new-instance` skips the guard and binds a private
+    // socket; a bind failure degrades to running without remote control rather than refusing.
     let remote = match remote::bind_or_detect(new_instance).await {
         remote::BindOutcome::AlreadyRunning => {
             eprintln!(
@@ -181,6 +381,17 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         remote::BindOutcome::Unavailable => None,
     };
     startup.mark("remote_bound");
+
+    // The primary owner must hold one process-wide writer lease before Config::load can migrate
+    // anything. A deliberate secondary player remains available, but only as strict read-only;
+    // normal owners and mutating CLI paths fail rather than accepting state a newer epoch discards.
+    let persistence_access = initialize_interactive_persistence(new_instance)?;
+    let (cfg, persistent_state) = persist::load_verified_startup_state()?;
+    startup.mark("config_loaded");
+    // Apply the saved UI language before anything renders, so the first frame is already
+    // translated. The Settings dropdown updates this global live as the user changes it.
+    i18n::set_language(cfg.effective_language());
+    let mouse = cfg.effective_mouse();
     // Probe the terminal for its graphics protocol + font size, and do it BEFORE `tui::init`
     // so the 1x1 probe image and its cursor-position reports never land on the app's alternate
     // screen. The probe is fully synchronous (see `ratatui_image::picker`): it raw-modes the
@@ -197,7 +408,9 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // picker never turns the feature on; it only means "a protocol is known." Repeat probes on
     // terminals without native graphics are cheap: `build_art_picker` short-circuits via the
     // 24h halfblocks cache.
-    let art_picker = Some(terminal_runtime::build_art_picker());
+    let art_picker = Some(terminal_runtime::build_art_picker_with_access(
+        &persistence_access,
+    ));
     startup.mark("art_picker_ready");
     // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
     // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
@@ -206,7 +419,7 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     startup.mark("terminal_ready");
     let result = terminal_runtime::run(
         &mut terminal,
-        cfg,
+        terminal_runtime::TerminalStartupState::new(cfg, persistent_state, persistence_access),
         art_picker,
         remote,
         startup,
@@ -216,4 +429,153 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     .await;
     tui::restore(mouse);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn explicit_new_instance_is_always_an_observational_reader() {
+        assert_eq!(interactive_persistence_mode(true), CliPersistence::Reader);
+    }
+
+    #[test]
+    fn ordinary_interactive_owner_requests_the_writer_capability() {
+        assert_eq!(interactive_persistence_mode(false), CliPersistence::Writer);
+    }
+
+    #[test]
+    fn transfer_download_and_review_views_are_observational() {
+        assert_eq!(
+            transfer_persistence(&args(&["download", "sp2yt-1", "--accepted", "--dry-run"])),
+            CliPersistence::Reader
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["review", "sp2yt-1"])),
+            CliPersistence::Reader
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["review", "sp2yt-1", "--accepted"])),
+            CliPersistence::Reader
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["review", "sp2yt-1", "accept", "1"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["review", "sp2yt-1", "unknown", "1"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["review"])),
+            CliPersistence::None
+        );
+    }
+
+    #[test]
+    fn transfer_organize_only_downgrades_a_valid_dry_run_shape() {
+        assert_eq!(
+            transfer_persistence(&args(&[
+                "organize",
+                "sp2yt-1",
+                "--root",
+                "/tmp/library",
+                "--dry-run"
+            ])),
+            CliPersistence::Reader
+        );
+        assert_eq!(
+            transfer_persistence(&args(&[
+                "organize",
+                "sp2yt-1",
+                "--root",
+                "/tmp/library",
+                "--apply",
+                "--yes"
+            ])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            transfer_persistence(&args(&[
+                "organize",
+                "sp2yt-1",
+                "--root",
+                "/tmp/library",
+                "--dry-run",
+                "--apply",
+                "--yes"
+            ])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            transfer_persistence(&args(&["organize", "sp2yt-1", "--dry-run"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            transfer_persistence(&args(&[
+                "organize",
+                "sp2yt-1",
+                "--root",
+                "/tmp/library",
+                "--dry-run",
+                "--unknown"
+            ])),
+            CliPersistence::Writer
+        );
+    }
+
+    #[test]
+    fn obvious_missing_tools_arguments_bypass_persistence_initialization() {
+        assert_eq!(tools_persistence(&args(&["use"])), CliPersistence::None);
+        assert_eq!(tools_persistence(&args(&["reset"])), CliPersistence::None);
+        assert_eq!(
+            tools_persistence(&args(&["use", "system"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            tools_persistence(&args(&["use", "system", "extra"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            tools_persistence(&args(&["reset", "--not-playback"])),
+            CliPersistence::Writer
+        );
+    }
+
+    #[test]
+    fn spotify_help_and_provable_parse_errors_bypass_persistence() {
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--help"])),
+            CliPersistence::None
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--client-id"])),
+            CliPersistence::None
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--unknown"])),
+            CliPersistence::None
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--client-id", "--help"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--status"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify", "--logout"])),
+            CliPersistence::Writer
+        );
+        assert_eq!(
+            auth_persistence(&args(&["spotify"])),
+            CliPersistence::Writer
+        );
+    }
 }

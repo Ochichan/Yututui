@@ -9,6 +9,7 @@ import { SettingsStore, type SettingsModelV8 } from '../src/lib/stores/settings.
 import { defaultAnimations } from '../src/lib/stores/anim.svelte';
 import { defaultKeymap } from '../src/lib/stores/keymap.svelte';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
+import { i18n } from '../src/lib/i18n.svelte';
 import type { Transport } from '../src/lib/ipc/transport';
 import type { InEnvelope, OutEnvelope } from '../src/lib/ipc/envelope';
 
@@ -70,13 +71,25 @@ function baseModel(): SettingsModelV8 {
       mpv_cache_back: '8MiB',
     },
     animations: defaultAnimations(),
-    theme: { preset: 'Default', roles: {}, overrides: {}, background_none: false, retro: false, presets: [] },
+    theme: {
+      preset: 'Default',
+      roles: {},
+      overrides: {},
+      background_none: false,
+      retro: false,
+      presets: [],
+    },
     keymap: defaultKeymap(),
   };
 }
 
 function push(t: MockTransport, model: SettingsModelV8): void {
   t.emit({ v: 1, kind: 'event', topic: 'settings', payload: { kind: 'settings_snapshot', model } });
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe('SettingsStore', () => {
@@ -107,12 +120,78 @@ describe('SettingsStore', () => {
     expect(store.dirty).toBe(true);
   });
 
-  it('clears a pending edit once a push confirms it', () => {
+  it('rolls back only the correlated optimistic edit when the core rejects it', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+
+    store.apply('playback', 'gapless', false);
+    const rejected = t.sent.at(-1);
+    expect(rejected).toMatchObject({ kind: 'cmd', name: 'apply' });
+    if (rejected?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: rejected.id, kind: 'err', payload: { reason: 'rejected' } });
+    await flushPromises();
+
+    expect(store.dirty).toBe(false);
+    expect(store.playback?.gapless).toBe(true);
+  });
+
+  it('does not let an older rejection roll back a newer edit to the same field', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+
+    store.apply('playback', 'gapless', false);
+    const older = t.sent.at(-1);
+    store.apply('playback', 'gapless', true);
+    if (older?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: older.id, kind: 'err', payload: { reason: 'rejected' } });
+    await flushPromises();
+
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(true);
+  });
+
+  it('does not confuse a newer equal-valued edit with an older rejected request', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+
+    store.apply('playback', 'gapless', false);
+    const oldest = t.sent.at(-1);
+    store.apply('playback', 'gapless', true);
+    store.apply('playback', 'gapless', false);
+    if (oldest?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: oldest.id, kind: 'err', payload: { reason: 'rejected' } });
+    await flushPromises();
+
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(false);
+  });
+
+  it('keeps a pending optimistic edit when confirmation is lost', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+    store.apply('playback', 'gapless', false);
+
+    t.emit({ v: 1, kind: 'conn', payload: { state: 'offline', reason: 'disconnected' } });
+    await flushPromises();
+
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(false);
+  });
+
+  it('clears a pending edit once its acknowledgement is followed by a confirming push', async () => {
     const t = new MockTransport();
     const store = new SettingsStore(new Client(t));
     push(t, baseModel());
     store.apply('playback', 'gapless', false);
     expect(store.dirty).toBe(true);
+    const request = t.sent.at(-1);
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: request.id, kind: 'res', payload: { ok: true } });
+    await flushPromises();
 
     const confirmed = baseModel();
     confirmed.playback.gapless = false; // the core agreed
@@ -136,13 +215,17 @@ describe('SettingsStore', () => {
     expect(store.model?.playback.gapless).toBe(true);
   });
 
-  it('uses value (not reference) equality for the 10-band EQ array', () => {
+  it('uses value (not reference) equality for the 10-band EQ array', async () => {
     const t = new MockTransport();
     const store = new SettingsStore(new Client(t));
     push(t, baseModel());
     const bands = [3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     store.apply('eq', 'bands', bands);
     expect(store.dirty).toBe(true);
+    const request = t.sent.at(-1);
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: request.id, kind: 'res', payload: { ok: true } });
+    await flushPromises();
 
     const confirmed = baseModel();
     confirmed.eq.bands = [3, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // equal by value, different array
@@ -151,13 +234,21 @@ describe('SettingsStore', () => {
     expect(store.eq?.bands[0]).toBe(3);
   });
 
-  it('two independent edits clear independently', () => {
+  it('two independent edits clear independently', async () => {
     const t = new MockTransport();
     const store = new SettingsStore(new Client(t));
     push(t, baseModel());
     store.apply('ui', 'album_art', false);
+    const first = t.sent.at(-1);
     store.apply('streaming', 'mode', 'discovery');
+    const second = t.sent.at(-1);
     expect(store.dirty).toBe(true);
+    if (first?.kind !== 'cmd' || second?.kind !== 'cmd') {
+      throw new Error('apply did not send mutations');
+    }
+    t.emit({ v: 1, id: first.id, kind: 'res', payload: { ok: true } });
+    t.emit({ v: 1, id: second.id, kind: 'res', payload: { ok: true } });
+    await flushPromises();
 
     const half = baseModel();
     half.ui.album_art = false; // only the first is confirmed
@@ -166,6 +257,52 @@ describe('SettingsStore', () => {
     expect(store.dirty).toBe(true); // mode edit still pending
     expect(store.ui?.album_art).toBe(false);
     expect(store.streaming?.mode).toBe('discovery');
+  });
+
+  it('does not let an old equal-valued push confirm the newest A to B to A edit', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+
+    store.apply('playback', 'gapless', false);
+    store.apply('playback', 'gapless', true);
+    store.apply('playback', 'gapless', false);
+    const newest = t.sent.at(-1);
+    if (newest?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+
+    const oldEqualPush = baseModel();
+    oldEqualPush.rev = 2;
+    oldEqualPush.playback.gapless = false;
+    push(t, oldEqualPush);
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(false);
+
+    t.emit({ v: 1, id: newest.id, kind: 'res', payload: { ok: true } });
+    await flushPromises();
+    expect(store.dirty).toBe(true);
+
+    const newestPush = structuredClone(oldEqualPush);
+    newestPush.rev = 4;
+    push(t, newestPush);
+    expect(store.dirty).toBe(false);
+    expect(store.playback?.gapless).toBe(false);
+  });
+
+  it('surfaces a localized setting rejection through the supplied error callback', async () => {
+    const t = new MockTransport();
+    const onError = vi.fn();
+    const store = new SettingsStore(new Client(t), onError);
+    push(t, baseModel());
+    i18n.set('ko');
+
+    store.apply('playback', 'gapless', false);
+    const request = t.sent.at(-1);
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
+    t.emit({ v: 1, id: request.id, kind: 'err', payload: { reason: 'rejected' } });
+    await flushPromises();
+
+    expect(onError).toHaveBeenCalledWith('설정을 적용하지 못했습니다: rejected');
+    i18n.set('en');
   });
 
   it('exposes the animations block and overlays edits optimistically', () => {
@@ -239,8 +376,9 @@ describe('demo core settings', () => {
   }
   const lastSettings = (frames: InEnvelope[]): SettingsModelV8 =>
     (
-      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'settings')!
-        .payload as { model: SettingsModelV8 }
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'settings')!.payload as {
+        model: SettingsModelV8;
+      }
     ).model;
 
   it('subscribing yields an initial settings snapshot', () => {

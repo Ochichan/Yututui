@@ -15,18 +15,31 @@ pub enum MpvIncoming {
         name: String,
         value: Value,
     },
+    /// mpv began a new playlist entry. Audio IPC uses this ordering boundary to activate the
+    /// generation assigned to the corresponding accepted `loadfile` command.
+    StartFile { playlist_entry_id: Option<u64> },
     /// Playback of the current file ended; `reason` is mpv's `end-file` reason
     /// (`eof`, `stop`, `error`, `quit`, ...). `file_error` is mpv's error detail, present
     /// only when `reason` is `error` (e.g. "Failed to open", "Unrecognized file format").
     EndFile {
         reason: String,
         file_error: Option<String>,
+        playlist_entry_id: Option<u64>,
+        playlist_insert_id: Option<u64>,
+        playlist_insert_num_entries: Option<u64>,
     },
+    /// mpv entered its explicit `--idle` loop with no file loaded. Unlike the observed
+    /// `idle-active` property, this lifecycle event cannot collapse across a fast failed load.
+    Idle,
     /// A `script-message …` fired inside mpv (e.g. by a rebound key in the video
     /// overlay); `args` are the message name and its arguments.
     ClientMessage { args: Vec<String> },
     /// mpv's reply to one of our commands (`{"error":"success","request_id":N,...}`).
-    CommandReply { request_id: u64, error: String },
+    CommandReply {
+        request_id: u64,
+        error: String,
+        data: Option<Value>,
+    },
     /// An event we don't act on.
     Other,
 }
@@ -41,6 +54,9 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
             let value = v.get("data").cloned().unwrap_or(Value::Null);
             Some(MpvIncoming::PropertyChange { id, name, value })
         }
+        Some("start-file") => Some(MpvIncoming::StartFile {
+            playlist_entry_id: v.get("playlist_entry_id").and_then(Value::as_u64),
+        }),
         Some("end-file") => {
             let reason = v
                 .get("reason")
@@ -51,8 +67,17 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                 .get("file_error")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            Some(MpvIncoming::EndFile { reason, file_error })
+            Some(MpvIncoming::EndFile {
+                reason,
+                file_error,
+                playlist_entry_id: v.get("playlist_entry_id").and_then(Value::as_u64),
+                playlist_insert_id: v.get("playlist_insert_id").and_then(Value::as_u64),
+                playlist_insert_num_entries: v
+                    .get("playlist_insert_num_entries")
+                    .and_then(Value::as_u64),
+            })
         }
+        Some("idle") => Some(MpvIncoming::Idle),
         Some("client-message") => {
             let args = v
                 .get("args")
@@ -75,7 +100,12 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
-                Some(MpvIncoming::CommandReply { request_id, error })
+                let data = v.get("data").cloned();
+                Some(MpvIncoming::CommandReply {
+                    request_id,
+                    error,
+                    data,
+                })
             } else {
                 Some(MpvIncoming::Other)
             }
@@ -102,6 +132,12 @@ pub fn cmd_stop(request_id: u64) -> String {
 /// `observe_property <id> <name>` — subscribe to property-change events.
 pub fn cmd_observe(id: u64, name: &str) -> String {
     json!({ "command": ["observe_property", id, name], "request_id": id }).to_string()
+}
+
+/// `get_property <name>` — used to correlate a load with its stable playlist entry on mpv
+/// 0.32, whose successful `loadfile` reply predates the direct `playlist_entry_id` result.
+pub fn cmd_get_property(name: &str, request_id: u64) -> String {
+    json!({ "command": ["get_property", name], "request_id": request_id }).to_string()
 }
 
 /// `cycle <property>` — e.g. toggle `pause`.
@@ -155,10 +191,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_start_file() {
+        assert!(matches!(
+            parse_line(r#"{"event":"start-file","playlist_entry_id":17}"#),
+            Some(MpvIncoming::StartFile {
+                playlist_entry_id: Some(17)
+            })
+        ));
+    }
+
+    #[test]
     fn parses_end_file() {
         let line = r#"{"event":"end-file","reason":"eof"}"#;
         match parse_line(line) {
-            Some(MpvIncoming::EndFile { reason, file_error }) => {
+            Some(MpvIncoming::EndFile {
+                reason, file_error, ..
+            }) => {
                 assert_eq!(reason, "eof");
                 assert!(file_error.is_none());
             }
@@ -170,7 +218,9 @@ mod tests {
     fn parses_end_file_error_with_detail() {
         let line = r#"{"event":"end-file","reason":"error","file_error":"Failed to open"}"#;
         match parse_line(line) {
-            Some(MpvIncoming::EndFile { reason, file_error }) => {
+            Some(MpvIncoming::EndFile {
+                reason, file_error, ..
+            }) => {
                 assert_eq!(reason, "error");
                 assert_eq!(file_error.as_deref(), Some("Failed to open"));
             }
@@ -179,10 +229,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicit_idle_lifecycle_event() {
+        assert!(matches!(
+            parse_line(r#"{"event":"idle"}"#),
+            Some(MpvIncoming::Idle)
+        ));
+    }
+
+    #[test]
     fn command_reply_parses() {
         let line = r#"{"error":"success","request_id":11}"#;
         match parse_line(line) {
-            Some(MpvIncoming::CommandReply { request_id, error }) => {
+            Some(MpvIncoming::CommandReply {
+                request_id, error, ..
+            }) => {
                 assert_eq!(request_id, 11);
                 assert_eq!(error, "success");
             }
@@ -194,7 +254,9 @@ mod tests {
     fn failed_command_reply_parses() {
         let line = r#"{"error":"invalid parameter","request_id":12}"#;
         match parse_line(line) {
-            Some(MpvIncoming::CommandReply { request_id, error }) => {
+            Some(MpvIncoming::CommandReply {
+                request_id, error, ..
+            }) => {
                 assert_eq!(request_id, 12);
                 assert_eq!(error, "invalid parameter");
             }

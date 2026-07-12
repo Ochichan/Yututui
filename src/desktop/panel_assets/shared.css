@@ -1,0 +1,56 @@
+    /* One semantic player tree is laid out by all skins. Tama's pet/LCD shell is a
+       presentation-only layer and never owns focus or accessible state. */
+    .tama-visual,
+    .compact-menu {
+      display: none;
+    }
+
+    #sharedSheetBar {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+    }
+
+    #sharedSheetBack {
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border-radius: 50%;
+    }
+
+    #sharedSheetTitle {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    /* Compact skins temporarily grow to the default work surface for Queue/More.
+       The very same tab panels and controls remain mounted, so focus and pending
+       state survive the transition. */
+    html.shared-sheet .player-shell {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: 100%;
+      height: 100%;
+      padding: 13px 13px 11px;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 26px;
+      background: linear-gradient(180deg, #262a40 0%, var(--base) 42%, var(--mantle) 100%);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    html.shared-sheet .tama-visual,
+    html.shared-sheet .compact-menu,
+    html.shared-sheet .player-shell > header,
+    html.shared-sheet .player-shell > .mode-switch,
+    html.shared-sheet .player-shell > .tabs,
+    html.shared-sheet .player-shell > .dock,
+    html.shared-sheet #panelNow {
+      display: none !important;
+    }
+
+    html.shared-sheet #sharedSheetBar {
+      display: flex;
+    }

@@ -44,13 +44,17 @@ impl ContextMenuState {
 #[derive(Clone)]
 enum ContextTarget {
     Search {
-        index: usize,
-        video_id: String,
+        /// Ascending result rows the menu acts on — the clicked row, or the whole
+        /// effective multi-selection when the click landed inside it.
+        rows: Vec<usize>,
+        /// Identity snapshot parallel to `rows`.
+        video_ids: Vec<String>,
         filter_row: Option<usize>,
     },
     LibrarySongs {
-        lo: usize,
-        hi: usize,
+        /// Ascending library rows the menu acts on — the clicked row, or the whole
+        /// effective (range or Ctrl/Cmd-picked) selection when clicked inside it.
+        rows: Vec<usize>,
         video_ids: Vec<String>,
         tab: LibraryTab,
         open_playlist: Option<String>,
@@ -157,7 +161,9 @@ impl ContextMenuItem {
 impl ContextTarget {
     fn count(&self) -> usize {
         match self {
-            Self::LibrarySongs { video_ids, .. } | Self::Queue { video_ids, .. } => video_ids.len(),
+            Self::LibrarySongs { video_ids, .. }
+            | Self::Queue { video_ids, .. }
+            | Self::Search { video_ids, .. } => video_ids.len(),
             _ => 1,
         }
     }
@@ -393,8 +399,8 @@ impl App {
             let &index = self.search_filter.matches.get(filter_row)?;
             let song = self.search.results.get(index)?;
             return Some(ContextTarget::Search {
-                index,
-                video_id: song.video_id.clone(),
+                rows: vec![index],
+                video_ids: vec![song.video_id.clone()],
                 filter_row: Some(filter_row),
             });
         }
@@ -444,9 +450,40 @@ impl App {
                     return None;
                 };
                 let song = self.search.results.get(index)?;
+                // A click inside the current multi-selection targets the whole selection;
+                // playlist rows keep their dedicated single-row menu, and any playlist
+                // rows inside the selection are dropped here so the "(N)" labels count
+                // exactly the songs the commands will act on.
+                let selection = self.search_selection_indices();
+                let rows = if selection.len() > 1
+                    && selection.contains(&index)
+                    && song.youtube_playlist_id().is_none()
+                {
+                    let songs_only: Vec<usize> = selection
+                        .into_iter()
+                        .filter(|&i| {
+                            self.search
+                                .results
+                                .get(i)
+                                .is_some_and(|s| s.youtube_playlist_id().is_none())
+                        })
+                        .collect();
+                    if songs_only.len() > 1 {
+                        songs_only
+                    } else {
+                        vec![index]
+                    }
+                } else {
+                    vec![index]
+                };
+                let video_ids = rows
+                    .iter()
+                    .filter_map(|&i| self.search.results.get(i))
+                    .map(|s| s.video_id.clone())
+                    .collect();
                 Some(ContextTarget::Search {
-                    index,
-                    video_id: song.video_id.clone(),
+                    rows,
+                    video_ids,
                     filter_row: None,
                 })
             }
@@ -478,20 +515,21 @@ impl App {
                 if index >= songs.len() {
                     return None;
                 }
-                let current_lo = self.library_ui.selected.min(self.library_ui.anchor);
-                let current_hi = self.library_ui.selected.max(self.library_ui.anchor);
-                let (lo, hi) = if current_lo <= index && index <= current_hi {
-                    (current_lo, current_hi.min(songs.len() - 1))
+                // A click inside the current effective selection (drag range or
+                // Ctrl/Cmd-picked rows) targets the whole selection.
+                let selection = self.library_selection_indices();
+                let rows = if selection.contains(&index) {
+                    selection
                 } else {
-                    (index, index)
+                    vec![index]
                 };
-                let video_ids = songs[lo..=hi]
+                let video_ids = rows
                     .iter()
+                    .filter_map(|&i| songs.get(i))
                     .map(|song| song.video_id.clone())
                     .collect();
                 Some(ContextTarget::LibrarySongs {
-                    lo,
-                    hi,
+                    rows,
                     video_ids,
                     tab: self.effective_library_tab(),
                     open_playlist: self.library_ui.open_playlist.clone(),
@@ -506,20 +544,41 @@ impl App {
     fn select_context_target(&mut self, target: &ContextTarget) {
         match target {
             ContextTarget::Search {
-                index, filter_row, ..
+                rows, filter_row, ..
             } => {
-                self.search.selected = *index;
+                // A click inside the current selection may target a filtered subset
+                // (song rows only, or a playlist row). Leave the selection untouched
+                // so cancelling the menu changes nothing.
+                if let Some((&first, &last)) = rows.first().zip(rows.last())
+                    && {
+                        let selection = self.search_selection_indices();
+                        *rows != selection && !rows.iter().all(|row| selection.contains(row))
+                    }
+                {
+                    if rows.len() > 1 {
+                        self.search.picked = rows.iter().copied().collect();
+                    } else {
+                        self.search.picked.clear();
+                    }
+                    self.search.selected = last;
+                    self.search.anchor = first;
+                }
                 self.search.focus = SearchFocus::Results;
                 if let Some(row) = filter_row {
                     self.search_filter.cursor = *row;
                 }
             }
-            ContextTarget::LibrarySongs { lo, hi, .. } => {
-                let current_lo = self.library_ui.selected.min(self.library_ui.anchor);
-                let current_hi = self.library_ui.selected.max(self.library_ui.anchor);
-                if (current_lo, current_hi) != (*lo, *hi) {
-                    self.library_ui.selected = *hi;
-                    self.library_ui.anchor = *lo;
+            ContextTarget::LibrarySongs { rows, .. } => {
+                if let Some((&first, &last)) = rows.first().zip(rows.last())
+                    && *rows != self.library_selection_indices()
+                {
+                    if rows.len() > 1 {
+                        self.library_ui.picked = rows.iter().copied().collect();
+                    } else {
+                        self.library_ui.picked.clear();
+                    }
+                    self.library_ui.selected = last;
+                    self.library_ui.anchor = first;
                 }
             }
             ContextTarget::LibraryPlaylist { index, .. } => {
@@ -562,15 +621,21 @@ impl App {
     fn context_items(&self, target: &ContextTarget) -> Vec<ContextMenuItem> {
         use ContextCommand as C;
         let commands: Vec<C> = match target {
+            // A multi-selection only ever holds song rows (playlist rows keep their
+            // dedicated single-row menu), so the bulk commands apply directly.
+            ContextTarget::Search { rows, .. } if rows.len() > 1 => {
+                vec![C::PlayNow, C::Enqueue, C::AddToPlaylist, C::Download]
+            }
             ContextTarget::Search {
-                index, video_id, ..
-            } => match self.search.results.get(*index) {
+                rows, video_ids, ..
+            } => match rows.first().and_then(|&i| self.search.results.get(i)) {
                 Some(song)
-                    if song.video_id == *video_id && song.youtube_playlist_id().is_some() =>
+                    if video_ids.first() == Some(&song.video_id)
+                        && song.youtube_playlist_id().is_some() =>
                 {
                     vec![C::PlayNow, C::Enqueue, C::ImportPlaylist]
                 }
-                Some(song) if song.video_id == *video_id => vec![
+                Some(song) if video_ids.first() == Some(&song.video_id) => vec![
                     C::PlayNow,
                     C::Enqueue,
                     C::ToggleFavorite,
@@ -636,27 +701,66 @@ impl App {
     ) -> Vec<Cmd> {
         match target {
             ContextTarget::Search {
-                index,
-                video_id,
+                rows,
+                video_ids,
                 filter_row,
             } => {
-                let valid_filter = filter_row.is_none_or(|row| {
-                    self.search_filter.open
-                        && self.search_filter.matches.get(row).copied() == Some(index)
-                });
-                let Some(song) = self
-                    .search
-                    .results
-                    .get(index)
-                    .filter(|song| song.video_id == video_id)
-                    .cloned()
-                else {
+                let Some((&first, &last)) = rows.first().zip(rows.last()) else {
                     return self.context_target_stale();
                 };
-                if !valid_filter {
+                let valid_filter = filter_row.is_none_or(|row| {
+                    self.search_filter.open
+                        && self.search_filter.matches.get(row).copied() == Some(first)
+                });
+                // Identity snapshot: every targeted row must still hold the song it did
+                // when the menu opened.
+                let songs: Vec<Song> = rows
+                    .iter()
+                    .filter_map(|&i| self.search.results.get(i).cloned())
+                    .collect();
+                if songs.len() != rows.len()
+                    || !songs
+                        .iter()
+                        .map(|s| s.video_id.as_str())
+                        .eq(video_ids.iter().map(String::as_str))
+                    || !valid_filter
+                {
                     return self.context_target_stale();
                 }
+                if songs.len() > 1 {
+                    self.search.picked = rows.iter().copied().collect();
+                    self.search.selected = last;
+                    self.search.anchor = first;
+                    self.search.focus = SearchFocus::Results;
+                    self.dirty = true;
+                    // Multi targets are built from song rows only; keep the filter as a
+                    // guard against a hypothetically stale playlist row sneaking in.
+                    let songs: Vec<Song> = songs
+                        .into_iter()
+                        .filter(|s| s.youtube_playlist_id().is_none())
+                        .collect();
+                    if songs.is_empty() {
+                        return Vec::new();
+                    }
+                    return match command {
+                        ContextCommand::Activate | ContextCommand::PlayNow => {
+                            self.play_now_many(songs)
+                        }
+                        ContextCommand::Enqueue => self.enqueue_many(songs),
+                        ContextCommand::AddToPlaylist => {
+                            self.open_playlist_picker(songs);
+                            Vec::new()
+                        }
+                        ContextCommand::Download => self.open_confirm_download(songs),
+                        _ => Vec::new(),
+                    };
+                }
+                let index = first;
+                let Some(song) = songs.into_iter().next() else {
+                    return self.context_target_stale();
+                };
                 self.search.selected = index;
+                self.collapse_search_selection();
                 self.search.focus = SearchFocus::Results;
                 self.dirty = true;
                 match command {
@@ -690,8 +794,7 @@ impl App {
                 }
             }
             ContextTarget::LibrarySongs {
-                lo,
-                hi,
+                rows,
                 video_ids,
                 tab,
                 open_playlist,
@@ -701,20 +804,27 @@ impl App {
                 {
                     return self.context_target_stale();
                 }
-                let songs = self.library_songs();
-                let Some(slice) = songs.get(lo..=hi) else {
+                let Some((&first, &last)) = rows.first().zip(rows.last()) else {
                     return self.context_target_stale();
                 };
-                if !slice
-                    .iter()
-                    .map(|song| song.video_id.as_str())
-                    .eq(video_ids.iter().map(String::as_str))
+                let songs = self.library_songs();
+                let selected: Vec<Song> =
+                    rows.iter().filter_map(|&i| songs.get(i).cloned()).collect();
+                if selected.len() != rows.len()
+                    || !selected
+                        .iter()
+                        .map(|song| song.video_id.as_str())
+                        .eq(video_ids.iter().map(String::as_str))
                 {
                     return self.context_target_stale();
                 }
-                let selected = slice.to_vec();
-                self.library_ui.selected = hi;
-                self.library_ui.anchor = lo;
+                if rows.len() > 1 {
+                    self.library_ui.picked = rows.iter().copied().collect();
+                } else {
+                    self.library_ui.picked.clear();
+                }
+                self.library_ui.selected = last;
+                self.library_ui.anchor = first;
                 self.dirty = true;
                 match command {
                     ContextCommand::Activate | ContextCommand::PlayNow => {
@@ -722,10 +832,13 @@ impl App {
                     }
                     ContextCommand::Enqueue => self.enqueue_many(selected),
                     ContextCommand::ToggleFavorite if selected.len() == 1 => {
+                        let rows_before = self.library_len();
                         self.library.toggle_favorite(&selected[0]);
-                        let last = self.library_len().saturating_sub(1);
-                        self.library_ui.selected = self.library_ui.selected.min(last);
-                        self.library_ui.anchor = self.library_ui.anchor.min(last);
+                        // Un-favoriting can remove the row (Favorites/All tab): re-clamp
+                        // and drop the now-stale picks; unchanged tabs keep the selection.
+                        if self.library_len() != rows_before {
+                            self.clamp_library_selection();
+                        }
                         vec![Cmd::Persist(PersistCmd::Library)]
                     }
                     ContextCommand::AddToPlaylist => {

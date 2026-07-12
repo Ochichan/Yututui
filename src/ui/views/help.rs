@@ -327,6 +327,12 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "이 마우스 치트시트를 엽니다. 별도 단축키는 없습니다.",
                 ),
                 mouse_row(
+                    "Footer ▼/▲",
+                    "하단 ▼/▲",
+                    "Collapse or expand the docked player bar on non-Player screens (Bottom bar layout).",
+                    "하단 배치에서 Player 외 화면의 도킹 플레이어 바를 접거나 펼칩니다.",
+                ),
+                mouse_row(
                     "Wheel / scrollbar",
                     "휠 / 스크롤바",
                     "Scroll the visible list; on Player volume, wheel changes volume.",
@@ -463,10 +469,17 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "한 번 클릭은 선택, 더블클릭은 바로 재생입니다.",
                 ),
                 mouse_row(
+                    "Drag rows",
+                    "행 드래그",
+                    "Select a range of results for play, enqueue, playlist, or download actions.",
+                    "재생, 큐 추가, 플레이리스트, 다운로드에 쓸 결과 범위를 선택합니다.",
+                ),
+                multi_click_row(),
+                mouse_row(
                     "Result right click",
                     "결과 우클릭",
-                    "Open result actions such as play, enqueue, favorite, playlist, or download.",
-                    "재생, 큐 추가, 즐겨찾기, 플레이리스트, 다운로드 등의 결과 동작을 엽니다.",
+                    "Open actions for that result or the selected rows (play, enqueue, favorite, playlist, download).",
+                    "해당 결과 또는 선택한 행들의 동작 메뉴를 엽니다 (재생, 큐 추가, 즐겨찾기, 플레이리스트, 다운로드).",
                 ),
             ],
         ),
@@ -497,6 +510,7 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "Select a range for play, enqueue, or delete actions.",
                     "재생, 큐 추가, 삭제에 쓸 범위를 선택합니다.",
                 ),
+                multi_click_row(),
                 mouse_row(
                     "Click x",
                     "x 클릭",
@@ -604,6 +618,29 @@ fn mouse_row(action_en: &str, action_ko: &str, desc_en: &str, desc_ko: &str) -> 
     (
         t!(action_en, action_ko).to_owned(),
         t!(desc_en, desc_ko).to_owned(),
+    )
+}
+
+/// The Ctrl/Cmd+click multi-select row, shared by the Search and Library groups. The
+/// modifier label follows the platform convention: ⌘ on macOS, Ctrl elsewhere (the app
+/// accepts both, but the cheat-sheet shows the native one).
+fn multi_click_row() -> (String, String) {
+    let modk = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl"
+    };
+    (
+        if crate::i18n::is_korean() {
+            format!("{modk} + 클릭")
+        } else {
+            format!("{modk} + click")
+        },
+        t!(
+            "Toggle single rows in/out of the selection (pick several non-adjacent rows).",
+            "클릭한 행만 선택/해제해 떨어져 있는 여러 행을 고릅니다."
+        )
+        .to_owned(),
     )
 }
 

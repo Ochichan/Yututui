@@ -27,13 +27,27 @@ impl PrefetchCache {
         self.insert_at(video_id, url, Instant::now());
     }
 
-    pub(in crate::app) fn get_fresh_url(&mut self, video_id: &str) -> Option<String> {
-        if !self.is_fresh(video_id) {
-            self.remove(video_id);
-            return None;
+    /// Inspect a fresh direct URL without changing LRU order or pruning the cache. Track
+    /// transition preparation must be side-effect free because the player lane can still reject
+    /// the resulting load batch. [`claim_loaded_url`](Self::claim_loaded_url) performs the LRU
+    /// touch only after admission succeeds.
+    pub(in crate::app) fn peek_fresh_url(&self, video_id: &str) -> Option<String> {
+        self.is_fresh(video_id)
+            .then(|| self.entries.get(video_id).map(|entry| entry.url.clone()))
+            .flatten()
+    }
+
+    /// Mark the exact URL selected during pure preparation as used. If the entry was replaced
+    /// meanwhile, leave the newer value alone; the already-admitted load still owns its cloned
+    /// URL and must not claim a different one.
+    pub(in crate::app) fn claim_loaded_url(&mut self, video_id: &str, expected_url: &str) {
+        if self
+            .entries
+            .get(video_id)
+            .is_some_and(|entry| entry.url == expected_url)
+        {
+            self.touch(video_id);
         }
-        self.touch(video_id);
-        self.entries.get(video_id).map(|entry| entry.url.clone())
     }
 
     pub(in crate::app) fn contains_fresh(&mut self, video_id: &str) -> bool {

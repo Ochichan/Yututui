@@ -19,9 +19,10 @@ fn shift_l_toggles_lyrics_and_fetches_on_open() {
 #[test]
 fn lyrics_result_stored_only_for_current_track() {
     let mut app = app_playing(3, 0); // current id0
+    let lines = lyric_lines();
     app.update(Msg::LyricsResult {
         video_id: "id0".to_owned(),
-        lines: lyric_lines(),
+        lines: std::sync::Arc::clone(&lines),
     });
     assert!(
         app.lyrics
@@ -29,6 +30,10 @@ fn lyrics_result_stored_only_for_current_track() {
             .as_ref()
             .is_some_and(|l| l.lines.len() == 2)
     );
+    assert!(std::sync::Arc::ptr_eq(
+        &lines,
+        &app.lyrics.track.as_ref().unwrap().lines
+    ));
     // A late result for a different track is ignored.
     app.update(Msg::LyricsResult {
         video_id: "stale".to_owned(),
@@ -46,7 +51,8 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
         lines: lyric_lines(),
     });
     assert!(app.lyrics.track.is_some());
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // -> id1
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // -> id1
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.lyrics.track.is_none());
     assert!(app.lyrics.loading);
     assert!(
@@ -61,7 +67,8 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
 fn album_art_off_emits_no_fetch() {
     let mut app = app_playing(3, 0);
     // Opt-in: off by default → advancing a track issues no artwork fetch.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::FetchArtwork { .. })));
     assert!(!app.art.loading);
 }
@@ -74,7 +81,8 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     let (resize_tx, _) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(resize_tx);
     // Advancing to id1 now fetches its thumbnail from the remote source.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.art.loading);
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -89,6 +97,57 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     assert!(!app.art.loading);
     assert!(app.art_active());
     assert_eq!(app.art.dims, (120, 120));
+    assert_eq!(
+        std::sync::Arc::strong_count(app.art.source.as_ref().expect("held decoded art")),
+        2,
+        "App and the resize protocol should share one decoded pixel allocation"
+    );
+}
+
+#[test]
+fn owned_and_shared_album_art_protocols_render_identically() {
+    use image::imageops::FilterType;
+    use image::{DynamicImage, Rgba, RgbaImage};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui_image::{Resize, ResizeEncodeRender};
+
+    let mut pixels = RgbaImage::new(17, 11);
+    for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+        *pixel = Rgba([
+            (x * 31 + y * 7) as u8,
+            (x * 11 + y * 37) as u8,
+            (x * 19 + y * 13) as u8,
+            if (x + y) % 3 == 0 { 96 } else { 255 },
+        ]);
+    }
+    let image = DynamicImage::ImageRgba8(pixels);
+
+    for background in [None, Some(Rgba([20, 30, 40, 255]))] {
+        let mut picker = Picker::halfblocks();
+        picker.set_background_color(background);
+        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 9, 4)] {
+            let mut owned = picker.new_resize_protocol(image.clone());
+            let mut shared = picker.new_resize_protocol_shared(std::sync::Arc::new(image.clone()));
+            let mut owned_buffer = Buffer::empty(area);
+            let mut shared_buffer = Buffer::empty(area);
+
+            owned.resize_encode_render(
+                &Resize::Scale(Some(FilterType::Triangle)),
+                area,
+                &mut owned_buffer,
+            );
+            shared.resize_encode_render(
+                &Resize::Scale(Some(FilterType::Triangle)),
+                area,
+                &mut shared_buffer,
+            );
+
+            assert_eq!(owned_buffer, shared_buffer, "background={background:?}");
+            assert!(owned.last_encoding_result().unwrap().is_ok());
+            assert!(shared.last_encoding_result().unwrap().is_ok());
+        }
+    }
 }
 
 #[test]
@@ -139,7 +198,7 @@ fn d_starts_download_of_current_track() {
     let mut app = app_playing(3, 0); // playing id0
     let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
     match cmds.as_slice() {
-        [Cmd::Download(song)] => assert_eq!(song.video_id, "id0"),
+        [Cmd::Download(DownloadCmd::Start(song))] => assert_eq!(song.video_id, "id0"),
         _ => panic!("expected a Download cmd"),
     }
     assert_eq!(
@@ -164,18 +223,18 @@ fn d_ignores_local_tracks() {
 #[test]
 fn download_progress_and_done_update_state() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::DownloadProgress {
+    app.update(Msg::Download(DownloadMsg::Progress {
         video_id: "id0".to_owned(),
         percent: 42.6,
-    });
+    }));
     assert_eq!(
         app.downloads.active.get("id0"),
         Some(&DownloadState::Running(43))
     );
-    app.update(Msg::DownloadDone {
+    app.update(Msg::Download(DownloadMsg::Done {
         video_id: "id0".to_owned(),
         path: "/tmp/x.m4a".to_owned(),
-    });
+    }));
     assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Done));
     assert!(app.status.text.contains("/tmp/x.m4a"));
     assert_eq!(app.library_ui.downloaded.len(), 1);
@@ -185,10 +244,10 @@ fn download_progress_and_done_update_state() {
 #[test]
 fn download_error_marks_failed() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::DownloadError {
+    app.update(Msg::Download(DownloadMsg::Error {
         video_id: "id0".to_owned(),
         error: "boom".to_owned(),
-    });
+    }));
     assert_eq!(
         app.downloads.active.get("id0"),
         Some(&DownloadState::Failed)
@@ -204,7 +263,8 @@ fn loading_prefetches_the_next_track() {
     let mut app = App::new(100);
     app.queue.set(songs(3), 0);
     let song = app.queue.current().cloned();
-    let cmds = app.load_song(song);
+    let mut cmds = app.load_song(song);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(resolve_cmd(&cmds, "id1").is_some_and(|u| u.contains("id1")));
 }
 
@@ -214,9 +274,11 @@ fn skip_uses_prefetched_url_when_available() {
     app.update(StreamingMsg::Resolved {
         video_id: "id1".to_owned(),
         stream_url: "https://cdn.example/stream-id1".to_owned(),
+        self_heal: false,
     });
     // Skip: id1 should load via the prefetched direct URL, not its watch URL.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     let url = load_url(&cmds).expect("a Load cmd");
     assert_eq!(url, "https://cdn.example/stream-id1");
     // And it should now prefetch id2.
@@ -243,6 +305,7 @@ fn prefetch_cache_lru_caps_without_clearing_everything() {
         app.update(StreamingMsg::Resolved {
             video_id: format!("id{i}"),
             stream_url: format!("https://cdn.example/stream-id{i}"),
+            self_heal: false,
         });
     }
 

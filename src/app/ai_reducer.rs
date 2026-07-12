@@ -208,7 +208,7 @@ impl App {
             self.push_ai_message(
                 AiRole::Error,
                 // Saving a key in Settings now brings the assistant up live (no restart).
-                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY."
+                "No Gemini API key. Add one under Settings > DJ Gem or set GEMINI_API_KEY."
                     .to_owned(),
             );
             return Vec::new();
@@ -235,13 +235,15 @@ impl App {
             .suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         let requested_songs = self.ai.suggestions.clone();
-        let romanize_cmds = self.request_romanization_for_songs(&requested_songs);
-        self.queue.set(requested_songs, start);
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        cmds
+        self.replace_queue_and_load(
+            requested_songs,
+            start,
+            None,
+            QueueReplacementOptions {
+                romanize_all: true,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     /// Append a line to the DJ Gem transcript, bounding its length.
@@ -251,6 +253,7 @@ impl App {
             let overflow = self.ai.messages.len() - AI_HISTORY_MAX;
             self.ai.messages.drain(0..overflow);
         }
+        self.ai.transcript_revision = self.ai.transcript_revision.wrapping_add(1);
         self.bridges.ai_transcript_scroll.scroll_to_end();
     }
 

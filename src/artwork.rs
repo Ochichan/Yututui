@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use image::DynamicImage;
 use tokio::sync::watch;
 
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use crate::util::http;
 
 /// Cap the decoded image to this many pixels on its longest side. The render protocol now
@@ -52,8 +53,11 @@ pub struct ArtworkHandle {
 }
 
 impl ArtworkHandle {
-    pub fn fetch(&self, video_id: String, source: ArtSource) {
-        let _ = self.tx.send(Some(ArtworkCmd::Fetch { video_id, source }));
+    pub fn fetch(&self, video_id: String, source: ArtSource) -> DeliveryResult {
+        self.tx
+            .send(Some(ArtworkCmd::Fetch { video_id, source }))
+            .map(|()| DeliveryReceipt::Enqueued)
+            .map_err(|_| DeliveryError::Closed)
     }
 }
 
@@ -71,12 +75,17 @@ async fn run_actor<F>(mut rx: watch::Receiver<Option<ArtworkCmd>>, emit: F)
 where
     F: Fn(ArtworkEvent) + Send + Sync + 'static,
 {
-    let client = reqwest::Client::builder()
-        .user_agent("yututui/1 (https://github.com/Ochichan/Yututui)")
+    let client = match http::build_no_redirect_client(
+        "yututui/1 (https://github.com/Ochichan/Yututui)",
         // Bound connect/response time so a hung thumbnail host can't stall the actor.
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+        std::time::Duration::from_secs(8),
+    ) {
+        Ok(client) => Some(client),
+        Err(error) => {
+            tracing::warn!(%error, "remote artwork disabled: could not build bounded HTTP client");
+            None
+        }
+    };
 
     // Sequential + latest-only: rapid track-skips replace the pending watch value, so the
     // actor pays network+decode only for the newest unseen request after any in-flight work
@@ -87,7 +96,10 @@ where
         };
         let ArtworkCmd::Fetch { video_id, source } = cmd;
         let bytes = match source {
-            ArtSource::Remote { video_id: id } => fetch_remote(&client, &id).await,
+            ArtSource::Remote { video_id: id } => match client.as_ref() {
+                Some(client) => fetch_remote(client, &id).await,
+                None => None,
+            },
             ArtSource::Local(path) => fetch_local(path).await,
         };
         let image = match bytes {
@@ -105,6 +117,7 @@ async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8
     for quality in ["maxresdefault", "hqdefault"] {
         let url = format!("https://i.ytimg.com/vi/{video_id}/{quality}.jpg");
         if let Ok(resp) = client.get(&url).send().await
+            && !resp.status().is_redirection()
             && let Ok(resp) = resp.error_for_status()
             && let Ok(bytes) = http::read_response_limited(resp, REMOTE_ART_MAX_BYTES).await
             && !bytes.is_empty()
@@ -212,12 +225,16 @@ mod tests {
             tx.send(event).unwrap();
         });
 
-        handle.fetch(
-            "missing-local".to_owned(),
-            ArtSource::Local(
-                std::env::temp_dir()
-                    .join(format!("yututui-missing-artwork-{}", std::process::id())),
-            ),
+        assert!(
+            handle
+                .fetch(
+                    "missing-local".to_owned(),
+                    ArtSource::Local(
+                        std::env::temp_dir()
+                            .join(format!("yututui-missing-artwork-{}", std::process::id())),
+                    ),
+                )
+                .is_ok()
         );
         drop(handle);
 

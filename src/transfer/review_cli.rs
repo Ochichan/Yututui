@@ -5,7 +5,10 @@ use anyhow::{anyhow, bail};
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
-use super::session::{ImportRecordGuard, ImportSession, ImportSessionRow, ImportSessionRowStatus};
+use super::session::{
+    ImportRecordGuard, ImportSession, ImportSessionRow, ImportSessionRowStatus,
+    ensure_review_row_mutable_unlocked,
+};
 
 const USAGE: &str = "\
 Usage:
@@ -69,6 +72,8 @@ fn run_inner(args: &[&str]) -> Result<String, ReviewError> {
         .map_err(|error| ReviewError::Failed(error.into()))?;
     let mut cp = Checkpoint::load(job_id).map_err(ReviewError::Failed)?;
     let index = resolve_row_index(&cp, row_ref).map_err(ReviewError::Usage)?;
+    let source_order = u32::try_from(index + 1).unwrap_or(u32::MAX);
+    ensure_review_row_mutable_unlocked(job_id, source_order).map_err(ReviewError::Failed)?;
     let message = match action {
         "accept" => {
             let selected = selected_candidate(&cp.tracks[index].outcome, candidate_ref)
@@ -104,9 +109,7 @@ fn run_inner(args: &[&str]) -> Result<String, ReviewError> {
         _ => return Err(ReviewError::Usage(format!("unknown action `{action}`"))),
     };
     cp.save().map_err(|e| ReviewError::Failed(e.into()))?;
-    ImportSession::from_checkpoint(&cp)
-        .save_unlocked()
-        .map_err(|e| ReviewError::Failed(e.into()))?;
+    ImportSession::save_checkpoint_projection_unlocked(&cp).map_err(ReviewError::Failed)?;
     Ok(format!("{message}\n"))
 }
 
@@ -474,6 +477,7 @@ fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transfer::artifact_identity::{ArtifactFileIdentity, ArtifactReceipt};
     use crate::transfer::checkpoint::TrackEntry;
     use crate::transfer::matching::{AmbiguousCandidate, TrackInput};
     use crate::transfer::{JobSpec, Stage, TransferDest, TransferSource};
@@ -567,6 +571,51 @@ mod tests {
         ImportSession::from_checkpoint(&cp)
             .save()
             .expect("save session");
+    }
+
+    #[test]
+    fn cli_review_projection_preserves_another_rows_artifact_state() {
+        let job_id = "sp2yt-review-cli-artifact-preserve";
+        let mut written = ambiguous_entry("Written");
+        written.outcome = Some(MatchOutcome::Matched {
+            key: "video-written".to_owned(),
+            score: 0.95,
+            display: "Written".to_owned(),
+            title: None,
+            artist: None,
+            album: None,
+            duration_secs: None,
+            score_breakdown: None,
+        });
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(),
+            vec![ambiguous_entry("Review"), written],
+        );
+        cp.stage = Stage::Writing;
+        cp.save().unwrap();
+        let mut session = ImportSession::from_checkpoint(&cp);
+        let artifact = std::path::PathBuf::from("/tmp/review-cli-written.m4a");
+        session.rows[1].written = true;
+        session.rows[1].local_path = Some(artifact.clone());
+        session.rows[1].artifact_receipt = Some(ArtifactReceipt {
+            audio: ArtifactFileIdentity {
+                len: 5,
+                sha256: "c".repeat(64),
+            },
+            sidecar_required: false,
+            sidecar: None,
+            claim: None,
+        });
+        session.save().unwrap();
+
+        run_inner(&[job_id, "accept", "1"]).unwrap();
+
+        let saved = ImportSession::load(job_id).unwrap();
+        assert_eq!(saved.rows[1].local_path, Some(artifact));
+        assert!(saved.rows[1].written);
+        assert!(saved.rows[1].artifact_receipt.is_some());
+        ImportSession::delete_record(job_id).unwrap();
     }
 
     #[test]

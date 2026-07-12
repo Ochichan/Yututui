@@ -14,13 +14,19 @@ fn focus_current_settings_field(app: &mut App, field: Field) {
     }
 }
 
+pub(super) fn update_and_admit(app: &mut App, msg: Msg) -> Vec<Cmd> {
+    let mut cmds = app.update(msg);
+    admit_player_transition(app, &mut cmds);
+    cmds
+}
+
 #[test]
 fn settings_key_opens_and_q_closes_without_quitting() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o'))));
     assert_eq!(app.mode, Mode::Settings);
     assert!(app.settings.is_some());
-    app.update(Msg::Key(key(KeyCode::Char('q'))));
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     assert_eq!(app.mode, Mode::Player);
     assert!(!app.should_quit);
     assert!(app.settings.is_none());
@@ -88,7 +94,7 @@ fn settings_mouse_binding_cycles_and_persists_with_single_double_safety() {
     );
     assert!(app.settings.as_ref().unwrap().capturing.is_none());
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(
         saved
@@ -440,7 +446,12 @@ fn remapped_focus_keys_switch_library_and_settings_tabs() {
 fn transient_status_expires_after_ttl_and_restores_the_title() {
     let mut app = app_playing(1, 0);
     // A notification covers the title and arms the expiry timer.
-    app.update(Msg::Key(key(KeyCode::Char('N')))); // toggle normalize → sets status
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('N')))); // toggle normalize
+    assert!(
+        app.status.text.is_empty(),
+        "status waits for player admission"
+    );
+    app.admit_player_intents_for_test(&cmds);
     assert!(!app.status.text.is_empty(), "an action should set a status");
     assert!(
         app.status_visible(),
@@ -492,7 +503,7 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     );
     assert!(app.status.text.contains("Curating style: Discovery"));
     // Closing settings commits the draft into config + emits a save.
-    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
     assert!(
         cmds.iter()
@@ -521,7 +532,7 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
     );
     assert!(app.status.text.contains("Curating mode:"));
     // Close → the AI rerank flag is now off.
-    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc)));
     assert!(!app.config.streaming.ai.enabled);
     assert!(
         cmds.iter()
@@ -554,7 +565,7 @@ fn dj_gem_reply_language_cycles_on_the_ai_tab_and_persists() {
     );
     assert!(app.status.text.contains("Reply language:"));
     // Closing commits the pick into config and emits a save.
-    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.dj_gem_language, DjGemLanguage::English);
     assert!(
         cmds.iter()
@@ -612,7 +623,7 @@ fn streaming_source_cycles_on_general_tab_and_persists() {
     );
     assert!(app.status.text.contains("Streaming source: SoundCloud"));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.search.streaming_source, SearchSource::SoundCloud);
     assert!(
         cmds.iter()
@@ -720,7 +731,7 @@ fn settings_key_capture_accepts_ctrl_chords() {
     );
     assert!(app.status.text.contains("^x"));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(
         saved
@@ -762,7 +773,7 @@ fn settings_context_menu_fallback_is_rendered_rebindable_and_persisted() {
     assert!(buffer_contains(&after, "Open context menu"));
     assert!(buffer_contains(&after, "F8"));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(
         saved
@@ -813,7 +824,7 @@ fn settings_key_capture_conflict_raises_modal_warning() {
     );
 
     // The popup is modal: the next key only dismisses it (here `q` does NOT save+quit).
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     assert!(app.overlays.key_conflict.is_none());
     assert!(
         save_config(&cmds).is_none(),
@@ -855,6 +866,95 @@ fn settings_mpv_overlay_key_capture_rejects_unsupported_keys() {
             .keymap
             .chord(KeyContext::MpvOverlay, Action::VideoTogglePause),
         crate::keymap::parse_chord("space")
+    );
+}
+
+#[test]
+fn personal_data_export_button_sets_busy_and_carries_live_sources_once() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    focus_current_settings_field(&mut app, Field::ExportPersonalData);
+    let row = app.settings.as_ref().unwrap().row;
+    {
+        let draft = &mut app.settings.as_mut().unwrap().draft;
+        draft.autoplay_on_start = true;
+        draft.speed = 1.7;
+    }
+    app.playback.volume = 37;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let [Cmd::Data(DataCmd::PersonalDataExport(PersonalDataExportCmd::Export { sources, .. }))] =
+        cmds.as_slice()
+    else {
+        panic!("export must carry owned source state to the worker");
+    };
+    assert!(app.personal_export.in_progress);
+    assert_eq!(sources.config.autoplay_on_start, Some(true));
+    assert_eq!(sources.config.speed, Some(1.7));
+    assert_eq!(sources.config.volume, 37);
+    assert_eq!(sources.library.favorites.len(), app.library.favorites.len());
+    assert_eq!(
+        sources.playlists.playlists.len(),
+        app.playlists.playlists.len()
+    );
+    assert_eq!(
+        sources.station.active.is_some(),
+        app.station.active.is_some()
+    );
+    assert_eq!(app.mode, Mode::Settings);
+    let settings = app.settings.as_ref().unwrap();
+    assert_eq!(settings.row, row);
+    assert_eq!(
+        settings.personal_data_export,
+        PersonalDataExportStatus::Exporting
+    );
+    assert!(app.status.text.contains("Exporting personal data"));
+
+    let duplicate = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        duplicate.is_empty(),
+        "busy Enter must not start another export"
+    );
+    assert_eq!(app.settings.as_ref().unwrap().row, row);
+}
+
+#[test]
+fn personal_data_export_mouse_activation_focuses_the_row_and_starts_export() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let row = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    app.register_mouse_button(
+        ratatui::layout::Rect {
+            x: 30,
+            y: 4,
+            width: 8,
+            height: 1,
+        },
+        MouseTarget::SettingsActivate(row),
+    );
+
+    let cmds = app.update(Msg::MouseClick {
+        col: 32,
+        row: 4,
+        multi: false,
+    });
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Data(DataCmd::PersonalDataExport(
+            PersonalDataExportCmd::Export { .. }
+        ))]
+    ));
+    assert_eq!(app.mode, Mode::Settings);
+    let settings = app.settings.as_ref().unwrap();
+    assert_eq!(settings.row, row);
+    assert_eq!(
+        settings.personal_data_export,
+        PersonalDataExportStatus::Exporting
     );
 }
 
@@ -907,7 +1007,7 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         Some(Action::TogglePause)
     );
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert!(saved.keybindings.is_empty());
     assert_eq!(
@@ -943,7 +1043,7 @@ fn reset_all_button_confirms_then_restores_defaults() {
     );
     assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
     // `y` confirms → every draft value is back to its default.
-    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('y'))));
     assert!(app.overlays.pending_settings_confirm.is_none());
     let d = &app.settings.as_ref().unwrap().draft;
     assert!((d.speed - 1.0).abs() < 1e-9);
@@ -979,7 +1079,7 @@ fn settings_theme_persists_when_closed_with_back() {
     app.update(Msg::Key(key(KeyCode::Right))); // Default -> Midnight
     assert_eq!(app.theme.preset, "midnight");
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(saved.theme.preset, "midnight");
 
@@ -1005,7 +1105,7 @@ fn settings_color_overrides_persist_when_quitting() {
         app.theme = st.draft.theme.normalized();
     }
 
-    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(ctrl(KeyCode::Char('q'))));
     assert!(app.should_quit);
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(
@@ -1019,12 +1119,12 @@ fn settings_close_applies_and_persists() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General)
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab; row 0 = Speed
-    app.update(Msg::Key(key(KeyCode::Right))); // speed 1.0 -> 1.1 (draft)
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right))); // speed 1.0 -> 1.1 (draft)
     assert!(
         (app.playback.speed - 1.0).abs() < 1e-9,
         "committed speed unchanged while editing"
     );
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q')))); // save+quit
     assert_eq!(app.mode, Mode::Player);
     assert!(
         (app.playback.speed - 1.1).abs() < 1e-9,
@@ -1039,8 +1139,8 @@ fn settings_close_persists_live_audio() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback; Speed
-    app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
-    let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+quit
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc))); // save+quit
     assert_eq!(app.mode, Mode::Player);
     assert!(
         (app.playback.speed - 1.1).abs() < 1e-9,
@@ -1054,7 +1154,8 @@ fn settings_close_persists_live_audio() {
     // now-persisted settings.
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(_))))
+            .flat_map(Cmd::player_commands)
+            .any(|command| matches!(command, PlayerCmd::SetAudioFilter(_)))
     );
 }
 
@@ -1064,18 +1165,22 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     focus_current_settings_field(&mut app, Field::Band(0));
-    let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Right))); // raise the band
     let st = app.settings.as_ref().unwrap();
     assert_eq!(st.draft.eq_preset, EqPreset::Custom);
     assert!(st.draft.eq_bands[0] > 0.0);
     // First non-zero band → full rebuild (creates the labels).
-    assert!(cmds.iter().any(
-        |c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(s)) if s.contains("equalizer"))
+    assert!(cmds.iter().flat_map(Cmd::player_commands).any(
+        |command| matches!(command, PlayerCmd::SetAudioFilter(filter) if filter.contains("equalizer"))
     ));
     // A second nudge with labels present uses the glitch-free af-command path.
     let cmds = app.update(Msg::Key(key(KeyCode::Right)));
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::Player(PlayerCmd::AfCommand { label, param, .. }) if label == "eq0" && param == "gain")));
+    assert!(
+        cmds.iter()
+            .flat_map(Cmd::player_commands)
+            .any(|command| matches!(command,
+        PlayerCmd::AfCommand { label, param, .. } if label == "eq0" && param == "gain"))
+    );
 }
 
 #[test]
@@ -1085,12 +1190,16 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     focus_current_settings_field(&mut app, Field::Band(0));
-    app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q')))); // save+quit
     // Closing re-asserts the committed chain so the current track matches what was saved
     // even if an EOF rebuilt mpv from the old bands mid-edit.
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::Player(PlayerCmd::SetAudioFilter(s)) if s.contains("equalizer"))));
+    assert!(
+        cmds.iter()
+            .flat_map(Cmd::player_commands)
+            .any(|command| matches!(command,
+        PlayerCmd::SetAudioFilter(filter) if filter.contains("equalizer")))
+    );
     // The session volume is folded into the persisted config (not the startup value).
     assert_eq!(save_config(&cmds).expect("a SaveConfig cmd").volume, 55);
 }
@@ -1101,20 +1210,20 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     focus_current_settings_field(&mut app, Field::Band(0));
-    app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(
         app.settings.as_ref().unwrap().draft.eq_preset,
         EqPreset::Custom
     );
     app.update(Msg::Key(key(KeyCode::Up))); // back to the preset row
     // From Custom, the first ←/→ snaps to Flat rather than jumping to a neighbour.
-    app.update(Msg::Key(key(KeyCode::Right)));
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right)));
     assert_eq!(
         app.settings.as_ref().unwrap().draft.eq_preset,
         EqPreset::Flat
     );
     // Then it cycles normally.
-    app.update(Msg::Key(key(KeyCode::Right)));
+    update_and_admit(&mut app, Msg::Key(key(KeyCode::Right)));
     assert_eq!(
         app.settings.as_ref().unwrap().draft.eq_preset,
         EqPreset::BassBoost
@@ -1142,7 +1251,7 @@ fn settings_text_field_edits_path_buffer() {
     assert_eq!(app.mode, Mode::Settings);
     app.update(Msg::Key(key(KeyCode::Enter))); // commit edit mode
     assert!(!app.settings.as_ref().unwrap().editing_text);
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q')))); // save+quit
     assert_eq!(
         save_config(&cmds).unwrap().cookies_file,
         Some(std::path::PathBuf::from("/x.txt"))
@@ -1165,7 +1274,7 @@ fn settings_ai_tab_switches_model_live_and_persists() {
         app.ai.model, start,
         "committed model unchanged while editing"
     );
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q')))); // save+quit
     assert_eq!(app.ai.model, drafted, "model committed on close");
     // The running actor is told to hot-swap; config persists the choice.
     assert!(
@@ -1205,7 +1314,7 @@ fn settings_ai_tab_edits_masked_api_key() {
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetAiModel(_))));
     // The committed value is now in config, so a later close doesn't double-reload.
-    let save_cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let save_cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     assert_eq!(
         save_config(&save_cmds).unwrap().gemini_api_key.as_deref(),
         Some("AIzaKey")
@@ -1324,7 +1433,7 @@ fn editing_existing_api_key_starts_fresh_not_appended() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(key(KeyCode::Enter))); // commit
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q')))); // save+quit
     // Replaces, not "OLDKEYNEWKEY".
     assert_eq!(
         save_config(&cmds).unwrap().gemini_api_key.as_deref(),
@@ -1360,7 +1469,7 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
     assert!(!app.settings.as_ref().unwrap().editing_text);
 
     // And it survives the save-on-close.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Char('q'))));
     assert_eq!(
         save_config(&cmds).unwrap().gemini_api_key.as_deref(),
         Some("KEEPME")
@@ -1375,7 +1484,8 @@ fn reset_all_re_enables_ai() {
     app.config.ai_enabled = Some(false);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft.ai_enabled seeds false)
     assert!(!app.settings.as_ref().unwrap().draft.ai_enabled);
-    app.settings_reset_all();
+    let mut cmds = app.settings_reset_all();
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         app.settings.as_ref().unwrap().draft.ai_enabled,
         "reset returns DJ Gem to its default (enabled)"

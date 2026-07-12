@@ -48,6 +48,19 @@ YuTuTui! is five screens, each one key away:
 
 `Esc` generally backs you out of wherever you are. The mouse works everywhere too — click anything, scroll the wheel to change volume.
 
+### The player bar follows you
+
+The now-playing controls — title, progress bar, transport, status — live in a bar docked to
+the bottom of **every** screen, so you can pause or seek from Search or Library without
+leaving. Press `B` (or click the `▼` / `▲` next to the footer's mouse hint) to tuck the bar
+away on those screens and reclaim the rows; the Player screen always keeps it. If you
+prefer the classic look with the controls at the top of the Player screen only, switch
+*Settings › General › Player bar position* to **Top**.
+
+Shrink the window far enough (below ~32×11 cells) and the whole app becomes a tiny
+miniplayer — title, progress, transport — then springs back to the full layout as soon as
+the window grows again. Nothing to configure; it just follows the window.
+
 ---
 
 ## 2. Everyday music (the normal mode)
@@ -232,7 +245,40 @@ The most common hiccups (403 "not allowlisted", INVALID_CLIENT, a busy port) all
 
 ---
 
-## 6. When something goes wrong (anywhere)
+## 6. Backing up your personal data
+
+YuTuTui! can gather the portable parts of your setup and music taste into one versioned, human-readable JSON file. Inside the app, open **Settings (`o`) → General → Export personal data**. It writes to your computer's normal **Downloads** folder and tells you the completed filename.
+
+You can do the same from a terminal:
+
+```sh
+ytt data export                         # save to the OS Downloads folder
+ytt data export --to ~/existing-folder # choose an existing directory
+```
+
+The folder after `--to` must already exist; give a directory, not a filename. YuTuTui! will not create the folder or silently fall back to the current directory if Downloads cannot be found.
+
+When the normal primary `ytt` app or daemon is running, the CLI asks that owner for its current in-memory state instead of reading a possibly stale file. An outdated, malformed, live-but-unreachable, or ambiguous owner stops the export rather than silently falling back to disk. Only when an advertised endpoint is provably stale and an exclusive data lock confirms no process owns the stores does the CLI recover with an offline snapshot. If `--new-instance` players are also open, the CLI exports only the advertised primary; export each secondary from its own Settings screen. An offline CLI export refuses to read the stores until every current-version ytt owner, including secondaries, is closed.
+
+**What's included:** sanitized portable settings; track and radio favorites; listening and radio history; your Library playlists; safe track metadata and public catalog IDs; and the recommendation signals, artist affinities and station preferences that represent your taste.
+
+**What's deliberately left out:**
+
+- authentication cookies, API keys, OAuth tokens and account identifiers;
+- filesystem paths and machine-specific audio settings;
+- playable, origin, artwork and radio-stream URLs;
+- downloaded or recorded music, download manifests and media sidecars;
+- pending scrobbles, transfer jobs and reports, and session queues;
+- AI usage logs, generated caches, artwork caches and application logs;
+- managed-tool binaries and paths, desktop window geometry and recovery backups.
+
+The export is **not encrypted**. It has no passwords or tokens, but it does contain your private listening history, so treat it as a personal file before uploading or sharing it. This version only exports data — there is no import or restore command yet.
+
+YuTuTui! creates a new owner-only file and never overwrites an existing one. It also rejects a destination where an untrusted local account could create, replace, or delete the completed path. If the destination filesystem cannot enforce and verify these private permissions or ACLs, the export fails instead of leaving a broadly readable copy.
+
+---
+
+## 7. When something goes wrong (anywhere)
 
 First, always: quit the app and run
 

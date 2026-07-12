@@ -49,10 +49,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // tab bar
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // field list
-        Constraint::Length(1), // help
+        Constraint::Length(1),                                        // tab bar
+        Constraint::Length(1),                                        // spacer
+        Constraint::Min(0),                                           // field list
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
+        Constraint::Length(1),                                        // help
     ])
     .split(inner);
 
@@ -62,6 +63,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         render_fields(frame, app, st, rows[2]);
     }
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
     // Footer reflects the *committed* keymap, since that's what operates the screen until
     // the edits are saved.
@@ -84,6 +86,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제"
         )
         .to_owned()
+    } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
+        format!(
+            "{} {}",
+            k(Action::Confirm),
+            t!(
+                "export · unencrypted JSON · includes private listening history",
+                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함"
+            )
+        )
     } else if st.tab == SettingsTab::Keys {
         let mouse_row = st.row >= keymap::editable_entries().len();
         if ko && mouse_row {
@@ -180,9 +191,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
     // is visible without leaving Settings; otherwise the keybinding hint shows. Every other view
     // renders `app.status` — Settings must too, or account actions look like silent no-ops.
-    if !app.status.text.is_empty() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[3].width) {
-            frame.render_widget(Paragraph::new(line), rows[3]);
+    // With the docked control box on screen its title row already shows the same status, so
+    // the footer keeps the keybinding hint instead of doubling the message.
+    if !app.status.text.is_empty() && !app.control_box_active() {
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[4].width) {
+            frame.render_widget(Paragraph::new(line), rows[4]);
         } else {
             let role = match app.status.kind {
                 StatusKind::Error => R::Error,
@@ -194,14 +207,35 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         .style(theme.style(role))
                         .alignment(Alignment::Center),
                 ),
-                rows[3],
+                rows[4],
             );
         }
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
-            rows[3],
+            rows[4],
         );
+    }
+    // Settings rolls its own footer (no `render_help_button`), so the docked-bar collapse
+    // toggle rides the row's right edge here — same target and glyphs as the shared footer.
+    if app.player_bar_position() == crate::config::PlayerBarPosition::Bottom && rows[4].width >= 2 {
+        let glyph = match (app.config.control_box_collapsed(), app.retro_mode()) {
+            (false, false) => "▼",
+            (true, false) => "▲",
+            (false, true) => "v",
+            (true, true) => "^",
+        };
+        let rect = Rect {
+            x: rows[4].right().saturating_sub(2),
+            y: rows[4].y,
+            width: 2,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(glyph).style(theme.style(R::TextMuted))),
+            rect,
+        );
+        app.register_mouse_button(rect, MouseTarget::Global(Action::ToggleControlBox));
     }
 }
 
@@ -512,6 +546,7 @@ fn slider_str(bar: &str, num: &str) -> String {
 /// blinking edit caret swaps `▏`↔space — both one cell, so the math holds mid-blink too).
 fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
     match (field, field.kind()) {
+        (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
         (f, _) if f.is_secret() && focused && st.editing_text => {
@@ -740,6 +775,12 @@ fn register_field_controls(
                 let last = vx.saturating_add(w.saturating_sub(1));
                 put(last, 1, y, MouseTarget::SettingsChange { row: i, delta: 1 });
             }
+            FieldKind::Button
+                if field == Field::ExportPersonalData && st.personal_data_export.is_busy() =>
+            {
+                // Keep the row focusable while work is running, but do not publish an action
+                // target that could enqueue a duplicate export from a second click.
+            }
             FieldKind::Button | FieldKind::Text => {
                 put(vx, w, y, MouseTarget::SettingsActivate(i));
             }
@@ -798,7 +839,17 @@ fn render_spotify_import_mode_dropdown(
         )
         .min(available_width);
     let leading = vx.saturating_sub(area.x) as usize;
-    let start_y = area.y + visible as u16 + 1;
+    // Drop below the row; when the list is short (e.g. the docked player bar shrank it)
+    // and the options wouldn't fit, drop up above the row instead of clipping them away.
+    let modes = crate::config::SpotifyImportMode::ALL.len() as u16;
+    let anchor_y = area.y + visible as u16;
+    let below = area.bottom().saturating_sub(anchor_y + 1);
+    let above = anchor_y.saturating_sub(area.y);
+    let start_y = if below >= modes || above < modes {
+        anchor_y + 1
+    } else {
+        anchor_y - modes
+    };
     for (idx, mode) in crate::config::SpotifyImportMode::ALL
         .iter()
         .copied()
@@ -842,6 +893,84 @@ fn render_spotify_import_mode_dropdown(
             MouseTarget::SettingsSpotifyImportModeSelect(mode),
         );
     }
+}
+
+pub(super) fn render_spotify_import_mode_dropdown_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(st) = app.settings.as_deref() else {
+        return;
+    };
+    let Some(selected) = st.spotify_import_mode_dropdown else {
+        return;
+    };
+    let popup =
+        crate::ui::centered_list_popup(area, crate::config::SpotifyImportMode::ALL.len(), 3, 32);
+    if popup.is_empty() {
+        return;
+    }
+
+    crate::ui::render_popup_background(frame, app, popup);
+    let block = Block::default()
+        .title(t!(" Spotify import mode ", " Spotify 가져오기 모드 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height < 2 || inner.width < 8 {
+        crate::ui::seal_popup_background(frame, app, popup);
+        crate::ui::mark_art_rows_for_popup(frame, app, popup);
+        return;
+    }
+
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let list_area = sections[0];
+    let row_w = list_area.width as usize;
+    let visible = list_area.height as usize;
+    let start = selected.saturating_sub(visible.saturating_sub(1));
+    for (idx, mode) in crate::config::SpotifyImportMode::ALL
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(start)
+        .take(list_area.height as usize)
+    {
+        let focused = idx == selected;
+        let marker = if focused { "▶ " } else { "  " };
+        let text = pad_to_width(
+            &format!("{marker}{}", mode.label()),
+            row_w.saturating_sub(1),
+        );
+        let style = if focused {
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            crate::ui::popup_style(app, R::TextPrimary)
+        };
+        let row = Rect {
+            x: list_area.x,
+            y: list_area.y + (idx - start) as u16,
+            width: list_area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
+        app.register_mouse_button(row, MouseTarget::SettingsSpotifyImportModeSelect(mode));
+    }
+    frame.render_widget(
+        Paragraph::new(t!(
+            "↑↓ choose · Enter save · Esc close",
+            "↑↓ 선택 · Enter 저장 · Esc 닫기"
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        sections[1],
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// One field row: a left-aligned label and its current value (with a slider bar for numeric
@@ -893,7 +1022,9 @@ fn field_row<'a>(
     // column lines up regardless of label length. The value text itself is produced by the
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
-    let value_role = if focused {
+    let value_role = if field == Field::ExportPersonalData && st.personal_data_export.is_busy() {
+        R::TextMuted
+    } else if focused {
         R::SettingsValueFocused
     } else {
         R::SettingsValue

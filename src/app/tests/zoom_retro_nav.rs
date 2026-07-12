@@ -179,7 +179,8 @@ fn retro_render_scrubs_cjk_metadata_without_unsupported_cells() {
         vec![Song::remote("cjk", "한글 제목 日本語", "가수 简体", "3:00")],
         0,
     );
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
 
     let buf = render_app_buffer(&app, 80, 24);
 
@@ -206,7 +207,9 @@ fn narrow_nav_pages_with_arrows_so_every_screen_stays_clickable() {
     let mut app = app_playing(1, 0);
     app.mode = Mode::Library;
 
-    let (targets, top) = render_at(&app, 40, 12);
+    // Keep the width narrow enough to page while staying at the Full/Mini height boundary;
+    // shorter frames intentionally render the miniplayer and have no screen nav.
+    let (targets, top) = render_at(&app, 40, crate::ui::layout::MINI_MIN_H);
     assert!(top.contains('◀') && top.contains('▶'), "paged nav: {top:?}");
     assert!(
         top.contains("Library"),
@@ -227,7 +230,7 @@ fn narrow_nav_arrows_navigate_on_click() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
     app.mode = Mode::Library;
-    render_at(&app, 40, 12);
+    render_at(&app, 40, crate::ui::layout::MINI_MIN_H);
 
     // Find the ◀ arrow's registered rect (the Nav(Search) target) and click it.
     let rect = app
@@ -240,6 +243,7 @@ fn narrow_nav_arrows_navigate_on_click() {
     app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     assert_eq!(app.mode, Mode::Search, "◀ pages to the previous screen");
 }
@@ -291,7 +295,7 @@ fn nav_arrows_hollow_at_first_and_last_tab() {
     let mut app = app_playing(1, 0);
 
     // First tab (Player): can't go left — the left arrow renders hollow.
-    let (_, top) = render_at(&app, 40, 12);
+    let (_, top) = render_at(&app, 40, crate::ui::layout::MINI_MIN_H);
     assert!(
         top.contains('◁') && !top.contains('◀'),
         "first tab: left arrow should be hollow: {top:?}"
@@ -300,7 +304,7 @@ fn nav_arrows_hollow_at_first_and_last_tab() {
 
     // Last tab (DJ Gem): can't go right — the right arrow renders hollow.
     app.mode = Mode::Ai;
-    let (_, top) = render_at(&app, 40, 12);
+    let (_, top) = render_at(&app, 40, crate::ui::layout::MINI_MIN_H);
     assert!(
         top.contains('▷') && !top.contains('▶'),
         "last tab: right arrow should be hollow: {top:?}"

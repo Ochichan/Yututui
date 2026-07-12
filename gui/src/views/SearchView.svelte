@@ -46,12 +46,14 @@
     >
       <span class="glass" aria-hidden="true">⌕</span>
       <input
+        id="search-query"
         class="ti"
         type="search"
         placeholder={t('search.placeholder')}
         bind:value={query}
         aria-label={t('search.queryLabel')}
         data-kctx="SearchInput"
+        data-ui-draft-key="search-query"
       />
       <button class="go" type="submit">{t('search.submit')}</button>
     </form>
@@ -68,7 +70,7 @@
     </div>
   </header>
 
-  <div class="results">
+  <div class="results" data-ui-scroll-key="search-results">
     {#if search.pending}
       <p class="hint">{t('search.searching', { query: search.query })}</p>
     {:else if !search.ran}

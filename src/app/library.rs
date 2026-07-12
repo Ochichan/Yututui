@@ -17,6 +17,7 @@ impl App {
             (self.library_ui.selected + lines).min(len - 1)
         };
         self.library_ui.anchor = self.library_ui.selected;
+        self.library_ui.picked.clear();
         self.dirty = true;
     }
 
@@ -38,7 +39,47 @@ impl App {
         } else {
             (self.library_ui.selected + lines).min(len - 1)
         };
+        // Extending is a range gesture — discontiguous picks yield to the range.
+        self.library_ui.picked.clear();
         self.dirty = true;
+    }
+
+    /// Ctrl/Cmd+click on a library row: toggle it in/out of the discontiguous selection.
+    /// The first toggle seeds the picked set from the current range selection (so a
+    /// modifier click *adds to* what is already highlighted, desktop-style); emptying the
+    /// set collapses the selection back onto the cursor. The Playlists root has no
+    /// multi-select (its actions are single-row), so the modifier click degrades to a
+    /// plain click there.
+    pub(in crate::app) fn library_toggle_pick(&mut self, index: usize) -> Vec<Cmd> {
+        let len = self.library_len();
+        if index >= len {
+            return Vec::new();
+        }
+        if self.playlists_root() {
+            return self.on_list_row_click(index);
+        }
+        if self.library_ui.picked.is_empty() {
+            let lo = self
+                .library_ui
+                .selected
+                .min(self.library_ui.anchor)
+                .min(len - 1);
+            let hi = self
+                .library_ui
+                .selected
+                .max(self.library_ui.anchor)
+                .min(len - 1);
+            self.library_ui.picked.extend(lo..=hi);
+        }
+        if !self.library_ui.picked.remove(&index) {
+            self.library_ui.picked.insert(index);
+        }
+        self.library_ui.selected = index;
+        self.library_ui.anchor = index;
+        // A toggle click never starts a drag range; the next drag anchors freshly.
+        self.interaction.drag_selection = None;
+        self.dirty = true;
+        Vec::new()
     }
 
     /// Stop capturing filter input, drop the query, and snap the cursor/scroll back to the top
@@ -48,6 +89,7 @@ impl App {
         self.library_ui.filter_editing = false;
         self.library_ui.selected = 0;
         self.library_ui.anchor = 0;
+        self.library_ui.picked.clear();
         self.bridges.library_scroll.reset();
     }
 
@@ -56,6 +98,7 @@ impl App {
     fn after_library_filter_change(&mut self) {
         self.library_ui.selected = 0;
         self.library_ui.anchor = 0;
+        self.library_ui.picked.clear();
         self.bridges.library_scroll.reset();
         self.dirty = true;
     }
@@ -80,6 +123,7 @@ impl App {
             KeyCode::Up => {
                 self.library_ui.selected = self.library_ui.selected.saturating_sub(1);
                 self.library_ui.anchor = self.library_ui.selected;
+                self.library_ui.picked.clear();
                 self.dirty = true;
             }
             KeyCode::Down => {
@@ -88,6 +132,7 @@ impl App {
                     self.library_ui.selected += 1;
                 }
                 self.library_ui.anchor = self.library_ui.selected;
+                self.library_ui.picked.clear();
                 self.dirty = true;
             }
             // Plain typed characters extend the query; ignore Ctrl/Alt combos (e.g. Ctrl+R for
@@ -229,12 +274,14 @@ impl App {
             Some(Action::JumpTop) => {
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
+                self.library_ui.picked.clear();
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::JumpBottom) => {
                 self.library_ui.selected = len.saturating_sub(1);
                 self.library_ui.anchor = self.library_ui.selected;
+                self.library_ui.picked.clear();
                 self.dirty = true;
                 Vec::new()
             }
@@ -344,10 +391,13 @@ impl App {
             // Un/favorite the highlighted track (removing shifts selection up).
             Some(Action::Favorite) => {
                 if let Some(song) = self.selected_library_song() {
+                    let rows_before = self.library_len();
                     self.library.toggle_favorite(&song);
-                    let new_len = self.library_len();
-                    if self.library_ui.selected >= new_len {
-                        self.library_ui.selected = new_len.saturating_sub(1);
+                    // Un-favoriting can remove the row (Favorites/All tab): re-clamp and
+                    // drop the now-stale picks. Tabs where the row list is unchanged
+                    // (e.g. History) keep the selection.
+                    if self.library_len() != rows_before {
+                        self.clamp_library_selection();
                     }
                     self.dirty = true;
                     return vec![Cmd::Persist(PersistCmd::Library)];

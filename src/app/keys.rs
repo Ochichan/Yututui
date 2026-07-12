@@ -24,27 +24,27 @@ impl App {
 
         // Radio mode switching is modal: Enter or `y` confirms, anything else cancels.
         // It sits outside Settings so the shortcut works from the Player/Search/Library tabs too.
-        if let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() {
+        if let Some(confirm) = self.radio_mode.pending_radio_mode_confirm {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
-            return if confirmed {
-                self.apply_radio_mode_confirm(confirm)
-            } else {
-                Vec::new()
-            };
+            if confirmed {
+                return self.apply_radio_mode_confirm(confirm);
+            }
+            self.radio_mode.pending_radio_mode_confirm = None;
+            return Vec::new();
         }
 
         // Local Player mode switching is modal and follows the Radio confirmation rules.
-        if let Some(confirm) = self.local_mode.pending_confirm.take() {
+        if let Some(confirm) = self.local_mode.pending_confirm {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
-            return if confirmed {
-                self.apply_local_mode_confirm(confirm)
-            } else {
-                Vec::new()
-            };
+            if confirmed {
+                return self.apply_local_mode_confirm(confirm);
+            }
+            self.local_mode.pending_confirm = None;
+            return Vec::new();
         }
 
         // Local import organize is modal because it moves files on disk. Enter/`y` applies
@@ -386,6 +386,7 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
+                Action::ToggleControlBox => return self.toggle_control_box(),
                 Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
                 Action::ToggleStreaming => {
                     // Radio mode: autoplay is meaningless — keep whatever the stored preference
@@ -440,6 +441,18 @@ impl App {
             return self.on_key_queue(k);
         }
 
+        // Under the miniplayer tier only the transport is on screen, so keys route to the
+        // Player context regardless of the retained mode — a suppressed screen must not
+        // eat keystrokes into an invisible list or input. Two modals render
+        // mode-independently but are keyed inside their owning screen's handler (the
+        // Spotify picker and the create-playlist input); while one is open the normal
+        // dispatch stays so it can be operated and dismissed.
+        if self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
+            && !self.mini_mode_owns_modal()
+        {
+            return self.on_key_player(k);
+        }
+
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search => self.on_key_search(k),
@@ -447,6 +460,23 @@ impl App {
             Mode::Library => self.on_key_library(k),
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),
+        }
+    }
+
+    /// Whether the retained (hidden) screen owns an open modal that renders
+    /// mode-independently — the only cases where mini-tier key routing must fall through
+    /// to the screen's own handler (see the mini guard in [`Self::on_key`]).
+    fn mini_mode_owns_modal(&self) -> bool {
+        match self.mode {
+            Mode::Settings => {
+                self.overlays.spotify_picker.is_some()
+                    || self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.spotify_import_mode_dropdown.is_some())
+            }
+            Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
+            _ => false,
         }
     }
 

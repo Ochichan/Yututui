@@ -5,20 +5,31 @@ use anyhow::Result;
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use ratatui_image::thread::ResizeRequest;
-use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::app::{self, App, Cmd, Msg};
 use crate::player::PlayerHandle;
 use crate::runtime::RuntimeEvent;
 use crate::{
-    ai, api, artwork, config, deps, download, downloads, event, library, logging, lyrics, media,
-    notify, persist, player, playlists, remote, resolver, romanize, runtime, scrobble, session,
-    signals, station, tools, tui, ui, update, zoom,
+    ai, api, artwork, config, deps, download, event, library, logging, lyrics, media, notify,
+    persist, player, remote, resolver, runtime, scrobble, tools, tui, ui, update, zoom,
 };
 
 use super::art::log_art_picker;
+use super::persistence_shutdown::flush_owner_persistence;
+use super::persistent_startup::{PersistentStartupState, TerminalStartupState};
 use super::startup::StartupTrace;
+
+mod buffered_events;
+mod perf_stats;
+mod runtime_paths;
+mod teardown;
+#[cfg(test)]
+mod teardown_tests;
+use buffered_events::BufferedWorkerEvents;
+use perf_stats::PerfStats;
+use runtime_paths::{TerminalRuntimePaths, resolve as terminal_runtime_paths};
+use teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
 
 /// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
 /// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
@@ -32,92 +43,227 @@ fn anim_tick_period(fps: u16) -> Duration {
 /// missed frames so a busy moment can't back up a redraw backlog.
 fn anim_interval(fps: u16) -> tokio::time::Interval {
     let period = anim_tick_period(fps);
-    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    anim_interval_at(tokio::time::Instant::now() + period, fps)
+}
+
+fn anim_interval_at(first_tick: tokio::time::Instant, fps: u16) -> tokio::time::Interval {
+    let mut tick = tokio::time::interval_at(first_tick, anim_tick_period(fps));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tick
 }
 
-struct PerfStats {
-    enabled: bool,
-    last_log: Instant,
-    frames: u64,
-    draw_total: Duration,
-    draw_max: Duration,
-    art_resizes: u64,
+fn owner_exit_requested(app: &App, shutdown: &player::lifetime::ShutdownLatch) -> bool {
+    app.should_quit || shutdown.is_triggered()
 }
 
-impl PerfStats {
-    fn from_env() -> Self {
-        let enabled = std::env::var_os("YTM_PERF").is_some();
-        Self {
-            enabled,
-            last_log: Instant::now(),
-            frames: 0,
-            draw_total: Duration::ZERO,
-            draw_max: Duration::ZERO,
-            art_resizes: 0,
+type PlayerReadyResult = Result<(PlayerHandle, player::Mpv), String>;
+const PLAYER_START_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct PlayerStartup {
+    ready_rx: Option<tokio::sync::oneshot::Receiver<PlayerReadyResult>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PlayerStartup {
+    async fn recv(
+        &mut self,
+    ) -> std::result::Result<PlayerReadyResult, tokio::sync::oneshot::error::RecvError> {
+        let result = self
+            .ready_rx
+            .as_mut()
+            .expect("player startup receiver is consumed only once")
+            .await;
+        self.ready_rx = None;
+        result
+    }
+
+    async fn join_finished(&mut self) {
+        if let Some(task) = self.task.take()
+            && let Err(error) = task.await
+            && !error.is_cancelled()
+        {
+            tracing::warn!(%error, "player startup task failed unexpectedly");
         }
     }
 
-    fn record_draw(&mut self, elapsed: Duration) {
-        if !self.enabled {
-            return;
+    /// Close the result slot first, then abort and reap the producer. A startup which has already
+    /// created mpv cannot leave its `(handle, guard)` buffered in an unpolled oneshot during the
+    /// slower actor and persistence shutdown which follows owner-loop exit.
+    async fn cancel_and_join(&mut self) {
+        if let Some(mut ready_rx) = self.ready_rx.take() {
+            ready_rx.close();
+            drop(ready_rx);
         }
-        self.frames += 1;
-        self.draw_total += elapsed;
-        self.draw_max = self.draw_max.max(elapsed);
+        if let Some(task) = self.task.take() {
+            task.abort();
+            match task.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => tracing::warn!(%error, "player startup task failed during shutdown"),
+            }
+        }
+    }
+}
+
+impl Drop for PlayerStartup {
+    fn drop(&mut self) {
+        if let Some(ready_rx) = self.ready_rx.as_mut() {
+            ready_rx.close();
+        }
+        if let Some(task) = self.task.as_ref() {
+            task.abort();
+        }
+    }
+}
+
+fn spawn_player_startup<F>(future: F) -> PlayerStartup
+where
+    F: std::future::Future<Output = PlayerReadyResult> + Send + 'static,
+{
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let result = future.await;
+        if ready_tx.send(result).is_err() {
+            // Closing/replacing the result slot is the cancellation boundary for obsolete work.
+            // Dropping the rejected value also retires its handle/guard in the safe order.
+            tracing::debug!("player startup completed after its readiness slot was closed");
+        }
+    });
+    PlayerStartup {
+        ready_rx: Some(ready_rx),
+        task: Some(task),
+    }
+}
+
+fn spawn_audio_player(
+    worker_tx: runtime::RuntimeSender,
+    data_dir: Option<std::path::PathBuf>,
+    cfg: &config::PlayerRuntimeConfig,
+) -> PlayerStartup {
+    let cookies_file = cfg.cookies_file.clone();
+    let gapless = cfg.gapless;
+    let audio = cfg.audio.clone();
+    spawn_player_startup(async move {
+        match tokio::time::timeout(
+            PLAYER_START_TIMEOUT,
+            player::spawn(
+                runtime::sink(worker_tx, RuntimeEvent::Player),
+                data_dir,
+                cookies_file,
+                gapless,
+                audio,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|error| format!("{error:#}")),
+            Err(_) => Err(format!(
+                "player startup timed out after {} seconds",
+                PLAYER_START_TIMEOUT.as_secs()
+            )),
+        }
+    })
+}
+
+/// Rebuild the long-lived interval only when the configured logical FPS changes. Animation
+/// activation and draw-cadence changes deliberately do not call this path, preserving the
+/// existing timer grid and reducer draw credit across a guarded (inactive) period.
+fn sync_animation_interval(
+    app: &mut App,
+    anim_fps: &mut u16,
+    anim_tick: &mut tokio::time::Interval,
+) -> bool {
+    let new_fps = app.animation_tick_fps();
+    if new_fps == *anim_fps {
+        return false;
+    }
+    *anim_fps = new_fps;
+    app.reset_animation_cadence();
+    *anim_tick = anim_interval(new_fps);
+    true
+}
+
+const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
+
+/// Permanent low-rate repaint clock for terminal-owned IME preedit text. The select branch is
+/// guarded while an application text field is active, but the clock itself never expires: some
+/// terminals repaint preedit without sending any event that could re-arm a bounded timer.
+fn ime_scrub_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(IME_SCRUB_PERIOD);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval
+}
+
+/// Take only an immediately-adjacent time/cache pair. Both messages still pass through
+/// `App::update` in their original order; sharing the post-update draw/observer work is safe while
+/// skipping over any intervening message would not be.
+fn take_adjacent_player_progress_pair(
+    first: &Msg,
+    pending: &mut BufferedWorkerEvents,
+    mut player_is_current: impl FnMut(&crate::player::PlayerEvent) -> bool,
+) -> Option<Msg> {
+    let first_is_time = matches!(first, Msg::Player(app::PlayerMsg::TimePos(_)));
+    let first_is_cache = matches!(first, Msg::Player(app::PlayerMsg::CacheTime(_)));
+    if !first_is_time && !first_is_cache {
+        return None;
     }
 
-    fn record_art_resize(&mut self) {
-        if self.enabled {
-            self.art_resizes += 1;
+    let next = pending.pop_current(&mut player_is_current)?;
+    let complementary = match &next {
+        RuntimeEvent::Player(event) => {
+            matches!(event.unscoped(), crate::player::PlayerEvent::CacheTime(_)) && first_is_time
+                || matches!(event.unscoped(), crate::player::PlayerEvent::TimePos(_))
+                    && first_is_cache
         }
+        RuntimeEvent::App(Msg::Player(app::PlayerMsg::CacheTime(_))) => first_is_time,
+        RuntimeEvent::App(Msg::Player(app::PlayerMsg::TimePos(_))) => first_is_cache,
+        _ => false,
+    };
+    if complementary {
+        Some(next.into())
+    } else {
+        pending.push_front(next);
+        None
     }
+}
 
-    fn maybe_log(&mut self, app: &App) {
-        if !self.enabled || self.last_log.elapsed() < Duration::from_secs(5) {
-            return;
-        }
-        let avg_draw_ms = if self.frames == 0 {
-            0.0
-        } else {
-            self.draw_total.as_secs_f64() * 1000.0 / self.frames as f64
+/// Post-reducer observer work for one owner-loop turn. Progress is deliberately separate: mpv's
+/// high-rate clocks still feed the 1 Hz scrobbler, but elapsed time is not an OS/remote change and
+/// must not trigger media fingerprints, `CoreView`, topic hashes, models, or serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObserverPlan {
+    project_state: bool,
+    drive_scrobble_heartbeat: bool,
+}
+
+impl ObserverPlan {
+    const INERT: Self = Self {
+        project_state: false,
+        drive_scrobble_heartbeat: false,
+    };
+    const PROGRESS: Self = Self {
+        project_state: false,
+        drive_scrobble_heartbeat: true,
+    };
+    const PROJECTED: Self = Self {
+        project_state: true,
+        drive_scrobble_heartbeat: true,
+    };
+
+    fn for_messages(first: &Msg, paired: Option<&Msg>) -> Self {
+        let progress = |msg: &Msg| {
+            matches!(
+                msg,
+                Msg::Player(app::PlayerMsg::TimePos(_)) | Msg::Player(app::PlayerMsg::CacheTime(_))
+            )
         };
-        let a = app.animations();
-        let active_effects = [
-            a.title,
-            a.heart,
-            a.seekbar,
-            a.spinner,
-            a.eq_bars,
-            a.controls,
-            a.border,
-            a.rain,
-            a.donut,
-            a.visualizer,
-            a.starfield,
-            a.bounce,
-        ]
-        .into_iter()
-        .filter(|on| *on)
-        .count();
-        tracing::info!(
-            target: "ytt::perf",
-            frames = self.frames,
-            avg_draw_ms,
-            max_draw_ms = self.draw_max.as_secs_f64() * 1000.0,
-            art_resizes = self.art_resizes,
-            active_effects,
-            tick_fps = app.animation_tick_fps(),
-            draw_fps = app.animation_draw_fps(),
-            dirty = app.dirty,
-            "perf window"
-        );
-        self.last_log = Instant::now();
-        self.frames = 0;
-        self.draw_total = Duration::ZERO;
-        self.draw_max = Duration::ZERO;
-        self.art_resizes = 0;
+        if progress(first) && paired.is_none_or(progress) {
+            Self::PROGRESS
+        } else if paired.is_none() && matches!(first, Msg::AnimTick | Msg::StatusTick) {
+            Self::INERT
+        } else {
+            Self::PROJECTED
+        }
     }
 }
 
@@ -132,6 +278,7 @@ fn draw_app_frame(
     let res = tui::draw_frame(terminal, synchronized, clear_before, |f| ui::render(f, app));
     match res {
         Ok(()) => {
+            app.mark_local_rows_rendered();
             if let Some(start) = start {
                 perf.record_draw(start.elapsed());
             }
@@ -153,6 +300,52 @@ fn finish_draw_cycle(app: &mut App) {
     app.dirty = app.clear_before_draw_pending();
 }
 
+/// Attempt the normal render lifecycle while keeping IME freshness fail-closed. A transient full
+/// draw failure may clear `app.dirty`, so the separate flag is set before touching the terminal and
+/// is cleared only after both a successful draw and the normal finish step.
+fn draw_full_app_frame(
+    terminal: &mut tui::AppTerminal,
+    app: &mut App,
+    perf: &mut PerfStats,
+    reducer_turn_unrendered: &mut bool,
+) -> std::io::Result<bool> {
+    *reducer_turn_unrendered = true;
+    let rendered = draw_app_frame(terminal, app, perf)?;
+    if rendered {
+        finish_draw_cycle(app);
+        *reducer_turn_unrendered = false;
+    }
+    Ok(rendered)
+}
+
+fn ime_scrub_state_requires_full_draw(
+    reducer_turn_unrendered: bool,
+    dirty: bool,
+    clear_before_draw_pending: bool,
+    animation_active: bool,
+    radio_stream_active: bool,
+) -> bool {
+    reducer_turn_unrendered
+        || dirty
+        || clear_before_draw_pending
+        || animation_active
+        || radio_stream_active
+}
+
+fn ime_scrub_requires_full_draw(app: &App, reducer_turn_unrendered: bool) -> bool {
+    ime_scrub_state_requires_full_draw(
+        reducer_turn_unrendered,
+        app.dirty,
+        app.clear_before_draw_pending(),
+        // Active animation renders can depend on wall-clock interpolation between reducer ticks.
+        // Keep origin's 80 ms full redraw in those windows so visible timing remains exact.
+        app.animation_active(),
+        // Live-radio rendering reads `cache_time_at.elapsed()` for its stale-edge verdict, even
+        // when the stream was started outside dedicated Radio mode.
+        app.current_is_radio_stream(),
+    ) || !app.ime_scrub_local_projection_fresh()
+}
+
 #[cfg(windows)]
 fn is_transient_terminal_draw_error(error: &std::io::Error) -> bool {
     // Windows Terminal can briefly reject console writes while its taskbar/window state is
@@ -165,26 +358,287 @@ fn is_transient_terminal_draw_error(_: &std::io::Error) -> bool {
     false
 }
 
+/// Preserve the first fatal owner-loop I/O error so resource teardown can run before it is
+/// returned to the terminal owner. Callers leave the owner loop immediately on `None`.
+fn capture_owner_io_result<T>(
+    result: std::io::Result<T>,
+    owner_error: &mut Option<anyhow::Error>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            debug_assert!(owner_error.is_none(), "owner loop keeps the first error");
+            if owner_error.is_none() {
+                *owner_error = Some(error.into());
+            }
+            None
+        }
+    }
+}
+
+struct TerminalBackgroundTasks {
+    art_resize: crate::util::background_task::BackgroundTask,
+    signal_handlers: crate::util::background_task::BackgroundTask,
+    ytdlp_maintainer: crate::util::background_task::BackgroundTask,
+    update_check: crate::util::background_task::BackgroundTask,
+}
+
+impl TerminalBackgroundTasks {
+    async fn shutdown(&mut self) {
+        tokio::join!(
+            self.art_resize.shutdown(),
+            self.signal_handlers.shutdown(),
+            self.ytdlp_maintainer.shutdown(),
+            self.update_check.shutdown(),
+        );
+    }
+}
+
+struct LiveOwnerTeardown<'a> {
+    app: &'a mut App,
+    handles: &'a mut runtime::RuntimeHandles,
+    player_startup: &'a mut PlayerStartup,
+    terminal_background: &'a mut TerminalBackgroundTasks,
+    media: &'a mut media::MediaSession,
+    publisher: Option<&'a remote::publish::Publisher>,
+    remote_guard: Option<&'a mut remote::server::InstanceGuard>,
+    persist: &'a persist::PersistHandle,
+    pending_worker_events: &'a mut BufferedWorkerEvents,
+    pending_shutdown_events: &'a mut VecDeque<RuntimeEvent>,
+    worker_rx: &'a mut tokio::sync::mpsc::Receiver<RuntimeEvent>,
+}
+
+impl LiveOwnerTeardown<'_> {
+    fn reduce_runtime_shutdown_event(
+        &mut self,
+        event: RuntimeEvent,
+        drain: &mut OwnerIngressDrain,
+    ) {
+        match event {
+            RuntimeEvent::Remote(
+                remote_event @ (remote::server::RemoteEvent::Command(_, _)
+                | remote::server::RemoteEvent::SessionCommand { .. }),
+            ) => {
+                drain.remote_requests += 1;
+                self.handles
+                    .reduce_shutdown_event(self.app, RuntimeEvent::Remote(remote_event));
+            }
+            RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
+                session,
+                frame_id,
+                page_id,
+                topics: _,
+                settlement,
+            }) => {
+                drain.subscribe_requests += 1;
+                if !self.publisher.is_some_and(|publisher| {
+                    publisher.reject_subscribe_for_shutdown(
+                        &session,
+                        page_id.as_deref(),
+                        frame_id,
+                        settlement,
+                    )
+                }) {
+                    tracing::debug!(
+                        frame_id,
+                        ?page_id,
+                        "retired queued session subscribe during owner shutdown"
+                    );
+                }
+            }
+            RuntimeEvent::TelemetryWake => {
+                for coalesced in self.handles.drain_background_coalesced() {
+                    self.reduce_runtime_shutdown_event(coalesced, drain);
+                }
+            }
+            event => self.handles.reduce_shutdown_event(self.app, event),
+        }
+    }
+}
+
+impl OwnerTeardown for LiveOwnerTeardown<'_> {
+    fn quiesce_remote(&mut self) {
+        if let Some(guard) = self.remote_guard.as_deref_mut() {
+            guard.quiesce_owner_admission();
+        } else if let Some(publisher) = self.publisher {
+            publisher.quiesce_owner_admission();
+        }
+    }
+
+    fn retire_player(&mut self) {
+        self.handles.begin_player_shutdown(self.app);
+    }
+
+    fn close_ingress(&mut self) {
+        // Reject new producers without closing the receiver: callback retries are released, while
+        // already accepted main/deferred/coalesced events remain available to the final drain.
+        self.handles.close_event_ingress();
+    }
+
+    fn deactivate_media(&mut self) {
+        let _ = self.media.set_enabled(false);
+    }
+
+    async fn drain_owner_ingress(&mut self) -> OwnerIngressDrain {
+        let mut drain = OwnerIngressDrain::default();
+        while let Some(event) = self.pending_worker_events.pop_front() {
+            self.reduce_runtime_shutdown_event(event, &mut drain);
+        }
+        while let Some(event) = self.pending_shutdown_events.pop_front() {
+            self.reduce_runtime_shutdown_event(event, &mut drain);
+        }
+        loop {
+            while let Ok(event) = self.worker_rx.try_recv() {
+                self.reduce_runtime_shutdown_event(event, &mut drain);
+            }
+            if self.handles.background_ingress_is_idle() {
+                match self.worker_rx.try_recv() {
+                    Ok(event) => {
+                        self.reduce_runtime_shutdown_event(event, &mut drain);
+                        continue;
+                    }
+                    Err(
+                        tokio::sync::mpsc::error::TryRecvError::Empty
+                        | tokio::sync::mpsc::error::TryRecvError::Disconnected,
+                    ) => break,
+                }
+            }
+            // The drainer may publish after the empty try-receive or may have completed its final
+            // send without retiring in-flight accounting yet. Yield and recheck both predicates;
+            // never wait on a receiver whose sender handles deliberately remain alive.
+            tokio::task::yield_now().await;
+        }
+        for coalesced in self.handles.drain_background_coalesced() {
+            self.reduce_runtime_shutdown_event(coalesced, &mut drain);
+        }
+        self.worker_rx.close();
+        drain
+    }
+
+    async fn await_remote_reply_flush(&mut self) {
+        if let Some(publisher) = self.publisher
+            && !publisher.wait_for_wire_settlements().await
+        {
+            // The structural barrier owns the normal path. This tiny final window is only a
+            // scheduler fallback after the bounded writer budget was exhausted and logged.
+            remote::await_shutdown_reply_grace().await;
+        }
+    }
+
+    async fn shutdown_remote(&mut self) {
+        // The endpoint must be unlinked while this guard still owns the listener. If the hub were
+        // latched first, the listener could drop and a successor could rebind before our late
+        // path cleanup, letting the old process delete the new socket.
+        if let Some(guard) = self.remote_guard.as_deref_mut() {
+            guard.release_endpoint();
+        }
+        if let Some(publisher) = self.publisher {
+            publisher.shutting_down();
+        }
+        if let Some(guard) = self.remote_guard.as_deref_mut() {
+            guard.shutdown().await;
+        }
+    }
+
+    async fn reap_player_startup(&mut self) {
+        self.player_startup.cancel_and_join().await;
+    }
+
+    fn close_video(&mut self) {
+        self.app.close_video();
+    }
+
+    async fn shutdown_terminal_background(&mut self) {
+        self.terminal_background.shutdown().await;
+    }
+
+    async fn shutdown_resolver(&mut self) {
+        self.handles
+            .resolver_shutdown(Duration::from_millis(3500))
+            .await;
+    }
+
+    async fn shutdown_runtime_background(&mut self) -> runtime::BackgroundShutdown {
+        // Runtime-local jobs close admission together with the player barrier. Cancellable work
+        // is aborted; real blocking work gets a bounded join window and reports exact leftovers.
+        // The teardown driver preserves a timeout and invokes this once more after transfer and
+        // download actors stop, before persistence flush.
+        self.handles
+            .background_shutdown(Duration::from_millis(3500))
+            .await
+    }
+
+    async fn shutdown_transfer(&mut self) {
+        // Transfer owns auth, playlist, and import child tasks. Stop it while the runtime ingress
+        // still exists so the actor can interrupt reliable retries, then reap every child.
+        self.handles
+            .transfer_shutdown(Duration::from_millis(3500))
+            .await;
+    }
+
+    async fn shutdown_downloads(&mut self) {
+        // Stop yt-dlp/ffmpeg process groups before slower persistence/scrobble work.
+        self.handles
+            .download_shutdown(Duration::from_millis(3500))
+            .await;
+    }
+
+    async fn finalize_runtime_background(&mut self) {
+        let fallback = self.handles.finalize_background().await;
+        // Main/deferred/coalesced work was settled before the remote/session owner closed. Only
+        // exact terminal completions which crossed the closed-ingress boundary remain here.
+        for event in fallback {
+            self.handles.reduce_shutdown_event(self.app, event);
+        }
+    }
+
+    async fn flush_persistence(&mut self) -> Result<()> {
+        // Publish all authoritative quit snapshots, then drain the actor. A timeout retries every
+        // still-owned journal frontier and reports any operation whose durability is unconfirmed.
+        flush_owner_persistence(self.app, self.persist).await
+    }
+
+    async fn shutdown_scrobble(&mut self) -> Result<()> {
+        // The deadline is diagnostic only. Accepted local durability is joined before the
+        // terminal returns, while the actor's network flush remains internally bounded.
+        self.handles
+            .scrobble_shutdown(Duration::from_millis(1500))
+            .await
+            .map_err(|error| anyhow::anyhow!("scrobble shutdown durability failed: {error}"))
+    }
+}
+
 pub async fn run(
     terminal: &mut tui::AppTerminal,
-    cfg: config::Config,
+    startup_state: TerminalStartupState,
     art_picker: Option<ratatui_image::picker::Picker>,
     remote: Option<remote::RemoteServer>,
     mut startup: StartupTrace,
     zoom: zoom::ZoomHandle,
     current_version: &'static str,
 ) -> Result<()> {
-    // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
-    let dirs = directories::ProjectDirs::from("", "", "yututui");
-    let _log_guard = dirs.as_ref().and_then(|d| {
-        let dir = d.cache_dir();
+    let TerminalStartupState {
+        config: cfg,
+        persistent,
+        persistence_access,
+    } = startup_state;
+    let persistence_read_only = persistence_access.is_read_only();
+    // Resolve every runtime store through the same override-aware roots covered by the writer
+    // lease. Observational (`--new-instance`) owners retain read access but receive no mutation
+    // destinations at all.
+    let TerminalRuntimePaths {
+        data_dir,
+        writable_data_dir: player_registry_dir,
+        writable_cache_dir,
+        recorder_temp_dir,
+    } = terminal_runtime_paths(persistence_read_only);
+    let _log_guard = writable_cache_dir.as_deref().and_then(|dir| {
         std::fs::create_dir_all(dir).ok()?;
         logging::init(dir)
     });
     startup.mark("logging_init_called");
     startup.enable_logging();
-    let data_dir = dirs.as_ref().map(|d| d.data_dir().to_path_buf());
-    if let Some(dir) = &data_dir {
+    if let Some(dir) = &player_registry_dir {
         let _ = std::fs::create_dir_all(dir);
         // Reap any mpv leaked by a prior run that died uncatchably (SIGKILL/power loss).
         player::lifetime::reap_orphans(dir);
@@ -202,13 +656,6 @@ pub async fn run(
     // Job Object guarantees it regardless; this just makes teardown immediate).
     #[cfg(windows)]
     player::lifetime::install_console_ctrl_handler();
-
-    // Background persistence actor: Save* commands hand it owned snapshots and it does
-    // the debounced atomic writes off the loop task. The flush hook is installed after
-    // the mpv panic hook above (last installed runs first), so on a panic pending
-    // snapshots land on disk, then mpv dies, then the terminal is restored.
-    let persist = persist::spawn();
-    persist::install_panic_flush(persist.pending());
 
     // Config is loaded in `async_main` (so mouse capture can reflect it) and passed in.
     let cookie = cfg.effective_cookie();
@@ -232,8 +679,8 @@ pub async fn run(
     // render (`recorder.supported` is only consulted when the user opens/uses the recorder),
     // and the probe is an `mpv --version` fork/exec (~40-60ms) that must run *after*
     // `tools::init` sets `mpv_program()`, so it probes the selected mpv, not the fallback.
-    if let Some(d) = dirs.as_ref() {
-        app.recorder.temp_dir = d.cache_dir().join("recordings");
+    if let Some(temp_dir) = recorder_temp_dir.as_ref() {
+        app.recorder.temp_dir = temp_dir.clone();
     }
     // Zoom wiring before `apply_config`, which restores the persisted scale (the handle
     // carries the probed mode, so an unsupported terminal never sees a scale above 1).
@@ -241,15 +688,22 @@ pub async fn run(
     // Hand over the terminal image picker (present only when album art is enabled).
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());
-    // Load the local library (favorites + history); an absent/corrupt file -> empty.
-    app.library = library::Library::load();
-    let session_cache = session::SessionCache::load();
-    // Load per-track preference signals (plays/skips/dislikes); absent -> empty.
-    app.signals = signals::Signals::load();
-    // Load the downloads manifest, then enrich the bare disk scan with each track's remembered
+    let PersistentStartupState {
+        library,
+        session_cache,
+        signals,
+        download_store,
+        playlists: loaded_playlists,
+        playlist_repair,
+        station,
+        romanization,
+    } = persistent;
+    app.library = library;
+    app.signals = signals;
+    app.download_store = download_store;
+    // Enrich the bare disk scan with each track's remembered
     // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
     // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
-    app.download_store = downloads::DownloadStore::load();
     let scanned = library::scan_downloads(&download_runtime.dir);
     let scan_truncated = scanned.truncated;
     let scan_limit = scanned.limit;
@@ -268,11 +722,10 @@ pub async fn run(
     // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
-    let (loaded_playlists, playlist_repair) = playlists::Playlists::load_with_repair_report();
+    let playlists_repaired_at_startup = playlist_repair.changed();
     app.playlists = loaded_playlists;
     if playlist_repair.changed() {
         tracing::warn!(?playlist_repair, "playlists file was repaired on load");
-        persist.save(persist::Snapshot::Playlists(app.playlists.clone()));
         if playlist_repair.truncated() && app.status.text.is_empty() {
             app.status.kind = app::StatusKind::Info;
             app.status.text = format!(
@@ -289,20 +742,51 @@ pub async fn run(
         }
     }
     // Load the active natural-language station profile (explore level + avoided artists), if any.
-    app.station = station::StationStore::load();
+    app.station = station;
     app.apply_station_profile();
     // Load Latin-script display overlays for CJK titles. Source metadata stays in the library.
-    app.romanization.cache = romanize::RomanizeCache::load();
+    app.romanization.cache = romanization;
+
+    if let Some(reason) = persistence_access.read_only_reason() {
+        tracing::warn!(%reason, "secondary player is running with read-only persistence");
+        app.status.kind = app::StatusKind::Error;
+        app.status.text = if crate::i18n::is_korean() {
+            format!("보조 인스턴스 — 변경사항이 저장되지 않습니다: {reason}")
+        } else {
+            format!("Secondary instance — changes are not saved: {reason}")
+        };
+        // Keep the first-frame warning persistent rather than arming the ordinary toast expiry.
+        app.dirty = true;
+    }
+
+    // Start persistence only after the binary-level typed preflight accepted every startup load.
+    // No actor or direct writer can run with a stale read-only fallback snapshot.
+    let persist = persist::spawn();
+    persist::install_panic_flush(persist.pending());
+    if playlists_repaired_at_startup
+        && let Err(error) = persist.save(persist::Snapshot::Playlists(app.playlists.clone()))
+    {
+        tracing::warn!(%error, "startup playlist repair remains read-only");
+    }
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
     app.restore_last_session_from_cache(&session_cache);
     startup.mark("app_state_loaded");
 
     let mut perf = PerfStats::from_env();
-    draw_app_frame(terminal, &mut app, &mut perf)?;
+    if let Err(error) = draw_app_frame(terminal, &mut app, &mut perf) {
+        let owner_error = anyhow::Error::from(error);
+        return match flush_owner_persistence(&app, &persist).await {
+            Ok(()) => Err(owner_error),
+            Err(persistence_error) => Err(owner_error.context(format!(
+                "persistence shutdown also failed: {persistence_error:#}"
+            ))),
+        };
+    }
     startup.mark("first_draw");
     if std::env::var_os("YTM_EXIT_AFTER_FIRST_DRAW").is_some() {
         startup.mark("exit_after_first_draw");
+        flush_owner_persistence(&app, &persist).await?;
         return Ok(());
     }
 
@@ -312,21 +796,13 @@ pub async fn run(
     tools::init(&cfg.tools).await;
     startup.mark("tools_selected");
 
-    // Radio recorder setup, deferred off the pre-first-frame path (see `App::new` above).
-    // Runs after `tools::init` so the capability probe hits the *selected* mpv (via
-    // `mpv_program()`), and before the event loop starts, so a recording (an explicit user
-    // action) can never race the temp-dir wipe.
-    if dirs.is_some() {
-        let temp_dir = app.recorder.temp_dir.clone();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        let _ = std::fs::create_dir_all(&temp_dir);
-    }
-    app.recorder.supported = player::mpv::stream_record_supported();
+    // Probe after `tools::init` so it hits the selected mpv. Recovery-aware temp cleanup is
+    // deferred until the tracked runtime task set exists below.
+    app.recorder.supported = !persistence_read_only && player::mpv::stream_record_supported();
     // Warm the media-controls probe here too (same one-time subprocess cost as the line above)
     // so the mid-session mpv respawn path hits the cache instead of blocking a worker on the
     // first play. Both probes are cached per (process, flag) after this.
     let _ = player::mpv::media_controls_flag_supported();
-    startup.mark("recorder_ready");
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
@@ -336,7 +812,10 @@ pub async fn run(
         // A missing yt-dlp is about to be fetched by the maintainer spawned below -
         // its "Downloading yt-dlp..." status supersedes the install nag. mpv stays a
         // hard nag; there is no managed download for it.
-        if cfg.tools.managed_enabled() && tools::ytdlp::asset_name().is_some() {
+        if !persistence_read_only
+            && cfg.tools.managed_enabled()
+            && tools::ytdlp::asset_name().is_some()
+        {
             missing.retain(|bin| *bin != "yt-dlp");
         }
     }
@@ -359,40 +838,66 @@ pub async fn run(
     >(crate::util::backpressure::ART_RESIZE_QUEUE);
     app.set_art_resize_tx(art_resize_tx);
     let art_resize_msg_tx = worker_tx.clone();
-    tokio::spawn(async move {
-        while let Some(mut request) = art_resize_rx.recv().await {
-            while let Ok(newer) = art_resize_rx.try_recv() {
-                request = newer;
-            }
-            match crate::util::blocking::spawn_cpu(move || request.resize_encode()).await {
-                Ok(Ok(response)) => {
-                    runtime::emit(&art_resize_msg_tx, RuntimeEvent::ArtworkResized(response));
+    let art_resize_task =
+        crate::util::background_task::BackgroundTask::spawn("artwork resize worker", async move {
+            while let Some(mut request) = art_resize_rx.recv().await {
+                while let Ok(newer) = art_resize_rx.try_recv() {
+                    request = newer;
                 }
-                Ok(Err(e)) => tracing::warn!(error = ?e, "artwork resize failed"),
-                Err(e) => tracing::warn!(error = ?e, "artwork resize task failed"),
+                match crate::util::blocking::spawn_cpu(move || request.resize_encode()).await {
+                    Ok(Ok(response)) => {
+                        runtime::emit_callback_observed(
+                            &art_resize_msg_tx,
+                            RuntimeEvent::ArtworkResized(response),
+                        );
+                    }
+                    Ok(Err(e)) => tracing::warn!(error = ?e, "artwork resize failed"),
+                    Err(e) => tracing::warn!(error = ?e, "artwork resize task failed"),
+                }
             }
-        }
-    });
+        });
 
-    // Signals (SIGINT/TERM/HUP) kill mpv and ask the loop to quit.
-    player::lifetime::spawn_signal_handlers(runtime::sink(worker_tx.clone(), RuntimeEvent::Signal));
+    // External shutdown has an out-of-band latch because the bounded worker lane can be full.
+    // The compatibility RuntimeEvent is still emitted for observers, but loop termination and
+    // transport-restart suppression never depend on admitting it.
+    let shutdown = player::lifetime::ShutdownLatch::new();
+    let signal_handlers = player::lifetime::spawn_signal_handlers(
+        shutdown.clone(),
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
+    );
 
     // Keep the managed yt-dlp present and fresh in the background (the fix for
     // distro-frozen yt-dlp breaking playback). Never blocks startup or playback;
     // download progress and outcomes surface on the status line via Msg::Tools.
-    tools::ytdlp::spawn_maintainer(
-        cfg.tools.clone(),
-        runtime::sink(worker_tx.clone(), RuntimeEvent::Tools),
-    );
+    let ytdlp_maintainer = if persistence_read_only {
+        crate::util::background_task::BackgroundTask::disabled(
+            "managed yt-dlp maintainer (read-only)",
+        )
+    } else {
+        tools::ytdlp::spawn_maintainer(
+            cfg.tools.clone(),
+            runtime::sink(worker_tx.clone(), RuntimeEvent::Tools),
+        )
+    };
 
     // Background app-update check: resolve the latest GitHub release and, if we're behind,
     // surface it in the About card (+ nav-brand dot + one-time toast). Never blocks startup;
     // no-ops entirely when disabled or on a development build.
-    update::spawn_update_check(
-        current_version,
-        cfg.update_check_enabled,
-        runtime::sink(worker_tx.clone(), RuntimeEvent::Update),
-    );
+    let update_check = if persistence_read_only {
+        crate::util::background_task::BackgroundTask::disabled("update check (read-only)")
+    } else {
+        update::spawn_update_check(
+            current_version,
+            cfg.update_check_enabled,
+            runtime::sink(worker_tx.clone(), RuntimeEvent::Update),
+        )
+    };
+    let mut terminal_background = TerminalBackgroundTasks {
+        art_resize: art_resize_task,
+        signal_handlers,
+        ytdlp_maintainer,
+        update_check,
+    };
 
     // The remote-control accept loop is started - and the instance descriptor published - just
     // before the reducer loop below (see `remote.map(..server.start..)`), NOT here. Publishing
@@ -402,25 +907,12 @@ pub async fn run(
 
     // Spawn mpv off the startup path. Until the IPC actor is ready, reducer-emitted
     // PlayerCmds are buffered by RuntimeHandles and replayed in order.
-    let (player_ready_tx, mut player_ready_rx) =
-        mpsc::unbounded_channel::<Result<(PlayerHandle, player::Mpv), String>>();
-    let player_msg_tx = worker_tx.clone();
-    let player_data_dir = data_dir.clone();
-    let player_cookies_file = player_runtime.cookies_file.clone();
-    let player_gapless = player_runtime.gapless;
-    let player_audio = player_runtime.audio.clone();
-    tokio::spawn(async move {
-        let result = player::spawn(
-            runtime::sink(player_msg_tx, RuntimeEvent::Player),
-            player_data_dir,
-            player_cookies_file,
-            player_gapless,
-            player_audio,
-        )
-        .await
-        .map_err(|e| format!("{e:#}"));
-        let _ = player_ready_tx.send(result);
-    });
+    let mut player_startup = spawn_audio_player(
+        worker_tx.clone(),
+        player_registry_dir.clone(),
+        &player_runtime,
+    );
+    let mut player_ready_pending = true;
     startup.mark("mpv_spawned");
 
     // Spawn the API actor. Cookie auth runs inside the actor so first render and player setup
@@ -436,8 +928,9 @@ pub async fn run(
     let artwork_handle = artwork::spawn(runtime::sink(worker_tx.clone(), RuntimeEvent::Artwork));
 
     // Download actor: yt-dlp best-audio + tags + cover art, capped concurrency.
+    let download_tx = worker_tx.clone();
     let download_handle = download::spawn(
-        runtime::sink(worker_tx.clone(), RuntimeEvent::Download),
+        move |event| runtime::emit(&download_tx, RuntimeEvent::Download(event)),
         download_runtime.dir.clone(),
         download_runtime.cookies_file.clone(),
         download_runtime.max_concurrent,
@@ -479,12 +972,62 @@ pub async fn run(
         persist.clone(),
     );
 
-    // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
-    // start the restored track. Routed through the message pump so the resulting load/save
-    // commands flow through the normal dispatch below (no-op when the setting is off or
-    // nothing was restored).
+    // An explicit Save is journaled in the stable recorder cache before its copy worker is
+    // admitted. Recover those intents off the owner task and wait for the tracked job before
+    // deleting ordinary incomplete/Decide temps or admitting any live recorder command. The
+    // journal retains its originally accepted destination even if configuration changed.
+    if recorder_temp_dir.is_some() {
+        let report = handles
+            .recover_recordings(app.recorder.temp_dir.clone(), cfg.effective_recording_dir())
+            .await;
+        app.recorder.capacity_blocked = report.capacity_blocked();
+        if report.capacity_blocked() {
+            app.status.kind = app::StatusKind::Error;
+            app.status.text = recorder_capacity_blocked_status(&report);
+            app.recorder.health_warning = Some(app.status.text.clone());
+            app.recorder.health_sticky = true;
+            app.dirty = true;
+        } else if !report.warnings.is_empty() {
+            tracing::warn!(
+                recovered = report.recovered,
+                pending = report.pending,
+                warnings = ?report.warnings,
+                "recording crash recovery completed with warnings"
+            );
+            app.status.kind = app::StatusKind::Error;
+            app.status.text = if crate::i18n::is_korean() {
+                format!(
+                    "녹음 복구: {}개 복구, {}개 대기 — {}",
+                    report.recovered, report.pending, report.warnings[0]
+                )
+            } else {
+                format!(
+                    "Recording recovery: {} recovered, {} pending — {}",
+                    report.recovered, report.pending, report.warnings[0]
+                )
+            };
+            app.recorder.health_warning = Some(app.status.text.clone());
+            app.recorder.health_sticky = true;
+            app.dirty = true;
+        } else if report.recovered > 0 {
+            app.status.kind = app::StatusKind::Info;
+            app.status.text = if crate::i18n::is_korean() {
+                format!("중단된 녹음 저장 {}개를 복구했어요", report.recovered)
+            } else {
+                format!("Recovered {} interrupted recording saves", report.recovered)
+            };
+            app.dirty = true;
+        }
+    }
+    startup.mark("recorder_ready");
+
+    // Opt-in autoplay-on-launch: every actor handle now exists, so reduce and dispatch this
+    // owner-local startup action directly. Sending it through the bounded worker ingress before
+    // the owner loop starts could reject the action behind an early burst of actor callbacks.
     if cfg.effective_autoplay_on_start() {
-        runtime::emit(&worker_tx, RuntimeEvent::App(Msg::Autoplay));
+        for cmd in app.update(Msg::Autoplay) {
+            handles.dispatch(&mut app, cmd);
+        }
     }
 
     // OS media session (macOS Now Playing / Windows SMTC / Linux MPRIS): commands from
@@ -493,13 +1036,33 @@ pub async fn run(
     // the platform session can't initialize.
     let media_cmd_tx = worker_tx.clone();
     let media_art_tx = worker_tx.clone();
-    let mut media = media::MediaSession::new(
+    let mut media = media::MediaSession::new_cancellable(
         cfg.effective_media_controls(),
-        move |cmd| {
-            runtime::emit(&media_cmd_tx, RuntimeEvent::App(Msg::Media(cmd)));
+        move |cmd, callback_cancellation| {
+            let event = RuntimeEvent::App(Msg::Media(cmd));
+            #[cfg(windows)]
+            {
+                // SMTC invokes this on its dedicated worker and has no busy return surface.
+                // Retain the exact user command until admission, but let backend-generation
+                // cancellation release it before a live Settings disable joins the worker.
+                runtime::ingress::emit_callback_result_until(
+                    &media_cmd_tx,
+                    event,
+                    callback_cancellation,
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                if callback_cancellation.is_cancelled() {
+                    return Err(crate::util::delivery::DeliveryError::Closed);
+                }
+                // MPRIS returns the error to D-Bus; macOS translates it to CommandFailed and is
+                // pumped by the owner thread, where blocking would self-deadlock.
+                runtime::emit(&media_cmd_tx, event)
+            }
         },
         move |ready| {
-            runtime::emit(
+            runtime::emit_callback_observed(
                 &media_art_tx,
                 RuntimeEvent::App(Msg::MediaArtworkReady(ready)),
             );
@@ -514,8 +1077,7 @@ pub async fn run(
 
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
-    let mut ime_scrub = tokio::time::interval(Duration::from_millis(80));
-    ime_scrub.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut ime_scrub = ime_scrub_interval();
     // Only polled while a transient status is covering the song title; lets the reducer
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
@@ -525,6 +1087,11 @@ pub async fn run(
     // ticks). Drives the max-duration force-split.
     let mut recording_tick = tokio::time::interval(Duration::from_secs(1));
     recording_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // A saturated scrobble lane can reject the final pause/stop after playback heartbeats cease.
+    // Keep one parked retry clock so the current terminal snapshot is retried without requiring
+    // another player event; the handle disables the guard immediately after admission.
+    let mut scrobble_retry_tick = tokio::time::interval(Duration::from_millis(250));
+    scrobble_retry_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // Drives the optional player-view animations at the configured frame rate - but only ticks
     // while `app.animation_active()` holds (player view, master + an effect enabled, a track
     // playing, focused unless the user opted out of focus-pausing). With every animation toggle
@@ -538,9 +1105,9 @@ pub async fn run(
     // now start the control server and publish the instance descriptor. Doing it here (rather
     // than during setup) means a `ytt -r` that discovers the descriptor is guaranteed something
     // is accepting and the reducer will answer promptly. `_remote_guard` lives to end of `run`;
-    // its Drop removes the descriptor (and best-effort the socket) on exit. `None` => remote
-    // control unavailable this run; the app still works as a normal player.
-    let (mut publisher, _remote_guard) = match remote {
+    // its owned shutdown removes the descriptor/socket and joins the accept tree. `None` =>
+    // remote control unavailable this run; the app still works as a normal player.
+    let (mut publisher, mut remote_guard) = match remote {
         Some(server) => {
             let (guard, hub) = server.start(runtime::remote_sink(worker_tx.clone()));
             // The v8 publisher shares the server's session hub; it runs on this loop
@@ -550,13 +1117,31 @@ pub async fn run(
         None => (None, None),
     };
 
-    let mut pending_worker_msgs: VecDeque<Msg> = VecDeque::new();
+    let mut pending_worker_events = BufferedWorkerEvents::default();
+    let mut pending_shutdown_events: VecDeque<RuntimeEvent> = VecDeque::new();
+    let mut owner_error = None;
+    // Startup mutates App after the first paint. Until a later successful full render proves the
+    // terminal matches all reducer-owned state, the IME clock must take the normal draw path.
+    let mut reducer_turn_unrendered = true;
 
-    while !app.should_quit {
+    enum OwnerTurnInput {
+        Local(Msg),
+        BufferedWorker(RuntimeEvent),
+        Worker(RuntimeEvent),
+    }
+
+    'owner: while !app.should_quit {
+        if shutdown.is_triggered() {
+            handles.begin_player_shutdown(&mut app);
+            break;
+        }
         if app.dirty {
-            if draw_app_frame(terminal, &mut app, &mut perf)? {
-                finish_draw_cycle(&mut app);
-            }
+            let Some(_drew) = capture_owner_io_result(
+                draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered),
+                &mut owner_error,
+            ) else {
+                break 'owner;
+            };
             perf.maybe_log(&app);
             if app.dirty {
                 continue;
@@ -566,18 +1151,26 @@ pub async fn run(
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
-        let msg = if !pending_worker_msgs.is_empty() {
-            let mut polled_input = None;
-            match event::poll_terminal_input_now(&mut events, &mut input, &zoom, &mut polled_input)
-            {
-                event::InputPoll::Ready => polled_input.expect("ready input message"),
-                event::InputPoll::Empty => pending_worker_msgs
-                    .pop_front()
-                    .expect("pending worker message"),
-                event::InputPoll::Closed => break,
-            }
+        let input = if let Some(pending) =
+            pending_worker_events.pop_current(|event| handles.player_event_is_current(event))
+        {
+            // Once a keyed wake has been accepted, finish that bounded owner batch before a
+            // newer input mutation. Otherwise a terminal event buffered before `Next` could be
+            // reduced against the track selected by `Next` and double-advance the queue.
+            OwnerTurnInput::BufferedWorker(pending)
         } else {
             tokio::select! {
+                biased;
+                _ = shutdown.wait() => {
+                    handles.begin_player_shutdown(&mut app);
+                    break 'owner;
+                },
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    media.retry_deadline().unwrap_or_else(Instant::now)
+                )), if media.retry_deadline().is_some() => {
+                    media.publish(app.media_snapshot());
+                    continue;
+                },
                 maybe = events.next() => match maybe {
                     // The translator maps physical mouse cells onto the zoom backend's
                     // virtual grid, so hit-testing (and double-click identity) stay correct
@@ -585,7 +1178,7 @@ pub async fn run(
                     Some(Ok(ev)) => {
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate(ev, cs, rs) {
-                            Some(m) => m,
+                            Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
                     }
@@ -593,46 +1186,105 @@ pub async fn run(
                     None => break,
                 },
                 Some(event) = worker_rx.recv() => {
+                    if let RuntimeEvent::Player(player_event) = &event
+                        && !handles.player_event_is_current(player_event)
+                    {
+                        continue;
+                    }
                     if event.is_telemetry_wake() {
-                        for event in worker_tx.drain_coalesced() {
-                            pending_worker_msgs.push_back(event.into());
-                        }
+                        pending_worker_events.extend(worker_tx.drain_coalesced());
                         continue;
                     } else {
-                        // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here,
-                        // between reducer turns, and never become a Msg - the Publisher emits
-                        // the initial snapshots + reply from current state.
-                        if let RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
-                            session, frame_id, topics,
-                        }) = event {
-                            if let Some(publisher) = publisher.as_mut() {
-                                publisher.handle_subscribe(&app.core_view(), &session, frame_id, &topics);
-                            }
-                            continue;
-                        }
-                        event.into()
+                        OwnerTurnInput::Worker(event)
                     }
                 },
-                Some(result) = player_ready_rx.recv() => {
-                    handles.handle_player_ready(result, &player_runtime, &mut app);
+                result = player_startup.recv(), if player_ready_pending => {
+                    if shutdown.is_triggered() {
+                        handles.begin_player_shutdown(&mut app);
+                        break 'owner;
+                    }
+                    player_ready_pending = false;
+                    let result = result.unwrap_or_else(|_| {
+                        Err("player startup task stopped before reporting readiness".to_owned())
+                    });
+                    player_startup.join_finished().await;
+                    if shutdown.is_triggered() {
+                        // A signal can race the tiny send/join boundary on the multi-thread
+                        // runtime. Drop a successful result here instead of installing a fresh
+                        // process after the shutdown latch has won.
+                        handles.begin_player_shutdown(&mut app);
+                        drop(result);
+                        break 'owner;
+                    }
+                    handles.handle_player_ready(result, &mut app);
+                    reducer_turn_unrendered = true;
                     if app.dirty {
-                        if draw_app_frame(terminal, &mut app, &mut perf)? {
-                            finish_draw_cycle(&mut app);
-                        }
+                        let Some(_drew) = capture_owner_io_result(
+                            draw_full_app_frame(
+                                terminal,
+                                &mut app,
+                                &mut perf,
+                                &mut reducer_turn_unrendered,
+                            ),
+                            &mut owner_error,
+                        ) else {
+                            break 'owner;
+                        };
                         perf.maybe_log(&app);
                     }
                     continue;
                 },
                 _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                    if draw_app_frame(terminal, &mut app, &mut perf)? {
-                        finish_draw_cycle(&mut app);
+                    let fast_succeeded = if ime_scrub_requires_full_draw(
+                        &app,
+                        reducer_turn_unrendered,
+                    ) {
+                        false
+                    } else {
+                        match tui::scrub_ime_preedit(
+                            terminal,
+                            app.synchronized_draw_active(),
+                        ) {
+                            Ok(tui::ImeScrubResult::Fast) => {
+                                perf.record_ime_fast_scrub();
+                                true
+                            }
+                            Ok(tui::ImeScrubResult::Resized) => false,
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "IME terminal scrub failed; retrying with a full draw"
+                                );
+                                false
+                            }
+                        }
+                    };
+                    if !fast_succeeded {
+                        let Some(_drew) = capture_owner_io_result(
+                            draw_full_app_frame(
+                                terminal,
+                                &mut app,
+                                &mut perf,
+                                &mut reducer_turn_unrendered,
+                            ),
+                            &mut owner_error,
+                        ) else {
+                            break 'owner;
+                        };
                     }
                     perf.maybe_log(&app);
                     continue;
                 },
-                _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
-                _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
-                _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
+                _ = status_tick.tick(), if app.status_visible() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
+                _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
+                _ = scrobble_retry_tick.tick(), if handles.scrobble_retry_needed() => {
+                    let snapshot = app.media_snapshot();
+                    if let Err(error) = handles.scrobble_observe(&snapshot) {
+                        tracing::debug!(%error, "scrobble terminal snapshot remains pending");
+                    }
+                    continue;
+                },
                 _ = media_pump.tick(), if media.wants_pump() => {
                     media.pump();
                     continue;
@@ -640,21 +1292,105 @@ pub async fn run(
             }
         };
 
-        let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
-        // AnimTick/StatusTick only advance animations / expire the toast - they can't touch
-        // anything a media snapshot reads, so skip rebuilding it (snapshot construction
-        // allocates ~10 Strings, and AnimTick fires at up to the configured FPS).
-        let media_inert = matches!(&msg, Msg::AnimTick | Msg::StatusTick);
-        let media_before = (!media_inert).then(|| app.media_fingerprint());
-        for cmd in app.update(msg) {
-            // Desktop notifications are handled here (not in `RuntimeHandles`) because the OSC
-            // path writes to the terminal's stdout, which this scope owns; do it between frames
-            // (before the draw below) so it never interleaves with a partial frame.
-            if let Cmd::DesktopNotify { title, body } = cmd {
-                notifier.emit(&title, &body);
+        // The latch wins even if a queued TransportClosed or compatibility Signal event was
+        // selected in the same scheduler turn.
+        if shutdown.is_triggered() {
+            match input {
+                OwnerTurnInput::BufferedWorker(event) => pending_worker_events.push_front(event),
+                OwnerTurnInput::Worker(event) => pending_shutdown_events.push_back(event),
+                OwnerTurnInput::Local(_) => {}
+            }
+            handles.begin_player_shutdown(&mut app);
+            break;
+        }
+
+        let msg = match input {
+            OwnerTurnInput::Local(msg) => msg,
+            OwnerTurnInput::BufferedWorker(event) => event.into(),
+            // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
+            // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
+            // latch check preserves the correlated request if shutdown wins this turn.
+            OwnerTurnInput::Worker(RuntimeEvent::Remote(
+                remote::server::RemoteEvent::SessionSubscribe {
+                    session,
+                    frame_id,
+                    page_id,
+                    topics,
+                    settlement,
+                },
+            )) => {
+                if let Some(publisher) = publisher.as_mut() {
+                    publisher.handle_tracked_subscribe(
+                        &app.core_view(),
+                        &session,
+                        page_id.as_deref(),
+                        frame_id,
+                        &topics,
+                        settlement,
+                    );
+                }
                 continue;
             }
-            handles.dispatch(&mut app, cmd);
+            OwnerTurnInput::Worker(event) => event.into(),
+        };
+
+        let paired_progress =
+            take_adjacent_player_progress_pair(&msg, &mut pending_worker_events, |event| {
+                handles.player_event_is_current(event)
+            });
+        let observer_plan = ObserverPlan::for_messages(&msg, paired_progress.as_ref());
+
+        let resized_artwork = matches!(&msg, Msg::ArtworkResized(_))
+            || matches!(&paired_progress, Some(Msg::ArtworkResized(_)));
+        // Progress updates only interpolation/live-sync clocks. Neither clock is a projected
+        // facet: OS media and remote clients interpolate elapsed independently, while seeks bump
+        // `position_epoch` through a different message. Skip both hashes on this high-rate path.
+        let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
+        reducer_turn_unrendered = true;
+        for msg in std::iter::once(msg).chain(paired_progress) {
+            if shutdown.is_triggered() {
+                handles.begin_player_shutdown(&mut app);
+                break 'owner;
+            }
+            let cmds = app.update(msg);
+            if owner_exit_requested(&app, &shutdown) {
+                // Quit has no follow-up effects. Retire transport before commands from the same
+                // reducer turn can enter background actors.
+                handles.begin_player_shutdown(&mut app);
+                break 'owner;
+            }
+            for cmd in cmds {
+                if shutdown.is_triggered() {
+                    handles.begin_player_shutdown(&mut app);
+                    break 'owner;
+                }
+                // Desktop notifications are handled here (not in `RuntimeHandles`) because the
+                // OSC path writes to the terminal's stdout, which this scope owns; do it between
+                // frames (before the draw below) so it never interleaves with a partial frame.
+                if let Cmd::DesktopNotify { title, body } = cmd {
+                    notifier.emit(&title, &body);
+                    continue;
+                }
+                handles.dispatch(&mut app, cmd);
+            }
+        }
+        if owner_exit_requested(&app, &shutdown) {
+            // A normal Quit or a signal can share a reducer turn with a queued TransportClosed.
+            // Revoke the replacement before the sole runner spawn point below; relying on the
+            // next `while` condition would leave this turn able to recreate mpv during teardown.
+            handles.begin_player_shutdown(&mut app);
+            break;
+        }
+        if handles.take_player_restart_request() {
+            // The terminal event is the old actor's final emission. Reap the completed readiness
+            // producer before starting the only successor, so no startup task is ever detached.
+            player_startup.cancel_and_join().await;
+            player_startup = spawn_audio_player(
+                worker_tx.clone(),
+                player_registry_dir.clone(),
+                &player_runtime,
+            );
+            player_ready_pending = true;
         }
         if resized_artwork {
             perf.record_art_resize();
@@ -664,47 +1400,54 @@ pub async fn run(
         // Rebuild the tick so the new rate applies without a relaunch - only when it actually
         // changed, so the common path costs one `u16` compare. Kept before the draw so the new
         // cadence is in force for this iteration.
-        let new_fps = app.animation_tick_fps();
-        if new_fps != anim_fps {
-            anim_fps = new_fps;
-            app.reset_animation_cadence();
-            anim_tick = anim_interval(anim_fps);
-        }
+        let _fps_changed = sync_animation_interval(&mut app, &mut anim_fps, &mut anim_tick);
 
         // Draw first, so the keypress lands on screen with the least latency. Everything below
         // is pure output bookkeeping - it reads post-update state but feeds no rendering - so
         // running it *after* the frame lags the OS/remote surfaces by well under one frame while
         // leaving the resting on-screen output identical.
-        if app.dirty && draw_app_frame(terminal, &mut app, &mut perf)? {
-            finish_draw_cycle(&mut app);
+        if app.dirty {
+            let Some(_drew) = capture_owner_io_result(
+                draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered),
+                &mut owner_error,
+            ) else {
+                break 'owner;
+            };
         }
 
-        // Mirror the post-update state to the OS media session: the facade diffs, so
-        // this is one comparison when nothing media-visible changed. The enabled flag
-        // tracks the Settings toggle live. The scrobbler taps the same snapshot first -
-        // it must keep working when media controls are disabled (publish early-returns).
-        // Scrobble cadence is unaffected by the inert skip: elapsed time is credited from
-        // the 1 Hz PlayerTimePos observations, which always take this path.
+        // Only a turn that can mutate projected state may toggle/rebuild OS metadata. Progress
+        // still checks the independent heartbeat gate below, so scrobbling remains ~1 Hz even
+        // when media controls are disabled or no remote topic is subscribed.
+        // Reconcile the live setting on every owner turn. The common progress path is a borrowed
+        // boolean comparison, while a re-enable must force one full current snapshot.
         let media_enabled = app.config.effective_media_controls();
         let media_enabled_changed = media.set_enabled(media_enabled);
-        let media_observed_turn = media_before.is_some();
+        let media_enable_publish_due = media_enabled_changed && media_enabled;
         let media_changed = media_before.is_some_and(|before| before != app.media_fingerprint());
-        let scrobble_due = media_observed_turn
+        let scrobble_due = observer_plan.drive_scrobble_heartbeat
             && app.media_scrobble_heartbeat_active()
             && handles.scrobble_heartbeat_due();
-        let publish_due = media_changed || (media_enabled_changed && media_enabled);
-        if media_changed || scrobble_due || publish_due {
+        let publish_due = media_changed || media_enable_publish_due || media.retry_due();
+        if scrobble_due || publish_due {
             let snapshot = app.media_snapshot();
-            if media_changed || scrobble_due {
-                handles.scrobble_observe(&snapshot);
+            if (media_changed || scrobble_due)
+                && let Err(error) = handles.scrobble_observe(&snapshot)
+            {
+                let message = if error == crate::util::delivery::DeliveryError::Busy {
+                    "Scrobble delivery is busy; retrying the current playback state.".to_owned()
+                } else {
+                    format!("Scrobble delivery unavailable: {}.", error.reason())
+                };
+                app.set_status_error(message);
             }
             if publish_due {
                 media.publish(snapshot);
             }
         }
-        // v8 push: fingerprint-diffed internally. Avoid building the borrowed core view
-        // on idle standalone turns after the publisher has primed its baselines.
-        if !media_inert
+        // Remote elapsed remains outside the player fingerprint. Match origin's observer call
+        // gates so late subscriptions and follow-up snapshot ordering stay byte-for-byte stable;
+        // unchanged turns perform only borrowed comparisons and never build owned models.
+        if observer_plan != ObserverPlan::INERT
             && let Some(publisher) = publisher.as_mut()
             && publisher.should_observe(media_changed || media_enabled_changed)
         {
@@ -713,103 +1456,49 @@ pub async fn run(
         perf.maybe_log(&app);
     }
 
-    // Tell v8 sessions the owner is going away (`system` event + Goodbye) before the
-    // guard below removes the descriptor - clients start their reconnect/daemon logic
-    // off this, not off a bare EOF (docs/gui/02 §7).
-    if let Some(publisher) = publisher.as_ref() {
-        publisher.shutting_down();
+    // Every loop exit, including a fatal draw error, reaches the same ownership barrier before
+    // any result is returned. The remote publisher is notified before slower actor/persistence
+    // work so clients can begin reconnect/daemon handling promptly (docs/gui/02 §7).
+    let mut teardown = LiveOwnerTeardown {
+        app: &mut app,
+        handles: &mut handles,
+        player_startup: &mut player_startup,
+        terminal_background: &mut terminal_background,
+        media: &mut media,
+        publisher: publisher.as_ref(),
+        remote_guard: remote_guard.as_mut(),
+        persist: &persist,
+        pending_worker_events: &mut pending_worker_events,
+        pending_shutdown_events: &mut pending_shutdown_events,
+        worker_rx: &mut worker_rx,
+    };
+    complete_owner_teardown(&mut teardown, owner_error).await
+}
+
+fn recorder_capacity_blocked_status(report: &crate::recorder::job::RecoveryReport) -> String {
+    if report.admission_uncertain {
+        let detail = report
+            .warnings
+            .first()
+            .map(String::as_str)
+            .unwrap_or("recovery inventory could not be verified");
+        if crate::i18n::is_korean() {
+            format!("자동 녹음 일시 중지: 복구 저장 목록을 확인할 수 없음 — {detail}")
+        } else {
+            format!("Automatic recording paused: recovery inventory is uncertain — {detail}")
+        }
+    } else if crate::i18n::is_korean() {
+        format!(
+            "자동 녹음 일시 중지: 저장 대기 {}개 / {}바이트",
+            report.pending, report.pending_bytes
+        )
+    } else {
+        format!(
+            "Automatic recording paused: {} pending / {} bytes",
+            report.pending, report.pending_bytes
+        )
     }
-    // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
-    // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
-    app.close_video();
-    // Belt-and-suspenders: persist the last UI mode + library/signals/downloads on a clean exit
-    // too. Send fresh quit-time snapshots, then drain the actor - the flush also lands any still-
-    // debounced config/playlists/romanize writes. Do NOT save directly here instead: an older
-    // pending snapshot in the actor could then overwrite the newer direct write.
-    persist.save(persist::Snapshot::Session(app.session_cache_snapshot()));
-    persist.save(persist::Snapshot::Library(app.library.clone()));
-    persist.save(persist::Snapshot::Signals(app.signals.clone()));
-    persist.save(persist::Snapshot::Downloads(app.download_store.clone()));
-    if !persist.flush(Duration::from_secs(5)).await {
-        // Timed out or still dirty after a write failure. Direct fallback is safe: the actor
-        // holds the same quit-time snapshots, so a late actor write can't clobber anything newer.
-        tracing::warn!("persist flush failed or timed out at quit; writing directly");
-        if let Err(e) = app.session_cache_snapshot().save() {
-            tracing::warn!(error = %e, "failed to save session cache at quit");
-        }
-        if let Err(e) = app.library.save() {
-            tracing::warn!(error = %e, "failed to save library at quit");
-        }
-        if let Err(e) = app.signals.save() {
-            tracing::warn!(error = %e, "failed to save signals at quit");
-        }
-        if let Err(e) = app.download_store.save() {
-            tracing::warn!(error = %e, "failed to save downloads manifest at quit");
-        }
-    }
-    // Give queued scrobbles one bounded delivery attempt (they're already durable on
-    // disk either way - leftovers flush on the next launch).
-    handles.scrobble_shutdown(Duration::from_millis(1500)).await;
-    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use crate::app::App;
-
-    use super::*;
-
-    #[test]
-    fn perf_stats_track_draws_and_reset_after_log_window() {
-        let mut stats = PerfStats {
-            enabled: false,
-            last_log: Instant::now() - Duration::from_secs(10),
-            frames: 0,
-            draw_total: Duration::ZERO,
-            draw_max: Duration::ZERO,
-            art_resizes: 0,
-        };
-        stats.record_draw(Duration::from_millis(7));
-        stats.record_art_resize();
-        assert_eq!(stats.frames, 0);
-        assert_eq!(stats.art_resizes, 0);
-
-        stats.enabled = true;
-        stats.record_draw(Duration::from_millis(7));
-        stats.record_draw(Duration::from_millis(11));
-        stats.record_art_resize();
-        assert_eq!(stats.frames, 2);
-        assert_eq!(stats.draw_total, Duration::from_millis(18));
-        assert_eq!(stats.draw_max, Duration::from_millis(11));
-        assert_eq!(stats.art_resizes, 1);
-
-        stats.maybe_log(&App::new(100));
-        assert_eq!(stats.frames, 0);
-        assert_eq!(stats.draw_total, Duration::ZERO);
-        assert_eq!(stats.draw_max, Duration::ZERO);
-        assert_eq!(stats.art_resizes, 0);
-    }
-
-    #[tokio::test]
-    async fn animation_tick_period_clamps_extreme_frame_rates() {
-        assert_eq!(anim_tick_period(0), Duration::from_millis(1000));
-        assert_eq!(anim_tick_period(1), Duration::from_millis(1000));
-        assert_eq!(anim_tick_period(60), Duration::from_millis(16));
-        assert_eq!(anim_tick_period(2_000), Duration::from_millis(1));
-
-        let interval = anim_interval(30);
-        assert_eq!(interval.period(), Duration::from_millis(33));
-    }
-
-    #[test]
-    fn draw_cycle_and_transient_error_helpers_are_stable() {
-        let mut app = App::new(100);
-        finish_draw_cycle(&mut app);
-        assert!(!app.dirty);
-
-        let error = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
-        assert!(!is_transient_terminal_draw_error(&error));
-    }
-}
+mod tests;

@@ -63,7 +63,9 @@ fn rendering_player_registers_control_buttons() {
 
 #[test]
 fn volume_flash_geometry_is_stable_and_off_mode_keeps_legacy_layout() {
+    // This pins the LEGACY Top-layout bytes/geometry, so opt out of the docked default.
     let mut app = app_playing(2, 0);
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
     let targets = [
         MouseTarget::Player(Action::PrevTrack),
         MouseTarget::Player(Action::TogglePause),
@@ -127,7 +129,8 @@ fn rendering_settings_registers_clickable_controls() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (mode → Settings)
         app.settings.as_mut().unwrap().tab = tab;
-        let backend = TestBackend::new(80, 32);
+        // Tall enough for every General row with the docked player bar reserving 5 rows.
+        let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         app.hits
@@ -174,17 +177,100 @@ fn rendering_settings_registers_clickable_controls() {
         "speed › arrow"
     );
 
-    // General's Reset buttons (no value) activate on click.
+    // General's non-destructive export and destructive Reset buttons activate on click.
     let general = render_targets(SettingsTab::General);
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|f| *f == Field::ExportPersonalData)
+        .unwrap();
     let reset_all = SettingsTab::General
         .fields()
         .iter()
         .position(|f| *f == Field::ResetAll)
         .unwrap();
     assert!(
+        has(&general, MouseTarget::SettingsActivate(export)),
+        "personal-data export button"
+    );
+    assert!(
         has(&general, MouseTarget::SettingsActivate(reset_all)),
         "reset-all button"
     );
+}
+
+#[test]
+fn exporting_personal_data_disables_its_mouse_action_without_breaking_narrow_rendering() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.row = export;
+        st.personal_data_export = crate::settings::PersonalDataExportStatus::Exporting;
+    }
+
+    const WIDTH: u16 = 48;
+    // Keep the height above the dedicated mini-player tier; this regression is about horizontal
+    // clipping and the busy button's hit target, not the intentionally player-only mini layout.
+    let backend = TestBackend::new(WIDTH, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    assert!(buffer_contains(&buffer, "Exporting…"));
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .all(|button| button.target != MouseTarget::SettingsActivate(export)),
+        "busy export must not publish a second activation target"
+    );
+}
+
+#[test]
+fn personal_data_export_row_renders_idle_and_result_states() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let export = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|field| *field == Field::ExportPersonalData)
+        .unwrap();
+    app.settings.as_mut().unwrap().row = export;
+
+    let warning = render_app_buffer(&app, 80, 32);
+    assert!(buffer_contains(
+        &warning,
+        "unencrypted JSON · includes private listening history"
+    ));
+
+    for (status, text) in [
+        (
+            crate::settings::PersonalDataExportStatus::Idle,
+            "↵ Export to Downloads",
+        ),
+        (
+            crate::settings::PersonalDataExportStatus::Succeeded,
+            "✓ Exported",
+        ),
+        (
+            crate::settings::PersonalDataExportStatus::Failed,
+            "Failed · ↵ retry",
+        ),
+    ] {
+        app.settings.as_mut().unwrap().personal_data_export = status;
+        let buffer = render_app_buffer(&app, 80, 32);
+        assert!(
+            buffer_contains(&buffer, text),
+            "missing export state: {text}"
+        );
+    }
 }
 
 #[test]
@@ -279,7 +365,14 @@ fn clicking_eq_label_toggles_dropdown() {
         },
         MouseTarget::EqMenu,
     );
-    assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 32,
+            row: 4,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(app.dropdowns.eq_open);
     // Clicking it again closes it.
     app.register_mouse_button(
@@ -291,7 +384,14 @@ fn clicking_eq_label_toggles_dropdown() {
         },
         MouseTarget::EqMenu,
     );
-    assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+    assert!(
+        app.update(Msg::MouseClick {
+            col: 32,
+            row: 4,
+            multi: false
+        })
+        .is_empty()
+    );
     assert!(!app.dropdowns.eq_open);
 }
 
@@ -308,14 +408,21 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
         },
         MouseTarget::EqSelect(EqPreset::Vocal),
     );
-    let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 33,
+        row: 6,
+        multi: false,
+    });
+    assert_eq!(app.audio.preset, EqPreset::Flat);
+    assert!(app.dropdowns.eq_open, "dropdown waits for admission");
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("equalizer"))
+    ));
+    app.admit_player_intents_for_test(&cmds);
     assert_eq!(app.audio.preset, EqPreset::Vocal);
     assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
     assert!(!app.dropdowns.eq_open);
-    assert!(matches!(
-        cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetAudioFilter(_))]
-    ));
 }
 
 #[test]
@@ -330,7 +437,11 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
         height: 1,
     });
     // A click on the seekbar with the dropdown open just closes it (no seek emitted).
-    let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 50,
+        row: 5,
+        multi: false,
+    });
     assert!(!app.dropdowns.eq_open);
     assert!(cmds.is_empty());
 }

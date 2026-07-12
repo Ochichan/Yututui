@@ -106,7 +106,10 @@ export function defaultFakeScript(): FakeScript {
     ],
     respond(env) {
       if (env.kind === 'req' && env.name === 'ping') {
-        return { v: 1, id: env.id, kind: 'res', payload: 'pong' };
+        return { v: 1, id: env.id, page_id: env.page_id, kind: 'res', payload: 'pong' };
+      }
+      if (env.kind === 'cmd') {
+        return { v: 1, id: env.id, page_id: env.page_id, kind: 'res', payload: { ok: true } };
       }
       return undefined;
     },

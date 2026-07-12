@@ -1,6 +1,14 @@
+use super::ingress::RuntimeTelemetrySlot;
 use super::*;
 use crate::remote::proto::RemoteCommand;
 use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
+
+mod coalescing;
+mod downloads;
+mod persistence;
+mod player_startup;
+mod policy;
+mod task_set;
 
 fn song(video_id: &str) -> crate::api::Song {
     crate::api::Song::from_search(
@@ -38,303 +46,585 @@ fn update_status() -> crate::update::UpdateStatus {
 }
 
 #[test]
-fn pending_player_cmds_coalesce_latest_setters_and_load() {
-    let mut pending = PendingPlayerCmds::default();
-    pending.push(PlayerCmd::SetVolume(10));
-    pending.push(PlayerCmd::SetProperty {
-        name: "speed".to_owned(),
-        value: serde_json::json!(1.2),
-    });
-    pending.push(PlayerCmd::Load("https://example.invalid/old".to_owned()));
-    pending.push(PlayerCmd::CyclePause);
-    pending.push(PlayerCmd::SetVolume(30));
-    pending.push(PlayerCmd::SetProperty {
-        name: "speed".to_owned(),
-        value: serde_json::json!(1.5),
-    });
-    pending.push(PlayerCmd::Load("https://example.invalid/new".to_owned()));
-
-    let drained = pending.drain();
-
-    assert_eq!(drained.len(), 4);
-    assert!(
-        drained
-            .iter()
-            .any(|cmd| matches!(cmd, PlayerCmd::CyclePause))
-    );
-    assert!(
-        drained
-            .iter()
-            .any(|cmd| matches!(cmd, PlayerCmd::SetVolume(30)))
-    );
-    assert!(drained.iter().any(|cmd| {
-        matches!(cmd, PlayerCmd::SetProperty { name, value } if name == "speed" && value == &serde_json::json!(1.5))
-    }));
-    assert!(drained.iter().any(|cmd| {
-        matches!(cmd, PlayerCmd::Load(url) if url == "https://example.invalid/new")
-    }));
+fn shutdown_retires_events_from_the_ended_player_generation() {
+    for event in [
+        RuntimeEvent::Player(crate::player::PlayerEvent::Eof),
+        RuntimeEvent::Player(crate::player::PlayerEvent::TransportClosed(
+            "late close".to_owned(),
+        )),
+    ] {
+        assert!(shutdown_event_is_retired(&event));
+    }
+    assert!(!shutdown_event_is_retired(&RuntimeEvent::Download(
+        crate::download::DownloadEvent::Error {
+            video_id: "id".to_owned(),
+            error: "late failure".to_owned(),
+        },
+    )));
 }
 
 #[test]
-fn pending_player_cmds_cap_keeps_latest_load() {
+fn pending_player_cmds_preserve_active_player_barriers_and_order() {
     let mut pending = PendingPlayerCmds::default();
-    pending.push(PlayerCmd::Load(
-        "https://example.invalid/current".to_owned(),
+    assert_eq!(
+        pending.push(PlayerCmd::SetVolume(10)),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::SetProperty {
+            name: "speed".to_owned(),
+            value: serde_json::json!(1.2),
+        }),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::SetVolume(30)),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::Load("https://example.invalid/old".to_owned())),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::CyclePause),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::Load("https://example.invalid/new".to_owned())),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert_eq!(
+        pending.push(PlayerCmd::SeekRelative(2.0)),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert!(matches!(
+        pending.push(PlayerCmd::SeekRelative(3.0)),
+        Ok(DeliveryReceipt::Coalesced {
+            replaced_existing: true,
+            ..
+        })
     ));
-    for i in 0..80 {
-        pending.push(PlayerCmd::SeekRelative(i as f64));
+    assert!(matches!(
+        pending.push(PlayerCmd::SeekAbsolute(12.0)),
+        Ok(DeliveryReceipt::Coalesced { .. })
+    ));
+    assert_eq!(
+        pending.push(PlayerCmd::CyclePause),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    assert!(matches!(
+        pending.push(PlayerCmd::CyclePause),
+        Ok(DeliveryReceipt::Coalesced { .. })
+    ));
+
+    let drained = pending.drain();
+
+    assert_eq!(drained.len(), 7);
+    assert!(matches!(drained[0], PlayerCmd::SetVolume(10)));
+    assert!(matches!(
+        &drained[1],
+        PlayerCmd::SetProperty { name, value }
+            if name == "speed" && value == &serde_json::json!(1.2)
+    ));
+    assert!(matches!(drained[2], PlayerCmd::SetVolume(30)));
+    assert!(matches!(
+        &drained[3],
+        PlayerCmd::Load(url) if url == "https://example.invalid/old"
+    ));
+    assert!(matches!(drained[4], PlayerCmd::CyclePause));
+    assert!(matches!(
+        &drained[5],
+        PlayerCmd::Load(url) if url == "https://example.invalid/new"
+    ));
+    assert!(matches!(
+        drained[6],
+        PlayerCmd::SeekAbsolute(value) if (value - 12.0).abs() < f64::EPSILON
+    ));
+}
+
+#[test]
+fn pending_player_cmds_cap_rejects_without_evicting_admitted_commands() {
+    let mut pending = PendingPlayerCmds::default();
+    assert_eq!(
+        pending.push(PlayerCmd::Load(
+            "https://example.invalid/current".to_owned(),
+        )),
+        Ok(DeliveryReceipt::Deferred)
+    );
+    for _ in 0..(PENDING_PLAYER_CMDS_MAX - 1) {
+        assert_eq!(pending.push(PlayerCmd::Stop), Ok(DeliveryReceipt::Deferred));
     }
+    assert_eq!(pending.push(PlayerCmd::Stop), Err(DeliveryError::Saturated));
 
     assert_eq!(pending.len(), PENDING_PLAYER_CMDS_MAX);
     let drained = pending.drain();
-    assert!(drained.iter().any(|cmd| {
-        matches!(cmd, PlayerCmd::Load(url) if url == "https://example.invalid/current")
-    }));
-}
-
-fn assert_policy(event: RuntimeEvent, expected: EventPolicy) {
-    assert_eq!(event.policy(), expected);
+    assert!(matches!(
+        &drained[0],
+        PlayerCmd::Load(url) if url == "https://example.invalid/current"
+    ));
+    assert!(
+        drained[1..]
+            .iter()
+            .all(|cmd| matches!(cmd, PlayerCmd::Stop))
+    );
 }
 
 #[test]
-fn runtime_event_policy_covers_representative_events() {
+fn pending_player_cmds_coalesce_relative_seek_bursts_before_capacity() {
+    let mut pending = PendingPlayerCmds::default();
     assert_eq!(
-        RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit).policy(),
-        EventPolicy::MustDeliver {
-            lane: EventLane::Control
-        }
+        pending.push(PlayerCmd::SeekRelative(1.0)),
+        Ok(DeliveryReceipt::Deferred)
     );
-    assert_eq!(
-        RuntimeEvent::Player(crate::player::PlayerEvent::Eof).policy(),
-        EventPolicy::MustDeliver {
-            lane: EventLane::Control
-        }
-    );
-    assert_eq!(
-        RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(12.0)).policy(),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::PlayerTimePos
-        }
-    );
+    for _ in 0..(PENDING_PLAYER_CMDS_MAX * 2) {
+        assert!(matches!(
+            pending.push(PlayerCmd::SeekRelative(1.0)),
+            Ok(DeliveryReceipt::Coalesced { .. })
+        ));
+    }
 
-    let (reply, _rx) = tokio::sync::oneshot::channel();
-    assert_eq!(
-        RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
-            RemoteCommand::TogglePause,
-            reply,
-        ))
-        .policy(),
-        EventPolicy::MustReplyOrBusy {
-            lane: EventLane::RemoteCommand
-        }
-    );
-
-    assert_eq!(
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id: "v".to_owned(),
-            percent: 50.0,
-        })
-        .policy(),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::DownloadProgress
-        }
-    );
-    assert_eq!(
-        RuntimeEvent::Download(crate::download::DownloadEvent::Done {
-            video_id: "v".to_owned(),
-            path: "song.m4a".to_owned(),
-        })
-        .policy(),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult
-        }
-    );
-    assert_eq!(
-        RuntimeEvent::Api(crate::api::ApiEvent::StreamingError {
-            seed_video_id: "seed".to_owned(),
-            error: "nope".to_owned(),
-        })
-        .policy(),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::StreamingSeed
-        }
-    );
+    assert_eq!(pending.len(), 1);
+    let drained = pending.drain();
     assert!(matches!(
-        RuntimeEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueStalled { pending: 1 })
-            .policy(),
-        EventPolicy::BestEffort { .. }
+        drained.as_slice(),
+        [PlayerCmd::SeekRelative(value)]
+            if (*value - (PENDING_PLAYER_CMDS_MAX * 2 + 1) as f64).abs() < f64::EPSILON
     ));
 }
 
 #[test]
-fn runtime_event_policy_covers_leaf_event_classes() {
-    use crate::api::{ApiEvent, ApiMode, PlaylistIntent};
-    use crate::search_source::SearchSource;
+fn pending_player_batch_rejection_rolls_back_earlier_staged_coalescing() {
+    let mut pending = PendingPlayerCmds::default();
+    for _ in 0..(PENDING_PLAYER_CMDS_MAX - 1) {
+        assert!(pending.push(PlayerCmd::Stop).is_ok());
+    }
+    assert!(pending.push(PlayerCmd::Load("old".to_owned())).is_ok());
 
-    assert_policy(
-        RuntimeEvent::Ai(crate::ai::AiEvent::Thinking(true)),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::AiThinking,
-        },
+    assert_eq!(
+        pending.push_batch(vec![PlayerCmd::Load("new".to_owned()), PlayerCmd::Stop,]),
+        Err(DeliveryError::Saturated)
     );
-    assert_policy(
-        RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks {
-            seed_video_id: "seed".to_owned(),
-            picks: Vec::new(),
+
+    let drained = pending.drain();
+    assert_eq!(drained.len(), PENDING_PLAYER_CMDS_MAX);
+    assert!(matches!(
+        drained.last(),
+        Some(PlayerCmd::Load(url)) if url == "old"
+    ));
+}
+
+#[test]
+fn full_pending_player_batch_can_cancel_before_atomic_publish() {
+    let mut pending = PendingPlayerCmds::default();
+    for _ in 0..PENDING_PLAYER_CMDS_MAX {
+        assert!(pending.push(PlayerCmd::Stop).is_ok());
+    }
+
+    assert_eq!(
+        pending.push_batch(vec![PlayerCmd::CyclePause, PlayerCmd::CyclePause]),
+        Ok(DeliveryReceipt::Coalesced {
+            replaced_existing: true,
+            evicted_oldest: false,
+        })
+    );
+    assert_eq!(pending.len(), PENDING_PLAYER_CMDS_MAX);
+    assert!(
+        pending
+            .drain()
+            .iter()
+            .all(|command| matches!(command, PlayerCmd::Stop))
+    );
+}
+
+#[test]
+fn empty_pending_player_batch_is_not_an_admitted_intent() {
+    let mut pending = PendingPlayerCmds::default();
+    assert_eq!(pending.push_batch(Vec::new()), Err(DeliveryError::Busy));
+    assert_eq!(pending.len(), 0);
+}
+
+#[test]
+fn transport_restore_batch_is_ordered_and_rejected_without_a_visible_prefix() {
+    let restore = || {
+        vec![
+            PlayerCmd::Load("https://example.invalid/recovered".to_owned()),
+            PlayerCmd::SetAudioFilter("lavfi=[volume=1]".to_owned()),
+            PlayerCmd::CyclePause,
+        ]
+    };
+
+    let mut pending = PendingPlayerCmds::default();
+    assert_eq!(pending.push_batch(restore()), Ok(DeliveryReceipt::Deferred));
+    let admitted = pending.drain();
+    assert!(matches!(
+        admitted.as_slice(),
+        [
+            PlayerCmd::Load(url),
+            PlayerCmd::SetAudioFilter(filter),
+            PlayerCmd::CyclePause,
+        ] if url == "https://example.invalid/recovered" && filter == "lavfi=[volume=1]"
+    ));
+
+    for _ in 0..(PENDING_PLAYER_CMDS_MAX - 1) {
+        assert!(pending.push(PlayerCmd::Stop).is_ok());
+    }
+    assert!(
+        pending
+            .push(PlayerCmd::Load(
+                "https://example.invalid/original".to_owned()
+            ))
+            .is_ok()
+    );
+    assert_eq!(pending.push_batch(restore()), Err(DeliveryError::Saturated));
+    let unchanged = pending.drain();
+    assert_eq!(unchanged.len(), PENDING_PLAYER_CMDS_MAX);
+    assert!(matches!(
+        unchanged.last(),
+        Some(PlayerCmd::Load(url)) if url == "https://example.invalid/original"
+    ));
+}
+
+#[test]
+fn rejected_player_intent_keeps_state_and_replies_with_correlated_busy() {
+    let mut app = App::new(50);
+    let epoch = app.playback.position_epoch;
+    let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+    let intent = crate::app::PlayerIntent {
+        commands: vec![PlayerCmd::SeekAbsolute(42.0)],
+        commit: crate::app::PlayerCommit::Seek {
+            optimistic_position: Some(42.0),
+        },
+        label: "seek_absolute",
+        remote_reply: Some(crate::app::PendingRemoteReply {
+            sender: reply.into(),
+            response: crate::app::RemoteReplyPlan::Status,
+        }),
+    };
+
+    assert!(settle_player_intent(&mut app, intent, Err(DeliveryError::Busy)).is_empty());
+    assert_eq!(app.playback.time_pos, None);
+    assert_eq!(app.playback.position_epoch, epoch);
+    assert!(app.status_visible(), "rejection status must arm its expiry");
+    assert_eq!(app.status.kind, crate::app::StatusKind::Error);
+    assert!(!app.status.text.is_empty());
+    let response = reply_rx.try_recv().expect("correlated busy response");
+    assert!(!response.ok);
+    assert_eq!(response.reason.as_deref(), Some("player_busy"));
+}
+
+#[test]
+fn rejected_eq_and_normalize_controls_keep_session_audio_state() {
+    fn key(code: crossterm::event::KeyCode, modifiers: crossterm::event::KeyModifiers) -> Msg {
+        Msg::Key(crossterm::event::KeyEvent {
+            code,
+            modifiers,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        })
+    }
+
+    let mut app = App::new(50);
+    app.dropdowns.eq_open = true;
+    app.dropdowns.streaming_open = true;
+    app.dropdowns.search_source_open = true;
+    let mut cmds = app.update(key(
+        crossterm::event::KeyCode::Char('e'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(app.audio.preset, crate::eq::EqPreset::Flat);
+    assert!(app.dropdowns.eq_open);
+    assert!(app.dropdowns.streaming_open);
+    assert!(app.dropdowns.search_source_open);
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("equalizer")
+        )
+    ));
+    let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+        cmds.pop().expect("EQ intent")
+    else {
+        panic!("expected EQ player intent");
+    };
+    assert!(settle_player_intent(&mut app, *intent, Err(DeliveryError::Busy)).is_empty());
+    assert_eq!(app.audio.preset, crate::eq::EqPreset::Flat);
+    assert_eq!(app.audio.bands, [0.0; crate::eq::BANDS]);
+    assert!(app.dropdowns.eq_open);
+    assert!(app.dropdowns.streaming_open);
+    assert!(app.dropdowns.search_source_open);
+
+    let mut app = App::new(50);
+    let mut cmds = app.update(key(
+        crossterm::event::KeyCode::Char('N'),
+        crossterm::event::KeyModifiers::SHIFT,
+    ));
+    assert!(!app.audio.normalize);
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("dynaudnorm")
+        )
+    ));
+    let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+        cmds.pop().expect("normalize intent")
+    else {
+        panic!("expected normalize player intent");
+    };
+    assert!(settle_player_intent(&mut app, *intent, Err(DeliveryError::Closed)).is_empty());
+    assert!(!app.audio.normalize);
+    assert_eq!(app.config.normalize, None);
+}
+
+#[test]
+fn rejected_remote_audio_settings_do_not_commit_or_persist_and_reply_with_error() {
+    let mut app = App::new(50);
+    app.status.text = "before".to_owned();
+    let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+    let mut cmds = app.update(Msg::Remote(
+        RemoteCommand::SetSetting {
+            change: crate::remote::proto::RemoteSettingChange::Speed { tenths: 13 },
+        },
+        reply.into(),
+    ));
+    assert_eq!(app.playback.speed, 1.0);
+    assert_eq!(app.config.speed, None);
+    assert_eq!(app.status.text, "before");
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "speed" && value == &serde_json::json!(1.3)
+        )
+    ));
+    let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+        cmds.pop().expect("remote speed intent")
+    else {
+        panic!("expected remote speed intent");
+    };
+    let follow_ups = settle_player_intent(&mut app, *intent, Err(DeliveryError::Busy));
+    assert!(follow_ups.is_empty(), "rejected speed must not persist");
+    assert_eq!(app.playback.speed, 1.0);
+    assert_eq!(app.config.speed, None);
+    assert_eq!(
+        reply_rx
+            .try_recv()
+            .expect("correlated speed rejection")
+            .reason
+            .as_deref(),
+        Some("player_busy")
+    );
+
+    let mut app = App::new(50);
+    let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+    let mut cmds = app.update(Msg::Remote(
+        RemoteCommand::SetSetting {
+            change: crate::remote::proto::RemoteSettingChange::Normalize { value: true },
+        },
+        reply.into(),
+    ));
+    assert!(!app.audio.normalize);
+    assert_eq!(app.config.normalize, None);
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("dynaudnorm")
+        )
+    ));
+    let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+        cmds.pop().expect("remote normalize intent")
+    else {
+        panic!("expected remote normalize intent");
+    };
+    let follow_ups = settle_player_intent(&mut app, *intent, Err(DeliveryError::Closed));
+    assert!(follow_ups.is_empty(), "rejected normalize must not persist");
+    assert!(!app.audio.normalize);
+    assert_eq!(app.config.normalize, None);
+    assert_eq!(
+        reply_rx
+            .try_recv()
+            .expect("correlated normalize rejection")
+            .reason
+            .as_deref(),
+        Some("player_unavailable")
+    );
+}
+
+#[test]
+fn rejected_mouse_seek_intent_retries_the_same_cell() {
+    let mut app = App::new(50);
+    app.mode = crate::app::Mode::Player;
+    app.playback.duration = Some(200.0);
+    app.hits.set_seekbar_rect(ratatui::layout::Rect {
+        x: 0,
+        y: 5,
+        width: 100,
+        height: 1,
+    });
+    let mut cmds = app.update(crate::app::Msg::MouseClick {
+        col: 25,
+        row: 5,
+        multi: false,
+    });
+    let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+        cmds.pop().expect("mouse seek intent")
+    else {
+        panic!("expected a player intent");
+    };
+
+    assert!(settle_player_intent(&mut app, *intent, Err(DeliveryError::Busy)).is_empty());
+    let retry = app.update(crate::app::Msg::MouseDrag { col: 25, row: 9 });
+    assert!(matches!(
+        retry.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SeekAbsolute(t)) if (*t - 50.0).abs() < 1.0)
+    ));
+}
+
+#[test]
+fn accepted_player_intent_commits_position_through_central_epoch_path() {
+    let mut app = App::new(50);
+    let epoch = app.playback.position_epoch;
+    let intent = crate::app::PlayerIntent {
+        commands: vec![PlayerCmd::SeekAbsolute(42.0)],
+        commit: crate::app::PlayerCommit::Seek {
+            optimistic_position: Some(42.0),
+        },
+        label: "seek_absolute",
+        remote_reply: None,
+    };
+
+    assert!(settle_player_intent(&mut app, intent, Ok(DeliveryReceipt::Deferred)).is_empty());
+    assert_eq!(app.playback.time_pos, Some(42.0));
+    assert_eq!(app.playback.position_epoch, epoch + 1);
+}
+
+#[test]
+fn rejected_video_load_returns_typed_unpause_compensation() {
+    for error in [DeliveryError::Busy, DeliveryError::Closed] {
+        let mut app = App::new(50);
+        app.playback.paused = true;
+        app.set_video_pause_ownership_for_test(true);
+
+        let mut follow_ups = settle_video_load_delivery(&mut app, Err(error));
+
+        assert!(
+            app.playback.paused,
+            "audio resumed before compensation admission"
+        );
+        assert!(
+            app.video_pause_owned_for_test(),
+            "ownership cleared before admission"
+        );
+        assert!(matches!(
+            follow_ups.as_slice(),
+            [cmd] if matches!(
+                cmd.player_command(),
+                Some(PlayerCmd::SetProperty { name, value })
+                    if name == "pause" && value == &serde_json::Value::Bool(false)
+            )
+        ));
+        let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
+            follow_ups.pop().expect("video unpause compensation")
+        else {
+            panic!("expected typed player compensation");
+        };
+
+        assert!(settle_player_intent(&mut app, *intent, Ok(DeliveryReceipt::Deferred),).is_empty());
+        assert!(!app.playback.paused);
+        assert!(!app.video_pause_owned_for_test());
+    }
+}
+
+#[test]
+fn accepted_video_load_leaves_overlay_pause_ownership_unchanged() {
+    let mut app = App::new(50);
+    app.playback.paused = true;
+    app.set_video_pause_ownership_for_test(true);
+
+    let follow_ups = settle_video_load_delivery(&mut app, Ok(DeliveryReceipt::Enqueued));
+
+    assert!(follow_ups.is_empty());
+    assert!(app.playback.paused);
+    assert!(app.video_pause_owned_for_test());
+}
+
+#[test]
+fn player_restart_gate_allows_one_replacement_and_prevents_loops() {
+    let mut gate = PlayerRestartGate::default();
+    assert_eq!(gate.request(), PlayerRestartDecision::Start);
+    assert_eq!(gate.request(), PlayerRestartDecision::AlreadyPending);
+    assert!(gate.take_request());
+    assert_eq!(gate.request(), PlayerRestartDecision::AlreadyPending);
+    assert!(gate.complete_start());
+    assert_eq!(gate.request(), PlayerRestartDecision::Exhausted);
+    assert!(!gate.take_request());
+}
+
+#[test]
+fn player_restart_gate_owner_exit_suppresses_queued_and_future_replacements() {
+    let mut gate = PlayerRestartGate::default();
+    assert_eq!(gate.request(), PlayerRestartDecision::Start);
+
+    // Models a TransportClosed reduced immediately before either normal Quit committed or the
+    // out-of-band latch won. Owner exit must revoke it before the runner's sole spawn point.
+    gate.suppress_for_shutdown();
+    assert!(!gate.take_request());
+    assert_eq!(gate.request(), PlayerRestartDecision::Suppressed);
+    assert!(!gate.take_request());
+}
+
+#[test]
+fn actor_rejection_releases_optimistic_ui_guards() {
+    let mut app = App::new(50);
+
+    app.lyrics.loading = true;
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::Lyrics).is_none());
+    assert!(!app.lyrics.loading);
+
+    app.art.loading = true;
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::Artwork).is_none());
+    assert!(!app.art.loading);
+
+    app.ai.thinking = true;
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::AiTurn).is_none());
+    assert!(!app.ai.thinking);
+
+    app.streaming.feedback_in_flight = true;
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::AiFeedback).is_none());
+    assert!(!app.streaming.feedback_in_flight);
+
+    app.transfer_running = true;
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::TransferStart).is_none());
+    assert!(!app.transfer_running);
+
+    assert!(recover_actor_rejection(&mut app, ActorRejectionRecovery::TransferCancel).is_none());
+    assert!(app.transfer_running);
+    assert!(app.dirty);
+}
+
+#[test]
+fn rejected_ai_rerank_schedules_empty_result_fallback() {
+    let mut app = App::new(50);
+    app.ai.thinking = true;
+
+    let event = recover_actor_rejection(
+        &mut app,
+        ActorRejectionRecovery::AiRerank("seed".to_owned()),
+    )
+    .expect("rerank rejection must schedule the reducer's local fallback");
+
+    assert!(!app.ai.thinking);
+    assert!(matches!(
+        event,
+        Msg::Streaming(StreamingMsg::AiPicks {
+            seed_video_id,
+            picks,
             conf: None,
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::StreamingSeed,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Ai(crate::ai::AiEvent::Chat("ok".to_owned())),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult,
-        },
-    );
-
-    assert_policy(
-        RuntimeEvent::Api(ApiEvent::ModeResolved {
-            mode: ApiMode::Anonymous,
-            had_cookie: false,
-        }),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Api(ApiEvent::SearchResults {
-            request_id: 7,
-            query: "q".to_owned(),
-            source: SearchSource::Youtube,
-            songs: Vec::new(),
-            timed_out: false,
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::SearchRequest,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Api(ApiEvent::PlaylistTracks {
-            title: "mix".to_owned(),
-            intent: PlaylistIntent::Play,
-            songs: Vec::new(),
-        }),
-        EventPolicy::MustReplyOrBusy {
-            lane: EventLane::WorkResult,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Api(ApiEvent::GuiSearchCompleted {
-            ticket: 9,
-            query: "q".to_owned(),
-            source: SearchSource::All,
-            groups: Vec::new(),
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::GuiSearchTicket,
-        },
-    );
-
-    assert_policy(
-        RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result {
-            video_id: "v".to_owned(),
-            image: None,
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::ArtworkVideo,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Lyrics(crate::lyrics::LyricsEvent::Result {
-            video_id: "v".to_owned(),
-            lines: Vec::new(),
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::LyricsVideo,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed {
-            video_id: crate::ids::VideoId::from("v"),
-        }),
-        EventPolicy::DropIfStale {
-            stale_key: EventKey::ResolverVideo,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Video {
-            generation: 1,
-            event: crate::player::video::VideoEvent::Next,
-        },
-        EventPolicy::MustDeliver {
-            lane: EventLane::Control,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Video {
-            generation: 1,
-            event: crate::player::video::VideoEvent::Paused(true),
-        },
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::VideoOverlayPaused,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Tools(crate::tools::ToolsEvent::Progress {
-            channel: crate::tools::YtdlpChannel::Nightly,
-            percent: Some(20),
-        }),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::ToolProgress,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Tools(crate::tools::ToolsEvent::Failed {
-            error: "offline".to_owned(),
-        }),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Update(crate::update::UpdateEvent::Checked(update_status())),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::WorkResult,
-            key: EventKey::UpdateCheck,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(
-            transfer_progress("job"),
-        )),
-        EventPolicy::CoalesceLatest {
-            lane: EventLane::Telemetry,
-            key: EventKey::TransferJob,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::JobFailed {
-            job_id: "job".to_owned(),
-            error: "failed".to_owned(),
-            resumable: true,
-        }),
-        EventPolicy::MustDeliver {
-            lane: EventLane::WorkResult,
-        },
-    );
-    assert_policy(
-        RuntimeEvent::TelemetryWake,
-        EventPolicy::MustDeliver {
-            lane: EventLane::Control,
-        },
-    );
+        }) if seed_video_id == "seed" && picks.is_empty()
+    ));
 }
 
 #[test]
@@ -372,12 +662,20 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
     assert!(!RuntimeEvent::Player(crate::player::PlayerEvent::Eof).is_telemetry_wake());
 
     assert_eq!(
-        RuntimeEvent::App(Msg::DownloadProgress {
+        RuntimeEvent::App(Msg::Download(crate::app::DownloadMsg::Progress {
             video_id: "a".to_owned(),
             percent: 1.0,
-        })
+        }))
         .telemetry_slot(),
         Some(RuntimeTelemetrySlot::DownloadProgress("a".to_owned()))
+    );
+    assert_eq!(
+        RuntimeEvent::Download(crate::download::DownloadEvent::Done {
+            video_id: "a".to_owned(),
+            path: "a.m4a".to_owned(),
+        })
+        .telemetry_slot(),
+        None
     );
     assert_eq!(
         RuntimeEvent::App(Msg::MediaArtworkReady(
@@ -388,6 +686,13 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
         ))
         .telemetry_slot(),
         Some(RuntimeTelemetrySlot::MediaArt("cover-key".to_owned()))
+    );
+    assert_eq!(
+        RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanProgress(
+            crate::local::LocalScanProgress::default(),
+        )))
+        .telemetry_slot(),
+        Some(RuntimeTelemetrySlot::Static(EventKey::LocalScanProgress))
     );
     assert_eq!(
         RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(
@@ -403,7 +708,48 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
         Some(RuntimeTelemetrySlot::Static(EventKey::PlayerTimePos))
     );
     assert_eq!(
+        RuntimeEvent::Api(crate::api::ApiEvent::SearchError {
+            request_id: 42,
+            source: crate::search_source::SearchSource::Youtube,
+            error: "nope".to_owned(),
+        })
+        .telemetry_slot(),
+        Some(RuntimeTelemetrySlot::StaleSearch(42))
+    );
+    assert_eq!(
         RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit).telemetry_slot(),
+        None
+    );
+    assert_eq!(
+        RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed {
+            video_id: crate::ids::VideoId::from("prefetch"),
+            purpose: crate::resolver::ResolvePurpose::Prefetch,
+        })
+        .telemetry_slot(),
+        Some(RuntimeTelemetrySlot::StaleResolver("prefetch".to_owned()))
+    );
+    assert_eq!(
+        RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed {
+            video_id: crate::ids::VideoId::from("heal"),
+            purpose: crate::resolver::ResolvePurpose::SelfHeal,
+        })
+        .telemetry_slot(),
+        None
+    );
+    assert_eq!(
+        RuntimeEvent::Video {
+            generation: 9,
+            event: crate::player::video::VideoEvent::Paused(true),
+        }
+        .telemetry_slot(),
+        Some(RuntimeTelemetrySlot::VideoPaused(9))
+    );
+    assert_eq!(
+        RuntimeEvent::Video {
+            generation: 9,
+            event: crate::player::video::VideoEvent::Failed("closed".to_owned()),
+        }
+        .telemetry_slot(),
         None
     );
 }
@@ -412,16 +758,16 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
 fn app_message_policy_covers_backpressure_lanes() {
     let (reply, _reply_rx) = tokio::sync::oneshot::channel();
     assert_eq!(
-        app_msg_policy(&Msg::Remote(RemoteCommand::TogglePause, reply)),
+        app_msg_policy(&Msg::Remote(RemoteCommand::TogglePause, reply.into())),
         EventPolicy::MustReplyOrBusy {
             lane: EventLane::RemoteCommand,
         }
     );
     assert_eq!(
-        app_msg_policy(&Msg::DownloadProgress {
+        app_msg_policy(&Msg::Download(crate::app::DownloadMsg::Progress {
             video_id: "v".to_owned(),
             percent: 12.0,
-        }),
+        })),
         EventPolicy::CoalesceLatest {
             lane: EventLane::Telemetry,
             key: EventKey::DownloadProgress,
@@ -474,6 +820,24 @@ fn app_message_policy_covers_backpressure_lanes() {
         })),
         EventPolicy::DropIfStale {
             stale_key: EventKey::StreamingSeed,
+        }
+    );
+    assert_eq!(
+        app_msg_policy(&Msg::Streaming(StreamingMsg::Resolved {
+            video_id: "seed".to_owned(),
+            stream_url: "https://example.invalid/audio".to_owned(),
+            self_heal: true,
+        })),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+    assert_eq!(
+        app_msg_policy(&Msg::ResolveFailed {
+            video_id: "seed".to_owned(),
+        }),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
         }
     );
     assert!(matches!(
@@ -607,7 +971,8 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
     ));
     assert!(matches!(
         msg,
-        Msg::DownloadError { video_id, error } if video_id == "v2" && error == "disk"
+        Msg::Download(crate::app::DownloadMsg::Error { video_id, error })
+            if video_id == "v2" && error == "disk"
     ));
 
     let msg = Msg::from(RuntimeEvent::Player(
@@ -620,7 +985,7 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
 
     let (reply, _reply_rx) = tokio::sync::oneshot::channel();
     let msg = Msg::from(RuntimeEvent::Remote(
-        crate::remote::server::RemoteEvent::Command(RemoteCommand::Next, reply),
+        crate::remote::server::RemoteEvent::Command(RemoteCommand::Next, reply.into()),
     ));
     assert!(matches!(msg, Msg::Remote(RemoteCommand::Next, _)));
 
@@ -643,6 +1008,7 @@ fn runtime_event_to_msg_validates_resolver_urls_and_side_channels() {
         crate::resolver::ResolverEvent::Resolved {
             video_id: crate::ids::VideoId::from("v1"),
             stream_url: crate::ids::StreamUrl::from("https://rr1---sn.test/video.m4a"),
+            purpose: crate::resolver::ResolvePurpose::Prefetch,
         },
     ));
     assert!(matches!(
@@ -650,22 +1016,57 @@ fn runtime_event_to_msg_validates_resolver_urls_and_side_channels() {
         Msg::Streaming(StreamingMsg::Resolved {
             video_id,
             stream_url,
+            self_heal: false,
         }) if video_id == "v1" && stream_url.starts_with("https://")
+    ));
+
+    let msg = Msg::from(RuntimeEvent::Resolver(
+        crate::resolver::ResolverEvent::Resolved {
+            video_id: crate::ids::VideoId::from("heal"),
+            stream_url: crate::ids::StreamUrl::from("https://rr1---sn.test/healed.m4a"),
+            purpose: crate::resolver::ResolvePurpose::SelfHeal,
+        },
+    ));
+    assert!(matches!(
+        msg,
+        Msg::Streaming(StreamingMsg::Resolved {
+            video_id,
+            self_heal: true,
+            ..
+        }) if video_id == "heal"
     ));
 
     let msg = Msg::from(RuntimeEvent::Resolver(
         crate::resolver::ResolverEvent::Resolved {
             video_id: crate::ids::VideoId::from("v2"),
             stream_url: crate::ids::StreamUrl::from("file:///etc/passwd"),
+            purpose: crate::resolver::ResolvePurpose::SelfHeal,
         },
     ));
     assert!(matches!(msg, Msg::ResolveFailed { video_id } if video_id == "v2"));
 
+    let msg = Msg::from(RuntimeEvent::Resolver(
+        crate::resolver::ResolverEvent::Failed {
+            video_id: crate::ids::VideoId::from("ordinary"),
+            purpose: crate::resolver::ResolvePurpose::Prefetch,
+        },
+    ));
+    assert!(
+        matches!(msg, Msg::Noop),
+        "ordinary prefetch failure cannot consume a pending self-heal latch"
+    );
+
+    let msg = Msg::from(RuntimeEvent::Resolver(
+        crate::resolver::ResolverEvent::Failed {
+            video_id: crate::ids::VideoId::from("heal"),
+            purpose: crate::resolver::ResolvePurpose::SelfHeal,
+        },
+    ));
+    assert!(matches!(msg, Msg::ResolveFailed { video_id } if video_id == "heal"));
+
     let msg = Msg::from(RuntimeEvent::Api(
         crate::api::ApiEvent::GuiSearchCompleted {
-            ticket: 1,
-            query: "ignored".to_owned(),
-            source: crate::search_source::SearchSource::All,
+            request_id: crate::api::GuiSearchRequestId::new(0, 1),
             groups: Vec::new(),
         },
     ));
@@ -846,6 +1247,10 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
             crate::player::PlayerEvent::Error("decode".to_owned()),
             "error",
         ),
+        (
+            crate::player::PlayerEvent::TransportClosed("broken pipe".to_owned()),
+            "transport_closed",
+        ),
     ] {
         let msg = Msg::from(RuntimeEvent::Player(event));
         match assert_msg {
@@ -870,6 +1275,10 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
             "error" => assert!(matches!(
                 msg,
                 Msg::Player(PlayerMsg::Error(error)) if error == "decode"
+            )),
+            "transport_closed" => assert!(matches!(
+                msg,
+                Msg::Player(PlayerMsg::TransportClosed(reason)) if reason == "broken pipe"
             )),
             _ => unreachable!(),
         }
@@ -900,7 +1309,7 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
 }
 
 #[tokio::test]
-async fn must_deliver_runtime_event_waits_when_owner_lane_is_full() {
+async fn must_deliver_runtime_signal_waits_when_owner_lane_is_full() {
     let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
     let tx = RuntimeSender::new(raw_tx.clone());
     assert!(
@@ -911,10 +1320,13 @@ async fn must_deliver_runtime_event_waits_when_owner_lane_is_full() {
             .is_ok()
     );
 
-    assert!(emit(
-        &tx,
-        RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit)
-    ));
+    assert_eq!(
+        emit(
+            &tx,
+            RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit)
+        ),
+        Ok(DeliveryReceipt::Deferred)
+    );
     assert!(matches!(
         rx.recv().await,
         Some(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(_)))
@@ -925,10 +1337,104 @@ async fn must_deliver_runtime_event_waits_when_owner_lane_is_full() {
             crate::player::lifetime::SignalEvent::Quit
         )))
     ));
+    assert!(tx.drain_coalesced().is_empty());
+}
+
+#[test]
+fn native_callback_backpressure_preserves_the_exact_media_command_until_owner_admission() {
+    let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let tx = RuntimeSender::with_deferred_capacity(raw_tx.clone(), 0);
+    raw_tx
+        .try_send(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(
+            1.0,
+        )))
+        .unwrap();
+
+    let callback_tx = tx.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let callback = std::thread::spawn(move || {
+        let result = emit_callback_result(
+            &callback_tx,
+            RuntimeEvent::App(Msg::Media(crate::media::MediaCommand::Next)),
+        );
+        done_tx.send(result).unwrap();
+    });
+
+    assert_eq!(
+        done_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "the callback must retain its command while every bounded owner lane is saturated"
+    );
+    assert!(matches!(
+        rx.blocking_recv(),
+        Some(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(_)))
+    ));
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("callback should complete after owner capacity is released")
+            .is_ok()
+    );
+    assert!(matches!(
+        rx.blocking_recv(),
+        Some(RuntimeEvent::App(Msg::Media(
+            crate::media::MediaCommand::Next
+        )))
+    ));
+    callback.join().unwrap();
+}
+
+#[test]
+fn retiring_media_generation_releases_callback_without_closing_runtime_owner() {
+    let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let tx = RuntimeSender::with_deferred_capacity(raw_tx.clone(), 0);
+    raw_tx
+        .try_send(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(
+            1.0,
+        )))
+        .unwrap();
+    let cancellation = crate::util::delivery::CallbackCancellation::new();
+    let callback_cancellation = cancellation.clone();
+    let callback_tx = tx.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let callback = std::thread::spawn(move || {
+        done_tx
+            .send(ingress::emit_callback_result_until(
+                &callback_tx,
+                RuntimeEvent::App(Msg::Media(crate::media::MediaCommand::Next)),
+                &callback_cancellation,
+            ))
+            .unwrap();
+    });
+
+    assert_eq!(
+        done_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    cancellation.cancel();
+    assert_eq!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("retiring the media generation should release its callback"),
+        Err(crate::util::delivery::DeliveryError::Closed)
+    );
+    callback.join().unwrap();
+
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(_)))
+    ));
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    assert!(!rx.is_closed());
 }
 
 #[test]
 fn remote_runtime_event_reports_full_to_callers() {
+    use crate::util::delivery::DeliveryError;
+
     let (raw_tx, _rx) = tokio::sync::mpsc::channel(1);
     let tx = RuntimeSender::new(raw_tx.clone());
     assert!(
@@ -940,93 +1446,84 @@ fn remote_runtime_event_reports_full_to_callers() {
     );
     let (reply, _reply_rx) = tokio::sync::oneshot::channel();
 
-    assert!(!emit(
-        &tx,
-        RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
-            RemoteCommand::TogglePause,
-            reply,
-        ))
-    ));
-}
-
-#[test]
-fn runtime_telemetry_coalesces_time_pos_to_one_wake() {
-    let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let tx = RuntimeSender::new(raw_tx);
-
-    for tick in 0..10_000 {
-        assert!(emit(
+    assert_eq!(
+        emit(
             &tx,
-            RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(tick as f64))
-        ));
-    }
-
-    assert!(matches!(rx.try_recv(), Ok(RuntimeEvent::TelemetryWake)));
-    assert!(rx.try_recv().is_err());
-    let drained = tx.drain_coalesced();
-    assert_eq!(drained.len(), 1);
-    assert!(matches!(
-        &drained[0],
-        RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(t)) if (*t - 9999.0).abs() < f64::EPSILON
-    ));
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
+                RemoteCommand::TogglePause,
+                reply.into(),
+            ))
+        ),
+        Err(DeliveryError::Busy)
+    );
 }
 
 #[test]
-fn runtime_download_progress_coalesces_without_displacing_final_event() {
-    let (raw_tx, mut rx) = tokio::sync::mpsc::channel(4);
-    let tx = RuntimeSender::new(raw_tx);
+fn rejected_resolver_admission_reduces_failure_without_owner_requeue() {
+    for error in [DeliveryError::Busy, DeliveryError::Closed] {
+        let mut app = App::new(100);
+        app.queue.set(vec![song("id0"), song("id1")], 0);
+        let heal = app.update(PlayerMsg::Error(
+            "mpv could not play this track (unrecognized file format)".to_owned(),
+        ));
+        assert!(heal.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::YtdlpSelfHeal { video_id, .. } if video_id == "id0"
+        )));
+        let resolve = app.update(Msg::YtdlpHealResult {
+            video_id: "id0".to_owned(),
+            updated: true,
+        });
+        assert!(resolve.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::ResolveForSelfHeal { video_id, .. } if video_id == "id0"
+        )));
 
-    assert!(emit(
-        &tx,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id: "a".to_owned(),
-            percent: 10.0,
-        })
-    ));
-    assert!(emit(
-        &tx,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id: "a".to_owned(),
-            percent: 70.0,
-        })
-    ));
-    assert!(emit(
-        &tx,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id: "b".to_owned(),
-            percent: 40.0,
-        })
-    ));
-    assert!(emit(
-        &tx,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Done {
-            video_id: "a".to_owned(),
-            path: "a.m4a".to_owned(),
-        })
-    ));
+        let mut follow_ups = settle_resolver_admission(&mut app, "id0".to_owned(), Err(error));
+        assert!(
+            follow_ups
+                .iter()
+                .flat_map(Cmd::player_commands)
+                .any(|command| { matches!(command, PlayerCmd::Load(url) if url.contains("id1")) })
+        );
+        assert_eq!(
+            app.queue.current().map(|song| song.video_id.as_str()),
+            Some("id0"),
+            "skip stays speculative until the player batch is admitted"
+        );
 
-    assert!(matches!(rx.try_recv(), Ok(RuntimeEvent::TelemetryWake)));
-    assert!(matches!(
-        rx.try_recv(),
-        Ok(RuntimeEvent::Download(crate::download::DownloadEvent::Done {
-            video_id,
-            ..
-        })) if video_id == "a"
+        let intent_index = follow_ups
+            .iter()
+            .position(|cmd| matches!(cmd, Cmd::PlayerControl(PlayerControl::Intent(_))))
+            .expect("resolver rejection must produce a typed skip intent");
+        let Cmd::PlayerControl(PlayerControl::Intent(intent)) =
+            follow_ups.swap_remove(intent_index)
+        else {
+            unreachable!("matched the player intent above")
+        };
+        let _ = settle_player_intent(&mut app, *intent, Ok(DeliveryReceipt::Enqueued));
+        assert_eq!(
+            app.queue.current().map(|song| song.video_id.as_str()),
+            Some("id1")
+        );
+        assert!(
+            app.update(Msg::ResolveFailed {
+                video_id: "id0".to_owned(),
+            })
+            .is_empty()
+        );
+    }
+}
+
+#[test]
+fn closed_persistence_admission_is_visible_to_the_owner() {
+    let mut app = App::new(100);
+
+    assert!(!report_actor_delivery(
+        &mut app,
+        "persistence",
+        Err(DeliveryError::Closed),
     ));
-    let drained = tx.drain_coalesced();
-    assert_eq!(drained.len(), 2);
-    assert!(drained.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id,
-            percent,
-        }) if video_id == "a" && (*percent - 70.0).abs() < f64::EPSILON
-    )));
-    assert!(drained.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-            video_id,
-            percent,
-        }) if video_id == "b" && (*percent - 40.0).abs() < f64::EPSILON
-    )));
+    assert_eq!(app.status.kind, crate::app::StatusKind::Error);
+    assert!(app.status.text.contains("closed"));
 }

@@ -123,7 +123,8 @@ fn all_animations_on_render_every_view_without_panic() {
                 time: f64::from(i) * 5.0,
                 text: format!("line {i}"),
             })
-            .collect(),
+            .collect::<Vec<_>>()
+            .into(),
     });
     app.downloads
         .active
@@ -531,18 +532,143 @@ fn ai_mascot_animation_redraws_only_when_pose_can_change() {
     app.playback.paused = false;
     app.config.animations.master = true;
     app.config.animations.fps = 30;
+    let asset = &crate::ui::mascot::generated::cat_laptop::CAT_LAPTOP_GROOVE;
 
     assert!(app.animation_active());
     assert_eq!(app.animation_tick_fps(), 30);
-    assert_eq!(app.animation_draw_fps(), 3);
+    assert_eq!(app.animation_draw_fps(), asset.fps);
 
+    let mut last_redrawn_frame = crate::ui::mascot::render::frame_index_for_tick(
+        app.anim.anim_frame,
+        app.animation_tick_fps(),
+        asset,
+    );
     let mut redraws = 0;
     for _ in 0..30 {
         app.dirty = false;
         app.update(Msg::AnimTick);
+        let frame = crate::ui::mascot::render::frame_index_for_tick(
+            app.anim.anim_frame,
+            app.animation_tick_fps(),
+            asset,
+        );
         redraws += usize::from(app.dirty);
+        if app.dirty {
+            last_redrawn_frame = frame;
+        } else {
+            assert_eq!(frame, last_redrawn_frame, "pose changed without redraw");
+        }
     }
-    assert_eq!(redraws, 3);
+    assert_eq!(redraws, usize::from(asset.fps));
+}
+
+#[test]
+fn marquee_animation_advances_every_tick_but_redraws_only_on_steps() {
+    let mut marquee = App::new(100);
+    marquee.config.animations.fps = 30;
+    marquee.bridges.marquee_ran.set(true);
+    assert_eq!(marquee.animation_draw_fps(), 5);
+
+    let mut redraws = 0;
+    for expected_frame in 1..=30 {
+        marquee.dirty = false;
+        marquee.update(Msg::AnimTick);
+        assert_eq!(marquee.anim_frame(), expected_frame);
+        redraws += usize::from(marquee.dirty);
+    }
+    assert_eq!(redraws, 5);
+}
+
+#[test]
+fn inactive_to_active_transition_retains_fractional_draw_credit() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.config.animations.master = true;
+    app.config.animations.caret = true;
+    app.config.animations.fps = 30;
+    assert_eq!(app.animation_draw_fps(), 12);
+
+    // Two delivered ticks leave 24/30 credit without drawing.
+    for _ in 0..2 {
+        app.dirty = false;
+        app.update(Msg::AnimTick);
+        assert!(!app.dirty);
+    }
+    assert_eq!(app.anim.anim_draw_credit, 24);
+
+    // Focus parking is only an Interval polling gate. It must not reset the reducer's cadence.
+    app.update(Msg::Focus(false));
+    app.update(Msg::Focus(true));
+    app.dirty = false;
+    app.update(Msg::AnimTick);
+    assert_eq!(app.anim_frame(), 3);
+    assert_eq!(app.anim.anim_draw_credit, 6);
+    assert!(app.dirty, "the retained 24/30 credit makes tick three draw");
+}
+
+#[tokio::test]
+async fn delayed_interval_skip_matches_one_tick_oracle_for_canvas_marquee_and_fx() {
+    async fn assert_matches_one_tick(mut actual: App, mut oracle: App, label: &str) {
+        oracle.dirty = false;
+        oracle.update(Msg::AnimTick);
+        let oracle_dirty = oracle.dirty;
+        let oracle_frame = oracle.anim_frame();
+        let oracle_buffer = render_app_buffer(&oracle, 80, 24);
+
+        let period = std::time::Duration::from_millis(33);
+        let first_due = tokio::time::Instant::now() - std::time::Duration::from_millis(200);
+        let mut interval = tokio::time::interval_at(first_due, period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        actual.dirty = false;
+        let delivered_due = interval.tick().await;
+        assert_eq!(delivered_due, first_due, "{label}: overdue first deadline");
+        actual.update(Msg::AnimTick);
+
+        assert_eq!(actual.anim_frame(), oracle_frame, "{label}: frame");
+        assert_eq!(actual.dirty, oracle_dirty, "{label}: draw credit");
+        assert_eq!(
+            render_app_buffer(&actual, 80, 24),
+            oracle_buffer,
+            "{label}: rendered buffer"
+        );
+    }
+
+    fn canvas_app() -> App {
+        let mut app = app_playing(1, 0);
+        app.playback.paused = false;
+        app.config.animations.master = true;
+        app.config.animations.rain = true;
+        app.config.animations.fps = 30;
+        assert_eq!(app.animation_draw_fps(), 20);
+        app
+    }
+
+    fn marquee_app() -> App {
+        let mut app = App::new(100);
+        app.config.animations.fps = 30;
+        app.bridges.marquee_ran.set(true);
+        assert_eq!(app.animation_draw_fps(), 5);
+        app
+    }
+
+    fn fx_app() -> App {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.config.animations.master = true;
+        app.config.animations.toast = true;
+        app.update(Msg::ApiModeResolved {
+            mode: ApiMode::Anonymous,
+            had_cookie: true,
+        });
+        assert!(app.fx_active());
+        assert_eq!(app.animation_draw_fps(), app.animation_tick_fps());
+        app
+    }
+
+    assert_matches_one_tick(canvas_app(), canvas_app(), "canvas").await;
+    assert_matches_one_tick(marquee_app(), marquee_app(), "marquee").await;
+    assert_matches_one_tick(fx_app(), fx_app(), "one-shot fx").await;
 }
 
 #[test]
@@ -563,7 +689,8 @@ fn toggling_animations_while_settings_open_survives_close() {
     // The draft must mirror the flip; otherwise close commits the stale (off) draft over it.
     assert!(app.settings.as_ref().unwrap().draft.animations.master);
     // Closing settings commits the draft → config; the toggle must stick, not revert.
-    app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         app.config.animations.master,
         "close_settings must not revert the toggle"

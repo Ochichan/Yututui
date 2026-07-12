@@ -87,12 +87,12 @@ impl App {
     /// themselves (retro ASCII art) instead of through the terminal-graphics protocol.
     pub fn art_source_image(&self) -> Option<(&str, &DynamicImage)> {
         match (self.art.video_id.as_deref(), self.art.source.as_ref()) {
-            (Some(id), Some(img)) => Some((id, img)),
+            (Some(id), Some(img)) => Some((id, img.as_ref())),
             _ => None,
         }
     }
 
-    fn native_art_active(&self) -> bool {
+    pub(in crate::app) fn native_art_active(&self) -> bool {
         self.art_active() && self.native_image_protocol_selected()
     }
 
@@ -259,8 +259,8 @@ impl App {
     /// Actual redraw cadence for the active animation mix. One-shot feedback effects and cheap
     /// element effects keep the configured FPS; full-cell canvas effects cap repaint work;
     /// ambient UI effects (caret blink, selection breathing, activity dots, About sparkles) are
-    /// slow breathers that look identical at ~12 fps; the DJ Gem mascot only needs to redraw
-    /// when its pose can change.
+    /// slow breathers that look identical at ~12 fps; the AI mascot only needs to redraw when
+    /// its pose can change.
     pub fn animation_draw_fps(&self) -> u16 {
         let fps = self.animation_tick_fps();
         let a = self.animations();
@@ -288,7 +288,11 @@ impl App {
             return fps.min(12);
         }
         if self.ai_mascot_active() {
-            return (fps / 10).max(1);
+            return fps.min(
+                crate::ui::mascot::generated::cat_laptop::CAT_LAPTOP_GROOVE
+                    .fps
+                    .max(1),
+            );
         }
         if self.bridges.marquee_ran.get() {
             // Only the marquee is awake (both masters may be off): it advances one column
@@ -404,7 +408,11 @@ impl App {
             self.fx.toast = Some(self.fx_arm(w::toast_ms(cols)));
         }
 
-        // Screen switch → nav-tab pop + the new view's list cascade.
+        // Screen switch → nav-tab pop + the new view's list cascade. Returning to the
+        // Player screen additionally replays the title letter-cascade as a light "welcome
+        // back" intro over the (re-centered) now-playing block — the existing one-shot
+        // window, no new fx state, and gated like every trigger so `off` mode stays
+        // byte-identical.
         if self.mode != self.fx.last_mode {
             self.fx.last_mode = self.mode;
             if on(a.tabs) {
@@ -412,6 +420,13 @@ impl App {
             }
             if on(a.stagger) {
                 self.fx.list = Some((self.fx_arm(w::LIST_MS), self.mode));
+            }
+            if self.mode == Mode::Player
+                && on(a.track_intro)
+                && self.queue.current().is_some()
+                && !track_changed
+            {
+                self.fx.track_intro = Some(self.fx_arm(w::TRACK_INTRO_MS));
             }
         }
 
@@ -639,6 +654,30 @@ impl App {
         }
     }
 
+    /// Track layout-geometry transitions that MOVE the art rect: the player-bar position
+    /// (top-anchored vs centered filler) and the lyrics panel (centered group re-flows).
+    /// Screen switches are already covered by [`ART_OVERLAY_NOT_PLAYER_BIT`]; resize and
+    /// zoom request their clears at the source (`Msg::Resize`, `zoom_step`) because the
+    /// centered y moves with the grid. Same rationale as [`Self::sync_art_overlay_state`]:
+    /// native protocols park image bytes in anchor cells ratatui's diff won't repaint, so
+    /// any relocation needs one full clear.
+    pub(in crate::app) fn sync_art_geometry(&mut self) {
+        let key = (
+            self.player_bar_position(),
+            self.lyrics.visible,
+            self.bridges.ui_tier.get(),
+        );
+        if self.art.geometry_key == Some(key) {
+            return;
+        }
+        let moved = self.art.geometry_key.is_some();
+        self.art.geometry_key = Some(key);
+        if moved && self.native_art_active() {
+            self.request_native_image_clear();
+            tracing::debug!(?key, "art layout geometry changed; next frame will clear");
+        }
+    }
+
     pub(in crate::app) fn request_native_image_clear(&mut self) {
         self.art.force_clear_next_frame = true;
         self.dirty = true;
@@ -676,11 +715,12 @@ impl App {
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art.picker.as_ref()) {
             (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {
+                let img = Arc::new(img);
                 self.art.dims = (img.width(), img.height());
                 let tx = self.art.resize_tx.as_ref().expect("checked above").clone();
                 *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
                     tx,
-                    Some(picker.new_resize_protocol(img.clone())),
+                    Some(picker.new_resize_protocol_shared(Arc::clone(&img))),
                 ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);

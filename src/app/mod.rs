@@ -6,8 +6,9 @@
 //! (state in, `Cmd`s out — no IO) makes it directly unit-testable.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -33,7 +34,8 @@ use crate::queue::{Queue, QueueSnapshot};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::settings::{
-    self, Field, FieldKind, SettingsConfirm, SettingsDraft, SettingsState, SettingsTab,
+    self, Field, FieldKind, PersonalDataExportStatus, SettingsConfirm, SettingsDraft,
+    SettingsState, SettingsTab,
 };
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
@@ -46,6 +48,7 @@ mod types;
 pub use types::*;
 
 mod bootstrap;
+mod data_export;
 mod feedback;
 mod helpers;
 pub(crate) use helpers::open_in_browser;
@@ -75,12 +78,25 @@ mod local_format;
 mod local_import;
 mod local_import_helpers;
 mod media_reducer;
+mod mode_transition;
 mod mouse;
 pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;
 mod playback_error;
 mod player;
+mod player_intent;
+pub use player_intent::{
+    PendingRemoteReply, PlayerCommit, PlayerControl, PlayerIntent, RemoteReplyPlan,
+};
+mod player_recovery;
+mod player_transport;
+mod track_load;
+mod track_transition;
+pub(in crate::app) use track_transition::QueueReplacementOptions;
+pub use track_transition::TrackTransitionPlan;
+mod video_transition;
+pub use video_transition::{VideoFinishPlan, VideoOpenPlan};
 pub(in crate::app) mod prefetch;
 pub use player::PlayerMsg;
 mod playlists_reducer;
@@ -90,6 +106,7 @@ mod remote_reducer;
 mod romanize;
 mod scrobble_reducer;
 mod search;
+mod settings_audio;
 mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;
@@ -111,6 +128,7 @@ pub(in crate::app) enum PositionEpochReason {
     RestoreSession,
     Seek,
     TrackRestart,
+    TransportRecovery,
     PlaybackCleared,
     Stop,
 }
@@ -209,6 +227,8 @@ pub struct App {
     pub overlays: Overlays,
     /// A transfer job is running (guards double-starts; progress rides the status line).
     pub transfer_running: bool,
+    /// Portable personal-data export state shared by Settings and authenticated remote requests.
+    pub(crate) personal_export: PersonalDataExportState,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed

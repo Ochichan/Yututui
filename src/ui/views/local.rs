@@ -7,14 +7,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{
-    App, LocalImportAcceptAllConfirm, LocalModeConfirm, LocalOrganizeConfirm, LocalSection,
-    MouseTarget, ScrollSurface,
+    App, LocalImportAcceptAllConfirm, LocalModeConfirm, LocalOrganizeConfirm, LocalRowsSnapshot,
+    LocalSection, MouseTarget, ScrollSurface,
 };
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let local_rows = app.local_rows_snapshot();
+    render_with_snapshot(frame, app, area, &local_rows);
+}
+
+fn render_with_snapshot(frame: &mut Frame, app: &App, area: Rect, local_rows: &LocalRowsSnapshot) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderFocused))
@@ -37,19 +42,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1),
     ])
     .split(inner);
 
-    render_header(frame, app, rows[0]);
-    render_status(frame, app, rows[1]);
-    render_body(frame, app, rows[2]);
-    buttons::render_help_button(frame, app, rows[3]);
+    render_header(frame, app, local_rows, rows[0]);
+    render_status(frame, app, local_rows, rows[1]);
+    render_body(frame, app, local_rows, rows[2]);
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
 }
 
-fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let count = app.local_total_rows_len();
-    let visible_count = app.local_rows_len();
+#[cfg(test)]
+pub(crate) fn render_test_snapshot(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    local_rows: &LocalRowsSnapshot,
+) {
+    render_with_snapshot(frame, app, area, local_rows);
+}
+
+fn render_header(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
+    let count = local_rows.total_len();
+    let visible_count = local_rows.rows().len();
     let count_label = if !app.local_mode.ui.filter_query.is_empty() {
         if crate::i18n::is_korean() {
             format!("{visible_count}/{count}개")
@@ -86,7 +103,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
     let text = if app.local_mode.ui.filter_editing || !app.local_mode.ui.filter_query.is_empty() {
         if app.local_mode.ui.filter_editing {
             format!("/{}", app.local_mode.ui.filter_query)
@@ -97,7 +114,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
                 app.local_mode.ui.filter_query
             )
         }
-    } else if let Some(hint) = app.local_import_action_hint() {
+    } else if let Some(hint) = app.local_import_action_hint_for_snapshot(local_rows) {
         hint
     } else if app.local_mode.index.loading {
         t!(
@@ -163,7 +180,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_body(frame: &mut Frame, app: &App, area: Rect) {
+fn render_body(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
     if area.height == 0 || area.width < 4 {
         return;
     }
@@ -182,8 +199,8 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         )
         .split(area);
         render_sidebar(frame, app, panes[0]);
-        render_rows(frame, app, panes[1]);
-        render_details(frame, app, panes[2]);
+        render_rows(frame, app, local_rows, panes[1]);
+        render_details(frame, app, local_rows, panes[2]);
     } else if area.width >= 80 {
         let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
         let panes = Layout::new(
@@ -192,8 +209,8 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         )
         .split(rows[0]);
         render_sidebar(frame, app, panes[0]);
-        render_rows(frame, app, panes[1]);
-        render_details_strip(frame, app, rows[1]);
+        render_rows(frame, app, local_rows, panes[1]);
+        render_details_strip(frame, app, local_rows, rows[1]);
     } else if area.width >= 72 {
         let panes = Layout::new(
             Direction::Horizontal,
@@ -201,19 +218,19 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         )
         .split(area);
         render_sidebar(frame, app, panes[0]);
-        render_rows(frame, app, panes[1]);
+        render_rows(frame, app, local_rows, panes[1]);
     } else {
-        render_rows(frame, app, area);
+        render_rows(frame, app, local_rows, area);
     }
 }
 
-fn render_details(frame: &mut Frame, app: &App, area: Rect) {
+fn render_details(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let width = area.width as usize;
     for (i, line) in app
-        .local_details_lines()
+        .local_details_lines_for_snapshot(local_rows)
         .into_iter()
         .take(area.height as usize)
         .enumerate()
@@ -239,12 +256,12 @@ fn render_details(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_details_strip(frame: &mut Frame, app: &App, area: Rect) {
+fn render_details_strip(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let text = crate::ui::text::truncate_owned_to_width(
-        app.local_details_summary(),
+        app.local_details_summary_for_snapshot(local_rows),
         area.width.saturating_sub(1) as usize,
     );
     frame.render_widget(
@@ -330,8 +347,8 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = app.local_visible_rows();
+fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
+    let rows = local_rows.rows();
     if rows.is_empty() {
         if app.local_mode.ui.filter_query.is_empty() {
             render_empty_section(frame, app, area);
@@ -359,21 +376,21 @@ fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
     {
         let y = area.y + vis as u16;
         let selected = i == cursor;
-        let deletable = app.local_import_record_deletable(song);
+        let deletable = app.local_import_record_deletable_at(local_rows, i);
         let delete_width = if deletable { 2 } else { 0 };
         let body_w = row_width.saturating_sub(delete_width) as usize;
         let marker = if selected { "> " } else { "  " };
-        let text = app.local_row_text(song);
+        let text = app.local_row_text_at(local_rows, i);
         let text = if selected {
             crate::ui::anim::selected_marquee(
                 app,
                 ScrollSurface::Library,
                 i,
-                &text,
+                text.as_ref(),
                 body_w.saturating_sub(3),
             )
         } else {
-            text
+            text.to_string()
         };
         let body = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{text}"),

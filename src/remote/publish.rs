@@ -1,12 +1,13 @@
 //! The v8 Publisher: turns owner-state changes into session push events without ever
 //! touching the reducer (docs/gui/02 §14).
 //!
-//! Both owner hosts call [`Publisher::observe`] once per turn on the owner-loop thread,
-//! right next to their existing `media.publish(..)` post-turn observers, passing a
-//! [`CoreView`] borrow of current state. Change detection is fingerprint-based and
-//! cheap; models are built and serialized only when something changed AND someone is
-//! subscribed, and the serialized payload fans out by `Arc` (the per-session envelope is
-//! spliced at write time by the session writer).
+//! Both owner hosts call [`Publisher::observe`] after turns that can change a projected
+//! facet, on the owner-loop thread next to their existing `media.publish(..)` observers,
+//! passing a [`CoreView`] borrow of current state. Ordinary position/cache clocks bypass
+//! the view entirely because elapsed is deliberately not pushed. Change detection is
+//! fingerprint-based; models are built and serialized only when something changed AND
+//! someone is subscribed, and the serialized payload fans out by `Arc` (the per-session
+//! envelope is spliced at write time by the session writer).
 //!
 //! Frozen rule (docs/gui/02 §14, tested here): the 1 Hz `PlayerTimePos` tick while
 //! playing changes only `elapsed_ms`, which is deliberately **outside** the player
@@ -16,6 +17,8 @@
 //! message types stay out of `src/remote` entirely (`scripts/check-architecture.sh`
 //! enforces that boundary).
 
+use std::borrow::Cow;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::api::Song;
@@ -41,9 +44,9 @@ pub struct CoreView<'a> {
     pub position_epoch: u64,
     pub streaming: bool,
     pub radio_mode: bool,
-    pub stream_now_playing: Option<String>,
+    pub stream_now_playing: Option<Cow<'a, str>>,
     pub owner_mode: InstanceMode,
-    pub eq_preset: String,
+    pub eq_preset: &'a str,
     pub eq_bands: [f64; 10],
     pub eq_normalize: bool,
     /// The live config, projected into the `settings` topic model.
@@ -51,12 +54,29 @@ pub struct CoreView<'a> {
     /// The media-art cache's resolved file for the CURRENT track (already gated by the
     /// host — stale art from a previous track never appears here). Rides the player
     /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
-    pub artwork: Option<super::proto::ArtworkRef>,
+    pub artwork: Option<CoreArtwork<'a>>,
+}
+
+/// Borrowed current-art projection. It is converted to the owned wire type only when a player
+/// snapshot is actually emitted, rather than cloning the key/path on every observer turn.
+pub struct CoreArtwork<'a> {
+    pub key: &'a str,
+    pub path: Option<&'a Path>,
+    pub mime: Option<&'a str>,
+}
+
+impl CoreArtwork<'_> {
+    fn to_wire(&self) -> super::proto::ArtworkRef {
+        super::proto::ArtworkRef {
+            key: self.key.to_owned(),
+            path: self.path.map(|path| path.to_string_lossy().into_owned()),
+            mime: self.mime.map(str::to_owned),
+        }
+    }
 }
 
 /// The player-topic change fingerprint. **`elapsed_ms` is deliberately absent** — see
 /// the module docs. `duration_ms` is included (it changes on track load, not per tick).
-#[derive(PartialEq, Clone)]
 struct PlayerFingerprint {
     video_id: Option<String>,
     paused: bool,
@@ -74,9 +94,7 @@ struct PlayerFingerprint {
     eq_normalize: bool,
     queue_pos: usize,
     queue_len: usize,
-    /// Art resolves ~1–2 s AFTER a track starts (async cache fetch); keying on it makes
-    /// that arrival its own push, or the GUI would show the placeholder until the next
-    /// unrelated change.
+    /// Art resolves ~1–2 s after track start, so its arrival must produce its own push.
     artwork_key: Option<String>,
 }
 
@@ -84,7 +102,7 @@ impl PlayerFingerprint {
     fn of(view: &CoreView<'_>) -> Self {
         let (pos, len) = view.queue.position();
         Self {
-            video_id: view.queue.current().map(|s| s.video_id.clone()),
+            video_id: view.queue.current().map(|song| song.video_id.clone()),
             paused: view.paused,
             volume: view.volume,
             speed_tenths: view.speed_tenths,
@@ -94,14 +112,38 @@ impl PlayerFingerprint {
             repeat: view.queue.repeat,
             streaming: view.streaming,
             radio_mode: view.radio_mode,
-            stream_now_playing: view.stream_now_playing.clone(),
-            eq_preset: view.eq_preset.clone(),
+            stream_now_playing: view.stream_now_playing.as_deref().map(str::to_owned),
+            eq_preset: view.eq_preset.to_owned(),
             eq_bands: view.eq_bands,
             eq_normalize: view.eq_normalize,
             queue_pos: if len == 0 { 0 } else { pos.saturating_sub(1) },
             queue_len: len,
-            artwork_key: view.artwork.as_ref().map(|art| art.key.clone()),
+            artwork_key: view.artwork.as_ref().map(|art| art.key.to_owned()),
         }
+    }
+
+    /// Compare the current borrowed projection against the retained exact snapshot. Owned strings
+    /// are allocated only after a real change; unchanged observer turns stay allocation-free
+    /// without relying on a lossy hash that could suppress a required remote update.
+    fn matches(&self, view: &CoreView<'_>) -> bool {
+        let (pos, len) = view.queue.position();
+        self.video_id.as_deref() == view.queue.current().map(|song| song.video_id.as_str())
+            && self.paused == view.paused
+            && self.volume == view.volume
+            && self.speed_tenths == view.speed_tenths
+            && self.position_epoch == view.position_epoch
+            && self.duration_ms == view.duration_ms
+            && self.shuffle == view.queue.shuffle
+            && self.repeat == view.queue.repeat
+            && self.streaming == view.streaming
+            && self.radio_mode == view.radio_mode
+            && self.stream_now_playing.as_deref() == view.stream_now_playing.as_deref()
+            && self.eq_preset == view.eq_preset
+            && self.eq_bands == view.eq_bands
+            && self.eq_normalize == view.eq_normalize
+            && self.queue_pos == if len == 0 { 0 } else { pos.saturating_sub(1) }
+            && self.queue_len == len
+            && self.artwork_key.as_deref() == view.artwork.as_ref().map(|art| art.key)
     }
 }
 
@@ -109,12 +151,23 @@ impl PlayerFingerprint {
 pub struct Publisher {
     hub: Arc<RemoteSessionHub>,
     last_player: Option<PlayerFingerprint>,
-    last_queue_rev: u64,
+    last_queue_rev: Option<u64>,
     /// Serialized settings model (rev 0) from the last turn — the settings fingerprint.
     /// Byte comparison over a ~2 KB projection per event turn is comfortably cheap and
     /// immune to forgotten-field drift, unlike a hand-listed fingerprint struct.
     last_settings: Option<Vec<u8>>,
     settings_rev: u64,
+    #[cfg(test)]
+    last_projection_work: ProjectionWork,
+}
+
+/// Test-only record of the concrete projection work performed by [`Publisher::observe`].
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ProjectionWork {
+    player_fingerprint: bool,
+    queue_revision: bool,
+    settings_model: bool,
 }
 
 impl Publisher {
@@ -122,19 +175,34 @@ impl Publisher {
         Self {
             hub,
             last_player: None,
-            last_queue_rev: 0,
+            last_queue_rev: None,
             last_settings: None,
             settings_rev: 0,
+            #[cfg(test)]
+            last_projection_work: ProjectionWork::default(),
         }
     }
 
-    /// Called once per owner-loop turn. O(fingerprint) when nothing changed; builds and
-    /// serializes a model only for a changed topic that has subscribers.
-    pub fn observe(&mut self, view: &CoreView<'_>) {
-        let player_now = PlayerFingerprint::of(view);
-        if self.last_player.as_ref() != Some(&player_now) {
-            self.last_player = Some(player_now);
-            if self.hub.any_subscribed(Topic::Player) {
+    /// Called after owner-loop turns selected by each host. Player and queue retain their historical
+    /// cheap baseline comparisons even without subscribers, so a later subscription cannot perturb
+    /// the established event sequence. Owned models are still built only for changed subscribed
+    /// topics, and the substantially more expensive Settings projection remains subscriber-gated.
+    pub(crate) fn observe(&mut self, view: &CoreView<'_>) {
+        #[cfg(test)]
+        let mut work = ProjectionWork::default();
+
+        let player_subscribed = self.hub.any_subscribed(Topic::Player);
+        #[cfg(test)]
+        {
+            work.player_fingerprint = true;
+        }
+        if self
+            .last_player
+            .as_ref()
+            .is_none_or(|last| !last.matches(view))
+        {
+            self.last_player = Some(PlayerFingerprint::of(view));
+            if player_subscribed {
                 let payload = event_payload(&PushEvent::PlayerSnapshot {
                     model: Box::new(player_model(view)),
                 });
@@ -142,10 +210,15 @@ impl Publisher {
             }
         }
 
+        let queue_subscribed = self.hub.any_subscribed(Topic::Queue);
+        #[cfg(test)]
+        {
+            work.queue_revision = true;
+        }
         let queue_rev = view.queue.rev();
-        if self.last_queue_rev != queue_rev {
-            self.last_queue_rev = queue_rev;
-            if self.hub.any_subscribed(Topic::Queue) {
+        if self.last_queue_rev != Some(queue_rev) {
+            self.last_queue_rev = Some(queue_rev);
+            if queue_subscribed {
                 let payload = event_payload(&PushEvent::QueueSnapshot {
                     model: queue_model(view),
                 });
@@ -162,7 +235,12 @@ impl Publisher {
         // freezes and no bytes are produced; `handle_subscribe` sends a full *current* snapshot
         // on connect, so a subscriber that joins after a change never misses it (test:
         // `late_settings_subscriber_still_sees_changes`).
-        if self.hub.any_subscribed(Topic::Settings) || self.last_settings.is_none() {
+        let settings_subscribed = self.hub.any_subscribed(Topic::Settings);
+        if settings_subscribed || self.last_settings.is_none() {
+            #[cfg(test)]
+            {
+                work.settings_model = true;
+            }
             let mut settings_now = settings_model(view, 0);
             let settings_bytes = serde_json::to_vec(&settings_now).unwrap_or_default();
             if self.last_settings.as_deref() != Some(settings_bytes.as_slice()) {
@@ -171,7 +249,7 @@ impl Publisher {
                 self.settings_rev += 1;
                 // The very first observe primes the baseline (nothing changed yet) —
                 // matching how the player/queue baselines behave before any subscriber.
-                if primed && self.hub.any_subscribed(Topic::Settings) {
+                if primed && settings_subscribed {
                     settings_now.rev = self.settings_rev;
                     let payload = event_payload(&PushEvent::SettingsSnapshot {
                         model: Box::new(settings_now),
@@ -180,12 +258,23 @@ impl Publisher {
                 }
             }
         }
+
+        #[cfg(test)]
+        {
+            self.last_projection_work = work;
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_work(&mut self, view: &CoreView<'_>) -> ProjectionWork {
+        self.observe(view);
+        self.last_projection_work
     }
 
     pub fn should_observe(&self, state_changed: bool) -> bool {
         state_changed
             || self.last_player.is_none()
-            || self.last_queue_rev == 0
+            || self.last_queue_rev.is_none()
             || self.last_settings.is_none()
             || self.hub.any_subscribed(Topic::Player)
             || self.hub.any_subscribed(Topic::Queue)
@@ -199,69 +288,143 @@ impl Publisher {
         &mut self,
         view: &CoreView<'_>,
         session: &RemoteSessionRef,
+        page_id: Option<&str>,
         frame_id: u64,
         topics: &[Topic],
-    ) {
-        for topic in session.subscribe(topics) {
-            let payload = match topic {
-                Topic::Player => Some(event_payload(&PushEvent::PlayerSnapshot {
-                    model: Box::new(player_model(view)),
-                })),
-                Topic::Queue => Some(event_payload(&PushEvent::QueueSnapshot {
-                    model: queue_model(view),
-                })),
-                Topic::Settings => Some(event_payload(&PushEvent::SettingsSnapshot {
-                    model: Box::new(settings_model(view, self.settings_rev)),
-                })),
-                // Event-only (system, search) or not yet served (B1+ topics):
-                // registered, no initial snapshot.
-                _ => None,
-            };
-            if let Some(payload) = payload
-                && !self.hub.send_event_to(session, topic, &payload)
-            {
-                return; // evicted mid-subscribe; the reply would go nowhere
-            }
-        }
-        self.hub.send_raw_to(
+    ) -> bool {
+        self.handle_subscribe_with_settlement(view, session, page_id, frame_id, topics, None)
+    }
+
+    pub(crate) fn handle_tracked_subscribe(
+        &mut self,
+        view: &CoreView<'_>,
+        session: &RemoteSessionRef,
+        page_id: Option<&str>,
+        frame_id: u64,
+        topics: &[Topic],
+        settlement: super::WireSettlement,
+    ) -> bool {
+        self.handle_subscribe_with_settlement(
+            view,
             session,
-            &ServerFrame::Reply {
-                id: frame_id,
-                resp: RemoteResponse::ok("subscribed".to_string()),
-            },
-        );
+            page_id,
+            frame_id,
+            topics,
+            Some(settlement),
+        )
+    }
+
+    fn handle_subscribe_with_settlement(
+        &mut self,
+        view: &CoreView<'_>,
+        session: &RemoteSessionRef,
+        page_id: Option<&str>,
+        frame_id: u64,
+        topics: &[Topic],
+        settlement: Option<super::WireSettlement>,
+    ) -> bool {
+        session
+            .apply_subscribe(page_id, topics, |new_topics| {
+                for &topic in new_topics {
+                    let payload = match topic {
+                        Topic::Player => Some(event_payload(&PushEvent::PlayerSnapshot {
+                            model: Box::new(player_model(view)),
+                        })),
+                        Topic::Queue => Some(event_payload(&PushEvent::QueueSnapshot {
+                            model: queue_model(view),
+                        })),
+                        Topic::Settings => Some(event_payload(&PushEvent::SettingsSnapshot {
+                            model: Box::new(settings_model(view, self.settings_rev)),
+                        })),
+                        // Event-only (system, search) or not yet served (B1+ topics):
+                        // registered, no initial snapshot.
+                        _ => None,
+                    };
+                    if let Some(payload) = payload
+                        && !self.hub.send_event_to(session, topic, &payload)
+                    {
+                        return false; // evicted mid-subscribe; the reply would go nowhere
+                    }
+                }
+                let reply = ServerFrame::Reply {
+                    id: frame_id,
+                    resp: RemoteResponse::ok("subscribed".to_string()),
+                };
+                match settlement {
+                    Some(settlement) => self.hub.send_tracked_raw_to(session, &reply, settlement),
+                    None => self.hub.send_raw_to(session, &reply),
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    /// Settle a subscribe event that was accepted before owner shutdown. Applying an empty topic
+    /// set advances only the already-admitted page generation, then emits the correlated failure
+    /// reply while the session writer is still live. A superseded page is explicitly retired.
+    pub(crate) fn reject_subscribe_for_shutdown(
+        &self,
+        session: &RemoteSessionRef,
+        page_id: Option<&str>,
+        frame_id: u64,
+        settlement: super::WireSettlement,
+    ) -> bool {
+        session
+            .apply_subscribe(page_id, &[], |_| {
+                self.hub.send_tracked_raw_to(
+                    session,
+                    &ServerFrame::Reply {
+                        id: frame_id,
+                        resp: RemoteResponse::err("shutting_down"),
+                    },
+                    settlement,
+                )
+            })
+            .unwrap_or(false)
     }
 
     /// Fan a completed GUI search out on the `search` topic (one-off event, not a
     /// snapshot — the host loop calls this straight from the api-answer lane).
     pub fn search_completed(
         &self,
+        requester: &super::RemoteSessionScope,
         ticket: u64,
         query: &str,
         source: crate::search_source::SearchSource,
         groups: &[crate::api::GuiSearchGroup],
-    ) {
-        if !self.hub.any_subscribed(Topic::Search) {
-            return;
-        }
+    ) -> bool {
+        let Some(session) = requester.session() else {
+            return false;
+        };
         let payload = event_payload(&PushEvent::SearchCompleted {
             ticket,
+            page_id: requester.page_id().map(str::to_owned),
             query: query.to_string(),
             source,
             groups: groups
                 .iter()
                 .map(|group| super::proto::SearchGroup {
                     source: group.source,
-                    tracks: group.songs.iter().map(track_model).collect(),
+                    tracks: group.songs.iter().map(gui_search_track_model).collect(),
                     error: group.error.clone(),
                 })
                 .collect(),
         });
-        self.hub.broadcast(Topic::Search, &payload);
+        self.hub
+            .send_event_to_subscriber(session, requester.page_id(), Topic::Search, &payload)
     }
 
     /// The owner is exiting: `shutting_down` on the `system` topic for subscribers,
     /// then a `Goodbye` to every session (docs/gui/02 §7).
+    pub(crate) fn quiesce_owner_admission(&self) {
+        self.hub.quiesce_owner_admission();
+    }
+
+    /// Wait until every request accepted before quiesce has either flushed its response or hit
+    /// the socket writer's bounded failure path. Returns `false` only on the outer safety budget.
+    pub(crate) async fn wait_for_wire_settlements(&self) -> bool {
+        self.hub.wait_for_wire_settlements().await
+    }
+
     pub fn shutting_down(&self) {
         if self.hub.any_subscribed(Topic::System) {
             let payload = event_payload(&PushEvent::ShuttingDown);
@@ -282,7 +445,7 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     PlayerModel {
         track: view.queue.current().map(|song| {
             let mut track = track_model(song);
-            track.artwork = view.artwork.clone();
+            track.artwork = view.artwork.as_ref().map(CoreArtwork::to_wire);
             track
         }),
         paused: view.paused,
@@ -295,10 +458,10 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
         repeat: view.queue.repeat,
         streaming: view.streaming,
         radio_mode: view.radio_mode,
-        stream_now_playing: view.stream_now_playing.clone(),
+        stream_now_playing: view.stream_now_playing.as_deref().map(str::to_owned),
         owner_mode: view.owner_mode,
         eq: EqModel {
-            preset: view.eq_preset.clone(),
+            preset: view.eq_preset.to_owned(),
             bands: view.eq_bands,
             normalize: view.eq_normalize,
         },
@@ -347,7 +510,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
             repeat: view.queue.repeat,
         },
         eq: EqModel {
-            preset: view.eq_preset.clone(),
+            preset: view.eq_preset.to_owned(),
             bands: view.eq_bands,
             normalize: view.eq_normalize,
         },
@@ -473,6 +636,12 @@ fn track_model(song: &Song) -> TrackModel {
     }
 }
 
+fn gui_search_track_model(song: &Song) -> TrackModel {
+    let mut model = track_model(song);
+    model.video_id = crate::api::gui_search_row_id(song);
+    model
+}
+
 /// `duration_secs` when known, else parse the required display string
 /// (`"3:45"`, `"1:02:03"`) — old persisted rows lack the numeric field
 /// (docs/gui/02 §11.2 conversion rule).
@@ -515,7 +684,7 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         radio_mode: false,
         stream_now_playing: None,
         owner_mode: InstanceMode::StandaloneTui,
-        eq_preset: "Flat".to_string(),
+        eq_preset: "Flat",
         eq_bands: [0.0; 10],
         eq_normalize: false,
         config: Box::leak(Box::new(crate::config::Config::default())),
@@ -526,7 +695,10 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::proto::PROTOCOL_VERSION;
-    use super::super::sessions::{SessionLine, SessionTuning, test_register};
+    use super::super::sessions::{
+        RemoteSessionScope, SessionLine, SessionTuning, SubscribeIngress, test_register,
+        test_register_next,
+    };
     use super::*;
 
     fn view(queue: &Queue) -> CoreView<'_> {
@@ -549,7 +721,7 @@ mod tests {
         lines
             .iter()
             .map(|line| match line {
-                SessionLine::Raw(bytes) => format!(
+                SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => format!(
                     "raw:{}",
                     String::from_utf8_lossy(bytes)
                         .split_once('"')
@@ -557,6 +729,29 @@ mod tests {
                         .unwrap_or("?")
                 ),
                 SessionLine::Event { topic, .. } => format!("event:{}", topic.wire_str()),
+            })
+            .collect()
+    }
+
+    fn admit(session: &RemoteSessionRef, page_id: Option<&str>) {
+        assert_eq!(
+            session.admit_subscribe(page_id, || Some(true)),
+            SubscribeIngress::Accepted
+        );
+    }
+
+    fn settings_revs(lines: &[SessionLine]) -> Vec<u64> {
+        lines
+            .iter()
+            .filter_map(|line| match line {
+                SessionLine::Event {
+                    topic: Topic::Settings,
+                    payload,
+                    ..
+                } => serde_json::from_slice::<serde_json::Value>(payload)
+                    .ok()
+                    .and_then(|event| event["model"]["rev"].as_u64()),
+                _ => None,
             })
             .collect()
     }
@@ -571,6 +766,7 @@ mod tests {
         publisher.handle_subscribe(
             &view(&queue),
             &session,
+            None,
             1,
             &[Topic::Player, Topic::Queue, Topic::System],
         );
@@ -582,9 +778,325 @@ mod tests {
         );
 
         // Duplicate subscribe: idempotent — no second snapshot stream, just the reply.
-        publisher.handle_subscribe(&view(&queue), &session, 2, &[Topic::Player]);
+        publisher.handle_subscribe(&view(&queue), &session, None, 2, &[Topic::Player]);
         let lines = drain(&mut rx);
         assert_eq!(kinds(&lines), vec!["raw:frame"]);
+    }
+
+    #[test]
+    fn delayed_subscribe_is_page_gated_and_new_page_gets_a_fresh_snapshot() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let mut queue = Queue::default();
+
+        admit(&session, Some("page-a"));
+        // Hold A's owner event while the reader admits the newer page generation.
+        admit(&session, Some("page-b"));
+        queue.set(vec![song("fresh-b")], 0);
+
+        assert!(!publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            Some("page-a"),
+            1,
+            &[Topic::Queue],
+        ));
+        assert!(
+            drain(&mut rx).is_empty(),
+            "stale A must be completely inert"
+        );
+
+        assert!(publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            Some("page-b"),
+            2,
+            &[Topic::Queue],
+        ));
+        let lines = drain(&mut rx);
+        assert_eq!(kinds(&lines), vec!["event:queue", "raw:frame"]);
+        let SessionLine::Event { payload, .. } = &lines[0] else {
+            panic!("B must receive a fresh queue snapshot");
+        };
+        let PushEvent::QueueSnapshot { model } =
+            serde_json::from_slice::<PushEvent>(payload).unwrap()
+        else {
+            panic!("B must receive a queue snapshot");
+        };
+        assert_eq!(model.items[0].video_id, "fresh-b");
+    }
+
+    #[test]
+    fn rejected_page_admission_rolls_back_without_losing_old_subscriptions() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let mut queue = Queue::default();
+        queue.set(vec![song("a")], 0);
+
+        admit(&session, Some("page-a"));
+        assert!(publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            Some("page-a"),
+            1,
+            &[Topic::Player],
+        ));
+        drain(&mut rx);
+
+        assert_eq!(
+            session.admit_subscribe(Some("page-b"), || Some(false)),
+            SubscribeIngress::Busy
+        );
+        assert!(publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            Some("page-a"),
+            2,
+            &[Topic::Player, Topic::Queue],
+        ));
+        assert_eq!(
+            kinds(&drain(&mut rx)),
+            vec!["event:queue", "raw:frame"],
+            "the rejected B transition must retain A and its Player subscription"
+        );
+    }
+
+    #[test]
+    fn saturated_new_page_cannot_make_an_older_accepted_event_disappear() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut queue = Queue::default();
+        queue.set(vec![song("page-a")], 0);
+        admit(&session, Some("page-a"));
+
+        let (busy_started_tx, busy_started_rx) = std::sync::mpsc::channel();
+        let (release_busy_tx, release_busy_rx) = std::sync::mpsc::channel();
+        let busy_session = session.clone();
+        let busy = std::thread::spawn(move || {
+            busy_session.admit_subscribe(Some("page-b"), || {
+                busy_started_tx.send(()).unwrap();
+                release_busy_rx.recv().unwrap();
+                Some(false)
+            })
+        });
+        busy_started_rx.recv().unwrap();
+
+        let owner_session = session.clone();
+        let (owner_started_tx, owner_started_rx) = std::sync::mpsc::channel();
+        let (owner_done_tx, owner_done_rx) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let mut publisher = Publisher::new(hub);
+            owner_started_tx.send(()).unwrap();
+            let applied = publisher.handle_subscribe(
+                &view(&queue),
+                &owner_session,
+                Some("page-a"),
+                1,
+                &[Topic::Queue],
+            );
+            owner_done_tx.send(applied).unwrap();
+        });
+        owner_started_rx.recv().unwrap();
+        assert!(
+            owner_done_rx
+                .recv_timeout(std::time::Duration::from_millis(30))
+                .is_err(),
+            "A's owner transaction must wait for B's ingress linearization"
+        );
+
+        release_busy_tx.send(()).unwrap();
+        assert_eq!(busy.join().unwrap(), SubscribeIngress::Busy);
+        assert!(owner_done_rx.recv().unwrap());
+        owner.join().unwrap();
+        assert_eq!(
+            kinds(&drain(&mut rx)),
+            vec!["event:queue", "raw:frame"],
+            "busy B must leave accepted A able to publish its snapshot and reply"
+        );
+    }
+
+    #[test]
+    fn owner_can_park_projection_work_without_model_subscribers() {
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let queue = Queue::default();
+
+        assert!(
+            publisher.should_observe(false),
+            "first turn primes baselines"
+        );
+        publisher.observe(&view(&queue));
+        assert!(
+            !publisher.should_observe(false),
+            "an empty queue at revision zero must not force perpetual observation"
+        );
+
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Player]);
+        drain(&mut rx);
+        assert!(
+            publisher.should_observe(false),
+            "active model subscriber stays observed"
+        );
+    }
+
+    #[test]
+    fn search_completion_targets_only_its_live_subscribed_session_and_page() {
+        let (hub, session_a, mut rx_a) = test_register(SessionTuning::default());
+        let (session_b, mut rx_b) = test_register_next(&hub);
+        let mut publisher = Publisher::new(hub);
+        let queue = Queue::default();
+        admit(&session_a, Some("page-a"));
+        admit(&session_b, Some("page-b"));
+        publisher.handle_subscribe(
+            &view(&queue),
+            &session_a,
+            Some("page-a"),
+            1,
+            &[Topic::Search],
+        );
+        publisher.handle_subscribe(
+            &view(&queue),
+            &session_b,
+            Some("page-b"),
+            1,
+            &[Topic::Search],
+        );
+        drain(&mut rx_a);
+        drain(&mut rx_b);
+
+        let requester = RemoteSessionScope::new(session_a.clone(), Some("page-a".to_owned()));
+        assert!(publisher.search_completed(
+            &requester,
+            1,
+            "alpha",
+            crate::search_source::SearchSource::Youtube,
+            &[crate::api::GuiSearchGroup {
+                source: crate::search_source::SearchSource::Youtube,
+                songs: vec![song("a")],
+                error: None,
+            }],
+        ));
+        let lines = drain(&mut rx_a);
+        assert_eq!(lines.len(), 1);
+        let SessionLine::Event { payload, .. } = &lines[0] else {
+            panic!("search completion must be an event");
+        };
+        match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+            PushEvent::SearchCompleted {
+                ticket, page_id, ..
+            } => {
+                assert_eq!(ticket, 1);
+                assert_eq!(page_id.as_deref(), Some("page-a"));
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(
+            drain(&mut rx_b).is_empty(),
+            "session B must not see A's result"
+        );
+
+        admit(&session_a, Some("page-new"));
+        assert!(publisher.handle_subscribe(
+            &view(&queue),
+            &session_a,
+            Some("page-new"),
+            2,
+            &[Topic::Search],
+        ));
+        drain(&mut rx_a);
+        assert!(!publisher.search_completed(
+            &requester,
+            2,
+            "stale page",
+            crate::search_source::SearchSource::Youtube,
+            &[],
+        ));
+        let current = RemoteSessionScope::new(session_a.clone(), Some("page-new".to_owned()));
+        assert!(publisher.search_completed(
+            &current,
+            2,
+            "current page",
+            crate::search_source::SearchSource::Youtube,
+            &[],
+        ));
+        drain(&mut rx_a);
+
+        assert!(!session_a.unsubscribe_if_current(Some("page-a"), &[Topic::Search]));
+        assert!(session_a.unsubscribe_if_current(Some("page-new"), &[Topic::Search]));
+        assert!(!publisher.search_completed(
+            &current,
+            3,
+            "late",
+            crate::search_source::SearchSource::Youtube,
+            &[],
+        ));
+        assert!(drain(&mut rx_a).is_empty());
+    }
+
+    #[test]
+    fn cheap_baselines_refresh_while_settings_projection_stays_subscriber_gated() {
+        let queue = Queue::default();
+
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        assert_eq!(
+            publisher.observe_work(&view(&queue)),
+            ProjectionWork {
+                player_fingerprint: true,
+                queue_revision: true,
+                settings_model: true,
+            },
+            "the first owner turn primes each baseline exactly once"
+        );
+        assert_eq!(
+            publisher.observe_work(&view(&queue)),
+            ProjectionWork {
+                player_fingerprint: true,
+                queue_revision: true,
+                settings_model: false,
+            },
+            "origin-compatible cheap baselines refresh without rebuilding settings"
+        );
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Settings]);
+        drain(&mut rx);
+        assert_eq!(
+            publisher.observe_work(&view(&queue)),
+            ProjectionWork {
+                settings_model: true,
+                player_fingerprint: true,
+                queue_revision: true,
+            },
+            "settings projection is added only for a settings subscriber"
+        );
+
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        publisher.observe(&view(&queue));
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Player]);
+        drain(&mut rx);
+        assert_eq!(
+            publisher.observe_work(&view(&queue)),
+            ProjectionWork {
+                player_fingerprint: true,
+                queue_revision: true,
+                settings_model: false,
+            },
+            "a player-only client does not build settings"
+        );
+
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        publisher.observe(&view(&queue));
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Queue]);
+        drain(&mut rx);
+        assert_eq!(
+            publisher.observe_work(&view(&queue)),
+            ProjectionWork {
+                player_fingerprint: true,
+                queue_revision: true,
+                settings_model: false,
+            },
+            "a queue-only client does not build settings"
+        );
     }
 
     #[test]
@@ -600,7 +1112,13 @@ mod tests {
         // Prime the baseline the way a real host does: observe runs from the first
         // loop turn, long before any subscriber exists.
         publisher.observe(&view(&queue));
-        publisher.handle_subscribe(&view(&queue), &session, 1, &[Topic::Player, Topic::Queue]);
+        publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            None,
+            1,
+            &[Topic::Player, Topic::Queue],
+        );
         drain(&mut rx);
 
         let mut v = view(&queue);
@@ -632,7 +1150,13 @@ mod tests {
         queue.set(vec![song("a"), song("b"), song("c")], 0);
 
         publisher.observe(&view(&queue));
-        publisher.handle_subscribe(&view(&queue), &session, 1, &[Topic::Player, Topic::Queue]);
+        publisher.handle_subscribe(
+            &view(&queue),
+            &session,
+            None,
+            1,
+            &[Topic::Player, Topic::Queue],
+        );
         drain(&mut rx);
 
         // Membership change → one queue event (and no player event: fingerprint's
@@ -678,7 +1202,7 @@ mod tests {
         // A setting changes while nobody is subscribed: the gate skips the serialize and pushes
         // nothing, but the change must not be lost to a future subscriber.
         let mut v = view(&queue);
-        v.eq_preset = "Rock".to_string();
+        v.eq_preset = "Rock";
         publisher.observe(&v);
         assert!(
             drain(&mut rx).is_empty(),
@@ -686,19 +1210,33 @@ mod tests {
         );
 
         // Subscriber connects: `handle_subscribe` sends the current settings snapshot.
-        publisher.handle_subscribe(&v, &session, 1, &[Topic::Settings]);
+        publisher.handle_subscribe(&v, &session, None, 1, &[Topic::Settings]);
+        let initial = drain(&mut rx);
         assert!(
-            kinds(&drain(&mut rx)).contains(&"event:settings".to_string()),
+            kinds(&initial).contains(&"event:settings".to_string()),
             "a new Settings subscriber receives the current snapshot despite the serialize gate"
         );
+        assert_eq!(
+            settings_revs(&initial),
+            vec![1],
+            "subscribe reports the existing owner revision without mutating observer baselines"
+        );
+
+        // Preserve the established wire sequence: subscription itself never advances the parked
+        // observer baseline, so the next owner observation publishes the already-current model.
+        publisher.observe(&v);
+        let follow_up = drain(&mut rx);
+        assert_eq!(settings_revs(&follow_up), vec![2]);
 
         // A further change while subscribed still pushes a settings snapshot.
-        v.eq_preset = "Jazz".to_string();
+        v.eq_preset = "Jazz";
         publisher.observe(&v);
+        let changed = drain(&mut rx);
         assert!(
-            kinds(&drain(&mut rx)).contains(&"event:settings".to_string()),
+            kinds(&changed).contains(&"event:settings".to_string()),
             "a subscribed settings change still pushes"
         );
+        assert_eq!(settings_revs(&changed), vec![3]);
     }
 
     #[test]

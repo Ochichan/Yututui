@@ -252,8 +252,7 @@ fn write_bad_copy(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
 }
 
 pub fn default_index_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui")
-        .map(|dirs| dirs.data_dir().join("local-index.json"))
+    crate::paths::local_index_data_dir().map(|dir| dir.join("local-index.json"))
 }
 
 fn unix_now() -> i64 {
@@ -295,6 +294,14 @@ mod tests {
         assert_eq!(loaded.tracks[0].title, "a");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn default_path_uses_the_central_local_index_directory() {
+        assert_eq!(
+            default_index_path(),
+            crate::paths::local_index_data_dir().map(|dir| dir.join("local-index.json"))
+        );
     }
 
     #[test]

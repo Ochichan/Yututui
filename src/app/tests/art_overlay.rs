@@ -141,7 +141,13 @@ fn current_queue_delete_under_overlay_requests_clear_for_removed_native_art() {
     );
     app.dirty = false;
 
-    let cmds = app.remove_queue_range(0, 0);
+    let mut cmds = app.remove_queue_range(0, 0);
+    assert_eq!(
+        app.queue.current().map(|s| s.video_id.as_str()),
+        Some("id0"),
+        "art and queue remain aligned before admission"
+    );
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(
         app.queue.current().map(|s| s.video_id.as_str()),
         Some("id1")
@@ -169,8 +175,11 @@ fn deleting_last_queue_track_under_overlay_clears_native_art() {
     );
     app.dirty = false;
 
-    let cmds = app.remove_queue_range(0, 0);
+    let mut cmds = app.remove_queue_range(0, 0);
     assert!(has_stop(&cmds));
+    assert!(!app.queue.is_empty(), "full delete waits for admission");
+    assert!(app.art_active());
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.queue.is_empty());
     assert!(!app.art_active());
     assert_art_refresh_clear_burst(&mut app, "emptying the queue under overlay");
@@ -209,7 +218,8 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
         assert!(app.take_clear_before_draw(), "{name} opening clears once");
         app.dirty = false;
 
-        let cmds = app.advance(false);
+        let mut cmds = app.advance(false);
+        admit_player_transition(&mut app, &mut cmds);
         assert_eq!(
             app.queue.current().map(|s| s.video_id.as_str()),
             Some("id1")
@@ -232,7 +242,8 @@ fn clearing_halfblocks_art_under_overlay_does_not_request_native_clear() {
     app.art.overlay_refresh_clear_frames = 0;
     app.dirty = false;
 
-    let _ = app.remove_queue_range(0, 0);
+    let mut cmds = app.remove_queue_range(0, 0);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(!app.take_clear_before_draw());
 }
 
@@ -522,16 +533,22 @@ fn ai_empty_state_while_playing_renders_groove_frame() {
     let mut app = app_playing(1, 0);
     app.mode = Mode::Ai;
     app.config.animations.master = true;
+    // Pin the tick rate: frame_index_for_tick(10, fps=30) must land on the cat
+    // asset's frame 1 regardless of future FPS_DEFAULT changes.
+    app.config.animations.fps = 30;
     app.anim.anim_frame = 10;
 
     assert!(app.ai_mascot_active());
 
     let buf = render_app_buffer(&app, 100, 30);
     assert!(
-        buffer_contains(&buf, "*/ DJ"),
+        buffer_contains(&buf, "⠩⠳⢯⣀⣴⠟"),
         "playing AI empty state should render a non-idle groove pose"
     );
-    assert!(buffer_contains(&buf, "GEM"));
+    assert!(
+        buffer_contains(&buf, "⢻⣶⠤⣄"),
+        "groove pose should be the cat_laptop mascot"
+    );
 }
 
 #[test]

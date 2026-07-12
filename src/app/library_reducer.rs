@@ -1,7 +1,6 @@
 //! Library data/delete reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
-use crate::util::sanitize;
 
 impl App {
     /// Number of rows currently shown in the active library tab — after the in-library
@@ -19,12 +18,28 @@ impl App {
     /// resolves to exactly one row; see [`Self::rows_from_slots`]). Called on every library
     /// nav key and wheel-scroll, so this must stay O(1) on a cache hit rather than rebuilding
     /// and throwing away a full row vector just to read its length.
-    fn library_rows_len(&self) -> usize {
+    pub(crate) fn library_rows_len(&self) -> usize {
         let tab = self.effective_library_tab();
-        // Playlist drill-down rows are built uncached (an open playlist is small); count them
-        // the same way `library_rows` builds them, so the two never disagree.
+        // Playlist drill-down rows are built uncached because the playlist store has no cheap
+        // revision key. Count directly so rendering does not first allocate a full `Vec<&Song>`.
         if matches!(tab, LibraryTab::Playlists) {
-            return self.apply_library_filter(self.open_playlist_rows()).len();
+            let Some(playlist) = self
+                .library_ui
+                .open_playlist
+                .as_ref()
+                .and_then(|key| self.playlists.find(key))
+            else {
+                return 0;
+            };
+            let needle = self.library_ui.filter_query.trim().to_lowercase();
+            if needle.is_empty() {
+                return playlist.songs.len();
+            }
+            return playlist
+                .songs
+                .iter()
+                .filter(|song| self.song_matches_filter(song, &needle))
+                .count();
         }
         let key = self.library_rows_key(tab);
         if let Some(cache) = self.library_rows_cache.borrow().as_ref()
@@ -38,6 +53,64 @@ impl App {
         let n = slots.len();
         *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
         n
+    }
+
+    /// Resolve one visible window of already-filtered library rows for rendering.
+    ///
+    /// Non-playlist tabs slice the cached `RowSlot` vector. An opened playlist scans its
+    /// source at most once through the requested window instead of restarting a filtered
+    /// `.nth(index)` search for every visible row. `Option` preserves the old behavior for a
+    /// hypothetically stale cached slot: that logical row remains blank rather than shifting
+    /// every following row and its mouse target upward.
+    pub(crate) fn library_render_window(&self, start: usize, visible: usize) -> Vec<Option<&Song>> {
+        if visible == 0 {
+            return Vec::new();
+        }
+        let tab = self.effective_library_tab();
+        if matches!(tab, LibraryTab::Playlists) {
+            let Some(playlist) = self
+                .library_ui
+                .open_playlist
+                .as_ref()
+                .and_then(|key| self.playlists.find(key))
+            else {
+                return Vec::new();
+            };
+            let needle = self.library_ui.filter_query.trim().to_lowercase();
+            if needle.is_empty() {
+                return playlist
+                    .songs
+                    .iter()
+                    .skip(start)
+                    .take(visible)
+                    .map(Some)
+                    .collect();
+            }
+            return playlist
+                .songs
+                .iter()
+                .filter(|song| self.song_matches_filter(song, &needle))
+                .skip(start)
+                .take(visible)
+                .map(Some)
+                .collect();
+        }
+
+        // Populate or refresh the slot cache on a miss. `library_rows_len` does not allocate
+        // the resolved row vector and leaves the cache ready for the window lookup below.
+        self.library_rows_len();
+        let cache = self.library_rows_cache.borrow();
+        let Some(cache) = cache.as_ref() else {
+            return Vec::new();
+        };
+        cache
+            .slots
+            .iter()
+            .skip(start)
+            .take(visible)
+            .copied()
+            .map(|slot| self.resolve_row_slot(slot))
+            .collect()
     }
 
     pub fn library_count_for(&self, tab: LibraryTab) -> usize {
@@ -138,18 +211,20 @@ impl App {
     fn rows_from_slots(&self, slots: &[RowSlot]) -> Vec<&Song> {
         slots
             .iter()
-            .filter_map(|slot| {
-                let song = match *slot {
-                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
-                    RowSlot::Hist(i) => self.library.history.get(i as usize),
-                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
-                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
-                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
-                };
-                debug_assert!(song.is_some(), "stale library row slot {slot:?}");
-                song
-            })
+            .filter_map(|slot| self.resolve_row_slot(*slot))
             .collect()
+    }
+
+    fn resolve_row_slot(&self, slot: RowSlot) -> Option<&Song> {
+        let song = match slot {
+            RowSlot::Fav(i) => self.library.favorites.get(i as usize),
+            RowSlot::Hist(i) => self.library.history.get(i as usize),
+            RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
+            RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
+            RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
+        };
+        debug_assert!(song.is_some(), "stale library row slot {slot:?}");
+        song
     }
 
     /// The uncached row computation: per-tab source selection (+ the All-tab dedup),
@@ -244,13 +319,7 @@ impl App {
         let needle = self.library_ui.filter_query.trim().to_lowercase();
         if !needle.is_empty() {
             let matches = |slot: &RowSlot| -> bool {
-                let song = match *slot {
-                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
-                    RowSlot::Hist(i) => self.library.history.get(i as usize),
-                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
-                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
-                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
-                };
+                let song = self.resolve_row_slot(*slot);
                 song.is_some_and(|s| self.song_matches_filter(s, &needle))
             };
             slots.retain(matches);
@@ -321,22 +390,25 @@ impl App {
         self.library_songs().get(self.library_ui.selected).cloned()
     }
 
-    /// Tracks in the current library drag/selection range, in visible row order.
+    /// Row indices of the effective library selection: the Ctrl/Cmd-picked rows when any
+    /// exist, else the inclusive drag/selection range between the anchor and the cursor.
+    pub(in crate::app) fn library_selection_indices(&self) -> Vec<usize> {
+        effective_selection_indices(
+            &self.library_ui.picked,
+            self.library_ui.selected,
+            self.library_ui.anchor,
+            self.library_len(),
+        )
+    }
+
+    /// Tracks in the current library selection (picked rows or the drag range), in
+    /// visible row order.
     pub(in crate::app) fn selected_library_songs(&self) -> Vec<Song> {
         let songs = self.library_songs();
-        if songs.is_empty() {
-            return Vec::new();
-        }
-        let lo = self.library_ui.selected.min(self.library_ui.anchor);
-        if lo >= songs.len() {
-            return Vec::new();
-        }
-        let hi = self
-            .library_ui
-            .selected
-            .max(self.library_ui.anchor)
-            .min(songs.len() - 1);
-        songs[lo..=hi].to_vec()
+        self.library_selection_indices()
+            .into_iter()
+            .filter_map(|i| songs.get(i).cloned())
+            .collect()
     }
 
     /// Queue the current library tab (starting at the cursor) and start playing.
@@ -345,46 +417,61 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let romanize_cmds = self.request_romanization_for_songs(&songs);
-        self.queue.set(songs, self.library_ui.selected);
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        cmds
+        self.replace_queue_and_load(
+            songs,
+            self.library_ui.selected,
+            None,
+            QueueReplacementOptions {
+                player_mode: true,
+                romanize_all: true,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
-    /// Delete the library list's current selection — the inclusive range between the drag
-    /// anchor and the cursor — using the active tab's delete semantics.
+    /// Delete the library list's current selection — the Ctrl/Cmd-picked rows, or the
+    /// inclusive range between the drag anchor and the cursor — using the active tab's
+    /// delete semantics.
     pub(in crate::app) fn library_delete_selection(&mut self) -> Vec<Cmd> {
-        let lo = self.library_ui.selected.min(self.library_ui.anchor);
-        let hi = self.library_ui.selected.max(self.library_ui.anchor);
-        self.library_delete_rows(lo, hi)
+        let rows = self.library_selection_indices();
+        self.library_delete_indices(&rows)
     }
 
-    /// Delete library rows `lo..=hi` (positions in the current tab) with per-tab meaning:
-    /// Favorites un-favorites, History forgets, Radio Favorites un-favorites radio stations,
-    /// Radio forgets recently played stations, Downloads asks before deleting the files on disk,
-    /// and All is an aggregate view so it's read-only. Clamps the selection afterward.
+    /// Delete library rows `lo..=hi` (positions in the current tab); see
+    /// [`Self::library_delete_indices`].
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        let rows: Vec<usize> = (lo..=hi).collect();
+        self.library_delete_indices(&rows)
+    }
+
+    /// Delete the library rows at `indices` (ascending positions in the current tab) with
+    /// per-tab meaning: Favorites un-favorites, History forgets, Radio Favorites un-favorites
+    /// radio stations, Radio forgets recently played stations, Downloads asks before deleting
+    /// the files on disk, and All is an aggregate view so it's read-only. Clamps the
+    /// selection afterward.
+    fn library_delete_indices(&mut self, indices: &[usize]) -> Vec<Cmd> {
         // The Playlists root lists playlists, not songs — the song-target resolution below
         // would bail on its empty song list, so route to the delete-confirm modal first.
-        // Deleting is deliberately single-row (`lo`): dropping several whole playlists in
-        // one keypress is too destructive for a range gesture.
+        // Deleting is deliberately single-row (the first index): dropping several whole
+        // playlists in one keypress is too destructive for a range gesture.
         if self.playlists_root() {
-            self.request_playlist_delete(lo);
+            if let Some(&first) = indices.first() {
+                self.request_playlist_delete(first);
+            }
             return Vec::new();
         }
         // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
         // by identity. Under an active filter the row positions no longer map to the raw
         // collection indices, so an index-based removal would hit the wrong tracks.
-        let targets = self.library_songs();
-        if lo >= targets.len() {
+        let songs = self.library_songs();
+        let targets: Vec<Song> = indices
+            .iter()
+            .filter_map(|&i| songs.get(i).cloned())
+            .collect();
+        if targets.is_empty() {
             return Vec::new();
         }
-        let hi = hi.min(targets.len() - 1);
-        let targets = &targets[lo..=hi];
+        let targets = &targets[..];
         match self.library_ui.tab {
             // Aggregate view — a row may live in several tabs, so deleting from here is
             // ambiguous. Manage tracks from their own tab instead.
@@ -478,27 +565,23 @@ impl App {
         }
     }
 
-    /// Carry out a confirmed download deletion: remove each file from disk, drop the matching
-    /// rows for instant feedback, then rescan the folder as the source of truth. A failed
-    /// delete is logged but doesn't abort the rest.
+    /// Submit a confirmed deletion as an owned runtime effect. The reducer must never unlink a
+    /// file before the process read-only/recovery gate has admitted the mutation.
     pub(in crate::app) fn confirm_delete_files_apply(&mut self) -> Vec<Cmd> {
         let Some(paths) = self.library_ui.confirm_delete.take() else {
             return Vec::new();
         };
         let root = self.config.effective_download_dir();
-        let mut deleted = Vec::new();
-        for path in &paths {
-            match remove_download_file_if_safe(path, &root) {
-                Ok(()) => deleted.push(path.clone()),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %sanitize::sanitize_error_text(path.display().to_string()),
-                        error = %sanitize::sanitize_error_text(err.to_string()),
-                        "refused or failed to delete downloaded file"
-                    );
-                }
-            }
-        }
+        self.dirty = true;
+        vec![Cmd::Download(DownloadCmd::Delete { paths, root })]
+    }
+
+    pub(in crate::app) fn apply_deleted_downloads(
+        &mut self,
+        root: PathBuf,
+        deleted: Vec<PathBuf>,
+        failed: usize,
+    ) -> Vec<Cmd> {
         self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
         self.library_ui.downloaded.retain(|song| {
             song.local_path
@@ -509,17 +592,28 @@ impl App {
         self.download_store.remove_paths(&deleted);
         self.clamp_library_selection();
         self.dirty = true;
-        vec![
-            Cmd::ScanDownloads(self.config.effective_download_dir()),
-            Cmd::Persist(PersistCmd::Downloads),
-        ]
+        if failed > 0 {
+            self.set_status_error(if crate::i18n::is_korean() {
+                format!("다운로드 파일 {failed}개를 삭제하지 못했습니다")
+            } else {
+                format!("Could not delete {failed} downloaded file(s)")
+            });
+        }
+        let mut commands = vec![Cmd::Download(DownloadCmd::Scan(root))];
+        if !deleted.is_empty() {
+            commands.push(Cmd::Persist(PersistCmd::Downloads));
+        }
+        commands
     }
 
-    /// Clamp the library cursor and the drag anchor into the current tab's row count.
+    /// Clamp the library cursor and the drag anchor into the current tab's row count, and
+    /// drop any Ctrl/Cmd-picked rows — the list just mutated, so their indices no longer
+    /// name the rows the user picked.
     pub(in crate::app) fn clamp_library_selection(&mut self) {
         let last = self.library_len().saturating_sub(1);
         self.library_ui.selected = self.library_ui.selected.min(last);
         self.library_ui.anchor = self.library_ui.anchor.min(last);
+        self.library_ui.picked.clear();
     }
 }
 
@@ -559,38 +653,3 @@ pub(in crate::app) struct LibraryRowsCache {
 /// (library_rev, downloaded_rev, favorites len, history len, downloaded len) — the All-tab
 /// count reads nothing else.
 pub(in crate::app) type AllCountKey = (u64, u64, usize, usize, usize);
-
-fn remove_download_file_if_safe(
-    path: &std::path::Path,
-    download_dir: &std::path::Path,
-) -> std::io::Result<()> {
-    let root = download_dir.canonicalize()?;
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "refusing to delete symlink",
-        ));
-    }
-    if !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "refusing to delete non-regular file",
-        ));
-    }
-    let target = path.canonicalize()?;
-    if !target.starts_with(&root) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "refusing to delete outside download directory",
-        ));
-    }
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "download file changed before delete",
-        ));
-    }
-    std::fs::remove_file(path)
-}

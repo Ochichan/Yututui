@@ -11,8 +11,12 @@ export type InKind = 'res' | 'err' | 'event' | 'conn';
 
 export interface OutEnvelope {
   v: 1;
-  /** Present for correlated `req` (and the `win` persist reply); absent for fire-and-forget. */
+  /** Present for every user `cmd` and correlated `req`; absent for subscriptions/window ops. */
   id?: number;
+  /** Page/WebView lifetime namespace; omitted only by legacy embedded frontends. */
+  page_id?: string;
+  /** Stable per-page command/request identity used by the core's deduplication registry. */
+  request_id?: string;
   kind: OutKind;
   /** Command / request / window-op name, or the topic verb for sub/unsub. */
   name: string;
@@ -21,8 +25,10 @@ export interface OutEnvelope {
 
 export interface InEnvelope {
   v: 1;
-  /** Echoes the triggering `req` id on `res`/`err`. */
+  /** Echoes the triggering `cmd`/`req` id on `res`/`err`. */
   id?: number;
+  /** Echoes the triggering page on correlated replies; absent from legacy shell replies. */
+  page_id?: string;
   kind: InKind;
   /** Set on `event` pushes: the topic wire string. */
   topic?: string;

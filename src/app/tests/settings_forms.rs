@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[test]
 fn settings_search_provider_toggles_normalize_selected_sources() {
@@ -31,29 +32,41 @@ fn settings_playback_changes_emit_live_player_commands() {
     app.open_settings();
 
     focus_settings_field(&mut app, SettingsTab::Playback, Field::Speed);
-    let cmds = app.settings_change(1);
+    let mut cmds = app.settings_change(1);
     assert!(matches!(
-        cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetProperty { name, value })]
+        cmds.first().and_then(Cmd::player_command),
+        Some(PlayerCmd::SetProperty { name, value })
             if name == "speed" && value.as_f64().is_some_and(|v| v > 1.0)
     ));
+    admit_player_transition(&mut app, &mut cmds);
 
     focus_settings_field(&mut app, SettingsTab::Playback, Field::Normalize);
-    let cmds = app.settings_change(1);
+    let mut cmds = app.settings_change(1);
     assert!(
-        matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetAudioFilter(_))]),
+        matches!(
+            cmds.first().and_then(Cmd::player_command),
+            Some(PlayerCmd::SetAudioFilter(_))
+        ),
         "normalize rebuilds the audio-filter chain"
     );
+    admit_player_transition(&mut app, &mut cmds);
 
     focus_settings_field(&mut app, SettingsTab::Playback, Field::Band(0));
-    let cmds = app.settings_change(1);
+    let mut cmds = app.settings_change(1);
     assert!(
-        matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetAudioFilter(_))]),
+        matches!(
+            cmds.first().and_then(Cmd::player_command),
+            Some(PlayerCmd::SetAudioFilter(_))
+        ),
         "first non-zero EQ band creates the filter chain"
     );
+    admit_player_transition(&mut app, &mut cmds);
     let cmds = app.settings_change(1);
     assert!(
-        matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::AfCommand { .. })]),
+        matches!(
+            cmds.first().and_then(Cmd::player_command),
+            Some(PlayerCmd::AfCommand { .. })
+        ),
         "subsequent active EQ edits update the labeled band"
     );
 }
@@ -92,11 +105,11 @@ fn settings_text_fields_persist_provider_ids_and_download_dir() {
     assert_eq!(app.config.download_dir.as_deref(), Some(new_dir.as_path()));
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::SetDownloadDir(path) if path == &new_dir))
+            .any(|c| matches!(c, Cmd::Download(DownloadCmd::SetDir(path)) if path == &new_dir))
     );
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::ScanDownloads(path) if path == &new_dir))
+            .any(|c| matches!(c, Cmd::Download(DownloadCmd::Scan(path)) if path == &new_dir))
     );
     let saved = save_config(&cmds).expect("download directory change saves config");
     assert_eq!(saved.download_dir.as_deref(), Some(new_dir.as_path()));
@@ -167,6 +180,9 @@ fn recordings_browser_moves_saves_discards_and_closes() {
         duration_secs: 61,
         state: RecordingState::Recorded,
         final_path: None,
+        automatic_final_dir: None,
+        close_barrier: None,
+        save_request: None,
     });
     app.recorder.history.push_back(RecordedTrack {
         id: 20,
@@ -179,6 +195,9 @@ fn recordings_browser_moves_saves_discards_and_closes() {
         duration_secs: 122,
         state: RecordingState::RecordedReachedMaxDuration,
         final_path: None,
+        automatic_final_dir: None,
+        close_barrier: None,
+        save_request: None,
     });
     assert_eq!(app.recordings_browser_ids(), vec![10, 20]);
 
@@ -207,18 +226,15 @@ fn recordings_browser_moves_saves_discards_and_closes() {
         ),
         "saving the selected recording should enqueue an off-loop save job"
     );
-    assert_eq!(app.recorder.history[1].state, RecordingState::Saved);
+    assert_eq!(app.recorder.history[1].state, RecordingState::SaveRequested);
 
     let cmds = app.recordings_browser_key(key(KeyCode::Char('d')));
     assert!(
-        matches!(
-            cmds.as_slice(),
-            [Cmd::Recorder(RecorderJob::Discard { temp })]
-                if temp == &std::path::PathBuf::from("/tmp/two.mp3")
-        ),
-        "discarding removes the selected history row and deletes only its temp file"
+        cmds.is_empty(),
+        "a requested Save retains its source until journal acceptance or a retry-safe failure"
     );
-    assert_eq!(app.recordings_browser_ids(), vec![10]);
+    assert_eq!(app.recordings_browser_ids(), vec![10, 20]);
+    assert!(app.status.text.contains("already accepted"));
 
     let cmds = app.recordings_browser_key(key(KeyCode::Esc));
     assert!(cmds.is_empty());
@@ -674,6 +690,7 @@ fn spotify_import_mode_dropdown_mouse_targets_select_and_dismiss() {
     let cmds = app.update(Msg::MouseClick {
         col: other_control.0,
         row: other_control.1,
+        multi: false,
     });
     assert!(cmds.is_empty());
     let st = app.settings.as_ref().unwrap();
@@ -767,7 +784,10 @@ fn account_buttons_start_lastfm_auth_or_cancel_spotify_imports() {
     focus_settings_field(&mut app, SettingsTab::Accounts, Field::LastfmConnect);
 
     let cmds = app.settings_activate();
-    assert!(matches!(cmds.as_slice(), [Cmd::ScrobbleAuthStart]));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Scrobble(ScrobbleCmd::AuthStart)]
+    ));
     assert_eq!(app.status.kind, StatusKind::Info);
     assert!(app.status.text.contains("Requesting Last.fm authorization"));
 
@@ -810,7 +830,7 @@ fn account_buttons_start_lastfm_auth_or_cancel_spotify_imports() {
     );
     assert!(
         cmds.iter()
-            .any(|cmd| matches!(cmd, Cmd::ScrobbleReconfigure(_)))
+            .any(|cmd| matches!(cmd, Cmd::Scrobble(ScrobbleCmd::Reconfigure(_))))
     );
 
     focus_settings_field(&mut app, SettingsTab::Accounts, Field::SpotifyImport);
@@ -885,7 +905,7 @@ fn transfer_events_surface_playlist_progress_and_failures() {
     assert!(app.status.text.contains("Artist - Song"));
 
     app.transfer_running = true;
-    app.update(Msg::Transfer(TransferEvent::JobDone(Box::new(
+    app.update(Msg::Transfer(TransferEvent::JobDone(Arc::new(
         crate::transfer::checkpoint::TransferReport {
             job_id: "sp2yt-1".to_owned(),
             total: 5,
@@ -901,6 +921,18 @@ fn transfer_events_surface_playlist_progress_and_failures() {
     assert!(app.status.text.contains("Library > Playlists"));
     assert!(!app.status.text.contains("Shift+D"));
     assert!(app.status.text.contains("Import Sessions"));
+
+    app.transfer_running = true;
+    app.update(Msg::Transfer(TransferEvent::JobRejected {
+        job_id: "sp2yt-rejected".to_owned(),
+        error: "a transfer is already running".to_owned(),
+    }));
+    assert!(
+        app.transfer_running,
+        "rejection must preserve the active job guard"
+    );
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("Import request rejected"));
 
     app.update(Msg::Transfer(TransferEvent::JobFailed {
         job_id: "sp2yt-1".to_owned(),

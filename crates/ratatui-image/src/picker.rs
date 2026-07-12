@@ -3,6 +3,7 @@
 use std::{
     env,
     io::{self, Read, Write},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -275,7 +276,12 @@ impl Picker {
 
     /// Returns a new *stateful* protocol for [`crate::StatefulImage`] widgets.
     pub fn new_resize_protocol(&self, image: DynamicImage) -> StatefulProtocol {
-        self.new_resize_protocol_with_kitty_z_index(image, None)
+        self.new_resize_protocol_shared(Arc::new(image))
+    }
+
+    /// Returns a new stateful protocol sharing its immutable decoded source pixels.
+    pub fn new_resize_protocol_shared(&self, image: Arc<DynamicImage>) -> StatefulProtocol {
+        self.new_resize_protocol_shared_with_kitty_z_index(image, None)
     }
 
     /// Returns a new *stateful* protocol, overriding Kitty's z-index when Kitty is selected.
@@ -285,6 +291,15 @@ impl Picker {
     pub fn new_resize_protocol_with_kitty_z_index(
         &self,
         image: DynamicImage,
+        kitty_z_index: Option<i32>,
+    ) -> StatefulProtocol {
+        self.new_resize_protocol_shared_with_kitty_z_index(Arc::new(image), kitty_z_index)
+    }
+
+    /// Shared-source variant of [`Self::new_resize_protocol_with_kitty_z_index`].
+    pub fn new_resize_protocol_shared_with_kitty_z_index(
+        &self,
+        image: Arc<DynamicImage>,
         kitty_z_index: Option<i32>,
     ) -> StatefulProtocol {
         let protocol_type = match self.protocol_type {
@@ -302,7 +317,7 @@ impl Picker {
                 ..Iterm2::default()
             }),
         };
-        StatefulProtocol::new(image, self.font_size, self.background_color, protocol_type)
+        StatefulProtocol::new_shared(image, self.font_size, self.background_color, protocol_type)
     }
 }
 

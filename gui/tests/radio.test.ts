@@ -24,6 +24,47 @@ class MockTransport implements Transport {
   }
 }
 
+function player(elapsed_ms = 1_000): PlayerModel {
+  return {
+    track: null,
+    paused: true,
+    volume: 50,
+    speed_tenths: 10,
+    elapsed_ms,
+    duration_ms: 10_000,
+    position_epoch: 1,
+    shuffle: false,
+    repeat: 'off',
+    streaming: false,
+    radio_mode: false,
+    stream_now_playing: null,
+    owner_mode: 'daemon',
+    eq: { preset: 'flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], normalize: false },
+    queue_pos: 0,
+    queue_len: 1,
+  };
+}
+
+function pushPlayer(t: MockTransport, model: PlayerModel): void {
+  t.emit({ v: 1, kind: 'event', topic: 'player', payload: { kind: 'player_snapshot', model } });
+}
+
+describe('PlaybackStore.seekTo', () => {
+  it('keeps the optimistic seek position when confirmation is lost', async () => {
+    const t = new MockTransport();
+    const store = new PlaybackStore(new Client(t));
+    pushPlayer(t, player());
+
+    store.seekTo(5_000);
+    expect(store.model?.elapsed_ms).toBe(5_000);
+    t.emit({ v: 1, id: t.sent.at(-1)!.id, kind: 'err', payload: { reason: 'confirmation_lost' } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.model?.elapsed_ms).toBe(5_000);
+  });
+});
+
 describe('PlaybackStore.setRadioMode', () => {
   it('sends the radio_mode setting change with on/off', () => {
     const t = new MockTransport();

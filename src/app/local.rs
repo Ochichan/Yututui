@@ -4,8 +4,18 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::local_format::*;
+
+mod import_fingerprint;
+mod rows_cache;
+
 use super::*;
 use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
+pub(in crate::app) use import_fingerprint::LocalImportFilesFingerprintCache;
+#[cfg(test)]
+pub(in crate::app) use import_fingerprint::{
+    local_import_files_fingerprint_for_test, stable_import_cache_key_for_test,
+};
+pub(in crate::app) use rows_cache::{LocalRowsCache, LocalRowsData};
 
 impl App {
     pub(in crate::app) fn request_local_mode_switch(&mut self) -> Vec<Cmd> {
@@ -38,26 +48,7 @@ impl App {
         &mut self,
         confirm: LocalModeConfirm,
     ) -> Vec<Cmd> {
-        self.local_mode.pending_confirm = None;
-        match confirm {
-            LocalModeConfirm::Enter => self.enter_local_dedicated_mode(),
-            LocalModeConfirm::Exit => self.exit_local_dedicated_mode(),
-        }
-    }
-
-    fn enter_local_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if self.local_dedicated_mode || self.radio_dedicated_mode {
-            return Vec::new();
-        }
-        self.local_mode.normal_mode_queue = Some(self.queue.snapshot());
-        self.activate_local_dedicated_mode_ui();
-        let restore = self.local_mode.local_mode_queue.take();
-        let mut cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        cmds.extend(self.ensure_local_index_ready());
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐").to_owned();
-        self.dirty = true;
-        cmds
+        self.prepare_local_mode_transition(confirm)
     }
 
     pub(in crate::app) fn activate_local_dedicated_mode_ui(&mut self) {
@@ -80,24 +71,8 @@ impl App {
         self.dirty = true;
     }
 
-    fn exit_local_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if !self.local_dedicated_mode {
-            return Vec::new();
-        }
-        self.local_mode.local_mode_queue = Some(self.queue.snapshot());
-        self.local_dedicated_mode = false;
-        self.local_mode.pending_confirm = None;
-        self.bridges.library_scroll.reset();
-        let restore = self.local_mode.normal_mode_queue.take();
-        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Local Player mode disabled", "로컬 플레이어 모드 꺼짐").to_owned();
-        self.dirty = true;
-        cmds
-    }
-
     pub fn local_rows_len(&self) -> usize {
-        self.local_visible_rows().len()
+        self.local_rows_snapshot().rows().len()
     }
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -336,19 +311,18 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let romanize_cmds = self.request_romanization_for_songs(&songs);
         let shuffle_changed = !self.queue.shuffle;
-        self.queue.set(songs, start);
-        self.queue.set_shuffle(true);
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        if shuffle_changed {
-            cmds.push(self.save_playback_modes_cmd());
-        }
-        cmds
+        self.replace_queue_and_load(
+            songs,
+            start,
+            Some(true),
+            QueueReplacementOptions {
+                player_mode: true,
+                romanize_all: true,
+                persist_playback_modes: shuffle_changed,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     pub(in crate::app) fn local_download_selected(&mut self) -> Vec<Cmd> {
@@ -366,8 +340,8 @@ impl App {
     fn local_download_visible(&mut self) -> Vec<Cmd> {
         let songs = self
             .local_visible_rows()
-            .into_iter()
-            .flat_map(|row| self.local_downloadable_songs_for_row(&row))
+            .iter()
+            .flat_map(|row| self.local_downloadable_songs_for_row(row))
             .collect();
         self.open_confirm_download(songs)
     }
@@ -401,6 +375,7 @@ impl App {
                 self.local_mode.index.progress = None;
                 self.local_mode.index.load_errors = warnings;
                 self.local_mode.index.errors.clear();
+                self.invalidate_local_rows();
                 self.clamp_local_after_index_change();
                 self.dirty = true;
                 if !self.local_mode.index.load_errors.is_empty() {
@@ -426,6 +401,7 @@ impl App {
                 self.local_mode.index.progress = None;
                 self.local_mode.index.last_summary = Some(result.summary.clone());
                 self.local_mode.index.errors = result.errors;
+                self.invalidate_local_rows();
                 self.clamp_local_after_index_change();
                 self.status.kind = if self.local_mode.index.errors.is_empty() {
                     StatusKind::Info
@@ -467,17 +443,26 @@ impl App {
                 action,
                 result,
                 elapsed_ms: _,
-            } => self.apply_local_import_review_finished(op_id, session_id, action, result),
+            } => {
+                let cmds =
+                    self.apply_local_import_review_finished(op_id, session_id, action, result);
+                self.invalidate_local_rows();
+                cmds
+            }
             LocalMsg::ImportReviewAcceptAllFinished {
                 op_id,
                 session_id,
                 result,
                 elapsed_ms: _,
-            } => self.apply_local_import_accept_all_finished(op_id, session_id, result),
+            } => {
+                let cmds = self.apply_local_import_accept_all_finished(op_id, session_id, result);
+                self.invalidate_local_rows();
+                cmds
+            }
         }
     }
 
-    fn ensure_local_index_ready(&mut self) -> Vec<Cmd> {
+    pub(in crate::app) fn ensure_local_index_ready(&mut self) -> Vec<Cmd> {
         if self.local_mode.index.loading || self.local_mode.index.scanning {
             return Vec::new();
         }
@@ -514,6 +499,7 @@ impl App {
         self.local_mode.index.scanning = true;
         self.local_mode.index.progress = Some(crate::local::LocalScanProgress::default());
         self.local_mode.index.errors.clear();
+        self.invalidate_local_rows();
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned();
         self.dirty = true;
@@ -626,12 +612,11 @@ impl App {
         self.request_local_mode_switch()
     }
 
-    pub(crate) fn local_visible_rows(&self) -> Vec<crate::local::LocalRowId> {
-        self.local_rows_for_query(self.local_mode.ui.filter_query.as_str())
-    }
-
-    pub(crate) fn local_total_rows_len(&self) -> usize {
-        self.local_rows_for_query("").len()
+    fn invalidate_local_rows(&self) {
+        self.local_mode
+            .rows_revision
+            .set(self.local_mode.rows_revision.get().wrapping_add(1));
+        self.local_mode.rows_cache.borrow_mut().take();
     }
 
     pub(crate) fn local_scan_progress_text(&self) -> Option<String> {
@@ -658,6 +643,39 @@ impl App {
             LocalSection::ImportSessions => self.local_import_session_rows_for_query(query),
             LocalSection::Inbox => self.local_inbox_rows_for_query(query),
         }
+    }
+
+    fn local_smart_track_count(
+        &self,
+        smart: crate::local::LocalSmartList,
+        download_dir: &Path,
+    ) -> usize {
+        self.local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| match smart {
+                crate::local::LocalSmartList::RecentlyAdded => true,
+                crate::local::LocalSmartList::DownloadedFromYoutubeMusic => {
+                    track.linked_video_id.is_some() || track.path.starts_with(download_dir)
+                }
+                crate::local::LocalSmartList::LocalOnly => track.linked_video_id.is_none(),
+                crate::local::LocalSmartList::MissingArtist => track.artist.is_empty(),
+                crate::local::LocalSmartList::MissingAlbum => track
+                    .album
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|album| !album.is_empty())
+                    .is_none(),
+                crate::local::LocalSmartList::NoEmbeddedCover => track.embedded_art_key.is_none(),
+                crate::local::LocalSmartList::LargeFiles => track.file_size >= 50 * 1024 * 1024,
+                crate::local::LocalSmartList::Lossless => matches!(
+                    track.format,
+                    Some(crate::local::AudioFormat::Flac | crate::local::AudioFormat::Wav)
+                ),
+            })
+            .count()
     }
 
     fn local_drill_rows(&self, drill: &LocalDrill, query: &str) -> Vec<crate::local::LocalRowId> {
@@ -1047,114 +1065,6 @@ impl App {
             LocalDrill::Smart(smart) => smart.label().to_owned(),
             LocalDrill::ImportSession(session_id) => session_id.clone(),
         }
-    }
-
-    pub(crate) fn local_row_text(&self, row: &crate::local::LocalRowId) -> String {
-        match row {
-            crate::local::LocalRowId::Track(id) => self
-                .local_track_by_id(id)
-                .map(|track| local_track_text(self, track))
-                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
-            crate::local::LocalRowId::DownloadSeed(index) => self
-                .library_ui
-                .downloaded
-                .get(*index)
-                .map(|song| local_song_text(self, song))
-                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
-            crate::local::LocalRowId::Album(id) => self
-                .local_album_by_id(id)
-                .map(|album| {
-                    let duration = album.duration_ms.map(format_local_duration_ms);
-                    let year = album.year.map(|year| year.to_string()).unwrap_or_default();
-                    let suffix = match (year.is_empty(), duration) {
-                        (false, Some(duration)) => format!("  {year} - {duration}"),
-                        (false, None) => format!("  {year}"),
-                        (true, Some(duration)) => format!("  {duration}"),
-                        (true, None) => String::new(),
-                    };
-                    format!(
-                        "{} - {}  ({} {}){}",
-                        album.title,
-                        album.album_artist,
-                        album.track_count,
-                        t!("tracks", "곡"),
-                        suffix
-                    )
-                })
-                .unwrap_or_else(|| t!("Missing album", "없는 앨범").to_owned()),
-            crate::local::LocalRowId::Artist(id) => self
-                .local_artist_by_id(id)
-                .map(|artist| {
-                    format!(
-                        "{}  ({} {}, {} {})",
-                        artist.name,
-                        artist.album_ids.len(),
-                        t!("albums", "앨범"),
-                        artist.track_ids.len(),
-                        t!("tracks", "곡")
-                    )
-                })
-                .unwrap_or_else(|| t!("Missing artist", "없는 아티스트").to_owned()),
-            crate::local::LocalRowId::Genre(genre) => {
-                let count = self.local_tracks_for_genre(genre).len();
-                format!("{genre}  ({count} {})", t!("tracks", "곡"))
-            }
-            crate::local::LocalRowId::Folder(folder) => {
-                let count = self.local_tracks_for_folder(folder).len();
-                format!("{}  ({count} {})", folder.display(), t!("tracks", "곡"))
-            }
-            crate::local::LocalRowId::Smart(smart) => {
-                let count = self.local_tracks_for_smart(*smart).len();
-                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
-            }
-            crate::local::LocalRowId::ImportSession(session_id) => local_import_session_text(
-                session_id,
-                self.local_tracks_for_import_session(session_id).len(),
-            ),
-            crate::local::LocalRowId::ImportSessionRow {
-                session_id,
-                source_order,
-            } => self.local_import_session_row_text(session_id, *source_order),
-            crate::local::LocalRowId::ScanError(index) => self
-                .local_scan_issue(*index)
-                .map(|error| format!("{} - {}", error.path.display(), error.message))
-                .unwrap_or_else(|| t!("Missing scan error", "없는 스캔 오류").to_owned()),
-        }
-    }
-
-    pub(crate) fn local_details_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push(t!("Selected", "선택").to_owned());
-        let selected = self
-            .local_visible_rows()
-            .get(self.local_mode.ui.selected)
-            .cloned();
-        if let Some(row) = selected {
-            self.push_local_row_details(&mut lines, &row);
-        } else {
-            lines.push(t!("No local item selected.", "선택된 로컬 항목이 없습니다.").to_owned());
-        }
-
-        lines.push(String::new());
-        self.push_local_queue_details(&mut lines);
-        lines
-    }
-
-    pub(crate) fn local_details_summary(&self) -> String {
-        let selected = self
-            .local_visible_rows()
-            .get(self.local_mode.ui.selected)
-            .map(|row| self.local_row_text(row))
-            .unwrap_or_else(|| t!("No selection", "선택 없음").to_owned());
-        let Some(current) = self.queue.current() else {
-            return format!("{}: {selected}", t!("Selected", "선택"));
-        };
-        format!(
-            "{}: {selected}  |  {}: {}",
-            t!("Selected", "선택"),
-            t!("Now", "재생 중"),
-            local_song_text(self, current)
-        )
     }
 
     fn push_local_row_details(&self, lines: &mut Vec<String>, row: &crate::local::LocalRowId) {

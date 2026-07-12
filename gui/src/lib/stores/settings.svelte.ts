@@ -15,6 +15,7 @@ import type { EqModel } from '../../generated/protocol/EqModel';
 import type { Repeat } from '../../generated/protocol/Repeat';
 import type { SearchSource } from '../../generated/protocol/SearchSource';
 import type { Client } from '../ipc/client';
+import { t } from '../i18n.svelte';
 import type { AnimationsModel } from './anim.svelte';
 import type { ThemeModel } from './theme.svelte';
 import type { KeymapModel } from './keymap.svelte';
@@ -123,10 +124,18 @@ export class SettingsStore {
   model = $state<SettingsModelV8 | null>(null);
   /** Sparse optimistic overlay keyed `group.field`; reassigned immutably for reactivity. */
   #pending = $state<Record<string, unknown>>({});
+  /** Per-field ownership token so equal-valued edits still have distinct identities. */
+  readonly #pendingGeneration = new Map<string, number>();
+  /** Latest generation whose correlated request succeeded; confirmation still requires a
+   * settings push that arrives after that acknowledgement. */
+  readonly #acknowledgedGeneration = new Map<string, number>();
+  #nextGeneration = 1;
   readonly #client: Client;
+  readonly #onError?: (message: string) => void;
 
-  constructor(client: Client) {
+  constructor(client: Client, onError?: (message: string) => void) {
     this.#client = client;
+    this.#onError = onError;
     this.#client.on('settings', (payload) => this.#onPush(payload as SettingsSnapshot));
   }
 
@@ -163,10 +172,28 @@ export class SettingsStore {
 
   // ── mutations ────────────────────────────────────────────────────────────────────────
 
-  /** Live-apply a field: overlay it optimistically, then send. Cleared by the next push. */
+  /** Live-apply a field: overlay it optimistically, then send a correlated request. */
   apply(group: SettingGroup, field: string, value: unknown): void {
-    this.#pending = { ...this.#pending, [`${group}.${field}`]: value };
-    this.#client.cmd('apply', { change: { group, field, value } });
+    const key = `${group}.${field}`;
+    const generation = this.#nextGeneration++;
+    this.#pendingGeneration.set(key, generation);
+    this.#acknowledgedGeneration.delete(key);
+    this.#pending = { ...this.#pending, [key]: value };
+    void this.#client.cmd('apply', { change: { group, field, value } }).then((result) => {
+      // Values are not request identities: A → B → A can leave a newer edit with
+      // the same value as an older result. Only the owning generation may settle
+      // its optimistic overlay.
+      if (this.#pendingGeneration.get(key) !== generation) return;
+      if (result.ok) {
+        this.#acknowledgedGeneration.set(key, generation);
+        return;
+      }
+      // The mutation may already have reached the owner. Keep the optimistic value until a
+      // future user edit/reset establishes a new owner rather than falsely rolling it back.
+      if (result.reason === 'confirmation_lost') return;
+      this.#dropPending(key);
+      this.#onError?.(settingsErrorMessage(result.reason));
+    });
   }
 
   /** Write-only: the core stores the key; only `streaming.has_gemini_key` comes back. */
@@ -174,16 +201,19 @@ export class SettingsStore {
     this.#client.cmd('set_gemini_key', { key });
   }
 
-  /** Clears cached romanizations; resolves to the count for a feedback toast. */
-  async clearRomanizationCache(): Promise<number> {
-    const res = await this.#client.req<{ cleared: number }>('clear_romanization_cache');
-    return res?.cleared ?? 0;
+  /** Clears cached romanizations; null means the acknowledged mutation was rejected. */
+  async clearRomanizationCache(): Promise<number | null> {
+    const result = await this.#client.cmd<{ cleared: number }>('clear_romanization_cache');
+    return result.ok ? (result.payload?.cleared ?? 0) : null;
   }
 
   /** Factory-reset every setting (danger zone). The confirming push refills the model. */
-  resetAll(): void {
+  async resetAll(): Promise<boolean> {
     this.#pending = {};
-    this.#client.cmd('reset_all_settings');
+    this.#pendingGeneration.clear();
+    this.#acknowledgedGeneration.clear();
+    const result = await this.#client.cmd('reset_all_settings');
+    return result.ok;
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────
@@ -205,8 +235,24 @@ export class SettingsStore {
     // Keep only the overlay entries the authoritative model still disagrees with.
     const next: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(this.#pending)) {
-      if (!sameValue(readPath(snap.model, key), val)) next[key] = val;
+      const generation = this.#pendingGeneration.get(key);
+      const acknowledged =
+        generation !== undefined && this.#acknowledgedGeneration.get(key) === generation;
+      if (!acknowledged || !sameValue(readPath(snap.model, key), val)) {
+        next[key] = val;
+      } else {
+        this.#pendingGeneration.delete(key);
+        this.#acknowledgedGeneration.delete(key);
+      }
     }
+    this.#pending = next;
+  }
+
+  #dropPending(key: string): void {
+    this.#pendingGeneration.delete(key);
+    this.#acknowledgedGeneration.delete(key);
+    const next = { ...this.#pending };
+    delete next[key];
     this.#pending = next;
   }
 }
@@ -224,4 +270,8 @@ function readPath(model: SettingsModelV8, path: string): unknown {
 /** Value (not reference) equality — covers primitives and the 10-band EQ array. */
 function sameValue(a: unknown, b: unknown): boolean {
   return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+function settingsErrorMessage(reason: string): string {
+  return t('settings.applyFailed', { reason });
 }

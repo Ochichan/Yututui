@@ -12,11 +12,13 @@ use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListSta
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind, StatusKind};
+use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let favorite_lookup = search_favorite_lookup(app);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
@@ -41,6 +43,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(2), // reserved top band (aligns with Settings/Library tab row + spacer)
         Constraint::Length(3), // input box
         Constraint::Min(0),    // results
+        Constraint::Length(crate::ui::control_box::docked_rows(app)), // docked player bar
         Constraint::Length(1), // help
     ])
     .split(inner);
@@ -49,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
     // the search screen. It auto-clears after STATUS_TTL via the global StatusTick. A just-set
     // message types itself in while the toast animation's window runs.
-    if !app.status.text.is_empty() {
+    if !app.status.text.is_empty() && !app.control_box_active() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
             frame.render_widget(Paragraph::new(line), rows[0]);
         } else {
@@ -69,9 +72,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     render_input(frame, app, rows[1]);
-    render_results(frame, app, rows[2]);
+    render_results(frame, app, rows[2], favorite_lookup.as_ref());
+    crate::ui::control_box::render_docked(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
     if app.dropdowns.search_source_open {
         render_source_dropdown(frame, app, inner);
     }
@@ -79,8 +83,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // overlays, like the queue window on the player). Its rect is a per-frame output.
     app.search_filter.rect.set(None);
     if app.search_filter.open {
-        render_filter_popup(frame, app, inner);
+        render_filter_popup(frame, app, inner, favorite_lookup.as_ref());
     }
+}
+
+fn search_favorite_lookup(app: &App) -> Option<FavoriteLookup<'_>> {
+    (!app.search.results.is_empty() || app.search_filter.open)
+        .then(|| app.library.favorite_lookup())
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -255,14 +264,18 @@ fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
 /// the fixed-width heart gutter, and the un-marqueed `title — artist (dur)` body — so the
 /// results list and the filter popup format rows identically and never drift. Each caller
 /// applies its own leading marker and marquee/truncation on top.
-fn result_row_cells(app: &App, song: &crate::api::Song) -> (String, &'static str, String) {
+fn result_row_cells(
+    app: &App,
+    song: &crate::api::Song,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) -> (String, &'static str, String) {
     // Fixed-width heart slot (like the library lists) so favoriting a row never shifts its
     // title relative to its neighbors.
-    let heart = if app.library.is_favorite(&song.video_id) {
-        "♥ "
-    } else {
-        "  "
-    };
+    let is_favorite = favorite_lookup.map_or_else(
+        || app.library.is_favorite(&song.video_id),
+        |lookup| lookup.is_favorite(&song.video_id),
+    );
+    let heart = if is_favorite { "♥ " } else { "  " };
     // Playlist rows get their own tag so they read as containers, not tracks. Codes vary in
     // width ([YT] vs [RAD]); pad to a fixed column so titles align across mixed-source results.
     let source = if song.youtube_playlist_id().is_some() {
@@ -281,7 +294,12 @@ fn result_row_cells(app: &App, song: &crate::api::Song) -> (String, &'static str
     (source, heart, text)
 }
 
-fn render_results(frame: &mut Frame, app: &App, area: Rect) {
+fn render_results(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
 
@@ -311,6 +329,34 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .then(|| app.search.selected.min(len - 1))
         .filter(|sel| (offset..offset + area.height as usize).contains(sel));
 
+    let highlight = if focused {
+        crate::ui::anim::selection_style(
+            app,
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Style::default()
+            .fg(app.theme.color(R::SelectionInactiveFg))
+            .bg(app.theme.color(R::SelectionInactiveBg))
+    };
+    // The effective multi-selection (drag range, Shift+nav, Ctrl/Cmd picks) highlights
+    // like the Library list; the cursor row additionally gets the ▶ marker below. A
+    // lone cursor row is left to the ListState highlight so wheel-scrolling past it
+    // keeps today's behavior.
+    let selected_rows = app.search_selection_indices();
+    let row_selected =
+        |i: usize| selected_rows.len() > 1 && selected_rows.binary_search(&i).is_ok();
+    // A cursor row that was Ctrl/Cmd-toggled OUT of the picks must not read as selected:
+    // keep its ▶ marker but drop the selection colors (the Library renders the same way).
+    let cursor_style = if selected_rows.binary_search(&app.search.selected).is_ok() {
+        highlight
+    } else {
+        app.theme.style(R::TextPrimary)
+    };
+
     // Fresh results cascade in top-to-bottom while the stagger window runs. New results
     // always land with the viewport at the top, so styling by absolute row index is the
     // visible order.
@@ -319,8 +365,10 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .results
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(area.height as usize)
         .map(|(i, s)| {
-            let (source, heart, text) = result_row_cells(app, s);
+            let (source, heart, text) = result_row_cells(app, s, favorite_lookup);
             // The focused, visible cursor row marquees when clipped — the source tag and
             // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
             // Suppressed while the filter popup is open: its cursor row marquees instead,
@@ -337,30 +385,21 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
                 text
             };
             let line = format!("{source}{heart}{text}");
+            let base = if row_selected(i) {
+                highlight
+            } else {
+                app.theme.style(R::TextPrimary)
+            };
             ListItem::new(line).style(crate::ui::anim::stagger_style(
                 app,
                 crate::app::Mode::Search,
                 i,
-                app.theme.style(R::TextPrimary),
+                base,
             ))
         })
         .collect();
-
-    let highlight = if focused {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Style::default()
-            .fg(app.theme.color(R::SelectionInactiveFg))
-            .bg(app.theme.color(R::SelectionInactiveBg))
-    };
     let list = List::new(items)
-        .highlight_style(highlight)
+        .highlight_style(cursor_style)
         .style(app.theme.style(R::TextPrimary))
         .highlight_symbol("▶ ")
         // Reserve the ▶ gutter even while the selection is scrolled off-view
@@ -369,15 +408,16 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         // viewport and snaps back when it returns.
         .highlight_spacing(HighlightSpacing::Always);
 
-    // Pre-seed the wheel offset so ratatui honors it; only highlight the selection while
-    // it is actually visible, so the wheel can scroll past it.
-    let mut state = ListState::default().with_offset(offset);
+    // Only the visible window is formatted above, so its local list offset is zero. Keep all
+    // hit targets, selection, animation indices, and scrollbar positions in absolute result
+    // coordinates to preserve the existing interaction semantics.
+    let mut state = ListState::default();
     if let Some(sel) = visible_sel {
-        state.select(Some(sel));
+        state.select(Some(sel - offset));
     }
     frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.
-    buttons::register_list_rows(app, area, state.offset(), len, Some);
+    buttons::register_list_rows(app, area, offset, len, Some);
     // Scrollbar on the right border, tracking the viewport position; hidden when results fit.
     buttons::render_list_scrollbar(
         frame,
@@ -390,7 +430,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         },
         ScrollSurface::Search,
         len,
-        state.offset(),
+        offset,
         area.height as usize,
     );
 }
@@ -502,7 +542,12 @@ fn render_dropdown(
 /// live filter input and the narrowed result rows. Typing edits the query, ↑↓/PgUp/PgDn/
 /// Home/End move within the matches, Enter or a double-click plays the highlighted one, a
 /// right-click enqueues it (popup stays open), Esc or a click outside closes.
-fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
+fn render_filter_popup(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    favorite_lookup: Option<&FavoriteLookup<'_>>,
+) {
     let rows_all = app.search_filter_rows();
     let total = app.search.results.len();
 
@@ -599,7 +644,7 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
             let y = list_area.y + vis as u16;
             let selected = display_idx == cursor;
             let marker = if selected { "▶ " } else { "  " };
-            let (source, heart, text) = result_row_cells(app, song);
+            let (source, heart, text) = result_row_cells(app, song, favorite_lookup);
             // The cursor row marquees when clipped, keyed by the *original* row index so
             // retyping (which shifts display positions) doesn't restart a crawl that is
             // still on the same song. The marker/source/heart gutter (10 cols) stays put.
@@ -667,4 +712,42 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn favorite_lookup_is_skipped_only_for_an_empty_closed_search() {
+        let mut app = App::new(100);
+        assert!(search_favorite_lookup(&app).is_none());
+
+        app.search_filter.open = true;
+        assert!(search_favorite_lookup(&app).is_some());
+
+        app.search_filter.open = false;
+        app.search
+            .results
+            .push(crate::api::Song::local_file(PathBuf::from("result.mp3")));
+        assert!(search_favorite_lookup(&app).is_some());
+    }
+
+    #[test]
+    fn lazy_favorite_lookup_preserves_result_row_output() {
+        let mut app = App::new(100);
+        let favorite = crate::api::Song::remote("favorite", "Favorite", "Artist", "3:00");
+        let other = crate::api::Song::remote("other", "Other", "Artist", "2:00");
+        app.library.toggle_favorite(&favorite);
+
+        let lookup = app.library.favorite_lookup();
+        for song in [&favorite, &other] {
+            assert_eq!(
+                result_row_cells(&app, song, None),
+                result_row_cells(&app, song, Some(&lookup))
+            );
+        }
+    }
 }

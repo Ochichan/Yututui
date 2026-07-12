@@ -23,6 +23,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::t;
+use crate::util::background_task::BackgroundTask;
 use crate::util::safe_fs;
 
 /// Canonical releases page — the click target and CLI hint for every install method.
@@ -397,21 +398,22 @@ pub fn cached_newer_tag() -> Option<String> {
 /// Spawn the background update check. No-ops (and makes zero network calls) when
 /// `enabled` is false or this is a development build. Never blocks startup: it sleeps
 /// briefly, honors a 24h success TTL and 1h failure backoff, persists what it learns, and
-/// emits [`UpdateEvent::Checked`] with the outcome.
-pub fn spawn_update_check<F>(current: &'static str, enabled: bool, emit: F)
+/// emits [`UpdateEvent::Checked`] with the outcome. The returned abort-on-drop owner must
+/// be retained until application teardown.
+pub fn spawn_update_check<F>(current: &'static str, enabled: bool, emit: F) -> BackgroundTask
 where
     F: Fn(UpdateEvent) + Send + Sync + 'static,
 {
     if !enabled {
-        return;
+        return BackgroundTask::disabled("application update check");
     }
     let method = resolved_install_method();
     // Development builds don't nag — unless a debug override is forcing a preview.
     if method == InstallMethod::Development && forced_latest_tag().is_none() {
-        return;
+        return BackgroundTask::disabled("application update check");
     }
 
-    tokio::spawn(async move {
+    BackgroundTask::spawn("application update check", async move {
         tokio::time::sleep(POST_START_DELAY).await;
         let mut state = load_state();
         let now = now_unix();
@@ -463,7 +465,7 @@ where
             first_seen,
             method,
         }));
-    });
+    })
 }
 
 fn update_first_seen(available: bool, latest: &str, state: &UpdateState) -> bool {
@@ -612,5 +614,12 @@ mod tests {
         };
         assert!(!update_first_seen(true, "v1.7.0", &state));
         assert!(update_first_seen(true, "v1.7.1", &state));
+    }
+
+    #[tokio::test]
+    async fn disabled_check_returns_explicit_noop_owner() {
+        let task = spawn_update_check("1.0.0", false, |_| {});
+
+        assert!(!task.is_enabled());
     }
 }

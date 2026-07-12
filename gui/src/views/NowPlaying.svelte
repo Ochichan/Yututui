@@ -38,12 +38,10 @@
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   });
 
-  function video() {
+  async function video() {
     if (!track) return;
-    // Fire-and-forget per protocol; the mpv window spawns core-side once the desktop
-    // bridge forwards commands (gui/WIRING.md "already-wired tier").
-    client.cmd('play_video', { video_id: track.video_id });
-    toasts.show('info', t('np.videoRequested'));
+    const result = await client.cmd('play_video', { video_id: track.video_id });
+    if (result.ok) toasts.show('info', t('np.videoRequested'));
   }
 </script>
 
@@ -62,7 +60,7 @@
       <div class="scrim"></div>
     </div>
 
-    <div class="stage" class:with-lyrics={lyrics.lines.length > 0}>
+    <div class="stage" class:with-lyrics={lyrics.lines.length > 0} data-ui-scroll-key="now-stage">
       <section class="main">
         <AlbumArt {track} size="min(300px, 32vw)" radius="var(--radius-l)" elevated />
         <div class="title-block">
@@ -151,7 +149,8 @@
             <button
               class="chip"
               class:on={model.streaming}
-              onclick={() => client.cmd('streaming', { state: model.streaming ? 'off' : 'on' })}
+              onclick={() =>
+                void client.cmd('streaming', { state: model.streaming ? 'off' : 'on' })}
               {disabled}
             >
               ✦ {t('np.djGem')}
@@ -170,7 +169,12 @@
       </section>
 
       {#if lyrics.lines.length > 0}
-        <aside class="lyrics" bind:this={lyricsPane} aria-label={t('np.lyrics')}>
+        <aside
+          class="lyrics"
+          bind:this={lyricsPane}
+          aria-label={t('np.lyrics')}
+          data-ui-scroll-key="now-lyrics"
+        >
           {#each lyrics.lines as line, i (i)}
             <button
               class="line"

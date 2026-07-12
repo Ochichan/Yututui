@@ -1,0 +1,202 @@
+//! Admission-atomic recovery paths for the active audio player.
+//!
+//! Playback failures and live-radio re-syncs are especially sensitive to optimistic reducer
+//! updates: consuming a one-shot retry or recording a failed seek before the player lane accepts
+//! the matching command makes the next user action lie about what mpv actually received.  The
+//! plans in this module keep those projections behind the same [`PlayerIntent`] boundary as
+//! ordinary transport controls.
+
+use super::*;
+
+#[derive(Clone)]
+pub struct PrefetchWatchRetryPlan {
+    expected_queue_rev: u64,
+    expected_cursor: usize,
+    expected_video_id: String,
+    expected_loaded_video_id: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct RadioLiveSeekPlan {
+    expected_queue_rev: u64,
+    expected_cursor: usize,
+    expected_video_id: String,
+    expected_paused: bool,
+    expected_video_paused_audio: bool,
+    target: f64,
+    attempted_at: Instant,
+}
+
+impl App {
+    /// Retry the current track through its watch URL without consuming the one-shot fallback
+    /// until the replacement `Load` has entered the player lane.
+    pub(in crate::app) fn prefetch_watch_retry_intent(
+        &self,
+        video_id: String,
+        watch_url: String,
+    ) -> Vec<Cmd> {
+        let plan = PrefetchWatchRetryPlan {
+            expected_queue_rev: self.queue.rev(),
+            expected_cursor: self.queue.cursor_pos(),
+            expected_video_id: video_id,
+            expected_loaded_video_id: self.prefetch.loaded_video_id.clone(),
+        };
+        self.player_intent(
+            "prefetch_watch_retry",
+            PlayerCmd::Load(watch_url),
+            PlayerCommit::PrefetchWatchRetry(Box::new(plan)),
+        )
+    }
+
+    pub(in crate::app) fn commit_prefetch_watch_retry(
+        &mut self,
+        plan: PrefetchWatchRetryPlan,
+    ) -> Vec<Cmd> {
+        self.queue.validate_planned_transition(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        );
+        assert_eq!(
+            self.prefetch.loaded_video_id, plan.expected_loaded_video_id,
+            "loaded track changed before prefetch retry commit"
+        );
+        assert!(
+            self.prefetch.last_load_prefetched,
+            "prefetch retry committed after its failed-load marker was cleared"
+        );
+
+        let prefetch_paused = self.prefetch.record_direct_url_failure();
+        self.prefetch.resolved.remove(&plan.expected_video_id);
+        self.prefetch
+            .watch_retry_attempted
+            .insert(plan.expected_video_id.clone());
+        self.prefetch.last_load_prefetched = false;
+        // `Load` restarts the current file at position zero even though queue membership and
+        // catalog bookkeeping stay unchanged. Project that discontinuity through the central
+        // reset path only after admission.
+        self.reset_progress();
+        self.status.kind = StatusKind::Info;
+        self.status.text = if prefetch_paused {
+            t!(
+                "Prefetched streams are being rejected — pausing prefetch and retrying this track",
+                "미리 받은 스트림이 반복 거부됨 — 프리페치를 쉬고 같은 곡을 다시 시도"
+            )
+            .to_owned()
+        } else {
+            t!(
+                "Prefetched stream was rejected — retrying this track",
+                "미리 받은 스트림이 거부됨 — 같은 곡을 다시 시도"
+            )
+            .to_owned()
+        };
+        tracing::info!(
+            video_id = %plan.expected_video_id,
+            prefetch_paused,
+            "retrying failed prefetched stream via watch URL"
+        );
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn prefetch_watch_retry_is_current(
+        &self,
+        plan: &PrefetchWatchRetryPlan,
+    ) -> bool {
+        self.queue.planned_transition_matches(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        ) && self.prefetch.loaded_video_id == plan.expected_loaded_video_id
+            && self.prefetch.last_load_prefetched
+    }
+
+    /// Resume and seek to the known live edge as one ordered batch. The attempt timestamp is
+    /// committed with the seek, so a rejected first press cannot make the next press falsely
+    /// escalate to a reconnect.
+    pub(in crate::app) fn radio_live_seek_intent(&self, target: f64) -> Vec<Cmd> {
+        let Some(song) = self.queue.current() else {
+            return Vec::new();
+        };
+        let plan = RadioLiveSeekPlan {
+            expected_queue_rev: self.queue.rev(),
+            expected_cursor: self.queue.cursor_pos(),
+            expected_video_id: song.video_id.clone(),
+            expected_paused: self.playback.paused,
+            expected_video_paused_audio: self.video.paused_audio,
+            target,
+            attempted_at: Instant::now(),
+        };
+        vec![Cmd::PlayerControl(PlayerControl::Intent(Box::new(
+            PlayerIntent::batch(
+                "radio_live_seek",
+                vec![
+                    PlayerCmd::SetProperty {
+                        name: "pause".to_owned(),
+                        value: serde_json::Value::Bool(false),
+                    },
+                    PlayerCmd::SeekAbsolute(target),
+                ],
+                PlayerCommit::RadioLiveSeek(Box::new(plan)),
+            ),
+        )))]
+    }
+
+    pub(in crate::app) fn commit_radio_live_seek(&mut self, plan: RadioLiveSeekPlan) -> Vec<Cmd> {
+        debug_assert!(plan.target.is_finite() && plan.target >= 0.0);
+        self.queue.validate_planned_transition(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        );
+        assert_eq!(
+            self.playback.paused, plan.expected_paused,
+            "pause state changed before live-seek commit"
+        );
+        assert_eq!(
+            self.video.paused_audio, plan.expected_video_paused_audio,
+            "video pause ownership changed before live-seek commit"
+        );
+
+        self.playback.paused = false;
+        self.video.paused_audio = false;
+        // Admission is not an mpv acknowledgement. Keep the last reported playhead so a second
+        // press can detect an unseekable live cache and escalate to reconnect; the central
+        // admitted-seek path still bumps the position epoch.
+        self.radio_resync_at = Some(plan.attempted_at);
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Re-synced to live", "실시간으로 다시 맞췄어요").to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn radio_live_seek_is_current(&self, plan: &RadioLiveSeekPlan) -> bool {
+        self.queue.planned_transition_matches(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        ) && self.playback.paused == plan.expected_paused
+            && self.video.paused_audio == plan.expected_video_paused_audio
+    }
+
+    /// A reconnect is an ordinary reload of the current track. Reuse the track transaction so
+    /// recorder teardown, `Load`, AF, progress reset, and the live-status toast share one
+    /// admission result.
+    pub(in crate::app) fn reconnect_radio_to_live(&mut self) -> Vec<Cmd> {
+        let mut cmds = self.stay_on_current_track();
+        Self::attach_track_commit_status(
+            &mut cmds,
+            StatusKind::Info,
+            t!(
+                "Reconnected to the live stream",
+                "라이브 스트림에 다시 연결했어요"
+            )
+            .to_owned(),
+        );
+        cmds
+    }
+}

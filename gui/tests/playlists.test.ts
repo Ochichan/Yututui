@@ -70,37 +70,63 @@ describe('PlaylistsStore', () => {
     expect(store.list[0].count).toBe(2);
   });
 
-  it('submitCreate sends playlist_create and ignores a blank name', () => {
+  it('submitCreate waits for acknowledgement and ignores a blank name', async () => {
     const t = new MockTransport();
     const store = new PlaylistsStore(new Client(t));
     store.beginCreate();
-    store.submitCreate('  ');
+    await store.submitCreate('  ');
     expect(t.sent.some((s) => s.kind === 'cmd' && s.name === 'playlist_create')).toBe(false);
-    store.submitCreate('Mix');
-    expect(t.lastCmd('playlist_create').payload).toMatchObject({ name: 'Mix' });
+    const submitted = store.submitCreate('Mix');
+    const command = t.lastCmd('playlist_create');
+    expect(command.payload).toMatchObject({ name: 'Mix' });
+    expect(store.createOpen).toBe(true);
+    t.emit({ v: 1, id: command.id, kind: 'res', payload: { ok: true } });
+    await expect(submitted).resolves.toBe(true);
     expect(store.createOpen).toBe(false);
   });
 
-  it('confirmDelete sends playlist_delete and closes an open matching detail', () => {
+  it('confirmDelete closes matching detail only after acknowledgement', async () => {
     const t = new MockTransport();
     const store = new PlaylistsStore(new Client(t));
     store.detail = detail('pl-1', [track('x')]);
     store.beginDelete(summary('pl-1', 1));
-    store.confirmDelete();
-    expect(t.lastCmd('playlist_delete').payload).toMatchObject({ playlist_id: 'pl-1' });
+    const deleted = store.confirmDelete();
+    const command = t.lastCmd('playlist_delete');
+    expect(command.payload).toMatchObject({ playlist_id: 'pl-1' });
+    expect(store.detail?.id).toBe('pl-1');
+    t.emit({ v: 1, id: command.id, kind: 'res', payload: { ok: true } });
+    await deleted;
     expect(store.detail).toBeNull();
     expect(store.deleteTarget).toBeNull();
   });
 
-  it('addTo sends playlist_add_tracks with the pending track and clears the picker', () => {
+  it('keeps delete context intact and clears in-flight state after rejection', async () => {
+    const t = new MockTransport();
+    const store = new PlaylistsStore(new Client(t));
+    store.detail = detail('pl-1', [track('x')]);
+    store.beginDelete(summary('pl-1', 1));
+    const deleted = store.confirmDelete();
+    const command = t.lastCmd('playlist_delete');
+    t.emit({ v: 1, id: command.id, kind: 'err', payload: { reason: 'busy' } });
+    await deleted;
+    expect(store.deleting).toBe(false);
+    expect(store.deleteTarget?.id).toBe('pl-1');
+    expect(store.detail?.id).toBe('pl-1');
+  });
+
+  it('addTo clears the picker only after acknowledgement', async () => {
     const t = new MockTransport();
     const store = new PlaylistsStore(new Client(t));
     store.beginAdd(track('vid-9'));
-    store.addTo('pl-2');
-    expect(t.lastCmd('playlist_add_tracks').payload).toMatchObject({
+    const added = store.addTo('pl-2');
+    const command = t.lastCmd('playlist_add_tracks');
+    expect(command.payload).toMatchObject({
       playlist_id: 'pl-2',
       video_ids: ['vid-9'],
     });
+    expect(store.addTarget?.video_id).toBe('vid-9');
+    t.emit({ v: 1, id: command.id, kind: 'res', payload: { ok: true } });
+    await added;
     expect(store.addTarget).toBeNull();
   });
 
@@ -126,7 +152,12 @@ describe('PlaylistsStore', () => {
 
     // The late reply to the superseded 'pl-1' open must not land over 'pl-2'.
     t.emit({ v: 1, id: firstReq.id, kind: 'res', payload: detail('pl-1', [track('a')]) });
-    t.emit({ v: 1, id: secondReq.id, kind: 'res', payload: detail('pl-2', [track('b'), track('c')]) });
+    t.emit({
+      v: 1,
+      id: secondReq.id,
+      kind: 'res',
+      payload: detail('pl-2', [track('b'), track('c')]),
+    });
     await Promise.all([first, second]);
 
     expect(store.detail?.id).toBe('pl-2');
@@ -138,7 +169,12 @@ describe('PlaylistsStore', () => {
     const t = new MockTransport();
     const store = new PlaylistsStore(new Client(t));
     const open = store.open('pl-1');
-    t.emit({ v: 1, id: t.lastReq('fetch_playlist_detail').id, kind: 'res', payload: detail('pl-1', []) });
+    t.emit({
+      v: 1,
+      id: t.lastReq('fetch_playlist_detail').id,
+      kind: 'res',
+      payload: detail('pl-1', []),
+    });
     await open;
 
     // Still present ⇒ a membership change re-pulls the detail.
@@ -166,8 +202,10 @@ describe('demo core playlists', () => {
     return { t, frames };
   }
   const lastList = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'playlists')!
-      .payload as PlaylistsSnapshot).items;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'playlists')!
+        .payload as PlaylistsSnapshot
+    ).items;
   const detailById = (frames: InEnvelope[], id: number) =>
     [...frames].reverse().find((e) => e.kind === 'res' && e.id === id)!.payload as PlaylistDetail;
 
@@ -180,7 +218,13 @@ describe('demo core playlists', () => {
 
   it('fetch_playlist_detail returns the playlist tracks', () => {
     const { t, frames } = boot();
-    t.send({ v: 1, id: 1, kind: 'req', name: 'fetch_playlist_detail', payload: { playlist_id: 'pl-1' } });
+    t.send({
+      v: 1,
+      id: 1,
+      kind: 'req',
+      name: 'fetch_playlist_detail',
+      payload: { playlist_id: 'pl-1' },
+    });
     vi.advanceTimersByTime(50);
     expect(detailById(frames, 1).tracks.length).toBe(3);
   });

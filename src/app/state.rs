@@ -41,6 +41,10 @@ pub struct RenderBridges {
     /// Viewport height (rows) of the active Library / Search list, written each render so
     /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
     pub list_viewport_rows: Cell<u16>,
+    /// The responsive tier the last frame rendered at (see [`crate::ui::layout::tier`]).
+    /// Bridged rather than derived from resize events because text zoom rescales the
+    /// virtual grid without one; the reducer reads it for key routing and art geometry.
+    pub ui_tier: Cell<crate::ui::layout::UiTier>,
     /// Decoupled wheel-scroll offset for each browse list (see [`crate::ui::scroll`]). The mouse
     /// wheel moves these directly; the render pass nudges them to keep the keyboard selection
     /// on-screen with a margin. One per list so each keeps its own place.
@@ -49,7 +53,7 @@ pub struct RenderBridges {
     pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
     /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
     /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
-    pub ai_transcript_copy_lines: RefCell<Vec<String>>,
+    pub ai_transcript_copy_lines: RefCell<Arc<[Arc<str>]>>,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// The Settings field list keeps its own persistent offset too, so a mouse click on a
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
@@ -123,6 +127,9 @@ pub struct FxState {
     pub(in crate::app) last_volume: i64,
     pub(in crate::app) last_liked: bool,
     pub(in crate::app) last_mode: Mode,
+    /// The responsive tier the reducer last acted on (diffed against the render-side
+    /// bridge to run one-shot mini-entry hygiene; see `App::sync_ui_tier`).
+    pub(in crate::app) last_ui_tier: crate::ui::layout::UiTier,
     pub(in crate::app) last_library_tab: LibraryTab,
     pub(in crate::app) last_settings_tab: Option<SettingsTab>,
     pub(in crate::app) last_open_playlist: Option<String>,
@@ -153,6 +160,7 @@ impl FxState {
             last_volume: volume,
             last_liked: false,
             last_mode: Mode::Player,
+            last_ui_tier: crate::ui::layout::UiTier::default(),
             last_library_tab: LibraryTab::default(),
             last_settings_tab: None,
             last_open_playlist: None,
@@ -222,7 +230,7 @@ pub struct Session {
 pub struct Video {
     /// The detached mpv video-overlay process, if one is open. Tracked so a second `v` (or a
     /// `Shift+V` layout switch) closes/respawns it instead of stacking windows.
-    pub proc: Option<std::process::Child>,
+    pub proc: Option<crate::util::process_tree::OwnedProcessTree>,
     /// Whether opening the video overlay is what paused the audio, so closing it only resumes
     /// playback we paused (not audio the user had paused themselves).
     pub paused_audio: bool,
@@ -317,13 +325,14 @@ pub struct YtdlpHeal {
     pub last_check: Option<Instant>,
 }
 
-/// Download state, keyed by `video_id`: the in-flight/finished progress map shown in the UI,
-/// plus the original catalog metadata held while a download runs.
+/// Download state, keyed by ordinary `video_id` or a stable import-session row key: the
+/// in-flight/finished progress map shown in the UI, plus the original catalog metadata held while
+/// a download runs.
 #[derive(Default)]
 pub struct Downloads {
-    /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
+    /// In-flight / finished downloads, keyed by download owner, for the UI indicator.
     pub active: HashMap<String, DownloadState>,
-    /// Original catalog metadata for in-flight downloads, keyed by `video_id`. Reducer-only
+    /// Original catalog metadata for in-flight downloads, keyed by download owner. Reducer-only
     /// (was a private App field) — `pub(in crate::app)` keeps it off the render-facing surface.
     pub(in crate::app) sources: HashMap<String, Song>,
     /// Bulk-download overflow queue: deduped songs accepted for download but not yet handed to
@@ -398,6 +407,15 @@ pub struct SearchState {
     pub results: Vec<Song>,
     /// The highlighted result row.
     pub selected: usize,
+    /// The fixed end of the results list's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `selected`,
+    /// mirroring the Library list's drag-to-select.
+    pub anchor: usize,
+    /// Discontiguous multi-select rows toggled with Ctrl/Cmd+click. When non-empty it
+    /// IS the effective selection (the anchor..=selected range is ignored); cleared by
+    /// any plain click/nav/drag and whenever the result list changes. Consumers clamp
+    /// stale indices, never panic.
+    pub picked: BTreeSet<usize>,
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
     /// Monotonic id of the most recently *submitted* search. Stamped on the request and echoed
@@ -418,6 +436,12 @@ pub struct AiState {
     pub model: GeminiModel,
     /// The chat transcript (user prompts, assistant replies, errors).
     pub messages: Vec<AiMessage>,
+    /// Production mutation generation for the wrapped-transcript render cache. Every reducer
+    /// append (including history trimming) advances it exactly once.
+    pub(crate) transcript_revision: u64,
+    /// Stable owner identity prevents a thread-local cache entry from one `App` being reused by a
+    /// different instance that happens to have the same revision and presentation settings.
+    pub(crate) transcript_cache_token: Arc<()>,
     /// The DJ Gem prompt being typed.
     pub input: String,
     /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
@@ -461,7 +485,7 @@ pub struct ArtState {
     pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::Sender<ResizeRequest>>,
     /// The decoded source image kept alongside the protocol for stale-result checks and future
     /// resize/protocol rebuilds. Reducer-only (was a private App field) — `pub(in crate::app)`.
-    pub(in crate::app) source: Option<DynamicImage>,
+    pub(in crate::app) source: Option<Arc<DynamicImage>>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub dims: (u32, u32),
     /// `video_id` the held art belongs to (guards against a stale image lingering).
@@ -481,6 +505,15 @@ pub struct ArtState {
     /// Windows Terminal can composite the graphics payload one frame after the text overlay, so the
     /// overlay needs a short reinforcement burst rather than a single clear.
     pub(in crate::app) overlay_refresh_clear_frames: u8,
+    /// Last layout-geometry key observed by the reducer (bar position, lyrics visibility) —
+    /// the inputs that MOVE the art rect within the Player screen. A separate key rather
+    /// than overlay-mask bits: the mask budget is nearly exhausted, and geometry is a
+    /// different axis than occlusion. `None` until the first sync.
+    pub(in crate::app) geometry_key: Option<(
+        crate::config::PlayerBarPosition,
+        bool,
+        crate::ui::layout::UiTier,
+    )>,
 }
 
 /// Streaming autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem
@@ -531,6 +564,12 @@ pub struct LibraryView {
     /// click). The selection is the inclusive span between this and `selected`, mirroring
     /// the queue window's drag-to-select.
     pub anchor: usize,
+    /// Discontiguous multi-select rows toggled with Ctrl/Cmd+click. When non-empty it
+    /// IS the effective selection (the anchor..=selected range is ignored); cleared by
+    /// any plain click/nav/drag and by every selection-aware mutation (delete, clamp,
+    /// filter/tab change). Like `anchor`, it can drift if the list shifts underneath
+    /// (e.g. history growing while off-screen) — consumers clamp, never panic.
+    pub picked: BTreeSet<usize>,
     /// Local audio files found in the configured download directory.
     pub downloaded: Vec<Song>,
     /// Mutation counter for `downloaded` (row cache / id-recovery memo key). Bumped at
@@ -648,16 +687,52 @@ pub struct QueuePopup {
     pub scroll: crate::ui::scroll::ScrollState,
 }
 
+/// Row indices of a list's effective multi-selection, ascending and bounded to `len`:
+/// the Ctrl/Cmd-picked set when non-empty, else the inclusive `anchor..=selected` range.
+/// Shared by the Library and Search lists so both resolve selection identically.
+pub(in crate::app) fn effective_selection_indices(
+    picked: &std::collections::BTreeSet<usize>,
+    selected: usize,
+    anchor: usize,
+    len: usize,
+) -> Vec<usize> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if !picked.is_empty() {
+        // BTreeSet iterates ascending; drop indices a stale set might hold past the end.
+        return picked.iter().copied().filter(|&i| i < len).collect();
+    }
+    let lo = selected.min(anchor);
+    if lo >= len {
+        return Vec::new();
+    }
+    let hi = selected.max(anchor).min(len - 1);
+    (lo..=hi).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DragSurface {
     Queue,
     Library,
+    Search,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DragSelection {
     pub surface: DragSurface,
     pub anchor: usize,
+}
+
+/// A multi-selection collapsed by the first press of a possible double-click. Plain clicks
+/// stay collapsed; only the translator's matching second press may restore these rows before
+/// activation. Keying the snapshot by surface and row prevents a later click elsewhere from
+/// reviving an unrelated selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingDoubleClickSelection {
+    pub surface: DragSurface,
+    pub row: usize,
+    pub indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -688,6 +763,9 @@ pub struct Interaction {
     /// paired `MouseDoubleClick` can be swallowed instead of leaking into a modal opened by the
     /// first press; the next ordinary single click resets it.
     pub(in crate::app) context_menu_click: Option<(u16, u16)>,
+    /// Multi-selection hidden by the latest plain Search/Library row press while the input
+    /// translator waits to learn whether that press is the first half of a double-click.
+    pub(in crate::app) pending_double_click_selection: Option<PendingDoubleClickSelection>,
     /// Active mouse drag-selection session. Cleared on left-button release so a later
     /// drag starts from its own first row, not whatever was selected before.
     pub(in crate::app) drag_selection: Option<DragSelection>,
@@ -698,16 +776,30 @@ pub struct Interaction {
     /// not message indexes, so wrapping and copy behavior line up exactly. `pub(crate)` (not
     /// `pub`) to match [`AiTranscriptDrag`]'s visibility — still reachable from the `ui` render.
     pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
-    /// Active seekbar (progress-bar) scrub: the last column we seeked to, so intra-cell drags
-    /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
-    /// or on mouse-up (so a dropped terminal `Up` can't strand it).
+    /// Active seekbar (progress-bar) scrub: the last requested column, used for intra-cell
+    /// dedupe only after its player intent was admitted. `None` = not scrubbing. Set on a
+    /// seekbar press, cleared on the next press or on mouse-up (so a dropped terminal `Up`
+    /// can't strand it).
     pub(in crate::app) seekbar_drag: Option<u16>,
+    /// Admission state for the active scrub request. A rejected request transitions to `Retry`,
+    /// allowing the same cell to be emitted again instead of being mistaken for a duplicate.
+    pub(in crate::app) seekbar_admission: SeekbarAdmission,
     /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
     /// the track rect captured at press, so pointer-x maps to a value even after the pointer
     /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
     pub(in crate::app) recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
+}
+
+/// Admission lifecycle for the most recent seekbar request. Keeping this inside
+/// [`Interaction`] prevents unrelated keyboard or remote seeks from arming a mouse retry.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::app) enum SeekbarAdmission {
+    #[default]
+    Settled,
+    Pending,
+    Retry,
 }
 
 /// Dedicated-Radio-mode stash: the normal- and radio-mode themes and queues that swap in and
@@ -763,6 +855,25 @@ pub struct LocalIndexRuntime {
     pub errors: Vec<crate::local::ScanError>,
 }
 
+/// One immutable view of the Local Deck rows used by a render pass. The backing row slice and
+/// its compact derived metadata are shared with the single-entry cache, so the header, body, and
+/// details panes never rebuild (or independently clone) the same row set within a frame.
+#[derive(Clone)]
+pub(crate) struct LocalRowsSnapshot {
+    pub(in crate::app) data: std::rc::Rc<super::local::LocalRowsData>,
+    pub(in crate::app) total_len: usize,
+}
+
+impl LocalRowsSnapshot {
+    pub(crate) fn rows(&self) -> &[crate::local::LocalRowId] {
+        self.data.rows.as_ref()
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.total_len
+    }
+}
+
 /// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
 /// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
 /// pending enter/leave confirmation.
@@ -770,6 +881,15 @@ pub struct LocalIndexRuntime {
 pub struct LocalMode {
     pub ui: LocalUi,
     pub index: LocalIndexRuntime,
+    /// Explicit production mutation generation for the Local Deck derived-row cache.
+    pub(in crate::app) rows_revision: Cell<u64>,
+    /// A single entry is enough: only the active section/query/drill path is rendered, and
+    /// replacing it promptly releases potentially large row/id and derived-metadata arrays.
+    pub(in crate::app) rows_cache: RefCell<Option<super::local::LocalRowsCache>>,
+    /// Recognized import-artifact paths and metadata used to invalidate the row cache without
+    /// opening persisted JSON or rescanning unchanged directories from the render path.
+    pub(in crate::app) import_files_fingerprint_cache:
+        RefCell<super::local::LocalImportFilesFingerprintCache>,
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,

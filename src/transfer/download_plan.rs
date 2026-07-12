@@ -50,14 +50,20 @@ pub struct ImportDownloadDedupeIndex {
 impl ImportDownloadDedupeIndex {
     pub fn from_download_store(store: &DownloadStore) -> Self {
         let mut index = Self::default();
-        for song in store.tracks() {
+        for song in store.tracks_with_existing_files() {
             index.add_downloaded_song(song);
         }
         index
     }
 
     pub fn add_downloaded_song(&mut self, song: &Song) {
-        self.downloaded.insert_song(song);
+        if song
+            .local_path
+            .as_deref()
+            .is_some_and(crate::downloads::is_existing_manifest_artifact)
+        {
+            self.downloaded.insert_song(song);
+        }
     }
 
     pub fn add_local_index(&mut self, index: &LocalIndex) {
@@ -330,6 +336,7 @@ mod tests {
         ImportSession {
             schema_version: 1,
             session_id: "sp2yt-plan".to_owned(),
+            session_instance_id: "test-download-plan-instance".to_owned(),
             job_id: "sp2yt-plan".to_owned(),
             created_at: 0,
             updated_at: 0,
@@ -376,10 +383,16 @@ mod tests {
 
     #[test]
     fn plan_links_existing_download_store_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "yututui-download-plan-existing-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let audio = root.join("Accepted.m4a");
+        std::fs::write(&audio, b"audio").unwrap();
         let mut store = DownloadStore::default();
         store.record(
-            &Song::remote("vid-a", "Accepted", "Artist", "3:00")
-                .with_local_path(PathBuf::from("/downloads/Accepted.m4a")),
+            &Song::remote("vid-a", "Accepted", "Artist", "3:00").with_local_path(audio.clone()),
         );
         let existing = ImportDownloadDedupeIndex::from_download_store(&store);
         let plan = build_import_download_plan(
@@ -391,10 +404,27 @@ mod tests {
         assert_eq!(plan.linked_existing_count, 1);
         assert_eq!(
             plan.rows[0].decision,
-            ImportDownloadDecision::AlreadyDownloaded {
-                path: Some(PathBuf::from("/downloads/Accepted.m4a"))
-            }
+            ImportDownloadDecision::AlreadyDownloaded { path: Some(audio) }
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plan_ignores_a_download_store_row_after_its_artifact_was_unlinked() {
+        let mut store = DownloadStore::default();
+        store.record(
+            &Song::remote("vid-a", "Accepted", "Artist", "3:00")
+                .with_local_path(PathBuf::from("/definitely/missing/Accepted.m4a")),
+        );
+        let existing = ImportDownloadDedupeIndex::from_download_store(&store);
+
+        let plan = build_import_download_plan(
+            &session(vec![row(1, "Accepted", Some("vid-a"))]),
+            &existing,
+        );
+
+        assert_eq!(plan.enqueue_count, 1);
+        assert_eq!(plan.rows[0].decision, ImportDownloadDecision::Enqueue);
     }
 
     #[test]

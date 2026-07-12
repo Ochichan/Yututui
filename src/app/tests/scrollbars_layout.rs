@@ -64,8 +64,10 @@ fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
     let buf = terminal.backend().buffer();
+    // The docked player bar (default Bottom) reserves 5 rows, so the list bottom sits at
+    // y=12 in an 80x20 frame (border 1 + tab 1 + spacer 1 + list rows .. + bar 5 + help 1).
     assert_eq!(
-        buf.cell((79, 17)).map(|c| c.symbol()),
+        buf.cell((79, 12)).map(|c| c.symbol()),
         Some("█"),
         "at the final page the scrollbar thumb should touch the list bottom"
     );
@@ -99,6 +101,7 @@ fn dragging_library_scrollbar_moves_the_viewport() {
     app.update(Msg::MouseClick {
         col: bar.x,
         row: bar.y,
+        multi: false,
     });
     app.update(Msg::MouseDrag {
         col: bar.x,
@@ -131,6 +134,7 @@ fn dragging_search_scrollbar_moves_the_viewport() {
     app.update(Msg::MouseClick {
         col: bar.x,
         row: bar.y,
+        multi: false,
     });
     app.update(Msg::MouseDrag {
         col: bar.x,
@@ -141,6 +145,82 @@ fn dragging_search_scrollbar_moves_the_viewport() {
         app.bridges.search_scroll.offset(),
         app.search.results.len() - app.bridges.search_scroll.viewport()
     );
+}
+
+#[test]
+fn scrolled_search_rows_keep_absolute_hit_indices() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.results = songs(40);
+    app.search.selected = 0;
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    app.bridges
+        .search_scroll
+        .wheel(false, 8, app.search.results.len());
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    let offset = app.bridges.search_scroll.offset();
+    assert!(offset > 0);
+    let mut visible_rows: Vec<_> = app
+        .hits
+        .regions()
+        .iter()
+        .filter_map(|region| match region.target {
+            MouseTarget::ListRow(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    visible_rows.sort_unstable();
+    visible_rows.dedup();
+    assert_eq!(visible_rows.first().copied(), Some(offset));
+    assert!(!visible_rows.contains(&0));
+}
+
+#[test]
+fn filtered_playlist_bottom_window_keeps_absolute_hit_indices() {
+    let mut app = App::new(100);
+    let playlist_id = app.playlists.create("Window").unwrap();
+    for i in 0..40 {
+        let title = if i % 2 == 0 {
+            format!("Keep {i}")
+        } else {
+            format!("Skip {i}")
+        };
+        app.playlists.add(
+            &playlist_id,
+            Song::remote(format!("id{i}"), title, "Artist", "0:10"),
+        );
+    }
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Playlists;
+    app.library_ui.open_playlist = Some(playlist_id);
+    app.library_ui.filter_query = "keep".to_owned();
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let len = app.library_len();
+    app.bridges.library_scroll.wheel(false, 999, len);
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    let offset = app.bridges.library_scroll.offset();
+    assert!(offset > 0);
+    let mut visible_rows: Vec<_> = app
+        .hits
+        .regions()
+        .iter()
+        .filter_map(|region| match region.target {
+            MouseTarget::ListRow(index) => Some(index),
+            _ => None,
+        })
+        .collect();
+    visible_rows.sort_unstable();
+    visible_rows.dedup();
+    assert_eq!(visible_rows.first().copied(), Some(offset));
+    assert_eq!(visible_rows.last().copied(), Some(len - 1));
 }
 
 #[test]

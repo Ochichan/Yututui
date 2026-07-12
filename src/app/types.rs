@@ -6,6 +6,52 @@
 
 use super::*;
 
+pub enum DownloadMsg {
+    Progress {
+        video_id: String,
+        percent: f64,
+    },
+    ImportProgress {
+        context: crate::download::ImportDownloadContext,
+        percent: f64,
+    },
+    Done {
+        video_id: String,
+        path: String,
+    },
+    ImportDone {
+        context: crate::download::ImportDownloadContext,
+        path: String,
+    },
+    Error {
+        video_id: String,
+        error: String,
+    },
+    ImportError {
+        context: crate::download::ImportDownloadContext,
+        error: String,
+    },
+    Rejected {
+        tracking_key: String,
+        error: String,
+    },
+    DirError {
+        error: String,
+    },
+}
+
+/// Blocking download-domain effects share one top-level command bucket.
+pub enum DownloadCmd {
+    /// Download a track to disk (best audio + tags + cover art).
+    Start(Box<Song>),
+    /// Refresh the local downloads list from this folder.
+    Scan(PathBuf),
+    /// Point the download actor at a new folder for future downloads.
+    SetDir(PathBuf),
+    /// Delete confirmed files off the owner thread after runtime mutation admission.
+    Delete { paths: Vec<PathBuf>, root: PathBuf },
+}
+
 /// Everything that can change the application state.
 pub enum Msg {
     /// Inert. Runtime events with no standalone-TUI meaning (e.g. daemon-only
@@ -13,9 +59,14 @@ pub enum Msg {
     Noop,
     Key(KeyEvent),
     /// A left-click at a terminal cell (1-based crossterm coords); may hit the seekbar.
+    /// `multi` is set when the multi-select modifier was held (Ctrl, or Cmd on macOS):
+    /// on a Library/Search list row that toggles the row in/out of the selection instead
+    /// of re-anchoring it; everywhere else the click behaves as plain. The input
+    /// translator never chains a modifier click into a double-click.
     MouseClick {
         col: u16,
         row: u16,
+        multi: bool,
     },
     /// A left double-click at a cell — plays a song row / queue entry (vs. single-click,
     /// which selects). Falls back to single-click behavior off a list row.
@@ -112,14 +163,14 @@ pub enum Msg {
         title: String,
         error: String,
     },
-    /// Download folder scan completed.
-    DownloadsScanned(crate::library::DownloadScan),
+    /// Local-data work completed: a download scan or portable personal-data export.
+    Data(DataMsg),
     /// Local Deck index load/scan result.
     Local(LocalMsg),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,
-        lines: Vec<LyricLine>,
+        lines: std::sync::Arc<[LyricLine]>,
     },
     /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
     ArtworkResult {
@@ -128,24 +179,13 @@ pub enum Msg {
     },
     /// Album-art protocol resize/encode finished off the UI thread.
     ArtworkResized(ResizeResponse),
-    /// Download progress for `video_id` (0-100).
-    DownloadProgress {
-        video_id: String,
-        percent: f64,
-    },
-    /// A download finished, saved at `path`.
-    DownloadDone {
-        video_id: String,
-        path: String,
-    },
-    /// A download failed.
-    DownloadError {
-        video_id: String,
-        error: String,
-    },
-    /// Updating the download actor's destination failed before any track-specific job started.
-    DownloadDirError {
-        error: String,
+    /// Download actor progress and terminal results, including stable import-row correlation.
+    Download(DownloadMsg),
+    /// Runtime completion of a confirmed, path-validated downloaded-file deletion batch.
+    DownloadsDeleted {
+        root: PathBuf,
+        deleted: Vec<PathBuf>,
+        failed: usize,
     },
     /// A background persistence write failed and remains queued for retry.
     PersistFailed {
@@ -162,13 +202,13 @@ pub enum Msg {
     /// suggestions, autoplay, station-profile shaping, playlist mutations, the feedback-summary
     /// station patch, and batch romanized titles. See [`AiMsg`].
     Ai(AiMsg),
-    /// A command from a `ytt -r <cmd>` client, with a oneshot channel to reply on. Applied
-    /// through the same reducer path as a keypress (see [`App::apply_remote`]) so it is
-    /// independent of the current input mode; the computed response is sent back over the
-    /// channel for the control socket to write to the client.
+    /// A command from a one-shot or persistent remote client. Applied through the same reducer
+    /// path as a keypress (see [`App::apply_remote`]) so it is independent of the current input
+    /// mode. For v8 sessions, sending this reply directly enqueues it before the run loop's
+    /// same-turn publisher observation.
     Remote(
         crate::remote::proto::RemoteCommand,
-        tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>,
+        crate::remote::server::RemoteReply,
     ),
     /// A command from the OS media session (media keys, Now Playing / SMTC / MPRIS
     /// surfaces, Bluetooth AVRCP). Applied through the same reducer paths as a keypress
@@ -209,9 +249,67 @@ pub enum Msg {
     Transfer(crate::transfer::actor::TransferEvent),
 }
 
+/// Results from local-data workers that are applied on the owner lane.
+pub enum DataMsg {
+    /// Download folder scan completed.
+    DownloadsScanned(crate::library::DownloadScan),
+    /// A portable personal-data export worker event.
+    PersonalDataExport(PersonalDataExportMsg),
+}
+
+/// Events produced by the portable personal-data export worker.
+pub enum PersonalDataExportMsg {
+    /// The off-loop writer completed.
+    Finished {
+        result: Result<PathBuf, String>,
+        /// Kept on the owner-lane completion event so busy state is cleared before a remote
+        /// success/failure becomes observable and an immediate retry can arrive.
+        reply: Option<crate::remote::RemoteReply>,
+    },
+}
+
+/// Small owner-lane guard shared by Settings and authenticated remote exports.
+#[derive(Debug, Default)]
+pub(crate) struct PersonalDataExportState {
+    pub(crate) in_progress: bool,
+}
+
+/// Owned source state for a personal-data export. This deliberately carries the original
+/// secret-bearing types only as far as the blocking worker; projection there produces the
+/// allowlisted [`crate::data_export::ExportSnapshot`] before anything is written.
+pub struct PersonalDataExportSources {
+    pub(crate) config: Config,
+    pub(crate) library: Library,
+    pub(crate) playlists: Playlists,
+    pub(crate) signals: Signals,
+    pub(crate) station: StationStore,
+}
+
+/// Local-data effects dispatched by the runtime.
+pub enum DataCmd {
+    /// Refresh the local downloads list from this folder.
+    ScanDownloads(PathBuf),
+    /// Run one portable personal-data export.
+    PersonalDataExport(PersonalDataExportCmd),
+}
+
+/// Effects in the portable personal-data export domain.
+pub enum PersonalDataExportCmd {
+    /// Project owned source state and write its sanitized snapshot off the UI loop. A remote
+    /// reply channel is carried only for `ytt data export`; the in-TUI button uses `None`.
+    Export {
+        directory: PathBuf,
+        sources: Box<PersonalDataExportSources>,
+        reply: Option<crate::remote::RemoteReply>,
+    },
+}
+
 /// Side effects the reducer asks the run loop to perform.
 pub enum Cmd {
-    Player(PlayerCmd),
+    /// Admission-sensitive player work. Intents commit projected UI state only after the
+    /// runtime accepts the whole command batch; transport recovery carries its ordered restore
+    /// batch through the same bounded admission path.
+    PlayerControl(PlayerControl),
     /// Off-loop disk work for the radio recorder (copy/tag a saved track, delete a temp,
     /// wipe the temp dir). Run via `spawn_blocking`; a `Save` reports back as `Msg::Recorder`.
     Recorder(crate::recorder::job::RecorderJob),
@@ -230,9 +328,7 @@ pub enum Cmd {
     /// Toggle the external video overlay's mute state.
     VideoToggleMute,
     /// Mark a newer release tag as accepted by the reducer and queued for notification.
-    UpdateSeen {
-        tag: String,
-    },
+    UpdateSeen { tag: String },
     Search {
         request_id: u64,
         query: String,
@@ -240,10 +336,7 @@ pub enum Cmd {
         config: SearchConfig,
     },
     /// Search public YouTube playlists by name (the search box's playlist kind).
-    SearchPlaylists {
-        request_id: u64,
-        query: String,
-    },
+    SearchPlaylists { request_id: u64, query: String },
     /// Fetch a remote playlist's full track list, then apply `intent` to it.
     FetchPlaylistTracks {
         playlist_id: String,
@@ -254,8 +347,10 @@ pub enum Cmd {
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
     Persist(PersistCmd),
-    /// Refresh the local downloads list from this folder.
-    ScanDownloads(PathBuf),
+    /// Local-data work, including portable personal-data exports.
+    Data(DataCmd),
+    /// Download actor and blocking download-store/file operations.
+    Download(DownloadCmd),
     /// Load or rebuild the Local Deck index off the UI thread.
     Local(LocalCmd),
     /// Fetch synced lyrics for a track.
@@ -265,19 +360,12 @@ pub enum Cmd {
         title: String,
     },
     /// Fetch + decode album art for a track (only when album art is enabled).
-    FetchArtwork {
-        video_id: String,
-        source: ArtSource,
-    },
-    /// Download a track to disk (best audio + tags + cover art).
-    Download(Box<Song>),
-    /// Point the download actor at a new folder for future downloads.
-    SetDownloadDir(PathBuf),
+    FetchArtwork { video_id: String, source: ArtSource },
     /// Prefetch a track's direct stream URL for instant skip.
-    Resolve {
-        video_id: String,
-        watch_url: String,
-    },
+    Resolve { video_id: String, watch_url: String },
+    /// Resolve the current self-healing track after yt-dlp was updated. Unlike ordinary
+    /// prefetch, an identical request already in flight must not satisfy this command.
+    ResolveForSelfHeal { video_id: String, watch_url: String },
     /// Playback self-heal: run a yt-dlp update check now (extraction-shaped failure on
     /// `video_id`). Answered by [`Msg::YtdlpHealResult`]; carries the tools config so
     /// the runtime needs no config plumbing of its own.
@@ -288,15 +376,10 @@ pub enum Cmd {
     /// Fire a desktop notification (radio-recording saved). Handled in the main loop where the
     /// terminal is owned: emits an OSC 9/777 escape when the terminal supports it, else a native
     /// `notify-rust` toast off-thread. Best-effort; the in-app status toast is the final fallback.
-    DesktopNotify {
-        title: String,
-        body: String,
-    },
+    DesktopNotify { title: String, body: String },
     /// Off-path: ask the assistant to distill a recent-feedback digest into artists to avoid /
     /// re-allow for the active station. The result returns as [`AiMsg::StationPatch`].
-    SummarizeFeedback {
-        digest: String,
-    },
+    SummarizeFeedback { digest: String },
     /// Ask Gemini to upgrade local CJK title/artist romanization for a visible batch.
     RomanizeTitles {
         request_id: u64,
@@ -347,13 +430,17 @@ pub enum Cmd {
         model: GeminiModel,
         assistant_enabled: bool,
     },
-    /// Kick the Last.fm browser authorization flow (Settings › Accounts › connect).
-    ScrobbleAuthStart,
-    /// Hand the scrobble actor a fresh settings snapshot (settings save, connect,
-    /// disconnect) — takes effect live, no relaunch.
-    ScrobbleReconfigure(Box<crate::scrobble::ScrobbleSettings>),
+    /// Last.fm owner controls (browser auth and live settings reconfiguration).
+    Scrobble(ScrobbleCmd),
     /// A command for the transfer actor (Spotify auth / playlist listing / jobs).
     Transfer(crate::transfer::actor::TransferCmd),
+}
+
+/// Scrobble-owner controls share one top-level effect bucket so authentication and live
+/// reconfiguration cannot grow the already-broad [`Cmd`] surface independently.
+pub enum ScrobbleCmd {
+    AuthStart,
+    Reconfigure(Box<crate::scrobble::ScrobbleSettings>),
 }
 
 /// Which persisted store a [`Cmd::Persist`] targets. The marker variants carry no data — the
@@ -805,7 +892,7 @@ pub enum Mode {
 /// Synced lyrics for one track (held while it's the current track).
 pub struct TrackLyrics {
     pub video_id: String,
-    pub lines: Vec<LyricLine>,
+    pub lines: std::sync::Arc<[LyricLine]>,
 }
 
 /// The lists in the library view.

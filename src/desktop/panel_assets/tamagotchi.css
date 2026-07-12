@@ -1,0 +1,411 @@
+    /* ================= theme: tamagotchi =================
+       The mint egg and LCD pet are aria-hidden decoration. The same semantic track,
+       recovery, sliders, view tabs, and transport used by Cushion/Mini sit above it. */
+    html[data-theme="tamagotchi"]:not(.shared-sheet) body {
+      --tama-shell: #aee7d2;
+      --tama-shell-hi: #d9f6ea;
+      --tama-shell-dk: #7cc9ae;
+      --tama-bezel: #49a58a;
+      --tama-bezel-dk: #2e7a63;
+      --tama-lcd: #c6e3c0;
+      --tama-lcd-dk: #a9c8a4;
+      --tama-ink: #23402f;
+      --tama-ink-dim: rgba(35, 64, 47, 0.45);
+      --tama-btn: #8fd8bf;
+      --tama-btn-hi: #c2efdd;
+      position: relative;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-visual {
+      position: absolute;
+      inset: 13px;
+      z-index: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-shell {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto auto;
+      align-content: start;
+      justify-items: center;
+      row-gap: 8px;
+      width: 248px;
+      height: 308px;
+      padding-top: 34px;
+      border: 2.5px solid var(--tama-bezel-dk);
+      border-radius: 50% 50% 47% 47% / 57% 57% 43% 43%;
+      background:
+        radial-gradient(90% 70% at 32% 22%, var(--tama-shell-hi), transparent 55%),
+        linear-gradient(180deg, var(--tama-shell) 45%, var(--tama-shell-dk));
+      box-shadow: 0 14px 30px rgba(20, 60, 45, 0.35);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-dots {
+      color: var(--tama-bezel-dk);
+      font-size: 9px;
+      line-height: 1;
+      letter-spacing: 5px;
+      opacity: 0.75;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-bezel {
+      box-sizing: content-box;
+      width: 166px;
+      height: 132px;
+      border: 9px solid var(--tama-bezel);
+      border-radius: 24px;
+      background: var(--tama-lcd);
+      box-shadow: inset 0 2px 6px rgba(35, 64, 47, 0.35), 0 1px 0 rgba(217, 246, 234, 0.7);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 14px;
+      color: var(--tama-ink);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(35, 64, 47, 0.05) 3px 4px);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-pet {
+      position: absolute;
+      inset: 0 0 20px;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .pf {
+      position: absolute;
+      inset: 0;
+      width: 96px;
+      height: 96px;
+      margin: auto;
+      opacity: 0;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .pf rect { fill: var(--tama-ink); }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="off"] .pf rect { fill: var(--tama-ink-dim); }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="dance"] .pf-dance-a { animation: pet2 0.84s steps(1, end) infinite; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="dance"] .pf-dance-b { animation: pet2 0.84s steps(1, end) -0.42s infinite; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="dance"] .tm-pet { animation: pet-bob 0.84s steps(2, jump-none) infinite; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="sleep"] .pf-sleep-a { animation: pet2 2.8s steps(1, end) infinite; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="sleep"] .pf-sleep-b { animation: pet2 2.8s steps(1, end) -1.4s infinite; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) [data-pet="off"] .pf-off { opacity: 1; }
+
+    @keyframes pet2 {
+      0%, 49.9% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    @keyframes pet-bob {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-marquee {
+      position: absolute;
+      right: 8px;
+      bottom: 3px;
+      left: 8px;
+      height: 17px;
+      overflow: hidden;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 17px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .tm-mq { display: inline-flex; white-space: nowrap; }
+    .tm-mq .mq-text { padding-right: 26px; }
+    .tm-mq:not(.scroll) { width: 100%; justify-content: center; }
+    .tm-mq:not(.scroll) .mq-text { padding-right: 0; }
+    .tm-mq:not(.scroll) .mq-text + .mq-text { display: none; }
+    .tm-mq.scroll { animation: tm-mq var(--mq-dur, 9s) steps(90) infinite; }
+    @keyframes tm-mq { to { transform: translateX(-50%); } }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen.flash .tm-pet,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen.menu .tm-pet,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen.recovering .tm-pet,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-screen.menu .tm-marquee {
+      display: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell {
+      position: absolute;
+      z-index: 2;
+      top: 13px;
+      left: 50%;
+      display: block;
+      width: 248px;
+      height: 308px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      box-shadow: none;
+      overflow: visible;
+      transform: translateX(-50%);
+      color: var(--tama-ink);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell > header {
+      position: static;
+      display: block;
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      cursor: grab;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) header .brand,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) header .chip,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #refreshTop,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .mode-switch,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .dock,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #tabNow,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #streaming,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .meta,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .now-copy,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .times {
+      display: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide {
+      position: absolute;
+      z-index: 8;
+      top: 30px;
+      display: inline-flex;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--tama-bezel-dk);
+      opacity: 0.7;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin { left: 36px; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide { right: 36px; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin.on {
+      background: rgba(35, 64, 47, 0.18);
+      color: var(--tama-ink);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) main,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #panelNow,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .now-card {
+      position: static;
+      display: block;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .now-art {
+      position: absolute;
+      z-index: 5;
+      top: 68px;
+      left: 76px;
+      display: none;
+      width: 96px;
+      height: 96px;
+      border: 2px solid var(--tama-ink);
+      border-radius: 0;
+      background: var(--tama-lcd);
+      overflow: hidden;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.art-flash .now-art { display: grid; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .now-art > .icon { display: none; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .now-art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      image-rendering: pixelated;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .recovery {
+      position: absolute;
+      z-index: 7;
+      top: 60px;
+      left: 41px;
+      width: 166px;
+      height: 132px;
+      grid-template-columns: 1fr 1fr;
+      align-content: center;
+      gap: 6px;
+      padding: 8px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--tama-lcd);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .recovery:not([hidden]) { display: grid; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .recovery button {
+      height: 32px;
+      padding: 0 4px;
+      border: 2px solid var(--tama-ink);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--tama-ink);
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 9px;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .recovery .primary-recovery {
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #transportSlot {
+      position: absolute;
+      right: 0;
+      bottom: 52px;
+      left: 0;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #sharedTransport {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 16px;
+      padding: 0;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #sharedTransport button {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border: 2.5px solid var(--tama-bezel-dk);
+      border-radius: 50%;
+      background: radial-gradient(70% 70% at 32% 26%, var(--tama-btn-hi), transparent 60%), linear-gradient(180deg, var(--tama-btn), var(--tama-shell-dk));
+      color: var(--tama-ink);
+      box-shadow: 0 3px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #playPause { transform: translateY(6px); }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .compact-menu {
+      position: absolute;
+      z-index: 9;
+      right: 108px;
+      bottom: 13px;
+      display: inline-flex;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 2px solid var(--tama-bezel-dk);
+      border-radius: 50%;
+      background: linear-gradient(180deg, var(--tama-btn), var(--tama-shell-dk));
+      color: var(--tama-ink);
+      box-shadow: 0 2px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .compact-menu.on {
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tabs,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .pill-row,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .volume-row,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .progress-row {
+      display: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .pill-row {
+      position: absolute;
+      z-index: 8;
+      top: 69px;
+      left: 50px;
+      display: grid;
+      width: 70px;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .tabs {
+      position: absolute;
+      z-index: 8;
+      top: 69px;
+      right: 48px;
+      display: grid;
+      width: 76px;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .pill-row button,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .tabs button {
+      height: 30px;
+      padding: 0 2px;
+      border: 2px solid var(--tama-ink);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--tama-ink);
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 8px;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .pill-row .icon-label span,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .pill-row .icon { display: none; }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .volume-row {
+      position: absolute;
+      z-index: 8;
+      top: 108px;
+      right: 50px;
+      left: 50px;
+      display: grid;
+      grid-template-columns: 28px 1fr 28px;
+      gap: 6px;
+      padding: 0;
+      color: var(--tama-ink);
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 9px;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .progress-row {
+      position: absolute;
+      z-index: 8;
+      top: 148px;
+      right: 50px;
+      left: 50px;
+      display: grid;
+      grid-template-columns: 1fr;
+      padding: 0;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .player-shell.menu .progress-row .step { display: none; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .track { background: var(--tama-lcd-dk); }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .fill,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .bar .knob { background: var(--tama-ink); box-shadow: none; }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .alert {
+      position: absolute;
+      z-index: 20;
+      right: 36px;
+      bottom: 16px;
+      left: 36px;
+      height: 26px;
+      overflow: hidden;
+      padding: 4px 8px;
+      font-size: 9px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }

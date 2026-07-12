@@ -38,19 +38,23 @@ pub(super) fn shift(code: KeyCode) -> KeyEvent {
 
 /// The `af` chain set by a `SetAudioFilter` command among `cmds`, if any.
 pub(super) fn af(cmds: &[Cmd]) -> Option<&str> {
-    cmds.iter().find_map(|c| match c {
-        Cmd::Player(PlayerCmd::SetAudioFilter(s)) => Some(s.as_str()),
-        _ => None,
-    })
+    cmds.iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|c| match c {
+            PlayerCmd::SetAudioFilter(s) => Some(s.as_str()),
+            _ => None,
+        })
 }
 
 /// The URL of the `Load` command among `cmds`, if any. (A load now also emits
 /// `SaveLibrary`, so tests look for the Load rather than an exact one-element match.)
 pub(super) fn load_url(cmds: &[Cmd]) -> Option<&str> {
-    cmds.iter().find_map(|c| match c {
-        Cmd::Player(PlayerCmd::Load(u)) => Some(u.as_str()),
-        _ => None,
-    })
+    cmds.iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|c| match c {
+            PlayerCmd::Load(u) => Some(u.as_str()),
+            _ => None,
+        })
 }
 
 pub(super) fn load_watch_video_id(cmds: &[Cmd]) -> Option<String> {
@@ -81,9 +85,52 @@ pub(super) fn assert_no_load(cmds: &[Cmd]) {
     assert_eq!(load, None, "expected no Load command, got {load:?}");
 }
 
+/// Reducer tests run without `RuntimeHandles`; model successful admission and append the
+/// post-commit effects so assertions observe the same complete turn as production.
+pub(super) fn admit_player_transition(app: &mut App, cmds: &mut Vec<Cmd>) {
+    let follow_ups = app.admit_player_intents_with_followups_for_test(cmds);
+    cmds.extend(follow_ups);
+}
+
+/// Model a failed runtime admission for one reducer-produced player transaction.
+pub(super) fn reject_player_transition(
+    app: &mut App,
+    cmds: Vec<Cmd>,
+    error: crate::util::delivery::DeliveryError,
+) -> Vec<Cmd> {
+    let intent = cmds
+        .into_iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Intent(intent)) => Some(*intent),
+            _ => None,
+        })
+        .expect("player transition intent");
+    crate::runtime::player_delivery::settle_player_intent(app, intent, Err(error))
+}
+
+/// Exercise the real runtime preflight/admission boundary and return the player receiver so a
+/// stale-plan regression can prove that no command prefix reached the actor lane.
+pub(super) fn runtime_admit_player_transition(
+    app: &mut App,
+    cmds: Vec<Cmd>,
+) -> (Vec<Cmd>, tokio::sync::mpsc::Receiver<PlayerCmd>) {
+    let intent = cmds
+        .into_iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Intent(intent)) => Some(*intent),
+            _ => None,
+        })
+        .expect("player transition intent");
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    let player = crate::player::PlayerHandle::test_handle(tx);
+    let follow_ups = crate::runtime::player_delivery::admit_player_intent(&player, app, intent);
+    (follow_ups, rx)
+}
+
 pub(super) fn has_stop(cmds: &[Cmd]) -> bool {
     cmds.iter()
-        .any(|c| matches!(c, Cmd::Player(PlayerCmd::Stop)))
+        .flat_map(Cmd::player_commands)
+        .any(|command| matches!(command, PlayerCmd::Stop))
 }
 
 pub(super) fn confirm_on_f5_keymap() -> KeyMap {
@@ -139,7 +186,8 @@ pub(super) fn app_playing(n: usize, start: usize) -> App {
     app.queue.set(songs(n), start);
     app.mode = Mode::Player;
     let song = app.queue.current().cloned();
-    app.load_song(song);
+    let mut cmds = app.load_song(song);
+    admit_player_transition(&mut app, &mut cmds);
     app
 }
 
@@ -154,7 +202,8 @@ pub(super) fn current(app: &App) -> &str {
 pub(super) fn recording_app(mode: crate::recorder::RecordingMode) -> App {
     let mut app = App::new(100);
     app.queue.set(vec![radio_station("groove")], 0);
-    app.load_song(app.queue.current().cloned());
+    let mut cmds = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut cmds);
     app.recorder.supported = true;
     app.recorder.temp_dir = std::path::PathBuf::from("/tmp/ytt-rec-test");
     app.config.recording.mode = mode;
@@ -162,9 +211,11 @@ pub(super) fn recording_app(mode: crate::recorder::RecordingMode) -> App {
 }
 
 pub(super) fn feed_title(app: &mut App, title: &str) -> Vec<Cmd> {
-    app.update(PlayerMsg::Metadata(
+    let mut cmds = app.update(PlayerMsg::Metadata(
         serde_json::json!({ "icy-title": title }),
-    ))
+    ));
+    admit_player_transition(app, &mut cmds);
+    cmds
 }
 
 /// Pretend the open segment started `secs` ago so the min/max filters see real duration.
@@ -178,16 +229,18 @@ pub(super) fn backdate_current(app: &mut App, secs: u64) {
 }
 
 pub(super) fn emits_stream_record_clear(cmds: &[Cmd]) -> bool {
-    cmds.iter().any(|c| {
-        matches!(c, Cmd::Player(crate::player::PlayerCmd::SetProperty { name, value })
-            if name == "stream-record" && value == &serde_json::Value::from(""))
+    cmds.iter().flat_map(Cmd::player_commands).any(|command| {
+        command.property().is_some_and(|(name, value)| {
+            name == "stream-record" && value == &serde_json::Value::from("")
+        })
     })
 }
 
 pub(super) fn radio_playing(id: &str) -> App {
     let mut app = App::new(100);
     app.queue.set(vec![radio_station(id)], 0);
-    app.load_song(app.queue.current().cloned());
+    let mut cmds = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut cmds);
     app
 }
 
@@ -231,7 +284,9 @@ pub(super) fn heal_cmd_id(cmds: &[Cmd]) -> Option<&str> {
 
 pub(super) fn resolve_cmd_id(cmds: &[Cmd]) -> Option<&str> {
     cmds.iter().find_map(|c| match c {
-        Cmd::Resolve { video_id, .. } => Some(video_id.as_str()),
+        Cmd::Resolve { video_id, .. } | Cmd::ResolveForSelfHeal { video_id, .. } => {
+            Some(video_id.as_str())
+        }
         _ => None,
     })
 }
@@ -426,7 +481,7 @@ pub(super) fn open_library_tab(app: &mut App, tab: LibraryTab) {
     }
 }
 
-pub(super) fn lyric_lines() -> Vec<LyricLine> {
+pub(super) fn lyric_lines() -> std::sync::Arc<[LyricLine]> {
     vec![
         LyricLine {
             time: 0.0,
@@ -437,11 +492,16 @@ pub(super) fn lyric_lines() -> Vec<LyricLine> {
             text: "two".to_owned(),
         },
     ]
+    .into()
 }
 
 pub(super) fn resolve_cmd<'a>(cmds: &'a [Cmd], id: &str) -> Option<&'a str> {
     cmds.iter().find_map(|c| match c {
         Cmd::Resolve {
+            video_id,
+            watch_url,
+        }
+        | Cmd::ResolveForSelfHeal {
             video_id,
             watch_url,
         } if video_id == id => Some(watch_url.as_str()),
@@ -465,10 +525,20 @@ pub(super) fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect 
         .find(|b| b.target == MouseTarget::MouseHelp)
         .map(|b| b.rect)
         .expect("rendered mouse help button");
+    // The footer may carry the docked-bar ▼/▲ toggle right of the mouse hint — the
+    // centering contract covers the whole rendered cluster.
+    let collapse = buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Global(Action::ToggleControlBox))
+        .map(|b| b.rect);
     let left = key.left().min(mouse.left());
     let top = key.top().min(mouse.top());
-    let right = key.right().max(mouse.right());
-    let bottom = key.bottom().max(mouse.bottom());
+    let mut right = key.right().max(mouse.right());
+    let mut bottom = key.bottom().max(mouse.bottom());
+    if let Some(c) = collapse {
+        right = right.max(c.right());
+        bottom = bottom.max(c.bottom());
+    }
     Rect {
         x: left,
         y: top,
@@ -667,7 +737,11 @@ pub(super) fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
 pub(super) fn click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
     render_app(app);
     let (col, row) = button_center(app, target);
-    app.update(Msg::MouseClick { col, row })
+    app.update(Msg::MouseClick {
+        col,
+        row,
+        multi: false,
+    })
 }
 
 pub(super) fn double_click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
@@ -730,15 +804,9 @@ pub(super) fn render_at(app: &App, w: u16, h: u16) -> (Vec<MouseTarget>, String)
     (targets, top)
 }
 
-#[cfg(unix)]
-pub(super) fn fake_overlay_proc() -> std::process::Child {
-    std::process::Command::new("sleep")
-        .arg("30")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn test child")
+pub(super) fn fake_overlay_proc() -> crate::util::process_tree::OwnedProcessTree {
+    crate::app::video_transition::spawn_fake_video_overlay_process()
+        .expect("spawn fake video-overlay child")
 }
 
 pub(super) fn app_with_playlist_row() -> App {

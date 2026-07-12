@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod scrollbar;
+
 /// The last-rendered mouse hit map: the clickable button rects views publish each frame plus
 /// the seekbar's screen rect. Kept behind a small method API so the reducer and views never
 /// touch the raw cells. Interior-mutable throughout because the render pass only holds `&App`
@@ -97,15 +99,19 @@ impl App {
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
     /// seekbar seeks to the matching fraction of the track. Hit rects are published by
-    /// views each render.
-    pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+    /// views each render. `multi` (Ctrl/Cmd held) only changes what a Library/Search
+    /// list-row hit does — toggle the row in/out of the selection — and is ignored by
+    /// every other surface, so a modifier click still presses buttons and closes modals.
+    pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16, multi: bool) -> Vec<Cmd> {
         // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
         // below if this click grabs a track.
         self.interaction.seekbar_drag = None;
+        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
+        self.interaction.pending_double_click_selection = None;
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
         if self.overlays.context_menu.is_some() {
@@ -429,6 +435,16 @@ impl App {
             if let MouseTarget::Scrollbar(surface) = region.target {
                 return self.on_scrollbar_press(surface, region.rect, row);
             }
+            // Ctrl/Cmd+click on a list row toggles it in/out of the multi-selection.
+            if multi && let MouseTarget::ListRow(i) = region.target {
+                match self.mode {
+                    Mode::Search => return self.search_toggle_pick(i),
+                    Mode::Library if !self.local_dedicated_mode => {
+                        return self.library_toggle_pick(i);
+                    }
+                    _ => {}
+                }
+            }
             return self.on_mouse_target(region.target);
         }
         // A click that missed every button dismisses an open dropdown (modal-style), so the same
@@ -448,7 +464,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.mode != Mode::Player {
+        if !self.player_controls_live() {
             return Vec::new();
         }
         if let Some(area) = self.hits.seekbar_rect()
@@ -462,10 +478,26 @@ impl App {
             tracing::info!(secs = target, "click seek");
             // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
             self.interaction.seekbar_drag = Some(col);
+            self.interaction.seekbar_admission = SeekbarAdmission::Pending;
             self.dirty = true;
-            return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
+            return self.player_intent(
+                "seek_absolute",
+                PlayerCmd::SeekAbsolute(target),
+                PlayerCommit::Seek {
+                    optimistic_position: Some(target),
+                },
+            );
         }
         Vec::new()
+    }
+
+    /// Whether the player transport/status controls are on screen and may take input:
+    /// always on the Player screen, and on every screen showing the docked control box.
+    /// A control that isn't rendered must never take clicks — and vice versa.
+    fn player_controls_live(&self) -> bool {
+        self.mode == Mode::Player
+            || self.control_box_active()
+            || self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
     }
 
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
@@ -480,13 +512,15 @@ impl App {
             }
             // The ✨ at the top-left of the nav bar — same handler as the `A` shortcut.
             MouseTarget::Global(Action::ToggleAnimations) => self.toggle_animations(),
+            // The ▲/▼ at the right of the footer hint — same handler as the `B` shortcut.
+            MouseTarget::Global(Action::ToggleControlBox) => self.toggle_control_box(),
             MouseTarget::Global(_) => Vec::new(),
-            MouseTarget::Player(action) if self.mode == Mode::Player => {
+            MouseTarget::Player(action) if self.player_controls_live() => {
                 self.on_player_action(action)
             }
             MouseTarget::Player(_) => Vec::new(),
             // Toggle the EQ dropdown by clicking its `eq:` label (closes the streaming one).
-            MouseTarget::EqMenu if self.mode == Mode::Player => {
+            MouseTarget::EqMenu if self.player_controls_live() => {
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dropdowns.eq_open = !self.dropdowns.eq_open;
@@ -495,12 +529,12 @@ impl App {
             }
             MouseTarget::EqMenu => Vec::new(),
             // Pick a preset from the open dropdown.
-            MouseTarget::EqSelect(preset) if self.mode == Mode::Player => {
+            MouseTarget::EqSelect(preset) if self.player_controls_live() => {
                 self.select_eq_preset(preset)
             }
             MouseTarget::EqSelect(_) => Vec::new(),
             // Toggle the streaming-mode dropdown by clicking its `streaming:` label (closes the EQ one).
-            MouseTarget::StreamingMenu if self.mode == Mode::Player => {
+            MouseTarget::StreamingMenu if self.player_controls_live() => {
                 self.dropdowns.eq_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dropdowns.streaming_open = !self.dropdowns.streaming_open;
@@ -509,7 +543,7 @@ impl App {
             }
             MouseTarget::StreamingMenu => Vec::new(),
             // Pick a streaming mode from the open dropdown.
-            MouseTarget::StreamingSelect(mode) if self.mode == Mode::Player => {
+            MouseTarget::StreamingSelect(mode) if self.player_controls_live() => {
                 self.select_streaming_mode(mode)
             }
             MouseTarget::StreamingSelect(_) => Vec::new(),
@@ -674,6 +708,21 @@ impl App {
                 self.open_queue_popup();
                 Vec::new()
             }
+            // The miniplayer renders the queue window itself, so the `N/M` label opens it
+            // in place — even when the bar is Top or collapsed (the mini is the only UI).
+            MouseTarget::QueuePos
+                if self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini =>
+            {
+                self.open_queue_popup();
+                Vec::new()
+            }
+            // From another screen (docked box) the queue window still lives on the Player
+            // screen — follow the click there instead of opening an invisible popup.
+            MouseTarget::QueuePos if self.control_box_active() => {
+                let cmds = self.navigate_to(Mode::Player);
+                self.open_queue_popup();
+                cmds
+            }
             MouseTarget::QueuePos => Vec::new(),
             // Single-click a queue row: select it (and anchor a drag range here).
             MouseTarget::QueueRow(i) if self.queue_popup.open => {
@@ -773,7 +822,7 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmRadioMode => {
-                let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() else {
+                let Some(confirm) = self.radio_mode.pending_radio_mode_confirm else {
                     return Vec::new();
                 };
                 self.apply_radio_mode_confirm(confirm)
@@ -784,7 +833,7 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmLocalMode => {
-                let Some(confirm) = self.local_mode.pending_confirm.take() else {
+                let Some(confirm) = self.local_mode.pending_confirm else {
                     return Vec::new();
                 };
                 self.apply_local_mode_confirm(confirm)
@@ -899,7 +948,7 @@ impl App {
             || self.overlays.recordings_browser.is_some()
             || self.overlays.recording_settings.is_some()
         {
-            return self.on_mouse_click(col, row);
+            return self.on_mouse_click(col, row, false);
         }
         // Double-clicking a filter-popup row plays it (the mouse Enter), mirroring the
         // queue window's inside/outside split.
@@ -915,7 +964,7 @@ impl App {
                 }
                 return Vec::new();
             }
-            return self.on_mouse_click(col, row); // outside -> close, same as single click
+            return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
         if self.queue_popup.open {
             let inside = self
@@ -929,7 +978,7 @@ impl App {
                 }
                 return Vec::new();
             }
-            return self.on_mouse_click(col, row); // outside -> close, same as single click
+            return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
         match self.mouse_target_at(col, row) {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
@@ -949,8 +998,11 @@ impl App {
             Some(MouseTarget::LocalRow(i)) if self.local_dedicated_mode => {
                 self.local_row_activate(i)
             }
-            Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
-            _ => self.on_mouse_click(col, row),
+            Some(MouseTarget::ListRow(i)) => {
+                self.restore_double_click_selection(i);
+                self.on_list_row_activate(i)
+            }
+            _ => self.on_mouse_click(col, row, false),
         }
     }
 
@@ -974,7 +1026,7 @@ impl App {
         // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
         // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
         if self.interaction.seekbar_drag.is_some()
-            && self.mode == Mode::Player
+            && self.player_controls_live()
             && !self.queue_popup.open
         {
             if let Some(area) = self.hits.seekbar_rect()
@@ -985,18 +1037,29 @@ impl App {
                 // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
                 // can't underflow u16).
                 let c = col.clamp(area.x, area.right().saturating_sub(1));
-                if self.interaction.seekbar_drag != Some(c) {
-                    // Intra-cell dedupe: only re-seek when the target cell actually changes.
+                if self.interaction.seekbar_drag != Some(c)
+                    || self.interaction.seekbar_admission == SeekbarAdmission::Retry
+                {
+                    // Intra-cell dedupe is valid only after admission. A rejected request keeps
+                    // the scrub active but must allow the same cell to be retried.
                     self.interaction.seekbar_drag = Some(c);
+                    self.interaction.seekbar_admission = SeekbarAdmission::Pending;
                     let frac = f64::from(c - area.x) / f64::from(area.width);
                     let target = (frac * dur).clamp(0.0, dur);
                     self.dirty = true;
-                    return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
+                    return self.player_intent(
+                        "seek_absolute",
+                        PlayerCmd::SeekAbsolute(target),
+                        PlayerCommit::Seek {
+                            optimistic_position: Some(target),
+                        },
+                    );
                 }
                 return Vec::new();
             }
             // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
             self.interaction.seekbar_drag = None;
+            self.interaction.seekbar_admission = SeekbarAdmission::Settled;
             return Vec::new();
         }
         if self.queue_popup.open {
@@ -1062,8 +1125,25 @@ impl App {
                 self.drag_anchor(DragSurface::Library, i)
             };
             if self.library_ui.anchor != anchor || self.library_ui.selected != i {
+                self.interaction.pending_double_click_selection = None;
                 self.library_ui.anchor = anchor;
                 self.library_ui.selected = i;
+                // A drag is a range gesture — discontiguous picks yield to the range.
+                self.library_ui.picked.clear();
+                self.dirty = true;
+            }
+        }
+        // The Search results list drags identically to the Library list above.
+        if self.mode == Mode::Search
+            && let Some(MouseTarget::ListRow(i)) = self.mouse_target_at(col, row)
+        {
+            let anchor = self.drag_anchor(DragSurface::Search, i);
+            if self.search.anchor != anchor || self.search.selected != i {
+                self.interaction.pending_double_click_selection = None;
+                self.search.anchor = anchor;
+                self.search.selected = i;
+                self.search.picked.clear();
+                self.search.focus = SearchFocus::Results;
                 self.dirty = true;
             }
         }
@@ -1075,6 +1155,7 @@ impl App {
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
         self.interaction.seekbar_drag = None;
+        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
 
         if let Some(drag) = self.interaction.ai_transcript_drag.take() {
             if drag.moved {
@@ -1110,119 +1191,19 @@ impl App {
         Vec::new()
     }
 
-    fn on_scrollbar_press(&mut self, surface: ScrollSurface, rect: Rect, row: u16) -> Vec<Cmd> {
-        let Some((content_len, viewport, position)) = self.scrollbar_snapshot(surface) else {
-            return Vec::new();
-        };
-        let track_row = row
-            .saturating_sub(rect.y)
-            .min(rect.height.saturating_sub(1));
-        let Some(thumb) =
-            crate::ui::scroll::scrollbar_thumb(content_len, viewport, rect.height, position)
-        else {
-            return Vec::new();
-        };
-        let thumb_end = thumb.start.saturating_add(thumb.len);
-        let grab = if track_row >= thumb.start && track_row < thumb_end {
-            track_row - thumb.start
-        } else {
-            thumb.len / 2
-        };
-        let drag = ScrollbarDrag {
-            surface,
-            rect,
-            content_len,
-            viewport,
-            grab,
-        };
-        self.interaction.drag_selection = None;
-        self.interaction.ai_transcript_drag = None;
-        self.interaction.drag_scrollbar = Some(drag);
-        self.drag_scrollbar_to(drag, row);
-        Vec::new()
-    }
-
-    fn drag_scrollbar_to(&mut self, drag: ScrollbarDrag, row: u16) {
-        if drag.rect.height == 0 {
+    /// Settle only a seek issued by the active mouse scrub. Runtime calls this for every seek
+    /// admission result, but unrelated keyboard/remote seeks find no `Pending` mouse request and
+    /// therefore cannot leave a stale retry bypass behind.
+    pub(crate) fn settle_mouse_seek_admission(&mut self, accepted: bool) {
+        if self.interaction.seekbar_admission != SeekbarAdmission::Pending {
             return;
         }
-        let track_row = row
-            .saturating_sub(drag.rect.y)
-            .min(drag.rect.height.saturating_sub(1));
-        let offset = crate::ui::scroll::offset_from_scrollbar_row(
-            track_row,
-            drag.grab,
-            drag.content_len,
-            drag.viewport,
-            drag.rect.height,
-        );
-        if let Some(state) = self.scroll_state(drag.surface) {
-            state.set_offset(offset, drag.content_len);
-            self.dirty = true;
-        }
-    }
-
-    fn scrollbar_snapshot(&self, surface: ScrollSurface) -> Option<(usize, usize, usize)> {
-        let state = self.scroll_state(surface)?;
-        let content_len = self.scroll_content_len(surface)?;
-        let viewport = state.viewport();
-        if content_len <= viewport || viewport == 0 {
-            return None;
-        }
-        Some((content_len, viewport, state.offset()))
-    }
-
-    fn scroll_state(&self, surface: ScrollSurface) -> Option<&crate::ui::scroll::ScrollState> {
-        Some(match surface {
-            ScrollSurface::Library => &self.bridges.library_scroll,
-            ScrollSurface::Search => &self.bridges.search_scroll,
-            ScrollSurface::SearchFilter => &self.search_filter.scroll,
-            ScrollSurface::AiTranscript => &self.bridges.ai_transcript_scroll,
-            ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
-            ScrollSurface::Settings => &self.bridges.settings_scroll,
-            ScrollSurface::Queue => &self.queue_popup.scroll,
-            // Marquee-only surface with no scrollbar.
-            ScrollSurface::NowPlaying => return None,
-        })
-    }
-
-    fn scroll_content_len(&self, surface: ScrollSurface) -> Option<usize> {
-        Some(match surface {
-            ScrollSurface::Library => {
-                if self.local_dedicated_mode {
-                    self.local_rows_len()
-                } else {
-                    self.library_len()
-                }
-            }
-            ScrollSurface::Search => self.search.results.len(),
-            ScrollSurface::SearchFilter => self.search_filter.matches.len(),
-            ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
-            ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
-            ScrollSurface::Settings => self.settings_field_display_len()?,
-            ScrollSurface::Queue => self.queue.len(),
-            // Marquee-only surface with no scrollbar.
-            ScrollSurface::NowPlaying => return None,
-        })
-    }
-
-    fn settings_field_display_len(&self) -> Option<usize> {
-        let st = self.settings.as_deref()?;
-        if st.tab == SettingsTab::Keys {
-            return None;
-        }
-        let fields = st.fields();
-        // `st.sections()` (not `st.tab.sections()`) so the scroll length matches the
-        // visibility-filtered field list in every mode.
-        let sections = st.sections();
-        Some(if sections.is_empty() {
-            fields.len()
+        self.interaction.seekbar_admission = if accepted || self.interaction.seekbar_drag.is_none()
+        {
+            SeekbarAdmission::Settled
         } else {
-            fields
-                .len()
-                .saturating_add(sections.len())
-                .saturating_add(sections.len().saturating_sub(1))
-        })
+            SeekbarAdmission::Retry
+        };
     }
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
@@ -1318,7 +1299,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.mode == Mode::Player
+        if self.player_controls_live()
             && self.config.effective_mouse_wheel_volume()
             && matches!(
                 self.mouse_target_at(col, row),
@@ -1379,15 +1360,43 @@ impl App {
     pub(in crate::app) fn on_list_row_click(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
             Mode::Search if index < self.search.results.len() => {
+                self.interaction.pending_double_click_selection = {
+                    let selection = self.search_selection_indices();
+                    (selection.len() > 1 && selection.contains(&index)).then_some(
+                        PendingDoubleClickSelection {
+                            surface: DragSurface::Search,
+                            row: index,
+                            indices: selection,
+                        },
+                    )
+                };
                 self.search.selected = index;
+                self.search.anchor = index;
+                // A plain click always has immediate single-row semantics. If it turns out
+                // to be the first half of a double-click, the matching activation path above
+                // restores the pre-click selection from the transient snapshot.
+                self.search.picked.clear();
                 self.search.focus = SearchFocus::Results;
+                self.interaction.drag_selection = Some(DragSelection {
+                    surface: DragSurface::Search,
+                    anchor: index,
+                });
                 self.dirty = true;
             }
             Mode::Library if self.local_dedicated_mode => return self.local_row_click(index),
             Mode::Library if index < self.library_len() => {
+                self.interaction.pending_double_click_selection = {
+                    let selection = self.library_selection_indices();
+                    (!self.playlists_root() && selection.len() > 1 && selection.contains(&index))
+                        .then_some(PendingDoubleClickSelection {
+                            surface: DragSurface::Library,
+                            row: index,
+                            indices: selection,
+                        })
+                };
                 self.library_ui.selected = index;
-                // A fresh single click re-anchors the multi-select range here.
                 self.library_ui.anchor = index;
+                self.library_ui.picked.clear();
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Library,
                     anchor: index,
@@ -1419,6 +1428,36 @@ impl App {
         Vec::new()
     }
 
+    /// Restore a selection hidden by the first press of this exact double-click. The snapshot
+    /// is one-shot and surface/row scoped, so a double-click on any other list row activates
+    /// only that clicked row.
+    fn restore_double_click_selection(&mut self, index: usize) {
+        let surface = match self.mode {
+            Mode::Search => Some(DragSurface::Search),
+            Mode::Library if !self.local_dedicated_mode => Some(DragSurface::Library),
+            _ => None,
+        };
+        let Some(snapshot) = self.interaction.pending_double_click_selection.take() else {
+            return;
+        };
+        if surface != Some(snapshot.surface) || snapshot.row != index {
+            return;
+        }
+        match snapshot.surface {
+            DragSurface::Search => {
+                self.search.selected = index;
+                self.search.anchor = index;
+                self.search.picked = snapshot.indices.into_iter().collect();
+            }
+            DragSurface::Library => {
+                self.library_ui.selected = index;
+                self.library_ui.anchor = index;
+                self.library_ui.picked = snapshot.indices.into_iter().collect();
+            }
+            DragSurface::Queue => {}
+        }
+    }
+
     /// Double-click activate on the active screen's list: play the song now, keeping the queue
     /// (Search/Library) — the mouse equivalent of Enter. Settings rows have no "play", so a
     /// double-click just selects.
@@ -1426,7 +1465,12 @@ impl App {
         match self.mode {
             // The shared activation path, so a double-clicked playlist row fetches its
             // tracks first (like Enter) instead of trying to play the row itself.
-            Mode::Search if index < self.search.results.len() => self.activate_search_index(index),
+            Mode::Search if index < self.search.results.len() => {
+                match self.multi_selected_search_songs() {
+                    Some(songs) => self.play_now_many(songs),
+                    None => self.activate_search_index(index),
+                }
+            }
             Mode::Library if self.local_dedicated_mode => self.local_row_activate(index),
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
@@ -1436,10 +1480,7 @@ impl App {
                     self.library_ui.anchor = index;
                     return self.open_selected_playlist();
                 }
-                match self.selected_library_song() {
-                    Some(song) => self.play_now(song),
-                    None => Vec::new(),
-                }
+                self.play_now_many(self.selected_library_songs())
             }
             _ => self.on_list_row_click(index),
         }

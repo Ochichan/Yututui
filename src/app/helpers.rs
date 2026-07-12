@@ -39,7 +39,7 @@ pub(in crate::app) fn spawn_video_overlay(
     cookies: Option<&std::path::Path>,
     layout: crate::config::VideoOverlay,
     ipc_path: Option<&str>,
-) -> Option<std::process::Child> {
+) -> Option<crate::util::process_tree::OwnedProcessTree> {
     use std::process::Stdio;
     let mut cmd =
         process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
@@ -83,5 +83,9 @@ pub(in crate::app) fn spawn_video_overlay(
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(DETACHED_PROCESS);
     }
-    cmd.spawn().ok()
+    cmd.spawn()
+        .map(|child| {
+            crate::util::process_tree::OwnedProcessTree::new(child, process::ProcessProfile::Media)
+        })
+        .ok()
 }

@@ -63,6 +63,18 @@ macOS and Windows releases include `yututray`, the menu-bar / notification-area 
 
 Start-at-login is opt-in: `yututray --install-startup`.
 
+`yututray` and `yututray --background` start tray-only, and `--mini` opens the native mini player.
+Packaged releases include those tray/mini surfaces but intentionally exclude the full web-GUI app;
+`--main-window` is available only in developer builds that embed its assets. Launching the bare
+command again asks the existing instance to show its mini player instead of creating a second tray
+icon. On Windows, left-click
+toggles the mini player and right-click opens the menu; macOS keeps the native menu on the status
+item and exposes the mini player from **Show Mini Player**.
+
+The unpinned mini player behaves like a popover and hides after focus moves away. Pinning keeps it
+visible, always on top, and restores its monitor-relative position. Tray-only and mini-only modes
+stay out of the taskbar/Dock and app switcher.
+
 </details>
 
 ## Quick start
@@ -91,7 +103,7 @@ same one-line instruction; extra shots are welcome — just copy a slot block. -
 
 ### The player — real album art & time-synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath.
+Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×11 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
@@ -251,7 +263,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `o` | Settings |
 | `Ctrl+Q` | Quit |
 
-> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume.
+> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume. Drag across rows to select a range — in Search results just like the Library — and `Ctrl`+click (`⌘`+click on macOS) toggles single rows in and out of the selection. The footer **mouse** button opens the full mouse cheat sheet.
 
 ## Troubleshooting
 
@@ -329,9 +341,19 @@ ytt -r seek-to 90          # jump to 1:30
 ytt -r streaming on        # endless streaming: on / off / toggle
 ytt -r play "lofi"         # daemon: search and play the first result
 ytt -r status              # one-line "now playing" (--json for scripts)
+ytt -r info                # owner mode, protocol and capabilities (never the token)
+ytt -r queue-list          # numbered queue; the current row starts with >
+ytt -r queue-play 2        # play queue row 2 (queue numbers start at 1)
+ytt -r settings-show       # compact, non-secret settings summary
+ytt -r watch --json        # live player/queue/system events as NDJSON (the default topics)
+ytt -r watch all           # all published topics: player, queue, settings, system
 ```
 
 Media keys on i3 / sway: `bindsym XF86AudioPlay exec ytt -r pp`.
+
+Remote control stays on the same machine and is scoped to the current OS user through a private
+Unix socket or Windows named pipe. It is not a LAN/HTTP remote: never share or expose its runtime
+directory. Queue numbers shown by `queue-list` are 1-based.
 
 For terminal-free playback, run the headless daemon:
 
@@ -405,6 +427,21 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 - Config: `~/Library/Application Support/yututui/config.json` (macOS) · `~/.config/yututui/config.json` (Linux) · `%APPDATA%\yututui\config.json` (Windows) — with `playlists.json`, `scrobble-queue.jsonl` and `transfers/` alongside.
 - Downloads: `~/Music/yututui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
 - `GEMINI_API_KEY` and `YTM_DOWNLOAD_DIR` override saved settings at launch.
+
+**Portable personal-data export.** Choose **Settings (`o`) → General → Export personal data**, or run:
+
+```sh
+ytt data export                         # save to the OS Downloads folder
+ytt data export --to ~/existing-folder # choose an existing directory
+```
+
+`--to` takes a directory, not a filename, and does not create it. A destination where another local account could replace the finished file is rejected. The result is a new, owner-private, never-overwritten, versioned JSON file containing sanitized portable settings; track and radio favorites; listening and radio history; playlists and safe track metadata/public catalog IDs; and recommendation signals, artist affinities and station preferences.
+
+If the primary app or daemon is running, the CLI exports that owner's current in-memory state. With additional `--new-instance` players, the CLI still exports only the advertised primary; use each secondary's Settings screen for its live state. Offline export refuses to read the stores while any current-version ytt owner is active.
+
+It excludes authentication cookies, API keys, OAuth tokens and account identifiers; every filesystem path and machine-specific audio setting; playable, origin, artwork and radio-stream URLs; downloaded/recorded media, manifests and sidecars; pending scrobbles, transfer jobs/reports and session queues; AI usage logs, generated caches, artwork caches and application logs; managed-tool binaries and paths, desktop geometry and recovery backups.
+
+The JSON is **not encrypted** and still contains private listening history, so store or share it accordingly. This version is export-only: there is no import or restore command yet.
 
 </details>
 

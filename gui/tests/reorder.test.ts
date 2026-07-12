@@ -55,7 +55,7 @@ describe('reorder math', () => {
 });
 
 describe('QueueStore.move', () => {
-  it('optimistically reorders and sends queue_move with the current rev', () => {
+  it('sends queue_move with the current rev and waits for an authoritative snapshot', () => {
     const t = new MockTransport();
     const store = new QueueStore(new Client(t));
     t.emit({
@@ -68,7 +68,7 @@ describe('QueueStore.move', () => {
       },
     });
     store.move(0, 2);
-    expect(store.items.map((x) => x.video_id)).toEqual(['b', 'c', 'a']);
+    expect(store.items.map((x) => x.video_id)).toEqual(['a', 'b', 'c']);
     const sent = t.sent.at(-1)!;
     expect(sent).toMatchObject({ kind: 'cmd', name: 'queue_move' });
     expect(sent.payload).toEqual({ from: 0, to: 2, expected_rev: 7 });
@@ -89,6 +89,63 @@ describe('QueueStore.move', () => {
   });
 });
 
+describe('QueueStore checked row mutations', () => {
+  it('plays with the snapshot revision in a correlated request', () => {
+    const t = new MockTransport();
+    const store = new QueueStore(new Client(t));
+    t.emit({
+      v: 1,
+      kind: 'event',
+      topic: 'queue',
+      payload: { kind: 'queue_snapshot', model: { rev: 7, items: [stub('a')] } as QueueModel },
+    });
+
+    store.play(0);
+
+    expect(t.sent.at(-1)).toMatchObject({
+      kind: 'req',
+      name: 'queue_play_if_revision',
+      payload: { position: 0, expected_rev: 7 },
+    });
+  });
+
+  it('does not optimistically remove and reports a stale revision with a page-scoped refresh', async () => {
+    const t = new MockTransport();
+    const errors: string[] = [];
+    const store = new QueueStore(new Client(t, 'queue-page'), (message) => errors.push(message));
+    t.emit({
+      v: 1,
+      kind: 'event',
+      topic: 'queue',
+      payload: {
+        kind: 'queue_snapshot',
+        model: { rev: 11, items: [stub('a'), stub('b')] } as QueueModel,
+      },
+    });
+
+    store.remove(1);
+    expect(store.items.map((item) => item.video_id)).toEqual(['a', 'b']);
+    const request = t.sent.at(-1)!;
+    expect(request).toMatchObject({
+      kind: 'req',
+      name: 'queue_remove_if_revision',
+      payload: { position: 1, expected_rev: 11 },
+    });
+    t.emit({ v: 1, id: request.id, kind: 'err', payload: { reason: 'stale_rev' } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toEqual(['The queue changed. Refreshing it now; try again.']);
+    expect(t.sent.at(-1)).toEqual({
+      v: 1,
+      page_id: 'queue-page',
+      kind: 'sub',
+      name: 'refresh',
+      payload: ['queue'],
+    });
+  });
+});
+
 describe('demo core queue_move', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -103,13 +160,17 @@ describe('demo core queue_move', () => {
     return { t, frames };
   }
   const lastQueue = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
-      model: QueueModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
+        model: QueueModel;
+      }
+    ).model;
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('reorders the queue, bumps rev, and keeps the cursor on the same track', () => {
     const { t, frames } = boot();

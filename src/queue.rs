@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::Song;
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod mutation;
+pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
+
 /// Hard cap on queued tracks (priority #1: bounded memory).
 const MAX: usize = 999;
 
@@ -92,6 +95,10 @@ pub struct Queue {
     /// queue change. Private: only mutators may touch it.
     rev: u64,
     rng: fastrand::Rng,
+    /// Per-instance instrumentation makes exact revision-mint assertions deterministic even
+    /// though the production revision source is process-global and tests run concurrently.
+    #[cfg(test)]
+    revision_bumps: usize,
 }
 
 /// A point-in-time copy of the queue's playable state.
@@ -137,6 +144,8 @@ impl Default for Queue {
             repeat: Repeat::Off,
             rev: next_queue_rev(),
             rng: fastrand::Rng::new(),
+            #[cfg(test)]
+            revision_bumps: 0,
         }
     }
 }
@@ -150,10 +159,19 @@ impl Queue {
         self.songs.len()
     }
 
+    pub(crate) fn has_capacity_for(&self, additional: usize) -> bool {
+        additional <= MAX.saturating_sub(self.songs.len())
+    }
+
     /// The membership/order revision. Equal revs ⇒ identical contents and play order
     /// (process-wide — safe to compare across queue swaps); cursor moves don't change it.
     pub fn rev(&self) -> u64 {
         self.rev
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revision_bumps(&self) -> usize {
+        self.revision_bumps
     }
 
     /// Test-only: pin the shuffle RNG so two queues driven by the same command script
@@ -166,6 +184,10 @@ impl Queue {
 
     fn bump_rev(&mut self) {
         self.rev = next_queue_rev();
+        #[cfg(test)]
+        {
+            self.revision_bumps += 1;
+        }
     }
 
     pub fn contains_video_id(&self, video_id: &str) -> bool {
@@ -186,7 +208,11 @@ impl Queue {
 
     /// Restore a snapshot previously produced by [`snapshot`](Self::snapshot).
     pub fn restore_snapshot(&mut self, snapshot: QueueSnapshot) {
-        self.bump_rev();
+        let plan = self.prepare_snapshot_restore(snapshot);
+        self.commit_mutation(plan);
+    }
+
+    fn restore_snapshot_without_revision(&mut self, snapshot: QueueSnapshot) {
         self.songs = snapshot.songs;
         // Enforce the same MAX cap every other mutation applies, so a corrupt/tampered session
         // snapshot can't inject an unbounded queue. Over-cap truncation drops the tail; the
@@ -252,6 +278,119 @@ impl Queue {
         self.cursor
     }
 
+    /// Plan a next-track cursor move without changing the live queue. Track loads are admitted
+    /// to the bounded player lane before [`commit_planned_cursor`](Self::commit_planned_cursor)
+    /// applies the move, so a rejected load cannot leave the UI pointing at a song mpv never
+    /// accepted.
+    pub(crate) fn plan_next_cursor(&self, from: usize, auto: bool) -> Option<usize> {
+        if self.songs.is_empty() || from >= self.order.len() {
+            return None;
+        }
+        if auto && self.repeat == Repeat::One {
+            return Some(from);
+        }
+        if from + 1 < self.order.len() {
+            Some(from + 1)
+        } else if self.repeat == Repeat::All {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Plan a previous-track cursor move without changing the live queue. At the beginning this
+    /// deliberately returns the current cursor unless repeat-all is active, matching [`prev`].
+    pub(crate) fn plan_prev_cursor(&self, from: usize) -> Option<usize> {
+        if self.songs.is_empty() || from >= self.order.len() {
+            return None;
+        }
+        if from > 0 {
+            Some(from - 1)
+        } else if self.repeat == Repeat::All {
+            Some(self.order.len() - 1)
+        } else {
+            Some(from)
+        }
+    }
+
+    pub(crate) fn song_at_cursor(&self, cursor: usize) -> Option<&Song> {
+        let idx = *self.order.get(cursor)?;
+        self.songs.get(idx)
+    }
+
+    /// Plan a queue-window jump without mutating the live cursor. Unlike [`goto`](Self::goto),
+    /// an out-of-range request is rejected instead of clamped: remote callers validate their
+    /// index up front, and a stale UI selection must not silently target a different track.
+    pub(crate) fn plan_goto_cursor(&self, target: usize) -> Option<usize> {
+        (target < self.order.len()).then_some(target)
+    }
+
+    /// Validate that a prepared track transition still refers to the exact queue state it read.
+    /// This is deliberately separate from the cursor mutation so callers can establish the
+    /// guard before recording outgoing signals or changing any other reducer state.
+    pub(crate) fn validate_planned_transition(
+        &self,
+        expected_rev: u64,
+        expected_cursor: usize,
+        expected_video_id: Option<&str>,
+        target_cursor: Option<usize>,
+    ) {
+        assert_eq!(
+            self.rev, expected_rev,
+            "queue changed before track-load commit"
+        );
+        assert_eq!(
+            self.cursor, expected_cursor,
+            "queue cursor changed before track-load commit"
+        );
+        assert_eq!(
+            self.current().map(|song| song.video_id.as_str()),
+            expected_video_id,
+            "current track changed before track-load commit"
+        );
+        if let Some(target_cursor) = target_cursor {
+            assert!(
+                target_cursor < self.order.len(),
+                "planned track cursor is out of range"
+            );
+        }
+    }
+
+    /// Non-panicking counterpart to [`Self::validate_planned_transition`] for an admission
+    /// boundary. A deferred player intent may outlive the queue snapshot it was prepared from;
+    /// the runtime must reject that work before sending its stale command batch to mpv.
+    pub(crate) fn planned_transition_matches(
+        &self,
+        expected_rev: u64,
+        expected_cursor: usize,
+        expected_video_id: Option<&str>,
+        target_cursor: Option<usize>,
+    ) -> bool {
+        self.rev == expected_rev
+            && self.cursor == expected_cursor
+            && self.current().map(|song| song.video_id.as_str()) == expected_video_id
+            && target_cursor.is_none_or(|cursor| cursor < self.order.len())
+    }
+
+    /// Commit a cursor move prepared from this exact queue state. Queue contents cannot change
+    /// between prepare and commit on the single owner lane; the guards make that invariant
+    /// explicit instead of silently loading a stale target if a future caller violates it.
+    pub(crate) fn commit_planned_cursor(
+        &mut self,
+        expected_rev: u64,
+        expected_cursor: usize,
+        expected_video_id: Option<&str>,
+        target_cursor: usize,
+    ) {
+        self.validate_planned_transition(
+            expected_rev,
+            expected_cursor,
+            expected_video_id,
+            Some(target_cursor),
+        );
+        self.cursor = target_cursor;
+    }
+
     /// How many tracks remain *after* the current one in the play order. Drives the
     /// autoplay/streaming hook (extend when this runs low). Zero when empty or at the end.
     pub fn remaining(&self) -> usize {
@@ -264,6 +403,14 @@ impl Queue {
     /// tracks are made reachable from the current cursor; with shuffle on they're
     /// randomized among themselves so they don't clump in insertion order.
     pub fn extend(&mut self, more: Vec<Song>) -> usize {
+        let added = self.extend_without_revision(more);
+        if added > 0 {
+            self.bump_rev();
+        }
+        added
+    }
+
+    fn extend_without_revision(&mut self, more: Vec<Song>) -> usize {
         let free = MAX.saturating_sub(self.songs.len());
         if free == 0 {
             return 0;
@@ -283,7 +430,6 @@ impl Queue {
         // If the queue had been empty, the cursor already sits at 0 → the first appended
         // track becomes current, which is what an enqueue-into-empty should do.
         self.order.extend(new_indices);
-        self.bump_rev();
         added
     }
 
@@ -331,6 +477,14 @@ impl Queue {
     /// Insert `more` immediately after the current track and make the first inserted track
     /// current. Returns the number actually inserted, bounded by [`MAX`].
     pub fn play_now_many(&mut self, more: Vec<Song>) -> usize {
+        let added = self.play_now_many_without_revision(more);
+        if added > 0 {
+            self.bump_rev();
+        }
+        added
+    }
+
+    fn play_now_many_without_revision(&mut self, more: Vec<Song>) -> usize {
         let free = MAX.saturating_sub(self.songs.len());
         if free == 0 {
             return 0;
@@ -353,18 +507,14 @@ impl Queue {
             }
             self.cursor = at;
         }
-        self.bump_rev();
         added
     }
 
     /// Replace the queue with `songs` and make `start` the current track. Honors the
     /// current shuffle setting (the chosen track plays first, the rest follow randomly).
-    pub fn set(&mut self, mut songs: Vec<Song>, start: usize) {
-        songs.truncate(MAX);
-        let start = start.min(songs.len().saturating_sub(1));
-        self.songs = songs;
-        self.rebuild_order(start);
-        self.bump_rev();
+    pub fn set(&mut self, songs: Vec<Song>, start: usize) {
+        let plan = self.prepare_replacement(QueueReplacementDraft::new(songs, start, None));
+        self.commit_mutation(plan);
     }
 
     /// Advance to the next track, returning it. `auto` is true for end-of-track
@@ -451,6 +601,12 @@ impl Queue {
     /// current track (or stops if the queue is now empty) — or `None` if `pos` is out of
     /// range. Powers the queue window's delete (single row or a drag-selected range).
     pub fn remove_at(&mut self, pos: usize) -> Option<bool> {
+        let was_current = self.remove_at_without_revision(pos)?;
+        self.bump_rev();
+        Some(was_current)
+    }
+
+    fn remove_at_without_revision(&mut self, pos: usize) -> Option<bool> {
         let song_idx = *self.order.get(pos)?;
         let was_current = pos == self.cursor;
         self.songs.remove(song_idx);
@@ -469,8 +625,19 @@ impl Queue {
         if self.cursor >= self.order.len() {
             self.cursor = self.order.len().saturating_sub(1);
         }
-        self.bump_rev();
         Some(was_current)
+    }
+
+    fn remove_range_without_revision(&mut self, lo: usize, hi: usize) {
+        debug_assert!(lo <= hi);
+        debug_assert!(hi < self.order.len());
+        for pos in (lo..=hi).rev() {
+            let removed = self.remove_at_without_revision(pos);
+            debug_assert!(
+                removed.is_some(),
+                "prepared queue range must stay in bounds"
+            );
+        }
     }
 
     /// Toggle shuffle, keeping the current track current.
@@ -480,14 +647,9 @@ impl Queue {
 
     /// Set shuffle explicitly, keeping the current track current.
     pub fn set_shuffle(&mut self, shuffle: bool) {
-        if self.shuffle == shuffle {
-            return;
+        if self.set_shuffle_without_revision(shuffle) {
+            self.bump_rev();
         }
-        self.shuffle = shuffle;
-        if let Some(&current_idx) = self.order.get(self.cursor) {
-            self.rebuild_order(current_idx);
-        }
-        self.bump_rev();
     }
 
     /// Cycle the repeat mode.
@@ -515,6 +677,24 @@ impl Queue {
             self.cursor = keep.min(n - 1);
         }
     }
+
+    fn replace_without_revision(&mut self, mut songs: Vec<Song>, start: usize) {
+        songs.truncate(MAX);
+        let start = start.min(songs.len().saturating_sub(1));
+        self.songs = songs;
+        self.rebuild_order(start);
+    }
+
+    fn set_shuffle_without_revision(&mut self, shuffle: bool) -> bool {
+        if self.shuffle == shuffle {
+            return false;
+        }
+        self.shuffle = shuffle;
+        if let Some(&current_idx) = self.order.get(self.cursor) {
+            self.rebuild_order(current_idx);
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -531,6 +711,34 @@ mod tests {
 
     fn id(q: &Queue) -> &str {
         q.current().unwrap().video_id.as_str()
+    }
+
+    fn rng_probe(q: &Queue) -> u64 {
+        q.rng.clone().u64(..)
+    }
+
+    fn fingerprint(q: &Queue) -> (Vec<String>, Vec<usize>, usize, bool, Repeat, u64, u64) {
+        (
+            q.video_ids().map(str::to_owned).collect(),
+            q.order.clone(),
+            q.cursor,
+            q.shuffle,
+            q.repeat,
+            q.rev,
+            rng_probe(q),
+        )
+    }
+
+    fn assert_queue_state_eq(actual: &Queue, expected: &Queue) {
+        assert_eq!(
+            actual.video_ids().collect::<Vec<_>>(),
+            expected.video_ids().collect::<Vec<_>>()
+        );
+        assert_eq!(actual.order, expected.order);
+        assert_eq!(actual.cursor, expected.cursor);
+        assert_eq!(actual.shuffle, expected.shuffle);
+        assert_eq!(actual.repeat, expected.repeat);
+        assert_eq!(rng_probe(actual), rng_probe(expected));
     }
 
     #[test]
@@ -557,6 +765,220 @@ mod tests {
         assert_eq!(q.position(), (3, 5));
         assert_eq!(q.next(true).unwrap().video_id, "3");
         assert_eq!(q.next(true).unwrap().video_id, "4");
+    }
+
+    #[test]
+    fn replacement_preparation_does_not_mutate_live_state_revision_or_rng() {
+        let mut q = Queue::default();
+        q.set(songs(4), 2);
+        q.repeat = Repeat::All;
+        q.seed_rng(0x5eed);
+        let before = fingerprint(&q);
+
+        let plan = q.prepare_replacement(QueueReplacementDraft::new(songs(7), 3, Some(true)));
+
+        assert_eq!(fingerprint(&q), before);
+        assert_eq!(plan.len(), 7);
+        assert_eq!(plan.cursor_pos(), 0, "shuffle makes selected track first");
+        assert_eq!(plan.current().unwrap().video_id, "3");
+        assert_eq!(plan.ordered_iter().next().unwrap().video_id, "3");
+        assert_eq!(plan.repeat(), Repeat::All);
+    }
+
+    #[test]
+    fn replacement_commit_matches_eager_set_and_optional_shuffle_override() {
+        for (initial_shuffle, shuffle_override) in [
+            (false, None),
+            (false, Some(false)),
+            (false, Some(true)),
+            (true, None),
+            (true, Some(false)),
+            (true, Some(true)),
+        ] {
+            let make_base = || {
+                let mut q = Queue::default();
+                q.set(songs(4), 1);
+                q.seed_rng(41);
+                q.set_shuffle(initial_shuffle);
+                // Compare replacement RNG consumption from an identical known state.
+                q.seed_rng(0xdecafbad);
+                q.repeat = Repeat::One;
+                q
+            };
+            let mut eager = make_base();
+            let mut planned = make_base();
+            let replacement = songs(8);
+            let start = 5;
+
+            eager.set(replacement.clone(), start);
+            if let Some(shuffle) = shuffle_override {
+                eager.set_shuffle(shuffle);
+            }
+
+            let plan = planned.prepare_replacement(QueueReplacementDraft::new(
+                replacement,
+                start,
+                shuffle_override,
+            ));
+            assert_eq!(plan.current().unwrap().video_id, "5");
+            if plan.shuffle() {
+                assert_eq!(plan.cursor_pos(), 0);
+                assert_eq!(plan.ordered_iter().next().unwrap().video_id, "5");
+            } else {
+                assert_eq!(plan.cursor_pos(), start);
+            }
+            let rev_before_commit = planned.rev();
+            planned.commit_mutation(plan);
+
+            assert_ne!(planned.rev(), rev_before_commit);
+            assert_queue_state_eq(&planned, &eager);
+        }
+    }
+
+    #[test]
+    fn stale_mutation_guard_rejects_before_mutating_queue_or_rng() {
+        // Revision mismatch.
+        let mut revision_stale = Queue::default();
+        revision_stale.set(songs(3), 0);
+        revision_stale.seed_rng(17);
+        let plan =
+            revision_stale.prepare_replacement(QueueReplacementDraft::new(songs(5), 2, Some(true)));
+        revision_stale.extend(vec![song("late")]);
+        let before_rejection = fingerprint(&revision_stale);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            revision_stale.commit_mutation(plan);
+        }));
+        assert!(result.is_err());
+        assert_eq!(fingerprint(&revision_stale), before_rejection);
+
+        // Cursor mismatch with an unchanged membership/order revision.
+        let mut cursor_stale = Queue::default();
+        cursor_stale.set(songs(3), 0);
+        let plan = cursor_stale.prepare_replacement(QueueReplacementDraft::new(songs(5), 2, None));
+        cursor_stale.goto(1);
+        let before_rejection = fingerprint(&cursor_stale);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cursor_stale.commit_mutation(plan);
+        }));
+        assert!(result.is_err());
+        assert_eq!(fingerprint(&cursor_stale), before_rejection);
+
+        // Current identity mismatch even if a future bug changes order without its revision.
+        let mut current_stale = Queue::default();
+        current_stale.set(songs(3), 0);
+        let plan = current_stale.prepare_replacement(QueueReplacementDraft::new(songs(5), 2, None));
+        current_stale.order.swap(0, 1);
+        let before_rejection = fingerprint(&current_stale);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            current_stale.commit_mutation(plan);
+        }));
+        assert!(result.is_err());
+        assert_eq!(fingerprint(&current_stale), before_rejection);
+    }
+
+    #[test]
+    fn replacement_plan_caps_clamps_and_handles_empty_input() {
+        let mut q = Queue::default();
+        let plan = q.prepare_replacement(QueueReplacementDraft::new(
+            songs(MAX + 50),
+            usize::MAX,
+            None,
+        ));
+        assert_eq!(plan.len(), MAX);
+        assert_eq!(plan.cursor_pos(), MAX - 1);
+        assert_eq!(plan.current().unwrap().video_id, (MAX - 1).to_string());
+        assert_eq!(plan.ordered_iter().count(), MAX);
+        q.commit_mutation(plan);
+        assert_eq!(q.len(), MAX);
+        assert_eq!(q.cursor_pos(), MAX - 1);
+        assert_eq!(id(&q), (MAX - 1).to_string());
+
+        let plan = q.prepare_replacement(QueueReplacementDraft::new(
+            Vec::new(),
+            usize::MAX,
+            Some(true),
+        ));
+        assert!(plan.is_empty());
+        assert_eq!(plan.cursor_pos(), 0);
+        assert!(plan.current().is_none());
+        assert_eq!(plan.ordered_iter().count(), 0);
+        q.commit_mutation(plan);
+        assert!(q.is_empty());
+        assert_eq!(q.cursor_pos(), 0);
+        assert!(q.current().is_none());
+        assert!(q.shuffle);
+    }
+
+    #[test]
+    fn play_now_preparation_is_pure_matches_eager_and_commits_one_revision() {
+        let make_base = || {
+            let mut q = Queue::default();
+            q.set(songs(MAX - 1), 17);
+            q.seed_rng(0x51de);
+            q.set_shuffle(true);
+            q.repeat = Repeat::All;
+            q.seed_rng(0x51de_0001);
+            q
+        };
+        let mut planned = make_base();
+        let mut eager = make_base();
+        let before = fingerprint(&planned);
+        let revision_bumps = planned.revision_bumps;
+        let requested = vec![song("new-0"), song("new-1"), song("new-2")];
+
+        let (plan, outcome) = planned.prepare_play_now_many(requested.clone());
+
+        assert_eq!(fingerprint(&planned), before);
+        assert_eq!(planned.revision_bumps, revision_bumps);
+        assert_eq!(outcome.requested(), 3);
+        assert_eq!(outcome.added(), 1, "the queue had only one free slot");
+        assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
+        assert_eq!(plan.current().unwrap().video_id, "new-0");
+
+        assert_eq!(eager.play_now_many(requested), 1);
+        planned.commit_mutation(plan);
+
+        assert_queue_state_eq(&planned, &eager);
+        assert_eq!(planned.revision_bumps, revision_bumps + 1);
+        assert_eq!(rng_probe(&planned), rng_probe(&eager));
+    }
+
+    #[test]
+    fn idle_enqueue_preparation_preserves_live_rng_and_matches_shuffled_eager_sequence() {
+        let make_base = || {
+            let mut q = Queue::default();
+            q.set(songs(5), 2);
+            q.seed_rng(0x1d1e);
+            q.set_shuffle(true);
+            q.repeat = Repeat::One;
+            q.seed_rng(0x1d1e_0001);
+            q
+        };
+        let mut planned = make_base();
+        let mut eager = make_base();
+        let before = fingerprint(&planned);
+        let revision_bumps = planned.revision_bumps;
+        let appended = vec![song("new-0"), song("new-1"), song("new-2"), song("new-3")];
+
+        let (plan, outcome) = planned.prepare_idle_enqueue(appended.clone());
+
+        assert_eq!(fingerprint(&planned), before);
+        assert_eq!(planned.revision_bumps, revision_bumps);
+        assert_eq!(outcome.requested(), appended.len());
+        assert_eq!(outcome.added(), appended.len());
+        assert_eq!(outcome.selected_cursor(), Some(5));
+        assert_eq!(plan.cursor_pos(), 5);
+
+        assert_eq!(eager.extend(appended), 4);
+        eager.goto(5);
+        planned.commit_mutation(plan);
+
+        assert_queue_state_eq(&planned, &eager);
+        assert_eq!(planned.revision_bumps, revision_bumps + 1);
+        assert_eq!(
+            planned.current().unwrap().video_id,
+            eager.current().unwrap().video_id
+        );
     }
 
     #[test]

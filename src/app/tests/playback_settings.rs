@@ -154,14 +154,25 @@ fn seek_keys_use_the_configured_interval() {
         ..Default::default()
     });
     // Forward (→) jumps +interval, backward (←) jumps −interval.
-    match app.update(Msg::Key(key(KeyCode::Right))).as_slice() {
-        [Cmd::Player(PlayerCmd::SeekRelative(s))] => assert!((*s - 30.0).abs() < 1e-9),
+    let cmds = app.update(Msg::Key(key(KeyCode::Right)));
+    match cmds.as_slice() {
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekRelative(s)) => assert!((*s - 30.0).abs() < 1e-9),
+            _ => panic!("expected a single SeekRelative(+30) cmd"),
+        },
         _ => panic!("expected a single SeekRelative(+30) cmd"),
     }
-    match app.update(Msg::Key(key(KeyCode::Left))).as_slice() {
-        [Cmd::Player(PlayerCmd::SeekRelative(s))] => assert!((*s + 30.0).abs() < 1e-9),
+    app.admit_player_intents_for_test(&cmds);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Left)));
+    match cmds.as_slice() {
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekRelative(s)) => assert!((*s + 30.0).abs() < 1e-9),
+            _ => panic!("expected a single SeekRelative(-30) cmd"),
+        },
         _ => panic!("expected a single SeekRelative(-30) cmd"),
     }
+    app.admit_player_intents_for_test(&cmds);
 }
 
 // --- D: settings screen -------------------------------------------------

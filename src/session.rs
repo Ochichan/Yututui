@@ -14,6 +14,7 @@ use crate::util::safe_fs;
 
 const SESSION_CACHE_FILE: &str = "session.json";
 const SESSION_SCHEMA_VERSION: u32 = 2;
+const SESSION_CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +50,18 @@ impl Default for SessionCache {
 }
 
 impl SessionCache {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = session_cache_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Session,
+            &path,
+            SESSION_CACHE_MAX_BYTES,
+        )
+    }
+
     pub fn from_last_mode(last_mode: LastMode) -> Self {
         Self {
             last_mode,
@@ -89,6 +102,7 @@ impl SessionCache {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = session_cache_path() else {
             return Ok(());
         };
@@ -96,27 +110,22 @@ impl SessionCache {
     }
 
     pub fn clear() -> std::io::Result<bool> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = session_cache_path() else {
             return Ok(false);
         };
-        match std::fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e),
-        }
+        crate::persist::remove_store_file(&path)
     }
 
     fn load_from_path(path: &Path) -> Self {
         // A corrupt/duplicated/synced multi-GB session.json is set aside (never slurped into
         // memory at startup), mirroring the size-capped config load; the queue snapshot it
         // holds is itself capped on restore.
-        const MAX_BYTES: u64 = 32 * 1024 * 1024;
-        let cache = safe_fs::load_json_or_default_limited::<SessionCache>(path, MAX_BYTES);
-        let cache = crate::persist::replay_journaled_snapshot(
+        let cache = crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::Session,
             path,
-            cache,
-            MAX_BYTES,
+            SESSION_CACHE_MAX_BYTES,
+            || safe_fs::load_json_or_default_limited::<SessionCache>(path, SESSION_CACHE_MAX_BYTES),
         );
         if cache.schema_version != SESSION_SCHEMA_VERSION
             || cache.app_version != env!("CARGO_PKG_VERSION")
@@ -132,7 +141,32 @@ impl SessionCache {
     }
 
     fn save_to_path(&self, path: &Path) -> std::io::Result<()> {
-        safe_fs::write_private_atomic_json(path, self)
+        crate::persist::write_store_json(path, self)
+    }
+}
+
+/// Whether starting the daemon with `--resume` can restore a playable row.
+///
+/// The desktop companion needs this while the core is offline, so it cannot ask the remote
+/// owner. Keep the predicate in lockstep with `DaemonEngine::restore_last_session`: prefer the
+/// active queue snapshot, then use the persisted history for the last normal/radio mode. Local
+/// mode has no history fallback.
+pub fn resume_available() -> bool {
+    let cache = SessionCache::load();
+    if cache.active_queue().is_some() {
+        return true;
+    }
+    resume_available_from(&cache, &crate::library::Library::load())
+}
+
+fn resume_available_from(cache: &SessionCache, library: &crate::library::Library) -> bool {
+    if cache.active_queue().is_some() {
+        return true;
+    }
+    match cache.last_mode {
+        LastMode::Normal => !library.history.is_empty(),
+        LastMode::Radio => !library.radios.is_empty(),
+        LastMode::Local => false,
     }
 }
 
@@ -166,6 +200,34 @@ mod tests {
             LastMode::Radio
         );
         assert!(SessionCache::from_radio_mode(true).was_radio_mode());
+    }
+
+    #[test]
+    fn resume_availability_matches_daemon_restore_sources() {
+        let mut library = crate::library::Library::default();
+        let normal = SessionCache::from_last_mode(LastMode::Normal);
+        assert!(!resume_available_from(&normal, &library));
+
+        library
+            .history
+            .push_back(Song::remote("history", "History", "Artist", "3:00"));
+        assert!(resume_available_from(&normal, &library));
+
+        let mut radio = SessionCache::from_last_mode(LastMode::Radio);
+        assert!(!resume_available_from(&radio, &library));
+        library
+            .radios
+            .push_back(Song::remote("radio", "Station", "Country", "LIVE"));
+        assert!(resume_available_from(&radio, &library));
+
+        let local = SessionCache::from_last_mode(LastMode::Local);
+        assert!(!resume_available_from(&local, &library));
+
+        radio.radio_queue = Some(snapshot("queued"));
+        assert!(resume_available_from(
+            &radio,
+            &crate::library::Library::default()
+        ));
     }
 
     #[test]

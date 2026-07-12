@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 # Re-bless the module-size baseline consumed by scripts/check-file-size.sh.
 #
-# Rewrites scripts/size-baseline.tsv with one "<lines>\t<path>" row for every tracked
-# src/**/*.rs file whose line count exceeds the global soft cap (1500). These are the
-# legit giants (and any deliberately-large module) the ratchet grandfathers; a file not
-# listed here is held to the 1500 (+grace) global cap. Run this only after an intentional
-# split shrinks a file (to lower its pin) or when a new large module is knowingly accepted;
-# then commit the regenerated TSV.
+# Rewrites scripts/size-baseline.tsv without ever raising an existing pin. Files above the
+# global soft cap (1500) receive a pin when first accepted; existing sub-global pins remain so
+# an intentional split cannot silently regrow on the next regeneration.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 GLOBAL_CAP=1500
+BASELINE=scripts/size-baseline.tsv
+previous=$(mktemp)
+next=$(mktemp)
+trap 'rm -f "$previous" "$next"' EXIT
+cp "$BASELINE" "$previous"
 {
   while IFS= read -r f; do
     [ -f "$f" ] || continue
     lines=$(wc -l < "$f" | tr -d '[:space:]')
-    if [ "$lines" -gt "$GLOBAL_CAP" ]; then
+    old=$(awk -v p="$f" -F'\t' '$2==p { print $1; exit }' "$previous")
+    if [ -n "$old" ]; then
+      [ "$old" -lt "$lines" ] && lines=$old
+      printf '%s\t%s\n' "$lines" "$f"
+    elif [ "$lines" -gt "$GLOBAL_CAP" ]; then
       printf '%s\t%s\n' "$lines" "$f"
     fi
-  done < <(git ls-files -- src | grep -E '\.rs$')
-} | sort -rn > scripts/size-baseline.tsv
-echo "wrote scripts/size-baseline.tsv ($(wc -l < scripts/size-baseline.tsv | tr -d '[:space:]') entries)"
+  done < <(git ls-files --cached --others --exclude-standard -- src | grep -E '\.rs$' | sort -u)
+} | sort -rn > "$next"
+mv "$next" "$BASELINE"
+echo "wrote $BASELINE ($(wc -l < "$BASELINE" | tr -d '[:space:]') entries; existing pins never increased)"

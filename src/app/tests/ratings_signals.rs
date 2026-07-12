@@ -43,7 +43,8 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
     let station = radio_station("station-like");
     app.queue.set(vec![station], 0);
     app.mode = Mode::Player;
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
 
@@ -68,7 +69,8 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert!(app.library_rows().is_empty());
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    admit_player_transition(&mut app, &mut cmds);
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert_eq!(row_ids(&app), vec!["rad:station-like"]);
@@ -77,7 +79,8 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
 
     app.mode = Mode::Player;
     app.queue.set(vec![radio_station("station-like")], 0);
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(
         cmds.iter()
@@ -101,7 +104,8 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
 fn manual_next_records_signals_then_advances() {
     let mut app = app_playing(3, 0);
     let id = current(&app).to_owned();
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     // The skipped track is persisted (SaveSignals) and playback advances.
     assert!(
         cmds.iter()
@@ -121,9 +125,11 @@ fn manual_next_from_radio_does_not_record_signals() {
         0,
     );
     app.mode = Mode::Player;
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(
         !cmds
@@ -136,7 +142,8 @@ fn manual_next_from_radio_does_not_record_signals() {
 #[test]
 fn eof_records_signals_for_the_finished_track() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(PlayerMsg::Eof);
+    let mut cmds = app.update(PlayerMsg::Eof);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))

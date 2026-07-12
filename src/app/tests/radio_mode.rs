@@ -1,5 +1,21 @@
 use super::*;
 
+fn apply_radio_mode_and_admit(app: &mut App, confirm: RadioModeConfirm) -> Vec<Cmd> {
+    let mut cmds = app.apply_radio_mode_confirm(confirm);
+    admit_player_transition(app, &mut cmds);
+    cmds
+}
+
+fn confirm_pending_radio_mode_and_admit(app: &mut App) -> Vec<Cmd> {
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    admit_player_transition(app, &mut cmds);
+    cmds
+}
+
+fn ordered_player_commands(cmds: &[Cmd]) -> Vec<&PlayerCmd> {
+    cmds.iter().flat_map(Cmd::player_commands).collect()
+}
+
 #[test]
 fn alt_shift_r_confirms_dedicated_radio_mode() {
     let mut app = app_playing(1, 0);
@@ -19,7 +35,16 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
     );
     assert!(!app.radio_dedicated_mode);
 
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut enter = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(
+        !app.radio_dedicated_mode,
+        "the visible mode must wait for player admission"
+    );
+    assert_eq!(
+        app.radio_mode.pending_radio_mode_confirm,
+        Some(RadioModeConfirm::Enter)
+    );
+    admit_player_transition(&mut app, &mut enter);
     assert!(app.radio_dedicated_mode);
     assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
     assert_eq!(app.theme.preset, "dario");
@@ -44,7 +69,7 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
         app.radio_mode.pending_radio_mode_confirm,
         Some(RadioModeConfirm::Exit)
     );
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    confirm_pending_radio_mode_and_admit(&mut app);
     assert!(!app.radio_dedicated_mode);
     assert_eq!(app.theme.preset, "default");
     assert!(
@@ -92,13 +117,21 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
         cache_key: 42,
     });
 
-    let enter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut enter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
 
-    assert!(app.radio_dedicated_mode);
     assert!(has_stop(&enter), "entering Radio mode should stop mpv");
+    assert!(!app.radio_dedicated_mode);
+    assert_eq!(app.queue.len(), 3);
+    assert!(!app.playback.paused);
+    assert!(load_url(&enter).is_none());
+    assert!(app.streaming.pending);
+    assert!(app.streaming.pending_rerank.is_some());
+    assert_eq!(app.theme.preset, "midnight");
+
+    admit_player_transition(&mut app, &mut enter);
+    assert!(app.radio_dedicated_mode);
     assert!(app.queue.is_empty());
     assert!(app.playback.paused);
-    assert!(load_url(&enter).is_none());
     assert!(!app.streaming.pending);
     assert!(app.streaming.pending_rerank.is_none());
     assert_eq!(app.theme.preset, "dario");
@@ -107,13 +140,28 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
         vec![radio_station("station-a"), radio_station("station-b")],
         1,
     );
-    app.load_song(app.queue.current().cloned());
+    let mut radio_load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut radio_load);
     app.playback.paused = false;
     app.theme.set_preset(crate::theme::ThemePreset::RosePine);
-    let exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    let mut exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+
+    assert!(has_stop(&exit), "leaving Radio mode should stop mpv");
+    assert!(app.radio_dedicated_mode);
+    assert_eq!(app.queue.len(), 2);
+    let exit_player = ordered_player_commands(&exit);
+    let stop = exit_player
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Stop))
+        .expect("mode switch Stop");
+    let load = exit_player
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Load(_)))
+        .expect("restored queue Load");
+    assert!(stop < load, "mode switch must stop before replacement load");
+    admit_player_transition(&mut app, &mut exit);
 
     assert!(!app.radio_dedicated_mode);
-    assert!(has_stop(&exit), "leaving Radio mode should stop mpv");
     assert_eq!(app.queue.len(), 3);
     assert_eq!(current(&app), "id1");
     assert!(
@@ -126,11 +174,15 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
 
     app.theme.set_preset(crate::theme::ThemePreset::Light);
     app.queue.set(songs(2), 0);
-    app.load_song(app.queue.current().cloned());
-    let reenter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut normal_load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut normal_load);
+    let mut reenter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+
+    assert!(has_stop(&reenter));
+    assert!(!app.radio_dedicated_mode);
+    admit_player_transition(&mut app, &mut reenter);
 
     assert!(app.radio_dedicated_mode);
-    assert!(has_stop(&reenter));
     assert_eq!(app.queue.len(), 2);
     assert_eq!(current(&app), "rad:station-b");
     assert!(
@@ -144,10 +196,13 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
         "Radio mode should remember the last Radio theme"
     );
 
-    let second_exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    let mut second_exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+
+    assert!(has_stop(&second_exit));
+    assert!(app.radio_dedicated_mode);
+    admit_player_transition(&mut app, &mut second_exit);
 
     assert!(!app.radio_dedicated_mode);
-    assert!(has_stop(&second_exit));
     assert_eq!(app.queue.len(), 2);
     assert_eq!(current(&app), "id0");
     assert!(
@@ -159,11 +214,91 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
 }
 
 #[test]
+fn radio_mode_busy_and_closed_preserve_the_complete_switch_for_retry() {
+    use crate::util::delivery::DeliveryError;
+
+    for error in [DeliveryError::Busy, DeliveryError::Closed] {
+        let mut app = app_playing(3, 1);
+        app.theme.set_preset(crate::theme::ThemePreset::Midnight);
+        app.config.theme = app.theme.clone();
+        app.playback.paused = false;
+        app.streaming.pending = true;
+        app.streaming.pending_rerank = Some(PendingRerank {
+            seed_video_id: "id1".to_owned(),
+            shortlist: Vec::new(),
+            local_pick: Vec::new(),
+            cid_map: Vec::new(),
+            mode: crate::streaming::config::StreamingMode::Balanced,
+            cache_key: 7,
+        });
+        app.radio_mode.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
+
+        let before_queue = serde_json::to_vec(&app.queue.snapshot()).unwrap();
+        let before_rev = app.queue.rev();
+        let before_epoch = app.playback.position_epoch;
+        let before_theme = serde_json::to_vec(&app.theme).unwrap();
+        let before_art_clear = app.art.force_clear_next_frame;
+
+        let cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+
+        assert!(has_stop(&cmds));
+        assert!(!app.radio_dedicated_mode);
+        assert_eq!(
+            app.radio_mode.pending_radio_mode_confirm,
+            Some(RadioModeConfirm::Enter)
+        );
+        assert_eq!(
+            serde_json::to_vec(&app.queue.snapshot()).unwrap(),
+            before_queue
+        );
+        assert_eq!(app.queue.rev(), before_rev);
+        assert_eq!(app.playback.position_epoch, before_epoch);
+        assert!(!app.playback.paused);
+        assert!(app.streaming.pending);
+        assert!(app.streaming.pending_rerank.is_some());
+        assert_eq!(serde_json::to_vec(&app.theme).unwrap(), before_theme);
+        assert_eq!(app.art.force_clear_next_frame, before_art_clear);
+
+        assert!(reject_player_transition(&mut app, cmds, error).is_empty());
+        assert!(!app.radio_dedicated_mode);
+        assert_eq!(
+            app.radio_mode.pending_radio_mode_confirm,
+            Some(RadioModeConfirm::Enter),
+            "a rejected confirmation must remain retryable"
+        );
+        assert_eq!(
+            serde_json::to_vec(&app.queue.snapshot()).unwrap(),
+            before_queue
+        );
+        assert_eq!(app.queue.rev(), before_rev);
+        assert_eq!(app.playback.position_epoch, before_epoch);
+        assert!(!app.playback.paused);
+        assert!(app.streaming.pending);
+        assert!(app.streaming.pending_rerank.is_some());
+        assert_eq!(serde_json::to_vec(&app.theme).unwrap(), before_theme);
+        assert_eq!(app.art.force_clear_next_frame, before_art_clear);
+        assert_eq!(app.status.kind, StatusKind::Error);
+        assert!(!app.status.text.is_empty(), "rejection must be visible");
+
+        let mut retry = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+        admit_player_transition(&mut app, &mut retry);
+        assert!(app.radio_dedicated_mode);
+        assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
+        assert!(app.queue.is_empty());
+        assert!(app.playback.paused);
+        assert_eq!(app.playback.position_epoch, before_epoch + 1);
+        assert!(!app.streaming.pending);
+        assert!(app.streaming.pending_rerank.is_none());
+        assert_eq!(app.theme.preset, "dario");
+    }
+}
+
+#[test]
 fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
     let mut app = App::new(100);
     app.theme.set_preset(crate::theme::ThemePreset::Midnight);
     app.config.theme = app.theme.clone();
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
 
     app.open_settings();
     {
@@ -172,7 +307,8 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
             .theme
             .set_preset(crate::theme::ThemePreset::RosePine);
     }
-    let cmds = app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(
         cmds.iter()
@@ -189,9 +325,9 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
         "a Radio-mode theme edit should persist into its own config slot"
     );
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Exit);
     assert_eq!(app.theme.preset, "midnight");
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     assert_eq!(app.theme.preset, "rose_pine");
 }
 
@@ -230,9 +366,9 @@ fn persisted_radio_theme_applies_on_radio_reentry_after_relaunch() {
     app.apply_config(&cfg);
     assert_eq!(app.theme.preset, "midnight");
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     assert_eq!(app.theme.preset, "rose_pine");
-    app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Exit);
     assert_eq!(app.theme.preset, "midnight");
 }
 
@@ -249,7 +385,8 @@ fn settings_enqueue_next_toggle_persists_on_close() {
 
     app.settings_change(1);
     assert!(app.settings.as_ref().unwrap().draft.enqueue_next);
-    let cmds = app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(app.config.effective_enqueue_next());
     assert!(
@@ -286,7 +423,7 @@ fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
         .rect;
     drop(normal_buttons);
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     let radio = render_app_buffer(&app, 80, 24);
     let radio_text: String = radio
         .content()
@@ -328,7 +465,7 @@ fn radio_mode_renders_custom_radio_art() {
     // The set piece rides the album-art toggle (off by default).
     app.config.album_art = Some(true);
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     let radio = render_app_buffer(&app, 80, 24);
     let radio_text: String = radio
         .content()
@@ -358,7 +495,7 @@ fn radio_separator_renders_only_in_radio_mode() {
         "normal player mode should not render the radio separator"
     );
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     let radio = render_app_buffer(&app, 80, 24);
     let radio_text: String = radio
         .content()
@@ -377,7 +514,7 @@ fn radio_art_animates_when_animation_master_is_on() {
     let mut app = App::new(100);
     // The set piece rides the album-art toggle (off by default).
     app.config.album_art = Some(true);
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     app.queue.set(vec![radio_station("moving")], 0);
     app.playback.paused = false;
     app.config.animations.master = true;
@@ -414,7 +551,7 @@ fn radio_art_animates_when_animation_master_is_on() {
 #[test]
 fn radio_art_hidden_when_album_art_disabled() {
     let mut app = App::new(100);
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     app.queue.set(vec![radio_station("plain")], 0);
     app.playback.paused = false;
     app.config.animations.master = true;
@@ -443,7 +580,7 @@ fn radio_art_hidden_when_album_art_disabled() {
 fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
     let mut app = App::new(100);
     app.config.album_art = Some(true);
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     app.queue.set(vec![radio_station("canvas")], 0);
     app.playback.paused = false;
     app.config.animations.master = true;
@@ -487,7 +624,7 @@ fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
 fn toggle_animations_in_radio_mode_flips_radio_master_not_master() {
     let mut app = App::new(100);
     app.config.animations.master = true;
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
     assert!(
         app.animations().master,
         "radio inherits the music master until first toggled"
@@ -537,7 +674,8 @@ fn autoplay_streaming_does_not_extend_from_radio_browser_streams() {
     app.queue.set(vec![radio_station("station-seed")], 0);
     app.mode = Mode::Player;
 
-    let cmds = app.load_song(app.queue.current().cloned());
+    let mut cmds = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(
         !cmds

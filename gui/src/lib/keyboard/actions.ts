@@ -51,7 +51,7 @@ export function runAction(id: string, ctx: AppCtx): boolean {
       playback.cycleRating();
       return true;
     case 'clear_upcoming':
-      ctx.client.cmd('queue_clear_upcoming');
+      void ctx.client.cmd('queue_clear_upcoming');
       return true;
     case 'toggle_queue':
       ui.toggleQueue();

@@ -3,90 +3,143 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::panic;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
-use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS, EventLoopWindowTargetExtMacOS};
+use tray_icon::menu::MenuEvent;
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+use crate::desktop::app::{
+    DesktopApp, DesktopEffect, DesktopEvent, DesktopTransition, DesktopWindowEvent, FrontendReplay,
+    WindowKind,
+};
 use crate::desktop::control;
+use crate::desktop::executor::{DesktopCommandExecutor, SubmitError};
 use crate::desktop::launch;
-use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
-use crate::desktop::panel::{PanelCommand, PanelTheme};
+use crate::desktop::menu_model::{self, MenuAction};
+use crate::desktop::panel::{self, DesktopCommandError, PanelCommand, PanelRequest, PanelTheme};
 use crate::desktop::platform::main_window::MainWindow;
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
-use crate::desktop::single_instance::{self, Acquire};
-use crate::desktop::startup::{self, StartupStatus};
+use crate::desktop::single_instance::{self, Acquire, ActivationIntent};
 use crate::desktop::status::{self, PollConfig, PollUpdate};
 use crate::desktop::window_state::DesktopState;
 use crate::desktop::{bridge, gateway};
-use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
+use crate::remote::proto::{InstanceMode, PushEvent, RemoteCommand, Topic};
+
+#[path = "macos_geometry.rs"]
+mod geometry;
+#[path = "macos_menu.rs"]
+mod native_menu;
+
+pub(crate) use geometry::work_area_for_point;
+use native_menu::{MacMenu, toggle_startup_entry, tooltip_for_state, user_event_from_menu_id};
 
 const POLL_THREAD_NAME: &str = "yututray-status";
 const COMMAND_THREAD_NAME: &str = "yututray-command";
+const GEOMETRY_SAVE_DELAY: Duration = Duration::from_millis(500);
+const MINI_WEBVIEW_GRACE: Duration = Duration::from_secs(15);
+const MAIN_WEBVIEW_GRACE: Duration = Duration::from_secs(60);
 
 // Status carries the poll snapshot inline; events are dispatched one at a time
 // (never queued in bulk), so boxing would buy nothing.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum UserEvent {
-    Status(PollUpdate),
+    Status {
+        generation: u64,
+        update: PollUpdate,
+        restart_fallback: bool,
+    },
     ShowMiniPlayer,
-    Panel(PanelCommand),
+    Panel {
+        generation: u64,
+        request: PanelRequest,
+    },
+    PanelResult {
+        generation: u64,
+        id: u64,
+        error: Option<DesktopCommandError>,
+    },
     Menu(MenuAction),
     /// The first daemon menu slot; whether it means Start or Stop depends on the
     /// state at click time, so the decision lives in the app, not in the menu id.
     DaemonPrimary,
     Refresh,
-    StartupChanged,
+    StartupChanged {
+        error: Option<String>,
+    },
     /// Live connection state from the persistent v8 gateway thread (docs/gui/03 §3.2).
     Gateway(gateway::GatewayEvent),
     /// A request concerning the main window: an IPC line from its webview, or an activate.
     Main(MainRequest),
+    Activation(ActivationIntent),
     Quit,
 }
 
 #[derive(Debug)]
 enum MainRequest {
     /// One IPC envelope line posted by the main window's webview.
-    Ipc(String),
-    /// A second instance asked us to surface the main window.
-    Activate,
+    Ipc { generation: u64, body: String },
 }
 
-pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
-    let log_guard = init_file_logging();
-    install_tray_panic_hook();
+pub fn run(
+    mut initial_intent: ActivationIntent,
+    secondary_intent: ActivationIntent,
+) -> Result<(), Box<dyn Error>> {
+    if initial_intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+        initial_intent = ActivationIntent::EnsureTray;
+    }
 
     // Single GUI instance (docs/gui/03 §6): a second launch activates the first and exits.
     // Held until the process exits (tao's run() diverges, so this never drops early).
-    let _instance = match single_instance::acquire() {
-        Ok(Acquire::Primary(guard)) => Some(guard),
-        Ok(Acquire::AlreadyRunning) => {
-            single_instance::signal_activate();
+    let _instance = match single_instance::acquire()? {
+        Acquire::Primary(guard) => Some(guard),
+        Acquire::AlreadyRunning => {
+            single_instance::signal_activation(secondary_intent)?;
             return Ok(());
         }
-        Err(e) => {
-            report_error(format_args!("single-instance lock unavailable: {e}"));
-            None
-        }
     };
+
+    // Bind while the primary lock is already held but before startup repair or tao setup.
+    // A bounded FIFO acknowledges and preserves activation intents until the proxy is installed.
+    let deferred_activations =
+        single_instance::DeferredActivations::<EventLoopProxy<UserEvent>>::new();
+    single_instance::spawn_activation_listener({
+        let deferred_activations = deferred_activations.clone();
+        move |intent| {
+            if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+                return false;
+            }
+            deferred_activations.deliver_or_defer(intent, |proxy, intent| {
+                proxy.send_event(UserEvent::Activation(intent)).is_ok()
+            })
+        }
+    })?;
+
+    crate::desktop::persistence::initialize_writer()?;
+    let log_guard = init_file_logging();
+    install_tray_panic_hook();
+
+    // Only the primary may mutate the LaunchAgent; concurrent secondaries must not race the
+    // same plist/temp file during login storms.
+    crate::desktop::startup::self_heal();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     event_loop.set_dock_visibility(false);
 
     let proxy = event_loop.create_proxy();
-
-    // A second launch pings the activate endpoint; surface the main window when it does.
-    let _ = single_instance::spawn_activate_listener({
-        let proxy = proxy.clone();
-        move || {
-            let _ = proxy.send_event(UserEvent::Main(MainRequest::Activate));
-        }
+    let rejected = deferred_activations.install(proxy.clone(), |proxy, intent| {
+        proxy.send_event(UserEvent::Activation(intent)).is_ok()
     });
+    if rejected != 0 {
+        tracing::warn!(target: "ytt_desktop", rejected, "queued activations could not reach the event loop");
+    }
 
     MenuEvent::set_event_handler(Some({
         let proxy = proxy.clone();
@@ -97,7 +150,7 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
         }
     }));
 
-    let mut app = MacTrayApp::new(proxy.clone(), log_guard, open_main);
+    let mut app = MacTrayApp::new(proxy.clone(), log_guard, initial_intent)?;
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -108,26 +161,50 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
                     *control_flow = ControlFlow::Exit;
                 }
             }
+            Event::Resumed => app.reconcile_window_placements(),
             Event::UserEvent(UserEvent::Gateway(ev)) => {
                 app.handle_gateway(ev);
             }
             Event::UserEvent(UserEvent::Main(req)) => {
                 app.handle_main(req, target);
             }
-            Event::UserEvent(UserEvent::Status(update)) => {
-                app.apply_update(update);
+            Event::UserEvent(UserEvent::Activation(intent)) => {
+                app.handle_activation(intent, target);
+            }
+            Event::UserEvent(UserEvent::Status {
+                generation,
+                update,
+                restart_fallback,
+            }) => {
+                app.apply_poll_update(generation, update, restart_fallback);
             }
             Event::UserEvent(UserEvent::ShowMiniPlayer) => {
-                app.show_panel(target);
+                let _ = app.dispatch_desktop_event(
+                    DesktopEvent::WindowVisibility {
+                        kind: WindowKind::Mini,
+                        visible: true,
+                    },
+                    target,
+                );
             }
-            Event::UserEvent(UserEvent::Panel(command)) => {
-                app.handle_panel_command(command);
+            Event::UserEvent(UserEvent::Panel {
+                generation,
+                request,
+            }) => {
+                app.handle_panel_request(generation, request, target);
+            }
+            Event::UserEvent(UserEvent::PanelResult {
+                generation,
+                id,
+                error,
+            }) => {
+                app.apply_panel_result(generation, id, error.as_ref());
             }
             Event::UserEvent(UserEvent::Refresh) => {
                 app.request_status_now();
             }
-            Event::UserEvent(UserEvent::StartupChanged) => {
-                app.apply_startup_status();
+            Event::UserEvent(UserEvent::StartupChanged { error }) => {
+                app.finish_startup_toggle(error.as_deref());
             }
             Event::UserEvent(UserEvent::Quit) => {
                 *control_flow = ControlFlow::Exit;
@@ -143,26 +220,44 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                app.handle_window_close(window_id);
+                app.handle_window_close(window_id, target);
             }
             Event::WindowEvent {
                 window_id,
-                event: WindowEvent::Focused(false),
+                event: WindowEvent::Focused(focused),
                 ..
             } => {
-                app.handle_panel_blur(window_id);
+                app.handle_panel_focus(window_id, focused, target);
             }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Moved(_) | WindowEvent::Resized(_),
+                ..
+            } => {
+                app.handle_geometry_changed(window_id);
+            }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::ScaleFactorChanged { .. },
+                ..
+            } => app.handle_scale_factor_changed(window_id),
             Event::WindowEvent {
                 window_id,
                 event: WindowEvent::Destroyed,
                 ..
             } => {
-                app.handle_window_destroyed(window_id);
+                app.handle_window_destroyed(window_id, target);
             }
             Event::LoopDestroyed => {
                 app.shutdown();
             }
             _ => {}
+        }
+        app.process_deadlines(target);
+        if !matches!(*control_flow, ControlFlow::Exit)
+            && let Some(deadline) = app.next_deadline()
+        {
+            *control_flow = ControlFlow::WaitUntil(deadline);
         }
     });
 }
@@ -174,40 +269,73 @@ struct MacTrayApp {
     panel: Option<MiniPlayerPanel>,
     main_window: Option<MainWindow>,
     gateway: Option<gateway::GatewayHandle>,
+    desktop_app: DesktopApp,
     last_conn: gateway::ConnState,
-    open_main: bool,
+    initial_intent: ActivationIntent,
     last_update: PollUpdate,
+    /// Cached while the core is online so a later offline recovery surface does not need to
+    /// parse the session/library files on the native event loop.
+    resume_available: bool,
     // Menu/tooltip fingerprint of the last poll — lets `apply_update` skip the native menu
     // rebuild + tooltip set when nothing the menu shows changed (see `menu_signature`).
     last_menu_signature: menu_model::MenuSignature,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    poll_thread: Option<thread::JoinHandle<()>>,
+    poll_done: Option<std::sync::mpsc::Receiver<()>>,
+    poll_generation: Arc<AtomicU64>,
+    poll_lane: status::PollLane,
     // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
     // dropping this in shutdown() is the only chance the non-blocking appender gets
     // to flush the final log lines.
     log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    geometry_dirty_at: Option<Instant>,
+    command_executor: Option<DesktopCommandExecutor>,
+    panel_teardown_at: Option<Instant>,
+    main_teardown_at: Option<Instant>,
+    panel_gateway_requests: HashMap<u64, (u64, u64)>,
+    startup_toggle_pending: bool,
 }
 
 impl MacTrayApp {
     fn new(
         proxy: EventLoopProxy<UserEvent>,
         log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
-        open_main: bool,
-    ) -> Self {
-        Self {
+        initial_intent: ActivationIntent,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut desktop_app = DesktopApp::default();
+        let desktop_state = DesktopState::load();
+        desktop_app.restore_mini_pinned(desktop_state.mini_pinned);
+        let resume_available = crate::session::resume_available();
+        Ok(Self {
             proxy,
             tray: None,
             menu: None,
             panel: None,
             main_window: None,
             gateway: None,
+            desktop_app,
             last_conn: gateway::ConnState::Connecting,
-            open_main,
-            last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
+            initial_intent,
+            last_update: PollUpdate::disconnected_with_resume(
+                control::ControlError::NotRunning,
+                resume_available,
+            ),
+            resume_available,
             // Matches the Disconnected menu built in `init`; the first real poll re-applies.
-            last_menu_signature: menu_model::MenuSignature::Disconnected,
+            last_menu_signature: menu_model::MenuSignature::Disconnected { resume_available },
             poll_shutdown: None,
+            poll_thread: None,
+            poll_done: None,
+            poll_generation: Arc::new(AtomicU64::new(0)),
+            poll_lane: status::PollLane::default(),
             log_guard,
-        }
+            geometry_dirty_at: None,
+            command_executor: Some(DesktopCommandExecutor::spawn(COMMAND_THREAD_NAME)?),
+            panel_teardown_at: None,
+            main_teardown_at: None,
+            panel_gateway_requests: HashMap::new(),
+            startup_toggle_pending: false,
+        })
     }
 
     fn init(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> Result<(), Box<dyn Error>> {
@@ -225,12 +353,8 @@ impl MacTrayApp {
 
         self.tray = Some(tray);
         self.menu = Some(menu);
-        self.start_polling();
-        self.request_status_now();
         self.start_gateway();
-        if self.open_main {
-            self.open_main_window(target);
-        }
+        self.handle_activation(self.initial_intent, target);
         Ok(())
     }
 
@@ -246,31 +370,148 @@ impl MacTrayApp {
         }));
     }
 
-    fn open_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+    fn dispatch_desktop_event(
+        &mut self,
+        event: DesktopEvent,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) -> Option<FrontendReplay> {
+        let transition = self.desktop_app.handle_event(event);
+        self.apply_desktop_transition(transition, target)
+    }
+
+    fn apply_desktop_transition(
+        &mut self,
+        transition: DesktopTransition,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) -> Option<FrontendReplay> {
+        let DesktopTransition { effects, replay } = transition;
+        let mut failed_window = None;
+        for effect in effects {
+            match effect {
+                DesktopEffect::EnsureTray => debug_assert!(self.tray.is_some()),
+                DesktopEffect::EnsureMiniSurface => {
+                    if !self.ensure_panel(target) {
+                        failed_window = Some(WindowKind::Mini);
+                    }
+                }
+                DesktopEffect::ShowMini => {
+                    if !self.show_panel(target) {
+                        failed_window = Some(WindowKind::Mini);
+                    }
+                }
+                DesktopEffect::HideMini => self.hide_panel(),
+                DesktopEffect::EnsureMainSurface => {
+                    if !self.ensure_main_window(target) {
+                        failed_window = Some(WindowKind::Main);
+                    }
+                }
+                DesktopEffect::ShowMain => {
+                    if !self.show_main_window(target) {
+                        failed_window = Some(WindowKind::Main);
+                    }
+                }
+                DesktopEffect::HideMain => self.hide_main_window(),
+                DesktopEffect::UseRegularActivation => set_main_activation(target, true),
+                DesktopEffect::UseAccessoryActivation => set_main_activation(target, false),
+                DesktopEffect::ApplyWindowPolicy {
+                    kind: WindowKind::Mini,
+                    policy,
+                } => {
+                    if let Some(panel) = &self.panel {
+                        panel.set_pinned(policy.always_on_top);
+                    }
+                }
+                DesktopEffect::ApplyWindowPolicy {
+                    kind: WindowKind::Main,
+                    ..
+                } => {}
+            }
+        }
+        if let Some(kind) = failed_window {
+            let correction = self
+                .desktop_app
+                .handle_event(DesktopEvent::WindowEvent(DesktopWindowEvent::Hidden(kind)));
+            let _ = self.apply_desktop_transition(correction, target);
+        }
+        replay.map(|(_, replay)| replay)
+    }
+
+    fn ensure_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> bool {
+        if !crate::desktop::assets::DIST_EMBEDDED {
+            return false;
+        }
+        self.main_teardown_at = None;
         if let Some(main) = &self.main_window {
-            main.show();
-            return;
+            return main.ensure_surface();
         }
         let boot = boot_json(&self.last_conn);
         let proxy = self.proxy.clone();
-        match MainWindow::create(target, boot, None, move |body| {
-            let _ = proxy.send_event(UserEvent::Main(MainRequest::Ipc(body)));
+        match MainWindow::create(target, boot, None, move |generation, body| {
+            let _ = proxy.send_event(UserEvent::Main(MainRequest::Ipc { generation, body }));
         }) {
             Ok(main) => {
-                // Seed the page with the current connection state right away.
-                main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
-                    self.last_conn.to_conn_payload(),
-                )));
                 self.main_window = Some(main);
+                true
             }
-            Err(e) => report_error(e),
+            Err(e) => {
+                crate::desktop::native_error::show(
+                    "YuTuTui! Desktop",
+                    &format!("Could not create the main window: {e}"),
+                );
+                report_error(e);
+                false
+            }
         }
+    }
+
+    fn show_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> bool {
+        self.ensure_main_window(target) && self.main_window.as_ref().is_some_and(MainWindow::show)
     }
 
     fn handle_gateway(&mut self, ev: gateway::GatewayEvent) {
         match ev {
             gateway::GatewayEvent::Connection(state) => {
+                let disconnected = match &state {
+                    gateway::ConnState::Connecting => {
+                        Some(control::ControlError::Transport("connecting".to_string()))
+                    }
+                    gateway::ConnState::Offline { reason } => {
+                        Some(control::ControlError::Transport(reason.clone()))
+                    }
+                    gateway::ConnState::Online { .. } => None,
+                };
+                self.desktop_app.set_connection(&state);
                 self.last_conn = state;
+                if !matches!(self.last_conn, gateway::ConnState::Online { .. }) {
+                    let error = DesktopCommandError::new(
+                        "offline",
+                        "The player connection was interrupted",
+                        true,
+                    );
+                    let pending = self
+                        .panel_gateway_requests
+                        .drain()
+                        .map(|(_, request)| request)
+                        .collect::<Vec<_>>();
+                    for (generation, request_id) in pending {
+                        self.apply_panel_result(generation, request_id, Some(&error));
+                    }
+                }
+                match &self.last_conn {
+                    gateway::ConnState::Offline { reason } if reason == "no_v8" => {
+                        self.start_polling();
+                    }
+                    // The v7 poll is an exclusive compatibility fallback, not a
+                    // general offline loop.  Cancel it as soon as the connection
+                    // leaves the explicit no-v8 state.
+                    _ => self.stop_polling(),
+                }
+                if let Some(error) = disconnected {
+                    self.apply_update(PollUpdate::disconnected_with_resume(
+                        error,
+                        self.resume_available,
+                    ));
+                }
                 if let Some(main) = &self.main_window {
                     main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
                         self.last_conn.to_conn_payload(),
@@ -280,41 +521,170 @@ impl MacTrayApp {
             // A topic push or correlated reply from the session — hand it straight to the
             // page. Frames that arrive with no window open are dropped; the window re-subs
             // and gets fresh snapshots when it next loads (docs/gui/03 §3.2).
-            gateway::GatewayEvent::Frame(env) => {
-                if let Some(main) = &self.main_window {
-                    main.eval(&bridge::receive_script(&env));
+            gateway::GatewayEvent::Frame(env) => self.handle_gateway_frame(env, None),
+            gateway::GatewayEvent::PageFrame {
+                envelope: env,
+                source_generation,
+            } => self.handle_gateway_frame(env, source_generation),
+            gateway::GatewayEvent::Push {
+                sequence,
+                topic,
+                event,
+                envelope,
+            } => {
+                if self.desktop_app.apply_push(sequence, topic, event) {
+                    if let Some(main) = &self.main_window {
+                        main.eval(&bridge::receive_script(&envelope));
+                    }
+                    self.apply_snapshot_locale();
+                    if let Some(status) = self.desktop_app.status_projection() {
+                        self.apply_update(PollUpdate::connected(status));
+                    }
                 }
             }
         }
     }
 
-    fn handle_main(&mut self, req: MainRequest, target: &EventLoopWindowTarget<UserEvent>) {
-        match req {
-            MainRequest::Activate => self.open_main_window(target),
-            MainRequest::Ipc(body) => match bridge::dispatch(&body) {
-                bridge::BridgeAction::Reply(env) => {
-                    if let Some(main) = &self.main_window {
-                        main.eval(&bridge::receive_script(&env));
-                    }
-                }
-                bridge::BridgeAction::Win(op) => self.handle_win_op(op),
-                // Commands/requests/subscriptions go to the live v8 session; its replies and
-                // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
-                bridge::BridgeAction::ToGateway(env) => {
-                    if let Some(gw) = &self.gateway {
-                        gw.send(env);
-                    }
-                }
-                bridge::BridgeAction::Ignore => {}
-            },
+    fn handle_gateway_frame(&mut self, env: bridge::InEnvelope, source_generation: Option<u64>) {
+        if source_generation.is_none() && gateway::is_native_request_id(env.id) {
+            self.handle_native_command_result(env);
+            return;
+        }
+        if let Some(main) = &self.main_window
+            && source_generation.is_none_or(|generation| generation == main.page_generation())
+        {
+            main.eval(&bridge::receive_script(&env));
         }
     }
 
-    fn handle_win_op(&mut self, op: bridge::WinOp) {
+    fn apply_snapshot_locale(&mut self) {
+        let Some(settings) = &self.desktop_app.snapshot().settings else {
+            return;
+        };
+        let language = if settings.ui.language == "ko" {
+            crate::i18n::Language::Korean
+        } else {
+            crate::i18n::Language::English
+        };
+        if crate::i18n::current() != language {
+            crate::i18n::set_language(language);
+            self.last_menu_signature = menu_model::MenuSignature::Disconnected {
+                resume_available: !self.resume_available,
+            };
+        }
+    }
+
+    fn handle_native_command_result(&mut self, env: bridge::InEnvelope) {
+        let panel_request = env
+            .id
+            .and_then(|gateway_id| self.panel_gateway_requests.remove(&gateway_id));
+        if panel_request.is_some_and(|(generation, _)| {
+            self.panel
+                .as_ref()
+                .is_none_or(|panel| panel.page_generation() != generation)
+        }) {
+            return;
+        }
+        match env.kind {
+            bridge::InKind::Res => {
+                // v8 push snapshots are authoritative. A response status can be older than a
+                // push already accepted by DesktopApp, so it must never overwrite projection.
+                self.complete_panel_request(panel_request, None);
+            }
+            bridge::InKind::Err => {
+                let reason = env
+                    .payload
+                    .as_ref()
+                    .and_then(|payload| {
+                        payload
+                            .get("reason")
+                            .or_else(|| payload.get("code"))
+                            .and_then(|value| value.as_str())
+                    })
+                    .unwrap_or("rejected")
+                    .to_string();
+                let update = PollUpdate {
+                    state: self.last_update.state.clone(),
+                    error: Some(control::ControlError::Rejected(reason.clone())),
+                };
+                let command_error = panel::command_error_from_control(
+                    update.error.as_ref().expect("rejection error was set"),
+                );
+                if panel_request.is_none() {
+                    report_command_error(&command_error.display_message);
+                }
+                self.apply_update(update);
+                self.complete_panel_request(panel_request, Some(&command_error));
+                if reason == "stale_rev"
+                    && let Some(gateway) = &self.gateway
+                {
+                    let _ = gateway.refresh_topic(Topic::Queue);
+                }
+            }
+            _ => self.complete_panel_request(panel_request, None),
+        }
+    }
+
+    fn handle_main(&mut self, req: MainRequest, target: &EventLoopWindowTarget<UserEvent>) {
+        match req {
+            MainRequest::Ipc { generation, body } => {
+                if self
+                    .main_window
+                    .as_ref()
+                    .is_none_or(|main| generation != main.page_generation())
+                {
+                    return;
+                }
+                match bridge::dispatch(&body) {
+                    bridge::BridgeAction::Reply(env) => {
+                        if let Some(main) = &self.main_window {
+                            main.eval(&bridge::receive_script(&env));
+                        }
+                    }
+                    bridge::BridgeAction::Win(op) => self.handle_win_op(op, target),
+                    // Commands/requests/subscriptions go to the live v8 session; its replies and
+                    // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
+                    bridge::BridgeAction::ToGateway(env) => {
+                        if let Some(rejection) = gateway::send_or_reject_from_generation(
+                            self.gateway.as_ref(),
+                            env,
+                            Some(generation),
+                        ) && let Some(main) = &self.main_window
+                            && main.page_generation() == generation
+                        {
+                            main.eval(&bridge::receive_script(&rejection));
+                        }
+                    }
+                    bridge::BridgeAction::Ignore => {}
+                }
+            }
+        }
+    }
+
+    fn handle_activation(
+        &mut self,
+        intent: ActivationIntent,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) {
+        if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+            return;
+        }
+        let _ = self.dispatch_desktop_event(DesktopEvent::Activation(intent), target);
+    }
+
+    fn handle_win_op(&mut self, op: bridge::WinOp, target: &EventLoopWindowTarget<UserEvent>) {
         match op {
+            bridge::WinOp::FrontendReady => self.replay_main_frontend(target),
             bridge::WinOp::Hide => {
-                if let Some(main) = &self.main_window {
-                    main.hide();
+                if self.main_window.is_some() {
+                    self.persist_main_geometry();
+                    let _ = self.dispatch_desktop_event(
+                        DesktopEvent::WindowVisibility {
+                            kind: WindowKind::Main,
+                            visible: false,
+                        },
+                        target,
+                    );
                 }
             }
             bridge::WinOp::Drag => {
@@ -323,6 +693,11 @@ impl MacTrayApp {
                 }
             }
             bridge::WinOp::StartDaemon => self.start_daemon(false),
+            bridge::WinOp::CopyText(text) => {
+                if let Err(error) = crate::desktop::clipboard::copy_text(&text) {
+                    report_error(format_args!("could not copy text: {error}"));
+                }
+            }
             bridge::WinOp::OpenUrl(url) if !url.trim().is_empty() => {
                 let opened = crate::util::browser::open_in_browser_checked(&url);
                 if !opened.launched() {
@@ -332,17 +707,70 @@ impl MacTrayApp {
                     ));
                 }
             }
-            // copyText/openDevtools/persist land at M1; ignore unknowns.
+            bridge::WinOp::PersistUi(snapshot) => {
+                if let Some(main) = &self.main_window {
+                    main.cache_ui_snapshot(snapshot);
+                }
+            }
             _ => {}
         }
     }
 
+    fn replay_main_frontend(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        let mut transition = self
+            .desktop_app
+            .handle_event(DesktopEvent::FrontendReady(WindowKind::Main));
+        let Some((WindowKind::Main, replay)) = transition.replay.take() else {
+            return;
+        };
+        let Some(main) = &self.main_window else {
+            return;
+        };
+        main.mark_frontend_ready();
+        gateway::refresh_ready_main_frontend(self.gateway.as_ref());
+        main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+            self.last_conn.to_conn_payload(),
+        )));
+        if let Some(model) = replay.snapshot.player {
+            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
+                "player",
+                serde_json::to_value(PushEvent::PlayerSnapshot {
+                    model: Box::new(model),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            )));
+        }
+        if let Some(model) = replay.snapshot.queue {
+            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
+                "queue",
+                serde_json::to_value(PushEvent::QueueSnapshot { model })
+                    .unwrap_or(serde_json::Value::Null),
+            )));
+        }
+        if let Some(model) = replay.snapshot.settings {
+            main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
+                "settings",
+                serde_json::to_value(PushEvent::SettingsSnapshot {
+                    model: Box::new(model),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            )));
+        }
+        self.apply_desktop_transition(transition, target);
+    }
+
     fn start_polling(&mut self) {
+        if self.poll_shutdown.is_some() {
+            return;
+        }
+        let generation = self.next_poll_generation();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.poll_shutdown = Some(shutdown_tx);
         let proxy = self.proxy.clone();
+        let poll_lane = self.poll_lane.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
         let builder = thread::Builder::new().name(POLL_THREAD_NAME.to_string());
-        if let Err(e) = builder.spawn(move || {
+        match builder.spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -350,6 +778,7 @@ impl MacTrayApp {
                 Ok(rt) => rt,
                 Err(e) => {
                     report_error(format_args!("could not start status runtime: {e}"));
+                    let _ = done_tx.send(());
                     return;
                 }
             };
@@ -357,21 +786,81 @@ impl MacTrayApp {
                 let shutdown = async {
                     let _ = shutdown_rx.await;
                 };
-                status::run_until_shutdown(
+                status::run_until_shutdown_with_lane(
                     PollConfig::default(),
+                    poll_lane,
                     move |update| {
-                        let _ = proxy.send_event(UserEvent::Status(update));
+                        let _ = proxy.send_event(UserEvent::Status {
+                            generation,
+                            update,
+                            restart_fallback: false,
+                        });
                     },
                     shutdown,
                 )
                 .await;
             });
+            let _ = done_tx.send(());
         }) {
-            report_error(format_args!("could not start status polling thread: {e}"));
+            Ok(thread) => {
+                self.poll_thread = Some(thread);
+                self.poll_done = Some(done_rx);
+            }
+            Err(e) => {
+                self.poll_shutdown = None;
+                self.poll_done = None;
+                report_error(format_args!("could not start status polling thread: {e}"));
+            }
         }
     }
 
+    fn stop_polling(&mut self) {
+        self.next_poll_generation();
+        if let Some(tx) = self.poll_shutdown.take() {
+            let _ = tx.send(());
+        }
+        let stopped = self
+            .poll_done
+            .take()
+            .is_none_or(|done| done.recv_timeout(Duration::from_secs(2)).is_ok());
+        if stopped {
+            if let Some(thread) = self.poll_thread.take()
+                && thread.join().is_err()
+            {
+                report_error("status polling thread panicked during shutdown");
+            }
+        } else {
+            report_error("status polling thread did not stop before deadline");
+            self.poll_thread.take();
+        }
+    }
+
+    fn apply_poll_update(&mut self, generation: u64, update: PollUpdate, restart_fallback: bool) {
+        if generation != self.poll_generation.load(Ordering::Acquire) {
+            return;
+        }
+        if !matches!(self.last_conn, gateway::ConnState::Online { .. }) {
+            self.apply_update(update);
+        }
+        if restart_fallback
+            && matches!(
+                self.last_conn,
+                gateway::ConnState::Offline { ref reason } if reason == "no_v8"
+            )
+        {
+            self.stop_polling();
+            self.start_polling();
+        }
+    }
+
+    fn next_poll_generation(&self) -> u64 {
+        self.poll_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
     fn apply_update(&mut self, update: PollUpdate) {
+        update
+            .state
+            .update_known_resume_available(&mut self.resume_available);
         // The native menu + tooltip derive from only a small field subset (see
         // `menu_model::menu_signature`); skip the allocating menu-model rebuild + the native
         // per-item set_text/set_enabled walk + the tooltip set whenever that subset is
@@ -395,10 +884,25 @@ impl MacTrayApp {
     }
 
     fn request_status_now(&self) {
+        if self
+            .gateway
+            .as_ref()
+            .is_some_and(gateway::GatewayHandle::is_online)
+        {
+            return;
+        }
+        let restart_fallback = matches!(
+            self.last_conn,
+            gateway::ConnState::Offline { ref reason } if reason == "no_v8"
+        );
         let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
-            let update = status::poll_once().await;
-            let _ = proxy.send_event(UserEvent::Status(update));
+        self.submit_command(move |generation| async move {
+            let update = status::poll_once_exclusive().await;
+            let _ = proxy.send_event(UserEvent::Status {
+                generation,
+                update,
+                restart_fallback,
+            });
         });
     }
 
@@ -417,15 +921,12 @@ impl MacTrayApp {
         }
     }
 
-    fn handle_action(&self, action: MenuAction) {
+    fn handle_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::ShowMiniPlayer => {
                 let _ = self.proxy.send_event(UserEvent::ShowMiniPlayer);
             }
-            MenuAction::OpenTui => match launch::open_tui() {
-                Ok(_) => self.request_status_now(),
-                Err(e) => report_error(e),
-            },
+            MenuAction::OpenTui => self.open_tui(),
             MenuAction::Refresh => self.request_status_now(),
             MenuAction::QuitTray => {
                 let _ = self.proxy.send_event(UserEvent::Quit);
@@ -442,116 +943,386 @@ impl MacTrayApp {
         }
     }
 
-    fn show_panel(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+    fn ensure_panel(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> bool {
+        self.panel_teardown_at = None;
         if let Some(panel) = &self.panel {
-            panel.show();
+            if !panel.is_pinned() {
+                panel.position_near_cursor();
+            }
             panel.apply_update(&self.last_update);
-            return;
+            return panel.ensure_surface();
         }
 
         // Unknown / corrupt persisted ids degrade to the default skin.
-        let theme = DesktopState::load()
+        let state = DesktopState::load();
+        let theme = state
             .mini_theme
             .as_deref()
             .and_then(PanelTheme::from_id)
             .unwrap_or(PanelTheme::Default);
         let proxy = self.proxy.clone();
-        match MiniPlayerPanel::create(target, &self.last_update, theme, move |command| {
-            let _ = proxy.send_event(UserEvent::Panel(command));
-        }) {
+        match MiniPlayerPanel::create(
+            target,
+            &self.last_update,
+            theme,
+            state.mini_pinned,
+            move |generation, request| {
+                let _ = proxy.send_event(UserEvent::Panel {
+                    generation,
+                    request,
+                });
+            },
+        ) {
             Ok(panel) => {
+                if !panel.is_pinned() {
+                    panel.position_near_cursor();
+                }
                 panel.apply_update(&self.last_update);
                 self.panel = Some(panel);
+                true
             }
-            Err(e) => report_error(e),
+            Err(e) => {
+                crate::desktop::native_error::show(
+                    "YuTuTui! Mini Player",
+                    &format!("Could not create the mini player: {e}"),
+                );
+                report_error(e);
+                false
+            }
         }
     }
 
-    fn handle_panel_command(&self, command: PanelCommand) {
+    fn show_panel(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> bool {
+        self.ensure_panel(target) && self.panel.as_ref().is_some_and(MiniPlayerPanel::show)
+    }
+
+    fn handle_panel_request(
+        &mut self,
+        generation: u64,
+        request: PanelRequest,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) {
+        if self
+            .panel
+            .as_ref()
+            .is_none_or(|panel| panel.page_generation() != generation)
+        {
+            return;
+        }
+        let PanelRequest { id, command } = request;
+        let correlated = id.map(|id| (generation, id));
         match command {
-            PanelCommand::Hide => {
+            PanelCommand::FrontendReady => {
+                let mut transition = self
+                    .desktop_app
+                    .handle_event(DesktopEvent::FrontendReady(WindowKind::Mini));
+                let replay = transition.replay.take();
                 if let Some(panel) = &self.panel {
-                    panel.hide();
+                    panel.mark_frontend_ready();
+                    panel.apply_update(&self.last_update);
                 }
+                debug_assert!(matches!(replay, Some((WindowKind::Mini, _))));
+                let _ = self.apply_desktop_transition(transition, target);
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::Hide => {
+                self.complete_panel_request(correlated, None);
+                let _ = self.dispatch_desktop_event(
+                    DesktopEvent::WindowVisibility {
+                        kind: WindowKind::Mini,
+                        visible: false,
+                    },
+                    target,
+                );
             }
             PanelCommand::Drag => {
                 if let Some(panel) = &self.panel {
                     panel.start_drag();
                 }
+                self.complete_panel_request(correlated, None);
             }
             PanelCommand::SetTheme(theme) => {
-                if let Some(panel) = &self.panel {
-                    panel.set_theme(theme);
-                }
                 // Same load-mutate-save as persist_main_geometry, so concurrent
                 // geometry writes are never clobbered.
                 let mut state = DesktopState::load();
                 state.mini_theme = Some(theme.id().to_string());
-                state.save();
+                let error = state.save_checked().err().map(|error| {
+                    DesktopCommandError::new("persist_failed", error.to_string(), true)
+                });
+                if error.is_none()
+                    && let Some(panel) = &self.panel
+                {
+                    panel.set_theme(theme);
+                }
+                self.complete_panel_request(correlated, error.as_ref());
             }
             PanelCommand::SetExpanded(expanded) => {
                 if let Some(panel) = &self.panel {
                     panel.set_expanded(expanded);
                 }
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::SetSharedSheet(open) => {
+                if let Some(panel) = &self.panel {
+                    panel.set_shared_sheet(open);
+                }
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::PersistUi(snapshot) => {
+                if let Some(panel) = &self.panel {
+                    panel.persist_ui(snapshot);
+                }
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::SetPinned(pinned) => {
+                let mut state = DesktopState::load();
+                state.mini_pinned = pinned;
+                if let Some(panel) = &self.panel
+                    && let Some(placement) = panel.placement()
+                {
+                    state.mini = Some(crate::desktop::window_state::Point {
+                        x: placement.work_area.x + placement.origin.x,
+                        y: placement.work_area.y + placement.origin.y,
+                    });
+                    state.placement_v2.mini = Some(placement);
+                }
+                let error = state.save_checked().err().map(|error| {
+                    DesktopCommandError::new("persist_failed", error.to_string(), true)
+                });
+                if let Some(error) = error.as_ref() {
+                    self.complete_panel_request(correlated, Some(error));
+                    return;
+                }
+                let _ = self.dispatch_desktop_event(DesktopEvent::MiniPinned(pinned), target);
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::ArtworkFailed => {
+                if let Some(panel) = &self.panel {
+                    panel.artwork_failed();
+                }
+                self.complete_panel_request(correlated, None);
+            }
+            PanelCommand::StartDaemon => self.start_daemon_for_panel(false, correlated),
+            PanelCommand::ResumeDaemon => self.start_daemon_for_panel(true, correlated),
+            PanelCommand::StopDaemon => self.stop_daemon_for_panel(correlated),
+            PanelCommand::OpenTui => self.open_tui_for_panel(correlated),
+            PanelCommand::Refresh => {
+                self.request_status_now();
+                self.complete_panel_request(correlated, None);
             }
             command => {
                 if let Some(remote) = command.remote_command() {
-                    self.send_panel_remote(
-                        remote,
-                        matches!(command, PanelCommand::SetStreaming(true)),
-                    );
+                    self.send_panel_remote(remote, correlated);
                 } else if let Some(action) = command.menu_action() {
                     self.handle_action(action);
+                    self.complete_panel_request(correlated, None);
                 }
             }
         }
     }
 
+    fn complete_panel_request(
+        &self,
+        request: Option<(u64, u64)>,
+        error: Option<&DesktopCommandError>,
+    ) {
+        if let (Some((generation, id)), Some(panel)) = (request, &self.panel)
+            && panel.page_generation() == generation
+        {
+            panel.apply_command_result(id, error);
+        }
+    }
+
+    fn apply_panel_result(&self, generation: u64, id: u64, error: Option<&DesktopCommandError>) {
+        if let Some(panel) = &self.panel
+            && panel.page_generation() == generation
+        {
+            panel.apply_command_result(id, error);
+        }
+    }
+
     /// Persist the main window's current geometry so relaunch restores it (docs/gui/03 §8).
     fn persist_main_geometry(&self) {
+        let mut state = DesktopState::load();
         if let Some(main) = &self.main_window
             && let Some(rect) = main.geometry()
         {
-            let mut state = DesktopState::load();
             state.main = Some(rect);
-            state.save();
+            state.placement_v2.main = main.placement();
+        }
+        if let Some(panel) = &self.panel
+            && panel.is_pinned()
+            && let Some(placement) = panel.placement()
+        {
+            state.mini = Some(crate::desktop::window_state::Point {
+                x: placement.work_area.x + placement.origin.x,
+                y: placement.work_area.y + placement.origin.y,
+            });
+            state.placement_v2.mini = Some(placement);
+        }
+        state.save();
+    }
+
+    fn handle_panel_focus(
+        &mut self,
+        window_id: tao::window::WindowId,
+        focused: bool,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) {
+        if let Some(panel) = &self.panel
+            && panel.window_id() == window_id
+        {
+            let event = if focused {
+                DesktopWindowEvent::Focused(WindowKind::Mini)
+            } else {
+                DesktopWindowEvent::Blurred(WindowKind::Mini)
+            };
+            let _ = self.dispatch_desktop_event(DesktopEvent::WindowEvent(event), target);
         }
     }
 
-    /// The minimal skin dismisses on click-away like a real tray popup. The menu
-    /// path self-heals: opening the tray menu blurs (hides) the panel, and the
-    /// "Show Mini Player" item simply re-shows it.
-    fn handle_panel_blur(&self, window_id: tao::window::WindowId) {
-        if let Some(panel) = &self.panel
-            && panel.window_id() == window_id
-            && panel.wants_blur_hide()
-        {
+    fn hide_panel(&mut self) {
+        if let Some(panel) = &self.panel {
             panel.hide();
+            self.panel_teardown_at = if DesktopState::load().keep_webview_alive {
+                None
+            } else {
+                Some(Instant::now() + MINI_WEBVIEW_GRACE)
+            };
         }
     }
 
-    fn handle_window_close(&self, window_id: tao::window::WindowId) {
+    fn hide_main_window(&mut self) {
+        if let Some(main) = &self.main_window {
+            main.hide();
+            self.main_teardown_at = if DesktopState::load().keep_webview_alive {
+                None
+            } else {
+                Some(Instant::now() + MAIN_WEBVIEW_GRACE)
+            };
+        }
+    }
+
+    fn handle_geometry_changed(&mut self, window_id: tao::window::WindowId) {
+        if let Some(main) = &self.main_window
+            && main.window_id() == window_id
+        {
+            main.record_geometry();
+            self.geometry_dirty_at = Some(Instant::now());
+        }
+        if let Some(panel) = &self.panel
+            && panel.window_id() == window_id
+            && panel.is_pinned()
+            && !panel.consume_programmatic_geometry_event()
+        {
+            self.geometry_dirty_at = Some(Instant::now());
+        }
+    }
+
+    fn process_deadlines(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        let now = Instant::now();
+        let transition = self
+            .desktop_app
+            .handle_event_at(DesktopEvent::Deadline, now);
+        let _ = self.apply_desktop_transition(transition, target);
+        if self.panel_teardown_at.is_some_and(|due| now >= due) {
+            self.panel_teardown_at = None;
+            if let Some(panel) = &self.panel {
+                panel.teardown_webview();
+                let _ = self.dispatch_desktop_event(
+                    DesktopEvent::FrontendTornDown(WindowKind::Mini),
+                    target,
+                );
+            }
+        }
+        if self.main_teardown_at.is_some_and(|due| now >= due) {
+            self.main_teardown_at = None;
+            if let Some(main) = &self.main_window {
+                main.teardown_webview();
+                let _ = self.dispatch_desktop_event(
+                    DesktopEvent::FrontendTornDown(WindowKind::Main),
+                    target,
+                );
+            }
+        }
+        if self
+            .geometry_dirty_at
+            .is_some_and(|dirty| now.duration_since(dirty) >= GEOMETRY_SAVE_DELAY)
+        {
+            self.geometry_dirty_at = None;
+            self.persist_main_geometry();
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        let blur = self.desktop_app.mini_dismiss_deadline();
+        let geometry = self
+            .geometry_dirty_at
+            .map(|dirty| dirty + GEOMETRY_SAVE_DELAY);
+        [
+            blur,
+            geometry,
+            self.panel_teardown_at,
+            self.main_teardown_at,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn handle_window_close(
+        &mut self,
+        window_id: tao::window::WindowId,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) {
         if let Some(panel) = &self.panel
             && panel.window_id() == window_id
         {
-            panel.hide();
+            let _ = self.dispatch_desktop_event(
+                DesktopEvent::WindowVisibility {
+                    kind: WindowKind::Mini,
+                    visible: false,
+                },
+                target,
+            );
         }
         // Main window close button → hide to tray (docs/gui/03 §4), saving geometry first.
         if let Some(main) = &self.main_window
             && main.window_id() == window_id
         {
             self.persist_main_geometry();
-            main.hide();
+            if DesktopState::load().close_to_tray {
+                let _ = self.dispatch_desktop_event(
+                    DesktopEvent::WindowVisibility {
+                        kind: WindowKind::Main,
+                        visible: false,
+                    },
+                    target,
+                );
+            } else {
+                let _ = self.proxy.send_event(UserEvent::Quit);
+            }
         }
     }
 
-    fn handle_window_destroyed(&mut self, window_id: tao::window::WindowId) {
+    fn handle_window_destroyed(
+        &mut self,
+        window_id: tao::window::WindowId,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) {
         if self
             .panel
             .as_ref()
             .is_some_and(|panel| panel.window_id() == window_id)
         {
             self.panel = None;
+            self.panel_teardown_at = None;
+            let _ = self.dispatch_desktop_event(
+                DesktopEvent::WindowEvent(DesktopWindowEvent::Hidden(WindowKind::Mini)),
+                target,
+            );
+            let _ = self
+                .dispatch_desktop_event(DesktopEvent::FrontendTornDown(WindowKind::Mini), target);
         }
         if self
             .main_window
@@ -559,63 +1330,177 @@ impl MacTrayApp {
             .is_some_and(|main| main.window_id() == window_id)
         {
             self.main_window = None;
+            self.main_teardown_at = None;
+            let _ = self.dispatch_desktop_event(
+                DesktopEvent::WindowEvent(DesktopWindowEvent::Hidden(WindowKind::Main)),
+                target,
+            );
+            let _ = self
+                .dispatch_desktop_event(DesktopEvent::FrontendTornDown(WindowKind::Main), target);
         }
     }
 
     fn send_remote(&self, command: RemoteCommand) {
-        let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
-            if let Err(e) = control::send_remote(command).await {
-                report_error(e);
+        if let Some(gateway) = &self.gateway
+            && gateway.is_online()
+        {
+            if let Err(error) = gateway.send_remote(command) {
+                report_command_error(format_args!(
+                    "could not queue desktop command: {}",
+                    error.code()
+                ));
             }
-            let update = status::poll_once().await;
-            let _ = proxy.send_event(UserEvent::Status(update));
+            return;
+        }
+        if !matches!(
+            self.last_conn,
+            gateway::ConnState::Offline { ref reason } if reason == "no_v8"
+        ) {
+            report_command_error("player is offline");
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.submit_command(move |generation| async move {
+            if let Err(e) = control::send_remote(command).await {
+                report_command_error(e);
+            }
+            let update = status::poll_once_exclusive().await;
+            let _ = proxy.send_event(UserEvent::Status {
+                generation,
+                update,
+                restart_fallback: true,
+            });
         });
     }
 
-    fn send_panel_remote(&self, command: RemoteCommand, resume_if_idle: bool) {
-        let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
-            if let Err(e) = control::send_remote(command).await {
-                report_error(e);
-            }
-            if resume_if_idle
-                && let Ok(status) = control::status().await
-                && status_is_idle(&status)
-            {
-                match control::send_remote(RemoteCommand::ResumeSession).await {
-                    Ok(_) => {}
-                    Err(control::ControlError::Rejected(reason)) if reason == "session_empty" => {}
-                    Err(e) => report_error(e),
+    fn send_panel_remote(&mut self, command: RemoteCommand, request: Option<(u64, u64)>) {
+        if let Some(gateway) = &self.gateway
+            && gateway.is_online()
+        {
+            match gateway.send_remote(command) {
+                Ok(gateway_id) => {
+                    if let Some(request) = request {
+                        self.panel_gateway_requests.insert(gateway_id, request);
+                    }
+                }
+                Err(error) => {
+                    let error = DesktopCommandError::new(
+                        error.code(),
+                        format!("Could not queue command: {}", error.code()),
+                        true,
+                    );
+                    self.complete_panel_request(request, Some(&error));
                 }
             }
-            let update = status::poll_once().await;
-            let _ = proxy.send_event(UserEvent::Status(update));
+            return;
+        }
+        if !matches!(
+            self.last_conn,
+            gateway::ConnState::Offline { ref reason } if reason == "no_v8"
+        ) {
+            let error = DesktopCommandError::new("offline", "Player is offline", true);
+            self.complete_panel_request(request, Some(&error));
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.submit_panel_command(request, move |generation| async move {
+            let result = control::send_remote(command).await;
+            if let Some((page_generation, id)) = request {
+                let error = result.as_ref().err().map(panel::command_error_from_control);
+                let _ = proxy.send_event(UserEvent::PanelResult {
+                    generation: page_generation,
+                    id,
+                    error,
+                });
+            }
+            let update = status::poll_once_exclusive().await;
+            let _ = proxy.send_event(UserEvent::Status {
+                generation,
+                update,
+                restart_fallback: true,
+            });
+        });
+    }
+
+    fn start_daemon_for_panel(&self, resume: bool, request: Option<(u64, u64)>) {
+        let proxy = self.proxy.clone();
+        self.submit_panel_lifecycle_command(request, move |_| async move {
+            let result = control::start_daemon(resume).await;
+            if let Some((page_generation, id)) = request {
+                let error = result.as_ref().err().map(panel::command_error_from_control);
+                let _ = proxy.send_event(UserEvent::PanelResult {
+                    generation: page_generation,
+                    id,
+                    error,
+                });
+            }
+            let _ = proxy.send_event(UserEvent::Refresh);
+        });
+    }
+
+    fn stop_daemon_for_panel(&self, request: Option<(u64, u64)>) {
+        let proxy = self.proxy.clone();
+        self.submit_panel_lifecycle_command(request, move |_| async move {
+            let result = control::stop_daemon().await;
+            if let Some((page_generation, id)) = request {
+                let error = result.as_ref().err().map(panel::command_error_from_control);
+                let _ = proxy.send_event(UserEvent::PanelResult {
+                    generation: page_generation,
+                    id,
+                    error,
+                });
+            }
+            let _ = proxy.send_event(UserEvent::Refresh);
         });
     }
 
     fn start_daemon(&self, resume: bool) {
         let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
+        self.submit_lifecycle_command(move |_| async move {
             if let Err(e) = control::start_daemon(resume).await {
-                report_error(e);
+                report_command_error(e);
             }
-            let update = status::poll_once().await;
-            let _ = proxy.send_event(UserEvent::Status(update));
+            let _ = proxy.send_event(UserEvent::Refresh);
         });
     }
 
-    fn toggle_startup(&self) {
+    fn toggle_startup(&mut self) {
+        if self.startup_toggle_pending {
+            return;
+        }
+        self.startup_toggle_pending = true;
+        if let Some(menu) = &self.menu {
+            menu.set_startup_pending(true);
+        }
         let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
-            if let Err(e) = toggle_startup_entry() {
-                report_error(e);
-            }
-            let _ = proxy.send_event(UserEvent::StartupChanged);
-        });
+        let submit = self
+            .command_executor
+            .as_ref()
+            .ok_or(SubmitError::Closed)
+            .and_then(|executor| {
+                executor.submit_lifecycle(move || async move {
+                    let error = tokio::task::spawn_blocking(|| {
+                        toggle_startup_entry().err().map(|error| error.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|error| Some(format!("startup worker failed: {error}")));
+                    let _ = proxy.send_event(UserEvent::StartupChanged { error });
+                })
+            });
+        if let Err(error) = submit {
+            self.finish_startup_toggle(Some(&error.to_string()));
+        }
     }
 
-    fn apply_startup_status(&self) {
+    fn finish_startup_toggle(&mut self, error: Option<&str>) {
+        self.startup_toggle_pending = false;
+        if let Some(error) = error {
+            report_error(format_args!("could not update login startup: {error}"));
+            crate::desktop::native_error::show(
+                "YuTuTui! Desktop",
+                &format!("Could not update login startup: {error}"),
+            );
+        }
         if let Some(menu) = &self.menu {
             menu.apply_startup_status();
         }
@@ -623,497 +1508,13 @@ impl MacTrayApp {
 
     fn stop_daemon(&self) {
         let proxy = self.proxy.clone();
-        spawn_async_command(move || async move {
+        self.submit_lifecycle_command(move |_| async move {
             if let Err(e) = control::stop_daemon().await {
-                report_error(e);
+                report_command_error(e);
             }
-            let update = status::poll_once().await;
-            let _ = proxy.send_event(UserEvent::Status(update));
+            let _ = proxy.send_event(UserEvent::Refresh);
         });
     }
-
-    fn shutdown(&mut self) {
-        self.persist_main_geometry();
-        if let Some(tx) = self.poll_shutdown.take() {
-            let _ = tx.send(());
-        }
-        // Tear down the gateway session cleanly (drops the handle → signals shutdown).
-        self.gateway.take();
-        // Flush the log before tao exits the process. (muda's event handler lives in
-        // a set-once cell — unsetting it here was always a no-op, so we don't.)
-        drop(self.log_guard.take());
-    }
 }
 
-struct MacMenu {
-    // `Menu` root for parity with the Windows backend, where a `Submenu` root is an
-    // outright crash (muda WM_NCACTIVATE type confusion); on macOS both map to an
-    // NSMenu, so this is behaviour-neutral and keeps one shape to reason about.
-    root: Menu,
-    track: MenuItem,
-    state: MenuItem,
-    startup: CheckMenuItem,
-    // Single handle for the first daemon slot. Its action flips between StartDaemon
-    // and StopDaemon with the state, so an action-keyed handle map would strand it:
-    // whichever variant was absent at build time could never appear afterwards.
-    daemon_primary: MenuItem,
-    actions: HashMap<MenuAction, MenuItem>,
-}
-
-impl MacMenu {
-    fn new(state: &TrayState) -> Result<Self, Box<dyn Error>> {
-        let model = menu_model::build_menu(state);
-        let root = Menu::new();
-        let mut action_items = HashMap::new();
-        let mut track = None;
-        let mut state_item = None;
-        let mut startup_item = None;
-        let mut daemon_primary = None;
-        let mut disabled_index = 0usize;
-
-        for entry in model.entries {
-            match entry {
-                MenuEntry::Separator => root.append(&PredefinedMenuItem::separator())?,
-                MenuEntry::Item(item) => {
-                    if item.action == Some(MenuAction::ToggleStartup) {
-                        let menu_item = make_startup_menu_item(&item);
-                        startup_item = Some(menu_item.clone());
-                        root.append(&menu_item)?;
-                        continue;
-                    }
-                    if is_daemon_primary(item.action) {
-                        let menu_item = MenuItem::with_id(
-                            MenuId::new(DAEMON_PRIMARY_ID),
-                            &item.label,
-                            item.enabled,
-                            None,
-                        );
-                        daemon_primary = Some(menu_item.clone());
-                        root.append(&menu_item)?;
-                        continue;
-                    }
-                    let menu_item = make_menu_item(&item, disabled_index);
-                    if let Some(action) = item.action {
-                        action_items.insert(action, menu_item.clone());
-                    } else {
-                        match disabled_index {
-                            1 => track = Some(menu_item.clone()),
-                            2 => state_item = Some(menu_item.clone()),
-                            _ => {}
-                        }
-                        disabled_index += 1;
-                    }
-                    root.append(&menu_item)?;
-                }
-            }
-        }
-
-        Ok(Self {
-            root,
-            track: track.ok_or("missing track menu item")?,
-            state: state_item.ok_or("missing state menu item")?,
-            startup: startup_item.ok_or("missing startup menu item")?,
-            daemon_primary: daemon_primary.ok_or("missing daemon menu item")?,
-            actions: action_items,
-        })
-    }
-
-    fn apply_state(&self, state: &TrayState) {
-        let model = menu_model::build_menu(state);
-        let mut disabled_index = 0usize;
-        for entry in model.entries {
-            let MenuEntry::Item(item) = entry else {
-                continue;
-            };
-            if let Some(action) = item.action {
-                if action == MenuAction::ToggleStartup {
-                    // Label only. Checked/enabled refresh on StartupChanged events —
-                    // hitting the LaunchAgent plist on every status poll was main-
-                    // thread disk IO plus report_error spam on persistent failure.
-                    self.startup.set_text(item.label);
-                    continue;
-                }
-                if is_daemon_primary(Some(action)) {
-                    self.daemon_primary.set_text(item.label);
-                    self.daemon_primary.set_enabled(item.enabled);
-                    continue;
-                }
-                if let Some(handle) = self.actions.get(&action) {
-                    handle.set_text(item.label);
-                    handle.set_enabled(item.enabled);
-                }
-            } else {
-                match disabled_index {
-                    1 => {
-                        self.track.set_text(item.label);
-                        self.track.set_enabled(item.enabled);
-                    }
-                    2 => {
-                        self.state.set_text(item.label);
-                        self.state.set_enabled(item.enabled);
-                    }
-                    _ => {}
-                }
-                disabled_index += 1;
-            }
-        }
-    }
-
-    fn apply_startup_status(&self) {
-        let (checked, enabled) = startup_menu_state();
-        self.startup.set_checked(checked);
-        self.startup.set_enabled(enabled);
-    }
-}
-
-fn make_menu_item(item: &ModelItem, disabled_index: usize) -> MenuItem {
-    if let Some(action) = item.action {
-        MenuItem::with_id(action_menu_id(action), &item.label, item.enabled, None)
-    } else {
-        MenuItem::with_id(
-            MenuId::new(format!("yututray:disabled:{disabled_index}")),
-            &item.label,
-            item.enabled,
-            None,
-        )
-    }
-}
-
-fn make_startup_menu_item(item: &ModelItem) -> CheckMenuItem {
-    let (checked, enabled) = startup_menu_state();
-    CheckMenuItem::with_id(
-        action_menu_id(MenuAction::ToggleStartup),
-        &item.label,
-        item.enabled && enabled,
-        checked,
-        None,
-    )
-}
-
-const DAEMON_PRIMARY_ID: &str = "yututray:daemon_primary";
-
-fn is_daemon_primary(action: Option<MenuAction>) -> bool {
-    matches!(
-        action,
-        Some(MenuAction::StartDaemon) | Some(MenuAction::StopDaemon)
-    )
-}
-
-fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
-    if id.as_ref() == DAEMON_PRIMARY_ID {
-        return Some(UserEvent::DaemonPrimary);
-    }
-    let action = action_from_menu_id(id)?;
-    Some(match action {
-        MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer,
-        MenuAction::Refresh => UserEvent::Refresh,
-        MenuAction::QuitTray => UserEvent::Quit,
-        other => UserEvent::Menu(other),
-    })
-}
-
-fn action_menu_id(action: MenuAction) -> MenuId {
-    MenuId::new(format!("yututray:{}", action_slug(action)))
-}
-
-fn action_from_menu_id(id: &MenuId) -> Option<MenuAction> {
-    let slug = id.as_ref().strip_prefix("yututray:")?;
-    match slug {
-        "play_pause" => Some(MenuAction::PlayPause),
-        "next" => Some(MenuAction::Next),
-        "previous" => Some(MenuAction::Previous),
-        "seek_back" => Some(MenuAction::SeekBack),
-        "seek_forward" => Some(MenuAction::SeekForward),
-        "volume_up" => Some(MenuAction::VolumeUp),
-        "volume_down" => Some(MenuAction::VolumeDown),
-        "toggle_streaming" => Some(MenuAction::ToggleStreaming),
-        "start_daemon" => Some(MenuAction::StartDaemon),
-        "resume_daemon" => Some(MenuAction::ResumeDaemon),
-        "stop_daemon" => Some(MenuAction::StopDaemon),
-        "show_mini_player" => Some(MenuAction::ShowMiniPlayer),
-        "open_tui" => Some(MenuAction::OpenTui),
-        "refresh" => Some(MenuAction::Refresh),
-        "toggle_startup" => Some(MenuAction::ToggleStartup),
-        "quit_player" => Some(MenuAction::QuitPlayer),
-        "quit_tray" => Some(MenuAction::QuitTray),
-        _ => None,
-    }
-}
-
-fn action_slug(action: MenuAction) -> &'static str {
-    match action {
-        MenuAction::PlayPause => "play_pause",
-        MenuAction::Next => "next",
-        MenuAction::Previous => "previous",
-        MenuAction::SeekBack => "seek_back",
-        MenuAction::SeekForward => "seek_forward",
-        MenuAction::VolumeUp => "volume_up",
-        MenuAction::VolumeDown => "volume_down",
-        MenuAction::ToggleStreaming => "toggle_streaming",
-        MenuAction::StartDaemon => "start_daemon",
-        MenuAction::ResumeDaemon => "resume_daemon",
-        MenuAction::StopDaemon => "stop_daemon",
-        MenuAction::ShowMiniPlayer => "show_mini_player",
-        MenuAction::OpenTui => "open_tui",
-        MenuAction::Refresh => "refresh",
-        MenuAction::ToggleStartup => "toggle_startup",
-        MenuAction::QuitPlayer => "quit_player",
-        MenuAction::QuitTray => "quit_tray",
-    }
-}
-
-fn toggle_startup_entry() -> Result<(), startup::StartupError> {
-    match startup::status()? {
-        StartupStatus::Enabled { .. } => startup::uninstall(),
-        StartupStatus::Disabled => startup::install().map(|_| ()),
-        StartupStatus::Unsupported => Err(startup::StartupError::Unsupported),
-    }
-}
-
-fn startup_menu_state() -> (bool, bool) {
-    match startup::status() {
-        Ok(StartupStatus::Enabled { .. }) => (true, true),
-        Ok(StartupStatus::Disabled) => (false, true),
-        Ok(StartupStatus::Unsupported) => (false, false),
-        Err(e) => {
-            report_error(e);
-            (false, true)
-        }
-    }
-}
-
-fn tooltip_for_state(state: &TrayState) -> String {
-    match state {
-        TrayState::Disconnected => "YuTuTui! is not running".to_string(),
-        TrayState::Connected(status) => {
-            if status.owner_mode == InstanceMode::Daemon
-                && status.total == 0
-                && status.title.as_deref().unwrap_or_default().is_empty()
-            {
-                return "YuTuTui! daemon idle".to_string();
-            }
-            let prefix = if status.paused { "Paused" } else { "Playing" };
-            match (status.artist.as_deref(), status.title.as_deref()) {
-                (Some(artist), Some(title)) if !artist.is_empty() && !title.is_empty() => {
-                    format!("{prefix}: {artist} - {title}")
-                }
-                (_, Some(title)) if !title.is_empty() => format!("{prefix}: {title}"),
-                _ => "YuTuTui!: nothing playing".to_string(),
-            }
-        }
-    }
-}
-
-fn status_is_idle(status: &StatusSnapshot) -> bool {
-    status.total == 0 && status.title.as_deref().unwrap_or_default().is_empty()
-}
-
-fn spawn_async_command<F, Fut>(make_future: F)
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + 'static,
-{
-    let builder = thread::Builder::new().name(COMMAND_THREAD_NAME.to_string());
-    if let Err(e) = builder.spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(e) => {
-                report_error(format_args!("could not start command runtime: {e}"));
-                return;
-            }
-        };
-        rt.block_on(make_future());
-    }) {
-        report_error(format_args!("could not start command thread: {e}"));
-    }
-}
-
-fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let dirs = directories::ProjectDirs::from("", "", "yututui")?;
-    let dir = dirs.cache_dir();
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        report_error(format_args!(
-            "could not create log directory {}: {e}",
-            dir.display()
-        ));
-        return None;
-    }
-
-    let guard = crate::logging::init(dir);
-    if guard.is_some() {
-        tracing::info!(
-            target: "ytt_tray",
-            path = %dir.join("yututui.log").display(),
-            "yututray logging initialized"
-        );
-    }
-    guard
-}
-
-fn install_tray_panic_hook() {
-    // panic = "abort" kills the process before tracing-appender's worker thread can
-    // flush, so mirror every panic synchronously into a plain file next to the log.
-    let panic_log = directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.cache_dir().join("yututray-panic.log"));
-    let previous = panic::take_hook();
-    panic::set_hook(Box::new(move |info| {
-        tracing::error!(target: "ytt_tray", panic = %info, "yututray panic");
-        if let Some(path) = &panic_log
-            && let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        {
-            use std::io::Write;
-            let unix_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_secs())
-                .unwrap_or_default();
-            let _ = writeln!(file, "[unix {unix_secs}] yututray panic: {info}");
-        }
-        previous(info);
-    }));
-}
-
-/// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
-/// M0 injects no theme — the frontend falls back to its app.css role defaults (static-themed).
-fn boot_json(conn: &gateway::ConnState) -> String {
-    let owner = match conn {
-        gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),
-        _ => None,
-    };
-    serde_json::json!({
-        "platform": "macos",
-        "version": env!("CARGO_PKG_VERSION"),
-        "coreVersion": serde_json::Value::Null,
-        "protocolVersion": crate::remote::proto::PROTOCOL_VERSION,
-        "ownerMode": owner,
-        "locale": "en",
-        "theme": serde_json::Value::Null,
-        "uiState": serde_json::Value::Null,
-        "devFlags": { "devFrontend": false },
-    })
-    .to_string()
-}
-
-fn report_error(message: impl std::fmt::Display) {
-    let message = message.to_string();
-    tracing::error!(target: "ytt_tray", "yututray: {message}");
-    #[cfg(debug_assertions)]
-    eprintln!("yututray: {message}");
-}
-
-fn template_icon() -> Result<Icon, tray_icon::BadIcon> {
-    const SIZE: u32 = 18;
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let center = (SIZE as f32 - 1.0) / 2.0;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let idx = ((y * SIZE + x) * 4) as usize;
-            let ring = (6.1..=8.0).contains(&dist);
-            let stem = (8..=10).contains(&x) && (3..=14).contains(&y);
-            let dot = dist <= 2.1;
-            if ring || stem || dot {
-                rgba[idx] = 0;
-                rgba[idx + 1] = 0;
-                rgba[idx + 2] = 0;
-                rgba[idx + 3] = 255;
-            }
-        }
-    }
-    Icon::from_rgba(rgba, SIZE, SIZE)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::remote::proto::{InstanceMode, StatusSnapshot};
-
-    #[test]
-    fn menu_ids_round_trip_actions() {
-        for action in [
-            MenuAction::PlayPause,
-            MenuAction::Next,
-            MenuAction::Previous,
-            MenuAction::SeekBack,
-            MenuAction::SeekForward,
-            MenuAction::VolumeUp,
-            MenuAction::VolumeDown,
-            MenuAction::ToggleStreaming,
-            MenuAction::StartDaemon,
-            MenuAction::ResumeDaemon,
-            MenuAction::StopDaemon,
-            MenuAction::ShowMiniPlayer,
-            MenuAction::OpenTui,
-            MenuAction::Refresh,
-            MenuAction::ToggleStartup,
-            MenuAction::QuitPlayer,
-            MenuAction::QuitTray,
-        ] {
-            assert_eq!(action_from_menu_id(&action_menu_id(action)), Some(action));
-        }
-    }
-
-    #[test]
-    fn tooltip_tracks_playback_state() {
-        let state = TrayState::Connected(StatusSnapshot {
-            title: Some("Song".to_string()),
-            artist: Some("Artist".to_string()),
-            paused: true,
-            volume: 60,
-            position: 1,
-            total: 2,
-            streaming: false,
-            owner_mode: InstanceMode::StandaloneTui,
-            settings: Default::default(),
-            queue: Vec::new(),
-            shuffle: false,
-            repeat: Default::default(),
-            elapsed_ms: None,
-            duration_ms: None,
-            artwork: None,
-        });
-        assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
-        let idle_daemon = TrayState::Connected(StatusSnapshot {
-            title: None,
-            artist: None,
-            paused: true,
-            volume: 80,
-            position: 0,
-            total: 0,
-            streaming: false,
-            owner_mode: InstanceMode::Daemon,
-            settings: Default::default(),
-            queue: Vec::new(),
-            shuffle: false,
-            repeat: Default::default(),
-            elapsed_ms: None,
-            duration_ms: None,
-            artwork: None,
-        });
-        assert_eq!(tooltip_for_state(&idle_daemon), "YuTuTui! daemon idle");
-        assert_eq!(
-            tooltip_for_state(&TrayState::Disconnected),
-            "YuTuTui! is not running"
-        );
-    }
-
-    #[test]
-    fn template_icon_is_valid_rgba() {
-        assert!(template_icon().is_ok());
-    }
-
-    #[test]
-    fn daemon_primary_menu_id_dispatches_state_dependent_event() {
-        assert!(matches!(
-            user_event_from_menu_id(&MenuId::new(DAEMON_PRIMARY_ID)),
-            Some(UserEvent::DaemonPrimary)
-        ));
-    }
-}
+include!("macos_support.rs");

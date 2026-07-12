@@ -20,6 +20,10 @@ impl App {
     /// Return to the player/home screen from any mode. Settings use the normal close path
     /// so draft values and keybinding changes are not silently discarded.
     pub(in crate::app) fn go_home(&mut self) -> Vec<Cmd> {
+        if self.mode == Mode::Settings {
+            self.finish_settings_text_edit();
+            return self.close_settings_for_home();
+        }
         self.overlays.help_visible = false;
         self.overlays.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
@@ -44,26 +48,20 @@ impl App {
         // when the input is re-entered later.
         self.search.select_all = false;
         self.ai.select_all = false;
-        if self.mode == Mode::Settings {
-            self.finish_settings_text_edit();
-            return self.close_settings();
-        }
         self.mode = Mode::Player;
         self.dirty = true;
         Vec::new()
     }
 
     pub(in crate::app) fn quit_app(&mut self) -> Vec<Cmd> {
+        if self.mode == Mode::Settings {
+            self.finish_settings_text_edit();
+            return self.close_settings_for_quit();
+        }
         self.overlays.help_visible = false;
         self.overlays.mouse_help_visible = false;
-        let cmds = if self.mode == Mode::Settings {
-            self.finish_settings_text_edit();
-            self.close_settings()
-        } else {
-            Vec::new()
-        };
         self.should_quit = true;
-        cmds
+        Vec::new()
     }
 
     /// How many rows a PageUp/PageDown moves: a screenful of the active list less one row
@@ -114,6 +112,10 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     pub(in crate::app) fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
+        if self.mode == Mode::Settings && mode != Mode::Settings {
+            self.finish_settings_text_edit();
+            return self.close_settings_for_navigation(mode);
+        }
         self.overlays.help_visible = false;
         self.overlays.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
@@ -138,12 +140,6 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        let cmds = if self.mode == Mode::Settings {
-            self.finish_settings_text_edit();
-            self.close_settings() // sets mode = Player; overridden below if needed
-        } else {
-            Vec::new()
-        };
         match mode {
             Mode::Player => self.mode = Mode::Player,
             Mode::Search => {
@@ -169,7 +165,7 @@ impl App {
             Mode::Ai => self.enter_ai(),
         }
         self.dirty = true;
-        cmds
+        Vec::new()
     }
 
     /// Select a Settings tab by index into [`SettingsTab::ALL`] (from a tab click).

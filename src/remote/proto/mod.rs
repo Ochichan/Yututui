@@ -26,10 +26,12 @@ mod model_player;
 mod model_settings;
 mod session;
 
+pub(crate) use command::RequestRetryClass;
 pub use command::{
-    GuiSettingChange, REMOTE_MAX_GEMINI_KEY_BYTES, REMOTE_MAX_QUERY_BYTES,
-    REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES, REMOTE_MAX_TOPICS,
-    REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
+    GuiSettingChange, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_GEMINI_KEY_BYTES,
+    REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES,
+    REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand,
+    RemoteSettingChange,
 };
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
@@ -60,6 +62,15 @@ pub const PROTOCOL_VERSION_V7: u8 = 7;
 /// session-frame ceiling so the client read bound and the server's notion of a valid reply
 /// share one source, while still refusing an unbounded stream from a corrupt/hostile peer.
 pub const MAX_ONESHOT_REPLY_BYTES: usize = 256 * 1024;
+
+/// Machine reason returned when a mutating request may have been applied but no authoritative
+/// reply was observed. Clients must ask the user to inspect current state before retrying.
+pub const CONFIRMATION_LOST_REASON: &str = "confirmation_lost";
+
+/// Instance capability proving that same-ID mutation retries return an explicitly marked
+/// retained owner outcome. Clients must not automatically retry an ambiguous mutation unless
+/// the published instance descriptor advertises this capability.
+pub const RETAINED_REQUEST_OUTCOMES_CAPABILITY: &str = "retained-request-outcomes-v1";
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
@@ -100,6 +111,13 @@ impl ToggleState {
 pub struct RemoteRequest {
     pub version: u8,
     pub token: String,
+    /// Stable identity for retaining state-changing outcomes within this advertised owner's
+    /// current 60-second retention window. It is not safe to reuse after that window or after the
+    /// descriptor token/owner changes.
+    /// Status and RunSearch use it only for validation/correlation and execute afresh. Optional so
+    /// the frozen v7 request stays byte-for-byte compatible; current clients always populate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub command: RemoteCommand,
 }
 
@@ -137,6 +155,18 @@ impl RemoteResponse {
         }
     }
 
+    /// A semantic rejection with sanitized, actionable text for human-facing one-shot clients.
+    /// `reason` remains the stable machine contract; `message` is deliberately optional on the
+    /// wire, so adding it does not change how older clients parse errors.
+    pub fn err_with_message(reason: &str, message: String) -> Self {
+        Self {
+            ok: false,
+            reason: Some(reason.to_string()),
+            message: Some(message),
+            status: None,
+        }
+    }
+
     /// A `status` success: the snapshot plus its one-line human rendering.
     pub fn status(snapshot: StatusSnapshot) -> Self {
         Self {
@@ -146,6 +176,23 @@ impl RemoteResponse {
             status: Some(snapshot),
         }
     }
+}
+
+/// Additive one-shot transport metadata around the frozen [`RemoteResponse`] body.
+///
+/// `retained_replay` is set only when this exchange observed the completed result of a prior
+/// same-ID mutation admission. It stays absent for ordinary responses, pre-admission rejections,
+/// and old servers, preserving the shipped v7/v8 byte shapes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RemoteResponseEnvelope {
+    #[serde(flatten)]
+    pub response: RemoteResponse,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retained_replay: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A point-in-time view of playback for `ytt -r status` (and, later, `--json` bars).
@@ -178,11 +225,31 @@ pub struct StatusSnapshot {
     /// Current track length in milliseconds; `None` for live streams / unknown.
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// Whether the current item is a genuine endless live stream. Duration absence is
+    /// deliberately not sufficient: a normal track may have no measured duration while loading.
+    /// Omitted when false so existing v7 status bytes remain unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_live: bool,
+    /// Revision of the queue snapshot used to render row positions. Newer clients attach it to
+    /// destructive/indexed commands; absent means an older v7 owner without revision support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_rev: Option<u64>,
+    /// Stable identity of the current track. Unlike title/artist, this does not change for ICY
+    /// metadata and does distinguish different tracks with identical display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_id: Option<String>,
+    /// Discontinuity counter for seek/track restarts. Omitted at zero to preserve legacy bytes.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub position_epoch: u64,
     /// Current track's cached artwork file, when the media-art cache has resolved
     /// one for it. Additive since v8; skip-serialized so pre-artwork shapes (and
     /// the freeze goldens) stay byte-identical when it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork: Option<ArtworkRef>,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A queue row in the currently effective play order.
@@ -298,6 +365,7 @@ mod tests {
         let req = RemoteRequest {
             version: PROTOCOL_VERSION,
             token: "abc".to_string(),
+            request_id: None,
             command: RemoteCommand::Streaming {
                 state: ToggleState::On,
             },
@@ -332,6 +400,44 @@ mod tests {
     }
 
     #[test]
+    fn personal_export_command_is_an_additive_round_trip() {
+        let command = RemoteCommand::ExportPersonalData {
+            directory: std::env::temp_dir().to_string_lossy().into_owned(),
+        };
+        let line = serde_json::to_string(&command).unwrap();
+        let back: RemoteCommand = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, command);
+    }
+
+    #[test]
+    fn revision_checked_queue_commands_are_additive_v8_shapes() {
+        let cases = [
+            (
+                RemoteCommand::QueuePlayIfRevision {
+                    position: 3,
+                    expected_rev: 41,
+                },
+                r#"{"cmd":"queue_play_if_revision","position":3,"expected_rev":41}"#,
+            ),
+            (
+                RemoteCommand::QueueRemoveIfRevision {
+                    position: 0,
+                    expected_rev: 42,
+                },
+                r#"{"cmd":"queue_remove_if_revision","position":0,"expected_rev":42}"#,
+            ),
+        ];
+        for (command, expected) in cases {
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(line, expected);
+            assert_eq!(
+                serde_json::from_str::<RemoteCommand>(&line).unwrap(),
+                command
+            );
+        }
+    }
+
+    #[test]
     fn legacy_status_without_position_fields_still_parses() {
         // A v7 server predating elapsed_ms/duration_ms: the fields default to None.
         let line = r#"{"title":"Song","artist":"A","paused":false,"volume":50,"position":1,"total":2,"streaming":false}"#;
@@ -361,6 +467,19 @@ mod tests {
     }
 
     #[test]
+    fn response_error_message_is_additive_and_keeps_machine_reason() {
+        let response = RemoteResponse::err_with_message(
+            "personal_export_failed",
+            "destination is not writable".to_string(),
+        );
+        let line = serde_json::to_string(&response).unwrap();
+        assert!(line.contains(r#""reason":"personal_export_failed""#));
+        assert!(line.contains(r#""message":"destination is not writable""#));
+        let back: RemoteResponse = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, response);
+    }
+
+    #[test]
     fn status_human_line_handles_empty() {
         let snap = StatusSnapshot {
             title: None,
@@ -377,6 +496,10 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         };
         let line = snap.human_line();
@@ -401,6 +524,10 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();

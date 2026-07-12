@@ -5,7 +5,8 @@ fn streaming_extend_resumes_playback_when_idle() {
     let mut app = App::new(100);
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
     app.prefetch.loaded_video_id = None; // the seed ended before this refill landed
-    let cmds = app.extend_queue_from_streaming(vec![Song::remote("b", "B", "y", "2:00")]);
+    let mut cmds = app.extend_queue_from_streaming(vec![Song::remote("b", "B", "y", "2:00")]);
+    admit_player_transition(&mut app, &mut cmds);
     assert_loads_video(&cmds, "b");
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("b"));
 }

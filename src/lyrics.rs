@@ -7,15 +7,20 @@
 //! (or replaying) costs no network.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 
+use crate::util::backpressure::{LYRICS_QUEUE, bounded_channel};
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use crate::util::{http, sanitize};
 
-/// Session cache cap (bounded memory; cleared wholesale when exceeded).
-const CACHE_MAX: usize = 999;
+/// Session cache bounds. Found lyric payloads count their slice storage plus every retained
+/// `String` capacity; empty results and transient failures still count toward the entry bound.
+const CACHE_MAX_ENTRIES: usize = 64;
+const CACHE_MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const LYRICS_JSON_MAX: usize = 512 * 1024;
 /// Per-request timeout so a hung lrclib connection can't wedge the actor indefinitely.
 const LYRICS_TIMEOUT: Duration = Duration::from_secs(8);
@@ -26,9 +31,114 @@ const NEGATIVE_TTL: Duration = Duration::from_secs(120);
 
 /// A per-track cache entry: a resolved result (kept for the session, even when empty — the
 /// track genuinely has no synced lyrics) versus a transient failure retried after a cooldown.
-enum CacheEntry {
-    Found(Vec<LyricLine>),
+enum CacheValue {
+    Found(Arc<[LyricLine]>),
     Failed(Instant),
+}
+
+struct CacheEntry {
+    value: CacheValue,
+    payload_bytes: usize,
+    last_used: u64,
+}
+
+/// Small dependency-free LRU. A monotonic touch stamp avoids a second owned copy of every video
+/// id; finding the oldest entry is O(64), bounded by [`CACHE_MAX_ENTRIES`].
+#[derive(Default)]
+struct LyricsCache {
+    entries: HashMap<String, CacheEntry>,
+    payload_bytes: usize,
+    clock: u64,
+}
+
+impl LyricsCache {
+    fn get(&mut self, video_id: &str, now: Instant) -> Option<Arc<[LyricLine]>> {
+        let stamp = self.next_stamp();
+        let entry = self.entries.get_mut(video_id)?;
+        entry.last_used = stamp;
+        match &entry.value {
+            CacheValue::Found(lines) => Some(Arc::clone(lines)),
+            CacheValue::Failed(at) if now.saturating_duration_since(*at) < NEGATIVE_TTL => {
+                Some(Arc::from([]))
+            }
+            CacheValue::Failed(_) => {
+                self.remove(video_id);
+                None
+            }
+        }
+    }
+
+    fn insert_found(&mut self, video_id: String, lines: Arc<[LyricLine]>) {
+        let payload_bytes = lyrics_payload_bytes(&lines);
+        self.remove(&video_id);
+
+        // A single pathological response is still delivered to the current track, but retaining
+        // it would make the byte cap meaningless. It can be fetched again if revisited.
+        if payload_bytes > CACHE_MAX_PAYLOAD_BYTES {
+            return;
+        }
+
+        let last_used = self.next_stamp();
+        self.payload_bytes = self.payload_bytes.saturating_add(payload_bytes);
+        self.entries.insert(
+            video_id,
+            CacheEntry {
+                value: CacheValue::Found(lines),
+                payload_bytes,
+                last_used,
+            },
+        );
+        self.evict_to_bounds();
+    }
+
+    fn insert_failed(&mut self, video_id: String, at: Instant) {
+        self.remove(&video_id);
+        let last_used = self.next_stamp();
+        self.entries.insert(
+            video_id,
+            CacheEntry {
+                value: CacheValue::Failed(at),
+                payload_bytes: 0,
+                last_used,
+            },
+        );
+        self.evict_to_bounds();
+    }
+
+    fn remove(&mut self, video_id: &str) {
+        if let Some(old) = self.entries.remove(video_id) {
+            self.payload_bytes = self.payload_bytes.saturating_sub(old.payload_bytes);
+        }
+    }
+
+    fn evict_to_bounds(&mut self) {
+        while self.entries.len() > CACHE_MAX_ENTRIES || self.payload_bytes > CACHE_MAX_PAYLOAD_BYTES
+        {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(video_id, _)| video_id.clone())
+            else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+    }
+
+    fn next_stamp(&mut self) -> u64 {
+        self.clock = self.clock.saturating_add(1);
+        self.clock
+    }
+}
+
+fn lyrics_payload_bytes(lines: &[LyricLine]) -> usize {
+    std::mem::size_of_val(lines).saturating_add(
+        lines
+            .iter()
+            .map(|line| line.text.capacity())
+            .fold(0usize, usize::saturating_add),
+    )
 }
 
 /// One timed lyric line.
@@ -103,32 +213,58 @@ pub enum LyricsCmd {
 pub enum LyricsEvent {
     Result {
         video_id: String,
-        lines: Vec<LyricLine>,
+        lines: Arc<[LyricLine]>,
     },
 }
 
 pub struct LyricsHandle {
-    tx: UnboundedSender<LyricsCmd>,
+    /// A capacity-one wake queue. The command itself lives in `latest`, so replacing a
+    /// pending fetch never needs to allocate another queue entry.
+    wake_tx: mpsc::Sender<()>,
+    latest: Arc<Mutex<Option<LyricsCmd>>>,
 }
 
 impl LyricsHandle {
-    pub fn fetch(&self, video_id: String, artist: String, title: String) {
-        let _ = self.tx.send(LyricsCmd::Fetch {
-            video_id,
-            artist,
-            title,
-        });
+    pub fn fetch(&self, video_id: String, artist: String, title: String) -> DeliveryResult {
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replaced_existing = latest
+            .replace(LyricsCmd::Fetch {
+                video_id,
+                artist,
+                title,
+            })
+            .is_some();
+
+        match self.wake_tx.try_send(()) {
+            // A full wake queue already guarantees the actor will inspect `latest`. A full
+            // queue with an empty previous slot is possible when a redundant wake remains
+            // after the actor consumed a replacement; the new command is still accepted.
+            Ok(()) | Err(mpsc::error::TrySendError::Full(())) => {
+                if replaced_existing {
+                    Ok(DeliveryReceipt::Coalesced {
+                        replaced_existing: true,
+                        evicted_oldest: false,
+                    })
+                } else {
+                    Ok(DeliveryReceipt::Enqueued)
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                // Nothing can consume this slot after the actor has gone away.
+                latest.take();
+                Err(DeliveryError::Closed)
+            }
+        }
     }
 }
 
-/// Collapse a burst of queued fetches to the newest one (rapid skips) — see the artwork
-/// actor. Non-blocking: drains only already-buffered commands, never awaits a new one.
-fn take_latest(first: LyricsCmd, rx: &mut UnboundedReceiver<LyricsCmd>) -> LyricsCmd {
-    let mut cmd = first;
-    while let Ok(next) = rx.try_recv() {
-        cmd = next;
-    }
-    cmd
+fn actor_channel() -> (LyricsHandle, mpsc::Receiver<()>) {
+    let (wake_tx, wake_rx) = bounded_channel(LYRICS_QUEUE);
+    let latest = Arc::new(Mutex::new(None));
+    (LyricsHandle { wake_tx, latest }, wake_rx)
 }
 
 /// Spawn the lyrics actor; results return as [`LyricsEvent`]s.
@@ -136,13 +272,16 @@ pub fn spawn<F>(emit: F) -> LyricsHandle
 where
     F: Fn(LyricsEvent) + Send + Sync + 'static,
 {
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_actor(rx, emit));
-    LyricsHandle { tx }
+    let (handle, wake_rx) = actor_channel();
+    tokio::spawn(run_actor(wake_rx, Arc::clone(&handle.latest), emit));
+    handle
 }
 
-async fn run_actor<F>(mut rx: UnboundedReceiver<LyricsCmd>, emit: F)
-where
+async fn run_actor<F>(
+    mut wake_rx: mpsc::Receiver<()>,
+    latest: Arc<Mutex<Option<LyricsCmd>>>,
+    emit: F,
+) where
     F: Fn(LyricsEvent) + Send + Sync + 'static,
 {
     let client = reqwest::Client::builder()
@@ -150,38 +289,38 @@ where
         .timeout(LYRICS_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let mut cache: HashMap<String, CacheEntry> = HashMap::new();
+    let mut cache = LyricsCache::default();
 
-    while let Some(cmd) = rx.recv().await {
-        // Latest-only: rapid track-skips queue several fetches, but only the current track's
-        // lyrics are shown, so drain to the newest (see the artwork actor) instead of walking
-        // a backlog. The per-`video_id` cache still serves a track revisited later.
+    while wake_rx.recv().await.is_some() {
+        // Latest-only: rapid track-skips replace this one slot, so the actor never walks a
+        // backlog. A redundant wake can remain after a replacement was consumed; skip it.
+        let Some(cmd) = latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            continue;
+        };
         let LyricsCmd::Fetch {
             video_id,
             artist,
             title,
-        } = take_latest(cmd, &mut rx);
+        } = cmd;
         // A resolved result (even empty) is reused; a transient failure is reused only until
         // its cooldown expires, after which we re-fetch instead of showing "no lyrics" forever.
-        let cached = match cache.get(&video_id) {
-            Some(CacheEntry::Found(lines)) => Some(lines.clone()),
-            Some(CacheEntry::Failed(at)) if at.elapsed() < NEGATIVE_TTL => Some(Vec::new()),
-            _ => None,
-        };
+        let cached = cache.get(&video_id, Instant::now());
         let lines = if let Some(lines) = cached {
             lines
         } else {
-            if cache.len() >= CACHE_MAX {
-                cache.clear();
-            }
             match fetch(&client, &artist, &title).await {
                 Ok(fetched) => {
-                    cache.insert(video_id.clone(), CacheEntry::Found(fetched.clone()));
+                    let fetched: Arc<[LyricLine]> = fetched.into();
+                    cache.insert_found(video_id.clone(), Arc::clone(&fetched));
                     fetched
                 }
                 Err(()) => {
-                    cache.insert(video_id.clone(), CacheEntry::Failed(Instant::now()));
-                    Vec::new()
+                    cache.insert_failed(video_id.clone(), Instant::now());
+                    Arc::from([])
                 }
             }
         };
@@ -277,5 +416,178 @@ mod tests {
     fn empty_is_handled() {
         assert!(parse_lrc("").is_empty());
         assert_eq!(current_index(&[], 5.0), None);
+    }
+
+    #[test]
+    fn fetches_coalesce_to_one_latest_pending_command() {
+        let (handle, mut wake_rx) = actor_channel();
+
+        assert_eq!(
+            handle.fetch("old".into(), "old artist".into(), "old title".into()),
+            Ok(DeliveryReceipt::Enqueued)
+        );
+        assert_eq!(
+            handle.fetch("new".into(), "new artist".into(), "new title".into()),
+            Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            })
+        );
+
+        wake_rx.try_recv().expect("one wake is queued");
+        assert!(wake_rx.try_recv().is_err(), "the wake queue stays bounded");
+        let latest = handle
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("latest command is retained");
+        let LyricsCmd::Fetch {
+            video_id,
+            artist,
+            title,
+        } = latest;
+        assert_eq!(video_id, "new");
+        assert_eq!(artist, "new artist");
+        assert_eq!(title, "new title");
+    }
+
+    #[test]
+    fn fetch_reports_closed_actor_and_discards_unconsumable_command() {
+        let (handle, wake_rx) = actor_channel();
+        drop(wake_rx);
+
+        assert_eq!(
+            handle.fetch("video".into(), "artist".into(), "title".into()),
+            Err(DeliveryError::Closed)
+        );
+        assert!(
+            handle
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        );
+    }
+
+    fn retained_lines(text_capacity: usize) -> Arc<[LyricLine]> {
+        let mut text = String::with_capacity(text_capacity);
+        text.push('x');
+        vec![LyricLine { time: 0.0, text }].into()
+    }
+
+    #[test]
+    fn cache_hits_share_the_same_lyric_payload() {
+        let mut cache = LyricsCache::default();
+        let lines = retained_lines(128);
+        cache.insert_found("track".to_owned(), Arc::clone(&lines));
+
+        let hit = cache.get("track", Instant::now()).unwrap();
+        assert!(Arc::ptr_eq(&lines, &hit));
+        assert_eq!(cache.payload_bytes, lyrics_payload_bytes(&lines));
+    }
+
+    #[test]
+    fn cache_evicts_least_recently_used_at_entry_bound() {
+        let mut cache = LyricsCache::default();
+        let now = Instant::now();
+        for i in 0..CACHE_MAX_ENTRIES {
+            cache.insert_found(format!("track-{i}"), Arc::from([]));
+        }
+        assert_eq!(cache.entries.len(), CACHE_MAX_ENTRIES);
+
+        // Keep the original oldest entry hot, making track-1 the eviction candidate.
+        assert!(cache.get("track-0", now).is_some());
+        cache.insert_found("newest".to_owned(), Arc::from([]));
+
+        assert_eq!(cache.entries.len(), CACHE_MAX_ENTRIES);
+        assert!(cache.entries.contains_key("track-0"));
+        assert!(!cache.entries.contains_key("track-1"));
+        assert!(cache.entries.contains_key("newest"));
+    }
+
+    #[test]
+    fn negative_cache_hits_are_touched_for_lru_eviction() {
+        let mut cache = LyricsCache::default();
+        let now = Instant::now();
+        cache.insert_failed("failed".to_owned(), now);
+        for i in 0..CACHE_MAX_ENTRIES - 1 {
+            cache.insert_found(format!("track-{i}"), Arc::from([]));
+        }
+
+        assert!(cache.get("failed", now).is_some());
+        cache.insert_found("newest".to_owned(), Arc::from([]));
+
+        assert!(cache.entries.contains_key("failed"));
+        assert!(!cache.entries.contains_key("track-0"));
+        assert!(cache.entries.contains_key("newest"));
+    }
+
+    #[test]
+    fn cache_evicts_by_retained_payload_bytes() {
+        let mut cache = LyricsCache::default();
+        let each = CACHE_MAX_PAYLOAD_BYTES / 2 + 1024;
+        let first = retained_lines(each);
+        let second = retained_lines(each);
+
+        cache.insert_found("first".to_owned(), first);
+        cache.insert_found("second".to_owned(), Arc::clone(&second));
+
+        assert!(!cache.entries.contains_key("first"));
+        assert!(cache.entries.contains_key("second"));
+        assert_eq!(cache.payload_bytes, lyrics_payload_bytes(&second));
+        assert!(cache.payload_bytes <= CACHE_MAX_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn replacement_updates_payload_accounting() {
+        let mut cache = LyricsCache::default();
+        cache.insert_found("track".to_owned(), retained_lines(128));
+        let replacement = retained_lines(4096);
+        cache.insert_found("track".to_owned(), Arc::clone(&replacement));
+
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.payload_bytes, lyrics_payload_bytes(&replacement));
+    }
+
+    #[test]
+    fn empty_and_negative_entries_count_but_not_toward_payload() {
+        let mut cache = LyricsCache::default();
+        let now = Instant::now();
+        cache.insert_found("empty".to_owned(), Arc::from([]));
+        cache.insert_failed("failed".to_owned(), now);
+
+        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(cache.payload_bytes, 0);
+        assert!(cache.get("empty", now).unwrap().is_empty());
+        assert!(cache.get("failed", now).unwrap().is_empty());
+    }
+
+    #[test]
+    fn transient_failure_expires_after_existing_ttl() {
+        let mut cache = LyricsCache::default();
+        let at = Instant::now();
+        cache.insert_failed("failed".to_owned(), at);
+
+        assert!(
+            cache
+                .get("failed", at + NEGATIVE_TTL - Duration::from_millis(1))
+                .is_some()
+        );
+        assert!(cache.get("failed", at + NEGATIVE_TTL).is_none());
+        assert!(!cache.entries.contains_key("failed"));
+    }
+
+    #[test]
+    fn oversized_payload_is_delivered_by_caller_but_not_retained() {
+        let mut cache = LyricsCache::default();
+        let oversized = retained_lines(CACHE_MAX_PAYLOAD_BYTES);
+        assert!(lyrics_payload_bytes(&oversized) > CACHE_MAX_PAYLOAD_BYTES);
+
+        cache.insert_found("huge".to_owned(), Arc::clone(&oversized));
+
+        assert!(!oversized.is_empty());
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.payload_bytes, 0);
     }
 }

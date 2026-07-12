@@ -4,11 +4,20 @@ use super::*;
 fn space_toggles_pause_and_emits_cmd() {
     let mut app = App::new(100);
     let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
-    assert!(app.playback.paused);
+    assert!(
+        !app.playback.paused,
+        "pause state must wait for player admission"
+    );
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::CyclePause)]
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
+        )
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert!(app.playback.paused);
 }
 
 #[test]
@@ -30,6 +39,14 @@ fn play_loads_restored_history_track() {
     app.restore_last_played_from_library();
     let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
     assert_loads_video(&cmds, "id0");
+    assert!(app.prefetch.loaded_video_id.is_none());
+    assert!(app.playback.paused);
+    let follow_ups = app.admit_player_intents_with_followups_for_test(&cmds);
+    assert!(
+        follow_ups
+            .iter()
+            .all(|cmd| cmd.player_commands().next().is_none())
+    );
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
     assert!(!app.playback.paused);
 }
@@ -43,6 +60,14 @@ fn autoplay_on_start_plays_restored_track_when_enabled() {
     // The launch trigger loads the restored track and starts it (no key press).
     let cmds = app.update(Msg::Autoplay);
     assert_loads_video(&cmds, "id0");
+    assert!(app.prefetch.loaded_video_id.is_none());
+    assert!(app.playback.paused);
+    let follow_ups = app.admit_player_intents_with_followups_for_test(&cmds);
+    assert!(
+        follow_ups
+            .iter()
+            .all(|cmd| cmd.player_commands().next().is_none())
+    );
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
     assert!(!app.playback.paused);
 }
@@ -107,18 +132,25 @@ fn restores_normal_session_mode_from_song_history() {
 fn up_down_adjust_volume_in_player_mode() {
     let mut app = App::new(50);
     let cmds = app.update(Msg::Key(key(KeyCode::Up)));
+    assert_eq!(
+        app.playback.volume, 50,
+        "volume must wait for player admission"
+    );
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(55)))
+    ));
+    app.admit_player_intents_for_test(&cmds);
+    assert_eq!(app.playback.volume, 55);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Down)));
     assert_eq!(app.playback.volume, 55);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(55))]
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(50)))
     ));
-
-    let cmds = app.update(Msg::Key(key(KeyCode::Down)));
+    app.admit_player_intents_for_test(&cmds);
     assert_eq!(app.playback.volume, 50);
-    assert!(matches!(
-        cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(50))]
-    ));
 }
 
 #[test]

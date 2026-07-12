@@ -66,7 +66,14 @@ fn external_set_volume_clears_the_mute_latch() {
     app.playback.volume = 0;
     // An OS-widget volume write is a direct change and must clear the latch, so a later `m`
     // mutes to this new level instead of restoring the stale 80.
-    app.update(Msg::Media(crate::media::MediaCommand::SetVolume(0.5)));
+    let cmds = app.update(Msg::Media(crate::media::MediaCommand::SetVolume(0.5)));
+    assert_eq!(app.playback.volume, 0);
+    assert_eq!(app.playback.pre_mute_volume, Some(80));
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(50))))
+    );
+    app.admit_player_intents_for_test(&cmds);
     assert_eq!(app.playback.volume, 50);
     assert_eq!(
         app.playback.pre_mute_volume, None,
@@ -86,9 +93,10 @@ fn results_then_enter_plays_and_returns_to_player() {
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
     });
     assert_eq!(app.search.focus, SearchFocus::Results);
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.mode, Mode::Player);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_loads_video(&cmds, "abc123");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
 }
 
 #[test]
@@ -108,12 +116,14 @@ fn enter_on_search_result_queues_only_the_selected_song() {
     });
     app.search.focus = SearchFocus::Results;
     app.search.selected = 1;
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    app.search.anchor = 1;
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     // Only the picked track lands in the queue — not the whole result list. Nothing was
     // playing, so it starts immediately.
     assert_eq!(app.queue.len(), 1);
-    assert_loads_video(&cmds, "id1");
 }
 
 #[test]
@@ -134,11 +144,14 @@ fn enter_on_search_result_plays_now_keeping_the_queue() {
     });
     app.search.focus = SearchFocus::Results;
     app.search.selected = 0;
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
 
     // The picked track starts playing immediately and we jump to the Player…
-    assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, "new9");
+    assert_eq!(app.mode, Mode::Search, "screen waits for load admission");
+    assert_eq!(app.queue.len(), before_len);
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("new9"));
     // …and the existing queue is preserved (grew by one, originals kept — not wiped).
     assert_eq!(app.queue.len(), before_len + 1);
@@ -191,7 +204,8 @@ fn search_result_confirm_stays_enter_when_common_confirm_is_remapped() {
     assert_no_load(&cmds);
     assert_eq!(app.mode, Mode::Search);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.mode, Mode::Player);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_loads_video(&cmds, "id0");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
 }

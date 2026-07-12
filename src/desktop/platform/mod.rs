@@ -8,6 +8,16 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn next_webview_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Process-global across both Main and Mini host lifetimes. A destroyed gen-1 window must
+    // never alias a newly-created gen-1 window and accept its late correlated reply.
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// One explicit WebView2 user-data folder for every `yututray` webview
 /// (docs/gui/03 §3, normative): windows sharing a UDF share a single WebView2
 /// browser/GPU/utility process set, so the second window costs one renderer
@@ -16,20 +26,21 @@ pub mod windows;
 /// install dir). The context only feeds `CreateCoreWebView2Environment` at
 /// build time, so each build may hold its own short-lived instance.
 #[cfg(target_os = "windows")]
-pub(crate) fn shared_web_context() -> wry::WebContext {
-    let dir = directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.data_local_dir().join("WebView2"));
-    let dir = dir.and_then(|dir| match std::fs::create_dir_all(&dir) {
-        Ok(()) => Some(dir),
-        Err(e) => {
-            tracing::warn!(
-                target: "ytt_tray",
-                error = %e,
-                path = %dir.display(),
-                "could not create the WebView2 user-data folder; using the default"
-            );
-            None
-        }
-    });
-    wry::WebContext::new(dir)
+pub(crate) fn shared_web_context() -> std::io::Result<wry::WebContext> {
+    let directory = crate::desktop::persistence::webview_data_dir()?;
+    Ok(wry::WebContext::new(Some(directory)))
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod tests {
+    use super::next_webview_generation;
+
+    #[test]
+    fn webview_generations_are_unique_across_host_recreation() {
+        let first = next_webview_generation();
+        let second = next_webview_generation();
+        assert_ne!(first, second);
+        assert_ne!(first, 0);
+        assert_ne!(second, 0);
+    }
 }

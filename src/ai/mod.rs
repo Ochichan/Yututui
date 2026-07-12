@@ -17,22 +17,28 @@
 //! run** (so a retry on another model can't double-apply a playback change).
 
 pub mod client;
+mod context;
 pub mod model;
+mod model_control;
 pub mod tools;
 pub mod usage;
 
 pub use model::GeminiModel;
 
+use context::context_summary;
+use model_control::{ModelUpdateReceiver, ModelUpdateSender};
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
 use crate::app::{AiContext, AiPick};
 use crate::romanize::{RomanizeItem, RomanizedResult};
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use client::{
     Content, GeminiClient, GeminiError, GenerateContentRequest, GenerationConfig, Part,
     ThinkingConfig, Tool,
@@ -227,35 +233,47 @@ pub(crate) type EventSink = Arc<dyn Fn(AiEvent) + Send + Sync>;
 
 /// Handle for issuing Gemini-backed requests; results return as [`AiEvent`]s.
 pub struct AiHandle {
-    tx: UnboundedSender<AiCmd>,
+    tx: Sender<AiCmd>,
+    model_updates: ModelUpdateSender,
 }
 
 impl AiHandle {
-    pub fn ask(&self, prompt: String, context: Box<AiContext>) {
-        let _ = self.tx.send(AiCmd::Ask { prompt, context });
+    fn send(&self, cmd: AiCmd) -> DeliveryResult {
+        self.model_updates
+            .send_work(|| match self.tx.try_send(cmd) {
+                Ok(()) => Ok(DeliveryReceipt::Enqueued),
+                Err(mpsc::error::TrySendError::Full(_)) => Err(DeliveryError::Busy),
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(DeliveryError::Closed),
+            })
+    }
+
+    pub fn ask(&self, prompt: String, context: Box<AiContext>) -> DeliveryResult {
+        self.send(AiCmd::Ask { prompt, context })
     }
 
     /// Kick off a one-shot streaming rerank; the result returns as [`AiEvent::StreamingPicks`].
-    pub fn rerank(&self, seed_video_id: String, prompt: String) {
-        let _ = self.tx.send(AiCmd::Rerank {
+    pub fn rerank(&self, seed_video_id: String, prompt: String) -> DeliveryResult {
+        self.send(AiCmd::Rerank {
             seed_video_id,
             prompt,
-        });
+        })
     }
 
     /// Kick off an off-path feedback summary; the result returns as [`AiEvent::StationPatch`].
-    pub fn summarize_feedback(&self, digest: String) {
-        let _ = self.tx.send(AiCmd::SummarizeFeedback { digest });
+    pub fn summarize_feedback(&self, digest: String) -> DeliveryResult {
+        self.send(AiCmd::SummarizeFeedback { digest })
     }
 
     /// Kick off a batch title/artist romanization upgrade.
-    pub fn romanize(&self, request_id: u64, items: Vec<RomanizeItem>) {
-        let _ = self.tx.send(AiCmd::Romanize { request_id, items });
+    pub fn romanize(&self, request_id: u64, items: Vec<RomanizeItem>) -> DeliveryResult {
+        self.send(AiCmd::Romanize { request_id, items })
     }
 
-    /// Hot-swap the model for future requests. Ignored if the actor has stopped.
-    pub fn set_model(&self, model: GeminiModel) {
-        let _ = self.tx.send(AiCmd::SetModel(model));
+    /// Hot-swap the model for future requests through a latest-value control slot.
+    /// The actor prioritizes this slot before dequeuing the next request, so a full
+    /// work inbox cannot leave the persisted/UI model ahead of the live client.
+    pub fn set_model(&self, model: GeminiModel) -> DeliveryResult {
+        self.model_updates.send(model)
     }
 }
 
@@ -265,7 +283,8 @@ where
     F: Fn(AiEvent) + Send + Sync + 'static,
 {
     let client = GeminiClient::new(api_key).ok()?;
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = crate::util::backpressure::bounded_channel(crate::util::backpressure::AI_QUEUE);
+    let (model_updates, model_rx) = model_control::channel(model);
     let actor = AiActor {
         client,
         model,
@@ -273,8 +292,8 @@ where
         call_times: VecDeque::new(),
         history: Vec::new(),
     };
-    tokio::spawn(actor.run(rx));
-    Some(AiHandle { tx })
+    tokio::spawn(actor.run(rx, model_rx));
+    Some(AiHandle { tx, model_updates })
 }
 
 struct AiActor {
@@ -317,19 +336,36 @@ impl AiActor {
         (self.emit)(event);
     }
 
-    async fn run(mut self, mut rx: UnboundedReceiver<AiCmd>) {
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                AiCmd::Ask { prompt, context } => self.converse(prompt, *context).await,
-                AiCmd::Rerank {
-                    seed_video_id,
-                    prompt,
-                } => self.rerank(seed_video_id, prompt).await,
-                AiCmd::SummarizeFeedback { digest } => self.summarize_feedback(digest).await,
-                AiCmd::Romanize { request_id, items } => {
-                    self.romanize_titles(request_id, items).await
+    async fn run(mut self, mut rx: Receiver<AiCmd>, mut model_rx: ModelUpdateReceiver) {
+        let mut model_updates_open = true;
+        loop {
+            tokio::select! {
+                biased;
+                changed = model_rx.changed(), if model_updates_open => {
+                    if changed.is_ok() {
+                        self.model = model_rx.take_latest();
+                    } else {
+                        // The handle owns both senders. Once it is dropped, drain any work that
+                        // was already accepted instead of abandoning it merely because the
+                        // control slot closed first.
+                        model_updates_open = false;
+                    }
                 }
-                AiCmd::SetModel(model) => self.model = model,
+                cmd = rx.recv() => match cmd {
+                    Some(AiCmd::Ask { prompt, context }) => self.converse(prompt, *context).await,
+                    Some(AiCmd::Rerank {
+                        seed_video_id,
+                        prompt,
+                    }) => self.rerank(seed_video_id, prompt).await,
+                    Some(AiCmd::SummarizeFeedback { digest }) => {
+                        self.summarize_feedback(digest).await
+                    }
+                    Some(AiCmd::Romanize { request_id, items }) => {
+                        self.romanize_titles(request_id, items).await
+                    }
+                    Some(AiCmd::SetModel(model)) => self.model = model,
+                    None => break,
+                }
             }
         }
     }
@@ -1070,61 +1106,6 @@ fn strip_code_fence(s: &str) -> &str {
     s.strip_suffix("```").unwrap_or(s).trim()
 }
 
-/// A compact, human-readable snapshot of player state for the model's first turn.
-fn context_summary(ctx: &AiContext) -> String {
-    let mut s = String::from("Current player state:\n");
-    s.push_str(&format!(
-        "- Now playing: {}\n",
-        ctx.current_track.as_deref().unwrap_or("nothing")
-    ));
-    if let Some(station) = &ctx.current_radio_station {
-        s.push_str(&format!("- Current radio station: {station}\n"));
-        match &ctx.current_radio_now_playing {
-            Some(track) => s.push_str(&format!("- Current radio stream track: {track}\n")),
-            None => s.push_str(
-                "- Current radio stream track: unavailable; this station has not exposed now-playing metadata yet\n",
-            ),
-        }
-    }
-    if !ctx.queue_upcoming.is_empty() {
-        s.push_str(&format!("- Up next: {}\n", ctx.queue_upcoming.join("; ")));
-    }
-    s.push_str(&format!(
-        "- Queue: {} track(s), {} remaining\n",
-        ctx.queue_len, ctx.queue_remaining
-    ));
-    if !ctx.recent_history.is_empty() {
-        s.push_str(&format!(
-            "- Recently played: {}\n",
-            ctx.recent_history.join("; ")
-        ));
-    }
-    if !ctx.favorites.is_empty() {
-        s.push_str(&format!("- Favorites: {}\n", ctx.favorites.join("; ")));
-    }
-    if !ctx.playlists.is_empty() {
-        let pls: Vec<String> = ctx
-            .playlists
-            .iter()
-            .map(|p| format!("{} ({})", p.name, p.count))
-            .collect();
-        s.push_str(&format!("- Playlists: {}\n", pls.join("; ")));
-    }
-    s.push_str(&format!(
-        "- Autoplay streaming: {}\n",
-        if ctx.autoplay_streaming { "on" } else { "off" }
-    ));
-    s.push_str(&format!(
-        "- Signed in: {}\n",
-        if ctx.authenticated {
-            "yes"
-        } else {
-            "no (anonymous)"
-        }
-    ));
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1171,10 +1152,15 @@ mod tests {
 
     #[test]
     fn ai_handle_sends_each_command_without_mutating_payloads() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let handle = AiHandle { tx };
+        let (tx, mut rx) = mpsc::channel(1);
+        let (model_updates, mut model_rx) = model_control::channel(GeminiModel::FlashLite);
+        let handle = AiHandle { tx, model_updates };
 
-        handle.ask("play something".to_owned(), Box::new(ctx()));
+        assert!(
+            handle
+                .ask("play something".to_owned(), Box::new(ctx()))
+                .is_ok()
+        );
         match rx.try_recv().unwrap() {
             AiCmd::Ask { prompt, context } => {
                 assert_eq!(prompt, "play something");
@@ -1184,7 +1170,11 @@ mod tests {
             _ => panic!("expected Ask command"),
         }
 
-        handle.rerank("seed-video".to_owned(), "CANDS...".to_owned());
+        assert!(
+            handle
+                .rerank("seed-video".to_owned(), "CANDS...".to_owned())
+                .is_ok()
+        );
         match rx.try_recv().unwrap() {
             AiCmd::Rerank {
                 seed_video_id,
@@ -1196,7 +1186,11 @@ mod tests {
             _ => panic!("expected Rerank command"),
         }
 
-        handle.summarize_feedback("SESSION|played|artist".to_owned());
+        assert!(
+            handle
+                .summarize_feedback("SESSION|played|artist".to_owned())
+                .is_ok()
+        );
         match rx.try_recv().unwrap() {
             AiCmd::SummarizeFeedback { digest } => {
                 assert_eq!(digest, "SESSION|played|artist");
@@ -1205,7 +1199,7 @@ mod tests {
         }
 
         let expected_items = vec![romanize_item("k0", "좋은 날", "아이유")];
-        handle.romanize(42, expected_items.clone());
+        assert!(handle.romanize(42, expected_items.clone()).is_ok());
         match rx.try_recv().unwrap() {
             AiCmd::Romanize { request_id, items } => {
                 assert_eq!(request_id, 42);
@@ -1214,11 +1208,8 @@ mod tests {
             _ => panic!("expected Romanize command"),
         }
 
-        handle.set_model(GeminiModel::Latest);
-        match rx.try_recv().unwrap() {
-            AiCmd::SetModel(model) => assert_eq!(model, GeminiModel::Latest),
-            _ => panic!("expected SetModel command"),
-        }
+        assert!(handle.set_model(GeminiModel::Latest).is_ok());
+        assert_eq!(model_rx.take_latest(), GeminiModel::Latest);
     }
 
     #[test]
@@ -1270,14 +1261,16 @@ mod tests {
 
     #[tokio::test]
     async fn actor_run_applies_set_model_and_exits_when_channel_closes() {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1);
+        let (model_updates, model_rx) = model_control::channel(GeminiModel::Flash);
         let mut actor = test_actor();
         actor.model = GeminiModel::Flash;
 
-        tx.send(AiCmd::SetModel(GeminiModel::Latest)).unwrap();
+        assert!(model_updates.send(GeminiModel::Latest).is_ok());
         drop(tx);
 
-        actor.run(rx).await;
+        actor.run(rx, model_rx).await;
+        assert_eq!(model_updates.applied_generation(), 1);
     }
 
     #[test]

@@ -22,6 +22,10 @@ is_allowed() {
     src/desktop/platform/windows.rs) return 0 ;;
     src/desktop/single_instance.rs) return 0 ;;
     src/desktop/startup.rs) return 0 ;;
+    src/data_ownership.rs) return 0 ;;
+    src/data_export/macos_private.rs) return 0 ;;
+    src/data_export/publish.rs) return 0 ;;
+    src/data_export/windows_private.rs) return 0 ;;
     src/media/identity.rs) return 0 ;;
     src/media/macos.rs) return 0 ;;
     src/media/smtc.rs) return 0 ;;
@@ -30,6 +34,7 @@ is_allowed() {
     src/util/process.rs) return 0 ;;
     src/util/runtime.rs) return 0 ;;
     src/util/safe_fs.rs) return 0 ;;
+    src/util/safe_fs/pinned.rs) return 0 ;;
     *) return 1 ;;
   esac
 }

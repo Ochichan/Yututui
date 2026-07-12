@@ -28,7 +28,7 @@
 </script>
 
 <div class="ai">
-  <div class="transcript" aria-label={t('ai.conversationLabel')}>
+  <div class="transcript" aria-label={t('ai.conversationLabel')} data-ui-scroll-key="ai-transcript">
     {#if !ai.started}
       <div class="bubble assistant">
         <span class="who">✦ DJ Gem</span>
@@ -72,11 +72,13 @@
     }}
   >
     <input
+      id="ai-prompt"
       class="ti"
       placeholder={t('ai.placeholder')}
       bind:value={prompt}
       aria-label={t('ai.messageLabel')}
       data-kctx="AiInput"
+      data-ui-draft-key="ai-prompt"
     />
     <button class="send" type="submit" title={t('ai.send')}>➤</button>
   </form>

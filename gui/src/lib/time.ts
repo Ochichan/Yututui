@@ -17,7 +17,7 @@ export interface PositionAnchor {
   /** Playback speed in tenths (10 = 1.0×). */
   speedTenths: number;
   paused: boolean;
-  /** null ⇒ live stream ("ON AIR" mode — position is wall-clock, unclamped). */
+  /** null means unbounded/unknown; callers must use TrackModel.is_live for "ON AIR". */
   durationMs: number | null;
 }
 
