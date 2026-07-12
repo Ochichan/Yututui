@@ -179,27 +179,45 @@
       display: none;
     }
 
+    /* Pin/close as little shell buttons (same recipe as .compact-menu / the transport):
+       filled + bezel-ringed so they read against the mint shell instead of vanishing. */
     html[data-theme="tamagotchi"]:not(.shared-sheet) #pin,
     html[data-theme="tamagotchi"]:not(.shared-sheet) #hide {
       position: absolute;
       z-index: 8;
-      top: 30px;
+      top: 32px;
       display: inline-flex;
       width: 32px;
       height: 32px;
       padding: 0;
-      border: 0;
+      border: 2px solid var(--tama-bezel-dk);
       border-radius: 50%;
-      background: transparent;
-      color: var(--tama-bezel-dk);
-      opacity: 0.7;
+      background:
+        radial-gradient(70% 70% at 32% 26%, var(--tama-btn-hi), transparent 60%),
+        linear-gradient(180deg, var(--tama-btn), var(--tama-shell-dk));
+      color: var(--tama-ink);
+      box-shadow: 0 2px 0 rgba(46, 122, 99, 0.5);
     }
 
-    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin { left: 36px; }
-    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide { right: 36px; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin { left: 40px; }
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide { right: 40px; }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin:hover,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide:hover {
+      background:
+        radial-gradient(70% 70% at 32% 26%, var(--tama-btn-hi), transparent 60%),
+        linear-gradient(180deg, var(--tama-btn-hi), var(--tama-btn));
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #pin:active,
+    html[data-theme="tamagotchi"]:not(.shared-sheet) #hide:active {
+      transform: translateY(2px);
+      box-shadow: none;
+    }
+
     html[data-theme="tamagotchi"]:not(.shared-sheet) #pin.on {
-      background: rgba(35, 64, 47, 0.18);
-      color: var(--tama-ink);
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
     }
 
     html[data-theme="tamagotchi"]:not(.shared-sheet) main,
