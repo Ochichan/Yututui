@@ -6,9 +6,11 @@ use std::time::UNIX_EPOCH;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(unix)]
+use super::private_file_mode;
 use super::{
     create_private_file, ensure_process_mutation_allowed, mark_do_not_clobber, open_no_symlink,
-    private_file_mode, reject_symlink, sync_parent_dir,
+    reject_symlink, sync_parent_dir,
 };
 
 /// Recovery backups for secret-bearing files are useful, but old credentials should not
