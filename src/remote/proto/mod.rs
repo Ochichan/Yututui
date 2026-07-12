@@ -132,6 +132,25 @@ pub struct RemoteResponse {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusSnapshot>,
+    /// Additive v8 per-command reply payload (docs/gui/02 §13): absent on every
+    /// pre-existing reply (byte-identical v7/v8 wire) and deserializes to a genuine
+    /// `None` from old servers. A named field on purpose — `#[serde(flatten)]` over an
+    /// `Option` yields `Some(default)` on plain replies, breaking the freeze corpus's
+    /// value-equality contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<ResponseData>,
+}
+
+/// Typed per-command reply payloads riding [`RemoteResponse::data`]. Untagged: each
+/// variant serializes as its bare shape — exactly the body the GUI's consumers read
+/// (the gateway projects `data` as the `req` reply payload and folds it into the `cmd`
+/// reply body). Variants land additively with their milestone streams; keep the shapes
+/// structurally disjoint so untagged deserialization stays unambiguous.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResponseData {
+    /// `clear_romanization_cache` → `{ cleared }` (wired in the settings stream).
+    Cleared { cleared: u64 },
 }
 
 impl RemoteResponse {
@@ -142,6 +161,7 @@ impl RemoteResponse {
             reason: Some("ok".to_string()),
             message: Some(message),
             status: None,
+            data: None,
         }
     }
 
@@ -152,6 +172,7 @@ impl RemoteResponse {
             reason: Some(reason.to_string()),
             message: None,
             status: None,
+            data: None,
         }
     }
 
@@ -164,6 +185,7 @@ impl RemoteResponse {
             reason: Some(reason.to_string()),
             message: Some(message),
             status: None,
+            data: None,
         }
     }
 
@@ -174,6 +196,7 @@ impl RemoteResponse {
             reason: Some("ok".to_string()),
             message: Some(snapshot.human_line()),
             status: Some(snapshot),
+            data: None,
         }
     }
 }
@@ -455,6 +478,32 @@ mod tests {
         .unwrap();
         assert!(line.contains("\"play\""), "got {line}");
         assert!(line.contains("\"hello\""), "got {line}");
+    }
+
+    #[test]
+    fn response_data_lane_is_byte_invisible_when_absent() {
+        // The v8 data lane must not change any pre-existing reply's bytes (v7 freeze)…
+        let ok = serde_json::to_string(&RemoteResponse::ok("pong".to_string())).unwrap();
+        assert!(!ok.contains("data"), "None data must not serialize: {ok}");
+        // …and a plain reply from an old server must deserialize to a genuine None so
+        // value-equality against constructor-built responses keeps holding.
+        let back: RemoteResponse =
+            serde_json::from_str(r#"{"ok":true,"reason":"ok","message":"pong"}"#).unwrap();
+        assert_eq!(back, RemoteResponse::ok("pong".to_string()));
+        assert!(back.data.is_none());
+    }
+
+    #[test]
+    fn response_data_lane_round_trips_typed_payloads() {
+        let mut resp = RemoteResponse::ok("cleared".to_string());
+        resp.data = Some(ResponseData::Cleared { cleared: 42 });
+        let line = serde_json::to_string(&resp).unwrap();
+        assert!(
+            line.contains(r#""data":{"cleared":42}"#),
+            "untagged variant serializes as its bare shape: {line}"
+        );
+        let back: RemoteResponse = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, resp);
     }
 
     #[test]

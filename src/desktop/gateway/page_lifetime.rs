@@ -27,6 +27,9 @@ pub(super) struct FrontendCorrelation {
     /// Whether reply loss leaves a state change or dispatch outcome ambiguous. The envelope kind
     /// supplies the initial value; `forward_command` refines it from the parsed remote command.
     pub(super) mutation: bool,
+    /// `req`-kind envelopes resolve to the reply's `data` payload (or `null`); `cmd`-kind
+    /// envelopes keep the response body with `data`'s members folded in (docs/gui/02 §13).
+    pub(super) req: bool,
 }
 
 /// A `sub`/`unsub` payload is a JSON array of wire topic strings. Empty is treated as nothing
@@ -89,6 +92,7 @@ pub(super) fn correlation(env: &OutEnvelope) -> Option<FrontendCorrelation> {
             page_id: env.page_id.clone(),
             id,
             mutation: matches!(env.kind, OutKind::Cmd),
+            req: matches!(env.kind, OutKind::Req),
         })
 }
 
@@ -256,7 +260,23 @@ pub(super) fn initial_topics(desired: &[Topic]) -> Vec<Topic> {
 
 pub(super) fn reply_envelope(correlation: FrontendCorrelation, resp: RemoteResponse) -> InEnvelope {
     if resp.ok {
-        let payload = serde_json::to_value(&resp).unwrap_or(serde_json::Value::Null);
+        let mut payload = serde_json::to_value(&resp).unwrap_or(serde_json::Value::Null);
+        if correlation.req {
+            // `req` consumers were built against the demo core's replies: the bare data
+            // body, or `null` when there is none (fetch_why_gem on an unknown track).
+            payload = match &mut payload {
+                serde_json::Value::Object(map) => {
+                    map.remove("data").unwrap_or(serde_json::Value::Null)
+                }
+                _ => serde_json::Value::Null,
+            };
+        } else if let serde_json::Value::Object(map) = &mut payload {
+            // `cmd` consumers read data members off the reply body itself
+            // (`payload.conflict`, `payload.cleared`) — fold them in.
+            if let Some(serde_json::Value::Object(data)) = map.remove("data") {
+                map.extend(data);
+            }
+        }
         InEnvelope::res_for_page(correlation.id, correlation.page_id, payload)
     } else {
         let mut reason = resp.reason.unwrap_or_else(|| "error".to_string());
@@ -285,6 +305,7 @@ mod unit_tests {
                 page_id: Some("page-a".to_string()),
                 id: 5,
                 mutation: false,
+                req: false,
             },
             RemoteResponse::ok("done".to_string()),
         );
@@ -297,6 +318,7 @@ mod unit_tests {
                 page_id: Some("page-b".to_string()),
                 id: 6,
                 mutation: true,
+                req: false,
             },
             RemoteResponse::err("bad_request"),
         );
@@ -312,6 +334,7 @@ mod unit_tests {
                 page_id: Some("page-c".to_string()),
                 id: 7,
                 mutation: true,
+                req: false,
             },
             RemoteResponse::err("timeout"),
         );
@@ -319,6 +342,50 @@ mod unit_tests {
             legacy_timeout.payload,
             Some(serde_json::json!({ "reason": "confirmation_lost" }))
         );
+    }
+
+    #[test]
+    fn req_replies_project_data_or_null_and_cmd_replies_fold_data_in() {
+        use crate::remote::proto::ResponseData;
+        let req = |id: u64| FrontendCorrelation {
+            page_id: Some("page-r".to_string()),
+            id,
+            mutation: false,
+            req: true,
+        };
+        let cmd = |id: u64| FrontendCorrelation {
+            page_id: Some("page-c".to_string()),
+            id,
+            mutation: true,
+            req: false,
+        };
+
+        // req + no data → null payload (the demo core's "nothing found" contract).
+        let none = reply_envelope(req(1), RemoteResponse::ok("done".to_string()));
+        assert_eq!(none.kind, InKind::Res);
+        assert_eq!(none.payload, Some(serde_json::Value::Null));
+
+        // req + data → the bare data body, nothing else.
+        let mut with_data = RemoteResponse::ok("done".to_string());
+        with_data.data = Some(ResponseData::Cleared { cleared: 7 });
+        let projected = reply_envelope(req(2), with_data.clone());
+        assert_eq!(projected.payload, Some(serde_json::json!({ "cleared": 7 })));
+
+        // cmd + data → response body with data's members folded to the top level.
+        let folded = reply_envelope(cmd(3), with_data);
+        let payload = folded.payload.expect("cmd reply keeps a body");
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["cleared"], serde_json::json!(7));
+        assert!(
+            payload.get("data").is_none(),
+            "folded members must not stay nested: {payload}"
+        );
+
+        // cmd + no data → unchanged full body (the shipped shape).
+        let plain = reply_envelope(cmd(4), RemoteResponse::ok("done".to_string()));
+        let payload = plain.payload.expect("cmd reply keeps a body");
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        assert_eq!(payload["message"], serde_json::json!("done"));
     }
 
     #[test]

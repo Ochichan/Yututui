@@ -854,6 +854,7 @@ fn info_rejection_never_reflects_owner_text() {
         ),
         message: Some("another owner-controlled field".to_string()),
         status: None,
+        data: None,
     };
 
     let message = info_rejection_message(&response);

@@ -269,7 +269,10 @@ fn compact_semantic_response(response: &RemoteResponse) -> RemoteResponse {
             .message
             .as_deref()
             .map(|message| truncate_utf8(message, MAX_COMPACT_MESSAGE_BYTES)),
+        // Like `status`, the optional large payload is dropped from compacted retained
+        // outcomes — a replayed mutation keeps its semantic verdict, not its data body.
         status: None,
+        data: None,
     }
 }
 
@@ -465,6 +468,7 @@ impl CommandDeduper {
                     reason: None,
                     message: None,
                     status: None,
+                    data: None,
                 })
                 .expect("minimal RemoteResponse serialization is infallible")
                 .len()
@@ -1131,6 +1135,7 @@ mod tests {
                                 reason: Some("applied".to_owned()),
                                 message: Some(large_message),
                                 status: None,
+                                data: None,
                             })
                             .expect("dedupe receiver is live");
                         true

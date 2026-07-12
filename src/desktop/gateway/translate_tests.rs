@@ -438,6 +438,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
             page_id: None,
             id: 71,
             mutation: false,
+            req: true,
         })
     );
     assert_eq!(
@@ -446,6 +447,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
             page_id: None,
             id: 72,
             mutation: true,
+            req: false,
         })
     );
 
@@ -456,6 +458,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
                 page_id: None,
                 id: 72,
                 mutation: true,
+                req: false,
             },
         ),
         (
@@ -464,6 +467,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
                 page_id: None,
                 id: 71,
                 mutation: false,
+                req: false,
             },
         ),
     ]);
