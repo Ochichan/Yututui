@@ -292,10 +292,21 @@ jobs:
             "startup_roundtrip",
             "no_console_window",
             "notification_icon_visible",
-            "left_click_menu_opens",
+            "background_starts_tray_only",
+            "bare_secondary_opens_mini_player",
+            "secondary_background_raises_no_window",
+            "left_click_toggles_mini_player",
             "right_click_menu_opens",
             "mini_player_opens",
             "mini_player_disconnected_state",
+            "mini_player_absent_from_taskbar",
+            "mini_player_absent_from_alt_tab",
+            "mini_player_toolwindow_style",
+            "main_window_opens_from_intent",
+            "main_window_present_in_taskbar",
+            "main_window_present_in_alt_tab",
+            "main_window_appwindow_style",
+            "hidden_main_leaves_task_switchers",
             "open_tui_launches_terminal",
             "ytt_taskbar_clicks_do_not_crash",
             "shortcut_icon_correct",
@@ -333,7 +344,12 @@ jobs:
             "startup-uninstall-before.txt",
             "startup-install.txt",
             "startup-uninstall-after.txt",
+            "activate-bare-intent.txt",
+            "activate-background-intent.txt",
+            "activate-mini-intent.txt",
             "mini-player-disconnected.png",
+            "activate-main-window-intent.txt",
+            "main-window.png",
             "tray-visual-check.png",
             "tray-scale-100.png",
             "tray-scale-150.png",
@@ -354,6 +370,7 @@ jobs:
           }
 
           Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\yututray.exe" --background'
+          Write-Evidence -Name "yututray-help.txt" -Text "--background --mini --main-window"
           Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\yututray.exe" --background'
           Write-Evidence -Name "startup-status-after-uninstall.txt" -Text "disabled"
           Write-Evidence -Name "open-tui-plan.txt" -Text "wt.exe C:\fake\ytt.exe"

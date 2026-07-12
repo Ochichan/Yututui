@@ -11,6 +11,19 @@ use crate::data_export::live::{
 };
 use crate::data_export::live::{SizeError, validate_source_clone};
 
+#[cfg(not(test))]
+fn personal_export_download_directory() -> Result<PathBuf, crate::data_export::ExportError> {
+    crate::data_export::default_export_directory()
+}
+
+// Settings interaction tests must not depend on a desktop Downloads directory being configured
+// on the host (headless Linux runners intentionally have none). The public resolver itself keeps
+// its platform-specific coverage in `data_export` tests.
+#[cfg(test)]
+fn personal_export_download_directory() -> Result<PathBuf, crate::data_export::ExportError> {
+    Ok(std::env::temp_dir())
+}
+
 impl App {
     pub(in crate::app) fn personal_export_status(&self) -> PersonalDataExportStatus {
         PersonalDataExportStatus::from_busy(self.personal_export.in_progress)
@@ -121,7 +134,7 @@ impl App {
     /// Settings-button entrypoint: resolve the platform Downloads directory without a cwd
     /// fallback. Resolution failure is surfaced in place and no worker is started.
     pub(in crate::app) fn start_personal_export_to_downloads(&mut self) -> Vec<Cmd> {
-        match crate::data_export::default_export_directory() {
+        match personal_export_download_directory() {
             Ok(directory) => self.start_personal_export(directory, None),
             Err(error) => {
                 let error = crate::util::sanitize::sanitize_error_text(error.to_string());

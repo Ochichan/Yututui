@@ -53,6 +53,21 @@ fn creates_and_durably_syncs_owned_generation() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(windows)]
+#[test]
+fn pinned_directory_handle_can_flush_metadata() {
+    let _revoke_reset = MutationRevokeReset::clear();
+    let root = temp_root("directory-flush");
+    fs::create_dir_all(&root).unwrap();
+
+    let pinned = PinnedDir::open_existing(&root, PathBuf::new().as_path()).unwrap();
+    pinned
+        .sync_directory()
+        .expect("write-capable directory handle must authorize metadata flush");
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn collision_preserves_existing_sentinel() {
     let _revoke_reset = MutationRevokeReset::clear();

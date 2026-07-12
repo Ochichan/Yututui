@@ -33,6 +33,10 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 pub(crate) const MAX_PENDING_SAVES: usize = 128;
 pub(crate) const MAX_PENDING_SOURCE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
+fn at_stage<T>(stage: &'static str, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|error| io::Error::new(error.kind(), format!("{stage}: {error}")))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SaveIntent {
     schema: u8,
@@ -226,15 +230,27 @@ where
                 "recording source has no parent directory",
             )
         })?;
-        safe_fs::ensure_private_dir(source_parent_path)?;
-        let source_parent = pin_private_absolute_dir(source_parent_path, None)?;
+        at_stage(
+            "prepare recording source directory",
+            safe_fs::ensure_private_dir(source_parent_path),
+        )?;
+        let source_parent = at_stage(
+            "pin recording source directory",
+            pin_private_absolute_dir(source_parent_path, None),
+        )?;
         let source_name = temp.file_name().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "recording source has no basename",
             )
         })?;
-        let source = source_parent.open_child_readonly(source_name)?;
+        // Acceptance must flush the mpv-owned source before publishing its recovery journal.
+        // Windows rejects FlushFileBuffers on a read-only handle, so retain write access on this
+        // exact pinned generation through the durability boundary.
+        let source = at_stage(
+            "open recording source for durability flush",
+            source_parent.open_child(source_name),
+        )?;
         let source_metadata = source.file()?.metadata()?;
         if source_metadata.len() == 0 && close_barrier.is_none() {
             return Err(
@@ -253,7 +269,7 @@ where
         // A durable journal is useful only if its mpv-created source inode, bytes, and owner
         // directory entry survive the same cutoff. This remains pre-acceptance: a sync failure
         // returns truthful SaveFailed and never publishes recovery ownership.
-        sync_source(source.file()?)?;
+        at_stage("flush recording source", sync_source(source.file()?))?;
         let _publication = ownership::acquire_publication_lock(&temp_dir)?;
         if automatic && !bypass_limits {
             let usage = spool_usage(&temp_dir, &final_dir)?;
@@ -275,21 +291,41 @@ where
                 });
             }
         }
-        ensure_final_dir(&final_dir)?;
-        safe_fs::ensure_private_dir_durable(&work_dir(&final_dir))?;
+        at_stage(
+            "prepare recording destination",
+            ensure_final_dir(&final_dir),
+        )?;
+        at_stage(
+            "prepare recorder work directory",
+            safe_fs::ensure_private_dir_durable(&work_dir(&final_dir)),
+        )?;
         let journal_dir = registry_journal_dir(&temp_dir);
-        safe_fs::ensure_private_dir_durable(&journal_dir)?;
-        let final_parent = pin_absolute_dir(&final_dir, None)?;
-        let work_parent = pin_private_absolute_dir(&work_dir(&final_dir), None)?;
-        let journal_parent = pin_private_absolute_dir(&journal_dir, None)?;
-        let (_, save_lock_identity) = work_parent
-            .try_lock_child(std::ffi::OsStr::new(SAVE_LOCK_NAME), None, true)?
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "recording save lock is owned by another process during acceptance",
-                )
-            })?;
+        at_stage(
+            "prepare recorder journal directory",
+            safe_fs::ensure_private_dir_durable(&journal_dir),
+        )?;
+        let final_parent = at_stage(
+            "pin recording destination directory",
+            pin_absolute_dir(&final_dir, None),
+        )?;
+        let work_parent = at_stage(
+            "pin recorder work directory",
+            pin_private_absolute_dir(&work_dir(&final_dir), None),
+        )?;
+        let journal_parent = at_stage(
+            "pin recorder journal directory",
+            pin_private_absolute_dir(&journal_dir, None),
+        )?;
+        let (_, save_lock_identity) = at_stage(
+            "acquire recorder save lock",
+            work_parent.try_lock_child(std::ffi::OsStr::new(SAVE_LOCK_NAME), None, true),
+        )?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "recording save lock is owned by another process during acceptance",
+            )
+        })?;
         let token = random_token()?;
         let journal_path = journal_dir.join(format!("{token}.json"));
         let mut intent = SaveIntent {

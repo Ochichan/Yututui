@@ -532,9 +532,8 @@ mod tests {
     #[test]
     fn explicit_destination_must_be_an_existing_real_directory() {
         let root = std::env::temp_dir().join(format!(
-            "yututui-data-cli-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("destination")
+            "yututui-data-cli-{}-destination",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();

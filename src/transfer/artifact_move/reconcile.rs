@@ -108,7 +108,13 @@ pub(super) fn reconcile_file_pair(
 
     let stage = match expected_stage_object {
         Some(expected_object) => {
-            match destination_parent.open_existing_child(destination_stage_name, expected_object) {
+            #[cfg(windows)]
+            let reopened = destination_parent
+                .open_existing_recoverable_child(destination_stage_name, expected_object);
+            #[cfg(not(windows))]
+            let reopened =
+                destination_parent.open_existing_child(destination_stage_name, expected_object);
+            match reopened {
                 Ok(generation) => Some(generation),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error),

@@ -29,10 +29,12 @@ pub(super) struct WorkerLease {
 /// One coalesced Windows thread-message wake. Producers may replace the latest snapshot while
 /// this token is claimed, but only the first producer posts `WM_APP_UPDATE`.
 #[derive(Default)]
+#[cfg(test)]
 pub(super) struct WorkerWake {
     posted: AtomicBool,
 }
 
+#[cfg(test)]
 impl WorkerWake {
     pub(super) fn claim(&self) -> bool {
         self.posted

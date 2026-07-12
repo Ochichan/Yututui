@@ -112,6 +112,21 @@ impl EndpointLease {
     /// Revoke this exact endpoint after the accept owner gives up permanently.
     pub(super) fn mark_accept_owner_failed(&self) {
         self.accept_owner_failed.store(true, Ordering::Release);
+        // The accept task still owns the listener while this runs, so no successor can have
+        // legitimately rebound the pathname unless another actor first removed it. Reclaim the
+        // exact socket now and never retry from delayed publication/guard cleanup: a late retry
+        // would have an unavoidable ABA window on filesystems that immediately reuse inodes.
+        #[cfg(unix)]
+        {
+            let current_identity = super::socket_file_identity(&self.socket).ok();
+            match remove_socket_file_if_matches(&self.socket, current_identity) {
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    "remote: failed to revoke unusable socket endpoint"
+                ),
+            }
+        }
         self.release();
     }
 
@@ -152,10 +167,12 @@ impl EndpointLease {
             tracing::warn!(%error, "remote: failed to remove owned instance descriptor");
         }
         #[cfg(unix)]
-        match remove_socket_file_if_matches(&self.socket, self.socket_identity) {
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(%error, "remote: failed to release owned socket endpoint")
+        if !self.accept_owner_failed() {
+            match remove_socket_file_if_matches(&self.socket, self.socket_identity) {
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "remote: failed to release owned socket endpoint")
+                }
             }
         }
         if self.accept_owner_failed() {

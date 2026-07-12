@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GENERIC_ALL, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, LocalFree,
+    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GENERIC_ALL, GENERIC_WRITE, HANDLE,
+    LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
@@ -199,7 +199,7 @@ pub(super) fn verify_private_destination_chain(path: &Path) -> io::Result<Destin
 
     // Reopen every name after the full chain is pinned. This catches a component that changed
     // between lexical enumeration and its original handle open; the original handles remain live
-    // and deny any subsequent delete/rename until the returned guard drops.
+    // so their kernel identities can be retained through publication.
     for (component, _, expected) in &opened {
         revalidate_directory_path_identity(component, *expected)?;
     }
@@ -216,8 +216,9 @@ fn open_chain_directory(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .access_mode(READ_CONTROL_ACCESS)
-        // Deliberately omit FILE_SHARE_DELETE. Besides pinning the name after this succeeds,
-        // Windows rejects this open if an existing handle already requested DELETE access.
+        // Deliberately omit FILE_SHARE_DELETE so ordinary delete/rename opens conflict while the
+        // export holds the verified directory object. POSIX-semantics renames may still move the
+        // name, but the returned guard continues to own the verified kernel object.
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     let directory = options.open(path)?;
@@ -234,47 +235,6 @@ fn require_real_directory(directory: &File) -> io::Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Open the stable cross-process ownership lock with a protected current-user-only DACL.
-///
-/// The file is deliberately never removed. While any process holds it, read/write sharing allows
-/// peers to acquire OS locks on the same file but delete sharing is denied so the rendezvous name
-/// cannot be replaced underneath live owners.
-pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<File> {
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "personal-data lock has no parent directory",
-        )
-    })?;
-    let _parent_chain = verify_private_destination_chain(parent)?;
-
-    let current_user = current_user_sid()?;
-    let private_acl = AclBuffer::for_sid(current_user.as_ptr())?;
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL_ACCESS | WRITE_DAC_ACCESS)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "personal-data lock is not a regular non-reparse file",
-        ));
-    }
-
-    apply_private_dacl(&file, private_acl.as_ptr())?;
-    verify_private_dacl(&file, current_user.as_ptr())?;
-    let identity = file_identity(&file)?;
-    revalidate_path_identity(path, identity)?;
-    Ok(file)
 }
 
 fn verify_directory_security(
@@ -1208,17 +1168,21 @@ mod tests {
     }
 
     #[test]
-    fn destination_chain_guard_pins_the_directory_name_until_drop() {
+    fn destination_chain_guard_retains_the_open_directory_after_a_name_move() {
         let directory = test_path("chain-guard").with_extension("dir");
         let moved = directory.with_extension("moved");
         fs::create_dir(&directory).unwrap();
 
         let guard = verify_private_destination_chain(&directory).unwrap();
         assert!(guard._directories.len() >= 2);
-        assert!(fs::rename(&directory, &moved).is_err());
+        let expected = file_identity(guard._directories.last().unwrap()).unwrap();
+        fs::rename(&directory, &moved).unwrap();
+        assert_eq!(
+            file_identity(guard._directories.last().unwrap()).unwrap(),
+            expected
+        );
 
         drop(guard);
-        fs::rename(&directory, &moved).unwrap();
         fs::remove_dir(moved).unwrap();
     }
 }

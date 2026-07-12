@@ -163,7 +163,7 @@ pub fn run(args_in: &[String]) -> i32 {
 /// terminal state and never prints; callers decide how to render success, rejection, or transport
 /// failures.
 pub async fn send(command: RemoteCommand) -> Result<RemoteResponse, ClientError> {
-    let instance = endpoint::read_current_instance().map_err(ClientError::CurrentDescriptor)?;
+    let instance = read_current_instance()?;
     send_to(instance, command).await
 }
 
@@ -271,8 +271,15 @@ fn require_capability(
 /// Send to a descriptor already selected by the caller. This keeps capability selection and
 /// the exchange tied to the same owner descriptor instead of re-reading it between the checks.
 async fn send_current(command: RemoteCommand) -> Result<RemoteResponse, ClientError> {
-    let instance = endpoint::read_current_instance().map_err(ClientError::CurrentDescriptor)?;
+    let instance = read_current_instance()?;
     send_to(instance, command).await
+}
+
+fn read_current_instance() -> Result<InstanceFile, ClientError> {
+    endpoint::read_current_instance().map_err(|error| match error {
+        endpoint::CurrentInstanceError::NotFound => ClientError::NoRunningInstance,
+        error => ClientError::CurrentDescriptor(error),
+    })
 }
 
 pub async fn send_to(
@@ -283,7 +290,7 @@ pub async fn send_to(
     send_to_instance_with_request_id(instance, command, &request_id).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn send_to_instance(
     instance: InstanceFile,
     command: RemoteCommand,

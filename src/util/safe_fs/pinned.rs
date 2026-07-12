@@ -42,7 +42,7 @@ pub(crate) struct OwnedGeneration {
 enum GenerationResidence {
     Named,
     #[cfg(windows)]
-    NamedDeleteOnClose,
+    NamedRecoverable,
     #[cfg(target_os = "linux")]
     Anonymous,
 }
@@ -149,9 +149,9 @@ impl PinnedDir {
 
     /// Create a crash-cleaned destination generation for copy-then-promote publication.
     ///
-    /// Linux prefers `O_TMPFILE`; Windows opens the named fallback with delete-on-close. Other
-    /// Unix filesystems use the exclusive name as a recoverable fallback. Callers must promote
-    /// or retain any named fallback under their durable transaction before dropping it.
+    /// Linux prefers `O_TMPFILE`; Windows and other Unix filesystems use an exclusive recoverable
+    /// name. Callers must promote or retain any named fallback under their durable transaction
+    /// before dropping it.
     pub(crate) fn create_ephemeral(
         &self,
         fallback_basename: &OsStr,
@@ -240,6 +240,18 @@ impl PinnedDir {
                 "existing child does not match its persisted object identity",
             ))
         }
+    }
+
+    /// Reopen a journal-owned Windows stage while preserving its recoverable residence marker.
+    #[cfg(windows)]
+    pub(crate) fn open_existing_recoverable_child(
+        &self,
+        basename: &OsStr,
+        expected: FileObjectId,
+    ) -> io::Result<OwnedGeneration> {
+        let mut generation = self.open_existing_child(basename, expected)?;
+        generation.residence = GenerationResidence::NamedRecoverable;
+        Ok(generation)
     }
 
     /// Open one existing child read-only only if it is the exact persisted kernel object.
@@ -337,14 +349,21 @@ impl OwnedGeneration {
 
     /// Whether dropping this handle before promotion leaves a named recovery generation.
     pub(crate) fn retains_name_on_drop(&self) -> bool {
-        self.residence == GenerationResidence::Named
+        match self.residence {
+            GenerationResidence::Named => true,
+            #[cfg(windows)]
+            GenerationResidence::NamedRecoverable => true,
+            #[cfg(target_os = "linux")]
+            GenerationResidence::Anonymous => false,
+        }
     }
 
     /// Publish this open generation under a new name in `destination` without replacing a name.
     ///
-    /// Linux and Windows create a hard link from the open file object; macOS uses
-    /// `fclonefileat`, whose source is likewise the open handle. Unsupported filesystems fail
-    /// closed. The owned source generation is intentionally retained.
+    /// Linux creates a hard link from the open file object; macOS uses `fclonefileat`, whose
+    /// source is likewise the open handle. Unsupported filesystems fail closed. The owned source
+    /// generation is intentionally retained.
+    #[cfg(not(windows))]
     pub(crate) fn publish_noreplace(
         &self,
         destination: &PinnedDir,
@@ -388,7 +407,7 @@ impl OwnedGeneration {
         let source_is_named = match self.residence {
             GenerationResidence::Named => true,
             #[cfg(windows)]
-            GenerationResidence::NamedDeleteOnClose => true,
+            GenerationResidence::NamedRecoverable => true,
             #[cfg(target_os = "linux")]
             GenerationResidence::Anonymous => false,
         };
@@ -968,28 +987,34 @@ mod platform {
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
         FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
-        FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS, FILE_LINK_INFORMATION,
-        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-        FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileDispositionInformation,
-        FileDispositionInformationEx, FileLinkInformation, FileRenameInformation,
-        FileRenameInformationEx, NtCreateFile, NtFlushBuffersFileEx, NtSetInformationFile,
+        FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS, FILE_NON_DIRECTORY_FILE,
+        FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_WRITE_THROUGH, FileDispositionInformation, FileDispositionInformationEx,
+        FileRenameInformation, FileRenameInformationEx, NtCreateFile, NtFlushBuffersFileEx,
+        NtSetInformationFile,
     };
     use windows_sys::Win32::Foundation::{
         HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
         STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
+        CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
-    const DIRECTORY_ACCESS: u32 =
-        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // NtFlushBuffersFileEx requires write or append access. For a directory those rights map to
+    // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY respectively; request both so metadata flushes are
+    // authorized on NTFS/ReFS instead of failing every durable publication with ACCESS_DENIED.
+    const DIRECTORY_ACCESS: u32 = FILE_LIST_DIRECTORY
+        | FILE_ADD_FILE
+        | FILE_ADD_SUBDIRECTORY
+        | FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE;
 
     pub(super) fn open_root(path: &Path) -> io::Result<File> {
         let wide = nul_terminated(path.as_os_str())?;
@@ -1040,18 +1065,12 @@ mod platform {
         parent: &File,
         name: &OsStr,
     ) -> io::Result<(File, super::GenerationResidence)> {
-        nt_open_relative(
-            parent,
-            name,
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE
-                | FILE_OPEN_REPARSE_POINT
-                | FILE_SYNCHRONOUS_IO_NONALERT
-                | FILE_WRITE_THROUGH
-                | FILE_DELETE_ON_CLOSE,
-        )
-        .map(|file| (file, super::GenerationResidence::NamedDeleteOnClose))
+        // Clearing a delete-on-close disposition after an exact-handle rename can return
+        // ACCESS_DENIED on Windows even though the rename succeeded. This namespace is private
+        // and the durable transaction journals the exclusive fallback name, so retain it for
+        // explicit recovery instead.
+        create_new_file_at(parent, name)
+            .map(|file| (file, super::GenerationResidence::NamedRecoverable))
     }
 
     pub(super) fn open_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
@@ -1124,47 +1143,6 @@ mod platform {
                 )
             };
         }
-        nt_result(status)
-    }
-
-    pub(super) fn publish_file_at(
-        source: &File,
-        destination: &File,
-        name: &OsStr,
-    ) -> io::Result<()> {
-        let wide: Vec<u16> = name.encode_wide().collect();
-        let name_bytes = u32::from(unicode_length(&wide)?);
-        let offset = std::mem::offset_of!(FILE_LINK_INFORMATION, FileName);
-        let byte_len = offset
-            .checked_add(wide.len() * std::mem::size_of::<u16>())
-            .ok_or_else(|| super::invalid_input("Windows link information is too long"))?;
-        let words = byte_len.div_ceil(std::mem::size_of::<usize>());
-        let mut storage = vec![0_usize; words];
-        let information = storage.as_mut_ptr().cast::<FILE_LINK_INFORMATION>();
-        // SAFETY: `storage` is suitably aligned and large enough for the fixed header plus every
-        // UTF-16 code unit. All pointers and both handles remain live through NtSetInformationFile.
-        unsafe {
-            (*information).Anonymous.Flags = 0;
-            (*information).RootDirectory = destination.as_raw_handle() as HANDLE;
-            (*information).FileNameLength = name_bytes;
-            ptr::copy_nonoverlapping(
-                wide.as_ptr(),
-                ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
-                wide.len(),
-            );
-        }
-        let mut io_status = IO_STATUS_BLOCK::default();
-        // SAFETY: the source was opened with DELETE access and the aligned link-information
-        // buffer remains valid for this synchronous call. Flags zero means no replacement.
-        let status = unsafe {
-            NtSetInformationFile(
-                source.as_raw_handle() as HANDLE,
-                &mut io_status,
-                information.cast(),
-                u32::try_from(byte_len).expect("bounded link information fits u32"),
-                FileLinkInformation,
-            )
-        };
         nt_result(status)
     }
 

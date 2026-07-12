@@ -205,7 +205,7 @@ pub(super) fn recording_app(mode: crate::recorder::RecordingMode) -> App {
     let mut cmds = app.load_song(app.queue.current().cloned());
     admit_player_transition(&mut app, &mut cmds);
     app.recorder.supported = true;
-    app.recorder.temp_dir = std::path::PathBuf::from("/tmp/ytt-rec-test");
+    app.recorder.temp_dir = std::env::temp_dir().join("ytt-rec-test");
     app.config.recording.mode = mode;
     app
 }

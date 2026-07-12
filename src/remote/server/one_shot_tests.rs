@@ -614,7 +614,11 @@ async fn failed_accept_owner_cannot_overwrite_or_unlink_a_fast_successor() {
     .await
     .expect("injected accept owner must stop");
 
-    std::fs::remove_file(&socket).unwrap();
+    match std::fs::remove_file(&socket) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("remove failed owner socket: {error}"),
+    }
     let successor_listener = bind(&socket).unwrap();
     let successor_identity = InstanceFile {
         app_pid: 20,
