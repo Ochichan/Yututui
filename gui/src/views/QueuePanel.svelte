@@ -41,7 +41,12 @@
   </header>
 
   <div class="list">
-    <VirtualList items={queue.items} rowHeight={52} reorder={(from, to) => queue.move(from, to)}>
+    <VirtualList
+      items={queue.items}
+      rowHeight={52}
+      reorder={(from, to) => queue.move(from, to)}
+      snapshotKey="queue-list"
+    >
       {#snippet row(track, i)}
         <TrackRow {track} index={i + 1} current={i === currentPos} ondblclick={() => queue.play(i)}>
           {#snippet actions()}
@@ -56,7 +61,12 @@
               >
             {/if}
             <button class="ra grip" data-drag-handle title={t('queue.dragReorder')}>⠿</button>
-            <button class="ra" onclick={() => queue.remove(i)} title={t('common.remove')}>✕</button>
+            <button
+              class="ra"
+              onclick={() => queue.remove(i)}
+              title={t('common.remove')}
+              aria-label={`${t('common.remove')}: ${track.display_title ?? track.title}`}>✕</button
+            >
           {/snippet}
         </TrackRow>
       {/snippet}

@@ -2,12 +2,13 @@
 
 use std::path::PathBuf;
 
+#[cfg(test)]
 use tokio::sync::oneshot;
 
 use super::{DaemonEvent, DaemonEventSender, emit_daemon_event};
 use crate::config::Config;
 use crate::library::Library;
-use crate::remote::proto::RemoteResponse;
+use crate::remote::{RemoteReply, proto::RemoteResponse};
 use crate::signals::Signals;
 use crate::station::StationStore;
 
@@ -17,7 +18,7 @@ pub(super) struct PersonalExport {
 }
 
 pub(super) struct Finished {
-    pub reply: oneshot::Sender<RemoteResponse>,
+    pub reply: RemoteReply,
     pub result: Result<PathBuf, String>,
 }
 
@@ -25,7 +26,7 @@ impl PersonalExport {
     pub(super) fn start_engine(
         &mut self,
         directory: String,
-        reply: oneshot::Sender<RemoteResponse>,
+        reply: RemoteReply,
         engine: &super::engine::DaemonEngine,
         event_tx: DaemonEventSender,
     ) {
@@ -40,7 +41,7 @@ impl PersonalExport {
     pub(super) fn start<F>(
         &mut self,
         directory: String,
-        reply: oneshot::Sender<RemoteResponse>,
+        reply: RemoteReply,
         sources: F,
         event_tx: DaemonEventSender,
     ) where
@@ -114,7 +115,7 @@ mod tests {
 
         export.start(
             "/unused".to_owned(),
-            reply,
+            reply.into(),
             || {
                 sources_called.set(true);
                 Ok((
@@ -149,7 +150,7 @@ mod tests {
 
         export.start(
             "/unused".to_owned(),
-            reply,
+            reply.into(),
             || Err("live source exceeds safe clone budget".to_owned()),
             events,
         );
@@ -168,7 +169,7 @@ mod tests {
         let mut export = PersonalExport { in_progress: true };
         let (reply, response) = oneshot::channel();
         export.finish(Finished {
-            reply,
+            reply: reply.into(),
             result: Ok(PathBuf::from("/tmp/export.json")),
         });
 

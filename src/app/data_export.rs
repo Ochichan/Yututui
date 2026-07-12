@@ -90,7 +90,7 @@ impl App {
     fn reject_oversized_personal_export(
         &mut self,
         error: SizeError,
-        reply: Option<tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+        reply: Option<crate::remote::RemoteReply>,
     ) -> Vec<Cmd> {
         let detail = error.detail();
         let remote_message = format!(
@@ -145,7 +145,7 @@ impl App {
     pub(in crate::app) fn start_personal_export(
         &mut self,
         directory: PathBuf,
-        reply: Option<tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+        reply: Option<crate::remote::RemoteReply>,
     ) -> Vec<Cmd> {
         if self.personal_export.in_progress {
             if let Some(reply) = reply {
@@ -187,7 +187,7 @@ impl App {
     pub(in crate::app) fn finish_personal_export(
         &mut self,
         result: Result<PathBuf, String>,
-        reply: Option<tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+        reply: Option<crate::remote::RemoteReply>,
     ) -> Vec<Cmd> {
         let remote_response = reply.map(|reply| {
             let response = match &result {
@@ -307,7 +307,7 @@ mod tests {
         crate::i18n::set_language(crate::i18n::Language::Korean);
         let (reply, mut response) = tokio::sync::oneshot::channel();
 
-        let cmds = app.start_personal_export(PathBuf::from("/unused"), Some(reply));
+        let cmds = app.start_personal_export(PathBuf::from("/unused"), Some(reply.into()));
 
         assert!(cmds.is_empty(), "rejection must not carry cloned sources");
         assert!(!app.personal_export.in_progress);
@@ -338,7 +338,7 @@ mod tests {
         app.personal_export.in_progress = true;
         let (reply, mut response) = tokio::sync::oneshot::channel();
 
-        app.finish_personal_export(Ok(PathBuf::from("/tmp/export.json")), Some(reply));
+        app.finish_personal_export(Ok(PathBuf::from("/tmp/export.json")), Some(reply.into()));
 
         assert!(!app.personal_export.in_progress);
         let response = response.try_recv().expect("owner-lane completion reply");

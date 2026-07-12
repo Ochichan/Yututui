@@ -32,6 +32,10 @@ use crate::playback_policy::{
     STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, VOLUME_MAX, VOLUME_STEP,
 };
 
+#[path = "engine_session.rs"]
+mod engine_session;
+use engine_session::{data_dir, local_neighbor_score};
+
 const SESSION_EVENTS_CAP: usize = 20;
 
 mod personal_export;
@@ -307,6 +311,12 @@ impl DaemonEngine {
         &mut self,
         command: RemoteCommand,
     ) -> (RemoteResponse, bool, Vec<EngineEffect>) {
+        if command
+            .expected_queue_rev()
+            .is_some_and(|rev| rev != self.queue.rev())
+        {
+            return (RemoteResponse::err("stale_rev"), false, Vec::new());
+        }
         self.last_error = None;
         let mut effects = Vec::new();
         let shutdown = matches!(command, RemoteCommand::Quit);
@@ -353,10 +363,10 @@ impl DaemonEngine {
                 RemoteResponse::status(self.status())
             }
             RemoteCommand::CycleRepeat => {
-                // Music-mode invariant (mirrors the App reducer for parity): refuse turning
+                // Music-mode invariant (mirrors the App reducer for parity): reject turning
                 // repeat on while autoplay streaming is on. Off→All is the only enabling step.
                 if self.queue.repeat.cycle_blocked_by_streaming(self.streaming) {
-                    RemoteResponse::err("repeat_streaming_conflict")
+                    RemoteResponse::err("incompatible_playback_modes")
                 } else {
                     self.queue.cycle_repeat();
                     self.config.repeat = self.queue.repeat;
@@ -365,14 +375,20 @@ impl DaemonEngine {
                     RemoteResponse::status(self.status())
                 }
             }
-            RemoteCommand::QueuePlay { position } => {
+            RemoteCommand::QueuePlay { position }
+            | RemoteCommand::QueuePlayIfRevision { position, .. } => {
                 let response = self.queue_play(position).await;
-                effects.extend(self.maybe_autoplay_extend());
+                if response.ok {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
                 response
             }
-            RemoteCommand::QueueRemove { position } => {
+            RemoteCommand::QueueRemove { position }
+            | RemoteCommand::QueueRemoveIfRevision { position, .. } => {
                 let response = self.queue_remove(position).await;
-                effects.extend(self.maybe_autoplay_extend());
+                if response.ok {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
                 response
             }
             RemoteCommand::Streaming { state } => {
@@ -545,9 +561,10 @@ impl DaemonEngine {
             ("playback", "repeat") => {
                 match serde_json::from_value::<crate::queue::Repeat>(value.clone()) {
                     // Music-mode invariant: can't enable repeat while autoplay streaming is on.
-                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => {
-                        (RemoteResponse::err("repeat_streaming_conflict"), Vec::new())
-                    }
+                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => (
+                        RemoteResponse::err("incompatible_playback_modes"),
+                        Vec::new(),
+                    ),
                     Ok(repeat) => {
                         self.queue.repeat = repeat;
                         self.config.repeat = repeat;
@@ -1107,6 +1124,10 @@ impl DaemonEngine {
             duration_ms: current
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            is_live: current.is_some_and(|song| song.is_radio_station()),
+            queue_rev: Some(self.queue.rev()),
+            track_id: current.map(|song| crate::api::sanitize_provider_id(&song.video_id)),
+            position_epoch: self.playback.position_epoch,
             // Same current-track gate as the media snapshot below: stale art from the
             // previous track never rides a status reply.
             artwork: current.and_then(|song| {
@@ -1740,7 +1761,10 @@ impl DaemonEngine {
         // Music-mode invariant (mirrors the App reducer for parity): reject the enable before
         // changing or persisting state, and without emitting any engine/player effects.
         if on && self.queue.repeat.is_on() {
-            return (RemoteResponse::err("repeat_streaming_conflict"), Vec::new());
+            return (
+                RemoteResponse::err("incompatible_playback_modes"),
+                Vec::new(),
+            );
         }
         self.streaming = on;
         self.config.autoplay_streaming = Some(self.streaming);
@@ -2302,119 +2326,6 @@ impl DaemonEngine {
             .map(|s| signals::normalize_artist(&s.artist))
             .unwrap_or_default()
     }
-
-    fn session_artist_bias(&self) -> HashMap<String, f32> {
-        let mut out: HashMap<String, f32> = HashMap::new();
-        for event in self.session_events.iter().rev().take(8) {
-            let completion = event.completion.clamp(0.0, 1.0);
-            let delta = match event.outcome {
-                DaemonOutcome::FullPlay => 0.05 * completion.max(0.5),
-                DaemonOutcome::Skip => -0.10 * (1.0 - completion).max(0.25),
-                DaemonOutcome::QuickSkip => -0.20 * (1.0 - completion).max(0.5),
-            };
-            let entry = out.entry(event.artist_key.clone()).or_insert(0.0);
-            *entry = (*entry + delta).clamp(-0.50, 0.35);
-        }
-        out
-    }
-
-    fn streaming_skip_streak(&self) -> usize {
-        self.session_events
-            .iter()
-            .rev()
-            .take_while(|e| matches!(e.outcome, DaemonOutcome::Skip | DaemonOutcome::QuickSkip))
-            .count()
-    }
-
-    fn record_outgoing(&mut self, full: bool) {
-        let Some(song) = self.queue.current().cloned() else {
-            return;
-        };
-        if song.is_radio_station() {
-            return;
-        }
-        let artist_key = signals::normalize_artist(&song.artist);
-        let now = signals::unix_now();
-        let (outcome, completion) = if full {
-            self.signals
-                .record_play(&song.video_id, &artist_key, 1.0, now);
-            (DaemonOutcome::FullPlay, 1.0)
-        } else {
-            let completion = self.playback_completion();
-            self.signals
-                .record_skip(&song.video_id, &artist_key, completion, now, 0.6);
-            let outcome = if completion < signals::STRONG_SKIP_FRAC {
-                DaemonOutcome::QuickSkip
-            } else {
-                DaemonOutcome::Skip
-            };
-            (outcome, completion)
-        };
-        self.record_session_event(&artist_key, outcome, completion);
-        if let Err(e) = self.signals.save() {
-            tracing::warn!(error = %e, "failed to save daemon signals");
-        }
-    }
-
-    fn playback_completion(&self) -> f32 {
-        match (self.playback.time_pos, self.playback.duration) {
-            (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
-            _ => 0.5,
-        }
-    }
-
-    fn record_session_event(&mut self, artist_key: &str, outcome: DaemonOutcome, completion: f32) {
-        self.session_events.push_back(DaemonSessionEvent {
-            artist_key: artist_key.to_owned(),
-            outcome,
-            completion,
-        });
-        while self.session_events.len() > SESSION_EVENTS_CAP {
-            self.session_events.pop_front();
-        }
-    }
-
-    fn session_cache_snapshot(&self) -> SessionCache {
-        let mut cache = SessionCache::from_last_mode(self.last_mode);
-        match self.last_mode {
-            LastMode::Normal => {
-                cache.normal_queue = Some(self.queue.snapshot());
-                cache.radio_queue = self.inactive_radio_queue.clone();
-                cache.local_queue = self.inactive_local_queue.clone();
-            }
-            LastMode::Radio => {
-                cache.radio_queue = Some(self.queue.snapshot());
-                cache.normal_queue = self.inactive_normal_queue.clone();
-                cache.local_queue = self.inactive_local_queue.clone();
-            }
-            LastMode::Local => {
-                cache.local_queue = Some(self.queue.snapshot());
-                cache.normal_queue = self.inactive_normal_queue.clone();
-                cache.radio_queue = self.inactive_radio_queue.clone();
-            }
-        }
-        cache
-    }
-
-    fn save_session(&self) {
-        if let Err(e) = self.session_cache_snapshot().save() {
-            tracing::warn!(error = %e, "failed to save daemon session");
-        }
-    }
-}
-
-fn local_neighbor_score(song: &Song, seed_artist_key: &str, sig: &Signals) -> f32 {
-    let artist_key = signals::normalize_artist(&song.artist);
-    let seed_bonus = if artist_key == seed_artist_key {
-        1.0
-    } else {
-        0.0
-    };
-    seed_bonus + sig.artist_weight(&artist_key)
-}
-
-fn data_dir() -> Option<PathBuf> {
-    crate::paths::data_dir()
 }
 
 #[cfg(test)]
@@ -2473,6 +2384,51 @@ mod tests {
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn status_distinguishes_unknown_duration_from_genuine_live_stream() {
+        let engine = engine_with_queue(&["loading"]);
+        let unknown = engine.status();
+        assert_eq!(unknown.duration_ms, None);
+        assert!(!unknown.is_live);
+        assert_eq!(unknown.queue_rev, Some(engine.queue.rev()));
+        assert_eq!(unknown.track_id.as_deref(), Some("loading"));
+        assert_eq!(unknown.position_epoch, engine.playback.position_epoch);
+
+        let mut live_engine = engine_with_queue(&[]);
+        live_engine.queue.set(vec![radio_station("station")], 0);
+        let live = live_engine.status();
+        assert_eq!(live.duration_ms, None);
+        assert!(live.is_live);
+        assert_eq!(live.queue_rev, Some(live_engine.queue.rev()));
+        assert_eq!(live.track_id.as_deref(), Some("station"));
+        assert_eq!(live.position_epoch, live_engine.playback.position_epoch);
+    }
+
+    #[tokio::test]
+    async fn stale_revision_checked_queue_commands_preserve_the_existing_error() {
+        let mut engine = engine_with_queue(&["a", "b"]);
+        for command in [
+            RemoteCommand::QueuePlayIfRevision {
+                position: 1,
+                expected_rev: u64::MAX,
+            },
+            RemoteCommand::QueueRemoveIfRevision {
+                position: 0,
+                expected_rev: u64::MAX,
+            },
+        ] {
+            engine.last_error = Some("existing playback failure".to_string());
+            let (response, shutdown, effects) = engine.handle_remote(command).await;
+            assert_eq!(response.reason.as_deref(), Some("stale_rev"));
+            assert!(!shutdown);
+            assert!(effects.is_empty());
+            assert_eq!(
+                engine.last_error.as_deref(),
+                Some("existing playback failure")
+            );
         }
     }
 
@@ -3046,6 +3002,53 @@ mod tests {
         assert!(shutdown);
         assert!(effects.is_empty());
         assert!(engine.loaded_video_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
+        let mut engine = engine_with_queue(&["seed"]);
+        engine.streaming = true;
+        engine.queue.repeat = crate::queue::Repeat::Off;
+
+        let (response, _, effects) = engine.handle_remote(RemoteCommand::CycleRepeat).await;
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("incompatible_playback_modes")
+        );
+        assert!(effects.is_empty());
+        assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
+
+        let (response, effects) = engine.apply_gui_setting(gui_change(
+            "playback",
+            "repeat",
+            serde_json::to_value(crate::queue::Repeat::All).unwrap(),
+        ));
+        assert!(!response.ok);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("incompatible_playback_modes")
+        );
+        assert!(effects.is_empty());
+        assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
+
+        engine.streaming = false;
+        engine.queue.repeat = crate::queue::Repeat::All;
+        let (response, _, effects) = engine
+            .handle_remote(RemoteCommand::Streaming {
+                state: ToggleState::On,
+            })
+            .await;
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("incompatible_playback_modes")
+        );
+        assert!(effects.is_empty());
+        assert!(!engine.streaming);
+        assert_ne!(engine.config.autoplay_streaming, Some(true));
     }
 
     #[tokio::test]

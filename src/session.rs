@@ -136,6 +136,31 @@ impl SessionCache {
     }
 }
 
+/// Whether starting the daemon with `--resume` can restore a playable row.
+///
+/// The desktop companion needs this while the core is offline, so it cannot ask the remote
+/// owner. Keep the predicate in lockstep with `DaemonEngine::restore_last_session`: prefer the
+/// active queue snapshot, then use the persisted history for the last normal/radio mode. Local
+/// mode has no history fallback.
+pub fn resume_available() -> bool {
+    let cache = SessionCache::load();
+    if cache.active_queue().is_some() {
+        return true;
+    }
+    resume_available_from(&cache, &crate::library::Library::load())
+}
+
+fn resume_available_from(cache: &SessionCache, library: &crate::library::Library) -> bool {
+    if cache.active_queue().is_some() {
+        return true;
+    }
+    match cache.last_mode {
+        LastMode::Normal => !library.history.is_empty(),
+        LastMode::Radio => !library.radios.is_empty(),
+        LastMode::Local => false,
+    }
+}
+
 pub(crate) fn session_cache_path() -> Option<PathBuf> {
     crate::paths::cache_dir().map(|d| d.join(SESSION_CACHE_FILE))
 }
@@ -166,6 +191,34 @@ mod tests {
             LastMode::Radio
         );
         assert!(SessionCache::from_radio_mode(true).was_radio_mode());
+    }
+
+    #[test]
+    fn resume_availability_matches_daemon_restore_sources() {
+        let mut library = crate::library::Library::default();
+        let normal = SessionCache::from_last_mode(LastMode::Normal);
+        assert!(!resume_available_from(&normal, &library));
+
+        library
+            .history
+            .push_back(Song::remote("history", "History", "Artist", "3:00"));
+        assert!(resume_available_from(&normal, &library));
+
+        let mut radio = SessionCache::from_last_mode(LastMode::Radio);
+        assert!(!resume_available_from(&radio, &library));
+        library
+            .radios
+            .push_back(Song::remote("radio", "Station", "Country", "LIVE"));
+        assert!(resume_available_from(&radio, &library));
+
+        let local = SessionCache::from_last_mode(LastMode::Local);
+        assert!(!resume_available_from(&local, &library));
+
+        radio.radio_queue = Some(snapshot("queued"));
+        assert!(resume_available_from(
+            &radio,
+            &crate::library::Library::default()
+        ));
     }
 
     #[test]

@@ -33,6 +33,7 @@
   // Live-switch the whole UI language off the settings model (i18n.catalog).
   $effect(() => {
     i18n.set(settings.ui?.language);
+    document.documentElement.lang = i18n.lang;
   });
 
   const bannerText = $derived.by(() => {
@@ -58,6 +59,54 @@
 
   const radioMode = $derived(playback.model?.radio_mode ?? false);
 
+  let persistUiTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function persistUiNow() {
+    if (!client || !window.ipc) return;
+    if (persistUiTimer) {
+      clearTimeout(persistUiTimer);
+      persistUiTimer = null;
+    }
+    client.win('persistUi', ui.snapshot());
+  }
+
+  function persistUiSoon() {
+    if (!client || !window.ipc) return;
+    if (persistUiTimer) clearTimeout(persistUiTimer);
+    persistUiTimer = setTimeout(() => {
+      persistUiTimer = null;
+      persistUiNow();
+    }, 100);
+  }
+
+  function persistBeforePageHide() {
+    playback.flushVolume();
+    persistUiNow();
+  }
+
+  $effect(() => {
+    // Element scroll events do not bubble. Capture scroll and opted-in draft input at the
+    // document boundary so the host receives the last small snapshot before idle teardown.
+    document.addEventListener('scroll', persistUiSoon, true);
+    document.addEventListener('input', persistUiSoon, true);
+    window.addEventListener('pagehide', persistBeforePageHide);
+    return () => {
+      document.removeEventListener('scroll', persistUiSoon, true);
+      document.removeEventListener('input', persistUiSoon, true);
+      window.removeEventListener('pagehide', persistBeforePageHide);
+      if (persistUiTimer) clearTimeout(persistUiTimer);
+    };
+  });
+
+  $effect(() => {
+    // Make all host-restored navigation fields dependencies of this debounced snapshot.
+    void ui.view;
+    void ui.queueOpen;
+    void ui.settingsTab;
+    void ui.libraryTab;
+    persistUiSoon();
+  });
+
   function switchMode(radio: boolean) {
     if (radio === radioMode) return;
     // Flip the mode via the RadioMode setting change; the library tab set + search default
@@ -81,7 +130,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} onscroll={persistUiSoon} onfocusin={persistUiSoon} />
 
 {#if connection.info.state !== 'online'}
   <div class="banner" role="status" class:offline={connection.info.state === 'offline'}>

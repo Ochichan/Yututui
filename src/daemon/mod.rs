@@ -1418,7 +1418,7 @@ mod tests {
 
         let (reply, _reply_rx) = tokio::sync::oneshot::channel();
         assert_eq!(
-            DaemonEvent::Remote(RemoteEvent::Command(RemoteCommand::Status, reply)).kind(),
+            DaemonEvent::Remote(RemoteEvent::Command(RemoteCommand::Status, reply.into())).kind(),
             "remote"
         );
         assert_eq!(
@@ -1597,7 +1597,10 @@ mod tests {
 
         assert!(!emit_daemon_event(
             &tx,
-            DaemonEvent::Remote(RemoteEvent::Command(RemoteCommand::TogglePause, reply))
+            DaemonEvent::Remote(RemoteEvent::Command(
+                RemoteCommand::TogglePause,
+                reply.into(),
+            ))
         ));
     }
 

@@ -1,0 +1,291 @@
+    /* ================= theme: minimal =================
+       The common semantic tree is compressed into a 64px capsule. Expansion only
+       reveals existing controls; it never mounts a second slider or transport. */
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell {
+      position: relative;
+      display: block;
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 16px;
+      background: linear-gradient(180deg, #262a40 0%, var(--mantle) 100%);
+      box-shadow: 0 8px 24px rgba(12, 12, 20, 0.5), 0 1px 6px rgba(12, 12, 20, 0.35);
+      overflow: hidden;
+      cursor: grab;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:active {
+      cursor: grabbing;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell > header {
+      position: absolute;
+      z-index: 8;
+      top: 0;
+      right: 0;
+      display: block;
+      width: 64px;
+      height: 64px;
+      padding: 0;
+      cursor: inherit;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) header .brand,
+    html[data-theme="minimal"]:not(.shared-sheet) header .chip,
+    html[data-theme="minimal"]:not(.shared-sheet) #refreshTop,
+    html[data-theme="minimal"]:not(.shared-sheet) .mode-switch,
+    html[data-theme="minimal"]:not(.shared-sheet) .dock,
+    html[data-theme="minimal"]:not(.shared-sheet) #tabNow,
+    html[data-theme="minimal"]:not(.shared-sheet) #streaming,
+    html[data-theme="minimal"]:not(.shared-sheet) .meta {
+      display: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #pin,
+    html[data-theme="minimal"]:not(.shared-sheet) #hide,
+    html[data-theme="minimal"]:not(.shared-sheet) .compact-menu {
+      position: absolute;
+      display: inline-flex;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border-radius: 50%;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #pin { top: 0; left: 0; }
+    html[data-theme="minimal"]:not(.shared-sheet) #hide { top: 0; right: 0; }
+    html[data-theme="minimal"]:not(.shared-sheet) .compact-menu {
+      z-index: 9;
+      right: 16px;
+      bottom: 0;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .compact-menu.on {
+      border-color: var(--mauve);
+      color: var(--mauve);
+      transform: rotate(90deg);
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) main,
+    html[data-theme="minimal"]:not(.shared-sheet) #panelNow,
+    html[data-theme="minimal"]:not(.shared-sheet) .now-card {
+      position: static;
+      display: block;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .now-art {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: grid;
+      place-items: center;
+      width: 64px;
+      height: 64px;
+      border: 0;
+      border-radius: 14px 0 0 14px;
+      background: linear-gradient(135deg, rgba(198, 160, 246, 0.28), rgba(245, 189, 230, 0.18));
+      overflow: hidden;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .now-art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .now-copy {
+      position: absolute;
+      top: 12px;
+      right: 72px;
+      left: 74px;
+      min-width: 0;
+      transition: opacity 0.12s ease, visibility 0.12s;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .title {
+      font-size: 12.5px;
+      line-height: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .artist {
+      margin-top: 2px;
+      font-size: 10.5px;
+      line-height: 16px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #transportSlot {
+      position: absolute;
+      z-index: 4;
+      top: 10px;
+      right: 70px;
+      left: 72px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.12s ease, visibility 0.12s;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #sharedTransport {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #sharedTransport button {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border-radius: 50%;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) #playPause {
+      width: 40px;
+      height: 40px;
+      border: 0;
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:hover .now-copy,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:focus-within .now-copy,
+    html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) .now-copy {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:hover #transportSlot,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell:focus-within #transportSlot,
+    html[data-theme="minimal"].keyboard-nav:not(.shared-sheet) #transportSlot {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .recovery {
+      position: absolute;
+      z-index: 6;
+      top: 8px;
+      right: 66px;
+      left: 68px;
+      height: 48px;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 0;
+      border: 0;
+      background: var(--mantle);
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .recovery button {
+      height: 32px;
+      padding: 0 7px;
+      font-size: 9.5px;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering .now-copy,
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.recovering #transportSlot {
+      display: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .tabs,
+    html[data-theme="minimal"]:not(.shared-sheet) .pill-row,
+    html[data-theme="minimal"]:not(.shared-sheet) .volume-row,
+    html[data-theme="minimal"]:not(.shared-sheet) .progress-row,
+    html[data-theme="minimal"]:not(.shared-sheet) .times {
+      display: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded {
+      border-radius: 16px;
+      background: linear-gradient(180deg, #262a40 0 64px, var(--mantle) 64px 100%);
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .tabs {
+      position: absolute;
+      top: 118px;
+      right: 10px;
+      left: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .pill-row {
+      position: absolute;
+      top: 76px;
+      right: 10px;
+      left: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .volume-row {
+      position: absolute;
+      top: 164px;
+      right: 12px;
+      left: 12px;
+      display: grid;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .progress-row {
+      position: absolute;
+      top: 207px;
+      right: 12px;
+      left: 12px;
+      display: grid;
+      grid-template-columns: 1fr;
+      padding: 0;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .progress-row .step {
+      display: none;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .player-shell.expanded .times {
+      position: absolute;
+      right: 12px;
+      bottom: 4px;
+      left: 12px;
+      display: flex;
+      padding: 0;
+    }
+
+    html[data-theme="minimal"]:not(.shared-sheet) .alert {
+      position: absolute;
+      z-index: 20;
+      right: 8px;
+      bottom: 3px;
+      left: 8px;
+      height: 24px;
+      padding: 4px 8px;
+      font-size: 9px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    @media (hover: none) {
+      html[data-theme="minimal"]:not(.shared-sheet) .now-copy {
+        opacity: 0;
+        visibility: hidden;
+      }
+
+      html[data-theme="minimal"]:not(.shared-sheet) #transportSlot {
+        opacity: 1;
+        visibility: visible;
+      }
+    }

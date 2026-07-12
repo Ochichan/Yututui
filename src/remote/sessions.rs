@@ -31,7 +31,7 @@ use super::proto::{
     ClientFrame, ClientOp, HelloAck, HelloRequest, InstanceMode, PROTOCOL_VERSION,
     REMOTE_MAX_TOPICS, RemoteResponse, ServerFrame, Topic,
 };
-use super::server::{ReadLineOutcome, RemoteEvent, read_bounded_line};
+use super::server::{ReadLineOutcome, RemoteEvent, RemoteReply, read_bounded_line};
 
 /// Hard cap on concurrent sessions per owner (`sessions_full` on the next Hello).
 /// TUI + GUI + tray + tests is ≤ 4 realistic.
@@ -147,6 +147,74 @@ impl RemoteSessionRef {
     }
 }
 
+/// Exactly-once persistent-session reply shared by the session timeout and the owner loop.
+///
+/// The owner completes this through [`RemoteReply::send`]. Completion first claims the response,
+/// then synchronously enqueues the reply frame, and only then wakes the session reader. A timeout
+/// races through the same gate, so a late owner cannot emit a duplicate reply after `timeout`.
+#[derive(Clone)]
+struct DirectSessionReply {
+    inner: Arc<DirectSessionReplyInner>,
+}
+
+struct DirectSessionReplyInner {
+    hub: Arc<RemoteSessionHub>,
+    session: RemoteSessionRef,
+    frame_id: u64,
+    completed: std::sync::atomic::AtomicBool,
+    done: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl DirectSessionReply {
+    fn new(
+        hub: Arc<RemoteSessionHub>,
+        session: RemoteSessionRef,
+        frame_id: u64,
+    ) -> (Self, oneshot::Receiver<()>) {
+        let (done_tx, done_rx) = oneshot::channel();
+        (
+            Self {
+                inner: Arc::new(DirectSessionReplyInner {
+                    hub,
+                    session,
+                    frame_id,
+                    completed: std::sync::atomic::AtomicBool::new(false),
+                    done: Mutex::new(Some(done_tx)),
+                }),
+            },
+            done_rx,
+        )
+    }
+
+    fn complete(&self, response: RemoteResponse) -> bool {
+        if self
+            .inner
+            .completed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+
+        let frame = ServerFrame::Reply {
+            id: self.inner.frame_id,
+            resp: response,
+        };
+        let sent = self.inner.hub.send_raw_to(&self.inner.session, &frame);
+        if let Some(done) = self
+            .inner
+            .done
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = done.send(());
+        }
+
+        sent
+    }
+}
+
 /// Test-only: a hub with one registered session, exposed as the host-visible ref plus
 /// the raw outbound receiver so Publisher tests can assert enqueue order directly.
 #[cfg(test)]
@@ -168,6 +236,19 @@ pub(crate) fn test_register(
         RemoteSessionRef { session_id, handle },
         rx,
     )
+}
+
+/// Test-only persistent reply wired through the same exactly-once/direct-enqueue primitive as a
+/// real v8 session. The receiver side of the completion signal is intentionally discarded: owner
+/// ordering tests inspect the outbound session lane itself.
+#[cfg(test)]
+pub(crate) fn test_command_reply(
+    hub: Arc<RemoteSessionHub>,
+    session: RemoteSessionRef,
+    frame_id: u64,
+) -> RemoteReply {
+    let (direct_reply, _done) = DirectSessionReply::new(hub, session, frame_id);
+    RemoteReply::direct(move |response| direct_reply.complete(response))
 }
 
 /// The per-owner session registry. The server's accept path registers sessions here;
@@ -562,16 +643,24 @@ pub(crate) async fn run_session(
                     } else {
                         tuning.reply_timeout
                     };
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let resp = if emit(RemoteEvent::Command(command, reply_tx)) {
-                        match timeout(reply_timeout, reply_rx).await {
-                            Ok(Ok(resp)) => resp,
-                            _ => RemoteResponse::err("timeout"),
+                    let session = RemoteSessionRef {
+                        session_id,
+                        handle: Arc::clone(&handle),
+                    };
+                    let (direct_reply, reply_done) =
+                        DirectSessionReply::new(Arc::clone(&hub), session, frame.id);
+                    let owner_reply = {
+                        let direct_reply = direct_reply.clone();
+                        RemoteReply::direct(move |response| direct_reply.complete(response))
+                    };
+                    if emit(RemoteEvent::Command(command, owner_reply)) {
+                        if !matches!(timeout(reply_timeout, reply_done).await, Ok(Ok(()))) {
+                            let _ = direct_reply.complete(RemoteResponse::err("timeout"));
                         }
                     } else {
-                        RemoteResponse::err("server_busy")
-                    };
-                    Some(ServerFrame::Reply { id: frame.id, resp })
+                        let _ = direct_reply.complete(RemoteResponse::err("server_busy"));
+                    }
+                    None
                 }
             }
         };

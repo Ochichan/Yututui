@@ -5,8 +5,9 @@
     volume: number;
     disabled?: boolean;
     onvolume: (percent: number) => void;
+    onvolumeend?: () => void;
   }
-  const { volume, disabled = false, onvolume }: Props = $props();
+  const { volume, disabled = false, onvolume, onvolumeend }: Props = $props();
 
   let track = $state<HTMLElement | null>(null);
   let dragging = $state(false);
@@ -26,6 +27,7 @@
   }
   function onpointerup() {
     dragging = false;
+    onvolumeend?.();
   }
 </script>
 
@@ -37,6 +39,7 @@
     {onpointerdown}
     {onpointermove}
     {onpointerup}
+    onpointercancel={onpointerup}
     role="slider"
     aria-label="Volume"
     aria-valuemin={0}

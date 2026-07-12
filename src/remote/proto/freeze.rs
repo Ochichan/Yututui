@@ -237,6 +237,10 @@ fn golden_v7_status_response_is_byte_stable() {
         repeat: Repeat::All,
         elapsed_ms: Some(61_500),
         duration_ms: Some(194_000),
+        is_live: false,
+        queue_rev: None,
+        track_id: None,
+        position_epoch: 0,
         artwork: None,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
@@ -268,10 +272,19 @@ fn golden_v8_status_artwork_is_additive() {
         repeat: Repeat::Off,
         elapsed_ms: None,
         duration_ms: None,
+        is_live: false,
+        queue_rev: None,
+        track_id: None,
+        position_epoch: 0,
         artwork: None,
     };
     // Absent artwork never appears on the wire (v7 byte stability).
-    assert!(!serde_json::to_string(&artless).unwrap().contains("artwork"));
+    let artless_line = serde_json::to_string(&artless).unwrap();
+    assert!(!artless_line.contains("artwork"));
+    assert!(!artless_line.contains("is_live"));
+    assert!(!artless_line.contains("queue_rev"));
+    assert!(!artless_line.contains("track_id"));
+    assert!(!artless_line.contains("position_epoch"));
 
     // Present artwork serializes as a nested ref with `mime` omitted when unknown,
     // and round-trips.
@@ -287,6 +300,28 @@ fn golden_v8_status_artwork_is_additive() {
     assert!(line.contains(r#""artwork":{"key":"vid","path":"/tmp/vid.jpg"}"#));
     let back: StatusSnapshot = serde_json::from_str(&line).unwrap();
     assert_eq!(back, with_art);
+}
+
+#[test]
+fn status_live_signal_is_additive_and_explicit() {
+    let legacy = r#"{"title":"Loading","artist":"Artist","paused":false,"volume":50,"position":1,"total":1,"streaming":false,"duration_ms":null}"#;
+    let parsed: StatusSnapshot = serde_json::from_str(legacy).unwrap();
+    assert_eq!(parsed.duration_ms, None);
+    assert!(!parsed.is_live);
+    assert_eq!(parsed.queue_rev, None);
+    assert_eq!(parsed.track_id, None);
+    assert_eq!(parsed.position_epoch, 0);
+
+    let mut live = parsed;
+    live.is_live = true;
+    live.queue_rev = Some(41);
+    live.track_id = Some("station-id".to_string());
+    live.position_epoch = 7;
+    let line = serde_json::to_string(&live).unwrap();
+    assert!(line.contains(r#""is_live":true"#));
+    assert!(line.contains(r#""queue_rev":41"#));
+    assert!(line.contains(r#""track_id":"station-id""#));
+    assert!(line.contains(r#""position_epoch":7"#));
 }
 
 #[test]

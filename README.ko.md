@@ -63,6 +63,10 @@ macOS와 Windows 릴리스에는 메뉴바/알림 영역 미니 플레이어인 
 
 로그인 시 자동 실행은 선택 사항입니다: `yututray --install-startup`.
 
+패키지 릴리스에는 네이티브 tray와 미니 플레이어(`yututray --mini`)가 포함됩니다. 웹 기반
+전체 GUI 앱은 포함하지 않으며, `--main-window`는 GUI assets를 넣은 개발자 빌드에서만
+사용할 수 있습니다.
+
 </details>
 
 ## 빠른 시작

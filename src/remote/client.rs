@@ -642,7 +642,7 @@ fn search_source_name(source: SearchSource) -> &'static str {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::remote::proto::InstanceMode;
+    use crate::remote::proto::{InstanceMode, PROTOCOL_VERSION_V7};
     use interprocess::local_socket::ListenerOptions;
     use interprocess::local_socket::tokio::Listener;
     use tokio::io::AsyncBufReadExt;
@@ -721,6 +721,10 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         };
         let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
@@ -751,6 +755,40 @@ mod tests {
 
         assert!(!resp.ok);
         assert_eq!(resp.reason.as_deref(), Some("queue_empty"));
+    }
+
+    #[tokio::test]
+    async fn old_descriptor_receives_a_frozen_v7_request() {
+        let endpoint = test_endpoint("v7-wire");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(async move {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(request.version, PROTOCOL_VERSION_V7);
+            drop(reader);
+
+            let mut writer = &conn;
+            writer
+                .write_all(
+                    serde_json::to_string(&RemoteResponse::ok("ok".to_string()))
+                        .unwrap()
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+            writer.flush().await.unwrap();
+        });
+
+        let mut instance = test_instance(endpoint.clone());
+        instance.protocol_version = PROTOCOL_VERSION_V7;
+        let response = send_to(instance, RemoteCommand::Status).await.unwrap();
+        server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+        assert!(response.ok);
     }
 
     #[tokio::test]
@@ -912,6 +950,10 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            is_live: false,
+            queue_rev: None,
+            track_id: None,
+            position_epoch: 0,
             artwork: None,
         }
     }

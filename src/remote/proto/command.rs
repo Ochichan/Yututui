@@ -80,6 +80,18 @@ pub enum RemoteCommand {
     QueueRemove {
         position: usize,
     },
+    /// Play an order position only if it still belongs to the queue snapshot the
+    /// caller rendered. Additive in v8; stale snapshots are rejected as `stale_rev`.
+    QueuePlayIfRevision {
+        position: usize,
+        expected_rev: u64,
+    },
+    /// Remove an order position only if it still belongs to the queue snapshot the
+    /// caller rendered. Additive in v8; stale snapshots are rejected as `stale_rev`.
+    QueueRemoveIfRevision {
+        position: usize,
+        expected_rev: u64,
+    },
     #[serde(alias = "radio")]
     Streaming {
         state: ToggleState,
@@ -129,8 +141,33 @@ pub enum RemoteCommand {
 }
 
 impl RemoteCommand {
+    pub(crate) fn expected_queue_rev(&self) -> Option<u64> {
+        match self {
+            Self::QueuePlayIfRevision { expected_rev, .. }
+            | Self::QueueRemoveIfRevision { expected_rev, .. } => Some(*expected_rev),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), RemoteCommandValidationError> {
         match self {
+            RemoteCommand::SetVolume { percent } if !(0..=100).contains(percent) => {
+                Err(validation_error("bad_volume"))
+            }
+            RemoteCommand::QueuePlay { position }
+            | RemoteCommand::QueueRemove { position }
+            | RemoteCommand::QueuePlayIfRevision { position, .. }
+            | RemoteCommand::QueueRemoveIfRevision { position, .. }
+                if *position >= REMOTE_MAX_TRACK_IDS =>
+            {
+                Err(validation_error("bad_queue_position"))
+            }
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::Speed { tenths },
+            } if !(5..=20).contains(tenths) => Err(validation_error("bad_speed")),
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::SeekSeconds { seconds },
+            } if !(1..=60).contains(seconds) => Err(validation_error("bad_seek_seconds")),
             RemoteCommand::Play { query }
             | RemoteCommand::Enqueue { query }
             | RemoteCommand::RunSearch { query, .. } => validate_query(query),
@@ -414,6 +451,60 @@ mod tests {
                 .validate()
                 .unwrap_err();
             assert_eq!(error.reason(), reason);
+        }
+    }
+
+    #[test]
+    fn desktop_control_ranges_are_rejected_at_the_protocol_edge() {
+        for percent in [-1, 101] {
+            assert_eq!(
+                RemoteCommand::SetVolume { percent }
+                    .validate()
+                    .unwrap_err()
+                    .reason(),
+                "bad_volume"
+            );
+        }
+        assert_eq!(
+            RemoteCommand::QueueRemove {
+                position: REMOTE_MAX_TRACK_IDS,
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "bad_queue_position"
+        );
+        assert_eq!(
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::Speed { tenths: 21 },
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "bad_speed"
+        );
+        assert_eq!(
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::SeekSeconds { seconds: 0 },
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "bad_seek_seconds"
+        );
+        for command in [
+            RemoteCommand::SetVolume { percent: 100 },
+            RemoteCommand::QueuePlay {
+                position: REMOTE_MAX_TRACK_IDS - 1,
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::Speed { tenths: 5 },
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::SeekSeconds { seconds: 60 },
+            },
+        ] {
+            assert!(command.validate().is_ok());
         }
     }
 

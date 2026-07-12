@@ -2,7 +2,7 @@
 // the wired tier actually renders — the strongest cheap proof that the frame, stores,
 // and demo core agree end to end.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/svelte';
 import App from '../src/App.svelte';
 import { Client } from '../src/lib/ipc/client';
@@ -42,7 +42,7 @@ function assemble(): AppCtx {
     theme: new ThemeStore(client),
     ui: new UiStore(),
     playback: new PlaybackStore(client),
-    queue: new QueueStore(client),
+    queue: new QueueStore(client, (message) => toasts.show('error', message)),
     search: new SearchStore(client),
     library: new LibraryStore(client),
     ai: new AiStore(client),
@@ -50,7 +50,7 @@ function assemble(): AppCtx {
     playlists: new PlaylistsStore(client),
     transfer: new TransferStore(client),
     accounts: new AccountsStore(client),
-    settings: new SettingsStore(client),
+    settings: new SettingsStore(client, (message) => toasts.show('error', message)),
     anim: new AnimStore(client),
     keymap: new KeymapStore(client),
     lyrics: new LyricsStore(client),
@@ -131,6 +131,16 @@ describe('App against the demo core', () => {
     // '?' is Global help.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));
     expect(ctx.ui.helpOpen).toBe(true);
+  });
+
+  it('flushes pending volume when the WebView is hidden', async () => {
+    const ctx = assemble();
+    const flush = vi.spyOn(ctx.playback, 'flushVolume');
+    render(App, { props: { ctx } });
+    await settle();
+
+    window.dispatchEvent(new Event('pagehide'));
+    expect(flush).toHaveBeenCalled();
   });
 
   it('the help overlay renders the live keymap cheat sheet and filters it', async () => {

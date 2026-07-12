@@ -28,9 +28,10 @@ use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
     GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse,
-    RemoteSettingChange, ToggleState,
+    RemoteSettingChange, ServerFrame, ToggleState, Topic,
 };
 use crate::remote::publish;
+use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
 use crate::signals::Signals;
 use crate::station::StationStore;
 
@@ -84,7 +85,7 @@ fn app_apply(app: &mut App, cmd: RemoteCommand) -> RemoteResponse {
 
 fn app_apply_with_cmds(app: &mut App, cmd: RemoteCommand) -> (RemoteResponse, Vec<Cmd>) {
     let (tx, mut rx) = oneshot::channel();
-    let cmds = app.update(Msg::Remote(cmd, tx));
+    let cmds = app.update(Msg::Remote(cmd, tx.into()));
     (
         rx.try_recv().expect("apply_remote replies synchronously"),
         cmds,
@@ -202,7 +203,7 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
             app_resp.reason, engine_resp.reason,
             "{step}: owners disagree on the machine reason code"
         );
-        if app_resp.reason.as_deref() == Some("repeat_streaming_conflict") {
+        if app_resp.reason.as_deref() == Some("incompatible_playback_modes") {
             assert!(app_cmds.is_empty(), "{step}: App rejection emitted effects");
             assert!(
                 engine_effects.is_empty(),
@@ -212,6 +213,194 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
 
         assert_parity(&step, &app, &engine);
     }
+}
+
+fn assert_reply_before_player_event(
+    owner: &str,
+    frame_id: u64,
+    rx: &mut tokio::sync::mpsc::Receiver<SessionLine>,
+) {
+    let reply = rx.try_recv().expect("command reply was enqueued");
+    let event = rx.try_recv().expect("same-turn player event was enqueued");
+    assert!(rx.try_recv().is_err(), "{owner}: unexpected third frame");
+
+    match reply {
+        SessionLine::Raw(bytes) => match serde_json::from_slice::<ServerFrame>(&bytes)
+            .unwrap_or_else(|error| panic!("{owner}: invalid reply frame: {error}"))
+        {
+            ServerFrame::Reply { id, resp } => {
+                assert_eq!(id, frame_id, "{owner}: wrong reply id");
+                assert!(resp.ok, "{owner}: mutation reply failed: {resp:?}");
+            }
+            other => panic!("{owner}: expected Reply first, got {other:?}"),
+        },
+        SessionLine::Event { .. } => panic!("{owner}: Event overtook Reply"),
+    }
+    match event {
+        SessionLine::Event {
+            topic: Topic::Player,
+            ..
+        } => {}
+        SessionLine::Event { topic, .. } => {
+            panic!("{owner}: expected player event, got {topic:?}")
+        }
+        SessionLine::Raw(bytes) => panic!(
+            "{owner}: expected Event second, got {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+    }
+}
+
+/// Regression for the v8 owner-loop ordering contract (docs/gui/02 §6): the command mutation and
+/// its response happen on the owner turn, and the post-turn publisher observes the new state only
+/// afterwards. Repeat enough times that the old oneshot wakeup race was easy to reproduce while
+/// keeping the assertion deterministic against each session's single outbound lane.
+#[tokio::test]
+async fn persistent_v8_mutation_reply_precedes_event_for_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+
+    let (app_hub, app_session, mut app_rx) = test_register(SessionTuning::default());
+    let mut app_publisher = publish::Publisher::new(Arc::clone(&app_hub));
+    app_publisher.observe(&app.core_view());
+    app_publisher.handle_subscribe(&app.core_view(), &app_session, 1, &[Topic::Player]);
+    while app_rx.try_recv().is_ok() {}
+
+    let (engine_hub, engine_session, mut engine_rx) = test_register(SessionTuning::default());
+    let mut engine_publisher = publish::Publisher::new(Arc::clone(&engine_hub));
+    engine_publisher.observe(&engine.core_view());
+    engine_publisher.handle_subscribe(&engine.core_view(), &engine_session, 1, &[Topic::Player]);
+    while engine_rx.try_recv().is_ok() {}
+
+    for turn in 0..64u64 {
+        let volume = if turn % 2 == 0 { 23 } else { 77 };
+        let frame_id = 100 + turn;
+
+        // Standalone TUI owner path: Msg::Remote completes the direct session reply inside
+        // App::update; runner.rs invokes Publisher::observe only after update/dispatch returns.
+        let app_reply = test_command_reply(Arc::clone(&app_hub), app_session.clone(), frame_id);
+        let _effects = app.update(Msg::Remote(
+            RemoteCommand::SetVolume { percent: volume },
+            app_reply,
+        ));
+        app_publisher.observe(&app.core_view());
+        assert_reply_before_player_event("tui", frame_id, &mut app_rx);
+
+        // Daemon owner path: daemon/mod.rs sends the engine response synchronously before its
+        // common post-turn Publisher::observe call.
+        let (response, shutdown, _effects) = engine
+            .handle_remote(RemoteCommand::SetVolume { percent: volume })
+            .await;
+        assert!(!shutdown);
+        let engine_reply =
+            test_command_reply(Arc::clone(&engine_hub), engine_session.clone(), frame_id);
+        let _ = engine_reply.send(response);
+        engine_publisher.observe(&engine.core_view());
+        assert_reply_before_player_event("daemon", frame_id, &mut engine_rx);
+    }
+}
+
+#[tokio::test]
+async fn revision_checked_queue_remove_is_stale_safe_and_owner_parity_holds() {
+    let (mut app, mut engine) = hermetic_pair();
+
+    let app_resp = app_apply(
+        &mut app,
+        RemoteCommand::QueueRemoveIfRevision {
+            position: 0,
+            expected_rev: u64::MAX,
+        },
+    );
+    let (engine_resp, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::QueueRemoveIfRevision {
+            position: 0,
+            expected_rev: u64::MAX,
+        })
+        .await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("stale revision-checked remove", &app, &engine);
+
+    let app_rev = app.core_view().queue.rev();
+    let engine_rev = engine.core_view().queue.rev();
+    let app_resp = app_apply(
+        &mut app,
+        RemoteCommand::QueueRemoveIfRevision {
+            position: 0,
+            expected_rev: app_rev,
+        },
+    );
+    let (engine_resp, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::QueueRemoveIfRevision {
+            position: 0,
+            expected_rev: engine_rev,
+        })
+        .await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert!(app_resp.ok && engine_resp.ok);
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("fresh revision-checked remove", &app, &engine);
+}
+
+#[tokio::test]
+async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
+    let (mut app, mut engine) = hermetic_pair();
+    let app_before = serde_json::to_value(app.core_view().queue.snapshot()).unwrap();
+    let engine_before = serde_json::to_value(engine.core_view().queue.snapshot()).unwrap();
+    let app_rev_before = app.core_view().queue.rev();
+    let engine_rev_before = engine.core_view().queue.rev();
+
+    let command = RemoteCommand::QueuePlayIfRevision {
+        position: 2,
+        expected_rev: u64::MAX,
+    };
+    let app_resp = app_apply(&mut app, command.clone());
+    let (engine_resp, shutdown, effects) = engine.handle_remote(command).await;
+
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_eq!(
+        serde_json::to_value(app.core_view().queue.snapshot()).unwrap(),
+        app_before
+    );
+    assert_eq!(
+        serde_json::to_value(engine.core_view().queue.snapshot()).unwrap(),
+        engine_before
+    );
+    assert_eq!(app.core_view().queue.rev(), app_rev_before);
+    assert_eq!(engine.core_view().queue.rev(), engine_rev_before);
+    assert_parity("stale revision-checked play", &app, &engine);
+
+    // A fresh revision must pass the optimistic-concurrency gate and reach the shared queue
+    // index validation. Use an invalid position here so the hermetic parity harness does not
+    // spawn a real daemon mpv merely to prove the revision gate was accepted.
+    let app_rev = app.core_view().queue.rev();
+    let engine_rev = engine.core_view().queue.rev();
+    let invalid_position = app.core_view().queue.len();
+    let app_resp = app_apply(
+        &mut app,
+        RemoteCommand::QueuePlayIfRevision {
+            position: invalid_position,
+            expected_rev: app_rev,
+        },
+    );
+    let (engine_resp, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::QueuePlayIfRevision {
+            position: invalid_position,
+            expected_rev: engine_rev,
+        })
+        .await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(app_resp.reason.as_deref(), Some("queue_index"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_eq!(app.core_view().queue.rev(), app_rev);
+    assert_eq!(engine.core_view().queue.rev(), engine_rev);
+    assert_parity("fresh revision-checked play validation", &app, &engine);
 }
 
 #[tokio::test]
@@ -233,7 +422,7 @@ async fn daemon_conflicts_reject_without_state_or_effects() {
         assert!(!response.ok && !shutdown);
         assert_eq!(
             response.reason.as_deref(),
-            Some("repeat_streaming_conflict")
+            Some("incompatible_playback_modes")
         );
         assert!(effects.is_empty());
         assert_eq!(engine.status(), before, "rejection mutated daemon state");
@@ -249,7 +438,7 @@ async fn daemon_conflicts_reject_without_state_or_effects() {
         assert!(!response.ok && !shutdown);
         assert_eq!(
             response.reason.as_deref(),
-            Some("repeat_streaming_conflict")
+            Some("incompatible_playback_modes")
         );
         assert!(effects.is_empty());
         assert_eq!(engine.status(), before, "rejection mutated daemon state");

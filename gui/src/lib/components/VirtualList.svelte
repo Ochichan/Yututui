@@ -14,11 +14,13 @@
     overscan?: number;
     row: Snippet<[T, number]>;
     empty?: Snippet;
+    /** Host-memory WebView snapshot key for restoring this list's scroll offset. */
+    snapshotKey?: string;
     /** Enable drag-reorder; fires with (from, to) on drop. Rows must carry a
      *  `data-drag-handle` element to start a drag. */
     reorder?: (from: number, to: number) => void;
   }
-  const { items, rowHeight, overscan = 6, row, empty, reorder }: Props = $props();
+  const { items, rowHeight, overscan = 6, row, empty, reorder, snapshotKey }: Props = $props();
 
   let listEl = $state<HTMLDivElement | null>(null);
   let scrollTop = $state(0);
@@ -110,6 +112,7 @@
        drag from a row's [data-drag-handle]; the scroll container itself has no role -->
   <div
     class="vlist"
+    data-ui-scroll-key={snapshotKey}
     class:reordering={dragFrom != null}
     bind:this={listEl}
     onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}

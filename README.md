@@ -63,6 +63,18 @@ macOS and Windows releases include `yututray`, the menu-bar / notification-area 
 
 Start-at-login is opt-in: `yututray --install-startup`.
 
+`yututray` and `yututray --background` start tray-only, and `--mini` opens the native mini player.
+Packaged releases include those tray/mini surfaces but intentionally exclude the full web-GUI app;
+`--main-window` is available only in developer builds that embed its assets. Launching the bare
+command again asks the existing instance to show its mini player instead of creating a second tray
+icon. On Windows, left-click
+toggles the mini player and right-click opens the menu; macOS keeps the native menu on the status
+item and exposes the mini player from **Show Mini Player**.
+
+The unpinned mini player behaves like a popover and hides after focus moves away. Pinning keeps it
+visible, always on top, and restores its monitor-relative position. Tray-only and mini-only modes
+stay out of the taskbar/Dock and app switcher.
+
 </details>
 
 ## Quick start

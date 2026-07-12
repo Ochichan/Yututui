@@ -7,8 +7,10 @@
 //!      unlinks the socket when the listener drops, so a clean exit needs no manual unlink;
 //!      we still best-effort it (plus the instance descriptor) via [`InstanceGuard`].
 //!   2. **Accept loop** ([`serve`]): one line in, one line out per connection. Each request
-//!      is forwarded to the runtime as [`RemoteEvent::Command`] with a oneshot reply channel, so the
-//!      response reflects the real outcome (capability guards, `status`, clean `quit` ack).
+//!      is forwarded to the runtime as [`RemoteEvent::Command`] with a [`RemoteReply`], so the
+//!      response reflects the real outcome (capability guards, `status`, clean `quit` ack). For a
+//!      persistent v8 session, sending that reply enqueues it directly into the session's outbound
+//!      lane before the owner can publish same-turn state changes.
 
 use std::io;
 use std::sync::Arc;
@@ -59,7 +61,7 @@ pub enum BindOutcome {
 
 /// Events emitted by the remote-control server.
 pub enum RemoteEvent {
-    Command(RemoteCommand, oneshot::Sender<RemoteResponse>),
+    Command(RemoteCommand, RemoteReply),
     /// A session sent `Subscribe`. Handled on the owner loop — never the reducer — by
     /// the [`crate::remote::publish::Publisher`]: it records the subscriptions, emits
     /// one initial snapshot per newly subscribed topic, then the `Reply`, all in order
@@ -69,6 +71,39 @@ pub enum RemoteEvent {
         frame_id: u64,
         topics: Vec<Topic>,
     },
+}
+
+/// The owner-loop half of a remote command response.
+///
+/// One-shot v7/v8 requests still use a Tokio oneshot internally. Persistent v8 sessions install
+/// a direct callback that synchronously enqueues `ServerFrame::Reply` into that session's outbound
+/// lane. Consequently, the existing owner loops' `reply.send(response)` call is the ordering
+/// barrier: every same-turn [`crate::remote::publish::Publisher::observe`] happens afterwards.
+pub struct RemoteReply(RemoteReplyInner);
+
+enum RemoteReplyInner {
+    OneShot(oneshot::Sender<RemoteResponse>),
+    Direct(Box<dyn FnOnce(RemoteResponse) -> bool + Send>),
+}
+
+impl RemoteReply {
+    /// Complete a remote command exactly once.
+    pub fn send(self, response: RemoteResponse) -> bool {
+        match self.0 {
+            RemoteReplyInner::OneShot(reply) => reply.send(response).is_ok(),
+            RemoteReplyInner::Direct(reply) => reply(response),
+        }
+    }
+
+    pub(crate) fn direct(reply: impl FnOnce(RemoteResponse) -> bool + Send + 'static) -> Self {
+        Self(RemoteReplyInner::Direct(Box::new(reply)))
+    }
+}
+
+impl From<oneshot::Sender<RemoteResponse>> for RemoteReply {
+    fn from(reply: oneshot::Sender<RemoteResponse>) -> Self {
+        Self(RemoteReplyInner::OneShot(reply))
+    }
 }
 
 pub(crate) type EventSink = Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>;
@@ -453,6 +488,35 @@ async fn write_response(conn: &Stream, resp: &RemoteResponse) -> io::Result<()> 
     Ok(())
 }
 
+/// Commands whose semantics depend on queue revisions introduced with protocol v8.
+///
+/// The enum is shared by both one-shot versions, so serde alone cannot reject these shapes for a
+/// v7 request. Keep that version gate here, before the command reaches either owner reducer.
+fn command_requires_v8(command: &RemoteCommand) -> bool {
+    matches!(
+        command,
+        RemoteCommand::QueuePlayIfRevision { .. } | RemoteCommand::QueueRemoveIfRevision { .. }
+    )
+}
+
+/// Project a reducer response onto the one-shot contract spoken by `version`.
+///
+/// Owners build the richest current [`StatusSnapshot`]. A v7 request must not leak fields added
+/// for v8 consumers, even when those fields are populated internally. The established v7
+/// `elapsed_ms` / `duration_ms` fields deliberately remain untouched.
+fn response_for_one_shot_version(version: u8, mut response: RemoteResponse) -> RemoteResponse {
+    if version == PROTOCOL_VERSION_V7
+        && let Some(status) = response.status.as_mut()
+    {
+        status.is_live = false;
+        status.queue_rev = None;
+        status.track_id = None;
+        status.position_epoch = 0;
+        status.artwork = None;
+    }
+    response
+}
+
 /// Validate the request and round-trip it through the reducer for the real outcome.
 async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> RemoteResponse {
     // Range, not equality: the v7 one-shot shapes are frozen, so a v8 server keeps
@@ -463,18 +527,191 @@ async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> Re
     if req.token != token {
         return RemoteResponse::err("bad_token");
     }
+    if req.version == PROTOCOL_VERSION_V7 && command_requires_v8(&req.command) {
+        return RemoteResponse::err("bad_version");
+    }
     if let Err(err) = req.command.validate() {
         return RemoteResponse::err(err.reason());
     }
 
+    let request_version = req.version;
     let reply_timeout = super::reply_timeout_for(&req.command);
     let (reply_tx, reply_rx) = oneshot::channel();
-    if !emit(RemoteEvent::Command(req.command, reply_tx)) {
+    if !emit(RemoteEvent::Command(req.command, reply_tx.into())) {
         return RemoteResponse::err("server_busy");
     }
-    match timeout(reply_timeout, reply_rx).await {
+    let response = match timeout(reply_timeout, reply_rx).await {
         Ok(Ok(resp)) => resp,
         _ => RemoteResponse::err("timeout"),
+    };
+    response_for_one_shot_version(request_version, response)
+}
+
+#[cfg(test)]
+mod protocol_boundary_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::queue::Repeat;
+    use crate::remote::proto::{ArtworkRef, SettingsSnapshot, StatusSnapshot};
+
+    fn request(version: u8, command: RemoteCommand) -> RemoteRequest {
+        RemoteRequest {
+            version,
+            token: "secret".to_string(),
+            command,
+        }
+    }
+
+    fn rich_status() -> StatusSnapshot {
+        StatusSnapshot {
+            title: Some("Song".to_string()),
+            artist: Some("Artist".to_string()),
+            paused: false,
+            volume: 55,
+            position: 1,
+            total: 1,
+            streaming: false,
+            owner_mode: InstanceMode::StandaloneTui,
+            settings: SettingsSnapshot::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Repeat::Off,
+            elapsed_ms: Some(61_500),
+            duration_ms: Some(194_000),
+            is_live: true,
+            queue_rev: Some(41),
+            track_id: Some("track-id".to_string()),
+            position_epoch: 7,
+            artwork: Some(ArtworkRef {
+                key: "track-id".to_string(),
+                path: Some("/tmp/track-id.jpg".to_string()),
+                mime: Some("image/jpeg".to_string()),
+            }),
+        }
+    }
+
+    fn status_emitter() -> EventSink {
+        Arc::new(|event| match event {
+            RemoteEvent::Command(RemoteCommand::Status, reply) => {
+                let _ = reply.send(RemoteResponse::status(rich_status()));
+                true
+            }
+            _ => false,
+        })
+    }
+
+    #[tokio::test]
+    async fn v7_rejects_revision_checked_queue_commands_before_the_reducer() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in_emit = Arc::clone(&calls);
+        let emit: EventSink = Arc::new(move |event| match event {
+            RemoteEvent::Command(_, reply) => {
+                calls_in_emit.fetch_add(1, Ordering::SeqCst);
+                let _ = reply.send(RemoteResponse::ok("accepted".to_string()));
+                true
+            }
+            _ => false,
+        });
+
+        for command in [
+            RemoteCommand::QueuePlayIfRevision {
+                position: 0,
+                expected_rev: 41,
+            },
+            RemoteCommand::QueueRemoveIfRevision {
+                position: 0,
+                expected_rev: 41,
+            },
+        ] {
+            let response =
+                build_response(request(PROTOCOL_VERSION_V7, command), "secret", &emit).await;
+            assert!(!response.ok);
+            assert_eq!(response.reason.as_deref(), Some("bad_version"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let response = build_response(
+            request(
+                PROTOCOL_VERSION,
+                RemoteCommand::QueuePlayIfRevision {
+                    position: 0,
+                    expected_rev: 41,
+                },
+            ),
+            "secret",
+            &emit,
+        )
+        .await;
+        assert!(
+            response.ok,
+            "v8 command must reach the reducer: {response:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn v7_status_wire_strips_v8_fields_but_keeps_position_fields() {
+        let response = build_response(
+            request(PROTOCOL_VERSION_V7, RemoteCommand::Status),
+            "secret",
+            &status_emitter(),
+        )
+        .await;
+        let status = response.status.as_ref().expect("status response");
+        assert_eq!(status.elapsed_ms, Some(61_500));
+        assert_eq!(status.duration_ms, Some(194_000));
+        assert!(!status.is_live);
+        assert_eq!(status.queue_rev, None);
+        assert_eq!(status.track_id, None);
+        assert_eq!(status.position_epoch, 0);
+        assert_eq!(status.artwork, None);
+
+        let wire = serde_json::to_value(&response).unwrap();
+        let status = wire["status"].as_object().expect("status object");
+        assert_eq!(status.get("elapsed_ms"), Some(&serde_json::json!(61_500)));
+        assert_eq!(status.get("duration_ms"), Some(&serde_json::json!(194_000)));
+        for field in [
+            "is_live",
+            "queue_rev",
+            "track_id",
+            "position_epoch",
+            "artwork",
+        ] {
+            assert!(!status.contains_key(field), "v7 leaked {field}: {wire}");
+        }
+    }
+
+    #[tokio::test]
+    async fn v8_status_wire_preserves_v8_and_legacy_position_fields() {
+        let response = build_response(
+            request(PROTOCOL_VERSION, RemoteCommand::Status),
+            "secret",
+            &status_emitter(),
+        )
+        .await;
+        let status = response.status.as_ref().expect("status response");
+        assert_eq!(status.elapsed_ms, Some(61_500));
+        assert_eq!(status.duration_ms, Some(194_000));
+        assert!(status.is_live);
+        assert_eq!(status.queue_rev, Some(41));
+        assert_eq!(status.track_id.as_deref(), Some("track-id"));
+        assert_eq!(status.position_epoch, 7);
+        assert!(status.artwork.is_some());
+
+        let wire = serde_json::to_value(&response).unwrap();
+        let status = wire["status"].as_object().expect("status object");
+        for field in [
+            "elapsed_ms",
+            "duration_ms",
+            "is_live",
+            "queue_rev",
+            "track_id",
+            "position_epoch",
+            "artwork",
+        ] {
+            assert!(status.contains_key(field), "v8 lost {field}: {wire}");
+        }
     }
 }
 
@@ -711,8 +948,9 @@ mod session_socket_tests {
         }
     }
 
-    /// Bind + serve with a mini owner-loop stand-in: commands get a pong, subscribes go
-    /// through a real Publisher over a fixed one-track queue (snapshot-before-reply).
+    /// Bind + serve with a mini owner-loop stand-in: ordinary commands get a pong, queue removals
+    /// mutate a fixed test queue, and subscribes go through a real Publisher
+    /// (snapshot-before-reply).
     fn start_server(tag: &str, hub: Arc<RemoteSessionHub>) -> String {
         let ep = test_endpoint(tag);
         let listener = bind(&ep).unwrap();
@@ -722,11 +960,33 @@ mod session_socket_tests {
             let mut publisher = crate::remote::publish::Publisher::new(publisher_hub);
             let mut queue = crate::queue::Queue::default();
             queue.set(
-                vec![crate::api::Song::remote("vid", "Song", "Artist", "3:45")],
+                (0..65)
+                    .map(|index| {
+                        crate::api::Song::remote(
+                            format!("vid-{index}"),
+                            format!("Song {index}"),
+                            "Artist",
+                            "3:45",
+                        )
+                    })
+                    .collect(),
                 0,
             );
             while let Some(event) = rx.recv().await {
                 match event {
+                    RemoteEvent::Command(RemoteCommand::QueueRemove { position }, reply) => {
+                        let response = if queue.remove_at(position).is_some() {
+                            RemoteResponse::ok("removed".to_string())
+                        } else {
+                            RemoteResponse::err("queue_index")
+                        };
+                        // This is the exact owner-loop ordering under test: complete the command,
+                        // then project its same-turn mutation. `RemoteReply::send` must enqueue the
+                        // persistent-session Reply synchronously; an ordinary oneshot wakes the
+                        // session reader too late and lets this Event overtake it.
+                        let _ = reply.send(response);
+                        publisher.observe(&crate::remote::publish::test_view(&queue));
+                    }
                     RemoteEvent::Command(_cmd, reply) => {
                         let _ = reply.send(RemoteResponse::ok("pong".to_string()));
                     }
@@ -923,6 +1183,71 @@ mod session_socket_tests {
                 assert_eq!(resp.message.as_deref(), Some("pong"));
             }
             other => panic!("expected command reply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_mutation_reply_precedes_same_turn_event_repeatedly() {
+        let ep = start_server("reply-before-event", test_hub());
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(ack.ok, "{ack:?}");
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 1,
+                op: ClientOp::Subscribe {
+                    topics: vec![Topic::Queue],
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            read_json_line::<_, ServerFrame>(&mut reader).await,
+            ServerFrame::Event {
+                topic: Topic::Queue,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read_json_line::<_, ServerFrame>(&mut reader).await,
+            ServerFrame::Reply { id: 1, .. }
+        ));
+
+        for turn in 0..64u64 {
+            let frame_id = 100 + turn;
+            write_json(
+                &mut write_half,
+                &ClientFrame {
+                    id: frame_id,
+                    op: ClientOp::Command(RemoteCommand::QueueRemove { position: 0 }),
+                },
+            )
+            .await;
+
+            match read_json_line::<_, ServerFrame>(&mut reader).await {
+                ServerFrame::Reply { id, resp } => {
+                    assert_eq!(id, frame_id, "wrong reply id on turn {turn}");
+                    assert!(resp.ok, "mutation failed on turn {turn}: {resp:?}");
+                }
+                other => panic!("Event overtook Reply on turn {turn}: {other:?}"),
+            }
+            match read_json_line::<_, ServerFrame>(&mut reader).await {
+                ServerFrame::Event {
+                    topic: Topic::Queue,
+                    ..
+                } => {}
+                other => panic!("expected queue Event after Reply on turn {turn}: {other:?}"),
+            }
         }
     }
 

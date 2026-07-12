@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use tokio::sync::oneshot;
-
 use super::{RuntimeEvent, RuntimeSender, emit};
 use crate::app::{Msg, PersonalDataExportSources};
 
@@ -11,7 +9,7 @@ pub(super) fn spawn(
     tx: RuntimeSender,
     directory: PathBuf,
     sources: Box<PersonalDataExportSources>,
-    reply: Option<oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+    reply: Option<crate::remote::RemoteReply>,
 ) {
     tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
