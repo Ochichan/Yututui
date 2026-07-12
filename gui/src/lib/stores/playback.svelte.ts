@@ -128,7 +128,9 @@ export class PlaybackStore {
     this.#anchorRebase();
     this.#holdUntil = performance.now() + SEEK_HOLD_MS;
     void this.#client.cmd('seek_to', { ms: Math.round(clamped) }).then((result) => {
-      if (result.ok || seq !== this.#seekSeq || this.model !== m) return;
+      if (result.ok) return;
+      if (result.reason === 'confirmation_lost' || seq !== this.#seekSeq || this.model !== m)
+        return;
       m.elapsed_ms = previous;
       this.#holdUntil = 0;
       this.#anchorRebase();

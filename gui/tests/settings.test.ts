@@ -125,6 +125,20 @@ describe('SettingsStore', () => {
     expect(store.playback?.gapless).toBe(true);
   });
 
+  it('keeps a pending optimistic edit when confirmation is lost', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+    store.apply('playback', 'gapless', false);
+
+    t.emit({ v: 1, kind: 'conn', payload: { state: 'offline', reason: 'disconnected' } });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(false);
+  });
+
   it('clears a pending edit once a push confirms it', () => {
     const t = new MockTransport();
     const store = new SettingsStore(new Client(t));

@@ -130,12 +130,6 @@ export class SettingsStore {
   constructor(client: Client) {
     this.#client = client;
     this.#client.on('settings', (payload) => this.#onPush(payload as SettingsSnapshot));
-    this.#client.onConn((info) => {
-      if (info.state === 'offline') {
-        this.#pending = {};
-        this.#pendingMutation.clear();
-      }
-    });
   }
 
   // ── merged per-group views (pending ?? model) ────────────────────────────────────────
@@ -178,7 +172,9 @@ export class SettingsStore {
     this.#pendingMutation.set(key, mutation);
     this.#pending = { ...this.#pending, [key]: value };
     void this.#client.cmd('apply', { change: { group, field, value } }).then((result) => {
-      if (result.ok || this.#pendingMutation.get(key) !== mutation) return;
+      if (result.ok) return;
+      if (result.reason === 'confirmation_lost' || this.#pendingMutation.get(key) !== mutation)
+        return;
       const next = { ...this.#pending };
       delete next[key];
       this.#pending = next;
