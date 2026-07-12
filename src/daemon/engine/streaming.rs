@@ -128,6 +128,20 @@ impl DaemonEngine {
         &mut self,
         songs: Vec<Song>,
     ) -> Vec<EngineEffect> {
+        let slot = self.streaming_mode_slot();
+        self.extend_queue_from_picks(songs, &slot).await
+    }
+
+    /// Queue extension with why-gem pick provenance: one recording pass, labeled by the
+    /// caller's slot (autoplay = the streaming mode's wire name; the DJ Gem chat labels
+    /// its own enqueues). Recording candidates that dedup out is harmless — provenance
+    /// only lights the "why?" affordance on rows that actually exist.
+    pub(super) async fn extend_queue_from_picks(
+        &mut self,
+        songs: Vec<Song>,
+        slot: &str,
+    ) -> Vec<EngineEffect> {
+        self.record_why_gem_picks(slot, &songs);
         let added = self.queue.extend(songs);
         if added == 0 {
             self.note_streaming_failure("autoplay streaming found no new tracks".to_owned());
@@ -143,6 +157,14 @@ impl DaemonEngine {
             }
         }
         Vec::new()
+    }
+
+    /// The autoplay slot label for why-gem provenance: the streaming mode's wire name.
+    fn streaming_mode_slot(&self) -> String {
+        serde_json::to_value(self.config.streaming.mode)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "autoplay".to_owned())
     }
 
     pub(super) fn note_streaming_failure(&mut self, status: String) {

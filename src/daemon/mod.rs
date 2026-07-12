@@ -17,6 +17,7 @@ use crate::remote::proto::{
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
 use crate::util::process::{self, ProcessProfile};
 
+mod ai_host;
 mod cli;
 mod downloads_host;
 mod effects;
@@ -274,6 +275,8 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         download_runtime.max_concurrent,
     );
     publisher.publish_downloads(downloads_host.models());
+    let mut ai_host = ai_host::AiHost::new(event_tx.clone());
+    ai_host.publish(&engine, &mut publisher);
 
     let shutdown = crate::player::lifetime::ShutdownLatch::new();
     let signal_event_tx = event_tx.clone();
@@ -328,6 +331,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
     let mut published_playlists_rev = None;
     let mut published_library_invalidations = engine.library_invalidations();
+    let mut published_why_gem_rev = None;
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -418,6 +422,28 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             continue;
         };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
+        // AI-triggered track loads (PlayTracks/PlayPlaylist) await network + mpv spawn;
+        // shutdown must be able to preempt them like any other owner handler.
+        let Some(intercepted) = await_owner_handler(
+            &shutdown,
+            ai_host.intercept(event, &mut engine, &mut publisher),
+        )
+        .await
+        else {
+            engine.suppress_transport_recovery_for_shutdown();
+            break;
+        };
+        pending_events.extend(dispatch_engine_effects(
+            &api,
+            &event_tx,
+            &shutdown,
+            &mut effect_tasks,
+            &mut gui_search_pending,
+            intercepted.effects,
+        ));
+        let event = intercepted
+            .event
+            .unwrap_or(DaemonEvent::Ai(crate::ai::AiEvent::Thinking(false)));
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
                 RemoteCommand::ExportPersonalData { directory } => {
@@ -645,12 +671,15 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
             DaemonEvent::Download(_) => unreachable!("downloads are intercepted above"),
+            DaemonEvent::Ai(_) => {}
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 engine.suppress_transport_recovery_for_shutdown();
                 break;
             }
-            DaemonEvent::TelemetryWake => unreachable!("telemetry wake is handled before dispatch"),
+            DaemonEvent::TelemetryWake => {
+                unreachable!("telemetry wake is handled before dispatch")
+            }
         }
         if shutdown.is_triggered() {
             engine.suppress_transport_recovery_for_shutdown();
@@ -721,6 +750,11 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         if published_library_invalidations != library_invalidations {
             publisher.publish_library_invalidated();
             published_library_invalidations = library_invalidations;
+        }
+        let why_gem_rev = engine.why_gem_rev();
+        if published_why_gem_rev != Some(why_gem_rev) {
+            publisher.publish_why_gem(engine.why_gem_ids());
+            published_why_gem_rev = Some(why_gem_rev);
         }
     }
     shutdown.trigger();

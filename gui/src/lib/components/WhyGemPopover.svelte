@@ -10,7 +10,11 @@
   }
   const { whygem }: Props = $props();
 
-  const pct = $derived(Math.round((whygem.detail?.confidence ?? 0) * 100));
+  // Confidence is null for v1 provenance-only picks (no model score) — hide the bar
+  // rather than rendering a misleading 0%.
+  const pct = $derived(
+    whygem.detail?.confidence == null ? null : Math.round(whygem.detail.confidence * 100),
+  );
 </script>
 
 <svelte:window

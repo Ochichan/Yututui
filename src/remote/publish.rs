@@ -25,8 +25,8 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel, PushEvent,
-    QueueModel, RemoteResponse, ServerFrame, Topic, TrackModel,
+    AiMessageModel, DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel,
+    PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic, TrackModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -200,6 +200,9 @@ pub struct Publisher {
     last_lyrics: Option<Arc<Vec<u8>>>,
     last_playlists: Option<Arc<Vec<u8>>>,
     last_downloads: Option<Arc<Vec<u8>>>,
+    last_ai: Option<Arc<Vec<u8>>>,
+    /// Retained `why_gem_provenance` — the `ai` topic's second subscribe snapshot.
+    last_whygem: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -224,6 +227,8 @@ impl Publisher {
             last_lyrics: None,
             last_playlists: None,
             last_downloads: None,
+            last_ai: None,
+            last_whygem: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -372,6 +377,19 @@ impl Publisher {
         session
             .apply_subscribe(page_id, topics, |new_topics| {
                 for &topic in new_topics {
+                    // The `ai` topic retains two sibling snapshots (transcript state and
+                    // why-gem provenance); every other topic serves at most one payload.
+                    if topic == Topic::Ai {
+                        for payload in [self.last_ai.clone(), self.last_whygem.clone()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            if !self.hub.send_event_to(session, topic, &payload) {
+                                return false;
+                            }
+                        }
+                        continue;
+                    }
                     let payload = match topic {
                         Topic::Player => Some(event_payload(&PushEvent::PlayerSnapshot {
                             model: Box::new(player_model(view)),
@@ -475,6 +493,37 @@ impl Publisher {
         self.last_downloads = Some(Arc::clone(&payload));
         if self.hub.any_subscribed(Topic::Downloads) {
             self.hub.broadcast(Topic::Downloads, &payload);
+        }
+    }
+
+    pub fn publish_ai(
+        &mut self,
+        messages: Vec<AiMessageModel>,
+        thinking: bool,
+        suggestions: Vec<TrackModel>,
+    ) {
+        let payload = event_payload(&PushEvent::AiState {
+            messages,
+            thinking,
+            suggestions,
+        });
+        self.last_ai = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Ai) {
+            self.hub.broadcast(Topic::Ai, &payload);
+        }
+    }
+
+    pub fn whygem_recorded(&self) -> bool {
+        self.last_whygem.is_some()
+    }
+
+    /// Publish which rows carry pick provenance (the "why?" affordance set). Retained
+    /// beside the transcript as the `ai` topic's second subscribe snapshot.
+    pub fn publish_why_gem(&mut self, video_ids: Vec<String>) {
+        let payload = event_payload(&PushEvent::WhyGemProvenance { video_ids });
+        self.last_whygem = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Ai) {
+            self.hub.broadcast(Topic::Ai, &payload);
         }
     }
 

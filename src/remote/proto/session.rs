@@ -252,6 +252,16 @@ pub enum PushEvent {
     DownloadsSnapshot {
         items: Vec<super::model::DownloadStatusModel>,
     },
+    /// `ai` topic: retained daemon-side DJ Gem transcript and current turn state.
+    AiState {
+        messages: Vec<super::model::AiMessageModel>,
+        thinking: bool,
+        suggestions: Vec<super::model::TrackModel>,
+    },
+    /// `ai` topic sibling: which queue rows carry recorded DJ Gem / autoplay pick
+    /// provenance — the GUI shows its "why?" affordance exactly on these ids and pulls
+    /// the rationale on demand with `fetch_why_gem`.
+    WhyGemProvenance { video_ids: Vec<String> },
 }
 
 /// One catalog's slice of a completed search: a concrete source (never `all`), its

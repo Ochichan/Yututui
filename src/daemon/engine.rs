@@ -25,6 +25,7 @@ use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
+mod ai_context;
 mod delivery;
 mod gui_library;
 mod gui_search;
@@ -168,6 +169,9 @@ pub struct DaemonEngine {
     /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
     /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
     gui_search_index: GuiSearchIndex,
+    /// v1 why-gem provenance: pick origin per video id (bounded; see ai_context.rs).
+    why_gem: Vec<(String, crate::remote::proto::WhyGemModel)>,
+    why_gem_rev: u64,
     /// The `PlayVideo` overlay child, held so the window outlives the command turn.
     /// A replacement spawn drops (closes) the previous window — one overlay at a time,
     /// like the TUI. The daemon has no IPC observer; closing the window is the user's.
@@ -339,6 +343,8 @@ impl DaemonEngine {
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: GuiSearchIndex::default(),
+            why_gem: Vec::new(),
+            why_gem_rev: 0,
             video_overlay: None,
         }
     }
@@ -631,6 +637,7 @@ impl DaemonEngine {
                 self.gui_fetch_playlist_detail(&playlist_id)
             }
             RemoteCommand::Rate { video_id, rating } => self.gui_rate(&video_id, rating),
+            RemoteCommand::FetchWhyGem { video_id } => self.gui_fetch_why_gem(&video_id),
             // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
             // gateway stops answering bad_command; each stream replaces its arms with
             // real dispatch. Until then the reason is an honest not_supported (the
@@ -648,7 +655,6 @@ impl DaemonEngine {
             | RemoteCommand::ThemeSetOverride { .. }
             | RemoteCommand::ThemeClearOverride { .. }
             | RemoteCommand::ClearRomanizationCache
-            | RemoteCommand::FetchWhyGem { .. }
             | RemoteCommand::TransferListSpotify
             | RemoteCommand::TransferStart { .. }
             | RemoteCommand::TransferCancel

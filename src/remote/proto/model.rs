@@ -8,6 +8,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::search_source::SearchSource;
 
+/// Speaker identity for one retained DJ Gem transcript message.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiRoleModel {
+    User,
+    Assistant,
+}
+
+/// One line in the retained daemon-side DJ Gem transcript.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiMessageModel {
+    pub role: AiRoleModel,
+    pub text: String,
+}
+
 /// The one wire shape for a track, used by player/queue/library/search/AI models alike.
 ///
 /// Rating note (docs/gui/02 §11.2): there is no stored tri-state rating in the core —
@@ -162,6 +187,27 @@ pub struct PlaylistDetailModel {
     pub name: String,
     pub description: Option<String>,
     pub tracks: Vec<TrackModel>,
+}
+
+/// Why a track sits in the queue (docs/gui/07 §whygem): the DJ Gem / autoplay pick
+/// rationale behind the GUI's "why?" popover. v1 provenance carries the slot label and
+/// whatever the pick context knew; `reasons` may be empty and `confidence` is null when
+/// no model score exists (the popover renders both gracefully).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhyGemModel {
+    /// The autoplay slot / origin label, e.g. "DJ Gem" or the streaming mode.
+    pub slot: String,
+    pub reasons: Vec<String>,
+    /// Model confidence `0..1`; null when the pick had no model score. A JSON `Number`
+    /// (not `f64`) because this rides `ResponseData`, whose `Eq` the response cache
+    /// relies on — `serde_json::Number` is `Eq`, floats are not.
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub confidence: Option<serde_json::Number>,
 }
 
 #[cfg(test)]

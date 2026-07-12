@@ -350,6 +350,19 @@ fn daemon_event_policy_covers_representative_events() {
         }
     );
     assert_eq!(
+        DaemonEvent::Ai(crate::ai::AiEvent::Thinking(true)).policy(),
+        EventPolicy::CoalesceLatest {
+            lane: EventLane::Telemetry,
+            key: EventKey::AiThinking,
+        }
+    );
+    assert_eq!(
+        DaemonEvent::Ai(crate::ai::AiEvent::Chat("hello".to_owned())).policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+    assert_eq!(
         DaemonEvent::YtdlpHeal {
             video_id: "v".to_owned(),
             updated: true,
@@ -422,6 +435,10 @@ fn daemon_event_kind_and_telemetry_slots_are_stable() {
         "download"
     );
     assert_eq!(
+        DaemonEvent::Ai(crate::ai::AiEvent::Chat("hello".to_owned())).kind(),
+        "ai"
+    );
+    assert_eq!(
         DaemonEvent::YtdlpHeal {
             video_id: "v".to_owned(),
             updated: false,
@@ -465,6 +482,10 @@ fn daemon_event_kind_and_telemetry_slots_are_stable() {
         })
         .telemetry_slot(),
         Some(DaemonTelemetrySlot::DownloadProgress("track-a".to_owned()))
+    );
+    assert_eq!(
+        DaemonEvent::Ai(crate::ai::AiEvent::Thinking(true)).telemetry_slot(),
+        Some(DaemonTelemetrySlot::Static(EventKey::AiThinking))
     );
     assert_eq!(DaemonEvent::Signal.telemetry_slot(), None);
     assert_eq!(

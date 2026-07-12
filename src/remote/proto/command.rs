@@ -182,8 +182,9 @@ pub enum RemoteCommand {
     PlayVideo {
         video_id: String,
     },
-    /// DJ Gem chat: fire-and-forget like `RunSearch`; the transcript rides the `ai`
-    /// topic, keyed by `ticket`.
+    /// DJ Gem chat: the reply only acknowledges dispatch; the transcript rides the
+    /// retained `ai` topic (`ticket` is client-side correlation only — a same-ID retry
+    /// replays the ack instead of double-asking, hence RetainedOutcome).
     AskAi {
         ticket: u64,
         prompt: String,

@@ -66,6 +66,8 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         session_events: VecDeque::new(),
         media_art: None,
         gui_search_index: GuiSearchIndex::default(),
+        why_gem: Vec::new(),
+        why_gem_rev: 0,
         video_overlay: None,
     }
 }

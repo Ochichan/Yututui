@@ -28,6 +28,8 @@ pub(super) enum DaemonEvent {
     /// Download actor progress/results. Import-owned variants are transfer-lane work and
     /// are ignored by the daemon downloads host.
     Download(crate::download::DownloadEvent),
+    /// DJ Gem actor output, reduced by the daemon AI host on the owner lane.
+    Ai(crate::ai::AiEvent),
     /// A playback-self-heal yt-dlp update check finished (see
     /// [`super::engine::EngineEffect::YtdlpSelfHeal`]).
     YtdlpHeal {
@@ -152,6 +154,13 @@ impl DaemonEvent {
             DaemonEvent::Download(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
+            DaemonEvent::Ai(crate::ai::AiEvent::Thinking(_)) => EventPolicy::CoalesceLatest {
+                lane: Lane::Telemetry,
+                key: Key::AiThinking,
+            },
+            DaemonEvent::Ai(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
@@ -180,6 +189,7 @@ impl DaemonEvent {
             DaemonEvent::Scrobble(_) => "scrobble",
             DaemonEvent::Lyrics(_) => "lyrics",
             DaemonEvent::Download(_) => "download",
+            DaemonEvent::Ai(_) => "ai",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",

@@ -36,21 +36,26 @@ again because its immediate reply only acknowledges a completion push scoped to 
 session, `page_id`, and ticket. Replaying that acknowledgement after reconnect would point at a
 dead session and leave the replacement page waiting for a result it can never receive.
 
-### 1.5 Deferred v8 commands — demo-core-only (registry id `core.v8-commands`)
+### 1.5 Deferred v8 commands (registry id `core.v8-commands`)
 
-Earlier revisions of this file listed several of these as "wired (v8)". That overclaimed:
-the stores and views are finished and speak the final shapes, and the **demo core**
-implements all of them, but the frozen `src/remote/proto/command.rs` has no variants for
-them — against a real core the gateway answers **`bad_command`** (`src/desktop/gateway.rs`)
-for every one of:
+The stores and views are finished and speak the final shapes, and the **demo core**
+implements all of them. Server-side (feat/gui-wiring): every variant now EXISTS in
+`src/remote/proto/command.rs` (the gateway no longer answers `bad_command`), and the
+daemon dispatches most of them for real:
 
-`rate` · `queue_move` · `queue_clear_upcoming` · `play_video` · `ask_ai` ·
-`library_play` / `library_enqueue` / `library_remove` / `fetch_library_page` ·
-`download` / `delete_download` · `keymap_unbind` / `keymap_reset_all` ·
-`lastfm_connect` / `spotify_connect` / `listen_brainz_configure` / `account_set` ·
-`transfer_start` / `transfer_list_spotify` / `transfer_cancel` ·
-`playlist_create` / `playlist_delete` / `playlist_play` / `playlist_add_tracks` /
-`playlist_remove_track` / `fetch_playlist_detail` · `fetch_why_gem`
+- **Live on a daemon owner**: `rate` · `queue_move` · `queue_clear_upcoming` ·
+  `play_video` · `library_play` / `library_enqueue` / `library_remove` /
+  `fetch_library_page` · `playlist_create` / `playlist_delete` / `playlist_play` /
+  `playlist_add_tracks` / `playlist_remove_track` / `fetch_playlist_detail` ·
+  `download` / `delete_download` · `ask_ai` · `fetch_why_gem` (v1 provenance:
+  slot + empty reasons + null confidence; unknown tracks answer null)
+- **Still `not_supported` (their streams are next)**: `queue_remove_many` (no
+  frontend sender yet) · `keymap_bind` / `keymap_unbind` / `keymap_reset_all` ·
+  `theme_set_override` / `theme_clear_override` · `clear_romanization_cache` ·
+  `lastfm_connect` / `spotify_connect` / `listen_brainz_configure` / `account_set` ·
+  `transfer_start` / `transfer_list_spotify` / `transfer_cancel`
+- The standalone TUI owner answers `daemon_required` for the whole set (the GUI
+  surface is daemon-only by design)
 
 The registry entry `core.v8-commands` (capability `v8-commands`) carries the plan. The
 main-screen entry points — rating, 🎬 video, queue drag-reorder / clear-upcoming, and the

@@ -310,7 +310,7 @@ impl DaemonEngine {
         RemoteResponse::ok("rating cycled".to_string())
     }
 
-    async fn gui_replace_queue(&mut self, songs: Vec<Song>) -> RemoteResponse {
+    pub(super) async fn gui_replace_queue(&mut self, songs: Vec<Song>) -> RemoteResponse {
         if songs.is_empty() {
             return RemoteResponse::err("queue_empty");
         }
@@ -352,7 +352,7 @@ impl DaemonEngine {
         RemoteResponse::status(self.status())
     }
 
-    fn bump_playlists_rev(&mut self) {
+    pub(super) fn bump_playlists_rev(&mut self) {
         self.playlists_rev = self.playlists_rev.wrapping_add(1);
     }
 }
@@ -490,6 +490,43 @@ mod tests {
         let unknown = engine.gui_library_remove("nonsense", "fav");
         assert_eq!(reason(&unknown), Some("bad_request"));
         assert_eq!(engine.library_invalidations(), before + 3);
+    }
+
+    #[test]
+    fn why_gem_provenance_records_dedups_and_answers_fetch() {
+        use crate::remote::proto::{ResponseData, WhyGemModel};
+        let mut engine = engine();
+        let rev = engine.why_gem_rev();
+        engine.record_why_gem_picks("DJ Gem", &[song("a", "A", "Alpha"), song("b", "B", "Beta")]);
+        assert_eq!(engine.why_gem_ids(), vec!["a".to_owned(), "b".to_owned()]);
+        assert_ne!(engine.why_gem_rev(), rev);
+
+        // Identical re-record is a no-op (no rev churn, no provenance re-push).
+        let rev = engine.why_gem_rev();
+        engine.record_why_gem_picks("DJ Gem", &[song("a", "A", "Alpha")]);
+        assert_eq!(engine.why_gem_rev(), rev);
+
+        // A different slot updates in place.
+        engine.record_why_gem(
+            "a".to_owned(),
+            WhyGemModel {
+                slot: "balanced".to_owned(),
+                reasons: Vec::new(),
+                confidence: None,
+            },
+        );
+        assert_ne!(engine.why_gem_rev(), rev);
+        assert_eq!(engine.why_gem_ids().len(), 2);
+
+        let hit = engine.gui_fetch_why_gem("a");
+        assert!(hit.ok);
+        match hit.data {
+            Some(ResponseData::WhyGem(model)) => assert_eq!(model.slot, "balanced"),
+            other => panic!("expected why-gem data, got {other:?}"),
+        }
+        let miss = engine.gui_fetch_why_gem("zzz");
+        assert!(miss.ok);
+        assert!(miss.data.is_none(), "unknown track answers with no data");
     }
 
     #[tokio::test]

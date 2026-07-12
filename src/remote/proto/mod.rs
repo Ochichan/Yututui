@@ -34,8 +34,9 @@ pub use command::{
     REMOTE_MAX_TRACK_IDS, RateChange, RemoteCommand, RemoteSettingChange,
 };
 pub use model::{
-    ArtworkRef, DownloadStateModel, DownloadStatusModel, LibraryPageModel, LyricLineModel,
-    PlaylistDetailModel, PlaylistSummaryModel, TrackModel,
+    AiMessageModel, AiRoleModel, ArtworkRef, DownloadStateModel, DownloadStatusModel,
+    LibraryPageModel, LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel, TrackModel,
+    WhyGemModel,
 };
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
@@ -158,6 +159,9 @@ pub enum ResponseData {
     },
     LibraryPage(LibraryPageModel),
     PlaylistDetail(PlaylistDetailModel),
+    /// `fetch_why_gem` → the pick rationale; the command replies with NO data (the
+    /// gateway projects null) when the track has no recorded provenance.
+    WhyGem(model::WhyGemModel),
 }
 
 impl RemoteResponse {

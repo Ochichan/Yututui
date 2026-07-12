@@ -22,6 +22,6 @@
 1389	src/settings.rs
 1389	src/transfer/matching.rs
 1251	src/tools/ytdlp.rs
-1085	src/daemon/mod.rs
+1119	src/daemon/mod.rs
 800	src/util/delivery.rs
 798	src/app/track_transition.rs

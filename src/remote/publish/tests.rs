@@ -670,6 +670,45 @@ fn downloads_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed()
 }
 
 #[test]
+fn ai_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
+    let (hub, session, mut rx) = test_register(SessionTuning::default());
+    let mut publisher = Publisher::new(hub);
+    let queue = Queue::default();
+    let message = AiMessageModel {
+        role: crate::remote::proto::AiRoleModel::User,
+        text: "play something".to_owned(),
+    };
+    let library = crate::library::Library::default();
+    let signals = crate::signals::Signals::default();
+    let suggestion = track_model(&song("pick"), &library, &signals);
+
+    publisher.publish_ai(vec![message.clone()], true, vec![suggestion.clone()]);
+    assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+    publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Ai]);
+    let lines = drain(&mut rx);
+    assert_eq!(kinds(&lines), vec!["event:ai", "raw:frame"]);
+    let SessionLine::Event { payload, .. } = &lines[0] else {
+        panic!("expected retained AI state");
+    };
+    match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+        PushEvent::AiState {
+            messages,
+            thinking,
+            suggestions,
+        } => {
+            assert_eq!(messages, vec![message]);
+            assert!(thinking);
+            assert_eq!(suggestions, vec![suggestion]);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+
+    publisher.publish_ai(Vec::new(), false, Vec::new());
+    assert_eq!(kinds(&drain(&mut rx)), vec!["event:ai"]);
+}
+
+#[test]
 fn library_invalidated_is_gated_and_has_no_subscribe_snapshot() {
     let (hub, session, mut rx) = test_register(SessionTuning::default());
     let mut publisher = Publisher::new(hub);
@@ -732,6 +771,36 @@ fn rating_change_on_the_current_track_pushes_a_player_snapshot() {
 
     publisher.observe(&v);
     assert!(drain(&mut rx).is_empty(), "no re-push without a change");
+}
+
+#[test]
+fn why_gem_provenance_is_retained_beside_the_transcript_on_the_ai_topic() {
+    let (hub, session, mut rx) = test_register(SessionTuning::default());
+    let mut publisher = Publisher::new(hub);
+    let queue = Queue::default();
+
+    // No subscriber: both ai-topic snapshots retain silently.
+    publisher.publish_ai(Vec::new(), false, Vec::new());
+    publisher.publish_why_gem(vec!["v1".to_owned()]);
+    assert!(publisher.whygem_recorded());
+    assert!(drain(&mut rx).is_empty());
+
+    // Subscribing the ai topic serves BOTH retained snapshots before the reply:
+    // transcript state first, provenance second.
+    publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Ai]);
+    let lines = drain(&mut rx);
+    assert_eq!(kinds(&lines), vec!["event:ai", "event:ai", "raw:frame"]);
+    let SessionLine::Event { payload, .. } = &lines[1] else {
+        panic!("expected the provenance snapshot");
+    };
+    match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+        PushEvent::WhyGemProvenance { video_ids } => assert_eq!(video_ids, vec!["v1"]),
+        other => panic!("unexpected event {other:?}"),
+    }
+
+    // Subscribed: a provenance change broadcasts.
+    publisher.publish_why_gem(vec!["v1".to_owned(), "v2".to_owned()]);
+    assert_eq!(kinds(&drain(&mut rx)), vec!["event:ai"]);
 }
 
 #[test]
