@@ -701,20 +701,21 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
 #[cfg(windows)]
 pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
     ensure_process_mutation_allowed()?;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
 
     let from = wide_path(from)?;
     let to = wide_path(to)?;
     // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call. The temp and
-    // target are in the same private directory, and REPLACE_EXISTING gives Windows the atomic
-    // overwrite semantics that `std::fs::rename` does not provide there.
+    // target are in the same private directory. ReplaceFileW is the Windows primitive intended
+    // for atomically installing a complete replacement while preserving target metadata.
     if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
+        ReplaceFileW(
             to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            from.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
         )
     } == 0
     {

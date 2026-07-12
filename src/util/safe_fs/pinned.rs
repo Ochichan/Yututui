@@ -41,6 +41,8 @@ pub(crate) struct OwnedGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GenerationResidence {
     Named,
+    #[cfg(windows)]
+    NamedRecoverable,
     #[cfg(target_os = "linux")]
     Anonymous,
 }
@@ -335,7 +337,13 @@ impl OwnedGeneration {
 
     /// Whether dropping this handle before promotion leaves a named recovery generation.
     pub(crate) fn retains_name_on_drop(&self) -> bool {
-        self.residence == GenerationResidence::Named
+        match self.residence {
+            GenerationResidence::Named => true,
+            #[cfg(windows)]
+            GenerationResidence::NamedRecoverable => true,
+            #[cfg(target_os = "linux")]
+            GenerationResidence::Anonymous => false,
+        }
     }
 
     /// Publish this open generation under a new name in `destination` without replacing a name.
@@ -376,10 +384,7 @@ impl OwnedGeneration {
         self.verify()?;
         self.file.sync_all()?;
 
-        if self.residence == GenerationResidence::Named
-            && !self.parent.inner.private_namespace
-            && !cfg!(windows)
-        {
+        if self.residence == GenerationResidence::Named && !self.parent.inner.private_namespace {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "named no-replace promotion requires an app-owned private source namespace",
@@ -388,6 +393,8 @@ impl OwnedGeneration {
 
         let source_is_named = match self.residence {
             GenerationResidence::Named => true,
+            #[cfg(windows)]
+            GenerationResidence::NamedRecoverable => true,
             #[cfg(target_os = "linux")]
             GenerationResidence::Anonymous => false,
         };
@@ -1049,7 +1056,8 @@ mod platform {
         // ACCESS_DENIED on Windows even though the rename succeeded. This namespace is private
         // and the durable transaction journals the exclusive fallback name, so retain it for
         // explicit recovery instead.
-        create_new_file_at(parent, name).map(|file| (file, super::GenerationResidence::Named))
+        create_new_file_at(parent, name)
+            .map(|file| (file, super::GenerationResidence::NamedRecoverable))
     }
 
     pub(super) fn open_file_at(parent: &File, name: &OsStr) -> io::Result<File> {

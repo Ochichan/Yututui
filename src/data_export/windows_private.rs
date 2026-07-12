@@ -199,7 +199,7 @@ pub(super) fn verify_private_destination_chain(path: &Path) -> io::Result<Destin
 
     // Reopen every name after the full chain is pinned. This catches a component that changed
     // between lexical enumeration and its original handle open; the original handles remain live
-    // and deny any subsequent delete/rename until the returned guard drops.
+    // so their kernel identities can be retained through publication.
     for (component, _, expected) in &opened {
         revalidate_directory_path_identity(component, *expected)?;
     }
@@ -216,8 +216,9 @@ fn open_chain_directory(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .access_mode(READ_CONTROL_ACCESS)
-        // Deliberately omit FILE_SHARE_DELETE. Besides pinning the name after this succeeds,
-        // Windows rejects this open if an existing handle already requested DELETE access.
+        // Deliberately omit FILE_SHARE_DELETE so ordinary delete/rename opens conflict while the
+        // export holds the verified directory object. POSIX-semantics renames may still move the
+        // name, but the returned guard continues to own the verified kernel object.
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     let directory = options.open(path)?;
@@ -1167,17 +1168,21 @@ mod tests {
     }
 
     #[test]
-    fn destination_chain_guard_pins_the_directory_name_until_drop() {
+    fn destination_chain_guard_retains_the_open_directory_after_a_name_move() {
         let directory = test_path("chain-guard").with_extension("dir");
         let moved = directory.with_extension("moved");
         fs::create_dir(&directory).unwrap();
 
         let guard = verify_private_destination_chain(&directory).unwrap();
         assert!(guard._directories.len() >= 2);
-        assert!(fs::rename(&directory, &moved).is_err());
+        let expected = file_identity(guard._directories.last().unwrap()).unwrap();
+        fs::rename(&directory, &moved).unwrap();
+        assert_eq!(
+            file_identity(guard._directories.last().unwrap()).unwrap(),
+            expected
+        );
 
         drop(guard);
-        fs::rename(&directory, &moved).unwrap();
         fs::remove_dir(moved).unwrap();
     }
 }

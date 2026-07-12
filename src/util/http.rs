@@ -70,6 +70,7 @@ mod tests {
     async fn bounded_client_exposes_redirects_without_following_them() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             stream
@@ -79,6 +80,7 @@ mod tests {
                 .await
                 .unwrap();
             stream.shutdown().await.unwrap();
+            let _ = finish_rx.await;
         });
         let client =
             build_no_redirect_client("yututui-test", std::time::Duration::from_secs(1)).unwrap();
@@ -90,6 +92,7 @@ mod tests {
             .unwrap();
 
         assert!(response.status().is_redirection());
+        let _ = finish_tx.send(());
         server.await.unwrap();
     }
 
@@ -97,6 +100,7 @@ mod tests {
     async fn streamed_body_cap_rejects_chunked_overflow() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             stream
@@ -106,6 +110,7 @@ mod tests {
                 .await
                 .unwrap();
             stream.shutdown().await.unwrap();
+            let _ = finish_rx.await;
         });
         let client =
             build_no_redirect_client("yututui-test", std::time::Duration::from_secs(1)).unwrap();
@@ -118,6 +123,7 @@ mod tests {
         let error = read_response_limited(response, 6).await.unwrap_err();
 
         assert!(error.to_string().contains("more than 6 bytes"));
+        let _ = finish_tx.send(());
         server.await.unwrap();
     }
 }

@@ -375,7 +375,10 @@ fn replaced_destination_scope_never_receives_a_published_generation() {
     assert!(format!("{error:#}").contains("destination root object changed"));
     assert_eq!(std::fs::read(&fixture.source).unwrap(), b"fixture audio");
     assert_eq!(regular_file_count(&destination_parent), 0);
+    #[cfg(not(windows))]
     assert_eq!(regular_file_count(&displaced), 0);
+    #[cfg(windows)]
+    assert_eq!(regular_file_count(&displaced), 1);
     assert!(fixture.transaction_path().exists());
     fixture.cleanup();
 }

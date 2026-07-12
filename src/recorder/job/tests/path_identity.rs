@@ -126,6 +126,7 @@ fn work_and_final_parent_generation_swaps_fail_closed() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn stale_owner_namespace_swap_is_preserved_and_reported_uncertain() {
     let dir = temp_dir("stale-owner-namespace-swap");
     let temp_root = dir.join("recordings");
@@ -167,6 +168,29 @@ fn stale_owner_namespace_swap_is_preserved_and_reported_uncertain() {
         "{:?}",
         report.warnings
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(windows)]
+fn stale_owner_namespace_claim_blocks_directory_rename() {
+    let dir = temp_dir("stale-owner-namespace-rename-blocked");
+    let temp_root = dir.join("recordings");
+    let namespace =
+        crate::recorder::ownership::owners_dir(&temp_root).join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    crate::util::safe_fs::ensure_private_dir_durable(&namespace).unwrap();
+    std::fs::write(namespace.join("lease.lock"), b"").unwrap();
+
+    let claim = crate::recorder::ownership::try_claim_stale_owner(&namespace)
+        .unwrap()
+        .expect("stale namespace should be claimable");
+    let moved = namespace.with_file_name("cccccccccccccccccccccccccccccccc");
+    assert_eq!(
+        std::fs::rename(&namespace, &moved).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    claim.verify().unwrap();
+    drop(claim);
     let _ = std::fs::remove_dir_all(dir);
 }
 
