@@ -26,7 +26,8 @@ use crate::queue::Queue;
 
 use super::proto::{
     AiMessageModel, DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel,
-    PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic, TrackModel,
+    PushEvent, QueueModel, RemoteResponse, ServerFrame, SpotifyPlaylistModel, Topic, TrackModel,
+    TransferJobModel, TransferPhaseModel, TransferReportModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -200,6 +201,7 @@ pub struct Publisher {
     last_lyrics: Option<Arc<Vec<u8>>>,
     last_playlists: Option<Arc<Vec<u8>>>,
     last_downloads: Option<Arc<Vec<u8>>>,
+    last_transfer: Option<Arc<Vec<u8>>>,
     last_ai: Option<Arc<Vec<u8>>>,
     /// Retained `why_gem_provenance` — the `ai` topic's second subscribe snapshot.
     last_whygem: Option<Arc<Vec<u8>>>,
@@ -229,6 +231,7 @@ impl Publisher {
             last_lyrics: None,
             last_playlists: None,
             last_downloads: None,
+            last_transfer: None,
             last_ai: None,
             last_whygem: None,
             last_accounts: None,
@@ -408,6 +411,7 @@ impl Publisher {
                         Topic::Lyrics => self.last_lyrics.clone(),
                         Topic::Playlists => self.last_playlists.clone(),
                         Topic::Downloads => self.last_downloads.clone(),
+                        Topic::Transfer => self.last_transfer.clone(),
                         Topic::Accounts => self.last_accounts.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
@@ -500,6 +504,31 @@ impl Publisher {
         }
     }
 
+    pub fn transfer_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Transfer)
+    }
+
+    pub fn publish_transfer(
+        &mut self,
+        phase: TransferPhaseModel,
+        sources: Vec<SpotifyPlaylistModel>,
+        job: Option<TransferJobModel>,
+        report: Option<TransferReportModel>,
+        error: Option<String>,
+    ) {
+        let payload = event_payload(&PushEvent::TransferState {
+            phase,
+            sources,
+            job,
+            report,
+            error,
+        });
+        self.last_transfer = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Transfer) {
+            self.hub.broadcast(Topic::Transfer, &payload);
+        }
+    }
+
     pub fn publish_ai(
         &mut self,
         messages: Vec<AiMessageModel>,
@@ -560,6 +589,17 @@ impl Publisher {
             let payload = event_payload(&PushEvent::AccountsAuthUrl {
                 service: service.to_owned(),
                 url: url.to_owned(),
+            });
+            self.hub.broadcast(Topic::Accounts, &payload);
+        }
+    }
+
+    /// One-shot sibling of the auth URL: the flow ended without connecting.
+    pub fn publish_accounts_auth_failed(&self, service: &str, error: &str) {
+        if self.hub.any_subscribed(Topic::Accounts) {
+            let payload = event_payload(&PushEvent::AccountsAuthFailed {
+                service: service.to_owned(),
+                error: error.to_owned(),
             });
             self.hub.broadcast(Topic::Accounts, &payload);
         }

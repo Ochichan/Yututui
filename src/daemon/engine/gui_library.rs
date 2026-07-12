@@ -16,6 +16,29 @@ impl DaemonEngine {
         self.library_invalidations
     }
 
+    /// Test-only: seed a local playlist without touching persistence gates.
+    #[cfg(test)]
+    pub(in crate::daemon) fn test_add_playlist(&mut self, name: &str) -> String {
+        self.playlists
+            .create(name)
+            .expect("test playlist name is valid")
+    }
+
+    /// Resolve a local playlist id to its display name (transfer destinations).
+    pub(in crate::daemon) fn playlist_name(&self, playlist_id: &str) -> Option<String> {
+        self.playlists
+            .find(playlist_id)
+            .map(|playlist| playlist.name.clone())
+    }
+
+    /// A transfer import wrote the on-disk playlist store from off the owner lane:
+    /// refresh the in-memory copy so a later engine save cannot clobber the imported
+    /// rows, and bump the topic so subscribers see them immediately.
+    pub(in crate::daemon) fn reload_playlists_after_import(&mut self) {
+        self.playlists = crate::playlists::Playlists::load();
+        self.bump_playlists_rev();
+    }
+
     pub fn playlists_models(&self) -> Vec<PlaylistSummaryModel> {
         self.playlists
             .list()

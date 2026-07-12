@@ -28,6 +28,8 @@ pub(super) enum DaemonEvent {
     /// Download actor progress/results. Import-owned variants are transfer-lane work and
     /// are ignored by the daemon downloads host.
     Download(crate::download::DownloadEvent),
+    /// Transfer actor progress/results, reduced by the daemon transfer host.
+    Transfer(crate::transfer::actor::TransferEvent),
     /// DJ Gem actor output, reduced by the daemon AI host on the owner lane.
     Ai(crate::ai::AiEvent),
     /// A playback-self-heal yt-dlp update check finished (see
@@ -154,6 +156,16 @@ impl DaemonEvent {
             DaemonEvent::Download(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
+            DaemonEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(_)) => {
+                // The actor runs one job at a time, so one static latest slot is sufficient.
+                EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::TransferJob,
+                }
+            }
+            DaemonEvent::Transfer(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::Ai(crate::ai::AiEvent::Thinking(_)) => EventPolicy::CoalesceLatest {
                 lane: Lane::Telemetry,
                 key: Key::AiThinking,
@@ -189,6 +201,7 @@ impl DaemonEvent {
             DaemonEvent::Scrobble(_) => "scrobble",
             DaemonEvent::Lyrics(_) => "lyrics",
             DaemonEvent::Download(_) => "download",
+            DaemonEvent::Transfer(_) => "transfer",
             DaemonEvent::Ai(_) => "ai",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",

@@ -12,11 +12,15 @@ import type { SearchGroup } from "./SearchGroup";
 import type { SearchSource } from "./SearchSource";
 import type { SettingsModelV8 } from "./SettingsModelV8";
 import type { SpotifyAccountModel } from "./SpotifyAccountModel";
+import type { SpotifyPlaylistModel } from "./SpotifyPlaylistModel";
 import type { TrackModel } from "./TrackModel";
+import type { TransferJobModel } from "./TransferJobModel";
+import type { TransferPhaseModel } from "./TransferPhaseModel";
+import type { TransferReportModel } from "./TransferReportModel";
 
 /**
  * The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so new
  * event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
  * invalidations, ticketed results, …).
  */
-export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, page_id?: string, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, } | { "kind": "lyrics_snapshot", video_id: string | null, lines: Array<LyricLineModel>, } | { "kind": "library_invalidated" } | { "kind": "playlists_snapshot", items: Array<PlaylistSummaryModel>, } | { "kind": "downloads_snapshot", items: Array<DownloadStatusModel>, } | { "kind": "ai_state", messages: Array<AiMessageModel>, thinking: boolean, suggestions: Array<TrackModel>, } | { "kind": "accounts_snapshot", lastfm: LastfmAccountModel, listenbrainz: ListenBrainzAccountModel, spotify: SpotifyAccountModel, scrobble_local: boolean, } | { "kind": "accounts_auth_url", service: string, url: string, } | { "kind": "why_gem_provenance", video_ids: Array<string>, };
+export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, page_id?: string, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, } | { "kind": "lyrics_snapshot", video_id: string | null, lines: Array<LyricLineModel>, } | { "kind": "library_invalidated" } | { "kind": "playlists_snapshot", items: Array<PlaylistSummaryModel>, } | { "kind": "downloads_snapshot", items: Array<DownloadStatusModel>, } | { "kind": "transfer_state", phase: TransferPhaseModel, sources: Array<SpotifyPlaylistModel>, job: TransferJobModel | null, report: TransferReportModel | null, error: string | null, } | { "kind": "ai_state", messages: Array<AiMessageModel>, thinking: boolean, suggestions: Array<TrackModel>, } | { "kind": "accounts_snapshot", lastfm: LastfmAccountModel, listenbrainz: ListenBrainzAccountModel, spotify: SpotifyAccountModel, scrobble_local: boolean, } | { "kind": "accounts_auth_url", service: string, url: string, } | { "kind": "accounts_auth_failed", service: string, error: string, } | { "kind": "why_gem_provenance", video_ids: Array<string>, };

@@ -31,6 +31,7 @@ mod observer_plan;
 mod parity_tests;
 mod personal_export;
 mod shutdown_drain;
+mod transfer_host;
 
 use cli::{ParseOutcome, parse};
 use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
@@ -276,6 +277,8 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         download_runtime.max_concurrent,
     );
     publisher.publish_downloads(downloads_host.models());
+    let mut transfer_host = transfer_host::TransferHost::spawn(event_tx.clone());
+    transfer_host.publish(&mut publisher);
     let mut ai_host = ai_host::AiHost::new(event_tx.clone());
     ai_host.publish(&engine, &mut publisher);
 
@@ -334,6 +337,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut published_library_invalidations = engine.library_invalidations();
     let mut published_why_gem_rev = None;
     let mut published_accounts_rev = None;
+    // Advances only on an accepted reconfigure, so a Busy drop retries next turn — a
+    // user who turned scrobbling OFF must never be left with a live actor still on.
+    let mut configured_accounts_rev = engine.accounts_rev();
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -424,6 +430,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             continue;
         };
         let Some(event) = accounts_host::intercept(event, &scrobble) else {
+            continue;
+        };
+        let Some(event) = transfer_host.intercept(event, &mut engine, &mut publisher) else {
             continue;
         };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
@@ -672,14 +681,15 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
             DaemonEvent::Scrobble(event) => {
-                if accounts_host::on_scrobble_event(event, &mut engine, &mut publisher) {
-                    let _ = scrobble.reconfigure(engine.scrobble_settings());
-                }
+                accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
             }
             DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
             DaemonEvent::Download(_) => unreachable!("downloads are intercepted above"),
+            DaemonEvent::Transfer(event) => {
+                transfer_host.on_event(event, &mut engine, &mut publisher);
+            }
             DaemonEvent::Ai(_) => {}
             DaemonEvent::Signal => {
                 shutdown.trigger();
@@ -774,12 +784,15 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 models.spotify,
                 models.scrobble_local,
             );
-            // account_set / listen_brainz_configure changed scrobble-relevant config
-            // through engine dispatch; retarget the live actor from one place.
-            if published_accounts_rev.is_some() {
-                let _ = scrobble.reconfigure(engine.scrobble_settings());
-            }
             published_accounts_rev = Some(accounts_rev);
+        }
+        // Retarget the live scrobble actor after any account mutation, from one place,
+        // with retry: a Busy reconfigure leaves configured_accounts_rev behind so the
+        // next turn tries again.
+        if configured_accounts_rev != accounts_rev
+            && scrobble.reconfigure(engine.scrobble_settings()).is_ok()
+        {
+            configured_accounts_rev = accounts_rev;
         }
     }
     shutdown.trigger();

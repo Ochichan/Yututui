@@ -74,15 +74,18 @@ impl DaemonEngine {
     }
 
     /// The Spotify PKCE flow completed / disconnected (transfer actor events).
-    #[expect(
-        dead_code,
-        reason = "the C5b transfer host wires this; the expect trips when it lands"
-    )]
     pub(in crate::daemon) fn set_spotify_user(&mut self, user: Option<String>) {
         if self.spotify_user != user {
             self.spotify_user = user;
             self.bump_accounts_rev();
         }
+    }
+
+    pub(in crate::daemon) fn spotify_auth_config(&self) -> (Option<String>, u16) {
+        (
+            self.config.spotify.client_id.clone(),
+            self.config.effective_spotify_port(),
+        )
     }
 
     pub(super) fn gui_listen_brainz_configure(

@@ -661,10 +661,12 @@ impl DaemonEngine {
             | RemoteCommand::ThemeSetOverride { .. }
             | RemoteCommand::ThemeClearOverride { .. }
             | RemoteCommand::ClearRomanizationCache
-            | RemoteCommand::TransferListSpotify
+            | RemoteCommand::LastfmConnect => RemoteResponse::err("not_supported"),
+            // Defensive backstop: the daemon owner loop owns the transfer actor and
+            // intercepts these before engine dispatch.
+            RemoteCommand::TransferListSpotify
             | RemoteCommand::TransferStart { .. }
             | RemoteCommand::TransferCancel
-            | RemoteCommand::LastfmConnect
             | RemoteCommand::SpotifyConnect => RemoteResponse::err("not_supported"),
             RemoteCommand::ListenBrainzConfigure {
                 submit,
@@ -2435,12 +2437,17 @@ impl DaemonEngine {
 }
 
 #[cfg(test)]
+pub(in crate::daemon) fn test_engine() -> DaemonEngine {
+    tests::engine_with_queue(&[])
+}
+
+#[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]
 mod gui_search_tests;
 #[cfg(test)]
 mod persistence_gate_tests;
 #[cfg(test)]
-mod tests;
+pub(in crate::daemon) mod tests;
 #[cfg(test)]
 mod transport_tests;

@@ -17,7 +17,7 @@ fn radio_station(id: &str) -> Song {
     song
 }
 
-pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
+pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     let mut queue = Queue::default();
     queue.set(ids.iter().map(|id| song(id)).collect(), 0);
     DaemonEngine {

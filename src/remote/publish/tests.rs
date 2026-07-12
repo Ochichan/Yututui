@@ -670,6 +670,65 @@ fn downloads_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed()
 }
 
 #[test]
+fn transfer_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
+    use super::super::proto::{
+        SpotifyPlaylistModel, TransferJobModel, TransferPhaseModel, TransferReportModel,
+    };
+
+    let (hub, session, mut rx) = test_register(SessionTuning::default());
+    let mut publisher = Publisher::new(hub);
+    let queue = Queue::default();
+    let sources = vec![SpotifyPlaylistModel {
+        id: "spotify:liked".to_owned(),
+        name: "Liked Songs".to_owned(),
+        count: 12,
+    }];
+    let job = TransferJobModel {
+        done: 3,
+        total: 12,
+        matched: 2,
+        failed: 1,
+    };
+
+    assert!(!publisher.transfer_subscribed());
+    publisher.publish_transfer(
+        TransferPhaseModel::Running,
+        sources.clone(),
+        Some(job.clone()),
+        None,
+        None,
+    );
+    assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+    publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Transfer]);
+    let lines = drain(&mut rx);
+    assert_eq!(kinds(&lines), vec!["event:transfer", "raw:frame"]);
+    let SessionLine::Event { payload, .. } = &lines[0] else {
+        panic!("expected retained transfer state");
+    };
+    match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+        PushEvent::TransferState {
+            phase,
+            sources: actual_sources,
+            job: actual_job,
+            report,
+            error,
+        } => {
+            assert_eq!(phase, TransferPhaseModel::Running);
+            assert_eq!(actual_sources, sources);
+            assert_eq!(actual_job, Some(job));
+            assert_eq!(report, None::<TransferReportModel>);
+            assert_eq!(error, None);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+    assert!(publisher.transfer_subscribed());
+
+    publisher.publish_transfer(TransferPhaseModel::Idle, Vec::new(), None, None, None);
+    assert_eq!(kinds(&drain(&mut rx)), vec!["event:transfer"]);
+}
+
+#[test]
 fn ai_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
     let (hub, session, mut rx) = test_register(SessionTuning::default());
     let mut publisher = Publisher::new(hub);

@@ -60,36 +60,34 @@ fn connect_command(
 }
 
 /// Route a scrobble-actor event: the auth trio feeds the `accounts` topic; everything
-/// else keeps its historical log-only behavior. Returns whether the engine's accounts
-/// state changed (the caller reconfigures the live actor and lets the serve-loop tail
-/// publish the refreshed snapshot).
+/// else keeps its historical log-only behavior. Engine account changes surface through
+/// `accounts_rev`, which the serve-loop tail publishes and reconciles (with retry).
 pub(super) fn on_scrobble_event(
     event: ScrobbleEvent,
     engine: &mut DaemonEngine,
     publisher: &mut Publisher,
-) -> bool {
+) {
     match event {
         ScrobbleEvent::AuthUrl(url) => {
-            // One-shot: the GUI opens the browser. Also logged like the TUI-less flow
-            // so `ytt daemon` operators can copy it from the log if no GUI is attached.
-            tracing::info!(%url, "lastfm authorization url");
+            // One-shot: the GUI opens the browser. Debug-logged (the URL embeds the
+            // request token; headless operators can raise the log level to copy it —
+            // the TUI never logs it at all).
+            tracing::debug!(%url, "lastfm authorization url");
             publisher.publish_accounts_auth_url("lastfm", &url);
-            false
         }
         ScrobbleEvent::AuthDone {
             username,
             session_key,
         } => {
             engine.apply_lastfm_session(username, session_key);
-            true
         }
         ScrobbleEvent::AuthFailed(error) => {
+            let error = crate::util::sanitize::sanitize_error_text(error);
             tracing::warn!(%error, "lastfm authorization failed");
-            false
+            publisher.publish_accounts_auth_failed("lastfm", &error);
         }
         other => {
             super::log_scrobble_event(other);
-            false
         }
     }
 }

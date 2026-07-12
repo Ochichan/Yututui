@@ -152,6 +152,88 @@ pub struct DownloadStatusModel {
     ts(export, export_to = "gui/src/generated/protocol/")
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyPlaylistModel {
+    pub id: String,
+    pub name: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub count: u64,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferJobModel {
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub done: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub total: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub matched: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub failed: u64,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReportModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub job_id: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub matched: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub failed: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub skipped: u64,
+    pub unmatched: Vec<String>,
+    pub dest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub review_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub report_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub download_preview_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub organize_preview_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub local_deck_hint: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferPhaseModel {
+    #[default]
+    Idle,
+    Listing,
+    Ready,
+    Running,
+    Done,
+    Failed,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryPageModel {
     pub scope: String,
     pub filter: String,

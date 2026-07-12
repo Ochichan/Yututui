@@ -48,12 +48,15 @@ daemon dispatches most of them for real:
   `fetch_library_page` · `playlist_create` / `playlist_delete` / `playlist_play` /
   `playlist_add_tracks` / `playlist_remove_track` / `fetch_playlist_detail` ·
   `download` / `delete_download` · `ask_ai` · `fetch_why_gem` (v1 provenance:
-  slot + empty reasons + null confidence; unknown tracks answer null)
-- **Still `not_supported` (their streams are next)**: `queue_remove_many` (no
-  frontend sender yet) · `keymap_bind` / `keymap_unbind` / `keymap_reset_all` ·
-  `theme_set_override` / `theme_clear_override` · `clear_romanization_cache` ·
-  `lastfm_connect` / `spotify_connect` / `listen_brainz_configure` / `account_set` ·
-  `transfer_start` / `transfer_list_spotify` / `transfer_cancel`
+  slot + empty reasons + null confidence; unknown tracks answer null) ·
+  `lastfm_connect` / `listen_brainz_configure` / `account_set` (accounts topic:
+  presence-only snapshots, one-shot auth-url/auth-failed events, secrets never on
+  the wire) · `spotify_connect` / `transfer_list_spotify` / `transfer_start` /
+  `transfer_cancel` (transfer topic; GUI imports land in the app's LOCAL playlist
+  store — create-or-append by name, never the YouTube Music account)
+- **Still `not_supported` (the last stream)**: `queue_remove_many` (no frontend
+  sender yet) · `keymap_bind` / `keymap_unbind` / `keymap_reset_all` ·
+  `theme_set_override` / `theme_clear_override` · `clear_romanization_cache`
 - The standalone TUI owner answers `daemon_required` for the whole set (the GUI
   surface is daemon-only by design)
 

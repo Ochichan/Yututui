@@ -34,6 +34,7 @@ impl DaemonEvent {
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
             | DaemonEvent::Lyrics(_)
             | DaemonEvent::Download(_)
+            | DaemonEvent::Transfer(_)
             | DaemonEvent::Ai(
                 crate::ai::AiEvent::Thinking(_)
                 | crate::ai::AiEvent::Chat(_)
@@ -84,6 +85,13 @@ mod tests {
             "a real media facet still runs media/remote observers"
         );
         assert_eq!(DaemonEvent::Signal.observer_plan(), ObserverPlan::INERT);
+        assert_eq!(
+            DaemonEvent::Transfer(crate::transfer::actor::TransferEvent::AuthError(
+                "failed".to_owned()
+            ))
+            .observer_plan(),
+            ObserverPlan::INERT
+        );
     }
 
     #[test]

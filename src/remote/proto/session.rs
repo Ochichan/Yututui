@@ -252,6 +252,15 @@ pub enum PushEvent {
     DownloadsSnapshot {
         items: Vec<super::model::DownloadStatusModel>,
     },
+    /// `transfer` topic: retained daemon-side Spotify import state.
+    TransferState {
+        phase: super::model::TransferPhaseModel,
+        sources: Vec<super::model::SpotifyPlaylistModel>,
+        job: Option<super::model::TransferJobModel>,
+        report: Option<super::model::TransferReportModel>,
+        #[cfg_attr(feature = "ts-export", ts(type = "string | null"))]
+        error: Option<String>,
+    },
     /// `ai` topic: retained daemon-side DJ Gem transcript and current turn state.
     AiState {
         messages: Vec<super::model::AiMessageModel>,
@@ -269,6 +278,9 @@ pub enum PushEvent {
     /// `accounts` topic, connect half: the browser-approval URL for a just-started
     /// auth flow. One-shot event — the GUI opens it via win:openUrl; never retained.
     AccountsAuthUrl { service: String, url: String },
+    /// `accounts` topic: a started auth flow ended without connecting (denied, timed
+    /// out, or errored). One-shot like the URL — the GUI stops its waiting state.
+    AccountsAuthFailed { service: String, error: String },
     /// `ai` topic sibling: which queue rows carry recorded DJ Gem / autoplay pick
     /// provenance — the GUI shows its "why?" affordance exactly on these ids and pulls
     /// the rationale on demand with `fetch_why_gem`.
