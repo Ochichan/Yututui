@@ -17,8 +17,8 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BinDir = Join-Path $RepoRoot "target\$Target\$Profile"
 $Tray = Join-Path $BinDir "yututray.exe"
 $Ytt = Join-Path $BinDir "ytt.exe"
-$LogDir = Join-Path $env:LOCALAPPDATA "yututui\cache"
-$LogPattern = "yututui.log*"
+$LogDir = Join-Path $env:LOCALAPPDATA "yututray\cache"
+$LogPattern = "yututray.log*"
 $createdTrayPid = $null
 
 function Assert-FileExists {
