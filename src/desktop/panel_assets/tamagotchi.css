@@ -43,12 +43,57 @@
       box-shadow: 0 14px 30px rgba(20, 60, 45, 0.35);
     }
 
+    /* Decorative spacer only: it keeps the shell grid's geometry (the bezel and every
+       absolutely-positioned overlay are tuned to it) while the real, interactive dot
+       row lives in the semantic layer as #tamaVolume. */
     html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-dots {
-      color: var(--tama-bezel-dk);
-      font-size: 9px;
-      line-height: 1;
-      letter-spacing: 5px;
-      opacity: 0.75;
+      height: 9px;
+    }
+
+    /* The speaker-hole dots are the volume: they wake up (ink + grow) with the level. */
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-vol {
+      position: absolute;
+      z-index: 8;
+      top: 27px;
+      left: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 13px;
+      width: 104px;
+      height: 24px;
+      margin: 0;
+      border-radius: 12px;
+      transform: translateX(-50%);
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-vol .td {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--tama-bezel-dk);
+      opacity: 0.4;
+      transform: scale(0.9);
+      transition: transform 140ms ease, opacity 140ms ease, background-color 140ms ease;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-vol .td.on {
+      background: var(--tama-ink);
+      opacity: 1;
+      /* --vol is 0..1 (set from JS): lit dots swell from 1x at silence to 1.5x at 100%. */
+      transform: scale(calc(1 + 0.5 * var(--vol, 0)));
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-vol.disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    html[data-theme="tamagotchi"]:not(.shared-sheet) .tama-vol:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(46, 122, 99, 0.35);
     }
 
     html[data-theme="tamagotchi"]:not(.shared-sheet) .tm-bezel {

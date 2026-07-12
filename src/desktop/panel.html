@@ -29,6 +29,8 @@
       <button class="icon-btn" data-action="hide" id="hide" title="Hide" aria-label="Hide mini player"><svg class="icon" aria-hidden="true"><use href="#icon-x"/></svg></button>
     </header>
 
+    <div class="bar tama-vol" id="tamaVolume" role="slider" tabindex="-1" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Unavailable" aria-disabled="true" title="Scroll, drag, or use arrow keys to change the volume"><span class="td"></span><span class="td"></span><span class="td"></span><span class="td"></span><span class="td"></span></div>
+
     <button class="compact-menu" id="compactMenu" title="More controls" aria-label="More controls" aria-expanded="false" aria-controls="panelNow tabQueue tabMore"><svg class="icon" aria-hidden="true"><use href="#icon-ellipsis"/></svg></button>
 
     <div class="mode-switch" id="modeSwitch" role="radiogroup" aria-label="Playback mode" title="Switch between normal playback and the dedicated radio mode">
@@ -198,7 +200,7 @@
 
   <div class="tama-visual" id="tamaVisual" aria-hidden="true">
     <div class="tm-shell" id="tmShell">
-      <div class="tm-dots">&#183; &#183; &#8226; &#183; &#8226; &#183; &#183;</div>
+      <div class="tm-dots" aria-hidden="true"></div>
       <div class="tm-bezel">
         <div class="tm-screen" id="tmScreen" data-pet="off">
           <div class="tm-pet">
