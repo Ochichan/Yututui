@@ -207,7 +207,7 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
-    margin: 0 0 var(--space-1);
+    margin: 0 0 var(--space-2);
     padding: 0 var(--space-2);
     font-size: 11px;
     font-weight: 600;

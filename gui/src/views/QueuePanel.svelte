@@ -163,7 +163,7 @@
     background: transparent;
     color: inherit;
     font-size: 11px;
-    padding: 2px 4px;
+    padding: 4px 6px;
     border-radius: var(--radius-s);
   }
   .ra:hover {

@@ -90,7 +90,7 @@
     color: var(--role-warning);
   }
   .mini {
-    padding: 2px 10px;
+    padding: 3px 10px;
     border: 1px solid var(--role-border-muted);
     border-radius: var(--radius-pill);
     background: transparent;

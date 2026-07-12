@@ -318,6 +318,7 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--space-2);
+    margin-top: var(--space-2);
   }
   .chip {
     padding: var(--space-1) var(--space-3);

@@ -247,14 +247,14 @@
   .roles {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 1px;
+    gap: 2px 6px;
     padding: var(--space-2);
   }
   .role-row {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-1) var(--space-2);
+    padding: 6px var(--space-2);
     border: none;
     border-radius: var(--radius-s);
     background: transparent;
@@ -358,7 +358,7 @@
     align-items: center;
     gap: var(--space-2);
     width: 100%;
-    padding: 3px var(--space-2);
+    padding: 4px var(--space-2);
     border: none;
     border-radius: var(--radius-s);
     background: transparent;

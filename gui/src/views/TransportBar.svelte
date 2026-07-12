@@ -234,7 +234,7 @@
     overflow: hidden;
   }
   .chip {
-    padding: 2px 8px;
+    padding: 3px 10px;
     border: 1px solid transparent;
     border-radius: var(--radius-pill);
     background: transparent;

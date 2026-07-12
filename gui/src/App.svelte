@@ -325,11 +325,11 @@
 
   .mode-switch {
     display: flex;
-    gap: 2px;
-    padding: 2px;
+    gap: 3px;
+    padding: 3px;
     border: 1px solid var(--role-border-muted);
     border-radius: var(--radius-pill);
-    margin: 0 var(--space-2) var(--space-3);
+    margin: 0 var(--space-2) var(--space-4);
   }
   .mode {
     flex: 1;
@@ -371,7 +371,7 @@
   }
   .demo-chip {
     align-self: flex-start;
-    padding: 1px 8px;
+    padding: 2px 10px;
     border-radius: var(--radius-pill);
     background: var(--surface-2);
     color: var(--role-warning);
