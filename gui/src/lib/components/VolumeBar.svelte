@@ -57,7 +57,8 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    width: 140px;
+    width: clamp(110px, 12vw, 140px);
+    flex: none;
   }
   .vol.disabled {
     opacity: 0.5;

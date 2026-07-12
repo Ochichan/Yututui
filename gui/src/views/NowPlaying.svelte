@@ -269,7 +269,7 @@
     width: min(560px, 100%);
   }
   .icy {
-    margin: calc(-1 * var(--space-2)) 0 0;
+    margin: 0;
     font-size: 11px;
     color: var(--role-text-subtle);
   }

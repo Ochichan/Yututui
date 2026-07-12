@@ -132,19 +132,19 @@
 
 <svelte:window {onkeydown} onscroll={persistUiSoon} onfocusin={persistUiSoon} />
 
-{#if connection.info.state !== 'online'}
-  <div class="banner" role="status" class:offline={connection.info.state === 'offline'}>
-    <span class="dot" style:background={stateColor}></span>
-    <span>{bannerText}</span>
-    {#if connection.info.state === 'offline'}
-      <button class="banner-action" onclick={() => client.win('startDaemon')}
-        >{t('conn.startDaemon')}</button
-      >
-    {/if}
-  </div>
-{/if}
-
 <div class="frame">
+  {#if connection.info.state !== 'online'}
+    <div class="banner" role="status" class:offline={connection.info.state === 'offline'}>
+      <span class="dot" style:background={stateColor}></span>
+      <span>{bannerText}</span>
+      {#if connection.info.state === 'offline'}
+        <button class="banner-action" onclick={() => client.win('startDaemon')}
+          >{t('conn.startDaemon')}</button
+        >
+      {/if}
+    </div>
+  {/if}
+
   <div class="shell">
     <nav class="rail" aria-label={t('nav.primary')}>
       {#each NAV_ITEMS as item, i (item.id)}
@@ -240,8 +240,11 @@
 </div>
 
 <style>
+  /* The banner lives inside the flex frame, so however tall it wraps (long ko strings at
+     narrow widths) the shell shrinks to fit and the transport bar is never pushed off. */
   .banner {
     display: flex;
+    flex: none;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-2) var(--space-4);
@@ -267,9 +270,6 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-  }
-  :global(body:has(.banner)) .frame {
-    height: calc(100% - 38px);
   }
   .shell {
     flex: 1;

@@ -91,7 +91,7 @@
   .dock {
     display: flex;
     flex-direction: column;
-    width: 300px;
+    width: 320px;
     background: var(--surface-1);
     border-left: 1px solid var(--role-border-muted);
     min-height: 0;
