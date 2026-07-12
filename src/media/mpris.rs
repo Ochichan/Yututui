@@ -22,9 +22,12 @@ use mpris_server::{
 };
 use tokio::sync::mpsc;
 
-use super::{CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot};
+use super::{
+    CommandSink, LatestMediaUpdate, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot,
+};
 use crate::config::{SPEED_MAX, SPEED_MIN};
 use crate::queue::Repeat;
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 
 /// MPRIS players register at launch: Linux widgets list every player, there is no
 /// single ownership slot to steal, and an eagerly listed (paused) player lets the
@@ -35,27 +38,48 @@ pub const EAGER: bool = true;
 const BUS_SUFFIX: &str = "ytmtui";
 
 pub struct Backend {
-    tx: mpsc::Sender<(MediaSnapshot, MediaChanges)>,
+    wake_tx: mpsc::Sender<()>,
+    pending: Arc<LatestMediaUpdate>,
 }
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        // Bounded with a generous cap; the zbus server task drains it. A permanently stalled
-        // D-Bus consumer drops new snapshots (`try_send` in `apply`) instead of growing the
-        // queue without bound — snapshots are frequent, so the next one re-conveys state.
-        let (tx, rx) = mpsc::channel(256);
-        tokio::spawn(run_server(rx, sink));
-        Ok(Self { tx })
+        // One wake plus one latest snapshot bounds memory while retaining every diff
+        // facet through `MediaChanges::merge` during a slow D-Bus call.
+        let (wake_tx, wake_rx) = mpsc::channel(1);
+        let pending = Arc::new(LatestMediaUpdate::default());
+        tokio::spawn(run_server(wake_rx, Arc::clone(&pending), sink));
+        Ok(Self { wake_tx, pending })
     }
 
-    pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
-        // Dropping the Backend closes the channel; the server task then winds down
-        // and releases the bus name (no ghost player in desktop widgets).
-        let _ = self.tx.try_send((snapshot.clone(), changes));
+    pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) -> DeliveryResult {
+        if self.wake_tx.is_closed() {
+            return Err(DeliveryError::Closed);
+        }
+        let replaced_existing = self.pending.store(snapshot.clone(), changes);
+        match self.wake_tx.try_send(()) {
+            Ok(()) if replaced_existing => Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            }),
+            Ok(()) => Ok(DeliveryReceipt::Enqueued),
+            Err(mpsc::error::TrySendError::Full(())) => Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            }),
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                self.pending.clear();
+                Err(DeliveryError::Closed)
+            }
+        }
     }
 }
 
-async fn run_server(mut rx: mpsc::Receiver<(MediaSnapshot, MediaChanges)>, sink: CommandSink) {
+async fn run_server(
+    mut wake_rx: mpsc::Receiver<()>,
+    pending: Arc<LatestMediaUpdate>,
+    sink: CommandSink,
+) {
     let state = Arc::new(Mutex::new(MediaSnapshot::idle()));
     // Bus-name collision (a second instance) retries with a PID-qualified suffix,
     // as the MPRIS spec prescribes (spec L-2).
@@ -94,7 +118,10 @@ async fn run_server(mut rx: mpsc::Receiver<(MediaSnapshot, MediaChanges)>, sink:
     };
     tracing::info!(bus_name = %server.bus_name(), "media controls: MPRIS session ready");
 
-    while let Some((snapshot, changes)) = rx.recv().await {
+    while wake_rx.recv().await.is_some() {
+        let Some((snapshot, changes)) = pending.take() else {
+            continue;
+        };
         *state.lock().unwrap() = snapshot.clone();
         let mut properties = Vec::new();
         if changes.track || changes.artwork {
@@ -154,8 +181,16 @@ impl Player {
         self.state.lock().unwrap().clone()
     }
 
-    fn send(&self, cmd: MediaCommand) {
-        (self.sink)(cmd);
+    fn send_fdo(&self, cmd: MediaCommand) -> fdo::Result<()> {
+        (self.sink)(cmd)
+            .map(|_| ())
+            .map_err(|error| fdo::Error::Failed(format!("owner rejected media command: {error}")))
+    }
+
+    fn send_zbus(&self, cmd: MediaCommand) -> zbus::Result<()> {
+        (self.sink)(cmd)
+            .map(|_| ())
+            .map_err(|error| zbus::Error::Failure(format!("owner rejected media command: {error}")))
     }
 }
 
@@ -256,8 +291,7 @@ impl mpris_server::RootInterface for Player {
     }
 
     async fn quit(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Quit);
-        Ok(())
+        self.send_fdo(MediaCommand::Quit)
     }
 
     async fn can_quit(&self) -> fdo::Result<bool> {
@@ -303,38 +337,31 @@ impl mpris_server::RootInterface for Player {
 
 impl mpris_server::PlayerInterface for Player {
     async fn next(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Next);
-        Ok(())
+        self.send_fdo(MediaCommand::Next)
     }
 
     async fn previous(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Previous);
-        Ok(())
+        self.send_fdo(MediaCommand::Previous)
     }
 
     async fn pause(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Pause);
-        Ok(())
+        self.send_fdo(MediaCommand::Pause)
     }
 
     async fn play_pause(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Toggle);
-        Ok(())
+        self.send_fdo(MediaCommand::Toggle)
     }
 
     async fn stop(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Stop);
-        Ok(())
+        self.send_fdo(MediaCommand::Stop)
     }
 
     async fn play(&self) -> fdo::Result<()> {
-        self.send(MediaCommand::Play);
-        Ok(())
+        self.send_fdo(MediaCommand::Play)
     }
 
     async fn seek(&self, offset: Time) -> fdo::Result<()> {
-        self.send(MediaCommand::SeekBy(offset.as_micros() as f64 / 1e6));
-        Ok(())
+        self.send_fdo(MediaCommand::SeekBy(offset.as_micros() as f64 / 1e6))
     }
 
     async fn set_position(&self, track_id: TrackId, position: Time) -> fdo::Result<()> {
@@ -342,14 +369,13 @@ impl mpris_server::PlayerInterface for Player {
         // must be dropped, not applied to the new track.
         let current = self.snapshot().track.map(|track| track_id_path(&track.key));
         if current.as_deref() == Some(track_id.as_str()) {
-            self.send(MediaCommand::SeekTo(position.as_micros() as f64 / 1e6));
+            return self.send_fdo(MediaCommand::SeekTo(position.as_micros() as f64 / 1e6));
         }
         Ok(())
     }
 
     async fn open_uri(&self, uri: String) -> fdo::Result<()> {
-        self.send(MediaCommand::OpenUri(uri));
-        Ok(())
+        self.send_fdo(MediaCommand::OpenUri(uri))
     }
 
     async fn playback_status(&self) -> fdo::Result<PlaybackStatus> {
@@ -361,12 +387,11 @@ impl mpris_server::PlayerInterface for Player {
     }
 
     async fn set_loop_status(&self, loop_status: LoopStatus) -> zbus::Result<()> {
-        self.send(MediaCommand::SetRepeat(match loop_status {
+        self.send_zbus(MediaCommand::SetRepeat(match loop_status {
             LoopStatus::None => Repeat::Off,
             LoopStatus::Track => Repeat::One,
             LoopStatus::Playlist => Repeat::All,
-        }));
-        Ok(())
+        }))
     }
 
     async fn rate(&self) -> fdo::Result<PlaybackRate> {
@@ -376,8 +401,7 @@ impl mpris_server::PlayerInterface for Player {
     async fn set_rate(&self, rate: PlaybackRate) -> zbus::Result<()> {
         // 0.0 pauses per the MPRIS spec; the core clamps into [MinimumRate,
         // MaximumRate] and ignores unusable values.
-        self.send(MediaCommand::SetRate(rate));
-        Ok(())
+        self.send_zbus(MediaCommand::SetRate(rate))
     }
 
     async fn shuffle(&self) -> fdo::Result<bool> {
@@ -385,8 +409,7 @@ impl mpris_server::PlayerInterface for Player {
     }
 
     async fn set_shuffle(&self, shuffle: bool) -> zbus::Result<()> {
-        self.send(MediaCommand::SetShuffle(shuffle));
-        Ok(())
+        self.send_zbus(MediaCommand::SetShuffle(shuffle))
     }
 
     async fn metadata(&self) -> fdo::Result<Metadata> {
@@ -399,8 +422,7 @@ impl mpris_server::PlayerInterface for Player {
 
     async fn set_volume(&self, volume: Volume) -> zbus::Result<()> {
         // Negative writes clamp to 0.0 (spec requirement); the core clamps.
-        self.send(MediaCommand::SetVolume(volume));
-        Ok(())
+        self.send_zbus(MediaCommand::SetVolume(volume))
     }
 
     async fn position(&self) -> fdo::Result<Time> {
@@ -472,5 +494,22 @@ mod tests {
                 assert_eq!(track_key_from_path(&path).as_deref(), Some(key));
             }
         }
+    }
+
+    #[test]
+    fn command_rejection_is_returned_to_dbus_callers() {
+        let player = Player {
+            sink: Arc::new(|_| Err(DeliveryError::Busy)),
+            state: Arc::new(Mutex::new(MediaSnapshot::idle())),
+        };
+
+        assert!(matches!(
+            player.send_fdo(MediaCommand::Play),
+            Err(fdo::Error::Failed(message)) if message.contains("busy")
+        ));
+        assert!(matches!(
+            player.send_zbus(MediaCommand::Pause),
+            Err(zbus::Error::Failure(message)) if message.contains("busy")
+        ));
     }
 }

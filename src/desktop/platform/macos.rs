@@ -88,11 +88,12 @@ enum MainRequest {
 }
 
 pub fn run(
-    initial_intent: ActivationIntent,
+    mut initial_intent: ActivationIntent,
     secondary_intent: ActivationIntent,
 ) -> Result<(), Box<dyn Error>> {
-    let log_guard = init_file_logging();
-    install_tray_panic_hook();
+    if initial_intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+        initial_intent = ActivationIntent::EnsureTray;
+    }
 
     // Single GUI instance (docs/gui/03 §6): a second launch activates the first and exits.
     // Held until the process exits (tao's run() diverges, so this never drops early).
@@ -111,11 +112,18 @@ pub fn run(
     single_instance::spawn_activation_listener({
         let deferred_activations = deferred_activations.clone();
         move |intent| {
+            if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+                return false;
+            }
             deferred_activations.deliver_or_defer(intent, |proxy, intent| {
                 proxy.send_event(UserEvent::Activation(intent)).is_ok()
             })
         }
     })?;
+
+    crate::desktop::persistence::initialize_writer()?;
+    let log_guard = init_file_logging();
+    install_tray_panic_hook();
 
     // Only the primary may mutate the LaunchAgent; concurrent secondaries must not race the
     // same plist/temp file during login storms.
@@ -429,6 +437,9 @@ impl MacTrayApp {
     }
 
     fn ensure_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> bool {
+        if !crate::desktop::assets::DIST_EMBEDDED {
+            return false;
+        }
         self.main_teardown_at = None;
         if let Some(main) = &self.main_window {
             return main.ensure_surface();
@@ -510,34 +521,20 @@ impl MacTrayApp {
             // A topic push or correlated reply from the session — hand it straight to the
             // page. Frames that arrive with no window open are dropped; the window re-subs
             // and gets fresh snapshots when it next loads (docs/gui/03 §3.2).
-            gateway::GatewayEvent::Frame {
+            gateway::GatewayEvent::Frame(env) => self.handle_gateway_frame(env, None),
+            gateway::GatewayEvent::PageFrame {
                 envelope: env,
                 source_generation,
-            } => {
-                if source_generation.is_none() && gateway::is_native_request_id(env.id) {
-                    self.handle_native_command_result(env);
-                    return;
-                }
-                if let Some(main) = &self.main_window
-                    && source_generation
-                        .is_none_or(|generation| generation == main.page_generation())
-                {
-                    main.eval(&bridge::receive_script(&env));
-                }
-            }
+            } => self.handle_gateway_frame(env, source_generation),
             gateway::GatewayEvent::Push {
                 sequence,
                 topic,
                 event,
+                envelope,
             } => {
-                let topic_name = topic.wire_str().to_string();
-                let payload = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
                 if self.desktop_app.apply_push(sequence, topic, event) {
                     if let Some(main) = &self.main_window {
-                        main.eval(&bridge::receive_script(&bridge::InEnvelope::event(
-                            &topic_name,
-                            payload,
-                        )));
+                        main.eval(&bridge::receive_script(&envelope));
                     }
                     self.apply_snapshot_locale();
                     if let Some(status) = self.desktop_app.status_projection() {
@@ -545,6 +542,18 @@ impl MacTrayApp {
                     }
                 }
             }
+        }
+    }
+
+    fn handle_gateway_frame(&mut self, env: bridge::InEnvelope, source_generation: Option<u64>) {
+        if source_generation.is_none() && gateway::is_native_request_id(env.id) {
+            self.handle_native_command_result(env);
+            return;
+        }
+        if let Some(main) = &self.main_window
+            && source_generation.is_none_or(|generation| generation == main.page_generation())
+        {
+            main.eval(&bridge::receive_script(&env));
         }
     }
 
@@ -636,24 +645,14 @@ impl MacTrayApp {
                     // Commands/requests/subscriptions go to the live v8 session; its replies and
                     // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
                     bridge::BridgeAction::ToGateway(env) => {
-                        let error = match &self.gateway {
-                            Some(gateway) => {
-                                gateway.send_from_generation(env, Some(generation)).err()
-                            }
-                            None => Some(gateway::GatewaySendError::Offline(env)),
-                        };
-                        if let Some(error) = error {
-                            let code = error.code();
-                            let rejected = error.into_envelope();
-                            if rejected.kind == bridge::OutKind::Req
-                                && let Some(id) = rejected.id
-                                && let Some(main) = &self.main_window
-                            {
-                                main.eval(&bridge::receive_script(&bridge::InEnvelope::err(
-                                    id,
-                                    serde_json::json!({ "reason": code }),
-                                )));
-                            }
+                        if let Some(rejection) = gateway::send_or_reject_from_generation(
+                            self.gateway.as_ref(),
+                            env,
+                            Some(generation),
+                        ) && let Some(main) = &self.main_window
+                            && main.page_generation() == generation
+                        {
+                            main.eval(&bridge::receive_script(&rejection));
                         }
                     }
                     bridge::BridgeAction::Ignore => {}
@@ -667,6 +666,9 @@ impl MacTrayApp {
         intent: ActivationIntent,
         target: &EventLoopWindowTarget<UserEvent>,
     ) {
+        if intent == ActivationIntent::ShowMain && !crate::desktop::assets::DIST_EMBEDDED {
+            return;
+        }
         let _ = self.dispatch_desktop_event(DesktopEvent::Activation(intent), target);
     }
 

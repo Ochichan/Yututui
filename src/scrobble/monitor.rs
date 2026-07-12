@@ -32,6 +32,7 @@ const NOW_PLAYING_AFTER: f64 = 5.0;
 const RESTART_EPSILON: f64 = 5.0;
 /// The scrobble threshold caps at 4 minutes regardless of track length (Last.fm rule).
 const FOUR_MINUTES: f64 = 240.0;
+pub(crate) const MAX_PRESERVED_CREDIT: f64 = FOUR_MINUTES;
 /// Tracks at/below 30s never scrobble (Last.fm rule).
 const MIN_TRACK_LEN: f64 = 30.0;
 
@@ -54,6 +55,20 @@ pub struct Observation {
     pub at: Instant,
     /// Wall-clock unix seconds (stamps listen starts).
     pub wall_unix: i64,
+}
+
+impl Observation {
+    /// Track-seconds that the normal monitor would credit between two adjacent observations.
+    /// Pending-delivery coalescing sums this evidence so a saturated actor inbox does not turn a
+    /// long stretch of healthy 1 Hz heartbeats into one capped five-second gap.
+    pub(crate) fn credit_until(&self, next: &Self) -> f64 {
+        if !self.playing {
+            return 0.0;
+        }
+        let elapsed = next.at.saturating_duration_since(self.at).as_secs_f64();
+        let rate = crate::util::finite_or(self.rate, 1.0).clamp(0.0, 4.0);
+        elapsed.min(MAX_CREDIT_STEP) * rate
+    }
 }
 
 /// The track fields scrobbling cares about, snapshot-derived.
@@ -175,17 +190,45 @@ impl ScrobbleMonitor {
     }
 
     pub fn observe(&mut self, obs: &Observation, local_files_ok: bool) -> Vec<ScrobbleAction> {
+        self.observe_inner(obs, local_files_ok, None)
+    }
+
+    /// Apply an observation whose immediately preceding compatible heartbeats were coalesced by
+    /// the bounded delivery queue. `preserved_credit` replaces (rather than augments) the usual
+    /// single-gap calculation and is capped at the largest possible scrobble threshold.
+    pub(crate) fn observe_with_preserved_credit(
+        &mut self,
+        obs: &Observation,
+        local_files_ok: bool,
+        preserved_credit: f64,
+    ) -> Vec<ScrobbleAction> {
+        self.observe_inner(
+            obs,
+            local_files_ok,
+            Some(crate::util::finite_or(preserved_credit, 0.0).clamp(0.0, MAX_PRESERVED_CREDIT)),
+        )
+    }
+
+    fn observe_inner(
+        &mut self,
+        obs: &Observation,
+        local_files_ok: bool,
+        preserved_credit: Option<f64>,
+    ) -> Vec<ScrobbleAction> {
         let mut actions = Vec::new();
 
         // Phase 1 — credit the gap that just elapsed to the armed listen (whatever
         // happens to it next: even a track we're about to leave earned this time).
         if let Some(l) = self.current.as_mut() {
             if l.was_playing {
-                let dt = obs.at.saturating_duration_since(l.last_at).as_secs_f64();
-                // Guard a non-finite rate: a NaN would poison `accumulated` and wedge the
-                // scrobble threshold math for the rest of the listen.
-                let rate = crate::util::finite_or(l.last_rate, 1.0).clamp(0.0, 4.0);
-                l.accumulated += dt.min(MAX_CREDIT_STEP) * rate;
+                let credit = preserved_credit.unwrap_or_else(|| {
+                    let dt = obs.at.saturating_duration_since(l.last_at).as_secs_f64();
+                    // Guard a non-finite rate: a NaN would poison `accumulated` and wedge the
+                    // scrobble threshold math for the rest of the listen.
+                    let rate = crate::util::finite_or(l.last_rate, 1.0).clamp(0.0, 4.0);
+                    dt.min(MAX_CREDIT_STEP) * rate
+                });
+                l.accumulated += credit;
             }
             l.last_at = obs.at;
             l.last_rate = crate::util::finite_or(obs.rate, 1.0);

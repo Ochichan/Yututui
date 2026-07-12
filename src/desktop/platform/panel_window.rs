@@ -1039,7 +1039,7 @@ fn build_webview(
     // Windows: share the WebView2 user-data folder with the main window (docs/gui/03 §3)
     // so both surfaces cost one browser-process set. macOS ignores the web context.
     #[cfg(windows)]
-    let mut web_context = crate::desktop::platform::shared_web_context();
+    let mut web_context = crate::desktop::platform::shared_web_context()?;
     #[cfg(windows)]
     let builder = {
         use wry::WebViewBuilderExtWindows;

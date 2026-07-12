@@ -89,35 +89,30 @@ export class ThemeStore {
   /** Switch the core preset. Palette is core-resolved, so no optimistic repaint — the push
    *  (< 100 ms) carries the resolved roles. Hands control back from any local skin. */
   setPreset(name: string, client: Client): void {
-    this.#leaveLocal();
-    client.cmd('apply', { change: { group: 'theme', field: 'preset', value: name } });
+    this.#commitCoreEdit(client, 'apply', {
+      change: { group: 'theme', field: 'preset', value: name },
+    });
   }
 
-  /** Override one role. We hold the hex, so apply it to the CSS var immediately (optimistic,
-   *  < 100 ms target) and reconcile on the confirming push. */
+  /** Override one role. The acknowledged push owns paint, so a rejected edit cannot strand CSS. */
   setOverride(role: string, hex: string, client: Client): void {
-    this.#leaveLocal();
-    document.documentElement.style.setProperty(
-      `--role-${role}`,
-      hex === 'none' ? 'transparent' : hex,
-    );
-    client.cmd('theme_set_override', { role, hex });
+    this.#commitCoreEdit(client, 'theme_set_override', { role, hex });
   }
 
   /** Drop a role's override back to the preset value — reconciled on the push. */
   clearOverride(role: string, client: Client): void {
-    this.#leaveLocal();
-    client.cmd('theme_clear_override', { role });
+    this.#commitCoreEdit(client, 'theme_clear_override', { role });
   }
 
   setBackgroundNone(on: boolean, client: Client): void {
-    this.#leaveLocal();
-    client.cmd('apply', { change: { group: 'theme', field: 'background_none', value: on } });
+    this.#commitCoreEdit(client, 'apply', {
+      change: { group: 'theme', field: 'background_none', value: on },
+    });
   }
 
   /** RetroMode is a TUI-only concept — round-trip the toggle, GUI paint is unchanged. */
   setRetro(on: boolean, client: Client): void {
-    client.cmd('apply', { change: { group: 'theme', field: 'retro', value: on } });
+    void client.cmd('apply', { change: { group: 'theme', field: 'retro', value: on } });
   }
 
   /** True if `role` carries a user override in the authoritative model. */
@@ -126,6 +121,12 @@ export class ThemeStore {
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────
+
+  #commitCoreEdit(client: Client, name: string, payload: unknown): void {
+    void client.cmd(name, payload).then((result) => {
+      if (result.ok) this.#leaveLocal();
+    });
+  }
 
   /** Leave any active local skin and repaint the core theme so the editor operates on it. */
   #leaveLocal(): void {

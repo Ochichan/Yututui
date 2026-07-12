@@ -142,12 +142,13 @@ fn filter_popup_enter_plays_the_highlighted_match_and_closes() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     assert_eq!(filter_row_ids(&app), vec!["c"]);
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.search_filter.open);
     // The main cursor lands on the played row (original index), and playback starts.
     assert_eq!(app.search.selected, 2);
-    assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, "c");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
 }
 
 #[test]
@@ -193,11 +194,12 @@ fn filter_button_opens_the_popup_and_clicking_rows_selects_and_plays() {
     assert!(app.search_filter.open);
     assert_eq!(app.search_filter.cursor, 1);
     // Double-click plays it and closes the popup, landing the main cursor on the row.
-    let cmds = double_click_target(&mut app, MouseTarget::SearchFilterRow(1));
+    let mut cmds = double_click_target(&mut app, MouseTarget::SearchFilterRow(1));
     assert!(!app.search_filter.open);
     assert_eq!(app.search.selected, 1);
-    assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, "b");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
 }
 
 #[test]
@@ -387,7 +389,8 @@ fn playing_the_whole_tab_under_a_filter_queues_only_the_filtered_subset() {
     app.update(Msg::Key(key(KeyCode::Enter))); // commit; two matches
     assert_eq!(app.library_len(), 2);
 
-    app.update(Msg::Key(key(KeyCode::Char('a')))); // play the whole filtered tab
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('a')))); // play the whole filtered tab
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     let ids: Vec<&str> = app.queue.video_ids().collect();
     assert_eq!(ids, vec!["a", "b"]); // only the matched tracks were queued

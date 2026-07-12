@@ -1,4 +1,5 @@
-//! Main-window geometry persistence (docs/gui/03 §8): `desktop.json` next to `config.json`.
+//! Desktop geometry persistence (docs/gui/03 §8): `desktop.json` in yututray's independent
+//! config root. The playback owner's yututui configuration tree is compatibility-read-only.
 //!
 //! Saved debounced on move/resize by the event loop; on restore the rect is clamped to the
 //! union of currently-available monitors so a window saved on a now-disconnected display
@@ -349,10 +350,9 @@ pub fn resolve_legacy_rect(
 }
 
 impl DesktopState {
-    /// `desktop.json` beside the persistent config (`config.json`).
+    /// `desktop.json` inside the tray companion's independent config root.
     pub fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "yututui")
-            .map(|d| d.config_dir().join("desktop.json"))
+        crate::desktop::persistence::config_dir().map(|dir| dir.join("desktop.json"))
     }
 
     /// Load persisted state, or defaults when absent/corrupt (never fails a launch).
@@ -364,7 +364,28 @@ impl DesktopState {
         let Some(path) = Self::path() else {
             return Self::default();
         };
+        if !path.exists()
+            && let Some(legacy) =
+                crate::desktop::persistence::legacy_config_dir().map(|dir| dir.join("desktop.json"))
+            && legacy.exists()
+        {
+            // Compatibility read only: never migrate into or modify the playback owner's root.
+            return Self::load_legacy_read_only(&legacy);
+        }
         crate::util::safe_fs::load_json_or_default_limited(&path, MAX_STATE_BYTES)
+    }
+
+    /// Decode legacy tray state without invoking recovery that may rename a core-owned file.
+    fn load_legacy_read_only(path: &std::path::Path) -> Self {
+        let Ok(bytes) = crate::util::safe_fs::read_no_symlink_limited(path, MAX_STATE_BYTES) else {
+            return Self::default();
+        };
+        if let Ok(state) = serde_json::from_slice::<Self>(&bytes) {
+            return state;
+        }
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map(crate::util::safe_fs::recover_lenient::<Self>)
+            .unwrap_or_default()
     }
 
     /// Persist state (best-effort). Atomic temp-write + rename with private perms so a crash
@@ -383,7 +404,11 @@ impl DesktopState {
                 "desktop state directory is unavailable",
             )
         })?;
-        crate::util::safe_fs::write_private_atomic_json(&path, self)
+        self.save_to(&path)
+    }
+
+    pub(crate) fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        crate::util::safe_fs::write_private_atomic_json(path, self)
     }
 }
 
@@ -518,6 +543,36 @@ fn scale_unsigned(value: u32, scale: f64) -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn corrupt_legacy_compatibility_state_is_read_without_mutating_core_storage() {
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).unwrap();
+        let suffix = random
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let directory = std::env::temp_dir().join(format!(
+            "yututray-legacy-read-only-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("desktop.json");
+        let corrupt = b"{not-valid-json-with-core-sentinel";
+        std::fs::write(&path, corrupt).unwrap();
+
+        assert_eq!(
+            DesktopState::load_legacy_read_only(&path),
+            DesktopState::default()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert!(
+            crate::util::safe_fs::recovery_backups(&path)
+                .unwrap()
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     const PRIMARY: MonitorRect = MonitorRect {
         x: 0,
         y: 0,
@@ -553,6 +608,39 @@ mod tests {
         assert!(!s.keep_webview_alive);
         assert!(!s.mini_pinned);
         assert!(s.placement_v2.is_empty());
+    }
+
+    #[test]
+    fn tray_state_save_uses_guarded_atomic_persistence() {
+        let dir = std::env::temp_dir().join(format!(
+            "yututray-window-state-{}-{}",
+            std::process::id(),
+            crate::signals::unix_now()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("desktop.json");
+        let state = DesktopState {
+            main: Some(WindowRect {
+                x: 10,
+                y: 20,
+                w: 800,
+                h: 600,
+                maximized: false,
+            }),
+            mini: Some(Point { x: 30, y: 40 }),
+            mini_pinned: true,
+            placement_v2: PlacementV2::default(),
+            close_to_tray: false,
+            keep_webview_alive: true,
+            mini_theme: Some("glass".to_owned()),
+        };
+
+        state.save_to(&path).unwrap();
+        let restored: DesktopState =
+            crate::util::safe_fs::load_json_or_default_limited(&path, MAX_STATE_BYTES);
+        assert_eq!(restored, state);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

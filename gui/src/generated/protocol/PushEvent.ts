@@ -11,4 +11,4 @@ import type { SettingsModelV8 } from "./SettingsModelV8";
  * event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
  * invalidations, ticketed results, …).
  */
-export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, };
+export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, page_id?: string, query: string, source: SearchSource, groups: Array<SearchGroup>, } | { "kind": "settings_snapshot", model: SettingsModelV8, };

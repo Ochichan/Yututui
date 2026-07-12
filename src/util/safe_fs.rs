@@ -4,9 +4,16 @@
 //! private files are `0600`, and reads/appends use `O_NOFOLLOW` so a symlink is rejected instead
 //! of followed. Windows rejects reparse-point final paths for the same private state APIs.
 
+mod pinned;
+pub(crate) use pinned::{OwnedGeneration, PinnedDir};
+
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
+use std::sync::Arc;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
@@ -17,7 +24,7 @@ use serde_json::{Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
 #[cfg(unix)]
 const PRIVATE_DIR_MODE: u32 = 0o700;
@@ -28,6 +35,8 @@ const PRIVATE_FILE_MODE: u32 = 0o600;
 /// accumulate indefinitely.
 pub const SECRET_BACKUP_RETENTION: usize = 3;
 const RECOVERY_BACKUP_LABELS: &[&str] = &["corrupt", "too-large", "unreadable"];
+#[cfg(all(windows, test))]
+const SOURCE_DURABILITY_MARKER: &str = ".ytt-recorder-source-durable";
 
 /// Metadata for a recovery backup. Contents are intentionally never read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +48,105 @@ pub struct RecoveryBackup {
 }
 
 static DO_NOT_CLOBBER: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+
+#[cfg(not(test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProcessMutationAccess {
+    Writable,
+    ReadOnly(Arc<str>),
+}
+
+#[cfg(not(test))]
+static PROCESS_MUTATION_ACCESS: OnceLock<ProcessMutationAccess> = OnceLock::new();
+#[cfg(not(test))]
+static PROCESS_MUTATION_REVOKED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
+static PROCESS_MUTATION_REVOKE_REASON: OnceLock<Arc<str>> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static PROCESS_MUTATION_REVOKE_REASON: std::cell::RefCell<Option<std::sync::Arc<str>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Fix the process-wide durable mutation capability immediately after the persistence root lease
+/// is decided. This guard deliberately sits below individual stores: artwork, recorder, scrobble,
+/// managed-tool, update, AI-usage, transfer, and download metadata writers all share these
+/// primitives even though they are not members of the eight-store persistence actor.
+#[cfg(not(test))]
+pub(crate) fn configure_process_mutations(access: Result<(), Arc<str>>) -> io::Result<()> {
+    let desired = match access {
+        Ok(()) => ProcessMutationAccess::Writable,
+        Err(reason) => ProcessMutationAccess::ReadOnly(reason),
+    };
+    match PROCESS_MUTATION_ACCESS.set(desired.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if PROCESS_MUTATION_ACCESS.get() == Some(&desired) => Ok(()),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "process durable mutation capability was already initialized differently",
+        )),
+    }
+}
+
+/// Permanently revoke durable mutation after startup recovery loses a coherent frontier.
+/// Coordination-only helpers deliberately bypass this gate so an endpoint or lease can still
+/// clean up its own exact identity while the process aborts.
+pub(crate) fn revoke_process_mutations(reason: std::sync::Arc<str>) {
+    #[cfg(not(test))]
+    {
+        let _ = PROCESS_MUTATION_REVOKE_REASON.set(reason);
+        PROCESS_MUTATION_REVOKED.store(true, Ordering::Release);
+    }
+    #[cfg(test)]
+    PROCESS_MUTATION_REVOKE_REASON.with(|latched| {
+        let mut latched = latched.borrow_mut();
+        if latched.is_none() {
+            *latched = Some(reason);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn clear_process_mutation_revoke_for_test() {
+    PROCESS_MUTATION_REVOKE_REASON.with(|reason| *reason.borrow_mut() = None);
+}
+
+fn ensure_process_mutation_allowed() -> io::Result<()> {
+    #[cfg(test)]
+    {
+        PROCESS_MUTATION_REVOKE_REASON.with(|reason| match reason.borrow().as_ref() {
+            Some(reason) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("durable mutation was revoked after recovery failure: {reason}"),
+            )),
+            None => Ok(()),
+        })
+    }
+    #[cfg(not(test))]
+    {
+        if PROCESS_MUTATION_REVOKED.load(Ordering::Acquire) {
+            let reason = PROCESS_MUTATION_REVOKE_REASON
+                .get()
+                .map_or("startup recovery failed", |reason| reason.as_ref());
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("durable mutation was revoked after recovery failure: {reason}"),
+            ));
+        }
+        match PROCESS_MUTATION_ACCESS.get() {
+            Some(ProcessMutationAccess::Writable) => Ok(()),
+            Some(ProcessMutationAccess::ReadOnly(reason)) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("durable mutation is disabled for this process: {reason}"),
+            )),
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "durable mutation is disabled until the persistence writer lease is initialized",
+            )),
+        }
+    }
+}
 
 fn do_not_clobber() -> &'static Mutex<Vec<PathBuf>> {
     DO_NOT_CLOBBER.get_or_init(|| Mutex::new(Vec::new()))
@@ -123,6 +231,15 @@ fn reject_symlink(_path: &Path) -> io::Result<()> {
 
 /// Ensure `path` exists as a private app directory.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    ensure_private_coordination_dir(path)
+}
+
+/// Create a private directory for the writer-lease or short-lived runtime coordination plane.
+///
+/// This is the only directory-creation bypass before the process mutation capability is fixed.
+/// It must not be used for application data, caches, downloads, or recovery artifacts.
+pub(crate) fn ensure_private_coordination_dir(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
@@ -130,7 +247,10 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         if meta.file_type().is_symlink() || !meta.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("refusing non-directory private path {}", path.display()),
+                format!(
+                    "refusing symlink or non-directory private path {}",
+                    path.display()
+                ),
             ));
         }
         if !is_owned_by_current_user(&meta) {
@@ -153,11 +273,225 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         if is_windows_reparse_point(&meta) || !meta.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("refusing non-directory private path {}", path.display()),
+                format!(
+                    "refusing symlink or non-directory private path {}",
+                    path.display()
+                ),
             ));
         }
     }
     Ok(())
+}
+
+/// Create a private directory tree one component at a time and durably publish every new
+/// component before creating its child. This is the directory equivalent of an atomic file
+/// publication boundary: a synced file is not considered crash-durable if one of its newly
+/// created ancestors can still disappear after power loss.
+pub fn ensure_private_dir_durable(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    ensure_dir_durable_with(path, true, sync_parent_dir)
+}
+
+/// Create a directory tree without changing user-selected permissions and durably publish every
+/// newly created component. Existing symlinked directories remain supported for configured output
+/// paths; a component that was missing when this operation began must be a real directory.
+pub fn ensure_dir_durable(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    ensure_dir_durable_with(path, false, sync_parent_dir)
+}
+
+fn ensure_dir_durable_with<S>(path: &Path, private: bool, mut sync_parent: S) -> io::Result<()>
+where
+    S: FnMut(&Path) -> io::Result<()>,
+{
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                if missing.is_empty() && private {
+                    ensure_private_coordination_dir(cursor)?;
+                } else if !fs::metadata(cursor)?.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        format!("directory path is not a directory: {}", cursor.display()),
+                    ));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor.parent().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "private directory has no existing ancestor: {}",
+                            path.display()
+                        ),
+                    )
+                })?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    for component in missing.into_iter().rev() {
+        match fs::create_dir(&component) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        if private {
+            ensure_private_coordination_dir(&component)?;
+        } else {
+            let metadata = fs::symlink_metadata(&component)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("refusing non-directory component {}", component.display()),
+                ));
+            }
+        }
+        sync_parent(&component)?;
+    }
+    Ok(())
+}
+
+/// Open (or create) a private, persistent lock file.
+///
+/// The caller owns only the returned file handle; the path is deliberately never unlinked on
+/// unlock. Kernel advisory locks attach ownership to this handle, so leaving the inode in place
+/// avoids the classic race where one process removes and recreates a lock path while another
+/// process still owns the old inode.
+pub fn open_private_lock_file(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        ensure_private_coordination_dir(dir)?;
+    }
+    reject_symlink(path)?;
+    #[cfg(unix)]
+    {
+        let mut opts = OpenOptions::new();
+        opts.read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(private_file_mode())
+            .custom_flags(libc::O_NOFOLLOW);
+        let file = opts.open(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(private_file_mode()))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    }
+}
+
+/// RAII owner of a non-blocking exclusive advisory lock on a private lock file.
+///
+/// The persistent path is never removed. Unix and Windows explicitly unlock before `_file`
+/// closes: a duplicated or inherited descriptor can outlive this guard, so relying on the final
+/// close alone can retain the lock past the guard's lifetime.
+#[derive(Debug)]
+pub struct AdvisoryFileLock {
+    _file: File,
+}
+
+/// Try to own `path` without blocking. `Ok(None)` means another live process owns the lock.
+pub fn try_lock_private_file(path: &Path) -> io::Result<Option<AdvisoryFileLock>> {
+    let file = open_private_lock_file(path)?;
+    if try_lock_file(&file)? {
+        Ok(Some(AdvisoryFileLock { _file: file }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn try_lock_file(file: &File) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the fd belongs to `file` for this call; flock returns errors via errno.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) || error.raw_os_error() == Some(libc::EAGAIN)
+    {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(windows)]
+fn try_lock_file(file: &File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+    // SAFETY: Win32 defines an all-zero OVERLAPPED as offset zero with no event handle, which is
+    // the required synchronous byte-range descriptor for this call.
+    let mut overlapped = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle and OVERLAPPED live for the call; byte range 0..1 is stable for every
+    // holder and FAIL_IMMEDIATELY makes contention non-blocking.
+    let locked = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if locked != 0 {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_lock_file(_file: &File) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private advisory locking is unsupported on this platform",
+    ))
+}
+
+#[cfg(windows)]
+impl Drop for AdvisoryFileLock {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+        // SAFETY: this recreates the same all-zero offset-zero byte range used for acquisition.
+        let mut overlapped = unsafe { std::mem::zeroed() };
+        // SAFETY: this guard owns the locked handle and unlocks exactly the range acquired above.
+        let _ = unsafe { UnlockFileEx(self._file.as_raw_handle() as _, 0, 1, 0, &mut overlapped) };
+    }
+}
+
+#[cfg(unix)]
+impl Drop for AdvisoryFileLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: `_file` owns a live descriptor for this call. Explicit LOCK_UN is necessary
+        // because duplicated descriptors share the same open file description and may outlive
+        // this guard; closing only this descriptor would leave the flock held.
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 fn random_suffix() -> io::Result<String> {
@@ -171,7 +505,7 @@ fn random_suffix() -> io::Result<String> {
     Ok(out)
 }
 
-fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -181,6 +515,28 @@ fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
         std::process::id(),
         random_suffix()?
     )))
+}
+
+/// Create an unpredictable, same-directory private staging file without ever opening an
+/// existing name. Random collisions are retried, but any other filesystem error is returned.
+pub(crate) fn create_private_temp_for(path: &Path) -> io::Result<(PathBuf, File)> {
+    ensure_process_mutation_allowed()?;
+    const ATTEMPTS: usize = 8;
+    for _ in 0..ATTEMPTS {
+        let temp = temp_path_for(path)?;
+        match create_private_file(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "could not allocate a collision-free staging path for {}",
+            path.display()
+        ),
+    ))
 }
 
 #[cfg(unix)]
@@ -193,17 +549,35 @@ fn sync_dir(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn sync_parent_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent_dir(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
     match path.parent() {
         Some(parent) => sync_dir(parent),
         None => Ok(()),
     }
 }
 
+/// Durably remove a private state file.
+///
+/// A missing file is still followed by a parent-directory sync. This makes retry after an
+/// ambiguous post-unlink sync failure idempotent: the retry can establish the directory
+/// durability boundary even though the name is already absent.
+pub fn remove_private_file_durable(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    reject_symlink(path)?;
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    sync_parent_dir(path)
+}
+
 #[cfg(unix)]
 fn create_private_file(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.write(true)
+    opts.read(true)
+        .write(true)
         .create_new(true)
         .mode(private_file_mode())
         .custom_flags(libc::O_NOFOLLOW);
@@ -213,18 +587,133 @@ fn create_private_file(path: &Path) -> io::Result<File> {
 #[cfg(windows)]
 fn create_private_file(path: &Path) -> io::Result<File> {
     reject_symlink(path)?;
-    OpenOptions::new().write(true).create_new(true).open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 #[cfg(not(any(unix, windows)))]
 fn create_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).open(path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+trait AtomicWriteOps {
+    fn create(&self, path: &Path) -> io::Result<File>;
+    fn write_all(&self, file: &mut File, bytes: &[u8]) -> io::Result<()>;
+    fn sync_file(&self, file: &File) -> io::Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    fn sync_parent(&self, path: &Path) -> io::Result<()>;
+}
+
+struct RealAtomicWriteOps;
+
+#[cfg(windows)]
+fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path contains a NUL character: {}", path.display()),
+        ));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+#[cfg(windows)]
+pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let from = wide_path(from)?;
+    let to = wide_path(to)?;
+    // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call. The temp and
+    // target are in the same private directory, and REPLACE_EXISTING gives Windows the atomic
+    // overwrite semantics that `std::fs::rename` does not provide there.
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    fs::rename(from, to)
+}
+
+/// Publish a complete same-volume staged file without replacing an existing destination.
+///
+/// Unix hard-links the stage so its private name remains available until the caller durably
+/// unlinks it. Windows atomically moves the stage with no replace flag; `WRITE_THROUGH` requests
+/// the strongest available metadata boundary before returning.
+#[cfg(all(not(windows), test))]
+pub(crate) fn install_file_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    fs::hard_link(from, to)
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn install_file_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+
+    let from = wide_path(from)?;
+    let to = wide_path(to)?;
+    // SAFETY: both UTF-16 buffers are NUL-terminated and remain alive for the call. Omitting
+    // MOVEFILE_REPLACE_EXISTING makes an external destination collision fail atomically.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+impl AtomicWriteOps for RealAtomicWriteOps {
+    fn create(&self, path: &Path) -> io::Result<File> {
+        create_private_file(path)
+    }
+
+    fn write_all(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        atomic_replace(from, to)
+    }
+
+    fn sync_parent(&self, path: &Path) -> io::Result<()> {
+        sync_parent_dir(path)
+    }
 }
 
 #[cfg(unix)]
 fn open_private_append(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.create(true)
+    opts.read(true)
+        .create(true)
         .append(true)
         .mode(private_file_mode())
         .custom_flags(libc::O_NOFOLLOW);
@@ -236,16 +725,37 @@ fn open_private_append(path: &Path) -> io::Result<File> {
 #[cfg(windows)]
 fn open_private_append(path: &Path) -> io::Result<File> {
     reject_symlink(path)?;
-    OpenOptions::new().create(true).append(true).open(path)
+    OpenOptions::new()
+        .read(true)
+        .create(true)
+        .append(true)
+        .open(path)
 }
 
 #[cfg(not(any(unix, windows)))]
 fn open_private_append(path: &Path) -> io::Result<File> {
-    OpenOptions::new().create(true).append(true).open(path)
+    OpenOptions::new()
+        .read(true)
+        .create(true)
+        .append(true)
+        .open(path)
 }
 
 /// Atomically replace `path` with private file contents.
+///
+/// The rename happens before the parent directory is synced. If that final sync fails, this
+/// returns an error even though the new contents may already be visible; their durability is
+/// uncertain and callers should retry according to their persistence policy.
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private_atomic_with_ops(path, bytes, &RealAtomicWriteOps)
+}
+
+fn write_private_atomic_with_ops<O: AtomicWriteOps>(
+    path: &Path,
+    bytes: &[u8],
+    ops: &O,
+) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
     if let Some(dir) = path.parent() {
         ensure_private_dir(dir)?;
     }
@@ -264,14 +774,14 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     let tmp = temp_path_for(path)?;
     let write_result = (|| {
-        let mut file = create_private_file(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        let mut file = ops.create(&tmp)?;
+        ops.write_all(&mut file, bytes)?;
+        ops.sync_file(&file)?;
         drop(file);
         #[cfg(unix)]
         fs::set_permissions(&tmp, fs::Permissions::from_mode(private_file_mode()))?;
-        fs::rename(&tmp, path)?;
-        sync_parent_dir(path)?;
+        ops.rename(&tmp, path)?;
+        ops.sync_parent(path)?;
         Ok(())
     })();
     if write_result.is_err() {
@@ -295,8 +805,24 @@ fn open_no_symlink(path: &Path) -> io::Result<File> {
 
 #[cfg(windows)]
 fn open_no_symlink(path: &Path) -> io::Result<File> {
-    reject_symlink(path)?;
-    OpenOptions::new().read(true).open(path)
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if is_windows_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing reparse-point path {}", path.display()),
+        ));
+    }
+    Ok(file)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -304,9 +830,9 @@ fn open_no_symlink(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).open(path)
 }
 
-/// Read a regular file, rejecting symlinks on Unix.
-pub fn read_no_symlink(path: &Path) -> io::Result<Vec<u8>> {
-    let mut file = open_no_symlink(path)?;
+/// Open a regular file for reading, rejecting symlinks/reparse points.
+pub(crate) fn open_regular_no_symlink(path: &Path) -> io::Result<File> {
+    let file = open_no_symlink(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(io::Error::new(
@@ -314,6 +840,131 @@ pub fn read_no_symlink(path: &Path) -> io::Result<Vec<u8>> {
             format!("not a regular file: {}", path.display()),
         ));
     }
+    Ok(file)
+}
+
+/// Inspect a regular file without following a final symlink/reparse point.
+pub(crate) fn metadata_no_symlink(path: &Path) -> io::Result<fs::Metadata> {
+    open_regular_no_symlink(path)?.metadata()
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn open_regular_for_sync_no_symlink(path: &Path) -> io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        // `File::sync_all` maps to FlushFileBuffers, whose Win32 contract requires a handle
+        // opened with GENERIC_WRITE. Keep this privilege isolated from ordinary read helpers.
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        // Inspect the final path itself rather than following a junction/symlink between a
+        // path-level preflight and CreateFileW.
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if is_windows_reparse_point(&metadata) || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing non-regular or reparse-point path {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(all(windows, test))]
+fn sync_source_parent_publication(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("recording source has no parent: {}", path.display()),
+        )
+    })?;
+    // Windows does not document FlushFileBuffers for directory handles. Publish one deterministic
+    // tiny marker in the *source's own parent* instead: `write_private_atomic` flushes its file,
+    // then MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) establishes the same-
+    // directory metadata barrier without ever renaming the source. One marker per owner namespace
+    // is bounded and disappears with that namespace's normal lifecycle cleanup.
+    write_private_atomic(&parent.join(SOURCE_DURABILITY_MARKER), b"v1\n")
+}
+
+/// Flush an existing regular recorder source without following a final symlink/reparse point.
+/// Unix additionally fsyncs the parent directory. Windows uses a GENERIC_WRITE, open-reparse
+/// handle for FlushFileBuffers, then a bounded same-parent marker published through
+/// MoveFileExW(MOVEFILE_WRITE_THROUGH) because Windows has no documented directory-fsync API.
+#[cfg(all(windows, test))]
+pub(crate) fn sync_regular_file_durable(path: &Path) -> io::Result<()> {
+    sync_regular_file_contents(path)?;
+    sync_source_parent_publication(path)
+}
+
+/// Flush only the contents of an existing regular file without following a final
+/// symlink/reparse point. Callers that publish the file with their own durable directory
+/// primitive can use this without creating the Windows source-parent publication marker.
+#[cfg(all(windows, test))]
+pub(crate) fn sync_regular_file_contents(path: &Path) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
+    let file = open_regular_for_sync_no_symlink(path)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Stable kernel identity for one open regular file. Content equality is deliberately not a
+/// substitute: callers use this to prove that two names reference the same inode/file record
+/// before removing either name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileObjectId {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+pub(crate) fn file_object_id(file: &File) -> io::Result<FileObjectId> {
+    let metadata = file.metadata()?;
+    Ok(FileObjectId {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn file_object_id(file: &File) -> io::Result<FileObjectId> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    // SAFETY: the structure is plain Win32 output storage and is initialized by the API before
+    // any field is inspected.
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` owns a live handle for this call and `information` is writable for the full
+    // BY_HANDLE_FILE_INFORMATION result.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(FileObjectId {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn file_object_id(_file: &File) -> io::Result<FileObjectId> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "stable file identity is unsupported on this platform",
+    ))
+}
+
+/// Read a regular file, rejecting symlinks on Unix.
+pub fn read_no_symlink(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = open_regular_no_symlink(path)?;
     let mut out = Vec::new();
     file.read_to_end(&mut out)?;
     Ok(out)
@@ -326,34 +977,8 @@ pub fn read_to_string_no_symlink(path: &Path) -> io::Result<String> {
 
 /// Read at most `max_bytes`, rejecting symlinks on Unix and oversized regular files.
 pub fn read_no_symlink_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
-    let file = open_no_symlink(path)?;
+    let file = open_regular_no_symlink(path)?;
     let meta = file.metadata()?;
-    read_opened_limited(file, &meta, path, max_bytes)
-}
-
-fn read_opened_limited(
-    file: File,
-    meta: &fs::Metadata,
-    path: &Path,
-    max_bytes: u64,
-) -> io::Result<Vec<u8>> {
-    if !meta.is_file()
-        || cfg!(windows) && {
-            #[cfg(windows)]
-            {
-                is_windows_reparse_point(&meta)
-            }
-            #[cfg(not(windows))]
-            {
-                false
-            }
-        }
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("not a regular file: {}", path.display()),
-        ));
-    }
     if meta.len() > max_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -464,6 +1089,10 @@ pub(crate) fn read_private_file_limited(path: &Path, max_bytes: u64) -> io::Resu
 }
 
 /// Append one JSONL line to a private file.
+///
+/// A non-empty unterminated tail is separated first so a record interrupted by a crash cannot
+/// consume the next record. Callers remain responsible for serializing higher-level operations
+/// (such as append versus compaction) for each path.
 pub fn append_private_jsonl(path: &Path, line: &str) -> io::Result<()> {
     append_private_jsonl_inner(path, line, false)
 }
@@ -474,12 +1103,33 @@ pub fn append_private_jsonl_durable(path: &Path, line: &str) -> io::Result<()> {
 }
 
 fn append_private_jsonl_inner(path: &Path, line: &str, durable: bool) -> io::Result<()> {
+    ensure_process_mutation_allowed()?;
     if let Some(dir) = path.parent() {
         ensure_private_dir(dir)?;
     }
     let mut file = open_private_append(path)?;
-    file.write_all(line.as_bytes())?;
-    file.write_all(b"\n")?;
+    let needs_separator = if file.seek(SeekFrom::End(0))? != 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut tail = [0];
+        file.read_exact(&mut tail)?;
+        tail[0] != b'\n'
+    } else {
+        false
+    };
+    let payload_len = line
+        .len()
+        .checked_add(1 + usize::from(needs_separator))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "JSONL record is too large"))?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(payload_len)
+        .map_err(io::Error::other)?;
+    if needs_separator {
+        payload.push(b'\n');
+    }
+    payload.extend_from_slice(line.as_bytes());
+    payload.push(b'\n');
+    file.write_all(&payload)?;
     if durable {
         file.sync_all()?;
         sync_parent_dir(path)?;
@@ -776,6 +1426,7 @@ pub fn recovery_backups(path: &Path) -> io::Result<Vec<RecoveryBackup>> {
 
 /// Enforce the default secret-backup retention for `path`.
 pub fn enforce_secret_backup_retention(path: &Path) -> io::Result<usize> {
+    ensure_process_mutation_allowed()?;
     rotate_recovery_backups(path, SECRET_BACKUP_RETENTION, None)
 }
 
@@ -794,6 +1445,7 @@ fn backup_with_label_retained(path: &Path, label: &str, keep: usize) -> io::Resu
 }
 
 fn backup_with_label_inner(path: &Path, label: &str) -> io::Result<PathBuf> {
+    ensure_process_mutation_allowed()?;
     reject_symlink(path)?;
     for n in 0..1000 {
         let bak = backup_path(path, label, n);
@@ -915,416 +1567,4 @@ fn backup_path(path: &Path, label: &str, n: usize) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_root(name: &str) -> PathBuf {
-        let mut bytes = [0u8; 8];
-        getrandom::fill(&mut bytes).unwrap();
-        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        std::env::temp_dir().join(format!("yututui-{name}-{}-{suffix}", std::process::id()))
-    }
-
-    #[test]
-    fn writes_and_reads_private_file() {
-        let dir = temp_root("safe-fs");
-        let path = dir.join("config.json");
-        write_private_atomic(&path, br#"{"ok":true}"#).unwrap();
-        assert_eq!(read_no_symlink(&path).unwrap(), br#"{"ok":true}"#);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn durable_append_writes_jsonl_line() {
-        let dir = temp_root("append-durable");
-        let path = dir.join("queue.jsonl");
-        append_private_jsonl_durable(&path, r#"{"ok":true}"#).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"ok\":true}\n");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn private_modes_are_enforced() {
-        let dir = temp_root("modes");
-        ensure_private_dir(&dir).unwrap();
-        assert_eq!(
-            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-            private_dir_mode()
-        );
-        let path = dir.join("secret.json");
-        write_private_atomic(&path, b"{}").unwrap();
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            private_file_mode()
-        );
-        assert_eq!(read_private_file_limited(&path, 16).unwrap(), b"{}");
-
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-        assert_eq!(
-            read_private_file_limited(&path, 16).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        fs::set_permissions(&path, fs::Permissions::from_mode(private_file_mode())).unwrap();
-
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
-        assert_eq!(
-            read_private_file_limited(&path, 16).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o1700)).unwrap();
-        assert_eq!(
-            read_private_file_limited(&path, 16).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        fs::set_permissions(&dir, fs::Permissions::from_mode(private_dir_mode())).unwrap();
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_reads_are_rejected() {
-        use std::os::unix::fs::symlink;
-
-        let dir = temp_root("symlink");
-        fs::create_dir_all(&dir).unwrap();
-        let real = dir.join("real");
-        let link = dir.join("link");
-        fs::write(&real, b"secret").unwrap();
-        symlink(&real, &link).unwrap();
-        assert!(read_no_symlink(&link).is_err());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn reparse_point_reads_are_rejected() {
-        use std::os::windows::fs::symlink_file;
-
-        let dir = temp_root("reparse");
-        fs::create_dir_all(&dir).unwrap();
-        let real = dir.join("real");
-        let link = dir.join("link");
-        fs::write(&real, b"secret").unwrap();
-        if symlink_file(&real, &link).is_err() {
-            let _ = fs::remove_dir_all(dir);
-            return;
-        }
-        assert!(read_no_symlink(&link).is_err());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn limited_load_reads_within_cap_and_sets_oversized_aside() {
-        use serde::{Deserialize, Serialize};
-        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-        struct S {
-            n: u32,
-        }
-        let dir = temp_root("limited");
-        let path = dir.join("s.json");
-
-        // Under the cap → loads normally.
-        write_private_atomic(&path, br#"{"n":7}"#).unwrap();
-        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S { n: 7 });
-
-        // Over the cap → default, and the offending file is moved to `*.too-large.bak`
-        // (never destroyed, so nothing is silently lost).
-        let big = format!(r#"{{"n":7,"pad":"{}"}}"#, "x".repeat(2048));
-        write_private_atomic(&path, big.as_bytes()).unwrap();
-        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
-        assert!(!path.exists());
-        assert!(path.with_extension("too-large.bak").exists());
-
-        // Invalid UTF-8 under the cap is still present-but-unreadable and must be preserved.
-        write_private_atomic(&path, &[0xff, 0xfe, 0xfd]).unwrap();
-        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
-        assert!(!path.exists());
-        assert!(path.with_extension("unreadable.bak").exists());
-
-        // Missing file → default (no panic, no backup).
-        let _ = fs::remove_dir_all(&dir);
-        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
-    }
-
-    #[test]
-    fn present_but_unreadable_file_is_backed_up_not_clobbered() {
-        use serde::{Deserialize, Serialize};
-        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-        struct S {
-            n: u32,
-        }
-        let dir = temp_root("unreadable");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.json");
-        // Invalid UTF-8 is present-but-unreadable: preserve it, don't silently default+clobber.
-        fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
-        assert_eq!(load_json_or_default::<S>(&path), S::default());
-        assert!(!path.exists(), "the unreadable file is moved aside");
-        assert!(
-            path.with_extension("unreadable.bak").exists(),
-            "present-but-unreadable file must be preserved as a backup",
-        );
-        // A genuinely missing file leaves no backup.
-        let missing = dir.join("missing.json");
-        assert_eq!(load_json_or_default::<S>(&missing), S::default());
-        assert!(!missing.with_extension("unreadable.bak").exists());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn copy_backup_preserves_original_when_linking_is_unavailable() {
-        let dir = temp_root("backup-copy");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.json");
-        let bak = path.with_extension("corrupt.bak");
-        fs::write(&path, b"copy-me").unwrap();
-
-        backup_by_copy(&path, &bak).unwrap();
-
-        assert!(!path.exists());
-        assert_eq!(fs::read(&bak).unwrap(), b"copy-me");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn failed_recovery_blocks_default_overwrite_until_original_is_removed() {
-        let dir = temp_root("backup-guard");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.json");
-        fs::write(&path, b"original").unwrap();
-
-        mark_do_not_clobber(&path);
-        let err = write_private_atomic(&path, b"replacement").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&path).unwrap(), b"original");
-
-        fs::remove_file(&path).unwrap();
-        write_private_atomic(&path, b"replacement").unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"replacement");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn backup_aside_never_overwrites_existing_backup() {
-        let dir = temp_root("backup-numbered");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("s.json");
-        let first_backup = path.with_extension("corrupt.bak");
-        let numbered_backup = path.with_extension("corrupt.1.bak");
-        fs::write(&path, b"new-bad").unwrap();
-        fs::write(&first_backup, b"old-bad").unwrap();
-
-        let backed_up = backup_aside(&path).unwrap();
-
-        assert_eq!(backed_up, numbered_backup);
-        assert_eq!(fs::read(&first_backup).unwrap(), b"old-bad");
-        assert_eq!(fs::read(&backed_up).unwrap(), b"new-bad");
-        assert!(!path.exists());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn secret_backup_retention_keeps_newest_and_prunes_old_recovery_files() {
-        let dir = temp_root("secret-backup-retention");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.json");
-        let mut newest = PathBuf::new();
-
-        for idx in 0..(SECRET_BACKUP_RETENTION + 2) {
-            fs::write(&path, format!("secret-{idx}")).unwrap();
-            newest = backup_aside_secret(&path).unwrap();
-        }
-
-        let backups = recovery_backups(&path).unwrap();
-        assert_eq!(backups.len(), SECRET_BACKUP_RETENTION);
-        assert!(backups.iter().any(|backup| backup.path == newest));
-        assert_eq!(
-            fs::read_to_string(&newest).unwrap(),
-            format!("secret-{}", SECRET_BACKUP_RETENTION + 1)
-        );
-        assert!(!path.exists());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn explicit_secret_backup_cleanup_prunes_to_retention() {
-        let dir = temp_root("secret-backup-cleanup");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.json");
-        for idx in 0..(SECRET_BACKUP_RETENTION + 1) {
-            fs::write(backup_path(&path, "corrupt", idx), b"old").unwrap();
-        }
-        fs::write(&path, b"current").unwrap();
-
-        let removed = enforce_secret_backup_retention(&path).unwrap();
-
-        assert_eq!(removed, 1);
-        assert_eq!(
-            recovery_backups(&path).unwrap().len(),
-            SECRET_BACKUP_RETENTION
-        );
-        assert_eq!(fs::read(&path).unwrap(), b"current");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    mod recover {
-        use super::*;
-        use serde::{Deserialize, Serialize};
-        use serde_json::json;
-
-        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Mode {
-            #[default]
-            Balanced,
-            Aggressive,
-        }
-
-        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(default)]
-        struct Inner {
-            mode: Mode,
-            weight: f32,
-            label: String,
-        }
-
-        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(default)]
-        struct Row {
-            id: String,
-            kind: Mode,
-        }
-
-        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(default)]
-        struct Store {
-            volume: u8,
-            name: String,
-            inner: Inner,
-            log: Vec<Row>,
-        }
-
-        #[test]
-        fn valid_input_is_returned_unchanged() {
-            let store = Store {
-                volume: 42,
-                name: "hi".into(),
-                inner: Inner {
-                    mode: Mode::Aggressive,
-                    weight: 0.7,
-                    label: "x".into(),
-                },
-                log: vec![Row {
-                    id: "a".into(),
-                    kind: Mode::Balanced,
-                }],
-            };
-            let value = serde_json::to_value(&store).unwrap();
-            assert_eq!(recover_lenient::<Store>(value), store);
-        }
-
-        #[test]
-        fn unknown_nested_enum_defaults_only_that_field() {
-            // `inner.mode` is a variant this build no longer knows; everything else survives.
-            let value = json!({
-                "volume": 55,
-                "name": "keep me",
-                "inner": { "mode": "wild", "weight": 0.9, "label": "still here" },
-                "log": [],
-            });
-            let recovered = recover_lenient::<Store>(value);
-            assert_eq!(recovered.volume, 55, "sibling scalar preserved");
-            assert_eq!(recovered.name, "keep me");
-            assert_eq!(recovered.inner.mode, Mode::Balanced, "bad enum -> default");
-            assert_eq!(
-                recovered.inner.weight, 0.9,
-                "sibling in same object preserved"
-            );
-            assert_eq!(recovered.inner.label, "still here");
-        }
-
-        #[test]
-        fn retyped_scalar_defaults_only_that_field() {
-            let value = json!({ "volume": "loud", "name": "kept" });
-            let recovered = recover_lenient::<Store>(value);
-            assert_eq!(recovered.volume, 0, "string-where-u8-expected -> default");
-            assert_eq!(recovered.name, "kept");
-        }
-
-        #[test]
-        fn bad_array_element_is_dropped_not_the_whole_log() {
-            let value = json!({
-                "log": [
-                    { "id": "a", "kind": "balanced" },
-                    { "id": "b", "kind": "wild" },        // drifted enum
-                    { "id": "c", "kind": "aggressive" },
-                ],
-            });
-            let recovered = recover_lenient::<Store>(value);
-            assert_eq!(
-                recovered.log,
-                vec![
-                    Row {
-                        id: "a".into(),
-                        kind: Mode::Balanced
-                    },
-                    Row {
-                        id: "c".into(),
-                        kind: Mode::Aggressive
-                    },
-                ],
-                "only the drifted record is dropped",
-            );
-        }
-
-        #[test]
-        fn overwhelmingly_incompatible_array_drops_to_default() {
-            // 300 rows whose enum variant this build no longer knows. Element-wise recovery
-            // would try each one; the early-abort keeps the default once the keep-ratio
-            // collapses, bounding startup CPU on a crafted under-size-cap file.
-            let rows: Vec<Value> = (0..300)
-                .map(|i| json!({ "id": format!("r{i}"), "kind": "wild" }))
-                .collect();
-            let recovered = recover_lenient::<Store>(json!({ "log": rows, "volume": 9 }));
-            assert!(
-                recovered.log.is_empty(),
-                "all-drifted array -> default (empty)"
-            );
-            assert_eq!(recovered.volume, 9, "sibling field is still preserved");
-        }
-
-        #[test]
-        fn unrelated_json_falls_back_to_default() {
-            assert_eq!(
-                recover_lenient::<Store>(json!({ "nope": 1 })),
-                Store::default()
-            );
-            assert_eq!(recover_lenient::<Store>(json!([1, 2, 3])), Store::default());
-        }
-
-        #[test]
-        fn corrupt_file_is_backed_up_and_defaulted() {
-            let dir = temp_root("recover-corrupt");
-            fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("store.json");
-            fs::write(&path, b"this is not { json").unwrap();
-
-            let recovered = load_json_or_default::<Store>(&path);
-            assert_eq!(recovered, Store::default());
-            assert!(
-                dir.join("store.corrupt.bak").exists(),
-                "unparseable file must be preserved as a backup, not destroyed",
-            );
-            let _ = fs::remove_dir_all(dir);
-        }
-
-        #[test]
-        fn missing_file_is_default_without_backup() {
-            let dir = temp_root("recover-missing");
-            let path = dir.join("store.json");
-            assert_eq!(load_json_or_default::<Store>(&path), Store::default());
-            assert!(!dir.join("store.corrupt.bak").exists());
-        }
-    }
-}
+mod tests;

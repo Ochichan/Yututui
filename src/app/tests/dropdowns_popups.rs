@@ -280,6 +280,9 @@ fn recording_popups_render_rows_and_controls() {
             duration_secs: 181,
             state: crate::recorder::RecordingState::Recorded,
             final_path: None,
+            automatic_final_dir: None,
+            close_barrier: None,
+            save_request: None,
         });
     let buf = render_app_buffer(&app, 80, 24);
     assert!(buffer_contains(&buf, "Radio recordings"));

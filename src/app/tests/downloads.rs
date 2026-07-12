@@ -1,5 +1,25 @@
 use super::*;
 
+fn test_import_context(
+    session_id: &str,
+    row_id: &str,
+    source_order: u32,
+    video_id: &str,
+) -> crate::download::ImportDownloadContext {
+    crate::download::ImportDownloadContext {
+        session_id: session_id.to_owned(),
+        row_id: row_id.to_owned(),
+        source_order,
+        video_id: video_id.to_owned(),
+        claim: crate::transfer::artifact_identity::test_import_claim(
+            session_id,
+            row_id,
+            source_order,
+            video_id,
+        ),
+    }
+}
+
 #[test]
 fn youtube_id_and_share_url_distinguish_local_from_remote() {
     // Remote: `video_id` is the YouTube ID, so the share URL is built from it.
@@ -65,7 +85,12 @@ fn copy_link_warns_for_local_only_track() {
 fn downloadable_batch_skips_local_downloaded_and_dupes() {
     let mut app = App::new(100);
     // Remember one track as already downloaded in a past session (manifest keeps its YT id).
-    let past = fsong("keep", "Kept", "A").with_local_path(PathBuf::from("/dl/keep.m4a"));
+    let root =
+        std::env::temp_dir().join(format!("yututui-downloadable-batch-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let past_path = root.join("keep.m4a");
+    std::fs::write(&past_path, b"audio").unwrap();
+    let past = fsong("keep", "Kept", "A").with_local_path(past_path);
     app.download_store.record(&past);
 
     let batch = app.downloadable_batch(vec![
@@ -78,6 +103,24 @@ fn downloadable_batch_skips_local_downloaded_and_dupes() {
 
     let ids: Vec<&str> = batch.iter().map(|s| s.video_id.as_str()).collect();
     assert_eq!(ids, vec!["a", "b"]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn downloadable_batch_retries_a_manifest_record_whose_file_is_missing() {
+    let mut app = App::new(100);
+    let missing = std::env::temp_dir().join(format!(
+        "yututui-missing-download-{}-keep.m4a",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&missing);
+    app.download_store
+        .record(&fsong("keep", "Kept", "A").with_local_path(missing));
+
+    let batch = app.downloadable_batch(vec![fsong("keep", "Kept", "A")]);
+
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].video_id, "keep");
 }
 
 #[test]
@@ -97,15 +140,133 @@ fn bulk_download_confirm_flow_queues_and_emits() {
         Some(2)
     );
 
-    // Confirming clears the modal, queues the batch, and emits one Cmd::Download per track.
+    // Confirming clears the modal, queues the batch, and emits one DownloadCmd::Start per track.
     let cmds = app.confirm_download_apply();
     let downloads = cmds
         .iter()
-        .filter(|c| matches!(c, Cmd::Download(_)))
+        .filter(|c| matches!(c, Cmd::Download(DownloadCmd::Start(_))))
         .count();
     assert_eq!(downloads, 2);
     assert!(app.library_ui.confirm_download.is_none());
     assert_eq!(app.downloads.dispatched, 2);
+}
+
+#[test]
+fn same_video_imports_are_tracked_and_settled_by_session_row() {
+    let mut app = App::new(100);
+    let first = Song::remote("shared-video", "First row", "Artist A", "1:00")
+        .with_import_session(Some("sp2yt-session-a".to_owned()), Some(1));
+    let second = Song::remote("shared-video", "Second row", "Artist B", "1:00")
+        .with_import_session(Some("sp2yt-session-b".to_owned()), Some(1));
+
+    assert_eq!(app.start_download(first).len(), 1);
+    assert_eq!(app.start_download(second).len(), 1);
+    assert_eq!(app.downloads.dispatched, 2);
+    let first_key = crate::download::import_download_tracking_key("sp2yt-session-a", 1);
+    let second_key = crate::download::import_download_tracking_key("sp2yt-session-b", 1);
+    assert!(app.downloads.sources.contains_key(&first_key));
+    assert!(app.downloads.sources.contains_key(&second_key));
+
+    app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context("sp2yt-session-b", "row-00001", 1, "shared-video"),
+        path: "/tmp/session-b.m4a".to_owned(),
+    }));
+    assert!(app.downloads.sources.contains_key(&first_key));
+    assert!(!app.downloads.sources.contains_key(&second_key));
+    assert_eq!(app.downloads.dispatched, 1);
+    assert_eq!(app.library_ui.downloaded[0].title, "Second row");
+
+    app.update(Msg::Download(DownloadMsg::ImportError {
+        context: test_import_context("sp2yt-session-a", "row-00001", 1, "shared-video"),
+        error: "delayed failure".to_owned(),
+    }));
+    assert!(!app.downloads.sources.contains_key(&first_key));
+    assert_eq!(app.downloads.dispatched, 0);
+    assert_eq!(
+        app.downloads.active.get(&first_key),
+        Some(&DownloadState::Failed)
+    );
+    assert_eq!(
+        app.downloads.active.get(&second_key),
+        Some(&DownloadState::Done)
+    );
+}
+
+#[test]
+fn late_progress_cannot_reopen_terminal_download_state() {
+    let mut app = App::new(100);
+    app.downloads
+        .active
+        .insert("ordinary".to_owned(), DownloadState::Done);
+    app.update(Msg::Download(DownloadMsg::Progress {
+        video_id: "ordinary".to_owned(),
+        percent: 55.0,
+    }));
+    assert_eq!(
+        app.downloads.active.get("ordinary"),
+        Some(&DownloadState::Done)
+    );
+    assert_eq!(
+        app.start_download(Song::remote("ordinary", "Retry", "Artist", "1:00"))
+            .len(),
+        1
+    );
+    assert_eq!(
+        app.downloads.active.get("ordinary"),
+        Some(&DownloadState::Running(0)),
+        "an explicit retry resets terminal state before new progress"
+    );
+
+    let context = test_import_context("sp2yt-late-progress", "row-00003", 3, "shared-video");
+    let tracking_key = context.tracking_key();
+    app.downloads
+        .active
+        .insert(tracking_key.clone(), DownloadState::Failed);
+    app.update(Msg::Download(DownloadMsg::ImportProgress {
+        context,
+        percent: 88.0,
+    }));
+    assert_eq!(
+        app.downloads.active.get(&tracking_key),
+        Some(&DownloadState::Failed)
+    );
+}
+
+#[test]
+fn duplicate_terminal_does_not_release_or_pump_an_inflight_slot_twice() {
+    let mut app = App::new(100);
+    let songs: Vec<_> = (0..98)
+        .map(|index| fsong(&format!("terminal-{index}"), "Title", "Artist"))
+        .collect();
+    app.library_ui.confirm_download = Some(songs);
+    app.confirm_download_apply();
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(app.downloads.pending.len(), 2);
+
+    let terminal = || {
+        Msg::Download(DownloadMsg::Done {
+            video_id: "terminal-0".to_owned(),
+            path: String::new(),
+        })
+    };
+    let first = app.update(terminal());
+    assert_eq!(
+        first
+            .iter()
+            .filter(|command| matches!(command, Cmd::Download(DownloadCmd::Start(_))))
+            .count(),
+        1
+    );
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(app.downloads.pending.len(), 1);
+
+    assert!(app.update(terminal()).is_empty());
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(
+        app.downloads.pending.len(),
+        1,
+        "an at-least-once terminal replay must not admit another queued job"
+    );
 }
 
 #[test]
@@ -120,7 +281,7 @@ fn bulk_download_stays_under_channel_bound_and_drips() {
     // Only up to the in-flight cap dispatches; the overflow waits in `pending` (no channel flood).
     assert_eq!(
         cmds.iter()
-            .filter(|c| matches!(c, Cmd::Download(_)))
+            .filter(|c| matches!(c, Cmd::Download(DownloadCmd::Start(_))))
             .count(),
         96
     );
@@ -128,12 +289,42 @@ fn bulk_download_stays_under_channel_bound_and_drips() {
     assert_eq!(app.downloads.pending.len(), 4);
 
     // Each completion frees a slot and drips the next queued download in, holding at the cap.
-    app.update(Msg::DownloadDone {
+    app.update(Msg::Download(DownloadMsg::Done {
         video_id: "id0".to_string(),
         path: String::new(),
-    });
+    }));
     assert_eq!(app.downloads.dispatched, 96);
     assert_eq!(app.downloads.pending.len(), 3);
+}
+
+#[test]
+fn bulk_download_backlog_overflow_is_retained_for_explicit_retry() {
+    let mut app = App::new(100);
+    let many: Vec<Song> = (0..1_000)
+        .map(|i| fsong(&format!("overflow-{i}"), "T", "A"))
+        .collect();
+    app.library_ui.confirm_download = Some(many);
+
+    let cmds = app.confirm_download_apply();
+
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| matches!(cmd, Cmd::Download(DownloadCmd::Start(_))))
+            .count(),
+        96
+    );
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(app.downloads.pending.len(), 903);
+    let retained = app
+        .library_ui
+        .confirm_download
+        .as_ref()
+        .expect("overflow remains available for retry");
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].video_id, "overflow-999");
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("999"));
+    assert!(app.status.text.contains('1'));
 }
 
 #[test]
@@ -241,9 +432,10 @@ fn copy_link_works_on_all_tab_when_history_holds_a_bare_local_entry() {
 
     app.update(Msg::Key(key(KeyCode::Char('l')))); // Library, All tab
     assert_eq!(app.library_ui.tab, LibraryTab::All);
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // play the All-tab current row
-    assert_eq!(app.mode, Mode::Player);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter))); // play the All-tab current row
     assert_eq!(load_url(&cmds), Some(path));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
     assert!(
         app.queue.current().unwrap().youtube_id().is_none(),
         "the bare history entry plays"
@@ -264,10 +456,10 @@ fn download_done_records_manifest_and_saves() {
     let remote = Song::remote("dQw4w9WgXcQ", "Title", "Real Artist", "3:00");
     app.start_download(remote); // populates downloads.sources
 
-    let cmds = app.update(Msg::DownloadDone {
+    let cmds = app.update(Msg::Download(DownloadMsg::Done {
         video_id: "dQw4w9WgXcQ".to_owned(),
         path: "/tmp/Title [dQw4w9WgXcQ].m4a".to_owned(),
-    });
+    }));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Downloads))),
@@ -289,7 +481,7 @@ fn download_done_records_manifest_and_saves() {
 }
 
 #[test]
-fn download_done_updates_import_session_row() {
+fn app_import_done_does_not_rewrite_worker_owned_session_row() {
     let mut app = App::new(100);
     let session_id = "sp2yt-app-download-row";
     let session = crate::transfer::session::ImportSession {
@@ -311,23 +503,21 @@ fn download_done_updates_import_session_row() {
         .with_import_session(Some(session_id.to_owned()), Some(3));
     app.start_download(remote);
 
-    app.update(Msg::DownloadDone {
-        video_id: "dQw4w9WgXcQ".to_owned(),
+    app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(session_id, "row-00003", 3, "dQw4w9WgXcQ"),
         path: "/tmp/Title [dQw4w9WgXcQ].m4a".to_owned(),
-    });
+    }));
 
     let session = crate::transfer::session::ImportSession::load(session_id)
-        .expect("load updated import session");
-    assert!(session.rows[0].written);
-    assert_eq!(
-        session.rows[0].local_path,
-        Some(PathBuf::from("/tmp/Title [dQw4w9WgXcQ].m4a"))
-    );
-    assert_eq!(session.counts.written, 1);
+        .expect("load unchanged import session");
+    assert!(!session.rows[0].written);
+    assert!(session.rows[0].local_path.is_none());
+    assert_eq!(session.counts.written, 0);
+    let _ = crate::transfer::session::ImportSession::delete_record(session_id);
 }
 
 #[test]
-fn download_error_updates_import_session_row() {
+fn app_import_error_does_not_rewrite_worker_owned_session_row() {
     let mut app = App::new(100);
     let session_id = "sp2yt-app-download-error";
     let session = crate::transfer::session::ImportSession {
@@ -349,26 +539,27 @@ fn download_error_updates_import_session_row() {
         .with_import_session(Some(session_id.to_owned()), Some(2));
     app.start_download(remote);
 
-    app.update(Msg::DownloadError {
-        video_id: "dQw4w9WgXcQ".to_owned(),
+    app.update(Msg::Download(DownloadMsg::ImportError {
+        context: test_import_context(session_id, "row-00002", 2, "dQw4w9WgXcQ"),
         error: "private video needs login".to_owned(),
-    });
+    }));
 
     let session = crate::transfer::session::ImportSession::load(session_id)
         .expect("load updated import session");
     assert!(!session.rows[0].written);
     assert_eq!(session.rows[0].local_path, None);
-    assert_eq!(session.rows[0].errors, vec!["private video needs login"]);
+    assert!(session.rows[0].errors.is_empty());
     assert_eq!(session.counts.written, 0);
+    let _ = crate::transfer::session::ImportSession::delete_record(session_id);
 }
 
 #[test]
 fn download_done_with_empty_path_does_not_save() {
     let mut app = App::new(100);
-    let cmds = app.update(Msg::DownloadDone {
+    let cmds = app.update(Msg::Download(DownloadMsg::Done {
         video_id: "x".to_owned(),
         path: "   ".to_owned(),
-    });
+    }));
     assert!(
         !cmds
             .iter()
@@ -630,7 +821,8 @@ fn settings_scroll_resets_on_reopen() {
     app.bridges.settings_scroll.resolve(0, 10, 50, 0);
     app.bridges.settings_scroll.wheel(false, 5, 50);
     assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 5);
-    app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
     app.open_settings();
     assert_eq!(
         app.bridges.settings_scroll.resolve(0, 10, 50, 0),
@@ -686,6 +878,21 @@ fn library_all_dedups_same_title_across_collections() {
     assert_eq!(app.library_rows()[0].video_id, "yt1");
 }
 
+fn settle_confirmed_download_delete(app: &mut App, commands: Vec<Cmd>) -> Vec<Cmd> {
+    let mut commands = commands.into_iter();
+    let (paths, root) = match commands.next() {
+        Some(Cmd::Download(DownloadCmd::Delete { paths, root })) => (paths, root),
+        _ => panic!("confirmed deletion must emit one typed delete effect"),
+    };
+    assert!(commands.next().is_none());
+    let (deleted, failures) = crate::download::delete_download_files(paths, &root);
+    app.update(Msg::DownloadsDeleted {
+        root,
+        deleted,
+        failed: failures.len(),
+    })
+}
+
 #[test]
 fn downloads_delete_confirms_then_removes_file() {
     let file = temp_audio_file("del");
@@ -698,13 +905,15 @@ fn downloads_delete_confirms_then_removes_file() {
     assert!(cmds.is_empty());
     assert!(app.library_ui.confirm_delete.is_some());
     assert!(file.exists());
-    // Confirming removes the file from disk and asks for a rescan.
+    // Confirming only transfers ownership to the runtime; reducer code cannot unlink first.
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.library_ui.confirm_delete.is_none());
+    assert!(file.exists());
+    let cmds = settle_confirmed_download_delete(&mut app, cmds);
     assert!(!file.exists());
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::Data(DataCmd::ScanDownloads(_))))
+            .any(|c| matches!(c, Cmd::Download(DownloadCmd::Scan(_))))
     );
 }
 
@@ -719,11 +928,12 @@ fn downloads_delete_refuses_file_outside_download_dir() {
     open_library_tab(&mut app, LibraryTab::Downloads);
     app.update(Msg::Key(key(KeyCode::Delete)));
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let cmds = settle_confirmed_download_delete(&mut app, cmds);
     assert!(file.exists());
     assert_eq!(app.library_ui.downloaded.len(), 1);
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::Data(DataCmd::ScanDownloads(_))))
+            .any(|c| matches!(c, Cmd::Download(DownloadCmd::Scan(_))))
     );
     let _ = std::fs::remove_file(&file);
     let _ = std::fs::remove_dir_all(root);
@@ -748,7 +958,8 @@ fn downloads_delete_refuses_symlink() {
     app.library_ui.downloaded = vec![Song::local_file(link.clone())];
     open_library_tab(&mut app, LibraryTab::Downloads);
     app.update(Msg::Key(key(KeyCode::Delete)));
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    settle_confirmed_download_delete(&mut app, cmds);
     assert!(link.exists());
     assert!(real.exists());
     assert_eq!(app.library_ui.downloaded.len(), 1);

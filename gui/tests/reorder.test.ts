@@ -55,7 +55,7 @@ describe('reorder math', () => {
 });
 
 describe('QueueStore.move', () => {
-  it('optimistically reorders and sends queue_move with the current rev', () => {
+  it('sends queue_move with the current rev and waits for an authoritative snapshot', () => {
     const t = new MockTransport();
     const store = new QueueStore(new Client(t));
     t.emit({
@@ -68,7 +68,7 @@ describe('QueueStore.move', () => {
       },
     });
     store.move(0, 2);
-    expect(store.items.map((x) => x.video_id)).toEqual(['b', 'c', 'a']);
+    expect(store.items.map((x) => x.video_id)).toEqual(['a', 'b', 'c']);
     const sent = t.sent.at(-1)!;
     expect(sent).toMatchObject({ kind: 'cmd', name: 'queue_move' });
     expect(sent.payload).toEqual({ from: 0, to: 2, expected_rev: 7 });
@@ -109,10 +109,10 @@ describe('QueueStore checked row mutations', () => {
     });
   });
 
-  it('does not optimistically remove and reports a stale revision', async () => {
+  it('does not optimistically remove and reports a stale revision with a page-scoped refresh', async () => {
     const t = new MockTransport();
     const errors: string[] = [];
-    const store = new QueueStore(new Client(t), (message) => errors.push(message));
+    const store = new QueueStore(new Client(t, 'queue-page'), (message) => errors.push(message));
     t.emit({
       v: 1,
       kind: 'event',
@@ -138,6 +138,7 @@ describe('QueueStore checked row mutations', () => {
     expect(errors).toEqual(['The queue changed. Refreshing it now; try again.']);
     expect(t.sent.at(-1)).toEqual({
       v: 1,
+      page_id: 'queue-page',
       kind: 'sub',
       name: 'refresh',
       payload: ['queue'],

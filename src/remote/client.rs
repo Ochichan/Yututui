@@ -14,19 +14,21 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
 use super::args::{self, Invocation, ParseError, Parsed};
 use super::endpoint;
 use super::proto::{
-    InstanceFile, InstanceMode, MAX_ONESHOT_REPLY_BYTES, PROTOCOL_VERSION, PROTOCOL_VERSION_V7,
-    RemoteCommand, RemoteRequest, RemoteResponse, StatusSnapshot,
+    CONFIRMATION_LOST_REASON, InstanceFile, InstanceMode, MAX_ONESHOT_REPLY_BYTES,
+    PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand,
+    RemoteRequest, RemoteResponse, RemoteResponseEnvelope, RequestRetryClass, StatusSnapshot,
 };
 use crate::search_source::SearchSource;
 use crate::streaming::StreamingMode;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
@@ -46,6 +48,9 @@ pub enum ClientError {
     FlushFailed(String),
     NoResponse,
     MalformedResponse,
+    /// A mutating request may have reached the owner, but neither the original exchange nor the
+    /// same-ID retry produced an authoritative result.
+    ConfirmationLost,
 }
 
 impl ClientError {
@@ -69,6 +74,10 @@ impl ClientError {
             ClientError::FlushFailed(e) => format!("flush failed: {e}"),
             ClientError::NoResponse => "no response from ytt.".to_string(),
             ClientError::MalformedResponse => "malformed response from ytt.".to_string(),
+            ClientError::ConfirmationLost => {
+                "confirmation lost — the action may have been applied; check current state before retrying."
+                    .to_string()
+            }
         }
     }
 }
@@ -154,9 +163,7 @@ pub fn run(args_in: &[String]) -> i32 {
 /// terminal state and never prints; callers decide how to render success, rejection, or transport
 /// failures.
 pub async fn send(command: RemoteCommand) -> Result<RemoteResponse, ClientError> {
-    let Some(instance) = endpoint::read_instance() else {
-        return Err(ClientError::NoRunningInstance);
-    };
+    let instance = endpoint::read_current_instance().map_err(ClientError::CurrentDescriptor)?;
     send_to(instance, command).await
 }
 
@@ -272,7 +279,97 @@ pub async fn send_to(
     instance: InstanceFile,
     command: RemoteCommand,
 ) -> Result<RemoteResponse, ClientError> {
+    let request_id = super::requests::fresh_request_id();
+    send_to_instance_with_request_id(instance, command, &request_id).await
+}
+
+#[cfg(test)]
+async fn send_to_instance(
+    instance: InstanceFile,
+    command: RemoteCommand,
+) -> Result<RemoteResponse, ClientError> {
+    send_to(instance, command).await
+}
+
+async fn send_to_instance_with_request_id(
+    instance: InstanceFile,
+    command: RemoteCommand,
+    request_id: &str,
+) -> Result<RemoteResponse, ClientError> {
     let version = negotiated_oneshot_version(instance.protocol_version)?;
+    let first = send_attempt(&instance, &command, request_id, version).await;
+    if attempt_is_ambiguous(&first) {
+        let requires_confirmation = command.requires_confirmation();
+        let retry_class = command.request_retry_class();
+        if retry_class == RequestRetryClass::RetainedOutcome
+            && (version < PROTOCOL_VERSION
+                || !instance
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == RETAINED_REQUEST_OUTCOMES_CAPABILITY))
+        {
+            // A v8 version number alone is not evidence of deduplication: older v8 servers ignore
+            // the additive request ID. Retrying a mutation against one could apply it twice.
+            return Err(ClientError::ConfirmationLost);
+        }
+        // Retained mutations can observe the first owner's late completion without a second
+        // admission; explicitly reexecuted queries instead issue safe fresh work. Client and
+        // server use the same nominal deadline, so a timeout can race the response write and
+        // surface as `NoResponse`; read failures and malformed/truncated replies are equally
+        // post-flush and therefore ambiguous. A write/flush failure can likewise happen after
+        // the complete request reached the server. Every retry reuses this exact identity.
+        let retry = send_attempt(&instance, &command, request_id, version).await;
+        let retry_is_authoritative = match retry_class {
+            RequestRetryClass::RetainedOutcome => attempt_is_retained_replay(&retry),
+            // RunSearch is deliberately executed afresh: an `ok` acknowledgement proves at
+            // least one dispatch, while a pre-admission rejection cannot resolve whether the
+            // first attempt dispatched. Status does not require confirmation and accepts any
+            // well-formed fresh retry response below.
+            RequestRetryClass::ReexecuteReadOnly => {
+                !requires_confirmation || attempt_confirms_fresh_dispatch(&retry)
+            }
+        };
+        if !retry_is_authoritative {
+            return Err(ClientError::ConfirmationLost);
+        }
+        return retry.map(|envelope| envelope.response);
+    }
+    first.map(|envelope| envelope.response)
+}
+
+fn attempt_is_ambiguous(result: &Result<RemoteResponseEnvelope, ClientError>) -> bool {
+    matches!(
+        result,
+        Ok(envelope) if matches!(
+            envelope.response.reason.as_deref(),
+            Some("timeout" | CONFIRMATION_LOST_REASON)
+        )
+    ) || matches!(
+        result,
+        Err(ClientError::NoResponse
+            | ClientError::MalformedResponse
+            | ClientError::WriteFailed(_)
+            | ClientError::FlushFailed(_))
+    )
+}
+
+fn attempt_is_retained_replay(result: &Result<RemoteResponseEnvelope, ClientError>) -> bool {
+    matches!(result, Ok(envelope) if envelope.retained_replay && !matches!(
+        envelope.response.reason.as_deref(),
+        Some("timeout" | CONFIRMATION_LOST_REASON)
+    ))
+}
+
+fn attempt_confirms_fresh_dispatch(result: &Result<RemoteResponseEnvelope, ClientError>) -> bool {
+    matches!(result, Ok(envelope) if envelope.response.ok)
+}
+
+async fn send_attempt(
+    instance: &InstanceFile,
+    command: &RemoteCommand,
+    request_id: &str,
+    version: u8,
+) -> Result<RemoteResponseEnvelope, ClientError> {
     let Ok(name) = instance.endpoint.as_str().to_fs_name::<GenericFilePath>() else {
         return Err(ClientError::MalformedEndpoint);
     };
@@ -283,11 +380,12 @@ pub async fn send_to(
         _ => return Err(ClientError::ConnectFailed),
     };
 
-    let reply_timeout = super::reply_timeout_for(&command);
+    let reply_timeout = super::reply_timeout_for(command);
     let req = RemoteRequest {
         version,
-        token: instance.token,
-        command,
+        token: instance.token.clone(),
+        request_id: (version >= PROTOCOL_VERSION).then(|| request_id.to_owned()),
+        command: command.clone(),
     };
     let mut payload = match serde_json::to_vec(&req) {
         Ok(v) => v,
@@ -297,12 +395,7 @@ pub async fn send_to(
 
     {
         let mut writer = &conn;
-        if let Err(e) = writer.write_all(&payload).await {
-            return Err(ClientError::WriteFailed(e.to_string()));
-        }
-        if let Err(e) = writer.flush().await {
-            return Err(ClientError::FlushFailed(e.to_string()));
-        }
+        write_request(&mut writer, &payload, WRITE_TIMEOUT).await?;
     }
 
     let mut reader = BufReader::new(&conn);
@@ -313,6 +406,29 @@ pub async fn send_to(
         Err(_) => return Err(ClientError::NoResponse),
     };
     serde_json::from_str(line.trim()).map_err(|_| ClientError::MalformedResponse)
+}
+
+async fn write_request<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+    write_timeout: Duration,
+) -> Result<(), ClientError> {
+    let write = async {
+        writer
+            .write_all(payload)
+            .await
+            .map_err(|e| ClientError::WriteFailed(e.to_string()))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| ClientError::FlushFailed(e.to_string()))
+    };
+    match timeout(write_timeout, write).await {
+        Ok(result) => result,
+        Err(_) => Err(ClientError::WriteFailed(
+            "remote request write timed out".to_string(),
+        )),
+    }
 }
 
 async fn exchange_for_cli(parsed: Parsed) -> i32 {
@@ -643,8 +759,11 @@ fn search_source_name(source: SearchSource) -> &'static str {
 mod tests {
     use super::*;
     use crate::remote::proto::{InstanceMode, PROTOCOL_VERSION_V7};
+    use crate::remote::requests::{CommandDeduper, RequestKey};
     use interprocess::local_socket::ListenerOptions;
     use interprocess::local_socket::tokio::Listener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncBufReadExt;
 
     fn test_endpoint(name: &str) -> String {
@@ -662,8 +781,20 @@ mod tests {
             created_unix: 1,
             mode: InstanceMode::StandaloneTui,
             protocol_version: PROTOCOL_VERSION,
-            capabilities: vec!["remote-control".to_string(), "status".to_string()],
+            capabilities: vec![
+                "remote-control".to_string(),
+                "status".to_string(),
+                RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
+            ],
         }
+    }
+
+    fn legacy_v8_instance(endpoint: String) -> InstanceFile {
+        let mut instance = test_instance(endpoint);
+        instance
+            .capabilities
+            .retain(|capability| capability != RETAINED_REQUEST_OUTCOMES_CAPABILITY);
+        instance
     }
 
     fn bind_test_listener(endpoint: &str) -> Listener {
@@ -685,6 +816,10 @@ mod tests {
             let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
             assert_eq!(request.version, expected_version);
             assert_eq!(request.token, "secret");
+            assert_eq!(
+                request.request_id.is_some(),
+                expected_version >= PROTOCOL_VERSION
+            );
         }
         let mut writer = &conn;
         writer.write_all(response_line.as_bytes()).await.unwrap();
@@ -692,14 +827,185 @@ mod tests {
         writer.flush().await.unwrap();
     }
 
-    async fn accept_one_request_without_response(listener: Listener) {
+    async fn accept_requests_without_response(listener: Listener, expected_requests: usize) {
+        for _ in 0..expected_requests {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let _: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+        }
+    }
+
+    async fn serve_timeout_then_success(listener: Listener) -> [Option<String>; 2] {
+        let responses = [
+            RemoteResponseEnvelope {
+                response: RemoteResponse::err(CONFIRMATION_LOST_REASON),
+                retained_replay: false,
+            },
+            RemoteResponseEnvelope {
+                response: RemoteResponse::ok("late success".to_owned()),
+                retained_replay: true,
+            },
+        ];
+        let mut request_ids: [Option<String>; 2] = [None, None];
+        for (index, response) in responses.into_iter().enumerate() {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+            request_ids[index] = request.request_id;
+
+            let mut writer = &conn;
+            let mut response = serde_json::to_vec(&response).unwrap();
+            response.push(b'\n');
+            writer.write_all(&response).await.unwrap();
+            writer.flush().await.unwrap();
+        }
+        request_ids
+    }
+
+    async fn serve_eof_then_success(listener: Listener) -> [Option<String>; 2] {
+        let mut request_ids: [Option<String>; 2] = [None, None];
+        for (index, request_id) in request_ids.iter_mut().enumerate() {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+            *request_id = request.request_id;
+
+            if index == 1 {
+                let mut writer = &conn;
+                let mut response = serde_json::to_vec(&RemoteResponseEnvelope {
+                    response: RemoteResponse::ok("recovered after ambiguous EOF".to_owned()),
+                    retained_replay: true,
+                })
+                .unwrap();
+                response.push(b'\n');
+                writer.write_all(&response).await.unwrap();
+                writer.flush().await.unwrap();
+            }
+        }
+        request_ids
+    }
+
+    async fn serve_corrupt_then_cached_then_fresh(
+        listener: Listener,
+    ) -> ([Option<String>; 3], usize) {
+        let requests = CommandDeduper::default();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut request_ids: [Option<String>; 3] = [None, None, None];
+
+        for (index, request_id) in request_ids.iter_mut().enumerate() {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+            *request_id = request.request_id.clone();
+
+            let key = RequestKey::stable(request.request_id.unwrap()).unwrap();
+            let executions_for_emit = Arc::clone(&executions);
+            let response = requests
+                .execute_with_replay_proof(
+                    key,
+                    &request.command,
+                    Duration::from_secs(1),
+                    move |reply| {
+                        let execution = executions_for_emit.fetch_add(1, Ordering::Relaxed) + 1;
+                        reply
+                            .send(RemoteResponse::ok(format!("execution {execution}")))
+                            .unwrap();
+                        true
+                    },
+                )
+                .await;
+
+            let mut writer = &conn;
+            if index == 0 {
+                // The mutation completed and its response is cached, but the first caller sees
+                // an invalid response. Its retry must join that cache entry instead of executing
+                // the mutation again.
+                writer.write_all(b"{truncated\n").await.unwrap();
+            } else {
+                let response = RemoteResponseEnvelope {
+                    response: response.response,
+                    retained_replay: response.retained_replay,
+                };
+                let mut response = serde_json::to_vec(&response).unwrap();
+                response.push(b'\n');
+                writer.write_all(&response).await.unwrap();
+            }
+            writer.flush().await.unwrap();
+        }
+
+        (request_ids, executions.load(Ordering::Relaxed))
+    }
+
+    async fn serve_two_malformed_responses(listener: Listener) -> [Option<String>; 2] {
+        let mut request_ids: [Option<String>; 2] = [None, None];
+        for request_id in &mut request_ids {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+            *request_id = request.request_id;
+
+            let mut writer = &conn;
+            writer.write_all(b"{not json}\n").await.unwrap();
+            writer.flush().await.unwrap();
+        }
+        request_ids
+    }
+
+    async fn serve_eof_then_fresh_response(
+        listener: Listener,
+        response: RemoteResponse,
+    ) -> [Option<String>; 2] {
+        let mut request_ids: [Option<String>; 2] = [None, None];
+        for (index, request_id) in request_ids.iter_mut().enumerate() {
+            let conn = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            let request: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+            *request_id = request.request_id;
+
+            if index == 1 {
+                let mut writer = &conn;
+                let envelope = RemoteResponseEnvelope {
+                    response: response.clone(),
+                    retained_replay: false,
+                };
+                let mut response = serde_json::to_vec(&envelope).unwrap();
+                response.push(b'\n');
+                writer.write_all(&response).await.unwrap();
+                writer.flush().await.unwrap();
+            }
+        }
+        request_ids
+    }
+
+    async fn serve_legacy_eof_and_detect_retry(listener: Listener) -> usize {
         let conn = listener.accept().await.unwrap();
         let mut reader = BufReader::new(&conn);
         let mut request = String::new();
         reader.read_line(&mut request).await.unwrap();
-        assert!(request.contains("\"version\""));
-        // Dropping the connection without a reply must remain `NoResponse`; callers cannot know
-        // whether the owner completed a side effect and therefore must not retry offline.
+        let _: RemoteRequest = serde_json::from_str(request.trim()).unwrap();
+        drop(reader);
+        drop(conn);
+
+        if timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_ok()
+        {
+            2
+        } else {
+            1
+        }
     }
 
     #[tokio::test]
@@ -758,63 +1064,302 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn old_descriptor_receives_a_frozen_v7_request() {
-        let endpoint = test_endpoint("v7-wire");
+    async fn semantic_timeout_retries_once_with_the_same_request_identity() {
+        let endpoint = test_endpoint("retry-identity");
         let listener = bind_test_listener(&endpoint);
-        let server = tokio::spawn(async move {
-            let conn = listener.accept().await.unwrap();
-            let mut reader = BufReader::new(&conn);
-            let mut line = String::new();
-            reader.read_line(&mut line).await.unwrap();
-            let request: RemoteRequest = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(request.version, PROTOCOL_VERSION_V7);
-            drop(reader);
+        let server = tokio::spawn(serve_timeout_then_success(listener));
 
-            let mut writer = &conn;
-            writer
-                .write_all(
-                    serde_json::to_string(&RemoteResponse::ok("ok".to_string()))
-                        .unwrap()
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-            writer.write_all(b"\n").await.unwrap();
-            writer.flush().await.unwrap();
-        });
-
-        let mut instance = test_instance(endpoint.clone());
-        instance.protocol_version = PROTOCOL_VERSION_V7;
-        let response = send_to(instance, RemoteCommand::Status).await.unwrap();
-        server.await.unwrap();
+        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::TogglePause)
+            .await
+            .unwrap();
+        let request_ids = server.await.unwrap();
         let _ = std::fs::remove_file(endpoint);
-        assert!(response.ok);
+
+        assert!(resp.ok);
+        assert_eq!(resp.message.as_deref(), Some("late success"));
+        assert!(request_ids[0].is_some());
+        assert_eq!(request_ids[0], request_ids[1]);
     }
 
     #[tokio::test]
-    async fn send_to_instance_rejects_malformed_response() {
-        let endpoint = test_endpoint("malformed");
+    async fn no_response_retries_once_with_the_same_request_identity() {
+        let endpoint = test_endpoint("retry-no-response");
         let listener = bind_test_listener(&endpoint);
-        let server = tokio::spawn(serve_one_response(
+        let server = tokio::spawn(serve_eof_then_success(listener));
+
+        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::TogglePause)
+            .await
+            .unwrap();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(resp.ok);
+        assert_eq!(
+            resp.message.as_deref(),
+            Some("recovered after ambiguous EOF")
+        );
+        assert!(request_ids[0].is_some());
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn old_v8_owner_without_retained_outcome_capability_is_not_retried() {
+        let endpoint = test_endpoint("legacy-v8-no-retry");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_legacy_eof_and_detect_retry(listener));
+
+        let err = send_to_instance(
+            legacy_v8_instance(endpoint.clone()),
+            RemoteCommand::TogglePause,
+        )
+        .await
+        .unwrap_err();
+        let accepted = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::ConfirmationLost);
+        assert_eq!(accepted, 1, "an old v8 owner must not receive a retry");
+    }
+
+    #[tokio::test]
+    async fn quiescing_owner_rejection_does_not_overwrite_ambiguous_mutation() {
+        let endpoint = test_endpoint("retry-quiescing-owner");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_eof_then_fresh_response(
             listener,
-            "{not json}".to_string(),
-            PROTOCOL_VERSION,
+            RemoteResponse::err("shutting_down"),
         ));
+
+        let err = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::TogglePause)
+            .await
+            .unwrap_err();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::ConfirmationLost);
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn successor_bad_token_rejection_does_not_overwrite_ambiguous_mutation() {
+        let endpoint = test_endpoint("retry-successor-bad-token");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_eof_then_fresh_response(
+            listener,
+            RemoteResponse::err("bad_token"),
+        ));
+
+        let err = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::TogglePause)
+            .await
+            .unwrap_err();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::ConfirmationLost);
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn run_search_accepts_a_fresh_retry_ack_without_retained_capability_or_proof() {
+        let endpoint = test_endpoint("search-fresh-retry-ack");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_eof_then_fresh_response(
+            listener,
+            RemoteResponse::ok("search dispatched".to_owned()),
+        ));
+        let command = RemoteCommand::RunSearch {
+            ticket: 7,
+            query: "query".to_owned(),
+            source: crate::search_source::SearchSource::Youtube,
+        };
+
+        let response = send_to_instance(legacy_v8_instance(endpoint.clone()), command)
+            .await
+            .unwrap();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(response.ok);
+        assert_eq!(response.message.as_deref(), Some("search dispatched"));
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn run_search_fresh_retry_rejection_preserves_confirmation_lost() {
+        let endpoint = test_endpoint("search-fresh-retry-rejected");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_eof_then_fresh_response(
+            listener,
+            RemoteResponse::err("bad_token"),
+        ));
+        let command = RemoteCommand::RunSearch {
+            ticket: 8,
+            query: "query".to_owned(),
+            source: crate::search_source::SearchSource::Youtube,
+        };
+
+        let err = send_to_instance(legacy_v8_instance(endpoint.clone()), command)
+            .await
+            .unwrap_err();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::ConfirmationLost);
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn status_accepts_a_fresh_retry_rejection_without_confirmation_semantics() {
+        let endpoint = test_endpoint("status-fresh-retry-rejected");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_eof_then_fresh_response(
+            listener,
+            RemoteResponse::err("shutting_down"),
+        ));
+
+        let response =
+            send_to_instance(legacy_v8_instance(endpoint.clone()), RemoteCommand::Status)
+                .await
+                .unwrap();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(!response.ok);
+        assert_eq!(response.reason.as_deref(), Some("shutting_down"));
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn malformed_response_retries_once_and_cached_result_executes_only_once() {
+        let endpoint = test_endpoint("malformed-cached");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_corrupt_then_cached_then_fresh(listener));
+
+        let instance = test_instance(endpoint.clone());
+        let recovered = send_to_instance(instance.clone(), RemoteCommand::TogglePause)
+            .await
+            .unwrap();
+        let later = send_to_instance(instance, RemoteCommand::TogglePause)
+            .await
+            .unwrap();
+        let (request_ids, executions) = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(recovered.ok);
+        assert_eq!(recovered.message.as_deref(), Some("execution 1"));
+        assert!(later.ok);
+        assert_eq!(later.message.as_deref(), Some("execution 2"));
+        assert_eq!(executions, 2, "the same-ID retry must not re-execute");
+        assert!(request_ids[0].is_some());
+        assert_eq!(request_ids[0], request_ids[1]);
+        assert_ne!(request_ids[1], request_ids[2]);
+    }
+
+    #[tokio::test]
+    async fn repeated_malformed_response_stops_after_one_retry() {
+        let endpoint = test_endpoint("malformed-twice");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_two_malformed_responses(listener));
 
         let err = send_to(test_instance(endpoint.clone()), RemoteCommand::Status)
             .await
             .unwrap_err();
-        server.await.unwrap();
+        let request_ids = server.await.unwrap();
         let _ = std::fs::remove_file(endpoint);
 
         assert_eq!(err, ClientError::MalformedResponse);
+        assert!(request_ids[0].is_some());
+        assert_eq!(request_ids[0], request_ids[1]);
+    }
+
+    #[tokio::test]
+    async fn repeated_lost_mutation_replies_surface_confirmation_lost() {
+        let endpoint = test_endpoint("mutation-confirmation-lost");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_two_malformed_responses(listener));
+
+        let err = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::TogglePause)
+            .await
+            .unwrap_err();
+        let request_ids = server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::ConfirmationLost);
+        assert_eq!(request_ids[0], request_ids[1]);
+        assert!(
+            err.human_message().contains("may have been applied"),
+            "the CLI must tell users to inspect state before retrying"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_write_is_deadline_bounded_for_a_non_reading_peer() {
+        let (mut writer, _non_reading_peer) = tokio::io::duplex(1);
+
+        let error = write_request(
+            &mut writer,
+            &vec![b'x'; 64 * 1024],
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ClientError::WriteFailed("remote request write timed out".to_string())
+        );
+    }
+
+    #[test]
+    fn only_possibly_delivered_or_post_flush_failures_are_ambiguous() {
+        assert!(attempt_is_ambiguous(&Err(ClientError::WriteFailed(
+            "partial".to_string()
+        ))));
+        assert!(attempt_is_ambiguous(&Err(ClientError::FlushFailed(
+            "lost ack".to_string()
+        ))));
+        assert!(attempt_is_ambiguous(&Err(ClientError::NoResponse)));
+        assert!(attempt_is_ambiguous(&Err(ClientError::MalformedResponse)));
+        assert!(attempt_is_ambiguous(&Ok(RemoteResponseEnvelope {
+            response: RemoteResponse::err(CONFIRMATION_LOST_REASON),
+            retained_replay: false,
+        })));
+        assert!(!attempt_is_ambiguous(&Err(ClientError::ConnectFailed)));
+        assert!(!attempt_is_ambiguous(&Err(ClientError::MalformedEndpoint)));
+        assert!(!attempt_is_ambiguous(&Err(ClientError::EncodeFailed(
+            "before write".to_string()
+        ))));
+    }
+
+    #[test]
+    fn only_explicit_retained_replay_proves_a_retry_outcome() {
+        let plain_success = Ok(RemoteResponseEnvelope {
+            response: RemoteResponse::ok("fresh owner response".to_owned()),
+            retained_replay: false,
+        });
+        assert!(!attempt_is_retained_replay(&plain_success));
+
+        let replayed_success = Ok(RemoteResponseEnvelope {
+            response: RemoteResponse::ok("retained owner response".to_owned()),
+            retained_replay: true,
+        });
+        assert!(attempt_is_retained_replay(&replayed_success));
+
+        let replay_wait_timed_out = Ok(RemoteResponseEnvelope {
+            response: RemoteResponse::err(CONFIRMATION_LOST_REASON),
+            retained_replay: true,
+        });
+        assert!(!attempt_is_retained_replay(&replay_wait_timed_out));
     }
 
     #[tokio::test]
     async fn send_to_instance_preserves_no_response() {
         let endpoint = test_endpoint("no-response");
         let listener = bind_test_listener(&endpoint);
-        let server = tokio::spawn(accept_one_request_without_response(listener));
+        // Status retries once after an ambiguous EOF. Keep the listener alive for both
+        // exchanges so the second attempt observes the same semantic no-response outcome
+        // instead of replacing it with a connect failure after the fixture exits.
+        let server = tokio::spawn(accept_requests_without_response(listener, 2));
 
         let err = send_to(test_instance(endpoint.clone()), RemoteCommand::Status)
             .await

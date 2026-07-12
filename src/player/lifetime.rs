@@ -10,7 +10,8 @@
 //! mpv when our process dies for any reason; the registry stays as a universal backstop.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,10 +21,94 @@ use crate::util::safe_fs;
 /// must be allocation-free and async-signal-safe — an atomic is exactly that.
 static MPV_PID: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(test)]
+static MPV_PID_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+pub(crate) async fn lock_mpv_pid_for_test() -> tokio::sync::MutexGuard<'static, ()> {
+    MPV_PID_TEST_LOCK.lock().await
+}
+
+/// Monotonic, out-of-band process shutdown signal.
+///
+/// Owner event queues are deliberately bounded and can be saturated at exactly the moment an
+/// external signal arrives. This latch therefore does not share their delivery path: signal
+/// handlers set the atomic first, then wake the owner loop through a watch channel. The atomic
+/// makes checks cheap and monotonic; subscribing before the second check in [`Self::wait`]
+/// makes the wait lost-wakeup safe.
+#[derive(Clone)]
+pub struct ShutdownLatch {
+    inner: Arc<ShutdownLatchInner>,
+}
+
+struct ShutdownLatchInner {
+    triggered: AtomicBool,
+    changed: tokio::sync::watch::Sender<bool>,
+}
+
+impl ShutdownLatch {
+    pub fn new() -> Self {
+        let (changed, _rx) = tokio::sync::watch::channel(false);
+        Self {
+            inner: Arc::new(ShutdownLatchInner {
+                triggered: AtomicBool::new(false),
+                changed,
+            }),
+        }
+    }
+
+    /// Set the latch once and wake every current or future waiter.
+    pub fn trigger(&self) {
+        if !self.inner.triggered.swap(true, Ordering::AcqRel) {
+            self.inner.changed.send_replace(true);
+        }
+    }
+
+    pub fn is_triggered(&self) -> bool {
+        self.inner.triggered.load(Ordering::Acquire)
+    }
+
+    /// Wait until shutdown is requested without losing a trigger that races registration.
+    pub async fn wait(&self) {
+        if self.is_triggered() {
+            return;
+        }
+        let mut changed = self.inner.changed.subscribe();
+        loop {
+            if self.is_triggered() {
+                return;
+            }
+            // The sender is owned by the same Arc as this receiver, so closure is impossible
+            // while the wait is live. Treat it as shutdown defensively if that invariant ever
+            // changes.
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+impl Default for ShutdownLatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Process-lifetime events emitted by signal handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalEvent {
     Quit,
+}
+
+fn request_signal_shutdown<F>(shutdown: &ShutdownLatch, emit: &F)
+where
+    F: Fn(SignalEvent),
+{
+    // Ordering is intentional: the owner must suppress recovery before killing mpv can cause
+    // its IPC actor to enqueue TransportClosed into an already-saturated owner lane.
+    shutdown.trigger();
+    kill_mpv_now();
+    emit(SignalEvent::Quit);
 }
 
 /// Record the spawned mpv pid so the panic hook / signal handler can reach it.
@@ -48,11 +133,11 @@ pub fn kill_mpv_now() {
 
 #[cfg(unix)]
 fn kill_pid(pid: u32) {
-    // SIGKILL is async-signal-safe and a single syscall — usable from the panic hook.
-    // SAFETY: `pid` came from the spawned mpv child registry; if it has exited or is
-    // no longer signalable, `kill` reports an error that this best-effort path ignores.
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    // The shared process abstraction owns the only unsafe Unix kill primitive. It targets mpv's
+    // process group (including ytdl_hook helpers) and falls back to the direct pid for lifeline
+    // records written by versions that launched Media children without group isolation.
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        crate::util::process::terminate_process_group(pid);
     }
 }
 
@@ -82,13 +167,16 @@ pub fn install_panic_hook() {
 /// loop to quit. Keyboard Ctrl+C is handled as a key event (raw mode swallows SIGINT),
 /// so these cover external `kill`s and terminal/SSH disconnects (SIGHUP).
 #[cfg(unix)]
-pub fn spawn_signal_handlers<F>(emit: F)
+pub fn spawn_signal_handlers<F>(
+    shutdown: ShutdownLatch,
+    emit: F,
+) -> crate::util::background_task::BackgroundTask
 where
     F: Fn(SignalEvent) + Send + Sync + 'static,
 {
     use tokio::signal::unix::{SignalKind, signal};
 
-    tokio::spawn(async move {
+    crate::util::background_task::BackgroundTask::spawn("termination signal handlers", async move {
         let mut hup = match signal(SignalKind::hangup()) {
             Ok(s) => s,
             Err(e) => {
@@ -117,95 +205,29 @@ where
             _ = int.recv() => tracing::info!("received SIGINT"),
         }
 
-        kill_mpv_now();
-        emit(SignalEvent::Quit);
-    });
+        request_signal_shutdown(&shutdown, &emit);
+    })
 }
 
 #[cfg(windows)]
-pub fn spawn_signal_handlers<F>(emit: F)
+pub fn spawn_signal_handlers<F>(
+    shutdown: ShutdownLatch,
+    emit: F,
+) -> crate::util::background_task::BackgroundTask
 where
     F: Fn(SignalEvent) + Send + Sync + 'static,
 {
     // Console Ctrl+C; CTRL_CLOSE/logoff/shutdown are owned by the Job Object below.
-    tokio::spawn(async move {
+    crate::util::background_task::BackgroundTask::spawn("termination signal handlers", async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            kill_mpv_now();
-            emit(SignalEvent::Quit);
+            request_signal_shutdown(&shutdown, &emit);
         }
-    });
-}
-
-/// Windows: place mpv in a Job Object flagged `KILL_ON_JOB_CLOSE`, so the kernel
-/// terminates it the instant our process exits for *any* reason — clean quit,
-/// `panic = "abort"`, the console close button, logoff/shutdown, or a Task-Manager
-/// kill. This is the definitive no-orphan fix for the hard kills that signal handlers
-/// cannot intercept (see the plan's "Process lifetime" section). The returned handle
-/// (as `isize`) must be kept alive for the whole session; the kernel auto-closes it on
-/// process death. Returns `None` on failure — we then lean on the sysinfo kill plus the
-/// startup registry reaper. mpv's own children (yt-dlp) inherit job membership, so they
-/// die too.
-#[cfg(windows)]
-pub fn assign_to_job(process_handle: std::os::windows::io::RawHandle) -> Option<isize> {
-    use std::ffi::c_void;
-
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
-    };
-
-    // SAFETY: all Win32 handles used here are either returned by the preceding API
-    // call or supplied by the mpv child process; errors are checked after each call.
-    unsafe {
-        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if job.is_null() {
-            tracing::warn!("CreateJobObject failed; relying on sysinfo backstop");
-            return None;
-        }
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let set = SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            std::ptr::addr_of!(info).cast::<c_void>(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        if set == 0 {
-            tracing::warn!("SetInformationJobObject failed");
-            close_handle(job);
-            return None;
-        }
-        if AssignProcessToJobObject(job, process_handle as HANDLE) == 0 {
-            tracing::warn!("AssignProcessToJobObject failed");
-            close_handle(job);
-            return None;
-        }
-        tracing::info!("mpv bound to a kill-on-close Job Object");
-        Some(job as isize)
-    }
-}
-
-#[cfg(windows)]
-fn close_handle(handle: windows_sys::Win32::Foundation::HANDLE) {
-    // SAFETY: callers pass an owned Win32 handle that must be closed exactly once;
-    // CloseHandle failure only means the handle was already invalid.
-    unsafe {
-        windows_sys::Win32::Foundation::CloseHandle(handle);
-    }
-}
-
-/// Close the job handle. Because of `KILL_ON_JOB_CLOSE`, this also terminates mpv —
-/// exactly what a clean quit wants. Called from the [`super::Mpv`] guard's `Drop`.
-#[cfg(windows)]
-pub fn close_job(handle: isize) {
-    close_handle(handle as windows_sys::Win32::Foundation::HANDLE);
+    })
 }
 
 /// Windows: register a console control handler that kills mpv on the close button,
-/// logoff, and shutdown. The Job Object already guarantees the kill, but this makes
-/// teardown prompt (the OS gives us a short window before force-terminating us).
+/// logoff, and shutdown. [`crate::util::process_guard::ChildTreeGuard`] already owns the
+/// kill-on-close Job Object; this makes teardown prompt while the OS allows cleanup.
 #[cfg(windows)]
 pub fn install_console_ctrl_handler() {
     use windows_sys::Win32::System::Console::{
@@ -318,6 +340,11 @@ pub fn reap_orphans(dir: &Path) {
         && proc_.name().to_string_lossy().to_lowercase().contains("mpv")
         && mpv_identity_matches(proc_, &record)
     {
+        #[cfg(unix)]
+        if let Ok(pid) = libc::pid_t::try_from(record.mpv_pid) {
+            crate::util::process::terminate_process_group(pid);
+        }
+        #[cfg(not(unix))]
         proc_.kill();
         tracing::warn!(
             mpv_pid = record.mpv_pid,
@@ -367,14 +394,60 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn mpv_pid_take_is_single_use_and_resets_to_empty() {
+    #[tokio::test]
+    async fn mpv_pid_take_is_single_use_and_resets_to_empty() {
+        let _pid_guard = lock_mpv_pid_for_test().await;
         let _ = take_mpv_pid();
         assert_eq!(take_mpv_pid(), None);
 
         set_mpv_pid(123_456);
         assert_eq!(take_mpv_pid(), Some(123_456));
         assert_eq!(take_mpv_pid(), None);
+    }
+
+    #[tokio::test]
+    async fn shutdown_latch_wakes_independently_of_a_full_owner_queue() {
+        let (owner_tx, _owner_rx) = tokio::sync::mpsc::channel(1);
+        owner_tx.try_send(()).expect("fill owner queue");
+
+        let latch = ShutdownLatch::new();
+        let waiter = latch.clone();
+        let waiting = tokio::spawn(async move {
+            waiter.wait().await;
+        });
+        tokio::task::yield_now().await;
+
+        latch.trigger();
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("out-of-band latch must not wait for owner capacity")
+            .expect("wait task must finish");
+        assert!(latch.is_triggered());
+        assert!(matches!(
+            owner_tx.try_send(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(()))
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_latch_wait_is_lost_wakeup_safe_and_monotonic() {
+        let latch = ShutdownLatch::new();
+        let wait_created_before_trigger = latch.wait();
+
+        // An async-fn body is not polled until awaited. Triggering here exercises the edge in
+        // which registration has not happened yet; the atomic pre-check must still complete it.
+        latch.trigger();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_created_before_trigger,
+        )
+        .await
+        .expect("pre-registration trigger must be observed");
+
+        latch.trigger();
+        tokio::time::timeout(std::time::Duration::from_secs(1), latch.wait())
+            .await
+            .expect("future waits stay ready after repeated triggers");
     }
 
     #[test]

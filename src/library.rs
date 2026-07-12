@@ -23,6 +23,7 @@ const HISTORY_MAX: usize = 999;
 const RADIO_FAVORITES_MAX: usize = 999;
 const RADIOS_MAX: usize = 999;
 const DOWNLOADS_MAX: usize = 999;
+const LIBRARY_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
 #[derive(Debug, Clone, Default)]
@@ -52,6 +53,18 @@ pub struct Library {
 }
 
 impl Library {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = library_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Library,
+            &path,
+            LIBRARY_MAX_BYTES,
+        )
+    }
+
     /// Load from disk, falling back to an empty library if absent or unreadable.
     pub fn load() -> Self {
         let Some(path) = library_path() else {
@@ -60,13 +73,11 @@ impl Library {
         // Schema-drift tolerant: one changed field no longer discards saved tracks/history.
         // Size-capped like the sibling Playlists load: a corrupt/oversized library.json is set
         // aside instead of being read wholesale into memory at startup.
-        const MAX_BYTES: u64 = 50 * 1024 * 1024;
-        let mut lib = safe_fs::load_json_or_default_limited::<Library>(&path, MAX_BYTES);
-        lib = crate::persist::replay_journaled_snapshot(
+        let mut lib = crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::Library,
             &path,
-            lib,
-            MAX_BYTES,
+            LIBRARY_MAX_BYTES,
+            || safe_fs::load_json_or_default_limited::<Library>(&path, LIBRARY_MAX_BYTES),
         );
         lib.trim_to_caps();
         lib
@@ -74,10 +85,11 @@ impl Library {
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = library_path() else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        crate::persist::write_store_json(&path, self)
     }
 
     pub fn is_favorite(&self, video_id: &str) -> bool {

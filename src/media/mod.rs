@@ -21,6 +21,8 @@ mod mpris;
 // Named `smtc` (not `windows`) so paths inside never shadow the `windows` crate.
 #[cfg(windows)]
 mod smtc;
+#[cfg(any(windows, test))]
+mod smtc_lifecycle;
 
 #[cfg(target_os = "macos")]
 use macos as platform_backend;
@@ -31,9 +33,12 @@ use smtc as platform_backend;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+#[cfg(any(target_os = "linux", windows, test))]
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::queue::Repeat;
+use crate::util::delivery::{CallbackCancellation, DeliveryResult};
 
 /// A control command originating from the OS media session, normalized across
 /// platforms. Applied through the same reducer/engine paths a keypress or `ytt -r`
@@ -202,6 +207,58 @@ impl MediaChanges {
             feedback: true,
         }
     }
+
+    /// Preserve every changed facet when several snapshots collapse into one
+    /// platform update. The newest snapshot supplies values; this union says which
+    /// values must be re-announced so an intermediate edge is never forgotten.
+    #[allow(dead_code)] // used by Linux MPRIS and Windows SMTC, not the macOS build
+    pub(crate) fn merge(&mut self, newer: Self) {
+        self.track |= newer.track;
+        self.artwork |= newer.artwork;
+        self.status |= newer.status;
+        self.position |= newer.position;
+        self.options |= newer.options;
+        self.caps |= newer.caps;
+        self.feedback |= newer.feedback;
+    }
+}
+
+/// One platform update slot shared by the asynchronous Linux and Windows backends.
+/// The newest snapshot owns all values while changed facets are unioned across every
+/// collapsed publish, so a full platform queue cannot erase an intermediate edge.
+#[derive(Default)]
+#[cfg(any(target_os = "linux", windows, test))]
+pub(crate) struct LatestMediaUpdate {
+    pending: Mutex<Option<(MediaSnapshot, MediaChanges)>>,
+}
+
+#[cfg(any(target_os = "linux", windows, test))]
+impl LatestMediaUpdate {
+    pub(crate) fn store(&self, snapshot: MediaSnapshot, changes: MediaChanges) -> bool {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replaced_existing = pending.is_some();
+        let mut accumulated = pending
+            .as_ref()
+            .map_or(changes, |(_, accumulated)| *accumulated);
+        accumulated.merge(changes);
+        *pending = Some((snapshot, accumulated));
+        replaced_existing
+    }
+
+    pub(crate) fn take(&self) -> Option<(MediaSnapshot, MediaChanges)> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn clear(&self) {
+        let _ = self.take();
+    }
 }
 
 /// Compute which facets differ between two snapshots. Position *values* are
@@ -246,7 +303,9 @@ pub fn diff(old: &MediaSnapshot, new: &MediaSnapshot) -> MediaChanges {
 }
 
 /// Shared type for the command sink handed to backends.
-pub type CommandSink = Arc<dyn Fn(MediaCommand) + Send + Sync>;
+pub type CommandSink = Arc<dyn Fn(MediaCommand) -> DeliveryResult + Send + Sync>;
+type CancellableCommandSink =
+    Arc<dyn Fn(MediaCommand, &CallbackCancellation) -> DeliveryResult + Send + Sync>;
 
 /// Extract a YouTube video id from a watch/share URL for MPRIS `OpenUri` and the search-box
 /// paste shortcut. Recognizes `…/watch?v=…`, `youtu.be/…`, `…/shorts/…`, `…/embed/…`,
@@ -334,6 +393,8 @@ pub fn parse_youtube_playlist_id(uri: &str) -> Option<String> {
 
 /// The facade owned by the run loop (TUI or daemon). Construction never fails: a
 /// backend that can't initialize just leaves the session inert (A-2 in the spec).
+const BACKEND_RETRY_DELAY: Duration = Duration::from_millis(250);
+
 pub struct MediaSession {
     enabled: bool,
     /// Backend init failed (no session bus, WinRT unavailable, …). Latched so the
@@ -347,7 +408,11 @@ pub struct MediaSession {
     activated: bool,
     backend: Option<platform_backend::Backend>,
     last: Option<MediaSnapshot>,
-    cmd_sink: CommandSink,
+    cmd_sink: CancellableCommandSink,
+    callback_cancellation: CallbackCancellation,
+    /// A prior Windows initialization worker timed out and is still retiring. Retry at a bounded
+    /// cadence without latching a permanent failure or spawning a concurrent SMTC worker.
+    backend_retry_after: Option<Instant>,
     artwork: artwork::ArtworkCache,
     /// Last artwork key requested, so a track change requests its art exactly once.
     art_requested: Option<String>,
@@ -356,10 +421,25 @@ pub struct MediaSession {
 impl MediaSession {
     pub fn new(
         enabled: bool,
-        cmd_sink: impl Fn(MediaCommand) + Send + Sync + 'static,
+        cmd_sink: impl Fn(MediaCommand) -> DeliveryResult + Send + Sync + 'static,
         art_sink: impl Fn(artwork::MediaArtworkReady) + Send + Sync + 'static,
     ) -> Self {
-        let cmd_sink: CommandSink = Arc::new(cmd_sink);
+        Self::new_cancellable(
+            enabled,
+            move |command, _cancellation| cmd_sink(command),
+            art_sink,
+        )
+    }
+
+    /// Construct a media session whose platform callback can release bounded backpressure when
+    /// that backend generation is retired. Kept crate-private so the public constructor retains
+    /// its existing source-compatible callback contract.
+    pub(crate) fn new_cancellable(
+        enabled: bool,
+        cmd_sink: impl Fn(MediaCommand, &CallbackCancellation) -> DeliveryResult + Send + Sync + 'static,
+        art_sink: impl Fn(artwork::MediaArtworkReady) + Send + Sync + 'static,
+    ) -> Self {
+        let cmd_sink: CancellableCommandSink = Arc::new(cmd_sink);
         Self {
             enabled,
             failed: false,
@@ -367,6 +447,8 @@ impl MediaSession {
             backend: None,
             last: None,
             cmd_sink,
+            callback_cancellation: CallbackCancellation::new(),
+            backend_retry_after: None,
             artwork: artwork::ArtworkCache::spawn(art_sink),
             art_requested: None,
         }
@@ -381,10 +463,17 @@ impl MediaSession {
         self.enabled = enabled;
         self.activated = false;
         self.last = None;
+        self.backend_retry_after = None;
         // An explicit user toggle gets a fresh init attempt even after a failure.
         self.failed = false;
         if !enabled {
+            // Release a callback retaining an exact command before the platform backend joins
+            // its producer thread. The application-wide owner ingress intentionally stays open.
+            self.callback_cancellation.cancel();
             self.backend = None; // Drop tears down the platform session.
+        } else {
+            // A retired producer must never poison a newly enabled backend generation.
+            self.callback_cancellation = CallbackCancellation::new();
         }
         true
     }
@@ -393,6 +482,22 @@ impl MediaSession {
     /// Only macOS needs it (main-thread run-loop delivery of remote commands).
     pub fn wants_pump(&self) -> bool {
         cfg!(target_os = "macos") && self.backend.is_some()
+    }
+
+    /// Whether a transient platform failure is due for another publish attempt. Owners that
+    /// fingerprint snapshots use this to bypass their usual no-change fast path at a bounded
+    /// cadence.
+    pub(crate) fn retry_due(&self) -> bool {
+        self.retry_deadline()
+            .is_some_and(|retry_after| Instant::now() >= retry_after)
+    }
+
+    pub(crate) fn retry_deadline(&self) -> Option<Instant> {
+        if self.enabled && !self.failed {
+            self.backend_retry_after
+        } else {
+            None
+        }
     }
 
     /// Service the platform event loop, if this platform needs manual pumping.
@@ -409,6 +514,12 @@ impl MediaSession {
         if !self.enabled || self.failed {
             return;
         }
+        if let Some(retry_after) = self.backend_retry_after {
+            if Instant::now() < retry_after {
+                return;
+            }
+            self.backend_retry_after = None;
+        }
 
         // Hold back until the first actually-playing snapshot on platforms where a
         // single Now Playing slot exists (macOS) or a blank session would show (SMTC).
@@ -418,9 +529,28 @@ impl MediaSession {
             }
             self.activated = true;
             if self.backend.is_none() {
-                match platform_backend::Backend::new(Arc::clone(&self.cmd_sink)) {
-                    Ok(backend) => self.backend = Some(backend),
+                let cmd_sink = Arc::clone(&self.cmd_sink);
+                let cancellation = self.callback_cancellation.clone();
+                let backend_sink: CommandSink =
+                    Arc::new(move |command| cmd_sink(command, &cancellation));
+                match platform_backend::Backend::new(backend_sink) {
+                    Ok(backend) => {
+                        self.backend_retry_after = None;
+                        self.backend = Some(backend);
+                    }
                     Err(e) => {
+                        if retryable_backend_init_error(&e) {
+                            self.defer_backend_init_retry();
+                            tracing::debug!(
+                                error = %e,
+                                retry_ms = BACKEND_RETRY_DELAY.as_millis(),
+                                "media backend is still retiring; initialization will retry"
+                            );
+                            return;
+                        }
+                        // A timed-out platform constructor may still be retiring off-thread.
+                        // Fence any late callback before allowing a future off→on retry.
+                        self.callback_cancellation.cancel();
                         tracing::warn!(error = %e, "media controls disabled: platform session init failed");
                         self.failed = true;
                         return;
@@ -437,9 +567,35 @@ impl MediaSession {
         if let Some(backend) = self.backend.as_mut() {
             // Always hand the backend the fresh snapshot (it re-bases its position
             // clock from it), but only make OS calls for the changed facets.
-            backend.apply(&snapshot, changes);
+            match backend.apply(&snapshot, changes) {
+                Ok(receipt) => {
+                    tracing::trace!(?receipt, "media snapshot accepted");
+                    self.backend_retry_after = None;
+                    self.last = Some(snapshot);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "media snapshot was not accepted");
+                    if error == crate::util::delivery::DeliveryError::Closed {
+                        self.callback_cancellation.cancel();
+                        self.backend = None;
+                        self.failed = true;
+                    } else {
+                        self.arm_backend_retry();
+                    }
+                }
+            }
+        } else {
+            self.last = Some(snapshot);
         }
-        self.last = Some(snapshot);
+    }
+
+    fn arm_backend_retry(&mut self) {
+        self.backend_retry_after = Some(Instant::now() + BACKEND_RETRY_DELAY);
+    }
+
+    fn defer_backend_init_retry(&mut self) {
+        self.activated = false;
+        self.arm_backend_retry();
     }
 
     /// Kick the async artwork fetch when a new track appears; the result comes back
@@ -453,9 +609,38 @@ impl MediaSession {
             return;
         }
         if let Some(query) = &track.art_query {
-            self.art_requested = Some(track.key.clone());
-            self.artwork.request(track.key.clone(), query.clone());
+            match self.artwork.request(track.key.clone(), query.clone()) {
+                Ok(receipt) => {
+                    tracing::trace!(?receipt, key = %track.key, "media artwork request accepted");
+                    self.art_requested = Some(track.key.clone());
+                }
+                Err(error) => {
+                    // Leave `art_requested` untouched so the next publish retries.
+                    tracing::warn!(%error, key = %track.key, "media artwork request was not accepted");
+                }
+            }
         }
+    }
+}
+
+fn retryable_backend_init_error(error: &anyhow::Error) -> bool {
+    #[cfg(windows)]
+    {
+        platform_backend::is_worker_retiring(error)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+impl Drop for MediaSession {
+    fn drop(&mut self) {
+        // Rust drops fields after `Drop::drop`; take the backend explicitly so cancellation is
+        // always visible before a platform destructor performs a synchronous worker join.
+        self.callback_cancellation.cancel();
+        self.backend.take();
     }
 }
 
@@ -463,6 +648,7 @@ impl MediaSession {
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod fallback {
     use super::{CommandSink, MediaChanges, MediaSnapshot};
+    use crate::util::delivery::{DeliveryReceipt, DeliveryResult};
 
     pub const EAGER: bool = false;
 
@@ -473,7 +659,13 @@ mod fallback {
             anyhow::bail!("no media-session backend for this platform")
         }
 
-        pub fn apply(&mut self, _snapshot: &MediaSnapshot, _changes: MediaChanges) {}
+        pub fn apply(
+            &mut self,
+            _snapshot: &MediaSnapshot,
+            _changes: MediaChanges,
+        ) -> DeliveryResult {
+            Ok(DeliveryReceipt::Enqueued)
+        }
     }
 }
 
@@ -483,6 +675,69 @@ use fallback as platform_backend;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disabling_media_cancels_a_blocked_callback_before_worker_join() {
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let mut media = MediaSession::new_cancellable(
+            true,
+            move |_command, cancellation| {
+                started_tx.send(()).expect("announce fake callback");
+                while !cancellation.is_cancelled() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(crate::util::delivery::DeliveryError::Closed)
+            },
+            |_| {},
+        );
+        let sink = Arc::clone(&media.cmd_sink);
+        let callback_cancellation = media.callback_cancellation.clone();
+        let worker = std::thread::spawn(move || sink(MediaCommand::Next, &callback_cancellation));
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("fake callback entered");
+        assert!(media.set_enabled(false));
+        assert_eq!(
+            worker.join().expect("join fake SMTC callback"),
+            Err(crate::util::delivery::DeliveryError::Closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn reenabled_media_uses_a_fresh_callback_generation() {
+        let mut media = MediaSession::new_cancellable(
+            true,
+            |_command, _cancellation| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        let retired = media.callback_cancellation.clone();
+
+        assert!(media.set_enabled(false));
+        assert!(retired.is_cancelled());
+        assert!(media.set_enabled(true));
+        assert!(!media.callback_cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn retiring_backend_defers_without_latching_the_fresh_generation() {
+        let mut media = MediaSession::new_cancellable(
+            true,
+            |_command, _cancellation| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        media.activated = true;
+        media.defer_backend_init_retry();
+
+        assert!(!media.failed);
+        assert!(!media.activated);
+        assert!(!media.callback_cancellation.is_cancelled());
+        assert!(media.backend_retry_after.is_some());
+        assert!(!media.retry_due());
+        media.backend_retry_after = Some(Instant::now());
+        assert!(media.retry_due());
+        assert!(media.retry_deadline().is_some());
+    }
 
     #[test]
     fn parse_playlist_id_variants() {
@@ -633,6 +888,77 @@ mod tests {
         let d = diff(&a, &b);
         assert!(d.status && d.options);
         assert!(!d.track && !d.position);
+    }
+
+    #[test]
+    fn coalesced_media_changes_preserve_every_intermediate_facet() {
+        let mut accumulated = MediaChanges {
+            status: true,
+            position: true,
+            ..MediaChanges::default()
+        };
+        accumulated.merge(MediaChanges {
+            artwork: true,
+            options: true,
+            ..MediaChanges::default()
+        });
+
+        assert!(accumulated.status);
+        assert!(accumulated.position);
+        assert!(accumulated.artwork);
+        assert!(accumulated.options);
+        assert!(!accumulated.track);
+    }
+
+    #[test]
+    fn latest_media_slot_keeps_newest_snapshot_and_unions_all_facets() {
+        let slot = LatestMediaUpdate::default();
+        let first = snap(Some("first"));
+        let mut newest = snap(Some("newest"));
+        newest.volume = 0.25;
+
+        assert!(!slot.store(
+            first,
+            MediaChanges {
+                track: true,
+                artwork: true,
+                status: true,
+                ..MediaChanges::default()
+            },
+        ));
+        assert!(slot.store(
+            newest,
+            MediaChanges {
+                position: true,
+                options: true,
+                caps: true,
+                feedback: true,
+                ..MediaChanges::default()
+            },
+        ));
+
+        let (stored, changes) = slot.take().expect("latest update");
+        assert_eq!(
+            stored.track.as_ref().map(|track| track.key.as_str()),
+            Some("newest")
+        );
+        assert_eq!(stored.volume, 0.25);
+        assert!(changes.track);
+        assert!(changes.artwork);
+        assert!(changes.status);
+        assert!(changes.position);
+        assert!(changes.options);
+        assert!(changes.caps);
+        assert!(changes.feedback);
+        assert!(slot.take().is_none());
+    }
+
+    #[test]
+    fn latest_media_slot_clear_discards_pending_state() {
+        let slot = LatestMediaUpdate::default();
+        assert!(!slot.store(snap(Some("pending")), MediaChanges::all()));
+        slot.clear();
+        assert!(slot.take().is_none());
     }
 
     #[test]

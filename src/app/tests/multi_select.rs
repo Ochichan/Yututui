@@ -255,8 +255,11 @@ fn search_ctrl_click_toggles_and_enter_plays_the_selection() {
         .collect();
     assert_eq!(ids.len(), 2, "rows 0 and 2 are selected");
 
-    // Enter plays the whole multi-selection (the Library's Enter semantics).
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    // Enter prepares the whole multi-selection as one player transaction. The queue projection
+    // stays untouched until the runtime admits that transaction.
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.queue.is_empty(), "queue replacement is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2, "both selected results were queued");
     let queued: Vec<String> = app
         .queue
@@ -273,13 +276,18 @@ fn every_single_search_action_uses_the_lone_picked_row_instead_of_the_cursor() {
     assert_loads_video(&cmds, "id0");
 
     let mut app = app_with_one_search_pick_off_cursor();
-    app.update(Msg::Key(key(KeyCode::Char('\\'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
+    assert!(app.queue.is_empty(), "idle enqueue is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id0", "enqueue must use the picked row");
 
     let mut app = app_with_one_search_pick_off_cursor();
     let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
     assert!(
-        matches!(cmds.as_slice(), [Cmd::Download(song)] if song.video_id == "id0"),
+        matches!(
+            cmds.as_slice(),
+            [Cmd::Download(DownloadCmd::Start(song))] if song.video_id == "id0"
+        ),
         "download must use the picked row"
     );
 
@@ -464,7 +472,9 @@ fn search_matching_double_click_restores_and_plays_pre_click_selection() {
     });
     assert_eq!(app.search_selection_indices(), vec![2]);
     app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    let mut cmds = app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    assert!(app.queue.is_empty(), "double-click play is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     let queued: Vec<&str> = app
         .queue
         .ordered_iter()
@@ -486,7 +496,9 @@ fn search_double_click_outside_selection_plays_only_clicked_row() {
         multi: false,
     });
     app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    let mut cmds = app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    assert!(app.queue.is_empty(), "double-click play is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     let queued: Vec<&str> = app
         .queue
         .ordered_iter()
@@ -525,7 +537,9 @@ fn library_matching_double_click_restores_and_plays_pre_click_selection() {
     });
     assert_eq!(app.library_selection_indices(), vec![2]);
     app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    let mut cmds = app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
+    assert!(app.queue.is_empty(), "double-click play is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     let queued: Vec<&str> = app
         .queue
         .ordered_iter()
@@ -547,7 +561,9 @@ fn library_double_click_outside_selection_plays_only_clicked_row() {
         multi: false,
     });
     app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    let mut cmds = app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    assert!(app.queue.is_empty(), "double-click play is admission-gated");
+    admit_player_transition(&mut app, &mut cmds);
     let queued: Vec<&str> = app
         .queue
         .ordered_iter()

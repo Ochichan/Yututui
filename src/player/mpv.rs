@@ -140,6 +140,10 @@ pub fn spawn(
     cmd.arg("--no-video")
         .arg("--no-terminal")
         .arg("--idle=yes")
+        // mpv 0.32's JSON end-file event has no reason. Keeping a naturally ended file open
+        // gives the eof-reached observer one ordered loop turn before the app loads the next
+        // track; load failures still enter the explicit idle event used by the IPC actor.
+        .arg("--keep-open=yes")
         .arg("--no-config")
         // Don't decode embedded cover art into a video track — pure audio engine.
         .arg("--audio-display=no")

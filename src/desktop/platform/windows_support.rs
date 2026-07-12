@@ -692,9 +692,8 @@ fn set_app_user_model_id() {
 }
 
 fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let dirs = directories::ProjectDirs::from("", "", "yututui")?;
-    let dir = dirs.cache_dir();
-    if let Err(e) = std::fs::create_dir_all(dir) {
+    let dir = crate::desktop::persistence::cache_dir()?;
+    if let Err(e) = crate::util::safe_fs::ensure_private_dir(&dir) {
         report_error(format_args!(
             "could not create log directory {}: {e}",
             dir.display()
@@ -702,11 +701,11 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         return None;
     }
 
-    let guard = crate::logging::init(dir);
+    let guard = crate::logging::init_named(&dir, "yututray.log");
     if guard.is_some() {
         tracing::info!(
             target: "ytt_tray",
-            path = %dir.join("yututui.log").display(),
+            path = %dir.join("yututray.log").display(),
             "yututray logging initialized"
         );
     }
@@ -716,23 +715,22 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 fn install_tray_panic_hook() {
     // panic = "abort" kills the process before tracing-appender's worker thread can
     // flush, so mirror every panic synchronously into a plain file next to the log.
-    let panic_log = directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.cache_dir().join("yututray-panic.log"));
+    let panic_log =
+        crate::desktop::persistence::cache_dir().map(|dir| dir.join("yututray-panic.jsonl"));
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         tracing::error!(target: "ytt_tray", panic = %info, "yututray panic");
-        if let Some(path) = &panic_log
-            && let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        {
-            use std::io::Write;
+        if let Some(path) = &panic_log {
             let unix_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or_default();
-            let _ = writeln!(file, "[unix {unix_secs}] yututray panic: {info}");
+            let record = serde_json::json!({
+                "unix": unix_secs,
+                "process": "yututray",
+                "panic": info.to_string(),
+            });
+            let _ = crate::util::safe_fs::append_private_jsonl(path, &record.to_string());
         }
         previous(info);
     }));

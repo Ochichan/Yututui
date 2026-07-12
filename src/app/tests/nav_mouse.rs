@@ -106,9 +106,10 @@ fn double_click_on_a_result_row_plays_it() {
     app.search.results = songs(5);
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::ListRow(3));
-    let cmds = app.update(Msg::MouseDoubleClick { col, row });
-    assert_eq!(current(&app), "id3");
+    let mut cmds = app.update(Msg::MouseDoubleClick { col, row });
     assert_loads_video(&cmds, "id3");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id3");
 }
 
 #[test]
@@ -129,11 +130,15 @@ fn double_clicking_a_queue_row_jumps_to_it() {
     assert!(app.queue_popup.open);
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::QueueRow(3));
-    let cmds = app.update(Msg::MouseDoubleClick { col, row });
+    let mut cmds = app.update(Msg::MouseDoubleClick { col, row });
+    assert_eq!(app.queue.cursor_pos(), 0);
+    assert_eq!(current(&app), "id0");
+    assert!(app.queue_popup.open);
+    assert_loads_video(&cmds, "id3");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.cursor_pos(), 3);
     assert_eq!(current(&app), "id3");
     assert!(!app.queue_popup.open);
-    assert_loads_video(&cmds, "id3");
 }
 
 #[test]
@@ -207,7 +212,9 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     assert_eq!(app.queue_popup.anchor, 0);
     assert_eq!(app.queue_popup.cursor, 2);
     // The Delete key removes the whole selected range at once.
-    app.update(Msg::Key(key(KeyCode::Delete)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    assert_eq!(app.queue.len(), 5, "range removal waits for admission");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
     let ids: Vec<&str> = app
         .queue
@@ -225,11 +232,16 @@ fn queue_delete_current_range_loads_next_after_removed_range() {
     app.queue_popup.anchor = 1;
     app.queue_popup.cursor = 3;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    let before_bumps = app.queue.revision_bumps();
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
 
+    assert_eq!(app.queue.len(), 5);
+    assert_eq!(current(&app), "id1");
+    assert_loads_video(&cmds, "id4");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(current(&app), "id4");
-    assert_loads_video(&cmds, "id4");
+    assert_eq!(app.queue.revision_bumps(), before_bumps + 1);
     let ids: Vec<&str> = app
         .queue
         .ordered()
@@ -246,12 +258,15 @@ fn queue_delete_current_tail_range_stops_when_no_next_exists() {
     app.queue_popup.anchor = 1;
     app.queue_popup.cursor = 2;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
 
-    assert_eq!(app.queue.len(), 1);
-    assert_eq!(current(&app), "id0");
     assert_no_load(&cmds);
     assert!(has_stop(&cmds), "mpv should stop the deleted current track");
+    assert_eq!(app.queue.len(), 3);
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id1"));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(current(&app), "id0");
     assert_eq!(app.prefetch.loaded_video_id, None);
     assert!(app.playback.paused);
 }
@@ -262,11 +277,14 @@ fn queue_delete_current_tail_wraps_under_repeat_all() {
     app.queue.repeat = crate::queue::Repeat::All;
     app.update(Msg::Key(key(KeyCode::Char('c'))));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
 
+    assert_loads_video(&cmds, "id0");
+    assert_eq!(app.queue.len(), 3);
+    assert_eq!(current(&app), "id2");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(current(&app), "id0");
-    assert_loads_video(&cmds, "id0");
 }
 
 #[test]
@@ -303,10 +321,14 @@ fn enter_on_queue_drag_range_starts_at_range_beginning() {
     app.queue_popup.anchor = 1;
     app.queue_popup.cursor = 3;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
 
+    assert!(app.queue_popup.open);
+    assert_eq!(app.queue.cursor_pos(), 0);
+    assert_eq!(current(&app), "id0");
+    assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert!(!app.queue_popup.open);
     assert_eq!(app.queue.cursor_pos(), 1);
     assert_eq!(current(&app), "id1");
-    assert_loads_video(&cmds, "id1");
 }

@@ -12,10 +12,12 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn load_url(cmds: &[Cmd]) -> Option<&str> {
-    cmds.iter().find_map(|c| match c {
-        Cmd::Player(PlayerCmd::Load(url)) => Some(url.as_str()),
-        _ => None,
-    })
+    cmds.iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|command| match command {
+            PlayerCmd::Load(url) => Some(url.as_str()),
+            _ => None,
+        })
 }
 
 fn hardening_song(id: &str, title: &str, artist: &str) -> Song {
@@ -136,9 +138,9 @@ fn download_scan_truncation_is_user_visible() {
 #[test]
 fn download_dir_error_updates_status_without_track_state() {
     let mut app = App::new(100);
-    app.update(Msg::DownloadDirError {
+    app.update(Msg::Download(DownloadMsg::DirError {
         error: "queue full".to_owned(),
-    });
+    }));
     assert!(app.downloads.active.is_empty());
     assert!(app.status.text.contains("queue full"));
 }
@@ -151,6 +153,20 @@ fn scrobble_queue_dropped_event_updates_status() {
     ));
     assert!(app.status.text.contains("3"));
     assert_eq!(app.status.kind, StatusKind::Error);
+}
+
+#[test]
+fn scrobble_append_recovery_does_not_claim_zero_items_are_waiting() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+
+    app.update(Msg::Scrobble(
+        crate::scrobble::ScrobbleEvent::QueueStalled { pending: 0 },
+    ));
+
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.status.text.contains("recovered"));
+    assert!(!app.status.text.contains("0 scrobbles waiting"));
 }
 
 #[test]

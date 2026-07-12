@@ -1,5 +1,10 @@
 use super::*;
 
+fn admit_mouse_seek(app: &mut App, cmds: &[Cmd]) {
+    app.settle_mouse_seek_admission(true);
+    app.admit_player_intents_for_test(cmds);
+}
+
 #[test]
 fn click_on_seekbar_seeks_to_fraction() {
     let mut app = app_playing(1, 0);
@@ -16,10 +21,23 @@ fn click_on_seekbar_seeks_to_fraction() {
         row: 5,
         multi: false,
     });
+    assert_eq!(
+        app.playback.time_pos, None,
+        "seek position must wait for player admission"
+    );
     match cmds.as_slice() {
-        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 100.0).abs() < 1.0),
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekAbsolute(t)) => assert!((*t - 100.0).abs() < 1.0),
+            _ => panic!("expected a SeekAbsolute cmd"),
+        },
         _ => panic!("expected a SeekAbsolute cmd"),
     }
+    admit_mouse_seek(&mut app, &cmds);
+    assert!(
+        app.playback
+            .time_pos
+            .is_some_and(|position| (position - 100.0).abs() < 1.0)
+    );
 }
 
 #[test]
@@ -86,35 +104,104 @@ fn drag_on_seekbar_scrubs_continuously() {
         height: 1,
     });
     // Press on the bar arms the scrub and seeks (col 25 → 50 s).
-    match app
-        .update(Msg::MouseClick {
-            col: 25,
-            row: 5,
-            multi: false,
-        })
-        .as_slice()
-    {
-        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 50.0).abs() < 1.0),
+    let cmds = app.update(Msg::MouseClick {
+        col: 25,
+        row: 5,
+        multi: false,
+    });
+    match cmds.as_slice() {
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekAbsolute(t)) => assert!((*t - 50.0).abs() < 1.0),
+            _ => panic!("expected a SeekAbsolute from the press"),
+        },
         _ => panic!("expected a SeekAbsolute from the press"),
     }
+    admit_mouse_seek(&mut app, &cmds);
     // Dragging to a new column seeks continuously — even off the bar's row (row ignored).
-    match app.update(Msg::MouseDrag { col: 75, row: 9 }).as_slice() {
-        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 150.0).abs() < 1.0),
+    let cmds = app.update(Msg::MouseDrag { col: 75, row: 9 });
+    match cmds.as_slice() {
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekAbsolute(t)) => assert!((*t - 150.0).abs() < 1.0),
+            _ => panic!("expected a SeekAbsolute from the drag"),
+        },
         _ => panic!("expected a SeekAbsolute from the drag"),
     }
+    admit_mouse_seek(&mut app, &cmds);
     // Same cell → no duplicate seek (intra-cell dedupe).
     assert!(app.update(Msg::MouseDrag { col: 75, row: 9 }).is_empty());
     // Dragging past the right end pins near the maximum (clamped to width-1, like click-seek).
-    match app.update(Msg::MouseDrag { col: 250, row: 5 }).as_slice() {
-        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 198.0).abs() < 1.0),
+    let cmds = app.update(Msg::MouseDrag { col: 250, row: 5 });
+    match cmds.as_slice() {
+        [cmd] => match cmd.player_command() {
+            Some(PlayerCmd::SeekAbsolute(t)) => assert!((*t - 198.0).abs() < 1.0),
+            _ => panic!("expected a clamped SeekAbsolute"),
+        },
         _ => panic!("expected a clamped SeekAbsolute"),
     }
+    admit_mouse_seek(&mut app, &cmds);
     // Release ends the scrub; a later stray drag does nothing.
     app.update(Msg::MouseLeftUp);
     assert!(
         app.update(Msg::MouseDrag { col: 10, row: 5 }).is_empty(),
         "no scrub after release"
     );
+}
+
+#[test]
+fn rejected_seekbar_drag_can_retry_the_same_cell() {
+    let mut app = app_playing(1, 0);
+    app.playback.duration = Some(200.0);
+    app.hits.set_seekbar_rect(Rect {
+        x: 0,
+        y: 5,
+        width: 100,
+        height: 1,
+    });
+
+    let first = app.update(Msg::MouseClick {
+        col: 25,
+        row: 5,
+        multi: false,
+    });
+    assert!(matches!(
+        first.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SeekAbsolute(t)) if (*t - 50.0).abs() < 1.0)
+    ));
+
+    // Admission failed: the same terminal cell is still a retry, not a duplicate.
+    app.settle_mouse_seek_admission(false);
+    let retry = app.update(Msg::MouseDrag { col: 25, row: 9 });
+    assert!(matches!(
+        retry.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SeekAbsolute(t)) if (*t - 50.0).abs() < 1.0)
+    ));
+
+    // Once that retry is admitted, accepted same-cell drag events are deduped again.
+    admit_mouse_seek(&mut app, &retry);
+    assert!(app.update(Msg::MouseDrag { col: 25, row: 9 }).is_empty());
+}
+
+#[test]
+fn unrelated_seek_rejection_does_not_arm_a_mouse_retry() {
+    let mut app = app_playing(1, 0);
+    app.playback.duration = Some(200.0);
+    app.hits.set_seekbar_rect(Rect {
+        x: 0,
+        y: 5,
+        width: 100,
+        height: 1,
+    });
+
+    let press = app.update(Msg::MouseClick {
+        col: 25,
+        row: 5,
+        multi: false,
+    });
+    admit_mouse_seek(&mut app, &press);
+    // A later keyboard/remote seek has no pending mouse request, so its failure is ignored by
+    // the mouse admission state.
+    app.settle_mouse_seek_admission(false);
+    assert!(app.update(Msg::MouseDrag { col: 25, row: 9 }).is_empty());
 }
 
 #[test]
@@ -148,11 +235,17 @@ fn click_player_buttons_dispatch_actions() {
         row: 4,
         multi: false,
     });
-    assert!(app.playback.paused);
+    assert!(!app.playback.paused);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::CyclePause)]
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
+        )
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert!(app.playback.paused);
 
     app.playback.volume = 40;
     app.register_mouse_button(
@@ -169,11 +262,13 @@ fn click_player_buttons_dispatch_actions() {
         row: 4,
         multi: false,
     });
-    assert_eq!(app.playback.volume, 45);
+    assert_eq!(app.playback.volume, 40);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(45))]
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(45)))
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert_eq!(app.playback.volume, 45);
 }
 
 #[test]
@@ -196,11 +291,13 @@ fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
         row: 4,
         ctrl: false,
     });
-    assert_eq!(app.playback.volume, 45);
+    assert_eq!(app.playback.volume, 40);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(45))]
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(45)))
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert_eq!(app.playback.volume, 45);
 
     let cmds = app.update(Msg::MouseScroll {
         up: false,
@@ -208,11 +305,13 @@ fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
         row: 4,
         ctrl: false,
     });
-    assert_eq!(app.playback.volume, 40);
+    assert_eq!(app.playback.volume, 45);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(40))]
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(40)))
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert_eq!(app.playback.volume, 40);
 }
 
 #[test]
@@ -252,11 +351,12 @@ fn click_next_button_loads_next_track() {
         },
         MouseTarget::Player(Action::NextTrack),
     );
-    let cmds = app.update(Msg::MouseClick {
+    let mut cmds = app.update(Msg::MouseClick {
         col: 3,
         row: 1,
         multi: false,
     });
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id1");
     assert_loads_video(&cmds, "id1");
 }

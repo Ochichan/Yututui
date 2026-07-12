@@ -29,10 +29,78 @@ fn local_deck_track(
     track
 }
 
+#[derive(Debug, PartialEq)]
+struct ModeSwitchProjection {
+    local: bool,
+    radio: bool,
+    mode: Mode,
+    queue: Vec<u8>,
+    cursor: usize,
+    loaded: Option<String>,
+    paused: bool,
+    position_epoch: u64,
+    streaming_pending: bool,
+    rerank_pending: bool,
+    theme: Vec<u8>,
+}
+
+fn mode_switch_projection(app: &App) -> ModeSwitchProjection {
+    ModeSwitchProjection {
+        local: app.local_dedicated_mode,
+        radio: app.radio_dedicated_mode,
+        mode: app.mode,
+        queue: serde_json::to_vec(&app.queue.snapshot()).expect("queue snapshot serializes"),
+        cursor: app.queue.cursor_pos(),
+        loaded: app.prefetch.loaded_video_id.clone(),
+        paused: app.playback.paused,
+        position_epoch: app.playback.position_epoch,
+        streaming_pending: app.streaming.pending,
+        rerank_pending: app.streaming.pending_rerank.is_some(),
+        theme: serde_json::to_vec(&app.theme).expect("theme serializes"),
+    }
+}
+
+fn admit_local_mode_confirm(app: &mut App, confirm: LocalModeConfirm) -> Vec<Cmd> {
+    let before = mode_switch_projection(app);
+    let mut cmds = app.apply_local_mode_confirm(confirm);
+    assert_eq!(
+        mode_switch_projection(app),
+        before,
+        "local mode switch state must wait for player admission"
+    );
+    admit_player_transition(app, &mut cmds);
+    cmds
+}
+
+fn admit_radio_mode_confirm(app: &mut App, confirm: RadioModeConfirm) -> Vec<Cmd> {
+    let before = mode_switch_projection(app);
+    let mut cmds = app.apply_radio_mode_confirm(confirm);
+    assert_eq!(
+        mode_switch_projection(app),
+        before,
+        "radio mode switch state must wait for player admission"
+    );
+    admit_player_transition(app, &mut cmds);
+    cmds
+}
+
+fn assert_stop_before_load(cmds: &[Cmd]) {
+    let commands: Vec<_> = cmds.iter().flat_map(Cmd::player_commands).collect();
+    let stop = commands
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Stop))
+        .expect("mode switch Stop command");
+    let load = commands
+        .iter()
+        .position(|command| matches!(command, PlayerCmd::Load(_)))
+        .expect("mode switch Load command");
+    assert!(stop < load, "mode switch must Stop before restoring a Load");
+}
+
 fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
     let mut app = App::new(100);
     app.mode = Mode::Library;
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     let mut index = crate::local::LocalIndex::default();
     index.set_tracks(tracks);
     app.update(Msg::Local(LocalMsg::ScanFinished {
@@ -63,7 +131,10 @@ fn double_click_library_nav_confirms_local_deck_shell() {
     );
     assert!(!app.local_dedicated_mode);
 
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    let before = mode_switch_projection(&app);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(mode_switch_projection(&app), before);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.local_dedicated_mode);
     assert_eq!(app.mode, Mode::Library);
     assert!(app.local_mode.pending_confirm.is_none());
@@ -72,7 +143,10 @@ fn double_click_library_nav_confirms_local_deck_shell() {
     assert!(cmds.is_empty());
     assert_eq!(app.local_mode.pending_confirm, Some(LocalModeConfirm::Exit));
 
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    let before = mode_switch_projection(&app);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(mode_switch_projection(&app), before);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(!app.local_dedicated_mode);
     assert!(app.local_mode.pending_confirm.is_none());
 }
@@ -81,7 +155,7 @@ fn double_click_library_nav_confirms_local_deck_shell() {
 fn local_deck_and_radio_mode_are_mutually_exclusive() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     assert!(app.local_dedicated_mode);
 
     app.mode = Mode::Player;
@@ -91,9 +165,9 @@ fn local_deck_and_radio_mode_are_mutually_exclusive() {
     assert!(!app.radio_dedicated_mode);
     assert!(!app.status.text.is_empty());
 
-    app.apply_local_mode_confirm(LocalModeConfirm::Exit);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Exit);
     assert!(!app.local_dedicated_mode);
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    admit_radio_mode_confirm(&mut app, RadioModeConfirm::Enter);
     assert!(app.radio_dedicated_mode);
 
     app.mode = Mode::Library;
@@ -115,7 +189,10 @@ fn alt_shift_l_confirms_local_deck_enter_and_exit_from_keyboard() {
         app.local_mode.pending_confirm,
         Some(LocalModeConfirm::Enter)
     );
-    app.update(Msg::Key(key(KeyCode::Enter)));
+    let before = mode_switch_projection(&app);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(mode_switch_projection(&app), before);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.local_dedicated_mode);
 
     let cmds = app.update(Msg::Key(alt_shift(KeyCode::Char('l'))));
@@ -149,7 +226,7 @@ fn local_deck_renders_download_seed_rows_and_activates_them() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
     app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Alpha.m4a"))];
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
 
     let buf = render_app_buffer(&app, 80, 24);
     assert!(buffer_contains(&buf, "LOCAL DECK"));
@@ -160,8 +237,9 @@ fn local_deck_renders_download_seed_rows_and_activates_them() {
             .any(|r| r.target == MouseTarget::LocalRow(0))
     );
 
-    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!cmds.is_empty());
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Alpha"));
 }
 
@@ -171,8 +249,13 @@ fn local_deck_enter_loads_index_then_scans_download_root_when_empty() {
     let root = PathBuf::from("/tmp/yututui-local-deck-test-root");
     app.config.download_dir = Some(root.clone());
 
-    let enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let before = mode_switch_projection(&app);
+    let mut enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
 
+    assert_eq!(mode_switch_projection(&app), before);
+    assert!(!app.local_dedicated_mode);
+    assert!(!app.local_mode.index.loading);
+    admit_player_transition(&mut app, &mut enter);
     assert!(app.local_dedicated_mode);
     assert!(app.local_mode.index.loading);
     assert!(
@@ -249,7 +332,7 @@ fn local_deck_scan_result_replaces_seed_rows_and_activates_index_track() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
     app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Seed.m4a"))];
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
 
     let mut track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Indexed.flac"), 7, 8);
     track.title = "Indexed Title".to_owned();
@@ -273,9 +356,10 @@ fn local_deck_scan_result_replaces_seed_rows_and_activates_index_track() {
     assert_eq!(app.local_rows_len(), 1);
     assert_eq!(app.local_mode.ui.section, LocalSection::Tracks);
 
-    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
 
     assert!(!cmds.is_empty());
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(
         app.queue.current().map(|s| s.title.as_str()),
         Some("Indexed Title")
@@ -289,7 +373,7 @@ fn local_deck_scan_result_replaces_seed_rows_and_activates_index_track() {
 #[test]
 fn local_deck_r_key_requests_incremental_rescan() {
     let mut app = App::new(100);
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     app.local_mode.index.loading = false;
     app.local_mode.index.loaded = true;
     let track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Indexed.flac"), 7, 8);
@@ -357,7 +441,7 @@ fn local_deck_scan_progress_updates_status_line_until_finished() {
 #[test]
 fn local_deck_slash_filters_index_tracks_and_activation_uses_visible_row() {
     let mut app = App::new(100);
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     let mut alpha = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Alpha.flac"), 7, 8);
     alpha.title = "Alpha".to_owned();
     let mut beta = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Beta.flac"), 9, 10);
@@ -385,16 +469,17 @@ fn local_deck_slash_filters_index_tracks_and_activation_uses_visible_row() {
     }
 
     assert_eq!(app.local_rows_len(), 1);
-    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
 
     assert!(!cmds.is_empty());
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
 }
 
 #[test]
 fn local_deck_escape_clears_committed_filter_before_exit() {
     let mut app = App::new(100);
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     let mut track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Alpha.flac"), 7, 8);
     track.title = "Alpha".to_owned();
     let mut index = crate::local::LocalIndex::default();
@@ -483,8 +568,9 @@ fn local_deck_album_rows_drill_down_to_tracks_and_play() {
     assert_eq!(app.local_mode.ui.drill.len(), 1);
     assert_eq!(app.local_rows_len(), 2);
 
-    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut play = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!play.is_empty());
+    admit_player_transition(&mut app, &mut play);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
         Some("One More Time")
@@ -519,8 +605,9 @@ fn local_deck_artist_rows_open_album_drill_down() {
     assert!(open_album.is_empty());
     assert_eq!(app.local_rows_len(), 1);
 
-    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut play = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!play.is_empty());
+    admit_player_transition(&mut app, &mut play);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
         Some("Palette")
@@ -738,7 +825,8 @@ fn local_deck_a_enqueues_selected_track_without_interrupting_current() {
         10,
     )]);
     app.queue.set(songs(1), 0);
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
     app.mode = Mode::Library;
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
@@ -779,8 +867,9 @@ fn local_deck_shift_a_enqueues_visible_filtered_rows() {
     ]);
     app.local_mode.ui.filter_query = "filtered".to_owned();
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
 
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 1);
     assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
     assert!(
@@ -815,8 +904,9 @@ fn local_deck_p_plays_selected_collection_now() {
     let mut app = app_with_local_deck_index(vec![second, first]);
     app.update(Msg::Key(key(KeyCode::Char('3'))));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('P'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('P'))));
 
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(
@@ -859,10 +949,32 @@ fn local_deck_s_shuffles_current_view_from_selected_row() {
     ]);
     app.update(Msg::Key(key(KeyCode::Down)));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+    let before = serde_json::to_value(app.queue.snapshot()).unwrap();
+    let before_rev = app.queue.rev();
+    let rejected = app.update(Msg::Key(key(KeyCode::Char('s'))));
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Library, "mode changes only after admission");
+    assert!(!app.queue.shuffle, "shuffle changes only after admission");
+    assert!(
+        reject_player_transition(
+            &mut app,
+            rejected,
+            crate::util::delivery::DeliveryError::Busy,
+        )
+        .is_empty()
+    );
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Library);
+    assert!(!app.queue.shuffle);
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+    admit_player_transition(&mut app, &mut cmds);
 
     assert_eq!(app.mode, Mode::Player);
     assert!(app.queue.shuffle);
+    assert_ne!(app.queue.rev(), before_rev);
     assert_eq!(app.queue.len(), 3);
     assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
     assert!(
@@ -888,7 +1000,8 @@ fn local_deck_c_opens_queue_popup_and_space_toggles_pause() {
         10,
     )]);
     app.queue.set(songs(1), 0);
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
     app.mode = Mode::Library;
 
     app.update(Msg::Key(key(KeyCode::Char('c'))));
@@ -898,11 +1011,17 @@ fn local_deck_c_opens_queue_popup_and_space_toggles_pause() {
     app.playback.paused = false;
     let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
 
-    assert!(app.playback.paused);
+    assert!(!app.playback.paused);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::CyclePause)]
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
+        )
     ));
+    app.admit_player_intents_for_test(&cmds);
+    assert!(app.playback.paused);
 }
 
 #[test]
@@ -943,7 +1062,8 @@ fn local_deck_collection_context_menu_can_enqueue_it() {
     );
 
     // Local collection menus contain "Activate" followed by "Add to queue".
-    let cmds = choose_context_menu_item(&mut app, 1);
+    let mut cmds = choose_context_menu_item(&mut app, 1);
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
@@ -960,7 +1080,7 @@ fn local_deck_collection_context_menu_can_enqueue_it() {
 fn local_download_seed_context_menu_rejects_an_index_shift() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     app.local_mode.ui.section = LocalSection::Tracks;
     app.library_ui.downloaded = vec![local_song("old-track")];
     render_app(&app);
@@ -996,11 +1116,19 @@ fn local_deck_switch_stops_playback_and_restores_cached_queues() {
         cache_key: 42,
     });
 
-    let enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let before_enter = mode_switch_projection(&app);
+    let mut enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    assert_eq!(mode_switch_projection(&app), before_enter);
+    assert!(!app.local_dedicated_mode);
+    assert!(has_stop(&enter), "entering Local Deck should stop mpv");
+    assert_eq!(app.queue.len(), 3);
+    assert!(app.streaming.pending);
+    assert!(app.streaming.pending_rerank.is_some());
+    admit_player_transition(&mut app, &mut enter);
 
     assert!(app.local_dedicated_mode);
     assert_eq!(app.mode, Mode::Library);
-    assert!(has_stop(&enter), "entering Local Deck should stop mpv");
     assert!(app.queue.is_empty());
     assert!(load_url(&enter).is_none());
     assert!(!app.streaming.pending);
@@ -1008,12 +1136,19 @@ fn local_deck_switch_stops_playback_and_restores_cached_queues() {
 
     app.queue
         .set(vec![local_song("local_alpha"), local_song("local_beta")], 1);
-    app.load_song(app.queue.current().cloned());
+    let mut local_load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut local_load);
     app.playback.paused = false;
-    let exit = app.apply_local_mode_confirm(LocalModeConfirm::Exit);
+    let before_exit = mode_switch_projection(&app);
+    let mut exit = app.apply_local_mode_confirm(LocalModeConfirm::Exit);
+
+    assert_eq!(mode_switch_projection(&app), before_exit);
+    assert!(app.local_dedicated_mode);
+    assert!(has_stop(&exit), "leaving Local Deck should stop mpv");
+    assert_stop_before_load(&exit);
+    admit_player_transition(&mut app, &mut exit);
 
     assert!(!app.local_dedicated_mode);
-    assert!(has_stop(&exit), "leaving Local Deck should stop mpv");
     assert_eq!(app.queue.len(), 3);
     assert_eq!(current(&app), "id1");
     assert!(
@@ -1024,11 +1159,18 @@ fn local_deck_switch_stops_playback_and_restores_cached_queues() {
     assert!(!app.playback.paused);
 
     app.queue.set(songs(1), 0);
-    app.load_song(app.queue.current().cloned());
-    let reenter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let mut normal_load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut normal_load);
+    let before_reenter = mode_switch_projection(&app);
+    let mut reenter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    assert_eq!(mode_switch_projection(&app), before_reenter);
+    assert!(!app.local_dedicated_mode);
+    assert!(has_stop(&reenter));
+    assert_stop_before_load(&reenter);
+    admit_player_transition(&mut app, &mut reenter);
 
     assert!(app.local_dedicated_mode);
-    assert!(has_stop(&reenter));
     assert_eq!(app.queue.len(), 2);
     assert_eq!(
         app.queue.current().map(|s| s.title.as_str()),
@@ -1042,9 +1184,124 @@ fn local_deck_switch_stops_playback_and_restores_cached_queues() {
 }
 
 #[test]
+fn local_deck_switch_busy_and_closed_preserve_state_until_retry() {
+    use crate::util::delivery::DeliveryError;
+
+    for error in [DeliveryError::Busy, DeliveryError::Closed] {
+        let mut app = app_playing(3, 1);
+        app.mode = Mode::Player;
+        app.local_mode.pending_confirm = Some(LocalModeConfirm::Enter);
+        app.streaming.pending = true;
+        app.queue_popup.open = true;
+        app.art.force_clear_next_frame = false;
+        let before = mode_switch_projection(&app);
+        let before_rev = app.queue.rev();
+
+        let cmds = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+        assert!(has_stop(&cmds));
+        assert_eq!(mode_switch_projection(&app), before);
+        assert_eq!(
+            app.local_mode.pending_confirm,
+            Some(LocalModeConfirm::Enter)
+        );
+        assert!(app.queue_popup.open);
+        assert!(!app.art.force_clear_next_frame);
+
+        assert!(reject_player_transition(&mut app, cmds, error).is_empty());
+        assert_eq!(mode_switch_projection(&app), before);
+        assert_eq!(app.queue.rev(), before_rev);
+        assert_eq!(
+            app.local_mode.pending_confirm,
+            Some(LocalModeConfirm::Enter)
+        );
+        assert!(app.queue_popup.open);
+        assert!(!app.art.force_clear_next_frame);
+        assert_eq!(app.status.kind, StatusKind::Error);
+        assert!(!app.status.text.is_empty());
+
+        let mut retry = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+        admit_player_transition(&mut app, &mut retry);
+        assert!(app.local_dedicated_mode);
+        assert!(app.local_mode.pending_confirm.is_none());
+        assert_eq!(app.mode, Mode::Library);
+        assert!(app.queue.is_empty());
+        assert_ne!(app.queue.rev(), before_rev);
+        assert!(!app.streaming.pending);
+        assert!(!app.queue_popup.open);
+        assert!(app.art.force_clear_next_frame);
+        assert_eq!(app.status.kind, StatusKind::Info);
+    }
+}
+
+#[test]
+fn local_mode_switch_retires_video_pause_ownership_only_after_batch_admission() {
+    use crate::util::delivery::DeliveryError;
+
+    for error in [
+        DeliveryError::Busy,
+        DeliveryError::Saturated,
+        DeliveryError::Closed,
+    ] {
+        let mut app = app_playing(1, 0);
+        let mut open = app.toggle_video_overlay_with_fake_spawn(true);
+        admit_player_transition(&mut app, &mut open);
+        assert!(app.video_open());
+        assert!(app.video_pause_owned_for_test());
+        app.local_mode.pending_confirm = Some(LocalModeConfirm::Enter);
+
+        let cmds = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+        assert!(cmds.iter().flat_map(Cmd::player_commands).any(|command| {
+            matches!(
+                command,
+                PlayerCmd::SetProperty { name, value }
+                    if name == "pause" && value == &serde_json::Value::Bool(false)
+            )
+        }));
+
+        assert!(reject_player_transition(&mut app, cmds, error).is_empty());
+        assert!(
+            app.video_open(),
+            "rejected mode switch must keep the overlay"
+        );
+        assert!(app.video_pause_owned_for_test());
+        assert!(!app.local_dedicated_mode);
+
+        let mut retry = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+        admit_player_transition(&mut app, &mut retry);
+        assert!(!app.video_open(), "accepted mode switch closes stale video");
+        assert!(!app.video_pause_owned_for_test());
+        assert!(app.local_dedicated_mode);
+        assert!(app.queue.is_empty());
+        assert!(app.playback.paused);
+    }
+}
+
+#[test]
+fn nonempty_mode_restore_resumes_the_replacement_after_retiring_video() {
+    let mut app = app_playing(1, 0);
+    app.local_mode.local_mode_queue = Some(app.queue.snapshot());
+    let mut open = app.toggle_video_overlay_with_fake_spawn(true);
+    admit_player_transition(&mut app, &mut open);
+    assert!(app.playback.paused);
+    assert!(app.video_pause_owned_for_test());
+
+    app.local_mode.pending_confirm = Some(LocalModeConfirm::Enter);
+    let mut switch = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    assert!(load_url(&switch).is_some());
+    admit_player_transition(&mut app, &mut switch);
+
+    assert!(app.local_dedicated_mode);
+    assert!(!app.video_open());
+    assert!(!app.video_pause_owned_for_test());
+    assert!(!app.playback.paused);
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
+}
+
+#[test]
 fn local_deck_session_snapshot_and_restore_use_local_queue() {
     let mut app = app_playing(2, 1);
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
     app.queue
         .set(vec![local_song("local_alpha"), local_song("local_beta")], 1);
 
@@ -1139,7 +1396,8 @@ fn closing_settings_with_local_root_toggles_rescans_active_local_deck() {
         draft.local_music_root_recursive = false;
     }
 
-    let cmds = app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(!app.config.local.include_download_dir());
     assert!(!app.config.local.roots[0].recursive());

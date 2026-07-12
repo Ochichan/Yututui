@@ -1,6 +1,6 @@
-// DJ Gem chat (docs/gui/07 §12): a ticketed ask over the `ai` topic. The user bubble is
-// added optimistically; the core echoes the full transcript (plus the thinking flag and
-// playable suggestions) on its push, so the store always mirrors authoritative state. The
+// DJ Gem chat (docs/gui/07 §12): a ticketed ask over the `ai` topic. The core pushes the full
+// transcript (plus the thinking flag and playable suggestions), so a rejected ask never leaves
+// a fabricated bubble/spinner behind. The
 // desktop bridge forwards ask_ai once the core advertises the `ai` capability; until then
 // the in-page demo core answers (see gui/WIRING.md).
 
@@ -41,11 +41,8 @@ export class AiStore {
     const text = prompt.trim();
     if (!text) return;
     this.#ticket += 1;
-    // Optimistic user bubble; the core's push replaces the transcript wholesale.
-    this.messages = [...this.messages, { role: 'user', text }];
-    this.thinking = true;
-    this.suggestions = [];
-    this.#client.cmd('ask_ai', { ticket: this.#ticket, prompt: text });
+    const ticket = this.#ticket;
+    void this.#client.cmd('ask_ai', { ticket, prompt: text });
   }
 
   /** Play a suggested track. */

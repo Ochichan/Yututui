@@ -50,7 +50,11 @@ fn mini_keeps_the_transport_clickable() {
     });
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::CyclePause)]
+        [cmd] if matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
+        )
     ));
 }
 
@@ -75,7 +79,8 @@ fn mini_routes_keys_to_the_player_context() {
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::Player(PlayerCmd::Load(_)))),
+            .flat_map(Cmd::player_commands)
+            .any(|command| matches!(command, PlayerCmd::Load(_))),
         "Player transport keys must work under the miniplayer: {}",
         cmds.len()
     );

@@ -2,7 +2,6 @@
 
 use super::*;
 use std::collections::HashSet;
-use std::path::Path;
 
 /// Ceiling on in-flight (dispatched-but-unfinished) downloads. Held comfortably below the
 /// bounded command channel (`backpressure::DOWNLOAD_QUEUE` = 128) so a bulk batch drains
@@ -11,7 +10,8 @@ const BULK_INFLIGHT_CAP: usize = 96;
 
 /// Hard ceiling on the `Downloads::pending` backlog. The bulk confirm popup and playlist
 /// caps keep normal batches far below this; the bound just stops an unexpectedly huge batch
-/// (or a future caller) from growing the queue without limit. Silent — no new UI text.
+/// (or a future caller) from growing the queue without limit. Overflow remains in the confirm
+/// popup for an explicit retry instead of being discarded.
 const DOWNLOAD_PENDING_MAX: usize = 999;
 
 impl App {
@@ -54,11 +54,13 @@ impl App {
                 }
                 if let Some(yt) = song.youtube_id()
                     && (self.download_store.contains_youtube_id(yt)
-                        || self
-                            .library_ui
-                            .downloaded
-                            .iter()
-                            .any(|d| d.youtube_id() == Some(yt)))
+                        || self.library_ui.downloaded.iter().any(|downloaded| {
+                            downloaded.youtube_id() == Some(yt)
+                                && downloaded
+                                    .local_path
+                                    .as_deref()
+                                    .is_some_and(crate::downloads::is_existing_manifest_artifact)
+                        }))
                 {
                     return false; // already downloaded before
                 }
@@ -92,19 +94,36 @@ impl App {
         let Some(batch) = self.library_ui.confirm_download.take() else {
             return Vec::new();
         };
-        // Bound the pending backlog (defensive; normal batches are far smaller).
+        // Bound the pending backlog (defensive; normal batches are far smaller). Preserve any
+        // overflow in the confirmation popup so the user can retry after the backlog drains.
         let free = DOWNLOAD_PENDING_MAX.saturating_sub(self.downloads.pending.len());
-        let batch: Vec<Song> = batch.into_iter().take(free).collect();
-        let n = batch.len();
-        self.status.kind = StatusKind::Info;
-        self.status.text = format!("{}: {n}", t!("Queued for download", "다운로드 대기"));
-        self.downloads.pending.extend(batch);
+        let mut batch = batch.into_iter();
+        let accepted: Vec<Song> = batch.by_ref().take(free).collect();
+        let deferred: Vec<Song> = batch.collect();
+        let accepted_count = accepted.len();
+        let deferred_count = deferred.len();
+        if deferred.is_empty() {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {accepted_count}",
+                t!("Queued for download", "다운로드 대기")
+            );
+        } else {
+            self.library_ui.confirm_download = Some(deferred);
+            self.status.kind = StatusKind::Error;
+            self.status.text = format!(
+                "{}: {accepted_count}; {}: {deferred_count}",
+                t!("Queued for download", "다운로드 대기"),
+                t!("Waiting for retry", "재시도 대기")
+            );
+        }
+        self.downloads.pending.extend(accepted);
         self.dirty = true;
         self.pump_downloads()
     }
 
     /// Hand pending downloads to the actor up to [`BULK_INFLIGHT_CAP`], marking each `Running`
-    /// so its indicator shows at once. Returns one `Cmd::Download` per dispatched song. Called
+    /// so its indicator shows at once. Returns one `DownloadCmd::Start` per dispatched song. Called
     /// on every enqueue and again as each download finishes, so the queue keeps flowing without
     /// ever exceeding the channel bound.
     pub(in crate::app) fn pump_downloads(&mut self) -> Vec<Cmd> {
@@ -113,25 +132,98 @@ impl App {
             let Some(song) = self.downloads.pending.pop_front() else {
                 break;
             };
-            // Don't spawn a second yt-dlp for a track already downloading — a duplicate request
-            // would write the same output file concurrently. A completed/failed entry does NOT
-            // block a deliberate re-download (only `Running` is in-flight).
+            // Ordinary downloads dedupe by video id. Import work is owned by session row, so two
+            // sessions selecting the same video remain independent and each gets a completion.
+            let tracking_key = crate::download::download_tracking_key(&song);
             if matches!(
-                self.downloads.active.get(&song.video_id),
+                self.downloads.active.get(&tracking_key),
                 Some(DownloadState::Running(_))
             ) {
                 continue;
             }
             self.downloads
                 .active
-                .insert(song.video_id.clone(), DownloadState::Running(0));
-            self.downloads
-                .sources
-                .insert(song.video_id.clone(), song.clone());
+                .insert(tracking_key.clone(), DownloadState::Running(0));
+            self.downloads.sources.insert(tracking_key, song.clone());
             self.downloads.dispatched += 1;
-            cmds.push(Cmd::Download(Box::new(song)));
+            cmds.push(Cmd::Download(DownloadCmd::Start(Box::new(song))));
         }
         cmds
+    }
+
+    pub(in crate::app) fn apply_download_progress(&mut self, tracking_key: String, percent: f64) {
+        if matches!(
+            self.downloads.active.get(&tracking_key),
+            Some(DownloadState::Done | DownloadState::Failed)
+        ) {
+            return;
+        }
+        let percent = percent.round() as u8;
+        let changed = !matches!(
+            self.downloads.active.get(&tracking_key),
+            Some(DownloadState::Running(previous)) if *previous == percent
+        );
+        if changed {
+            self.downloads
+                .active
+                .insert(tracking_key, DownloadState::Running(percent));
+            self.dirty = true;
+        }
+    }
+
+    pub(in crate::app) fn apply_download_done(
+        &mut self,
+        tracking_key: String,
+        path: String,
+    ) -> Vec<Cmd> {
+        if matches!(
+            self.downloads.active.get(&tracking_key),
+            Some(DownloadState::Done | DownloadState::Failed)
+        ) {
+            return Vec::new();
+        }
+        self.downloads
+            .active
+            .insert(tracking_key.clone(), DownloadState::Done);
+        self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
+        let saved = !path.trim().is_empty();
+        if saved {
+            let path_buf = PathBuf::from(&path);
+            let source = self.downloads.sources.remove(&tracking_key);
+            let local = source
+                .map(|source| source.with_local_path(path_buf.clone()))
+                .unwrap_or_else(|| Song::local_file(path_buf));
+            self.add_downloaded_track(local);
+        }
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
+        self.dirty = true;
+        let mut commands = self.pump_downloads();
+        if saved {
+            commands.push(Cmd::Persist(PersistCmd::Downloads));
+        }
+        commands
+    }
+
+    pub(in crate::app) fn apply_download_error(
+        &mut self,
+        tracking_key: String,
+        error: String,
+    ) -> Vec<Cmd> {
+        if matches!(
+            self.downloads.active.get(&tracking_key),
+            Some(DownloadState::Done | DownloadState::Failed)
+        ) {
+            return Vec::new();
+        }
+        self.downloads
+            .active
+            .insert(tracking_key.clone(), DownloadState::Failed);
+        self.downloads.sources.remove(&tracking_key);
+        self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
+        self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
+        self.dirty = true;
+        self.pump_downloads()
     }
 
     pub(in crate::app) fn add_downloaded_track(&mut self, song: Song) {
@@ -144,40 +236,6 @@ impl App {
             .retain(|s| s.video_id != song.video_id);
         self.library_ui.downloaded.insert(0, song);
         self.library_ui.downloaded.truncate(DOWNLOADED_TRACKS_MAX);
-    }
-
-    pub(in crate::app) fn record_import_download_done(&self, source: &Song, path: &Path) {
-        let Some((session_id, source_order)) = import_session_ref(source) else {
-            return;
-        };
-        if let Err(error) = crate::transfer::session::record_download_done(
-            session_id,
-            source_order,
-            path.to_path_buf(),
-        ) {
-            tracing::warn!(
-                session_id,
-                source_order,
-                error = %error,
-                "could not update import session download path"
-            );
-        }
-    }
-
-    pub(in crate::app) fn record_import_download_error(&self, source: &Song, message: &str) {
-        let Some((session_id, source_order)) = import_session_ref(source) else {
-            return;
-        };
-        if let Err(error) =
-            crate::transfer::session::record_download_error(session_id, source_order, message)
-        {
-            tracing::warn!(
-                session_id,
-                source_order,
-                error = %error,
-                "could not update import session download error"
-            );
-        }
     }
 
     /// Turn a bare disk scan into the Downloads-tab list, restoring each track's YouTube
@@ -211,11 +269,4 @@ impl App {
             .find(|e| e.youtube_id().is_some() && e.title.trim().to_lowercase() == key)
             .and_then(|e| e.youtube_id().map(str::to_owned))
     }
-}
-
-fn import_session_ref(song: &Song) -> Option<(&str, u32)> {
-    Some((
-        song.import_session_id.as_deref()?,
-        song.import_source_order?,
-    ))
 }

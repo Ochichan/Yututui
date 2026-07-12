@@ -67,10 +67,7 @@ impl SpotifyToken {
         let Some(path) = token_path() else {
             return Ok(());
         };
-        match std::fs::remove_file(path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
+        remove_auth_file(&path)
     }
 }
 
@@ -94,10 +91,15 @@ pub fn clear_pending_auth_url() -> std::io::Result<()> {
     let Some(path) = pending_auth_url_path() else {
         return Ok(());
     };
-    match std::fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
+    remove_auth_file(&path)
+}
+
+/// Delete secret-bearing OAuth state through the process-wide mutation/recovery guard.
+///
+/// Kept as one helper so disconnect and pending-URL cleanup have identical crash-durability and
+/// late-recovery behavior. `remove_private_file_durable` treats absence as an idempotent success.
+pub(crate) fn remove_auth_file(path: &std::path::Path) -> std::io::Result<()> {
+    safe_fs::remove_private_file_durable(path)
 }
 
 /// RFC 7636 §4.1: 43–128 chars from the unreserved set. 64 gives ~380 bits of entropy.
@@ -415,6 +417,41 @@ fn token_from_response(
 mod tests {
     use super::*;
     use std::net::SocketAddr;
+
+    struct RecoveryLatchReset;
+
+    impl Drop for RecoveryLatchReset {
+        fn drop(&mut self) {
+            crate::persist::clear_startup_recovery_error_for_test();
+        }
+    }
+
+    #[test]
+    fn late_recovery_latch_preserves_token_and_pending_authorization_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "yututui-auth-recovery-{}-{}",
+            std::process::id(),
+            crate::signals::unix_now()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("spotify_token.json");
+        let pending = dir.join("spotify_auth_url.txt");
+        std::fs::write(&token, b"token-before-latch").unwrap();
+        std::fs::write(&pending, b"url-before-latch").unwrap();
+
+        let reset = RecoveryLatchReset;
+        crate::persist::latch_startup_recovery_error_for_test(crate::persist::StoreKind::Config);
+        for path in [&token, &pending] {
+            let error = remove_auth_file(path).expect_err("recovery revoke rejects deletion");
+            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        }
+        assert_eq!(std::fs::read(&token).unwrap(), b"token-before-latch");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"url-before-latch");
+
+        drop(reset);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// RFC 7636 Appendix B reference vector.
     #[test]

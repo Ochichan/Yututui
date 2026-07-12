@@ -20,6 +20,8 @@ export interface SearchGroup {
 }
 export interface SearchCompleted {
   kind: 'search_completed';
+  /** Requesting page lifetime; absent only when talking to a legacy core. */
+  page_id?: string | null;
   ticket: number;
   query: string;
   /** The requested scope — `'all'` or a single catalog. */
@@ -40,6 +42,16 @@ export class SearchStore {
   constructor(client: Client) {
     this.#client = client;
     client.on('search', (payload) => this.#onPush(payload as SearchCompleted));
+    client.onConn((info) => {
+      if (info.state === 'offline') {
+        // Search row ids are resolved inside the daemon session that produced them. A reconnect
+        // gets a new session identity, so retaining those rows would expose actions that can only
+        // fail as stale_results. Advance the ticket as a fence against a late pre-drop push too.
+        this.#ticket += 1;
+        this.pending = false;
+        this.groups = [];
+      }
+    });
   }
 
   /** Run a search. No-op on a blank query (the input already guards, but be defensive). */
@@ -51,7 +63,10 @@ export class SearchStore {
     this.ran = true;
     this.pending = true;
     this.groups = [];
-    this.#client.cmd('run_search', { ticket: this.#ticket, query: q, source });
+    const ticket = this.#ticket;
+    void this.#client.cmd('run_search', { ticket, query: q, source }).then((result) => {
+      if (!result.ok && ticket === this.#ticket) this.pending = false;
+    });
   }
 
   /** Play a result now (replaces nothing — inserts and jumps, core-defined). */

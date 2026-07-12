@@ -27,7 +27,7 @@
 
   async function clearCache(): Promise<void> {
     const n = await settings.clearRomanizationCache();
-    toasts.show('success', t('settings.djgem.cacheCleared', { n }));
+    if (n != null) toasts.show('success', t('settings.djgem.cacheCleared', { n }));
   }
 </script>
 

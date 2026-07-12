@@ -9,18 +9,32 @@ for continuing that work. Read it before touching anything.
 
 ### 1. Wired — live today, do not stub these
 
-| Surface | How it's wired |
-|---|---|
-| `player` / `queue` topic rendering | `playback.svelte.ts` / `queue.svelte.ts` consume `player_snapshot` / `queue_snapshot` pushes (the B0 wire), incl. interpolation with the ported mini-player constants (`lib/time.ts` — do not re-derive) |
-| Transport commands | `toggle_pause` `next` `prev` `seek_to` `set_volume` `toggle_shuffle` `cycle_repeat` `streaming` (v7-frozen) + `rate` `queue_play` `queue_remove_many` `queue_clear_upcoming` `play_video` (v8) — sent fire-and-forget per protocol |
-| Local themes | `lib/theme/local.ts` + `ThemeStore.applyLocal` — 5 GUI-owned skins (incl. Crimson Mono and Ember Wine), applied live, persisted in localStorage |
-| Demo core | `lib/dev/democore.ts` — a stateful in-page core for `npm run dev` / browsers: transport, queue ops, rating, auto-advance, lyrics all actually behave |
+| Surface                            | How it's wired                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `player` / `queue` topic rendering | `playback.svelte.ts` / `queue.svelte.ts` consume `player_snapshot` / `queue_snapshot` pushes (the B0 wire), incl. interpolation with the ported mini-player constants (`lib/time.ts` — do not re-derive)                                                                                                                                  |
+| Transport commands                 | `toggle_pause` `next` `prev` `seek_to` `set_volume` `toggle_shuffle` `cycle_repeat` `streaming` (v7-frozen) + `rate` `queue_play` `queue_remove_many` `queue_clear_upcoming` `play_video` (v8) — every mutation has a correlated acknowledgement, a page-scoped `request_id`, a bounded timeout, and a visible busy/offline/error outcome |
+| Local themes                       | `lib/theme/local.ts` + `ThemeStore.applyLocal` — 5 GUI-owned skins (incl. Crimson Mono and Ember Wine), applied live, persisted in localStorage                                                                                                                                                                                           |
+| Demo core                          | `lib/dev/democore.ts` — a stateful in-page core for `npm run dev` / browsers: transport, queue ops, rating, auto-advance, lyrics all actually behave                                                                                                                                                                                      |
 
-**The single Rust seam that makes the wired tier real end-to-end:** the desktop bridge
-(`src/desktop/bridge.rs`) currently only echoes `req ping`. Forwarding `cmd` envelopes to
-the gateway's session (name → `RemoteCommand`, snake_case tags already match) and fanning
-topic pushes back as `event` envelopes is the M1 shell work — the frontend sends/consumes
-the right shapes today.
+**The Rust seam is wired end-to-end:** the desktop bridge (`src/desktop/bridge.rs`) decodes
+the WebView envelopes and the gateway translates their names into `RemoteCommand` values,
+binds every command/request's stable `request_id` to its optional `page_id`, and echoes that page on the
+correlated reply so a replacement WebView cannot consume an older page's response. `Client.cmd()` resolves only after an explicit acknowledgement (or a typed
+busy/offline/timeout/error result); callers with local in-flight state clear or roll it back on
+failure, while the global toast surface reports every rejected mutation.
+
+Topic declarations use a separate latest-desired-set lane rather than the bounded mutation
+queue. Duplicate changes coalesce, changes made under pressure or while offline are retained,
+and the current full set is reconciled after reconnect. A new `page_id` cycles page-owned topics
+through unsubscribe/subscribe even when the set is unchanged, forcing fresh initial snapshots.
+Mutation commands are not automatically retried because a disconnect after admission leaves
+their outcome ambiguous. Legacy envelopes without `page_id` remain accepted.
+
+Stable-ID outcome retention is a state-changing-command contract, not a blanket cache for every
+command. `status` always executes again to return a fresh snapshot, and `run_search` executes
+again because its immediate reply only acknowledges a completion push scoped to the current
+session, `page_id`, and ticket. Replaying that acknowledgement after reconnect would point at a
+dead session and leave the replacement page waiting for a result it can never receive.
 
 ### 2. Pending — the patch-bay registry
 
@@ -30,7 +44,7 @@ UI is finished but whose wire is not. Current entries (delete each as you wire i
 `lyrics.live` · `artwork.live`
 
 (these two are B1 reconciles — the stores already consume the PROVISIONAL demo shapes; they
-can only be *verified/aligned* against a real core push once B1 lands.)
+can only be _verified/aligned_ against a real core push once B1 lands.)
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,

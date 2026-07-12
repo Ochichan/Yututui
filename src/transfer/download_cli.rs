@@ -141,10 +141,19 @@ mod tests {
     use super::*;
     use crate::transfer::session::{ImportSessionRow, ImportSessionRowStatus, SessionEndpoint};
 
+    struct MutationRevocationReset;
+
+    impl Drop for MutationRevocationReset {
+        fn drop(&mut self) {
+            crate::util::safe_fs::clear_process_mutation_revoke_for_test();
+        }
+    }
+
     fn save_session(job_id: &str) {
         let session = ImportSession {
             schema_version: 1,
             session_id: job_id.to_owned(),
+            session_instance_id: "test-download-cli-instance".to_owned(),
             job_id: job_id.to_owned(),
             created_at: 0,
             updated_at: 0,
@@ -177,6 +186,34 @@ mod tests {
         assert!(output.contains("Download plan: sp2yt-download-cli-plan"));
         assert!(output.contains("enqueue: 1"));
         assert!(output.contains("Accepted"));
+    }
+
+    #[test]
+    fn dry_run_needs_no_durable_mutation_and_keeps_session_bytes() {
+        let job_id = "sp2yt-download-cli-read-only";
+        crate::util::safe_fs::clear_process_mutation_revoke_for_test();
+        save_session(job_id);
+        let path = super::super::session::session_path(job_id).expect("session path");
+        let summary_path = path.with_file_name(format!("{job_id}.summary.json"));
+        let session_before = std::fs::read(&path).expect("saved session");
+        let summary_before = std::fs::read(&summary_path).expect("saved session summary");
+
+        let _reset = MutationRevocationReset;
+        crate::util::safe_fs::revoke_process_mutations(
+            "download CLI dry-run must remain observational".into(),
+        );
+        let output = run_inner(&[job_id, "--accepted", "--dry-run"])
+            .expect("download planning must not require durable mutation");
+
+        assert!(output.contains("Download plan: sp2yt-download-cli-read-only"));
+        assert_eq!(
+            std::fs::read(&path).expect("session after dry-run"),
+            session_before
+        );
+        assert_eq!(
+            std::fs::read(&summary_path).expect("summary after dry-run"),
+            summary_before
+        );
     }
 
     #[test]

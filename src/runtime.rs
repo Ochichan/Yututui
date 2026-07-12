@@ -1,27 +1,50 @@
 //! Runtime event adapter between leaf actors and the app reducer.
 //!
-//! Actors emit domain-specific events so they do not depend on `crate::app::Msg`.
-//! This module is the single orchestration boundary that maps those events back into
-//! reducer messages.
-
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+//! Leaf domain events cross this single orchestration boundary into reducer messages.
 
 use ratatui_image::thread::ResizeResponse;
-use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError};
 
+#[cfg(test)]
+use crate::app::PersistCmd;
 use crate::app::{
-    AiMsg, App, Cmd, DataCmd, DataMsg, Msg, PersistCmd, PersonalDataExportCmd, PlayerMsg,
-    StreamingMsg,
+    AiMsg, App, Cmd, DataCmd, DownloadCmd, Msg, PersonalDataExportCmd, PlayerControl, PlayerMsg,
+    ScrobbleCmd, StreamingMsg,
 };
-use crate::config::PlayerRuntimeConfig;
-use crate::player::{PlayerCmd, PlayerHandle};
-use crate::util::event_policy::{
-    EventKey as Key, EventLane as Lane, EventPolicy, LatestEventBuffer,
-};
+#[cfg(test)]
+use crate::player::PlayerCmd;
+use crate::player::PlayerHandle;
+use crate::util::delivery::{DeliveryReceipt, DeliveryResult};
+use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
 
-mod must_deliver;
-mod personal_export;
+mod delivery_reporting;
+mod event_policy;
+pub(crate) mod ingress;
+mod persist_delivery;
+pub(crate) mod player_delivery;
+mod read_only;
+mod recorder_recovery;
+mod task_set;
+
+#[cfg(test)]
+use crate::util::delivery::DeliveryError;
+use delivery_reporting::{ActorRejectionRecovery, recover_actor_rejection, report_actor_delivery};
+#[cfg(test)]
+use event_policy::player_msg_policy as app_player_msg_policy;
+use event_policy::{app_msg_policy, video_event_policy};
+#[cfg(test)]
+use player_delivery::{
+    PENDING_PLAYER_CMDS_MAX, PENDING_PLAYER_INTENTS_MAX, PlayerRestartDecision,
+    admit_player_intent, reject_pending_player_intents, settle_player_intent,
+};
+use player_delivery::{
+    PendingPlayerCmds, PendingPlayerIntents, PlayerRestartGate, report_player_delivery,
+};
+use task_set::RuntimeTaskSet;
+
+pub use ingress::{
+    RuntimeSender, channel, emit, emit_callback_observed, emit_callback_result, emit_observed,
+};
+pub use task_set::BackgroundShutdown;
 
 pub enum RuntimeEvent {
     App(Msg),
@@ -87,18 +110,16 @@ impl RuntimeEvent {
                     stale_key: Key::SearchRequest,
                 },
                 crate::api::ApiEvent::PlaylistTracks { .. }
-                | crate::api::ApiEvent::PlaylistTracksError { .. } => {
-                    EventPolicy::MustReplyOrBusy {
-                        lane: Lane::WorkResult,
-                    }
-                }
+                | crate::api::ApiEvent::PlaylistTracksError { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
                 crate::api::ApiEvent::StreamingResults { .. }
                 | crate::api::ApiEvent::StreamingPreflighted { .. }
                 | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
                     stale_key: Key::StreamingSeed,
                 },
-                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::GuiSearchTicket,
+                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
                 },
             },
             RuntimeEvent::Artwork(_) => EventPolicy::DropIfStale {
@@ -109,19 +130,24 @@ impl RuntimeEvent {
                 key: Key::ArtResize,
             },
             RuntimeEvent::Download(event) => match event {
-                crate::download::DownloadEvent::Progress { .. } => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::DownloadProgress,
-                },
+                crate::download::DownloadEvent::Progress { .. }
+                | crate::download::DownloadEvent::ImportProgress { .. } => {
+                    EventPolicy::CoalesceLatest {
+                        lane: Lane::Telemetry,
+                        key: Key::DownloadProgress,
+                    }
+                }
                 crate::download::DownloadEvent::Done { .. }
-                | crate::download::DownloadEvent::Error { .. } => EventPolicy::MustDeliver {
+                | crate::download::DownloadEvent::ImportDone { .. }
+                | crate::download::DownloadEvent::Error { .. }
+                | crate::download::DownloadEvent::ImportError { .. } => EventPolicy::MustDeliver {
                     lane: Lane::WorkResult,
                 },
             },
             RuntimeEvent::Lyrics(_) => EventPolicy::DropIfStale {
                 stale_key: Key::LyricsVideo,
             },
-            RuntimeEvent::Player(event) => match event {
+            RuntimeEvent::Player(event) => match event.unscoped() {
                 crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
                     lane: Lane::Telemetry,
                     key: Key::PlayerTimePos,
@@ -154,10 +180,13 @@ impl RuntimeEvent {
                     lane: Lane::Telemetry,
                     key: Key::PlayerFileFormat,
                 },
-                crate::player::PlayerEvent::Eof | crate::player::PlayerEvent::Error(_) => {
-                    EventPolicy::MustDeliver {
-                        lane: Lane::Control,
-                    }
+                crate::player::PlayerEvent::Eof
+                | crate::player::PlayerEvent::Error(_)
+                | crate::player::PlayerEvent::TransportClosed(_) => EventPolicy::MustDeliver {
+                    lane: Lane::Control,
+                },
+                crate::player::PlayerEvent::FileScoped { .. } => {
+                    unreachable!("audio file event was unscoped before policy lookup")
                 }
             },
             RuntimeEvent::Persist(_) => EventPolicy::MustDeliver {
@@ -165,16 +194,38 @@ impl RuntimeEvent {
             },
             RuntimeEvent::Remote(
                 crate::remote::server::RemoteEvent::Command(_, _)
+                | crate::remote::server::RemoteEvent::SessionCommand { .. }
                 | crate::remote::server::RemoteEvent::SessionSubscribe { .. },
             ) => EventPolicy::MustReplyOrBusy {
                 lane: Lane::RemoteCommand,
             },
             RuntimeEvent::Video { event, .. } => video_event_policy(event),
-            RuntimeEvent::Resolver(_) => EventPolicy::DropIfStale {
-                stale_key: Key::ResolverVideo,
+            RuntimeEvent::Resolver(
+                crate::resolver::ResolverEvent::Resolved { purpose, .. }
+                | crate::resolver::ResolverEvent::Failed { purpose, .. },
+            ) if *purpose == crate::resolver::ResolvePurpose::SelfHeal => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
+            RuntimeEvent::Resolver(_) => EventPolicy::CoalesceLatest {
+                lane: Lane::WorkResult,
+                key: Key::ResolverVideo,
             },
-            RuntimeEvent::Scrobble(_) => EventPolicy::BestEffort {
-                reason: "scrobble UI notices are secondary to the durable scrobble queue",
+            RuntimeEvent::Scrobble(event) => match event {
+                crate::scrobble::ScrobbleEvent::AuthUrl(_)
+                | crate::scrobble::ScrobbleEvent::AuthDone { .. }
+                | crate::scrobble::ScrobbleEvent::AuthFailed(_)
+                | crate::scrobble::ScrobbleEvent::SessionInvalid(_)
+                | crate::scrobble::ScrobbleEvent::QueueDropped { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::Control,
+                },
+                crate::scrobble::ScrobbleEvent::QueueStalled { .. } => {
+                    EventPolicy::CoalesceLatest {
+                        lane: Lane::Telemetry,
+                        key: Key::ScrobbleQueueStalled,
+                    }
+                }
             },
             RuntimeEvent::Signal(_) => EventPolicy::MustDeliver {
                 lane: Lane::Control,
@@ -206,6 +257,7 @@ impl RuntimeEvent {
                 },
                 crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
                 | crate::transfer::actor::TransferEvent::JobDone(_)
+                | crate::transfer::actor::TransferEvent::JobRejected { .. }
                 | crate::transfer::actor::TransferEvent::JobFailed { .. } => {
                     EventPolicy::MustDeliver {
                         lane: Lane::WorkResult,
@@ -243,195 +295,6 @@ impl RuntimeEvent {
 
     pub fn is_telemetry_wake(&self) -> bool {
         matches!(self, RuntimeEvent::TelemetryWake)
-    }
-
-    fn telemetry_slot(&self) -> Option<RuntimeTelemetrySlot> {
-        match self {
-            RuntimeEvent::App(Msg::DownloadProgress { video_id, .. }) => {
-                Some(RuntimeTelemetrySlot::DownloadProgress(video_id.clone()))
-            }
-            RuntimeEvent::App(Msg::MediaArtworkReady(ready)) => {
-                Some(RuntimeTelemetrySlot::MediaArt(ready.key.clone()))
-            }
-            RuntimeEvent::App(Msg::Transfer(crate::transfer::actor::TransferEvent::Progress(
-                progress,
-            ))) => Some(RuntimeTelemetrySlot::TransferProgress(
-                progress.job_id.clone(),
-            )),
-            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
-                video_id, ..
-            }) => Some(RuntimeTelemetrySlot::DownloadProgress(video_id.clone())),
-            RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(progress)) => {
-                Some(RuntimeTelemetrySlot::TransferProgress(
-                    progress.job_id.clone(),
-                ))
-            }
-            _ => match self.policy() {
-                EventPolicy::CoalesceLatest { key, .. } => Some(RuntimeTelemetrySlot::Static(key)),
-                _ => None,
-            },
-        }
-    }
-}
-
-fn app_msg_policy(msg: &Msg) -> EventPolicy {
-    match msg {
-        Msg::Quit => EventPolicy::MustDeliver {
-            lane: Lane::Control,
-        },
-        Msg::Media(_) => EventPolicy::MustDeliver {
-            lane: Lane::Control,
-        },
-        Msg::Remote(_, _) => EventPolicy::MustReplyOrBusy {
-            lane: Lane::RemoteCommand,
-        },
-        Msg::Data(_) => EventPolicy::MustDeliver {
-            lane: Lane::WorkResult,
-        },
-        Msg::Player(player) => app_player_msg_policy(player),
-        Msg::ArtworkResized(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::ArtResize,
-        },
-        Msg::DownloadProgress { .. } => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::DownloadProgress,
-        },
-        Msg::MediaArtworkReady(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::MediaArtVideo,
-        },
-        Msg::Local(crate::app::LocalMsg::ScanProgress(_)) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::LocalScanProgress,
-        },
-        Msg::Tools(crate::tools::ToolsEvent::Progress { .. }) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::ToolProgress,
-        },
-        Msg::UpdateChecked(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::WorkResult,
-            key: Key::UpdateCheck,
-        },
-        Msg::Transfer(crate::transfer::actor::TransferEvent::Progress(_)) => {
-            EventPolicy::CoalesceLatest {
-                lane: Lane::Telemetry,
-                key: Key::TransferJob,
-            }
-        }
-        Msg::SearchResults { .. } | Msg::SearchError { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::SearchRequest,
-        },
-        Msg::ArtworkResult { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::ArtworkVideo,
-        },
-        Msg::LyricsResult { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::LyricsVideo,
-        },
-        Msg::Streaming(_) => EventPolicy::DropIfStale {
-            stale_key: Key::StreamingSeed,
-        },
-        Msg::TrackResolved { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::ResolverVideo,
-        },
-        Msg::ResolveFailed { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::ResolverVideo,
-        },
-        Msg::Noop | Msg::StatusTick | Msg::AnimTick | Msg::RecordingTick => {
-            EventPolicy::BestEffort {
-                reason: "loop-owned ticks and inert messages are redraw/status hints",
-            }
-        }
-        Msg::Key(_)
-        | Msg::MouseClick { .. }
-        | Msg::MouseDoubleClick { .. }
-        | Msg::MouseRightClick { .. }
-        | Msg::MouseRightDoubleClick { .. }
-        | Msg::MouseDrag { .. }
-        | Msg::MouseLeftUp
-        | Msg::MouseScroll { .. }
-        | Msg::Resize
-        | Msg::Focus(_)
-        | Msg::Autoplay
-        | Msg::ApiModeResolved { .. }
-        | Msg::Recorder(_)
-        | Msg::PlaylistTracks { .. }
-        | Msg::PlaylistTracksError { .. }
-        | Msg::Local(_)
-        | Msg::DownloadDone { .. }
-        | Msg::DownloadError { .. }
-        | Msg::DownloadDirError { .. }
-        | Msg::PersistFailed { .. }
-        | Msg::Ai(_)
-        | Msg::Scrobble(_)
-        | Msg::Tools(
-            crate::tools::ToolsEvent::Installed { .. } | crate::tools::ToolsEvent::Failed { .. },
-        )
-        | Msg::YtdlpHealResult { .. }
-        | Msg::Transfer(
-            crate::transfer::actor::TransferEvent::AuthUrl(_)
-            | crate::transfer::actor::TransferEvent::AuthDone { .. }
-            | crate::transfer::actor::TransferEvent::AuthError(_)
-            | crate::transfer::actor::TransferEvent::Disconnected
-            | crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
-            | crate::transfer::actor::TransferEvent::JobDone(_)
-            | crate::transfer::actor::TransferEvent::JobFailed { .. },
-        ) => EventPolicy::MustDeliver {
-            lane: Lane::WorkResult,
-        },
-    }
-}
-
-fn app_player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
-    match msg {
-        PlayerMsg::TimePos(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerTimePos,
-        },
-        PlayerMsg::Duration(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerDuration,
-        },
-        PlayerMsg::Paused(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerPaused,
-        },
-        PlayerMsg::Volume(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerVolume,
-        },
-        PlayerMsg::Metadata(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::WorkResult,
-            key: Key::PlayerMetadata,
-        },
-        PlayerMsg::CacheTime(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerCacheTime,
-        },
-        PlayerMsg::AudioCodec(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerAudioCodec,
-        },
-        PlayerMsg::FileFormat(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerFileFormat,
-        },
-        PlayerMsg::Eof | PlayerMsg::Error(_) => EventPolicy::MustDeliver {
-            lane: Lane::Control,
-        },
-        PlayerMsg::VideoOverlay { event, .. } => video_event_policy(event),
-    }
-}
-
-fn video_event_policy(event: &crate::player::video::VideoEvent) -> EventPolicy {
-    match event {
-        crate::player::video::VideoEvent::Paused(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::VideoOverlayPaused,
-        },
-        _ => EventPolicy::MustDeliver {
-            lane: Lane::Control,
-        },
     }
 }
 
@@ -559,19 +422,28 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::ArtworkResized(response) => Msg::ArtworkResized(response),
             RuntimeEvent::Download(event) => match event {
                 crate::download::DownloadEvent::Progress { video_id, percent } => {
-                    Msg::DownloadProgress { video_id, percent }
+                    Msg::Download(crate::app::DownloadMsg::Progress { video_id, percent })
+                }
+                crate::download::DownloadEvent::ImportProgress { context, percent } => {
+                    Msg::Download(crate::app::DownloadMsg::ImportProgress { context, percent })
                 }
                 crate::download::DownloadEvent::Done { video_id, path } => {
-                    Msg::DownloadDone { video_id, path }
+                    Msg::Download(crate::app::DownloadMsg::Done { video_id, path })
+                }
+                crate::download::DownloadEvent::ImportDone { context, path } => {
+                    Msg::Download(crate::app::DownloadMsg::ImportDone { context, path })
                 }
                 crate::download::DownloadEvent::Error { video_id, error } => {
-                    Msg::DownloadError { video_id, error }
+                    Msg::Download(crate::app::DownloadMsg::Error { video_id, error })
+                }
+                crate::download::DownloadEvent::ImportError { context, error } => {
+                    Msg::Download(crate::app::DownloadMsg::ImportError { context, error })
                 }
             },
             RuntimeEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 Msg::LyricsResult { video_id, lines }
             }
-            RuntimeEvent::Player(event) => match event {
+            RuntimeEvent::Player(event) => match event.into_unscoped() {
                 crate::player::PlayerEvent::TimePos(t) => Msg::Player(PlayerMsg::TimePos(t)),
                 crate::player::PlayerEvent::Duration(d) => Msg::Player(PlayerMsg::Duration(d)),
                 crate::player::PlayerEvent::Paused(paused) => {
@@ -588,6 +460,12 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::FileFormat(f) => Msg::Player(PlayerMsg::FileFormat(f)),
                 crate::player::PlayerEvent::Eof => Msg::Player(PlayerMsg::Eof),
                 crate::player::PlayerEvent::Error(error) => Msg::Player(PlayerMsg::Error(error)),
+                crate::player::PlayerEvent::TransportClosed(reason) => {
+                    Msg::Player(PlayerMsg::TransportClosed(reason))
+                }
+                crate::player::PlayerEvent::FileScoped { .. } => {
+                    unreachable!("audio file event was unscoped before conversion")
+                }
             },
             RuntimeEvent::Persist(crate::persist::PersistEvent::WriteFailed { store, error }) => {
                 Msg::PersistFailed { store, error }
@@ -595,6 +473,11 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionCommand {
+                command,
+                reply,
+                ..
+            }) => Msg::Remote(command, reply),
             RuntimeEvent::Video { generation, event } => {
                 Msg::Player(PlayerMsg::VideoOverlay { generation, event })
             }
@@ -609,9 +492,11 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {
                 video_id,
                 stream_url,
+                purpose,
             }) => {
                 let video_id = video_id.into_string();
                 let stream_url = stream_url.into_string();
+                let self_heal = purpose == crate::resolver::ResolvePurpose::SelfHeal;
                 match crate::api::validate_playable_url(
                     crate::search_source::SearchSource::Youtube,
                     &stream_url,
@@ -619,16 +504,28 @@ impl From<RuntimeEvent> for Msg {
                     Ok(stream_url) => Msg::Streaming(StreamingMsg::Resolved {
                         video_id,
                         stream_url,
+                        self_heal,
                     }),
                     Err(error) => {
                         tracing::warn!(%video_id, %error, "dropping invalid resolved stream URL");
-                        Msg::ResolveFailed { video_id }
+                        if self_heal {
+                            Msg::ResolveFailed { video_id }
+                        } else {
+                            Msg::Noop
+                        }
                     }
                 }
             }
-            RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed { video_id }) => {
-                Msg::ResolveFailed {
-                    video_id: video_id.into_string(),
+            RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed {
+                video_id,
+                purpose,
+            }) => {
+                if purpose == crate::resolver::ResolvePurpose::SelfHeal {
+                    Msg::ResolveFailed {
+                        video_id: video_id.into_string(),
+                    }
+                } else {
+                    Msg::Noop
                 }
             }
             RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
@@ -647,219 +544,39 @@ impl From<RuntimeEvent> for Msg {
     }
 }
 
-const RUNTIME_TELEMETRY_SLOTS: usize = 256;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum RuntimeTelemetrySlot {
-    Static(Key),
-    DownloadProgress(String),
-    MediaArt(String),
-    TransferProgress(String),
-}
-
-#[derive(Clone)]
-pub struct RuntimeSender {
-    tx: Sender<RuntimeEvent>,
-    telemetry: Arc<Mutex<LatestEventBuffer<RuntimeTelemetrySlot, RuntimeEvent>>>,
-    must_deliver_overflow: Arc<must_deliver::MustDeliverOverflow>,
-}
-
-impl RuntimeSender {
-    pub fn new(tx: Sender<RuntimeEvent>) -> Self {
-        Self {
-            tx,
-            telemetry: Arc::new(Mutex::new(LatestEventBuffer::new(RUNTIME_TELEMETRY_SLOTS))),
-            must_deliver_overflow: Arc::new(must_deliver::MustDeliverOverflow::new()),
+fn settle_resolver_admission(app: &mut App, video_id: String, result: DeliveryResult) -> Vec<Cmd> {
+    match result {
+        Ok(DeliveryReceipt::Coalesced { .. }) => {
+            tracing::trace!(%video_id, "resolver request coalesced");
+            Vec::new()
+        }
+        Ok(DeliveryReceipt::Enqueued | DeliveryReceipt::Deferred) => Vec::new(),
+        Err(error) => {
+            tracing::debug!(%video_id, %error, "resolver request was not accepted");
+            // Dispatch already owns `&mut App`, so reduce the failure directly. Sending it
+            // back through the bounded owner ingress could itself saturate or evict another
+            // keyed completion and leave a self-heal retry latch stuck forever.
+            app.update(Msg::ResolveFailed { video_id })
         }
     }
-
-    pub fn drain_coalesced(&self) -> Vec<RuntimeEvent> {
-        self.telemetry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain()
-    }
 }
 
-pub fn channel(
-    policy: crate::util::backpressure::QueuePolicy,
-) -> (RuntimeSender, Receiver<RuntimeEvent>) {
-    let (tx, rx) = crate::util::backpressure::bounded_channel(policy);
-    (RuntimeSender::new(tx), rx)
-}
-
-pub fn emit(tx: &RuntimeSender, event: RuntimeEvent) -> bool {
-    let policy = event.policy();
-    let event_kind = event.kind();
-    if matches!(policy, EventPolicy::CoalesceLatest { .. }) {
-        return emit_coalesced(tx, event, event_kind, policy);
+fn recover_download_admission(
+    app: &mut App,
+    error: crate::download::DownloadStartError,
+) -> Vec<Cmd> {
+    // Reduce directly so saturated owner ingress cannot strand `downloads.dispatched`.
+    let message = "Download queue is full; try again in a moment.".to_owned();
+    if let Some(context) = error.import_context
+        && let Err(record_error) =
+            crate::transfer::session::record_import_download_error(&context.claim, &message)
+    {
+        tracing::warn!(error = %record_error, "could not record rejected import download");
     }
-    emit_direct(tx, event, event_kind, policy)
-}
-
-fn emit_direct(
-    tx: &RuntimeSender,
-    event: RuntimeEvent,
-    event_kind: &'static str,
-    policy: EventPolicy,
-) -> bool {
-    match tx.tx.try_send(event) {
-        Ok(()) => true,
-        Err(TrySendError::Full(event)) if matches!(policy, EventPolicy::MustDeliver { .. }) => {
-            tracing::warn!(
-                event_policy = policy.name(),
-                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                event_kind,
-                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
-                drop_reason = "must_deliver_delayed",
-                "runtime owner event queue full; deferring must-deliver event"
-            );
-            tx.must_deliver_overflow
-                .push(tx.tx.clone(), event, event_kind, policy);
-            true
-        }
-        Err(TrySendError::Full(_)) => {
-            tracing::warn!(
-                event_policy = policy.name(),
-                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                event_kind,
-                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
-                drop_reason = full_queue_reason(policy),
-                "runtime owner event queue full; dropping event"
-            );
-            false
-        }
-        Err(TrySendError::Closed(_)) => false,
-    }
-}
-
-fn emit_coalesced(
-    tx: &RuntimeSender,
-    event: RuntimeEvent,
-    event_kind: &'static str,
-    policy: EventPolicy,
-) -> bool {
-    let Some(slot) = event.telemetry_slot() else {
-        return emit_direct(tx, event, event_kind, policy);
-    };
-    let insert = tx
-        .telemetry
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(slot, event);
-    if insert.replaced_existing || insert.evicted_oldest {
-        tracing::trace!(
-            event_policy = policy.name(),
-            event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-            event_kind,
-            coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
-            drop_reason = if insert.evicted_oldest {
-                "coalesced_evicted_oldest"
-            } else {
-                "coalesced"
-            },
-            "runtime telemetry event coalesced"
-        );
-    }
-    if insert.should_wake {
-        emit_direct(
-            tx,
-            RuntimeEvent::TelemetryWake,
-            RuntimeEvent::TelemetryWake.kind(),
-            RuntimeEvent::TelemetryWake.policy(),
-        )
-    } else {
-        true
-    }
-}
-
-fn full_queue_reason(policy: EventPolicy) -> &'static str {
-    match policy {
-        EventPolicy::MustReplyOrBusy { .. } => "busy",
-        EventPolicy::BestEffort { .. } => "dropped_best_effort",
-        EventPolicy::DropIfStale { .. } => "stale_or_full",
-        EventPolicy::CoalesceLatest { .. } => "coalesced_wake_full",
-        EventPolicy::MustDeliver { .. } => "must_deliver_failed",
-    }
-}
-
-const PENDING_PLAYER_CMDS_MAX: usize = 64;
-
-#[derive(Default)]
-struct PendingPlayerCmds {
-    cmds: VecDeque<PlayerCmd>,
-}
-
-impl PendingPlayerCmds {
-    fn push(&mut self, cmd: PlayerCmd) {
-        match &cmd {
-            PlayerCmd::Load(_) => {
-                self.cmds
-                    .retain(|existing| !matches!(existing, PlayerCmd::Load(_)));
-            }
-            PlayerCmd::SetVolume(_) => {
-                self.cmds
-                    .retain(|existing| !matches!(existing, PlayerCmd::SetVolume(_)));
-            }
-            PlayerCmd::SetAudioFilter(_) => {
-                self.cmds
-                    .retain(|existing| !matches!(existing, PlayerCmd::SetAudioFilter(_)));
-            }
-            PlayerCmd::SetProperty { name, .. } => {
-                self.cmds.retain(|existing| {
-                    !matches!(existing, PlayerCmd::SetProperty { name: existing_name, .. } if existing_name == name)
-                });
-            }
-            PlayerCmd::Stop
-            | PlayerCmd::CyclePause
-            | PlayerCmd::SeekRelative(_)
-            | PlayerCmd::SeekAbsolute(_)
-            | PlayerCmd::AfCommand { .. } => {}
-        }
-        self.cmds.push_back(cmd);
-        while self.cmds.len() > PENDING_PLAYER_CMDS_MAX {
-            let idx = self
-                .cmds
-                .iter()
-                .position(|cmd| !matches!(cmd, PlayerCmd::Load(_)))
-                .unwrap_or(0);
-            if let Some(dropped) = self.cmds.remove(idx) {
-                tracing::warn!(
-                    kind = player_cmd_kind(&dropped),
-                    "pending player command buffer full; dropping oldest queued command"
-                );
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn drain(&mut self) -> Vec<PlayerCmd> {
-        self.cmds.drain(..).collect()
-    }
-
-    fn clear(&mut self) {
-        self.cmds.clear();
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.cmds.len()
-    }
-}
-
-fn player_cmd_kind(cmd: &PlayerCmd) -> &'static str {
-    match cmd {
-        PlayerCmd::Load(_) => "load",
-        PlayerCmd::Stop => "stop",
-        PlayerCmd::CyclePause => "cycle_pause",
-        PlayerCmd::SeekRelative(_) => "seek_relative",
-        PlayerCmd::SeekAbsolute(_) => "seek_absolute",
-        PlayerCmd::SetVolume(_) => "set_volume",
-        PlayerCmd::SetAudioFilter(_) => "set_audio_filter",
-        PlayerCmd::AfCommand { .. } => "af_command",
-        PlayerCmd::SetProperty { .. } => "set_property",
-    }
+    app.update(Msg::Download(crate::app::DownloadMsg::Rejected {
+        tracking_key: error.tracking_key,
+        error: message,
+    }))
 }
 
 pub fn sink<T, F>(tx: RuntimeSender, wrap: F) -> impl Fn(T) + Send + Sync + 'static
@@ -868,26 +585,30 @@ where
     F: Fn(T) -> RuntimeEvent + Send + Sync + 'static,
 {
     move |event| {
-        emit(&tx, wrap(event));
+        emit_callback_observed(&tx, wrap(event));
     }
 }
 
 pub fn remote_sink(
     tx: RuntimeSender,
 ) -> impl Fn(crate::remote::server::RemoteEvent) -> bool + Send + Sync + 'static {
-    move |event| emit(&tx, RuntimeEvent::Remote(event))
+    move |event| emit(&tx, RuntimeEvent::Remote(event)).is_ok()
 }
 
 pub struct RuntimeHandles {
     worker_tx: RuntimeSender,
     player_handle: Option<PlayerHandle>,
+    /// Runtime-owned restore commands are kept apart from user intents so restore is always
+    /// admitted first when a replacement actor becomes ready.
     pending_player_cmds: PendingPlayerCmds,
+    pending_player_intents: PendingPlayerIntents,
     player_failed: bool,
+    player_restart: PlayerRestartGate,
     _mpv_guard: Option<crate::player::Mpv>,
     /// Command sender for the *current* video overlay's IPC client. Replaced wholesale
-    /// on every `Cmd::VideoConnect` (each spawn generation gets a fresh client); sends
-    /// to a dead client are silent no-ops.
-    video_handle: Option<Sender<crate::player::video::VideoCmd>>,
+    /// on every `Cmd::VideoConnect` (each spawn generation gets a fresh client); rejected
+    /// sends are surfaced through the common player-delivery status path.
+    video_handle: Option<crate::player::video::VideoHandle>,
     api_handle: crate::api::ApiHandle,
     lyrics_handle: crate::lyrics::LyricsHandle,
     artwork_handle: crate::artwork::ArtworkHandle,
@@ -899,6 +620,44 @@ pub struct RuntimeHandles {
     transfer_handle: Option<crate::transfer::actor::TransferHandle>,
     /// Debounced background store writes (the `Cmd::Persist` family).
     persist: crate::persist::PersistHandle,
+    /// Runtime-local blocking jobs and cancellable maintenance work.
+    background_tasks: RuntimeTaskSet,
+    /// A deliberate secondary player may use playback/network actors, but every command capable
+    /// of durable mutation is rejected before it reaches an actor or blocking worker.
+    persistence_read_only: Option<std::sync::Arc<str>>,
+}
+
+fn settle_video_load_delivery(app: &mut App, result: DeliveryResult) -> Vec<Cmd> {
+    report_player_delivery(app, "video_load", result);
+    if result.is_err() {
+        app.compensate_video_load_rejection()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Return the durable-mutation reason which is authoritative *now*.
+///
+/// `persistence_read_only` captures the writer-lease decision made at process startup. Recovery
+/// can still discover an unverifiable journal later (for example when the lazily-spawned transfer
+/// actor loads config), so every durable admission also consults the typed process latch. The
+/// lower-level `safe_fs` revoke remains the final race barrier if recovery fails after admission.
+fn durable_mutation_rejection_reason(
+    persistence_read_only: Option<&std::sync::Arc<str>>,
+) -> Option<String> {
+    let recovery_reason = crate::persist::ensure_startup_recovery_coherent()
+        .err()
+        .map(|error| error.to_string());
+    persistence_read_only
+        .map(|reason| reason.to_string())
+        .or(recovery_reason)
+}
+
+fn shutdown_event_is_retired(event: &RuntimeEvent) -> bool {
+    matches!(
+        event,
+        RuntimeEvent::TelemetryWake | RuntimeEvent::Signal(_) | RuntimeEvent::Player(_)
+    )
 }
 
 impl RuntimeHandles {
@@ -918,7 +677,9 @@ impl RuntimeHandles {
             worker_tx,
             player_handle: None,
             pending_player_cmds: PendingPlayerCmds::default(),
+            pending_player_intents: PendingPlayerIntents::default(),
             player_failed: false,
+            player_restart: PlayerRestartGate::default(),
             _mpv_guard: None,
             video_handle: None,
             api_handle,
@@ -930,90 +691,182 @@ impl RuntimeHandles {
             scrobble_handle,
             transfer_handle: None,
             persist,
+            background_tasks: RuntimeTaskSet::new(),
+            persistence_read_only: match crate::persist::persistence_access() {
+                crate::persist::PersistenceAccess::Writable => None,
+                crate::persist::PersistenceAccess::ReadOnly { reason } => Some(reason),
+            },
         }
     }
 
     /// Feed the scrobbler the same snapshot the loop is about to publish to the OS media
     /// session. Deliberately independent of that session's enabled state — scrobbling
     /// must survive `media_controls: false`.
-    pub fn scrobble_observe(&mut self, snapshot: &crate::media::MediaSnapshot) {
-        self.scrobble_handle.observe(snapshot);
+    pub fn scrobble_observe(
+        &mut self,
+        snapshot: &crate::media::MediaSnapshot,
+    ) -> crate::util::delivery::DeliveryResult {
+        self.scrobble_handle.observe(snapshot)
     }
 
     pub fn scrobble_heartbeat_due(&self) -> bool {
         self.scrobble_handle.heartbeat_due()
     }
 
-    /// Best-effort queue flush on quit, bounded by `budget`.
-    pub async fn scrobble_shutdown(&self, budget: std::time::Duration) {
-        let done = self.scrobble_handle.shutdown_flush();
-        let _ = tokio::time::timeout(budget, done).await;
+    pub fn scrobble_retry_needed(&self) -> bool {
+        self.scrobble_handle.retry_needed()
     }
 
-    fn emit_api_enqueue_error(&self, msg: Msg) {
-        emit(&self.worker_tx, RuntimeEvent::App(msg));
-    }
-
-    fn send_video_cmd(&self, cmd: crate::player::video::VideoCmd, label: &'static str) {
-        let Some(video) = &self.video_handle else {
-            tracing::warn!(%label, "video overlay command requested with no IPC client");
-            return;
-        };
-        if video.try_send(cmd).is_err() {
-            tracing::warn!(%label, "video overlay command queue full or closed; dropping command");
+    /// Cancel and join every accepted yt-dlp task before the terminal runtime exits.
+    pub async fn download_shutdown(&self, budget: std::time::Duration) {
+        match tokio::time::timeout(budget, self.download_handle.shutdown()).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("download actor stopped before confirming shutdown"),
+            Err(_) => tracing::warn!("download shutdown timed out"),
         }
     }
 
-    pub fn handle_player_ready(
-        &mut self,
-        result: Result<(PlayerHandle, crate::player::Mpv), String>,
-        cfg: &PlayerRuntimeConfig,
-        app: &mut App,
-    ) {
-        match result {
-            Ok((handle, guard)) => {
-                handle.send(PlayerCmd::SetVolume(cfg.volume));
-                if (app.playback.speed - 1.0).abs() > f64::EPSILON {
-                    handle.send(PlayerCmd::SetProperty {
-                        name: "speed".to_owned(),
-                        value: serde_json::Value::from(app.playback.speed),
-                    });
-                }
-                if let Some(af) = crate::eq::build_af_string(&app.audio.bands, app.audio.normalize)
-                {
-                    handle.send(PlayerCmd::SetAudioFilter(af));
-                }
-                if let Ok(url) = std::env::var("YTM_PLAY_URL") {
-                    handle.load(url);
-                }
-                for cmd in self.pending_player_cmds.drain() {
-                    handle.send(cmd);
-                }
-                self.player_handle = Some(handle);
-                self._mpv_guard = Some(guard);
+    /// Close resolver admission and join the actor which owns every active yt-dlp resolve.
+    pub async fn resolver_shutdown(&mut self, budget: std::time::Duration) {
+        match tokio::time::timeout(budget, self.resolver_handle.shutdown()).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("resolver actor stopped before confirming shutdown"),
+            Err(_) => tracing::warn!("resolver shutdown timed out"),
+        }
+    }
+
+    /// Close background admission, abort cancellable work, and wait boundedly for real blocking
+    /// jobs. A timeout keeps the blocking joins owned so a later call can observe their completion.
+    pub async fn background_shutdown(&mut self, budget: std::time::Duration) -> BackgroundShutdown {
+        let outcome = self.background_tasks.shutdown(budget).await;
+        match outcome {
+            BackgroundShutdown::Drained => {
+                tracing::debug!("runtime background tasks drained during shutdown")
             }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to start mpv");
-                self.player_failed = true;
-                self.pending_player_cmds.clear();
-                if app.status.text.is_empty() {
-                    app.set_status_error(format!(
-                        "{}: {e}",
-                        crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
-                    ));
-                }
+            BackgroundShutdown::TimedOut {
+                blocking_remaining,
+                cancellable_remaining,
+            } => tracing::warn!(
+                blocking_remaining,
+                cancellable_remaining,
+                "runtime background task shutdown timed out"
+            ),
+        }
+        outcome
+    }
+
+    /// Stop new owner-event producers without closing the receiver. This releases callback retry
+    /// loops while preserving every already accepted main/deferred/coalesced event for teardown.
+    pub fn close_event_ingress(&self) -> bool {
+        self.worker_tx.close_admission()
+    }
+
+    pub fn background_ingress_is_idle(&self) -> bool {
+        self.worker_tx.deferred_is_idle()
+    }
+
+    pub fn drain_background_coalesced(&self) -> Vec<RuntimeEvent> {
+        self.worker_tx.drain_coalesced()
+    }
+
+    /// Final ownership barrier for non-abortable runtime jobs. Unlike the diagnostic shutdown
+    /// windows, this deliberately has no timeout.
+    pub async fn finalize_background(&mut self) -> Vec<RuntimeEvent> {
+        self.background_tasks.finalize().await
+    }
+
+    /// Apply one event accepted before producer shutdown (or retained in the shutdown outbox).
+    /// Remote request lifetimes are settled explicitly; state completions use the ordinary
+    /// reducer/dispatcher so persistence follow-ups cross the same durable actor boundary. Player
+    /// events are retired because teardown has already ended that generation and suppresses every
+    /// follow-up player command; applying a queued EOF here would corrupt the final queue/session.
+    pub fn reduce_shutdown_event(&mut self, app: &mut App, event: RuntimeEvent) {
+        if shutdown_event_is_retired(&event) {
+            return;
+        }
+        match event {
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(_, reply))
+            | RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionCommand {
+                reply,
+                ..
+            }) => {
+                let _ = reply.send(crate::remote::proto::RemoteResponse::err("shutting_down"));
+            }
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionSubscribe {
+                ..
+            }) => {
+                tracing::debug!("retired queued session subscribe during owner shutdown");
+            }
+            event => self.reduce_owner_msg(app, event.into()),
+        }
+    }
+
+    /// Abort and join any active transfer/auth/playlist work before the owner runtime exits.
+    pub async fn transfer_shutdown(&mut self, budget: std::time::Duration) {
+        let Some(handle) = self.transfer_handle.as_mut() else {
+            return;
+        };
+        match tokio::time::timeout(budget, handle.shutdown()).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("transfer actor stopped before confirming shutdown"),
+            Err(_) => tracing::warn!("transfer shutdown timed out"),
+        }
+        self.transfer_handle = None;
+    }
+
+    /// Confirm the durable scrobble frontier and join its isolated owner thread. `budget` is a
+    /// diagnostic warning deadline, not permission to cancel an accepted append/fsync.
+    pub async fn scrobble_shutdown(
+        &mut self,
+        budget: std::time::Duration,
+    ) -> Result<(), crate::util::delivery::DeliveryError> {
+        self.scrobble_handle.shutdown_and_join(budget).await
+    }
+
+    /// Settle a synchronous actor rejection on the owner which already holds `App`.
+    /// Re-enqueueing this terminal message through the same bounded ingress could reject it a
+    /// second time and leave request flags such as `searching` or `thinking` stuck forever.
+    fn reduce_owner_msg(&mut self, app: &mut App, msg: Msg) {
+        for follow_up in app.update(msg) {
+            self.dispatch(app, follow_up);
+        }
+    }
+
+    fn send_video_cmd(
+        &self,
+        cmd: crate::player::video::VideoCmd,
+        label: &'static str,
+    ) -> DeliveryResult {
+        match &self.video_handle {
+            Some(video) => video.send(cmd),
+            None => {
+                tracing::warn!(%label, "video overlay command requested with no IPC client");
+                Err(crate::util::delivery::DeliveryError::Closed)
             }
         }
     }
 
     pub fn dispatch(&mut self, app: &mut App, cmd: Cmd) {
-        match cmd {
-            Cmd::Player(pc) => {
-                if let Some(p) = &self.player_handle {
-                    p.send(pc);
-                } else if !self.player_failed {
-                    self.pending_player_cmds.push(pc);
+        self.background_tasks.reap_finished();
+        if let Some(component) = read_only::durable_mutation_component(&cmd) {
+            let reason = durable_mutation_rejection_reason(self.persistence_read_only.as_ref());
+            if let Some(reason) = reason {
+                for follow_up in read_only::reject_mutation(app, &cmd, component, &reason) {
+                    self.dispatch(app, follow_up);
                 }
+                return;
+            }
+        }
+        match cmd {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => {
+                let restart_started = self.handle_player_transport_closed(app);
+                if restart_started && !restore.is_empty() {
+                    let result = self.admit_player_restore_batch(restore);
+                    report_player_delivery(app, "transport_restore", result);
+                }
+            }
+            Cmd::PlayerControl(PlayerControl::Intent(intent)) => {
+                self.dispatch_player_intent(app, intent);
             }
             // dispatch runs synchronously right after each update, so the connect for a
             // spawn generation is always installed before any VideoLoad that follows it.
@@ -1028,29 +881,38 @@ impl RuntimeHandles {
                     generation,
                     bindings,
                     move |generation, event| {
-                        emit(&tx, RuntimeEvent::Video { generation, event });
+                        emit_callback_observed(&tx, RuntimeEvent::Video { generation, event });
                     },
                 ));
             }
             Cmd::VideoLoad(url) => {
-                if let Some(v) = &self.video_handle
-                    && v.try_send(crate::player::video::VideoCmd::Load(url))
-                        .is_err()
-                {
-                    tracing::warn!("video overlay command queue full or closed; dropping load");
+                let result =
+                    self.send_video_cmd(crate::player::video::VideoCmd::Load(url), "video_load");
+                if result.is_err() {
+                    // Drop the rejected generation before closing its process so no stale
+                    // pending load can later reach an overlay which no longer represents state.
+                    self.video_handle = None;
+                }
+                for follow_up in settle_video_load_delivery(app, result) {
+                    self.dispatch(app, follow_up);
                 }
             }
             Cmd::VideoTogglePause => {
-                self.send_video_cmd(crate::player::video::VideoCmd::CyclePause, "pause");
+                let result =
+                    self.send_video_cmd(crate::player::video::VideoCmd::CyclePause, "video_pause");
+                report_player_delivery(app, "video_pause", result);
             }
             Cmd::VideoToggleFullscreen => {
-                self.send_video_cmd(
+                let result = self.send_video_cmd(
                     crate::player::video::VideoCmd::CycleFullscreen,
-                    "fullscreen",
+                    "video_fullscreen",
                 );
+                report_player_delivery(app, "video_fullscreen", result);
             }
             Cmd::VideoToggleMute => {
-                self.send_video_cmd(crate::player::video::VideoCmd::CycleMute, "mute");
+                let result =
+                    self.send_video_cmd(crate::player::video::VideoCmd::CycleMute, "video_mute");
+                report_player_delivery(app, "video_mute", result);
             }
             Cmd::UpdateSeen { tag } => crate::update::mark_notified(&tag),
             Cmd::Search {
@@ -1061,21 +923,27 @@ impl RuntimeHandles {
             } => {
                 if let Err(error) = self.api_handle.search(request_id, query, source, config) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::SearchError {
-                        request_id,
-                        source,
-                        error: error.to_string(),
-                    });
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::SearchError {
+                            request_id,
+                            source,
+                            error: error.to_string(),
+                        },
+                    );
                 }
             }
             Cmd::SearchPlaylists { request_id, query } => {
                 if let Err(error) = self.api_handle.search_playlists(request_id, query) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::SearchError {
-                        request_id,
-                        source: crate::search_source::SearchSource::Youtube,
-                        error: error.to_string(),
-                    });
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::SearchError {
+                            request_id,
+                            source: crate::search_source::SearchSource::Youtube,
+                            error: error.to_string(),
+                        },
+                    );
                 }
             }
             Cmd::FetchPlaylistTracks {
@@ -1088,67 +956,100 @@ impl RuntimeHandles {
                         .playlist_tracks(playlist_id, title.clone(), intent)
                 {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::PlaylistTracksError {
-                        title,
-                        error: error.to_string(),
-                    });
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::PlaylistTracksError {
+                            title,
+                            error: error.to_string(),
+                        },
+                    );
                 }
             }
             // Persist: hand the persistence actor an owned snapshot (or clear one). Cloning a
             // store is a couple ms of memcpy at worst; the fsync it replaces on this task was
             // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`
             // carries its own owned snapshot.
-            Cmd::Persist(p) => match p {
-                PersistCmd::Library => self
-                    .persist
-                    .save(crate::persist::Snapshot::Library(app.library.clone())),
-                PersistCmd::Downloads => self.persist.save(crate::persist::Snapshot::Downloads(
-                    app.download_store.clone(),
-                )),
-                PersistCmd::Signals => self
-                    .persist
-                    .save(crate::persist::Snapshot::Signals(app.signals.clone())),
-                PersistCmd::RomanizedTitles => self.persist.save(
-                    crate::persist::Snapshot::RomanizedTitles(app.romanization.cache.clone()),
-                ),
-                PersistCmd::ClearRomanizedTitles => self.persist.delete_romanized_titles(),
-                PersistCmd::Config(cfg) => self.persist.save(crate::persist::Snapshot::Config(cfg)),
-                PersistCmd::Playlists => self
-                    .persist
-                    .save(crate::persist::Snapshot::Playlists(app.playlists.clone())),
-                PersistCmd::StationProfile => self
-                    .persist
-                    .save(crate::persist::Snapshot::Station(app.station.clone())),
-            },
+            Cmd::Persist(p) => {
+                let result = persist_delivery::admit(&self.persist, app, p);
+                report_actor_delivery(app, "persistence", result);
+            }
             Cmd::Data(cmd) => match cmd {
                 DataCmd::PersonalDataExport(PersonalDataExportCmd::Export {
                     directory,
                     sources,
                     reply,
-                }) => personal_export::spawn(self.worker_tx.clone(), directory, sources, reply),
-                DataCmd::ScanDownloads(dir) => {
-                    // Directory scan does per-file IO — keep it off the loop task too.
-                    let tx = self.worker_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = crate::util::blocking::spawn_io(move || {
-                            let scan = crate::library::scan_downloads(&dir);
-                            emit(
-                                &tx,
-                                RuntimeEvent::App(Msg::Data(DataMsg::DownloadsScanned(scan))),
+                }) => {
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("personal_data_export", move || {
+                            let snapshot = crate::data_export::ExportSnapshot::new(
+                                &sources.config,
+                                &sources.library,
+                                &sources.playlists,
+                                &sources.signals,
+                                &sources.station,
                             );
-                        })
-                        .await
-                        {
-                            tracing::warn!(%error, "download scan task failed");
-                        }
-                    });
+                            drop(sources);
+                            let result = crate::data_export::export_snapshot(&directory, &snapshot)
+                                .map_err(|error| {
+                                    crate::util::sanitize::sanitize_error_text(error.to_string())
+                                });
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
+                                crate::app::DataMsg::PersonalDataExport(
+                                    crate::app::PersonalDataExportMsg::Finished { result, reply },
+                                ),
+                            )));
+                        });
+                }
+                DataCmd::ScanDownloads(dir) => {
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("scan_downloads_data", move || {
+                            let scan = crate::library::scan_downloads(&dir);
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
+                                crate::app::DataMsg::DownloadsScanned(scan),
+                            )));
+                        });
                 }
             },
+            Cmd::Download(DownloadCmd::Scan(dir)) => {
+                // Directory scan does per-file IO — keep it off the loop task too.
+                let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                self.background_tasks
+                    .spawn_blocking("scan_downloads", move || {
+                        let scan = crate::library::scan_downloads(&dir);
+                        emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
+                            crate::app::DataMsg::DownloadsScanned(scan),
+                        )));
+                    });
+            }
+            Cmd::Download(DownloadCmd::Delete { paths, root }) => {
+                let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                self.background_tasks
+                    .spawn_blocking("delete_downloads", move || {
+                        let (deleted, failures) =
+                            crate::download::delete_download_files(paths, &root);
+                        for (path, error) in &failures {
+                            tracing::warn!(
+                                path = %crate::util::sanitize::sanitize_error_text(path.display().to_string()),
+                                error = %crate::util::sanitize::sanitize_error_text(error.to_string()),
+                                "refused or failed to delete downloaded file"
+                            );
+                        }
+                        emitter.emit_terminal_blocking(RuntimeEvent::App(
+                            Msg::DownloadsDeleted {
+                                root,
+                                deleted,
+                                failed: failures.len(),
+                            },
+                        ));
+                    });
+            }
             Cmd::Local(cmd) => match cmd {
                 crate::app::LocalCmd::LoadIndex { index_path } => {
-                    let tx = self.worker_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = crate::util::blocking::spawn_io(move || {
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("local_load_index", move || {
                             let load = index_path
                                 .as_deref()
                                 .map(crate::local::LocalIndex::load_with_diagnostics)
@@ -1161,40 +1062,31 @@ impl RuntimeHandles {
                                     message: warning.message,
                                 })
                                 .collect();
-                            emit(
-                                &tx,
-                                RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Local(
+                                crate::app::LocalMsg::IndexLoaded {
                                     index_path,
                                     index: load.index,
                                     warnings,
-                                })),
-                            );
-                        })
-                        .await
-                        {
-                            tracing::warn!(%error, "local index load task failed");
-                        }
-                    });
+                                },
+                            )));
+                        });
                 }
                 crate::app::LocalCmd::ScanRoots {
                     roots,
                     index_path,
                     previous,
                 } => {
-                    let tx = self.worker_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = crate::util::blocking::spawn_io(move || {
-                            let progress_tx = tx.clone();
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("local_scan_roots", move || {
+                            let progress_emitter = emitter.clone();
                             let mut result = crate::local::scan_roots_with_progress(
                                 &roots,
                                 &previous,
                                 |progress| {
-                                    emit(
-                                        &progress_tx,
-                                        RuntimeEvent::App(Msg::Local(
-                                            crate::app::LocalMsg::ScanProgress(progress),
-                                        )),
-                                    );
+                                    progress_emitter.emit(RuntimeEvent::App(Msg::Local(
+                                        crate::app::LocalMsg::ScanProgress(progress),
+                                    )));
                                 },
                             );
                             if let Some(path) = index_path.as_deref()
@@ -1206,19 +1098,10 @@ impl RuntimeHandles {
                                 });
                                 result.summary.errors = result.errors.len();
                             }
-                            emit(
-                                &tx,
-                                RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanFinished {
-                                    index_path,
-                                    result,
-                                })),
-                            );
-                        })
-                        .await
-                        {
-                            tracing::warn!(%error, "local root scan task failed");
-                        }
-                    });
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Local(
+                                crate::app::LocalMsg::ScanFinished { index_path, result },
+                            )));
+                        });
                 }
                 crate::app::LocalCmd::ReviewImport {
                     op_id,
@@ -1226,44 +1109,46 @@ impl RuntimeHandles {
                     source_order,
                     action,
                 } => {
-                    let tx = self.worker_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let t0 = std::time::Instant::now();
-                        let result = match action {
-                            crate::app::ImportReviewAction::AcceptFirst => {
-                                crate::transfer::review_action::accept_first_candidate(
-                                    &session_id,
-                                    source_order,
-                                )
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("review_import", move || {
+                            let t0 = std::time::Instant::now();
+                            let result = match action {
+                                crate::app::ImportReviewAction::AcceptFirst => {
+                                    crate::transfer::review_action::accept_first_candidate(
+                                        &session_id,
+                                        source_order,
+                                    )
+                                }
+                                crate::app::ImportReviewAction::ChooseNext => {
+                                    crate::transfer::review_action::choose_next_candidate(
+                                        &session_id,
+                                        source_order,
+                                    )
+                                }
+                                crate::app::ImportReviewAction::Reject => {
+                                    crate::transfer::review_action::reject_row(
+                                        &session_id,
+                                        source_order,
+                                    )
+                                }
+                                crate::app::ImportReviewAction::Skip => {
+                                    crate::transfer::review_action::skip_row(
+                                        &session_id,
+                                        source_order,
+                                    )
+                                }
                             }
-                            crate::app::ImportReviewAction::ChooseNext => {
-                                crate::transfer::review_action::choose_next_candidate(
-                                    &session_id,
-                                    source_order,
-                                )
-                            }
-                            crate::app::ImportReviewAction::Reject => {
-                                crate::transfer::review_action::reject_row(
-                                    &session_id,
-                                    source_order,
-                                )
-                            }
-                            crate::app::ImportReviewAction::Skip => {
-                                crate::transfer::review_action::skip_row(&session_id, source_order)
-                            }
-                        }
-                        .map_err(|error| format!("{error:#}"));
-                        let elapsed_ms = t0.elapsed().as_millis();
-                        tracing::debug!(
-                            session_id = %session_id,
-                            source_order,
-                            ?action,
-                            elapsed_ms,
-                            "finished import review action"
-                        );
-                        emit(
-                            &tx,
-                            RuntimeEvent::App(Msg::Local(
+                            .map_err(|error| format!("{error:#}"));
+                            let elapsed_ms = t0.elapsed().as_millis();
+                            tracing::debug!(
+                                session_id = %session_id,
+                                source_order,
+                                ?action,
+                                elapsed_ms,
+                                "finished import review action"
+                            );
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Local(
                                 crate::app::LocalMsg::ImportReviewFinished {
                                     op_id,
                                     session_id,
@@ -1272,163 +1157,230 @@ impl RuntimeHandles {
                                     result,
                                     elapsed_ms,
                                 },
-                            )),
-                        );
-                    });
+                            )));
+                        });
                 }
                 crate::app::LocalCmd::ReviewImportAcceptAll { op_id, session_id } => {
-                    let tx = self.worker_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let t0 = std::time::Instant::now();
-                        let result =
-                            crate::transfer::review_action::accept_all_candidates(&session_id)
-                                .map_err(|error| format!("{error:#}"));
-                        let elapsed_ms = t0.elapsed().as_millis();
-                        tracing::debug!(
-                            session_id = %session_id,
-                            elapsed_ms,
-                            "finished import review accept all"
-                        );
-                        emit(
-                            &tx,
-                            RuntimeEvent::App(Msg::Local(
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("review_import_accept_all", move || {
+                            let t0 = std::time::Instant::now();
+                            let result =
+                                crate::transfer::review_action::accept_all_candidates(&session_id)
+                                    .map_err(|error| format!("{error:#}"));
+                            let elapsed_ms = t0.elapsed().as_millis();
+                            tracing::debug!(
+                                session_id = %session_id,
+                                elapsed_ms,
+                                "finished import review accept all"
+                            );
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Local(
                                 crate::app::LocalMsg::ImportReviewAcceptAllFinished {
                                     op_id,
                                     session_id,
                                     result,
                                     elapsed_ms,
                                 },
-                            )),
-                        );
-                    });
+                            )));
+                        });
                 }
             },
             Cmd::Recorder(job) => {
-                // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
-                // reports back; `Discard`/`WipeTemp` are fire-and-forget.
-                let tx = self.worker_tx.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = crate::util::blocking::spawn_io(move || {
-                        if let Some(event) = crate::recorder::job::run(job) {
-                            emit(&tx, RuntimeEvent::App(Msg::Recorder(event)));
-                        }
-                    })
-                    .await
-                    {
-                        tracing::warn!(%error, "recorder file task failed");
-                    }
-                });
+                self.dispatch_recorder(app, job);
             }
             Cmd::FetchLyrics {
                 video_id,
                 artist,
                 title,
             } => {
-                self.lyrics_handle.fetch(video_id, artist, title);
-            }
-            Cmd::FetchArtwork { video_id, source } => {
-                self.artwork_handle.fetch(video_id, source);
-            }
-            Cmd::Download(song) => {
-                let result = if let Some(request) = crate::download::import_request_for_song(&song)
-                {
-                    self.download_handle.start_for_import(request)
-                } else {
-                    self.download_handle.start(*song)
-                };
-                if let Err(error) = result {
-                    tracing::warn!(video_id = %error.video_id, "download queue full; dropping request");
-                    emit(
-                        &self.worker_tx,
-                        RuntimeEvent::App(Msg::DownloadError {
-                            video_id: error.video_id,
-                            error: "Download queue is full; try again in a moment.".to_owned(),
-                        }),
-                    );
+                if !report_actor_delivery(
+                    app,
+                    "lyrics",
+                    self.lyrics_handle.fetch(video_id, artist, title),
+                ) {
+                    recover_actor_rejection(app, ActorRejectionRecovery::Lyrics);
                 }
             }
-            Cmd::SetDownloadDir(dir) => {
+            Cmd::FetchArtwork { video_id, source } => {
+                if !report_actor_delivery(
+                    app,
+                    "artwork",
+                    self.artwork_handle.fetch(video_id, source),
+                ) {
+                    recover_actor_rejection(app, ActorRejectionRecovery::Artwork);
+                }
+            }
+            Cmd::Download(DownloadCmd::Start(song)) => {
+                let import_metadata_present =
+                    song.import_session_id.is_some() || song.import_source_order.is_some();
+                let result = match crate::download::import_request_for_song(&song) {
+                    Ok(Some(request)) => Some(self.download_handle.start_for_import(request)),
+                    Ok(None) if import_metadata_present => {
+                        let follow_ups =
+                            app.update(Msg::Download(crate::app::DownloadMsg::Rejected {
+                                tracking_key: crate::download::download_tracking_key(&song),
+                                error: "Import session row is unavailable; refresh and retry."
+                                    .to_owned(),
+                            }));
+                        for follow_up in follow_ups {
+                            self.dispatch(app, follow_up);
+                        }
+                        None
+                    }
+                    Err(error) if import_metadata_present => {
+                        tracing::warn!(%error, "import download admission failed");
+                        let follow_ups =
+                            app.update(Msg::Download(crate::app::DownloadMsg::Rejected {
+                                tracking_key: crate::download::download_tracking_key(&song),
+                                error: format!("Import download was not admitted: {error:#}"),
+                            }));
+                        for follow_up in follow_ups {
+                            self.dispatch(app, follow_up);
+                        }
+                        None
+                    }
+                    Ok(None) => Some(self.download_handle.start(*song)),
+                    Err(error) => {
+                        tracing::warn!(%error, "ordinary download metadata admission failed");
+                        Some(self.download_handle.start(*song))
+                    }
+                };
+                if let Some(Err(error)) = result {
+                    tracing::warn!(video_id = %error.video_id, "download request rejected; surfacing retry status");
+                    for follow_up in recover_download_admission(app, error) {
+                        self.dispatch(app, follow_up);
+                    }
+                }
+            }
+            Cmd::Download(DownloadCmd::SetDir(dir)) => {
                 if let Err(error) = self.download_handle.set_dir(dir) {
                     tracing::warn!(dir = %error.dir().display(), %error, "could not update download directory");
-                    emit(
-                        &self.worker_tx,
-                        RuntimeEvent::App(Msg::DownloadDirError {
-                            error: error.to_string(),
-                        }),
-                    );
+                    let follow_ups = app.update(Msg::Download(crate::app::DownloadMsg::DirError {
+                        error: error.to_string(),
+                    }));
+                    for follow_up in follow_ups {
+                        self.dispatch(app, follow_up);
+                    }
                 }
             }
             Cmd::Resolve {
                 video_id,
                 watch_url,
             } => {
-                self.resolver_handle.resolve_or_log(video_id, watch_url);
+                let result = self.resolver_handle.resolve(video_id.clone(), watch_url);
+                for follow_up in settle_resolver_admission(app, video_id, result) {
+                    self.dispatch(app, follow_up);
+                }
+            }
+            Cmd::ResolveForSelfHeal {
+                video_id,
+                watch_url,
+            } => {
+                let result = self
+                    .resolver_handle
+                    .resolve_for_self_heal(video_id.clone(), watch_url);
+                for follow_up in settle_resolver_admission(app, video_id, result) {
+                    self.dispatch(app, follow_up);
+                }
             }
             Cmd::YtdlpSelfHeal { video_id, tools } => {
                 // Off-loop: an update check downloads up to ~40 MiB. Progress rides the
                 // same Tools status-line events as the maintainer; the verdict returns
                 // as Msg::YtdlpHealResult for the reducer's retry-or-skip decision.
-                let tx = self.worker_tx.clone();
-                tokio::spawn(async move {
-                    let progress_tx = tx.clone();
-                    crate::tools::ytdlp::clear_probe_cache();
-                    let outcome = crate::tools::ytdlp::rollback_or_check_and_update(
-                        &tools,
-                        &move |event| {
-                            emit(&progress_tx, RuntimeEvent::Tools(event));
-                        },
-                        "playback self-heal",
-                    )
-                    .await;
-                    let updated = matches!(
-                        outcome,
-                        crate::tools::ytdlp::UpdateOutcome::Installed { .. }
-                    );
-                    emit(
-                        &tx,
-                        RuntimeEvent::App(Msg::YtdlpHealResult { video_id, updated }),
-                    );
-                });
+                let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                self.background_tasks
+                    .spawn_cancellable("ytdlp_self_heal", async move {
+                        let progress_emitter = emitter.clone();
+                        crate::tools::ytdlp::clear_probe_cache();
+                        let outcome = crate::tools::ytdlp::rollback_or_check_and_update(
+                            &tools,
+                            &move |event| {
+                                progress_emitter.emit(RuntimeEvent::Tools(event));
+                            },
+                            "playback self-heal",
+                        )
+                        .await;
+                        let updated = matches!(
+                            outcome,
+                            crate::tools::ytdlp::UpdateOutcome::Installed { .. }
+                        );
+                        emitter
+                            .emit_terminal(RuntimeEvent::App(Msg::YtdlpHealResult {
+                                video_id,
+                                updated,
+                            }))
+                            .await;
+                    });
             }
             Cmd::AskAi { prompt, context } => {
-                if let Some(h) = &self.ai_handle {
-                    h.ask(prompt, context);
+                let result = self.ai_handle.as_ref().map_or_else(
+                    || Err(crate::util::delivery::DeliveryError::Closed),
+                    |handle| handle.ask(prompt, context),
+                );
+                if !report_actor_delivery(app, "ai.ask", result) {
+                    recover_actor_rejection(app, ActorRejectionRecovery::AiTurn);
                 }
             }
             Cmd::ResolveTrack { seq, query, config } => {
                 if let Err(error) = self.api_handle.resolve_track(seq, query, config) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::TrackResolved {
-                        seq,
-                        result: Err(error.to_string()),
-                    });
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::TrackResolved {
+                            seq,
+                            result: Err(error.to_string()),
+                        },
+                    );
                 }
             }
             Cmd::AiRerank {
                 seed_video_id,
                 prompt,
             } => {
-                if let Some(h) = &self.ai_handle {
-                    h.rerank(seed_video_id, prompt);
+                let recovery_seed = seed_video_id.clone();
+                let result = self.ai_handle.as_ref().map_or_else(
+                    || Err(crate::util::delivery::DeliveryError::Closed),
+                    |handle| handle.rerank(seed_video_id, prompt),
+                );
+                if !report_actor_delivery(app, "ai.rerank", result)
+                    && let Some(msg) = recover_actor_rejection(
+                        app,
+                        ActorRejectionRecovery::AiRerank(recovery_seed),
+                    )
+                {
+                    self.reduce_owner_msg(app, msg);
                 }
             }
             Cmd::SummarizeFeedback { digest } => {
-                if let Some(h) = &self.ai_handle {
-                    h.summarize_feedback(digest);
+                let result = self.ai_handle.as_ref().map_or_else(
+                    || Err(crate::util::delivery::DeliveryError::Closed),
+                    |handle| handle.summarize_feedback(digest),
+                );
+                if !report_actor_delivery(app, "ai.feedback", result) {
+                    recover_actor_rejection(app, ActorRejectionRecovery::AiFeedback);
                 }
             }
             Cmd::RomanizeTitles { request_id, items } => {
                 let keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
                 if let Some(h) = &self.ai_handle {
-                    h.romanize(request_id, items);
+                    if !report_actor_delivery(app, "ai.romanize", h.romanize(request_id, items)) {
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Ai(AiMsg::RomanizedTitles {
+                                request_id,
+                                keys,
+                                entries: Vec::new(),
+                            }),
+                        );
+                    }
                 } else {
-                    emit(
-                        &self.worker_tx,
-                        RuntimeEvent::App(Msg::Ai(AiMsg::RomanizedTitles {
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::Ai(AiMsg::RomanizedTitles {
                             request_id,
                             keys,
                             entries: Vec::new(),
-                        })),
+                        }),
                     );
                 }
             }
@@ -1448,10 +1400,13 @@ impl RuntimeHandles {
                     config,
                 ) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::Streaming(StreamingMsg::Error {
-                        seed_video_id,
-                        error: error.to_string(),
-                    }));
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::Streaming(StreamingMsg::Error {
+                            seed_video_id,
+                            error: error.to_string(),
+                        }),
+                    );
                 }
             }
             Cmd::StreamingPreflight {
@@ -1469,15 +1424,18 @@ impl RuntimeHandles {
                     config,
                 ) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    self.emit_api_enqueue_error(Msg::Streaming(StreamingMsg::Error {
-                        seed_video_id,
-                        error: error.to_string(),
-                    }));
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::Streaming(StreamingMsg::Error {
+                            seed_video_id,
+                            error: error.to_string(),
+                        }),
+                    );
                 }
             }
             Cmd::SetAiModel(model) => {
                 if let Some(h) = &self.ai_handle {
-                    h.set_model(model);
+                    report_actor_delivery(app, "ai.model", h.set_model(model));
                 }
             }
             Cmd::ReloadAi {
@@ -1490,16 +1448,42 @@ impl RuntimeHandles {
                 });
                 app.ai.available = assistant_enabled && self.ai_handle.is_some();
             }
-            Cmd::ScrobbleAuthStart => self.scrobble_handle.auth_start(),
-            Cmd::ScrobbleReconfigure(settings) => self.scrobble_handle.reconfigure(*settings),
+            Cmd::Scrobble(scrobble) => match scrobble {
+                ScrobbleCmd::AuthStart => {
+                    report_actor_delivery(app, "scrobble.auth", self.scrobble_handle.auth_start());
+                }
+                ScrobbleCmd::Reconfigure(settings) => {
+                    report_actor_delivery(
+                        app,
+                        "scrobble.reconfigure",
+                        self.scrobble_handle.reconfigure(*settings),
+                    );
+                }
+            },
             Cmd::Transfer(cmd) => {
+                let recovery = match &cmd {
+                    crate::transfer::actor::TransferCmd::StartJob(_)
+                    | crate::transfer::actor::TransferCmd::WriteReviewedLocal { .. } => {
+                        Some(ActorRejectionRecovery::TransferStart)
+                    }
+                    crate::transfer::actor::TransferCmd::CancelJob => {
+                        Some(ActorRejectionRecovery::TransferCancel)
+                    }
+                    crate::transfer::actor::TransferCmd::AuthStart { .. }
+                    | crate::transfer::actor::TransferCmd::Disconnect
+                    | crate::transfer::actor::TransferCmd::ListSpotifyPlaylists => None,
+                };
+                let transfer_tx = self.worker_tx.clone();
                 let handle = self.transfer_handle.get_or_insert_with(|| {
-                    crate::transfer::actor::spawn(sink(
-                        self.worker_tx.clone(),
-                        RuntimeEvent::Transfer,
-                    ))
+                    crate::transfer::actor::spawn(move |event| {
+                        emit(&transfer_tx, RuntimeEvent::Transfer(event))
+                    })
                 });
-                handle.send(cmd);
+                if !report_actor_delivery(app, "transfer", handle.send(cmd))
+                    && let Some(recovery) = recovery
+                {
+                    recover_actor_rejection(app, recovery);
+                }
             }
             // Handled in the main loop (the OSC path writes to the terminal this scope doesn't
             // own); never reaches here. Listed for exhaustiveness.

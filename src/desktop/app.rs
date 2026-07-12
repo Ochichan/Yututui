@@ -733,6 +733,7 @@ mod tests {
                 Topic::Search,
                 PushEvent::SearchCompleted {
                     ticket: 1,
+                    page_id: None,
                     query: "topic".to_string(),
                     source: SearchSource::Youtube,
                     groups: Vec::new(),

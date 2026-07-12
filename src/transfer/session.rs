@@ -12,12 +12,26 @@ use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
+use super::artifact_identity::{ArtifactReceipt, ImportDownloadClaim};
 use super::checkpoint::{
     Checkpoint, JobDeferReason, MatchTrace, ProbeTrace, ReportCandidate, ReviewDecision,
 };
 use super::matching::{MatchOutcome, TrackInput};
 use super::{Stage, TransferDest, TransferSource};
 use crate::util::safe_fs;
+
+mod artifact_receipt;
+mod claim;
+mod projection;
+pub(crate) use artifact_receipt::{
+    clear_missing_artifact_unlocked, import_song_for_row, promote_artifact_receipt_unlocked,
+    record_artifact_move_done_unlocked, record_import_download_error,
+    record_import_download_interruption,
+};
+pub(crate) use claim::{
+    claim_import_download, ensure_review_row_mutable_unlocked,
+    validate_import_download_claim_unlocked,
+};
 
 const IMPORT_SESSION_SCHEMA_VERSION: u32 = 1;
 const IMPORT_SESSION_SUMMARY_SCHEMA_VERSION: u32 = 1;
@@ -29,6 +43,9 @@ const IMPORT_SESSION_SUMMARY_MAX_BYTES: u64 = 256 * 1024;
 pub struct ImportSession {
     pub schema_version: u32,
     pub session_id: String,
+    /// Random incarnation id. Unlike `session_id`, this changes if a deleted record is recreated.
+    #[serde(default)]
+    pub(crate) session_instance_id: String,
     pub job_id: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -145,6 +162,7 @@ impl Default for ImportSession {
         Self {
             schema_version: IMPORT_SESSION_SCHEMA_VERSION,
             session_id: String::new(),
+            session_instance_id: String::new(),
             job_id: String::new(),
             created_at: 0,
             updated_at: 0,
@@ -195,6 +213,11 @@ pub struct ImportSessionCounts {
 pub struct ImportSessionRow {
     pub row_id: String,
     pub source_order: u32,
+    /// Monotonic identity for the row's review-selected download target.
+    #[serde(default = "default_row_revision")]
+    pub(crate) revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) download_claim: Option<ImportDownloadClaim>,
     pub status: ImportSessionRowStatus,
     pub title: String,
     pub artists: Vec<String>,
@@ -243,6 +266,8 @@ pub struct ImportSessionRow {
     pub written: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifact_receipt: Option<ArtifactReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,6 +295,8 @@ impl Default for ImportSessionRow {
         Self {
             row_id: String::new(),
             source_order: 0,
+            revision: default_row_revision(),
+            download_claim: None,
             status: ImportSessionRowStatus::Pending,
             title: String::new(),
             artists: Vec::new(),
@@ -296,6 +323,7 @@ impl Default for ImportSessionRow {
             candidates: Vec::new(),
             written: false,
             local_path: None,
+            artifact_receipt: None,
             warnings: Vec::new(),
             errors: Vec::new(),
             search_queries: Vec::new(),
@@ -323,47 +351,6 @@ pub enum ImportSessionRowStatus {
 }
 
 impl ImportSession {
-    pub fn from_checkpoint(cp: &Checkpoint) -> Self {
-        let searched_ytm = !matches!(
-            cp.spec.dest,
-            TransferDest::SpotifyNewPlaylist { .. } | TransferDest::SpotifyMirrorPlaylist { .. }
-        );
-        let rows: Vec<ImportSessionRow> = cp
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                row_from_input(
-                    idx,
-                    &entry.input,
-                    entry.outcome.as_ref(),
-                    entry.review_decision.clone(),
-                    entry.written,
-                    searched_ytm,
-                    cp.match_traces.get(&(idx as u32 + 1)),
-                )
-            })
-            .collect();
-        let counts = ImportSessionCounts::from_rows(&rows);
-        let mut destination = endpoint_from_dest(&cp.spec.dest, cp.dest_name.clone());
-        if matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
-            destination.key = cp.dest_id.clone();
-        }
-        Self {
-            schema_version: IMPORT_SESSION_SCHEMA_VERSION,
-            session_id: cp.job_id.clone(),
-            job_id: cp.job_id.clone(),
-            created_at: cp.created_at,
-            updated_at: cp.updated_at,
-            stage: cp.stage,
-            source: endpoint_from_source(&cp.spec.source, cp.source_name.clone()),
-            destination,
-            counts,
-            defer_reason: cp.defer_reason.clone(),
-            rows,
-        }
-    }
-
     pub fn save(&self) -> std::io::Result<()> {
         if session_path(&self.session_id).is_none() {
             return Ok(());
@@ -380,8 +367,17 @@ impl ImportSession {
             return Ok(());
         };
         safe_fs::write_private_atomic_json(&path, self)?;
-        if let Some(path) = session_summary_path(&self.session_id) {
-            safe_fs::write_private_atomic_json(&path, &ImportSessionSummaryFile::from(self))?;
+        if let Some(path) = session_summary_path(&self.session_id)
+            && let Err(error) =
+                safe_fs::write_private_atomic_json(&path, &ImportSessionSummaryFile::from(self))
+        {
+            // The summary is a rebuildable discovery cache. The authoritative session has
+            // already committed, and list_all ignores a summary older than that session.
+            tracing::warn!(
+                %error,
+                session_id = %self.session_id,
+                "import session saved but its derived summary is stale"
+            );
         }
         Ok(())
     }
@@ -473,6 +469,15 @@ impl ImportSession {
         };
         reject_symlinked_record_parents()?;
         let _guard = ImportRecordGuard::try_acquire(session_id)?;
+        if session_path(session_id).is_some_and(|path| path.exists()) {
+            let session = Self::load(session_id).map_err(std::io::Error::other)?;
+            if session.rows.iter().any(|row| row.download_claim.is_some()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    format!("import job `{session_id}` has an active download claim"),
+                ));
+            }
+        }
         let mut removed = 0;
         for path in paths {
             match std::fs::remove_file(path) {
@@ -511,6 +516,7 @@ pub(crate) fn record_download_done_unlocked(
     let row = row_by_source_order_mut(&mut session, source_order)?;
     row.written = true;
     row.local_path = Some(local_path);
+    row.artifact_receipt = None;
     row.errors.clear();
     save_updated_session(session)
 }
@@ -533,6 +539,7 @@ fn record_download_error_unlocked(
     let row = row_by_source_order_mut(&mut session, source_order)?;
     row.written = false;
     row.local_path = None;
+    row.artifact_receipt = None;
     row.errors.clear();
     let message = error.trim();
     if !message.is_empty() {
@@ -541,7 +548,7 @@ fn record_download_error_unlocked(
     save_updated_session(session)
 }
 
-fn row_by_source_order_mut(
+pub(crate) fn row_by_source_order_mut(
     session: &mut ImportSession,
     source_order: u32,
 ) -> anyhow::Result<&mut ImportSessionRow> {
@@ -556,7 +563,7 @@ fn row_by_source_order_mut(
         })
 }
 
-fn save_updated_session(mut session: ImportSession) -> anyhow::Result<()> {
+pub(crate) fn save_updated_session(mut session: ImportSession) -> anyhow::Result<()> {
     session.updated_at = crate::signals::unix_now();
     session.counts = ImportSessionCounts::from_rows(&session.rows);
     session.save_unlocked().map_err(Into::into)
@@ -696,6 +703,10 @@ fn row_from_input(
         row.search_queries.clear();
     }
     row
+}
+
+fn default_row_revision() -> u64 {
+    1
 }
 
 fn apply_row_quality(row: &mut ImportSessionRow, score: &super::matching::MatchScoreBreakdown) {
@@ -872,6 +883,18 @@ impl ImportRecordGuard {
                 format!("import job `{session_id}` is still active"),
             )),
             Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+}
+
+impl Drop for ImportRecordGuard {
+    fn drop(&mut self) {
+        // Closing only this handle is insufficient when a concurrent process spawn or an
+        // explicit clone duplicated the locked file description: the duplicate can retain the
+        // advisory lock after the guard is gone. Unlock first so the guard's lexical lifetime,
+        // rather than the last duplicate handle's lifetime, remains the ownership boundary.
+        if let Err(error) = self._file.unlock() {
+            tracing::warn!(%error, "failed to explicitly release import record lock");
         }
     }
 }
@@ -1233,6 +1256,32 @@ mod tests {
             .expect("summary from list_all");
         assert_eq!(summary.session_id, session.session_id);
         assert_eq!(summary.counts.total, 1);
+    }
+
+    #[test]
+    fn derived_summary_failure_does_not_turn_authoritative_session_commit_into_failure() {
+        let job_id = "sp2yt-session-summary-derived-failure";
+        let summary = session_summary_path(job_id).expect("summary path");
+        std::fs::create_dir_all(&summary).expect("block summary pathname with a directory");
+        let session = ImportSession {
+            session_id: job_id.to_owned(),
+            job_id: job_id.to_owned(),
+            updated_at: 42,
+            ..ImportSession::default()
+        };
+
+        session
+            .save()
+            .expect("authoritative session commit ignores derived summary failure");
+
+        assert_eq!(ImportSession::load(job_id).unwrap().updated_at, 42);
+        assert!(
+            ImportSession::list_all()
+                .iter()
+                .any(|summary| summary.session_id == job_id)
+        );
+        std::fs::remove_dir_all(summary).unwrap();
+        ImportSession::delete_record(job_id).unwrap();
     }
 
     #[test]

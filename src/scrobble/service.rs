@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Which backend a queue entry still owes a delivery to. Serialized into the JSONL queue
 /// (`"lastfm"` / `"listenbrainz"`), so the names are a stable on-disk format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceKind {
     Lastfm,

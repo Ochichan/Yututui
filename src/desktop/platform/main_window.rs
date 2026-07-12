@@ -521,7 +521,7 @@ fn build_webview(
     // main window and the mini player ride one browser-process set. macOS ignores the
     // web context, so the default builder keeps the signed-off WKWebView path untouched.
     #[cfg(windows)]
-    let mut web_context = crate::desktop::platform::shared_web_context();
+    let mut web_context = crate::desktop::platform::shared_web_context()?;
     #[cfg(windows)]
     let builder = {
         use wry::WebViewBuilderExtWindows;

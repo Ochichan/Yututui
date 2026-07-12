@@ -8,13 +8,10 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton,
-    MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEventKind,
 };
-use futures::{FutureExt, StreamExt};
 
 use crate::app::Msg;
-use crate::zoom::ZoomHandle;
 
 /// Two same-button presses within this window at the same cell count as a double-click.
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
@@ -36,34 +33,6 @@ pub struct Translator {
     /// Whether a left-button press has not yet been released. Some terminals report motion
     /// during a press as `Moved` rather than `Drag`, so keep enough state to preserve dragging.
     left_down: bool,
-}
-
-pub enum InputPoll {
-    Ready,
-    Empty,
-    Closed,
-}
-
-pub fn poll_terminal_input_now(
-    events: &mut EventStream,
-    input: &mut Translator,
-    zoom: &ZoomHandle,
-    out: &mut Option<Msg>,
-) -> InputPoll {
-    loop {
-        match events.next().now_or_never() {
-            Some(Some(Ok(ev))) => {
-                let (cs, rs) = zoom.mouse_scale();
-                if let Some(msg) = input.translate(ev, cs, rs) {
-                    *out = Some(msg);
-                    return InputPoll::Ready;
-                }
-            }
-            Some(Some(Err(_))) => continue,
-            Some(None) => return InputPoll::Closed,
-            None => return InputPoll::Empty,
-        }
-    }
 }
 
 impl Default for Translator {

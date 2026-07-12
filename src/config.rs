@@ -847,6 +847,18 @@ impl Default for Config {
 }
 
 impl Config {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = config_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Config,
+            &path,
+            MAX_CONFIG_BYTES,
+        )
+    }
+
     /// Load config, importing from the old app on first run. Never fails: a missing or
     /// corrupt file falls back to defaults (+ migration).
     pub fn load() -> Self {
@@ -871,6 +883,7 @@ impl Config {
 
     /// Persist atomically (write a temp file, then rename over the target).
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = config_path() else {
             return Ok(()); // no config dir on this platform; nothing to do
         };
@@ -878,7 +891,7 @@ impl Config {
     }
 
     fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
-        safe_fs::write_private_atomic_json(path, self)
+        crate::persist::write_store_json(path, self)
     }
 
     pub fn player_runtime(&self, cookies_file: Option<PathBuf>) -> PlayerRuntimeConfig {

@@ -18,6 +18,18 @@ use crate::media::{
 };
 use crate::streaming::candidate::parse_duration_secs;
 
+/// Reducer projection paired with the ordered recorder-clear → Stop player batch. None of the
+/// playback, recorder, loaded-track, or video-latch state is changed until the runtime accepts
+/// the complete batch.
+#[derive(Clone)]
+pub struct PlaybackStopPlan {
+    expected_queue_rev: u64,
+    expected_cursor: usize,
+    expected_video_id: Option<String>,
+    expected_loaded_video_id: Option<String>,
+    recorder: crate::recorder::RecorderTransitionPlan,
+}
+
 impl App {
     pub fn media_scrobble_heartbeat_active(&self) -> bool {
         self.queue.current().is_some() && !self.playback.paused
@@ -130,20 +142,18 @@ impl App {
                 if !self.media_can_seek() || !secs.is_finite() {
                     return Vec::new();
                 }
-                // Optimistic position (like the pause toggle): the snapshot pushed
-                // right after this turn already carries the target, so the OS
-                // progress bar doesn't briefly rubber-band to the stale position.
-                // mpv confirms via its next `time-pos` report. Seeking past the end
-                // lets mpv hit EOF → the queue advances, per the MPRIS spec.
                 let from = self.playback.time_pos.unwrap_or(0.0);
                 let mut target = (from + secs).max(0.0);
                 if let Some(d) = self.playback.duration {
                     target = target.min(d);
                 }
-                self.playback.time_pos = Some(target);
-                self.playback.time_pos_at = Some(Instant::now());
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SeekRelative(secs))]
+                self.player_intent(
+                    "seek_relative",
+                    PlayerCmd::SeekRelative(secs),
+                    PlayerCommit::Seek {
+                        optimistic_position: Some(target),
+                    },
+                )
             }
             MediaCommand::SeekTo(pos) => {
                 // Reject non-finite (a NaN/inf `SetPosition` would poison `time_pos`) and
@@ -158,12 +168,13 @@ impl App {
                 {
                     return Vec::new();
                 }
-                self.playback.time_pos = Some(pos);
-                self.playback.time_pos_at = Some(Instant::now());
-                // No epoch bump here: `App::update` bumps it centrally for every turn
-                // that emits a seek command, this one included.
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SeekAbsolute(pos))]
+                self.player_intent(
+                    "seek_absolute",
+                    PlayerCmd::SeekAbsolute(pos),
+                    PlayerCommit::Seek {
+                        optimistic_position: Some(pos),
+                    },
+                )
             }
             MediaCommand::SetShuffle(on) => {
                 // On a live radio stream shuffle is meaningless (the TUI slot shows the
@@ -198,12 +209,14 @@ impl App {
                 if volume == self.playback.volume {
                     return Vec::new();
                 }
-                // An OS-widget volume write is a direct change; clear the mute latch (contract on
-                // `pre_mute_volume`) so a later `m` doesn't restore a stale pre-mute level.
-                self.playback.pre_mute_volume = None;
-                self.playback.volume = volume;
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(volume))]
+                self.player_intent(
+                    "set_volume",
+                    PlayerCmd::SetVolume(volume),
+                    PlayerCommit::Volume {
+                        volume,
+                        pre_mute_volume: None,
+                    },
+                )
             }
             MediaCommand::SetRate(rate) => {
                 // MPRIS: writing 0.0 to Rate must act as Pause.
@@ -216,14 +229,18 @@ impl App {
                 if (speed - self.playback.speed).abs() < f64::EPSILON {
                     return Vec::new();
                 }
-                self.playback.speed = speed;
-                self.status.kind = StatusKind::Info;
-                self.status.text = format!("{}: {speed:.1}x", t!("Speed", "재생 속도"));
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetProperty {
-                    name: "speed".to_owned(),
-                    value: serde_json::Value::from(speed),
-                })]
+                self.player_intent(
+                    "set_speed",
+                    PlayerCmd::SetProperty {
+                        name: "speed".to_owned(),
+                        value: serde_json::Value::from(speed),
+                    },
+                    PlayerCommit::Speed {
+                        speed,
+                        announce: true,
+                        persist: false,
+                    },
+                )
             }
             MediaCommand::Like => self.media_set_rating(true),
             MediaCommand::Dislike => self.media_set_rating(false),
@@ -243,10 +260,58 @@ impl App {
     /// MPRIS `Stop`: halt playback but keep the queue and current track, so a later
     /// Play restarts the track from the top. (The TUI itself has no Stop control —
     /// this exists purely for the OS media surface.)
-    fn media_stop(&mut self) -> Vec<Cmd> {
+    fn media_stop(&self) -> Vec<Cmd> {
         if self.queue.current().is_none() && self.prefetch.loaded_video_id.is_none() {
             return Vec::new();
         }
+        let recorder = self.prepare_recorder_teardown();
+        let mut commands = self.recorder_transition_commands(&recorder);
+        commands.push(PlayerCmd::Stop);
+        let plan = PlaybackStopPlan {
+            expected_queue_rev: self.queue.rev(),
+            expected_cursor: self.queue.cursor_pos(),
+            expected_video_id: self.queue.current().map(|song| song.video_id.clone()),
+            expected_loaded_video_id: self.prefetch.loaded_video_id.clone(),
+            recorder,
+        };
+        vec![Cmd::PlayerControl(PlayerControl::Intent(Box::new(
+            PlayerIntent::batch("media_stop", commands, PlayerCommit::Stop(Box::new(plan))),
+        )))]
+    }
+
+    pub(in crate::app) fn media_stop_is_current(&self, plan: &PlaybackStopPlan) -> bool {
+        self.queue.planned_transition_matches(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            plan.expected_video_id.as_deref(),
+            plan.expected_video_id
+                .as_ref()
+                .map(|_| plan.expected_cursor),
+        ) && self.prefetch.loaded_video_id == plan.expected_loaded_video_id
+            && self.recorder_transition_is_current(&plan.recorder)
+    }
+
+    pub(in crate::app) fn commit_media_stop(&mut self, plan: PlaybackStopPlan) -> Vec<Cmd> {
+        let PlaybackStopPlan {
+            expected_queue_rev,
+            expected_cursor,
+            expected_video_id,
+            expected_loaded_video_id,
+            recorder,
+        } = plan;
+        self.queue.validate_planned_transition(
+            expected_queue_rev,
+            expected_cursor,
+            expected_video_id.as_deref(),
+            expected_video_id.as_ref().map(|_| expected_cursor),
+        );
+        assert_eq!(
+            self.prefetch.loaded_video_id, expected_loaded_video_id,
+            "loaded track changed before media Stop commit"
+        );
+        self.validate_recorder_transition(&recorder);
+
+        let effects = self.commit_recorder_transition(recorder);
         self.playback.paused = true;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
@@ -258,10 +323,7 @@ impl App {
         self.prefetch.loaded_video_id = None;
         self.video.paused_audio = false;
         self.dirty = true;
-        // Cut any in-progress radio recording before stopping mpv (mid-song → dropped).
-        let mut cmds = self.recorder_teardown();
-        cmds.push(Cmd::Player(PlayerCmd::Stop));
-        cmds
+        effects
     }
 
     /// macOS like/dislike commands: a targeted set/clear of the same tri-state the
@@ -513,19 +575,25 @@ mod tests {
         assert!(!app.playback.paused);
         // Playing → Pause toggles.
         let cmds = app.update(Msg::Media(MediaCommand::Pause));
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::CyclePause)))
-        );
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
+        )));
+        assert!(!app.playback.paused, "pause waits for player admission");
+        app.admit_player_intents_for_test(&cmds);
         assert!(app.playback.paused);
         // Paused → Pause is a no-op.
         assert!(app.update(Msg::Media(MediaCommand::Pause)).is_empty());
         // Paused → Play resumes.
         let cmds = app.update(Msg::Media(MediaCommand::Play));
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::CyclePause)))
-        );
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(false)
+        )));
+        assert!(app.playback.paused, "resume waits for player admission");
+        app.admit_player_intents_for_test(&cmds);
         assert!(!app.playback.paused);
     }
 
@@ -537,7 +605,7 @@ mod tests {
         let cmds = app.update(Msg::Media(MediaCommand::Play));
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::Load(_))))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::Load(_))))
         );
     }
 
@@ -576,13 +644,20 @@ mod tests {
         assert_eq!(app.playback.volume, 50);
         // A valid unit maps to percent and emits the player command.
         let cmds = app.update(Msg::Media(MediaCommand::SetVolume(0.3)));
-        assert_eq!(app.playback.volume, 30);
+        assert_eq!(app.playback.volume, 50, "volume waits for player admission");
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::SetVolume(30))))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(30))))
         );
+        app.admit_player_intents_for_test(&cmds);
+        assert_eq!(app.playback.volume, 30);
         // A finite out-of-range unit clamps into the band rather than overflowing.
-        let _ = app.update(Msg::Media(MediaCommand::SetVolume(9.0)));
+        let cmds = app.update(Msg::Media(MediaCommand::SetVolume(9.0)));
+        assert_eq!(
+            app.playback.volume, 30,
+            "clamped write still waits for admission"
+        );
+        app.admit_player_intents_for_test(&cmds);
         assert_eq!(app.playback.volume, 100);
     }
 
@@ -596,7 +671,7 @@ mod tests {
         let cmds = app.update(Msg::Media(MediaCommand::Next));
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::Load(_))))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::Load(_))))
         );
     }
 
@@ -606,9 +681,16 @@ mod tests {
         mark_loaded(&mut app);
         let epoch = app.playback.position_epoch;
         let cmds = app.update(Msg::Media(MediaCommand::SeekTo(42.0)));
-        assert!(cmds.iter().any(
-            |c| matches!(c, Cmd::Player(PlayerCmd::SeekAbsolute(p)) if (*p - 42.0).abs() < 1e-9)
-        ));
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SeekAbsolute(pos)) if (*pos - 42.0).abs() < 1e-9
+        )));
+        assert_eq!(app.playback.time_pos, Some(10.0));
+        assert_eq!(
+            app.playback.position_epoch, epoch,
+            "seek state and epoch wait for player admission"
+        );
+        app.admit_player_intents_for_test(&cmds);
         assert_eq!(app.playback.time_pos, Some(42.0));
         assert_eq!(app.playback.position_epoch, epoch + 1);
     }
@@ -714,13 +796,17 @@ mod tests {
     fn volume_maps_unit_range_to_percent() {
         let mut app = app_with_queue(1);
         let cmds = app.update(Msg::Media(MediaCommand::SetVolume(0.37)));
-        assert_eq!(app.playback.volume, 37);
+        assert_eq!(app.playback.volume, 50);
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::SetVolume(37))))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(37))))
         );
+        app.admit_player_intents_for_test(&cmds);
+        assert_eq!(app.playback.volume, 37);
         // Out-of-range writes clamp (MPRIS spec: negative → 0).
-        app.update(Msg::Media(MediaCommand::SetVolume(-3.0)));
+        let cmds = app.update(Msg::Media(MediaCommand::SetVolume(-3.0)));
+        assert_eq!(app.playback.volume, 37);
+        app.admit_player_intents_for_test(&cmds);
         assert_eq!(app.playback.volume, 0);
     }
 
@@ -729,18 +815,26 @@ mod tests {
         let mut app = app_with_queue(1);
         mark_loaded(&mut app);
         let cmds = app.update(Msg::Media(MediaCommand::SetRate(0.0)));
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::CyclePause)))
-        );
-        let cmds = app.update(Msg::Media(MediaCommand::SetRate(1.5)));
-        assert!((app.playback.speed - 1.5).abs() < 1e-9);
-        assert!(cmds.iter().any(|c| matches!(
-            c,
-            Cmd::Player(PlayerCmd::SetProperty { name, .. }) if name == "speed"
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, value })
+                if name == "pause" && value == &serde_json::Value::Bool(true)
         )));
+        assert!(!app.playback.paused);
+        app.admit_player_intents_for_test(&cmds);
+        assert!(app.playback.paused);
+        let cmds = app.update(Msg::Media(MediaCommand::SetRate(1.5)));
+        assert!((app.playback.speed - 1.0).abs() < 1e-9);
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::SetProperty { name, .. }) if name == "speed"
+        )));
+        app.admit_player_intents_for_test(&cmds);
+        assert!((app.playback.speed - 1.5).abs() < 1e-9);
         // Clamped to the app's speed range.
-        app.update(Msg::Media(MediaCommand::SetRate(9.0)));
+        let cmds = app.update(Msg::Media(MediaCommand::SetRate(9.0)));
+        assert!((app.playback.speed - 1.5).abs() < 1e-9);
+        app.admit_player_intents_for_test(&cmds);
         assert!(app.playback.speed <= crate::config::SPEED_MAX);
     }
 
@@ -776,19 +870,27 @@ mod tests {
     fn stop_keeps_queue_but_unloads() {
         let mut app = app_with_queue(2);
         mark_loaded(&mut app);
+        let epoch = app.playback.position_epoch;
         let cmds = app.update(Msg::Media(MediaCommand::Stop));
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::Stop)))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::Stop)))
         );
+        assert!(!app.playback.paused, "Stop waits for player admission");
+        assert_eq!(app.playback.time_pos, Some(10.0));
+        assert_eq!(app.playback.position_epoch, epoch);
+        assert!(!app.current_needs_load());
+        app.admit_player_intents_for_test(&cmds);
         assert!(app.playback.paused);
+        assert_eq!(app.playback.time_pos, None);
+        assert_eq!(app.playback.position_epoch, epoch.wrapping_add(1));
         assert_eq!(app.queue.len(), 2);
         assert!(app.current_needs_load());
         // Play after Stop reloads from the start.
         let cmds = app.update(Msg::Media(MediaCommand::Play));
         assert!(
             cmds.iter()
-                .any(|c| matches!(c, Cmd::Player(PlayerCmd::Load(_))))
+                .any(|cmd| matches!(cmd.player_command(), Some(PlayerCmd::Load(_))))
         );
     }
 
@@ -799,10 +901,12 @@ mod tests {
         let cmds = app.update(Msg::Media(MediaCommand::OpenUri(
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ&feature=share".to_owned(),
         )));
+        let _follow_ups = app.admit_player_intents_with_followups_for_test(&cmds);
         assert_eq!(app.queue.current().unwrap().video_id, "dQw4w9WgXcQ");
-        assert!(cmds.iter().any(
-            |c| matches!(c, Cmd::Player(PlayerCmd::Load(url)) if url.contains("dQw4w9WgXcQ"))
-        ));
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd.player_command(),
+            Some(PlayerCmd::Load(url)) if url.contains("dQw4w9WgXcQ")
+        )));
         // The rest of the queue is preserved (play-now semantics).
         assert_eq!(app.queue.len(), 2);
     }

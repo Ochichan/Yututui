@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::streaming::StreamingMode;
 use crate::util::safe_fs;
 
+const STATION_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
 /// How adventurous the listener asked the station to be — a small, stable, model-facing scale
 /// that maps onto the engine's [`StreamingMode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -108,6 +110,18 @@ pub struct StationStore {
 }
 
 impl StationStore {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = station_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Station,
+            &path,
+            STATION_MAX_BYTES,
+        )
+    }
+
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         let Some(path) = station_path() else {
@@ -115,22 +129,21 @@ impl StationStore {
         };
         // Schema-drift tolerant: preserves the active station across incompatible changes.
         // Size-capped like the sibling Playlists load.
-        const MAX_BYTES: u64 = 16 * 1024 * 1024;
-        let store = safe_fs::load_json_or_default_limited::<StationStore>(&path, MAX_BYTES);
-        crate::persist::replay_journaled_snapshot(
+        crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::Station,
             &path,
-            store,
-            MAX_BYTES,
+            STATION_MAX_BYTES,
+            || safe_fs::load_json_or_default_limited::<StationStore>(&path, STATION_MAX_BYTES),
         )
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = station_path() else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        crate::persist::write_store_json(&path, self)
     }
 
     /// The active station's avoid list as engine artist keys (empty when no station is set).

@@ -216,11 +216,12 @@ fn exporting_personal_data_disables_its_mouse_action_without_breaking_narrow_ren
     }
 
     const WIDTH: u16 = 48;
-    let backend = TestBackend::new(WIDTH, 10);
+    // Keep the height above the dedicated mini-player tier; this regression is about horizontal
+    // clipping and the busy button's hit target, not the intentionally player-only mini layout.
+    let backend = TestBackend::new(WIDTH, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let buffer = terminal.backend().buffer().clone();
-
     assert!(buffer_contains(&buffer, "Exporting…"));
     assert!(
         app.hits
@@ -412,13 +413,16 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
         row: 6,
         multi: false,
     });
+    assert_eq!(app.audio.preset, EqPreset::Flat);
+    assert!(app.dropdowns.eq_open, "dropdown waits for admission");
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("equalizer"))
+    ));
+    app.admit_player_intents_for_test(&cmds);
     assert_eq!(app.audio.preset, EqPreset::Vocal);
     assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
     assert!(!app.dropdowns.eq_open);
-    assert!(matches!(
-        cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetAudioFilter(_))]
-    ));
 }
 
 #[test]

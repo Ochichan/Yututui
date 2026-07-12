@@ -6,6 +6,8 @@
 //! direction-agnostic [`matching`] engine.
 
 pub mod actor;
+pub(crate) mod artifact_identity;
+pub(crate) mod artifact_move;
 pub mod checkpoint;
 pub mod cli;
 pub mod csv;

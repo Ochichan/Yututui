@@ -73,15 +73,27 @@ fn docked_transport_clicks_dispatch_from_other_screens() {
         .rect_of_target(MouseTarget::Player(Action::TogglePause))
         .expect("pause button registered on Library");
     let paused_before = app.playback.paused;
-    let cmds = app.update(Msg::MouseClick {
+    let mut cmds = app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
         multi: false,
     });
     assert!(
-        matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]),
+        matches!(
+            cmds.as_slice(),
+            [cmd] if matches!(
+                cmd.player_command(),
+                Some(PlayerCmd::SetProperty { name, value })
+                    if name == "pause" && value == &serde_json::Value::Bool(!paused_before)
+            )
+        ),
         "docked pause click must reach the player"
     );
+    assert_eq!(
+        app.playback.paused, paused_before,
+        "reducer state must wait for player admission"
+    );
+    admit_player_transition(&mut app, &mut cmds);
     assert_ne!(app.playback.paused, paused_before);
 }
 
@@ -97,17 +109,22 @@ fn wheel_over_docked_volume_cluster_adjusts_volume_on_library() {
         .hits
         .rect_of_target(MouseTarget::VolumeArea)
         .expect("volume cluster registered on Library");
-    let cmds = app.update(Msg::MouseScroll {
+    let mut cmds = app.update(Msg::MouseScroll {
         up: true,
         col: rect.x + 1,
         row: rect.y,
         ctrl: false,
     });
-    assert_eq!(app.playback.volume, 45, "wheel over the cluster nudges");
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetVolume(45))]
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetVolume(45)))
     ));
+    assert_eq!(
+        app.playback.volume, 40,
+        "reducer state must wait for player admission"
+    );
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.playback.volume, 45, "wheel over the cluster nudges");
 
     // Off the cluster the wheel still scrolls the list (no volume change).
     app.update(Msg::MouseScroll {
@@ -164,7 +181,12 @@ fn cycling_player_bar_position_previews_live_and_persists_on_close() {
     assert_eq!(app.player_bar_position(), PlayerBarPosition::Top);
     assert!(!app.control_box_active());
     // Closing Settings commits the draft into config.
-    app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    assert_eq!(
+        app.config.player_bar_position, None,
+        "Settings config must wait for player admission"
+    );
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.config.player_bar_position, Some(PlayerBarPosition::Top));
     assert_eq!(
         app.config.effective_player_bar_position(),

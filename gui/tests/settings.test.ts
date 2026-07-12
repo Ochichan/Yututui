@@ -110,7 +110,7 @@ describe('SettingsStore', () => {
 
     store.apply('playback', 'gapless', false);
     expect(t.sent.at(-1)).toMatchObject({
-      kind: 'req',
+      kind: 'cmd',
       name: 'apply',
       payload: { change: { group: 'playback', field: 'gapless', value: false } },
     });
@@ -127,8 +127,8 @@ describe('SettingsStore', () => {
 
     store.apply('playback', 'gapless', false);
     const rejected = t.sent.at(-1);
-    expect(rejected).toMatchObject({ kind: 'req', name: 'apply' });
-    if (rejected?.kind !== 'req') throw new Error('apply did not send a request');
+    expect(rejected).toMatchObject({ kind: 'cmd', name: 'apply' });
+    if (rejected?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: rejected.id, kind: 'err', payload: { reason: 'rejected' } });
     await flushPromises();
 
@@ -144,7 +144,7 @@ describe('SettingsStore', () => {
     store.apply('playback', 'gapless', false);
     const older = t.sent.at(-1);
     store.apply('playback', 'gapless', true);
-    if (older?.kind !== 'req') throw new Error('apply did not send a request');
+    if (older?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: older.id, kind: 'err', payload: { reason: 'rejected' } });
     await flushPromises();
 
@@ -161,8 +161,21 @@ describe('SettingsStore', () => {
     const oldest = t.sent.at(-1);
     store.apply('playback', 'gapless', true);
     store.apply('playback', 'gapless', false);
-    if (oldest?.kind !== 'req') throw new Error('apply did not send a request');
+    if (oldest?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: oldest.id, kind: 'err', payload: { reason: 'rejected' } });
+    await flushPromises();
+
+    expect(store.dirty).toBe(true);
+    expect(store.playback?.gapless).toBe(false);
+  });
+
+  it('keeps a pending optimistic edit when confirmation is lost', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+    store.apply('playback', 'gapless', false);
+
+    t.emit({ v: 1, kind: 'conn', payload: { state: 'offline', reason: 'disconnected' } });
     await flushPromises();
 
     expect(store.dirty).toBe(true);
@@ -176,7 +189,7 @@ describe('SettingsStore', () => {
     store.apply('playback', 'gapless', false);
     expect(store.dirty).toBe(true);
     const request = t.sent.at(-1);
-    if (request?.kind !== 'req') throw new Error('apply did not send a request');
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: request.id, kind: 'res', payload: { ok: true } });
     await flushPromises();
 
@@ -210,7 +223,7 @@ describe('SettingsStore', () => {
     store.apply('eq', 'bands', bands);
     expect(store.dirty).toBe(true);
     const request = t.sent.at(-1);
-    if (request?.kind !== 'req') throw new Error('apply did not send a request');
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: request.id, kind: 'res', payload: { ok: true } });
     await flushPromises();
 
@@ -230,8 +243,8 @@ describe('SettingsStore', () => {
     store.apply('streaming', 'mode', 'discovery');
     const second = t.sent.at(-1);
     expect(store.dirty).toBe(true);
-    if (first?.kind !== 'req' || second?.kind !== 'req') {
-      throw new Error('apply did not send requests');
+    if (first?.kind !== 'cmd' || second?.kind !== 'cmd') {
+      throw new Error('apply did not send mutations');
     }
     t.emit({ v: 1, id: first.id, kind: 'res', payload: { ok: true } });
     t.emit({ v: 1, id: second.id, kind: 'res', payload: { ok: true } });
@@ -255,7 +268,7 @@ describe('SettingsStore', () => {
     store.apply('playback', 'gapless', true);
     store.apply('playback', 'gapless', false);
     const newest = t.sent.at(-1);
-    if (newest?.kind !== 'req') throw new Error('apply did not send a request');
+    if (newest?.kind !== 'cmd') throw new Error('apply did not send a mutation');
 
     const oldEqualPush = baseModel();
     oldEqualPush.rev = 2;
@@ -284,7 +297,7 @@ describe('SettingsStore', () => {
 
     store.apply('playback', 'gapless', false);
     const request = t.sent.at(-1);
-    if (request?.kind !== 'req') throw new Error('apply did not send a request');
+    if (request?.kind !== 'cmd') throw new Error('apply did not send a mutation');
     t.emit({ v: 1, id: request.id, kind: 'err', payload: { reason: 'rejected' } });
     await flushPromises();
 
@@ -301,7 +314,7 @@ describe('SettingsStore', () => {
 
     store.apply('animations', 'master', true);
     expect(t.sent.at(-1)).toMatchObject({
-      kind: 'req',
+      kind: 'cmd',
       name: 'apply',
       payload: { change: { group: 'animations', field: 'master', value: true } },
     });
@@ -319,7 +332,7 @@ describe('SettingsStore', () => {
 
     store.apply('audio', 'mpv_output', 'pipewire');
     expect(t.sent.at(-1)).toMatchObject({
-      kind: 'req',
+      kind: 'cmd',
       name: 'apply',
       payload: { change: { group: 'audio', field: 'mpv_output', value: 'pipewire' } },
     });

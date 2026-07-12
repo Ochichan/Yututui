@@ -1,6 +1,5 @@
 //! Top-level TEA reducer wrapper and message dispatcher.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use super::*;
@@ -17,6 +16,10 @@ impl App {
         // without a terminal resize). Apply the bridged tier before routing this event so a
         // hidden Search/DJ input cannot consume the first global key after entering Mini.
         self.sync_ui_tier();
+        let admitted_seek = matches!(
+            &msg,
+            Msg::Player(PlayerMsg::IntentAdmitted(commit)) if commit.is_seek()
+        );
         let mut status_before = std::mem::take(&mut self.status_text_prev);
         status_before.clear();
         status_before.push_str(&self.status.text);
@@ -29,9 +32,17 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let cmds = self.dispatch(msg);
+        if self.status.text.is_empty()
+            && let Some(warning) = self.recorder.health_warning.as_ref()
+        {
+            self.status.kind = StatusKind::Error;
+            self.status.text.clone_from(warning);
+        }
         let status_changed = self.status.text != status_before;
         if status_changed {
-            self.status.set_at = if self.status.text.is_empty() {
+            let persistent_recorder_health =
+                self.recorder.health_warning.as_deref() == Some(self.status.text.as_str());
+            self.status.set_at = if self.status.text.is_empty() || persistent_recorder_health {
                 None
             } else {
                 Some(Instant::now())
@@ -44,13 +55,7 @@ impl App {
         // any seek command emitted this turn is a position discontinuity (bump the epoch so
         // the OS session re-announces the position), and any pause/resume flip rebases the
         // interpolation anchor so a long pause never reads as elapsed progress.
-        let seeked = cmds.iter().any(|cmd| {
-            matches!(
-                cmd,
-                Cmd::Player(PlayerCmd::SeekRelative(_) | PlayerCmd::SeekAbsolute(_))
-            )
-        });
-        if seeked {
+        if admitted_seek {
             self.bump_position_epoch(PositionEpochReason::Seek);
         }
         if self.playback.paused != paused_before {
@@ -59,7 +64,7 @@ impl App {
         // One-shot animation feedback, detected centrally for the same reason as the status
         // TTL above: every input path (key, mouse, remote, DJ Gem) changes the same state, so
         // diffing it here means no call site can forget to trigger the matching effect.
-        self.detect_fx(status_changed, seeked);
+        self.detect_fx(status_changed, admitted_seek);
         if animations_were_on && !self.animations().master {
             self.fx.cancel();
         }
@@ -95,16 +100,25 @@ impl App {
             }
             Msg::Quit => self.should_quit = true,
             Msg::Remote(cmd, reply) => {
-                return match cmd {
-                    crate::remote::proto::RemoteCommand::ExportPersonalData { directory } => {
-                        self.start_personal_export(PathBuf::from(directory), Some(reply))
-                    }
-                    other => {
-                        let (resp, cmds) = self.apply_remote(other);
-                        let _ = reply.send(resp);
-                        cmds
-                    }
+                if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory } = cmd {
+                    return self.start_personal_export(PathBuf::from(directory), Some(reply));
+                }
+                let deferred = Self::remote_reply_plan(&cmd);
+                let (resp, mut cmds) = self.apply_remote(cmd);
+                // Admission-sensitive success snapshots wait for their player intent, while a
+                // command rejected during validation (for example an empty resume session) must
+                // preserve its explicit error instead of being replaced by a fake status reply.
+                let response = if resp.ok {
+                    deferred.unwrap_or(RemoteReplyPlan::Fixed(Box::new(resp)))
+                } else {
+                    RemoteReplyPlan::Fixed(Box::new(resp))
                 };
+                if let Err((reply, response)) =
+                    Self::attach_remote_reply(&mut cmds, reply, response)
+                {
+                    let _ = reply.send(self.resolve_remote_reply(response));
+                }
+                return cmds;
             }
             Msg::Data(DataMsg::PersonalDataExport(PersonalDataExportMsg::Finished {
                 result,
@@ -132,11 +146,22 @@ impl App {
                 return self.request_romanization_for_songs(&results);
             }
             Msg::StatusTick => {
-                // The status has been covering the title long enough — clear it so the
-                // wrapper above nulls `status.set_at` and the next frame redraws the title.
+                // Transient status expires back to the recorder's persistent recovery/
+                // backpressure condition. That condition clears only when its exact source is
+                // settled or explicitly discarded, never merely because three seconds elapsed.
                 if matches!(self.status.set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
-                    self.status.text.clear();
-                    self.dirty = true;
+                    if let Some(warning) = self.recorder.health_warning.as_ref() {
+                        if self.status.text != *warning {
+                            self.status.kind = StatusKind::Error;
+                            self.status.text.clone_from(warning);
+                            self.dirty = true;
+                        } else {
+                            self.status.set_at = None;
+                        }
+                    } else {
+                        self.status.text.clear();
+                        self.dirty = true;
+                    }
                 }
             }
             Msg::AnimTick => {
@@ -235,14 +260,18 @@ impl App {
                 PlayerMsg::Eof => {
                     tracing::info!("track ended (eof)");
                     // The just-finished track played to its end → a full-play signal, then advance.
-                    let mut cmds = self.record_outgoing(true);
-                    cmds.extend(self.advance(true));
-                    return cmds;
+                    return self.advance_with_outgoing(true, true);
                 }
                 PlayerMsg::VideoOverlay { generation, event } => {
                     return self.on_video_overlay_event(generation, event);
                 }
                 PlayerMsg::Error(e) => return self.on_player_error(e),
+                PlayerMsg::TransportClosed(reason) => {
+                    return self.recover_player_transport(reason);
+                }
+                PlayerMsg::IntentAdmitted(commit) => {
+                    return self.commit_player_intent(commit);
+                }
             },
             Msg::RecordingTick => {
                 return self.recorder_on_tick();
@@ -275,7 +304,7 @@ impl App {
                     // below finishes the retry); Msg::ResolveFailed ends the heal.
                     let watch_url = self.queue.current().and_then(Song::prefetch_target);
                     if let Some(watch_url) = watch_url {
-                        return vec![Cmd::Resolve {
+                        return vec![Cmd::ResolveForSelfHeal {
                             video_id,
                             watch_url,
                         }];
@@ -288,7 +317,7 @@ impl App {
                     return Vec::new();
                 }
                 self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
-                let cmds = if self.queue.peek_next().is_some() {
+                let mut cmds = if self.queue.peek_next().is_some() {
                     self.advance(false)
                 } else {
                     Vec::new()
@@ -299,6 +328,11 @@ impl App {
                     "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
                 )
                 .to_owned();
+                Self::attach_track_commit_status(
+                    &mut cmds,
+                    StatusKind::Error,
+                    self.status.text.clone(),
+                );
                 self.dirty = true;
                 return cmds;
             }
@@ -313,7 +347,7 @@ impl App {
                     return Vec::new();
                 }
                 self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
-                let cmds = if self.queue.peek_next().is_some() {
+                let mut cmds = if self.queue.peek_next().is_some() {
                     self.advance(false)
                 } else {
                     Vec::new()
@@ -324,6 +358,11 @@ impl App {
                     "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
                 )
                 .to_owned();
+                Self::attach_track_commit_status(
+                    &mut cmds,
+                    StatusKind::Error,
+                    self.status.text.clone(),
+                );
                 self.dirty = true;
                 return cmds;
             }
@@ -426,72 +465,46 @@ impl App {
                 }
             }
             Msg::ArtworkResized(response) => self.apply_artwork_resize(response),
-            Msg::DownloadProgress { video_id, percent } => {
-                let percent = percent.round() as u8;
-                let changed = !matches!(
-                    self.downloads.active.get(&video_id),
-                    Some(DownloadState::Running(prev)) if *prev == percent
-                );
-                if changed {
-                    self.downloads
-                        .active
-                        .insert(video_id, DownloadState::Running(percent));
+            Msg::Download(message) => match message {
+                DownloadMsg::Progress { video_id, percent } => {
+                    self.apply_download_progress(video_id, percent);
+                }
+                DownloadMsg::ImportProgress { context, percent } => {
+                    self.apply_download_progress(context.tracking_key(), percent);
+                }
+                DownloadMsg::Done { video_id, path } => {
+                    return self.apply_download_done(video_id, path);
+                }
+                DownloadMsg::ImportDone { context, path } => {
+                    return self.apply_download_done(context.tracking_key(), path);
+                }
+                DownloadMsg::Error { video_id, error } => {
+                    return self.apply_download_error(video_id, error);
+                }
+                DownloadMsg::ImportError { context, error } => {
+                    return self.apply_download_error(context.tracking_key(), error);
+                }
+                DownloadMsg::Rejected {
+                    tracking_key,
+                    error,
+                } => return self.apply_download_error(tracking_key, error),
+                DownloadMsg::DirError { error } => {
+                    self.status.kind = StatusKind::Error;
+                    self.status.text = format!(
+                        "{}: {error}",
+                        t!(
+                            "Download directory update failed",
+                            "다운로드 폴더 변경 실패"
+                        )
+                    );
                     self.dirty = true;
                 }
-            }
-            Msg::DownloadDone { video_id, path } => {
-                self.downloads
-                    .active
-                    .insert(video_id.clone(), DownloadState::Done);
-                self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
-                let saved = !path.trim().is_empty();
-                if saved {
-                    let path_buf = PathBuf::from(&path);
-                    let source = self.downloads.sources.remove(&video_id);
-                    if let Some(source) = source.as_ref() {
-                        self.record_import_download_done(source, &path_buf);
-                    }
-                    let local = source
-                        .map(|source| source.with_local_path(path_buf.clone()))
-                        .unwrap_or_else(|| Song::local_file(path_buf));
-                    self.add_downloaded_track(local);
-                }
-                // Success toast — opt out of this turn's default error styling.
-                self.status.kind = StatusKind::Info;
-                self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
-                self.dirty = true;
-                // A finished slot lets the next bulk-queued download start.
-                let mut cmds = self.pump_downloads();
-                if saved {
-                    // Persist the manifest so the recovered YouTube id survives a restart.
-                    cmds.push(Cmd::Persist(PersistCmd::Downloads));
-                }
-                return cmds;
-            }
-            Msg::DownloadError { video_id, error } => {
-                self.downloads
-                    .active
-                    .insert(video_id.clone(), DownloadState::Failed);
-                if let Some(source) = self.downloads.sources.remove(&video_id) {
-                    self.record_import_download_error(&source, &error);
-                }
-                self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
-                self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
-                self.dirty = true;
-                // Keep the batch flowing even when one track fails.
-                return self.pump_downloads();
-            }
-            Msg::DownloadDirError { error } => {
-                self.status.kind = StatusKind::Error;
-                self.status.text = format!(
-                    "{}: {error}",
-                    t!(
-                        "Download directory update failed",
-                        "다운로드 폴더 변경 실패"
-                    )
-                );
-                self.dirty = true;
-            }
+            },
+            Msg::DownloadsDeleted {
+                root,
+                deleted,
+                failed,
+            } => return self.apply_deleted_downloads(root, deleted, failed),
             Msg::PersistFailed { store, error } => {
                 self.status.kind = StatusKind::Error;
                 self.status.text = if crate::i18n::is_korean() {
@@ -505,8 +518,10 @@ impl App {
                 StreamingMsg::Resolved {
                     video_id,
                     stream_url,
+                    self_heal,
                 } => {
-                    let healing = self.heal.pending_video_id.as_deref() == Some(video_id.as_str());
+                    let healing = self_heal
+                        && self.heal.pending_video_id.as_deref() == Some(video_id.as_str());
                     if !healing && !self.prefetch.enabled() {
                         tracing::debug!(
                             video_id = %video_id,
@@ -520,10 +535,12 @@ impl App {
                     // failed track — reload it now through the direct CDN URL just cached
                     // (bypassing the session mpv's stale spawn-time ytdl_hook).
                     if healing {
-                        self.heal.pending_video_id = None;
                         if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                            return self.load_song(self.queue.current().cloned());
+                            return self.reload_healed_track(video_id);
                         }
+                        // The user moved on while resolution was in flight. No player command is
+                        // needed, so this stale background result can retire immediately.
+                        self.heal.pending_video_id = None;
                     }
                 }
                 StreamingMsg::Results {
@@ -595,13 +612,15 @@ impl App {
                 }
                 AiMsg::PlayTracks(songs) => {
                     if !songs.is_empty() {
-                        let romanize_cmds = self.request_romanization_for_songs(&songs);
-                        self.queue.set(songs, 0);
-                        self.status.text.clear();
-                        let song = self.queue.current().cloned();
-                        let mut cmds = self.load_song(song);
-                        cmds.extend(romanize_cmds);
-                        return cmds;
+                        return self.replace_queue_and_load(
+                            songs,
+                            0,
+                            None,
+                            QueueReplacementOptions {
+                                romanize_all: true,
+                                ..QueueReplacementOptions::default()
+                            },
+                        );
                     }
                 }
                 AiMsg::Enqueue(songs) => {
@@ -673,13 +692,15 @@ impl App {
                     if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
                         && !songs.is_empty()
                     {
-                        let romanize_cmds = self.request_romanization_for_songs(&songs);
-                        self.queue.set(songs, 0);
-                        self.status.text.clear();
-                        let song = self.queue.current().cloned();
-                        let mut cmds = self.load_song(song);
-                        cmds.extend(romanize_cmds);
-                        return cmds;
+                        return self.replace_queue_and_load(
+                            songs,
+                            0,
+                            None,
+                            QueueReplacementOptions {
+                                romanize_all: true,
+                                ..QueueReplacementOptions::default()
+                            },
+                        );
                     }
                 }
                 AiMsg::StationPatch {

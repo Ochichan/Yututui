@@ -4,7 +4,7 @@ use anyhow::{Context as _, anyhow, bail};
 
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
-use super::session::{ImportRecordGuard, ImportSession};
+use super::session::{ImportRecordGuard, ImportSession, ensure_review_row_mutable_unlocked};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewActionSummary {
@@ -38,6 +38,7 @@ pub fn accept_first_candidate(
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
+    ensure_review_row_mutable_unlocked(job_id, source_order)?;
     let selected = candidates_from_outcome(&cp.tracks[index].outcome)
         .into_iter()
         .next()
@@ -53,6 +54,7 @@ pub fn choose_next_candidate(
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
+    ensure_review_row_mutable_unlocked(job_id, source_order)?;
     let candidates = candidates_from_outcome(&cp.tracks[index].outcome);
     if candidates.is_empty() {
         bail!("row {source_order} has no candidate to choose");
@@ -91,6 +93,7 @@ pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary>
         let Some(selected) = first_ambiguous_candidate(&cp.tracks[index].outcome) else {
             continue;
         };
+        ensure_review_row_mutable_unlocked(job_id, source_order)?;
         if ensure_review_candidate_allowed(&cp.spec, selected.score_breakdown.as_ref()).is_err() {
             continue;
         }
@@ -175,6 +178,7 @@ fn apply_terminal_decision(
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
+    ensure_review_row_mutable_unlocked(job_id, source_order)?;
     cp.tracks[index].review_decision = Some(decision);
     save_checkpoint_and_session(&mut cp)?;
     Ok(ReviewActionSummary {
@@ -188,9 +192,7 @@ fn apply_terminal_decision(
 
 fn save_checkpoint_and_session(cp: &mut Checkpoint) -> anyhow::Result<()> {
     cp.save().context("save checkpoint")?;
-    ImportSession::from_checkpoint(cp)
-        .save_unlocked()
-        .context("save import session")?;
+    ImportSession::save_checkpoint_projection_unlocked(cp).context("save import session")?;
     Ok(())
 }
 
@@ -282,6 +284,9 @@ fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transfer::artifact_identity::{ArtifactFileIdentity, ArtifactReceipt};
+    use crate::transfer::checkpoint::TrackEntry;
+    use crate::transfer::matching::{AmbiguousCandidate, TrackInput};
     use crate::transfer::{
         ImportMediaKind, JobSpec, MatchPolicy, TransferCacheMode, TransferDest, TransferSource,
     };
@@ -322,5 +327,91 @@ mod tests {
             ensure_review_candidate_allowed(&spec(ImportMediaKind::Track), None).is_ok(),
             "legacy track reviews do not require the new MV evidence field"
         );
+    }
+
+    fn input(title: &str) -> TrackInput {
+        TrackInput {
+            title: title.to_owned(),
+            artists: vec!["Artist".to_owned()],
+            album_artists: Vec::new(),
+            album: None,
+            album_id: None,
+            album_uri: None,
+            album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
+            disc_number: None,
+            track_number: None,
+            duration_secs: None,
+            isrc: None,
+            explicit: None,
+            source_url: None,
+            source_key: format!("spotify:track:{title}"),
+            known_video_id: None,
+        }
+    }
+
+    #[test]
+    fn tui_review_projection_preserves_another_rows_artifact_state() {
+        let job_id = "sp2yt-review-action-artifact-preserve";
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(ImportMediaKind::Track),
+            vec![
+                TrackEntry {
+                    input: input("Review"),
+                    outcome: Some(MatchOutcome::Ambiguous {
+                        candidates: vec![AmbiguousCandidate {
+                            key: "video-review".to_owned(),
+                            score: 0.9,
+                            display: "Review".to_owned(),
+                            score_breakdown: None,
+                        }],
+                    }),
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Written"),
+                    outcome: Some(MatchOutcome::Matched {
+                        key: "video-written".to_owned(),
+                        score: 0.95,
+                        display: "Written".to_owned(),
+                        title: None,
+                        artist: None,
+                        album: None,
+                        duration_secs: None,
+                        score_breakdown: None,
+                    }),
+                    review_decision: None,
+                    written: false,
+                },
+            ],
+        );
+        cp.save().unwrap();
+        let mut session = ImportSession::from_checkpoint(&cp);
+        let artifact = std::path::PathBuf::from("/tmp/review-action-written.m4a");
+        session.rows[1].written = true;
+        session.rows[1].local_path = Some(artifact.clone());
+        session.rows[1].artifact_receipt = Some(ArtifactReceipt {
+            audio: ArtifactFileIdentity {
+                len: 5,
+                sha256: "b".repeat(64),
+            },
+            sidecar_required: false,
+            sidecar: None,
+            claim: None,
+        });
+        session.save().unwrap();
+
+        accept_first_candidate(job_id, 1).unwrap();
+
+        let saved = ImportSession::load(job_id).unwrap();
+        assert_eq!(saved.rows[1].local_path, Some(artifact));
+        assert!(saved.rows[1].written);
+        assert!(saved.rows[1].artifact_receipt.is_some());
+        ImportSession::delete_record(job_id).unwrap();
     }
 }

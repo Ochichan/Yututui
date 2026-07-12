@@ -60,7 +60,9 @@ fn shift_down_extends_queue_selection_and_delete_removes_the_range() {
     assert_eq!(app.queue_popup.cursor, 2, "queue cursor advanced");
 
     // Delete acts on the inclusive anchor..=cursor span (rows 0..=2), leaving 2 of 5.
-    app.update(Msg::Key(key(KeyCode::Delete)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    assert_eq!(app.queue.len(), 5, "range removal waits for admission");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
 }
 

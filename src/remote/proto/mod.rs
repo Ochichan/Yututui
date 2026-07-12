@@ -26,6 +26,7 @@ mod model_player;
 mod model_settings;
 mod session;
 
+pub(crate) use command::RequestRetryClass;
 pub use command::{
     GuiSettingChange, REMOTE_MAX_EXPORT_DIRECTORY_BYTES, REMOTE_MAX_GEMINI_KEY_BYTES,
     REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES,
@@ -61,6 +62,15 @@ pub const PROTOCOL_VERSION_V7: u8 = 7;
 /// session-frame ceiling so the client read bound and the server's notion of a valid reply
 /// share one source, while still refusing an unbounded stream from a corrupt/hostile peer.
 pub const MAX_ONESHOT_REPLY_BYTES: usize = 256 * 1024;
+
+/// Machine reason returned when a mutating request may have been applied but no authoritative
+/// reply was observed. Clients must ask the user to inspect current state before retrying.
+pub const CONFIRMATION_LOST_REASON: &str = "confirmation_lost";
+
+/// Instance capability proving that same-ID mutation retries return an explicitly marked
+/// retained owner outcome. Clients must not automatically retry an ambiguous mutation unless
+/// the published instance descriptor advertises this capability.
+pub const RETAINED_REQUEST_OUTCOMES_CAPABILITY: &str = "retained-request-outcomes-v1";
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
@@ -101,6 +111,13 @@ impl ToggleState {
 pub struct RemoteRequest {
     pub version: u8,
     pub token: String,
+    /// Stable identity for retaining state-changing outcomes within this advertised owner's
+    /// current 60-second retention window. It is not safe to reuse after that window or after the
+    /// descriptor token/owner changes.
+    /// Status and RunSearch use it only for validation/correlation and execute afresh. Optional so
+    /// the frozen v7 request stays byte-for-byte compatible; current clients always populate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub command: RemoteCommand,
 }
 
@@ -159,6 +176,23 @@ impl RemoteResponse {
             status: Some(snapshot),
         }
     }
+}
+
+/// Additive one-shot transport metadata around the frozen [`RemoteResponse`] body.
+///
+/// `retained_replay` is set only when this exchange observed the completed result of a prior
+/// same-ID mutation admission. It stays absent for ordinary responses, pre-admission rejections,
+/// and old servers, preserving the shipped v7/v8 byte shapes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RemoteResponseEnvelope {
+    #[serde(flatten)]
+    pub response: RemoteResponse,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retained_replay: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A point-in-time view of playback for `ytt -r status` (and, later, `--json` bars).
@@ -331,6 +365,7 @@ mod tests {
         let req = RemoteRequest {
             version: PROTOCOL_VERSION,
             token: "abc".to_string(),
+            request_id: None,
             command: RemoteCommand::Streaming {
                 state: ToggleState::On,
             },

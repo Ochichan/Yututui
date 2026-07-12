@@ -105,6 +105,7 @@ impl App {
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
         // below if this click grabs a track.
         self.interaction.seekbar_drag = None;
+        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
@@ -475,8 +476,15 @@ impl App {
             tracing::info!(secs = target, "click seek");
             // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
             self.interaction.seekbar_drag = Some(col);
+            self.interaction.seekbar_admission = SeekbarAdmission::Pending;
             self.dirty = true;
-            return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
+            return self.player_intent(
+                "seek_absolute",
+                PlayerCmd::SeekAbsolute(target),
+                PlayerCommit::Seek {
+                    optimistic_position: Some(target),
+                },
+            );
         }
         Vec::new()
     }
@@ -812,7 +820,7 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmRadioMode => {
-                let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() else {
+                let Some(confirm) = self.radio_mode.pending_radio_mode_confirm else {
                     return Vec::new();
                 };
                 self.apply_radio_mode_confirm(confirm)
@@ -823,7 +831,7 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmLocalMode => {
-                let Some(confirm) = self.local_mode.pending_confirm.take() else {
+                let Some(confirm) = self.local_mode.pending_confirm else {
                     return Vec::new();
                 };
                 self.apply_local_mode_confirm(confirm)
@@ -1027,18 +1035,29 @@ impl App {
                 // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
                 // can't underflow u16).
                 let c = col.clamp(area.x, area.right().saturating_sub(1));
-                if self.interaction.seekbar_drag != Some(c) {
-                    // Intra-cell dedupe: only re-seek when the target cell actually changes.
+                if self.interaction.seekbar_drag != Some(c)
+                    || self.interaction.seekbar_admission == SeekbarAdmission::Retry
+                {
+                    // Intra-cell dedupe is valid only after admission. A rejected request keeps
+                    // the scrub active but must allow the same cell to be retried.
                     self.interaction.seekbar_drag = Some(c);
+                    self.interaction.seekbar_admission = SeekbarAdmission::Pending;
                     let frac = f64::from(c - area.x) / f64::from(area.width);
                     let target = (frac * dur).clamp(0.0, dur);
                     self.dirty = true;
-                    return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
+                    return self.player_intent(
+                        "seek_absolute",
+                        PlayerCmd::SeekAbsolute(target),
+                        PlayerCommit::Seek {
+                            optimistic_position: Some(target),
+                        },
+                    );
                 }
                 return Vec::new();
             }
             // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
             self.interaction.seekbar_drag = None;
+            self.interaction.seekbar_admission = SeekbarAdmission::Settled;
             return Vec::new();
         }
         if self.queue_popup.open {
@@ -1134,6 +1153,7 @@ impl App {
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
         self.interaction.seekbar_drag = None;
+        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
 
         if let Some(drag) = self.interaction.ai_transcript_drag.take() {
             if drag.moved {
@@ -1167,6 +1187,21 @@ impl App {
         }
 
         Vec::new()
+    }
+
+    /// Settle only a seek issued by the active mouse scrub. Runtime calls this for every seek
+    /// admission result, but unrelated keyboard/remote seeks find no `Pending` mouse request and
+    /// therefore cannot leave a stale retry bypass behind.
+    pub(crate) fn settle_mouse_seek_admission(&mut self, accepted: bool) {
+        if self.interaction.seekbar_admission != SeekbarAdmission::Pending {
+            return;
+        }
+        self.interaction.seekbar_admission = if accepted || self.interaction.seekbar_drag.is_none()
+        {
+            SeekbarAdmission::Settled
+        } else {
+            SeekbarAdmission::Retry
+        };
     }
 
     fn on_scrollbar_press(&mut self, surface: ScrollSurface, rect: Rect, row: u16) -> Vec<Cmd> {

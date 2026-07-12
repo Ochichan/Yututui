@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -21,24 +21,36 @@ use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
-use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingConfig, StreamingMode};
+use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
-// Autoplay/streaming policy + volume bounds are single-sourced with the TUI App in
-// `crate::playback_policy`, so a threshold can't drift between the two playback owners.
-use crate::playback_policy::{
-    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
-    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, VOLUME_MAX, VOLUME_STEP,
-};
+mod delivery;
+mod gui_search;
+mod persistence_gate;
+mod personal_export;
+mod streaming;
+mod transport;
 
 #[path = "engine_session.rs"]
 mod engine_session;
-use engine_session::{data_dir, local_neighbor_score};
+
+pub use delivery::EngineError;
+use delivery::{record_player_delivery, require_player_delivery};
+use engine_session::data_dir;
+pub(super) use gui_search::RequesterKey;
+use gui_search::{GuiSearchAdmission, GuiSearchIndex};
+use transport::TransportRecovery;
+
+// Autoplay/streaming policy + volume bounds are single-sourced with the TUI App in
+// `crate::playback_policy`, so a threshold can't drift between the two playback owners.
+#[cfg(test)]
+use crate::playback_policy::{AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, STREAMING_POOL_COUNT};
+use crate::playback_policy::{MAX_CONSECUTIVE_PLAY_ERRORS, VOLUME_MAX, VOLUME_STEP};
+#[cfg(test)]
+use crate::streaming::CandidateSource;
 
 const SESSION_EVENTS_CAP: usize = 20;
-
-mod personal_export;
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -52,29 +64,6 @@ pub(crate) struct EngineState {
     pub library: Library,
     pub signals: Signals,
 }
-
-#[derive(Debug)]
-pub enum EngineError {
-    Player(String),
-}
-
-impl EngineError {
-    fn reason(&self) -> &'static str {
-        match self {
-            EngineError::Player(_) => "mpv_unavailable",
-        }
-    }
-}
-
-impl std::fmt::Display for EngineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EngineError::Player(message) => write!(f, "{message}"),
-        }
-    }
-}
-
-impl std::error::Error for EngineError {}
 
 #[derive(Debug)]
 pub enum EngineEffect {
@@ -103,14 +92,22 @@ pub enum EngineEffect {
     /// Run a GUI-session search off-loop (`RemoteCommand::RunSearch`); the answer
     /// returns as [`ApiEvent::GuiSearchCompleted`] and is pushed on the `search` topic.
     GuiSearch {
+        requester: RequesterKey,
         ticket: u64,
         query: String,
         source: crate::search_source::SearchSource,
         config: SearchConfig,
     },
+    /// Re-enter the daemon owner loop after a bounded transport-recovery backoff.
+    /// The generation makes an already-satisfied or superseded retry inert.
+    TransportRecoveryRetry {
+        generation: u64,
+        retry_after: Duration,
+    },
 }
 
 pub struct DaemonEngine {
+    maintainer: crate::util::background_task::BackgroundTask,
     player: Option<PlayerRuntime>,
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
@@ -120,11 +117,33 @@ pub struct DaemonEngine {
     signals: Signals,
     station: StationStore,
     loaded_video_id: Option<String>,
+    /// A dead transport's current-track identity and pause bit. The next explicit load
+    /// consumes it without duplicating history/signals and restores the pause state.
+    transport_recovery: Option<TransportRecovery>,
+    /// Monotonic identity for scheduled transport retries. Stale retry events must never
+    /// restart a newer player lifetime.
+    transport_recovery_generation: u64,
+    /// One-shot crash-loop gate. Only a normal (non-recovery) load rearms it; merely
+    /// recreating mpv or receiving late telemetry from the dead actor does not.
+    transport_auto_recovery_armed: bool,
+    /// Deterministic player starts for transport-recovery tests. Production always takes
+    /// the real `player::spawn` path.
+    #[cfg(test)]
+    test_player_starts: VecDeque<PlayerRuntime>,
     streaming: bool,
     streaming_pending: bool,
     last_extend: Option<Instant>,
     consecutive_streaming_failures: u8,
     last_error: Option<String>,
+    /// Set when any durable write fails during the current remote command. The
+    /// command's success-shaped response is replaced with `durability_unconfirmed` while
+    /// preserving any player-visible state that was already applied.
+    remote_persistence_write_failed: bool,
+    /// Persistence-only diagnostic state. Healthy probes clear this without erasing an
+    /// unrelated player/transport `last_error`.
+    remote_persistence_error: Option<String>,
+    remote_persistence_command_active: bool,
+    remote_persistence_read_only: bool,
     consecutive_play_errors: u8,
     /// yt-dlp self-heal bookkeeping (mirrors the TUI's `YtdlpHeal`): the in-flight
     /// healed track, the per-track one-shot guard, and the update-check cooldown.
@@ -139,15 +158,14 @@ pub struct DaemonEngine {
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
-    /// Rows the GUI can address by bare `video_id` (`play_tracks`/`enqueue_tracks`):
-    /// the songs of the most recently completed GUI search. Replaced wholesale per
-    /// search — the GUI only ever acts on the results it currently shows.
-    gui_search_index: std::collections::HashMap<String, Song>,
+    /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
+    /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
+    gui_search_index: GuiSearchIndex,
 }
 
 struct PlayerRuntime {
     handle: PlayerHandle,
-    _guard: player::Mpv,
+    _guard: Option<player::Mpv>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -170,6 +188,7 @@ struct DaemonPlayback {
 enum PositionEpochReason {
     Seek,
     TrackRestart,
+    TransportRecovery,
     IdleReset,
 }
 
@@ -192,28 +211,39 @@ impl DaemonEngine {
     where
         F: Fn(PlayerEvent) + Send + Sync + 'static,
     {
+        let (config, startup) =
+            crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
+        let crate::persist::StartupStoreSet {
+            library,
+            session_cache,
+            signals,
+            station,
+            ..
+        } = startup;
+        let state = EngineState {
+            config,
+            station,
+            library,
+            signals,
+        };
+        crate::persist::ensure_startup_recovery_coherent().map_err(EngineError::from)?;
+        // Orphan reaping can unlink lifeline records and kill child processes. It is safe only
+        // after all recovery-backed stores have established one coherent startup frontier.
         if let Some(dir) = data_dir() {
             player::lifetime::reap_orphans(&dir);
         }
-        let mut engine = Self::with_state(
-            EngineState {
-                config: Config::load(),
-                station: StationStore::load(),
-                library: Library::load(),
-                signals: Signals::load(),
-            },
-            Arc::new(emit),
-        );
+        let mut engine = Self::with_state(state, Arc::new(emit));
 
         // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
         // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
         crate::tools::init(&engine.config.tools).await;
         // Keep the managed copy fresh for long daemon runs. No-op emit: the daemon
         // has no status line and `check_and_update` already logs its outcomes.
-        crate::tools::ytdlp::spawn_maintainer(engine.config.tools.clone(), |_| {});
+        engine.maintainer =
+            crate::tools::ytdlp::spawn_maintainer(engine.config.tools.clone(), |_| {});
 
         if options.resume {
-            engine.restore_last_session();
+            engine.restore_session_cache(session_cache);
             if engine.queue.current().is_some() {
                 engine.load_current().await?;
             }
@@ -244,6 +274,7 @@ impl DaemonEngine {
         queue.set_shuffle(config.effective_shuffle());
 
         Self {
+            maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
             player: None,
             player_emit,
             queue,
@@ -267,10 +298,19 @@ impl DaemonEngine {
             signals,
             station,
             loaded_video_id: None,
+            transport_recovery: None,
+            transport_recovery_generation: 0,
+            transport_auto_recovery_armed: true,
+            #[cfg(test)]
+            test_player_starts: VecDeque::new(),
             streaming_pending: false,
             last_extend: None,
             consecutive_streaming_failures: 0,
             last_error: None,
+            remote_persistence_write_failed: false,
+            remote_persistence_error: None,
+            remote_persistence_command_active: false,
+            remote_persistence_read_only: false,
             consecutive_play_errors: 0,
             heal_pending: None,
             heal_attempted: HashSet::new(),
@@ -281,7 +321,7 @@ impl DaemonEngine {
             inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
-            gui_search_index: std::collections::HashMap::new(),
+            gui_search_index: GuiSearchIndex::default(),
         }
     }
 
@@ -303,6 +343,11 @@ impl DaemonEngine {
         self.config.effective_cookie()
     }
 
+    /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
+    pub async fn shutdown_background(&mut self) {
+        self.maintainer.shutdown().await;
+    }
+
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
         self.maybe_autoplay_extend()
     }
@@ -311,25 +356,55 @@ impl DaemonEngine {
         &mut self,
         command: RemoteCommand,
     ) -> (RemoteResponse, bool, Vec<EngineEffect>) {
+        self.handle_remote_scoped(command, None).await
+    }
+
+    pub async fn handle_session_remote(
+        &mut self,
+        command: RemoteCommand,
+        requester: RequesterKey,
+    ) -> (RemoteResponse, bool, Vec<EngineEffect>) {
+        self.handle_remote_scoped(command, Some(requester)).await
+    }
+
+    async fn handle_remote_scoped(
+        &mut self,
+        command: RemoteCommand,
+        requester: Option<RequesterKey>,
+    ) -> (RemoteResponse, bool, Vec<EngineEffect>) {
         if command
             .expected_queue_rev()
-            .is_some_and(|rev| rev != self.queue.rev())
+            .is_some_and(|revision| revision != self.queue.rev())
         {
             return (RemoteResponse::err("stale_rev"), false, Vec::new());
         }
-        self.last_error = None;
+        if let Some(response) = self.preflight_remote_persistence(&command) {
+            return (response, false, Vec::new());
+        }
         let mut effects = Vec::new();
         let shutdown = matches!(command, RemoteCommand::Quit);
         let response = match command {
+            RemoteCommand::ExportPersonalData { .. } => {
+                unreachable!("personal export is intercepted by the daemon owner loop")
+            }
             RemoteCommand::Status => RemoteResponse::status(self.status()),
             RemoteCommand::Quit => {
                 self.stop_playback();
+                // `stop_playback` rearms normal transport recovery for future loads. Process
+                // teardown is terminal, so close that gate again before the stopped actor can
+                // enqueue its final TransportClosed event.
+                self.suppress_transport_recovery_for_shutdown();
                 self.save_session();
                 RemoteResponse::ok("stopping daemon".to_string())
             }
             RemoteCommand::Next => {
-                self.record_outgoing(false);
+                let outgoing = self.prepare_outgoing(false);
                 let response = self.next_track().await;
+                if (response.ok || response.reason.as_deref() == Some("queue_end"))
+                    && let Some(outgoing) = outgoing
+                {
+                    self.commit_outgoing(outgoing);
+                }
                 effects.extend(self.maybe_autoplay_extend());
                 response
             }
@@ -403,7 +478,9 @@ impl DaemonEngine {
             }
             RemoteCommand::ResumeSession => {
                 let response = self.resume_session().await;
-                effects.extend(self.force_autoplay_extend());
+                if response.ok {
+                    effects.extend(self.force_autoplay_extend());
+                }
                 response
             }
             RemoteCommand::RunSearch {
@@ -416,26 +493,45 @@ impl DaemonEngine {
                     RemoteResponse::err("empty_query")
                 } else if query.len() > REMOTE_MAX_QUERY_BYTES {
                     RemoteResponse::err("query_too_long")
+                } else if let Some(requester) = requester.clone() {
+                    match self
+                        .gui_search_index
+                        .begin(&requester, ticket, &query, source)
+                    {
+                        GuiSearchAdmission::Start => {
+                            effects.push(EngineEffect::GuiSearch {
+                                requester,
+                                ticket,
+                                query,
+                                source,
+                                config: self.config.effective_search(),
+                            });
+                            RemoteResponse::ok("searching".to_string())
+                        }
+                        GuiSearchAdmission::DuplicateActive => {
+                            RemoteResponse::ok("searching".to_string())
+                        }
+                        GuiSearchAdmission::StaleTicket => RemoteResponse::err("stale_ticket"),
+                        GuiSearchAdmission::TicketConflict => {
+                            RemoteResponse::err("ticket_conflict")
+                        }
+                    }
                 } else {
-                    // Off-loop: the api actor answers with GuiSearchCompleted, which the
-                    // host loop indexes here and pushes on the `search` topic.
-                    effects.push(EngineEffect::GuiSearch {
-                        ticket,
-                        query,
-                        source,
-                        config: self.config.effective_search(),
-                    });
-                    RemoteResponse::ok("searching".to_string())
+                    RemoteResponse::err("session_required")
                 }
             }
             RemoteCommand::PlayTracks { video_ids } => {
-                let response = self.play_tracks(video_ids).await;
-                effects.extend(self.maybe_autoplay_extend());
+                let response = self.play_tracks(requester.as_ref(), video_ids).await;
+                if response.ok {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
                 response
             }
             RemoteCommand::EnqueueTracks { video_ids } => {
-                let response = self.enqueue_tracks(video_ids).await;
-                effects.extend(self.maybe_autoplay_extend());
+                let response = self.enqueue_tracks(requester.as_ref(), video_ids).await;
+                if response.ok {
+                    effects.extend(self.maybe_autoplay_extend());
+                }
                 response
             }
             RemoteCommand::Apply { change } => {
@@ -460,13 +556,8 @@ impl DaemonEngine {
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
             }
-            // The serve loop intercepts this command because the response must stay pending while
-            // a blocking writer runs and because the engine intentionally owns no playlists.
-            RemoteCommand::ExportPersonalData { .. } => {
-                RemoteResponse::err("invalid_export_dispatch")
-            }
         };
-        (response, shutdown, effects)
+        self.finish_remote_persistence(response, shutdown, effects)
     }
 
     /// Route one GUI `apply { group.field = value }` onto the live config. Fields that
@@ -621,9 +712,15 @@ impl DaemonEngine {
                 .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok())
             {
                 Some(preset) => {
+                    let previous_preset = self.config.eq_preset;
+                    let previous_bands = self.config.eq_bands;
                     self.config.eq_preset = preset;
                     self.config.eq_bands = None; // preset gains take over
-                    self.apply_audio_filter();
+                    if let Err(error) = self.apply_audio_filter() {
+                        self.config.eq_preset = previous_preset;
+                        self.config.eq_bands = previous_bands;
+                        return (self.reject_player_command(error), Vec::new());
+                    }
                     self.save_config("daemon eq preset");
                     ok(self)
                 }
@@ -631,9 +728,15 @@ impl DaemonEngine {
             },
             ("eq", "bands") => match serde_json::from_value::<[f64; 10]>(value.clone()) {
                 Ok(bands) => {
+                    let previous_preset = self.config.eq_preset;
+                    let previous_bands = self.config.eq_bands;
                     self.config.eq_bands = Some(bands);
                     self.config.eq_preset = crate::eq::EqPreset::Custom;
-                    self.apply_audio_filter();
+                    if let Err(error) = self.apply_audio_filter() {
+                        self.config.eq_preset = previous_preset;
+                        self.config.eq_bands = previous_bands;
+                        return (self.reject_player_command(error), Vec::new());
+                    }
                     self.save_config("daemon eq bands");
                     ok(self)
                 }
@@ -878,23 +981,40 @@ impl DaemonEngine {
     }
 
     /// Re-send the current audio filter chain (EQ + normalize) to the live player.
-    fn apply_audio_filter(&mut self) {
+    fn apply_audio_filter(&self) -> Result<(), EngineError> {
         let af = self.current_audio_filter();
-        if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::SetAudioFilter(af));
-        }
+        self.send_player_command_if_active("set_audio_filter", PlayerCmd::SetAudioFilter(af))
     }
 
-    /// Record a completed GUI search so `play_tracks`/`enqueue_tracks` can address its
-    /// rows by bare `video_id`. Wholesale replace: the GUI acts on what it shows.
-    pub fn index_gui_search(&mut self, groups: &[crate::api::GuiSearchGroup]) {
-        self.gui_search_index.clear();
-        for group in groups {
-            for song in &group.songs {
-                self.gui_search_index
-                    .insert(song.video_id.clone(), song.clone());
-            }
-        }
+    pub(crate) fn gui_search_is_current(&self, requester: &RequesterKey, ticket: u64) -> bool {
+        self.gui_search_index.is_current(requester, ticket)
+    }
+
+    pub(crate) fn complete_gui_search(
+        &mut self,
+        requester: &RequesterKey,
+        ticket: u64,
+        groups: &[crate::api::GuiSearchGroup],
+    ) -> bool {
+        self.gui_search_index.complete(requester, ticket, groups)
+    }
+
+    #[cfg(test)]
+    fn index_gui_search(
+        &mut self,
+        requester: &RequesterKey,
+        groups: &[crate::api::GuiSearchGroup],
+    ) {
+        assert_eq!(
+            self.gui_search_index.begin(
+                requester,
+                0,
+                "test-index",
+                crate::search_source::SearchSource::All,
+            ),
+            GuiSearchAdmission::Start
+        );
+        assert!(self.gui_search_index.complete(requester, 0, groups));
     }
 
     /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
@@ -902,9 +1022,9 @@ impl DaemonEngine {
     /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
     /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
     /// buggy client or script can't enter the queue as a permanently-unplayable row.
-    fn resolve_video_id(&self, video_id: &str) -> Option<Song> {
-        if let Some(song) = self.gui_search_index.get(video_id) {
-            return Some(song.clone());
+    fn resolve_video_id(&self, requester: Option<&RequesterKey>, video_id: &str) -> Option<Song> {
+        if let Some(song) = requester.and_then(|key| self.gui_search_index.resolve(key, video_id)) {
+            return Some(song);
         }
         if let Some(song) = self
             .library
@@ -918,64 +1038,103 @@ impl DaemonEngine {
         crate::api::is_youtube_video_id(video_id).then(|| Song::remote(video_id, video_id, "", ""))
     }
 
-    async fn play_tracks(&mut self, mut video_ids: Vec<String>) -> RemoteResponse {
-        // Bound resolution/allocation work to the queue cap regardless of request size.
-        video_ids.truncate(REMOTE_MAX_TRACK_IDS);
-        let mut songs = video_ids.iter().filter_map(|id| self.resolve_video_id(id));
-        let Some(first) = songs.next() else {
-            return RemoteResponse::err("no_valid_tracks");
+    async fn play_tracks(
+        &mut self,
+        requester: Option<&RequesterKey>,
+        video_ids: Vec<String>,
+    ) -> RemoteResponse {
+        let songs = match self.resolve_video_ids_exact(requester, &video_ids) {
+            Ok(songs) => songs,
+            Err(reason) => return RemoteResponse::err(reason),
         };
-        let rest: Vec<Song> = songs.collect();
-        if !self.queue.play_now(first) {
+        if !self.queue.has_capacity_for(songs.len()) {
             return RemoteResponse::err("queue_full");
         }
-        if !rest.is_empty() {
-            self.queue.insert_next_many(rest);
-        }
-        self.save_session();
-        self.load_current()
+        let previous = self.queue.snapshot();
+        let expected = songs.len();
+        let added = self.queue.play_now_many(songs);
+        debug_assert_eq!(added, expected, "queue capacity was preflighted");
+        self.load_current_or_restore_queue(previous)
             .await
             .map(|_| RemoteResponse::status(self.status()))
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
     }
 
-    async fn enqueue_tracks(&mut self, mut video_ids: Vec<String>) -> RemoteResponse {
+    async fn enqueue_tracks(
+        &mut self,
+        requester: Option<&RequesterKey>,
+        video_ids: Vec<String>,
+    ) -> RemoteResponse {
         if video_ids.is_empty() {
             return RemoteResponse::err("empty_selection");
         }
-        video_ids.truncate(REMOTE_MAX_TRACK_IDS);
-        let songs: Vec<Song> = video_ids
-            .iter()
-            .filter_map(|id| self.resolve_video_id(id))
-            .collect();
-        if songs.is_empty() {
-            return RemoteResponse::err("no_valid_tracks");
+        let songs = match self.resolve_video_ids_exact(requester, &video_ids) {
+            Ok(songs) => songs,
+            Err(reason) => return RemoteResponse::err(reason),
+        };
+        if !self.queue.has_capacity_for(songs.len()) {
+            return RemoteResponse::err("queue_full");
         }
+        let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
+        let expected = songs.len();
         let added = if self.config.effective_enqueue_next() && !was_idle {
             self.queue.insert_next_many(songs)
         } else {
             self.queue.extend(songs)
         };
-        if added == 0 {
-            return RemoteResponse::err("queue_full");
-        }
-        self.save_session();
+        debug_assert_eq!(added, expected, "queue capacity was preflighted");
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
             return self
-                .load_current()
+                .load_current_or_restore_queue(previous)
                 .await
                 .map(|_| RemoteResponse::status(self.status()))
                 .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
         }
+        self.save_session();
         RemoteResponse::status(self.status())
     }
 
+    fn resolve_video_ids_exact(
+        &self,
+        requester: Option<&RequesterKey>,
+        video_ids: &[String],
+    ) -> Result<Vec<Song>, &'static str> {
+        if video_ids.is_empty() {
+            return Err("empty_selection");
+        }
+        if video_ids.len() > REMOTE_MAX_TRACK_IDS {
+            return Err("too_many_tracks");
+        }
+        video_ids
+            .iter()
+            .map(|id| self.resolve_video_id(requester, id).ok_or("stale_results"))
+            .collect()
+    }
+
     pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
-        match event {
+        if let Some(event_generation) = event.file_generation() {
+            let current_generation = self
+                .player
+                .as_ref()
+                .map(|player| player.handle.current_file_generation());
+            if !self
+                .player
+                .as_ref()
+                .is_some_and(|player| player.handle.event_is_current(&event))
+            {
+                tracing::debug!(
+                    event_generation,
+                    ?current_generation,
+                    "ignored stale daemon audio terminal event"
+                );
+                return Vec::new();
+            }
+        }
+        match event.into_unscoped() {
             PlayerEvent::TimePos(t) => {
                 // Normalize at the mpv trust boundary (parity with the TUI reducer): a
                 // NaN/inf/negative time-pos must not reach the position clock or media session.
@@ -1020,6 +1179,15 @@ impl DaemonEngine {
                 self.advance_after_end().await
             }
             PlayerEvent::Error(error) => self.handle_playback_error(error).await,
+            PlayerEvent::TransportClosed(reason) => {
+                let Some(generation) = self.handle_transport_closed(reason) else {
+                    return Vec::new();
+                };
+                self.attempt_transport_recovery(generation).await
+            }
+            PlayerEvent::FileScoped { .. } => {
+                unreachable!("daemon player event was unscoped before reduction")
+            }
         }
     }
 
@@ -1192,8 +1360,13 @@ impl DaemonEngine {
             }
             MediaCommand::Next => {
                 if self.queue.peek_next().is_some() {
-                    self.record_outgoing(false);
-                    let _ = self.next_track().await;
+                    let outgoing = self.prepare_outgoing(false);
+                    let response = self.next_track().await;
+                    if response.ok
+                        && let Some(outgoing) = outgoing
+                    {
+                        self.commit_outgoing(outgoing);
+                    }
                     effects.extend(self.maybe_autoplay_extend());
                 }
             }
@@ -1217,10 +1390,7 @@ impl DaemonEngine {
                     {
                         return (false, effects);
                     }
-                    self.note_seek(pos);
-                    if let Some(player) = &self.player {
-                        player.handle.send(PlayerCmd::SeekAbsolute(pos));
-                    }
+                    let _ = self.seek_to(pos);
                 }
             }
             MediaCommand::SetShuffle(on) => {
@@ -1259,12 +1429,17 @@ impl DaemonEngine {
                 }
                 let speed = clamp_speed(rate);
                 if (speed - self.playback.speed).abs() > f64::EPSILON {
-                    self.playback.speed = speed;
-                    if let Some(player) = &self.player {
-                        player.handle.send(PlayerCmd::SetProperty {
+                    let delivery = self.send_player_command_if_active(
+                        "set_speed",
+                        PlayerCmd::SetProperty {
                             name: "speed".to_owned(),
                             value: Value::from(speed),
-                        });
+                        },
+                    );
+                    if let Err(error) = delivery {
+                        self.last_error = Some(error.to_string());
+                    } else {
+                        self.playback.speed = speed;
                     }
                 }
             }
@@ -1282,8 +1457,9 @@ impl DaemonEngine {
                         .unwrap_or_else(|| {
                             Song::remote(id.clone(), format!("YouTube {id}"), "", "")
                         });
+                    let previous = self.queue.snapshot();
                     if self.queue.play_now(song) {
-                        if let Err(e) = self.load_current().await {
+                        if let Err(e) = self.load_current_or_restore_queue(previous).await {
                             self.last_error = Some(e.to_string());
                             self.stop_playback();
                         }
@@ -1293,6 +1469,7 @@ impl DaemonEngine {
             }
             MediaCommand::Quit => {
                 self.stop_playback();
+                self.suppress_transport_recovery_for_shutdown();
                 self.save_session();
                 return (true, effects);
             }
@@ -1327,9 +1504,7 @@ impl DaemonEngine {
         if song.is_radio_station() {
             if like {
                 self.library.toggle_favorite(&song);
-                if let Err(e) = self.library.save() {
-                    tracing::warn!(error = %e, "failed to save daemon library");
-                }
+                self.save_library("daemon radio favorite");
             }
             return;
         }
@@ -1363,12 +1538,8 @@ impl DaemonEngine {
             self.signals
                 .toggle_dislike(&song.video_id, &artist_key, now);
         }
-        if let Err(e) = self.library.save() {
-            tracing::warn!(error = %e, "failed to save daemon library");
-        }
-        if let Err(e) = self.signals.save() {
-            tracing::warn!(error = %e, "failed to save daemon signals");
-        }
+        self.save_library("daemon media rating library");
+        self.save_signals("daemon media rating signals");
     }
 
     /// The v8 publisher's read view of this owner (the daemon analog of
@@ -1494,8 +1665,7 @@ impl DaemonEngine {
         }
     }
 
-    fn restore_last_session(&mut self) {
-        let cache = SessionCache::load();
+    fn restore_session_cache(&mut self, cache: SessionCache) {
         self.last_mode = cache.last_mode;
         self.inactive_normal_queue = cache.normal_queue.clone();
         self.inactive_radio_queue = cache.radio_queue.clone();
@@ -1519,7 +1689,11 @@ impl DaemonEngine {
     }
 
     async fn resume_session(&mut self) -> RemoteResponse {
-        self.restore_last_session();
+        let cache = SessionCache::load();
+        if let Err(error) = persistence_gate::current_recovery_status() {
+            return self.reject_remote_recovery(error);
+        }
+        self.restore_session_cache(cache);
         if self.queue.current().is_none() {
             return RemoteResponse::err("session_empty");
         }
@@ -1533,9 +1707,10 @@ impl DaemonEngine {
         if self.queue.is_empty() {
             return RemoteResponse::err("queue_empty");
         }
+        let previous = self.queue.snapshot();
         if self.queue.next(false).is_some() {
             return self
-                .load_current()
+                .load_current_or_restore_queue(previous)
                 .await
                 .map(|_| RemoteResponse::status(self.status()))
                 .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
@@ -1548,8 +1723,9 @@ impl DaemonEngine {
         if self.queue.is_empty() {
             return RemoteResponse::err("queue_empty");
         }
+        let previous = self.queue.snapshot();
         self.queue.prev();
-        self.load_current()
+        self.load_current_or_restore_queue(previous)
             .await
             .map(|_| RemoteResponse::status(self.status()))
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
@@ -1559,8 +1735,9 @@ impl DaemonEngine {
         if position >= self.queue.len() {
             return RemoteResponse::err("queue_index");
         }
+        let previous = self.queue.snapshot();
         self.queue.goto(position);
-        self.load_current()
+        self.load_current_or_restore_queue(previous)
             .await
             .map(|_| RemoteResponse::status(self.status()))
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
@@ -1585,14 +1762,14 @@ impl DaemonEngine {
         } else {
             None
         };
+        let previous = self.queue.snapshot();
         let current_changed = self.queue.remove_at(position).unwrap_or(false);
-        self.save_session();
 
         if current_changed {
             if let Some(next_pos) = next_pos_after_removal {
                 self.queue.goto(next_pos);
                 return self
-                    .load_current()
+                    .load_current_or_restore_queue(previous)
                     .await
                     .map(|_| RemoteResponse::status(self.status()))
                     .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
@@ -1600,6 +1777,7 @@ impl DaemonEngine {
             self.stop_playback();
         }
 
+        self.save_session();
         RemoteResponse::status(self.status())
     }
 
@@ -1616,10 +1794,10 @@ impl DaemonEngine {
                 .map(|_| RemoteResponse::status(self.status()))
                 .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
         }
-        self.playback.paused = !self.playback.paused;
-        if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::CyclePause);
+        if let Err(error) = self.send_active_player_command("cycle_pause", PlayerCmd::CyclePause) {
+            return self.reject_player_command(error);
         }
+        self.playback.paused = !self.playback.paused;
         RemoteResponse::status(self.status())
     }
 
@@ -1632,10 +1810,11 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
+        let previous = self.queue.snapshot();
         if !self.queue.play_now(song) {
             return RemoteResponse::err("queue_full");
         }
-        self.load_current()
+        self.load_current_or_restore_queue(previous)
             .await
             .map(|_| RemoteResponse::status(self.status()))
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
@@ -1650,6 +1829,7 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
+        let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
         let added = if self.config.effective_enqueue_next() && !was_idle {
@@ -1660,16 +1840,16 @@ impl DaemonEngine {
         if added == 0 {
             return RemoteResponse::err("queue_full");
         }
-        self.save_session();
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
             return self
-                .load_current()
+                .load_current_or_restore_queue(previous)
                 .await
                 .map(|_| RemoteResponse::status(self.status()))
                 .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
         }
+        self.save_session();
         RemoteResponse::status(self.status())
     }
 
@@ -1711,12 +1891,13 @@ impl DaemonEngine {
     }
 
     fn set_volume(&mut self, percent: i64) -> RemoteResponse {
-        self.playback.volume = percent.clamp(0, VOLUME_MAX);
-        if let Some(player) = &self.player {
-            player
-                .handle
-                .send(PlayerCmd::SetVolume(self.playback.volume));
+        let volume = percent.clamp(0, VOLUME_MAX);
+        if let Err(error) =
+            self.send_player_command_if_active("set_volume", PlayerCmd::SetVolume(volume))
+        {
+            return self.reject_player_command(error);
         }
+        self.playback.volume = volume;
         RemoteResponse::status(self.status())
     }
 
@@ -1730,10 +1911,12 @@ impl DaemonEngine {
         if let Some(d) = self.playback.duration {
             target = target.min(d);
         }
-        self.note_seek(target);
-        if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::SeekRelative(seconds));
+        if let Err(error) =
+            self.send_active_player_command("seek_relative", PlayerCmd::SeekRelative(seconds))
+        {
+            return self.reject_player_command(error);
         }
+        self.note_seek(target);
         RemoteResponse::status(self.status())
     }
 
@@ -1742,10 +1925,12 @@ impl DaemonEngine {
             return RemoteResponse::err("nothing_playing");
         }
         let target = crate::playback_policy::clamp_seek_target(pos, self.playback.duration);
-        self.note_seek(target);
-        if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::SeekAbsolute(target));
+        if let Err(error) =
+            self.send_active_player_command("seek_absolute", PlayerCmd::SeekAbsolute(target))
+        {
+            return self.reject_player_command(error);
         }
+        self.note_seek(target);
         RemoteResponse::status(self.status())
     }
 
@@ -1758,8 +1943,7 @@ impl DaemonEngine {
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
         let on = state.resolve(self.streaming);
-        // Music-mode invariant (mirrors the App reducer for parity): reject the enable before
-        // changing or persisting state, and without emitting any engine/player effects.
+        // Mirror the App reducer exactly and preserve the caller's intent as a structured error.
         if on && self.queue.repeat.is_on() {
             return (
                 RemoteResponse::err("incompatible_playback_modes"),
@@ -1773,9 +1957,7 @@ impl DaemonEngine {
         } else {
             self.streaming_pending = false;
         }
-        if let Err(e) = self.config.save() {
-            tracing::warn!(error = %e, "failed to save daemon autoplay streaming setting");
-        }
+        self.save_config("daemon autoplay streaming setting");
         let effects = if self.streaming {
             self.force_autoplay_extend()
         } else {
@@ -1814,14 +1996,18 @@ impl DaemonEngine {
             }
             RemoteSettingChange::Speed { tenths } => {
                 let speed = clamp_speed(f64::from(tenths) / 10.0);
-                self.config.speed = Some(speed);
-                self.playback.speed = speed;
-                if let Some(player) = &self.player {
-                    player.handle.send(PlayerCmd::SetProperty {
+                let delivery = self.send_player_command_if_active(
+                    "set_speed",
+                    PlayerCmd::SetProperty {
                         name: "speed".to_owned(),
                         value: Value::from(speed),
-                    });
+                    },
+                );
+                if let Err(error) = delivery {
+                    return (self.reject_player_command(error), Vec::new());
                 }
+                self.config.speed = Some(speed);
+                self.playback.speed = speed;
                 self.save_config("daemon speed setting");
                 (RemoteResponse::status(self.status()), Vec::new())
             }
@@ -1831,10 +2017,11 @@ impl DaemonEngine {
                 (RemoteResponse::status(self.status()), Vec::new())
             }
             RemoteSettingChange::Normalize { value } => {
+                let previous = self.config.normalize;
                 self.config.normalize = Some(value);
-                let af = self.current_audio_filter();
-                if let Some(player) = &self.player {
-                    player.handle.send(PlayerCmd::SetAudioFilter(af));
+                if let Err(error) = self.apply_audio_filter() {
+                    self.config.normalize = previous;
+                    return (self.reject_player_command(error), Vec::new());
                 }
                 self.save_config("daemon normalize setting");
                 (RemoteResponse::status(self.status()), Vec::new())
@@ -1852,12 +2039,6 @@ impl DaemonEngine {
             RemoteSettingChange::RadioMode { .. } => {
                 (RemoteResponse::err("radio_mode_unavailable"), Vec::new())
             }
-        }
-    }
-
-    fn save_config(&self, context: &str) {
-        if let Err(e) = self.config.save() {
-            tracing::warn!(error = %e, "failed to save {context}");
         }
     }
 
@@ -1963,52 +2144,17 @@ impl DaemonEngine {
 
     async fn load_current(&mut self) -> Result<(), EngineError> {
         self.ensure_player().await?;
-        self.load_current_loaded();
-        Ok(())
-    }
-
-    fn load_current_loaded(&mut self) {
-        let Some(song) = self.queue.current().cloned() else {
-            self.stop_playback();
-            return;
-        };
-        let target = match song.playback_target_checked() {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(
-                    video_id = %song.video_id,
-                    title = %song.title,
-                    artist = %song.artist,
-                    %error,
-                    "refusing to load track with invalid playback URL"
-                );
-                self.last_error = Some(format!("invalid playback URL: {error}"));
-                self.stop_playback();
-                return;
-            }
-        };
-        self.playback.paused = false;
-        self.playback.time_pos = None;
-        self.playback.time_pos_at = None;
-        self.bump_position_epoch(PositionEpochReason::TrackRestart);
-        self.playback.duration = None;
-        self.loaded_video_id = Some(song.video_id.clone());
-        self.library.record_play(&song);
-        if let Err(e) = self.library.save() {
-            tracing::warn!(error = %e, "failed to save daemon library history");
-        }
-        self.save_session();
-        if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::Load(target));
-        }
+        self.load_current_loaded()
     }
 
     fn stop_playback(&mut self) {
         if let Some(player) = self.player.take() {
-            player.handle.send(PlayerCmd::Stop);
+            record_player_delivery("stop", player.handle.send(PlayerCmd::Stop));
         }
         self.reset_idle_playback();
         self.loaded_video_id = None;
+        self.transport_recovery = None;
+        self.transport_auto_recovery_armed = true;
     }
 
     fn reset_idle_playback(&mut self) {
@@ -2028,6 +2174,12 @@ impl DaemonEngine {
         if self.player.is_some() {
             return Ok(());
         }
+
+        #[cfg(test)]
+        if let Some(player) = self.test_player_starts.pop_front() {
+            return self.configure_player_runtime(player);
+        }
+
         let emit = Arc::clone(&self.player_emit);
         let (handle, guard) = player::spawn(
             move |event| (emit)(event),
@@ -2040,19 +2192,36 @@ impl DaemonEngine {
         .await
         .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;
 
-        handle.send(PlayerCmd::SetVolume(self.playback.volume));
+        self.configure_player_runtime(PlayerRuntime {
+            handle,
+            _guard: Some(guard),
+        })
+    }
+
+    fn configure_player_runtime(&mut self, player: PlayerRuntime) -> Result<(), EngineError> {
+        require_player_delivery(
+            "volume",
+            player
+                .handle
+                .send(PlayerCmd::SetVolume(self.playback.volume)),
+        )?;
         let speed = self.playback.speed;
         if (speed - 1.0).abs() > f64::EPSILON {
-            handle.send(PlayerCmd::SetProperty {
-                name: "speed".to_owned(),
-                value: Value::from(speed),
-            });
+            require_player_delivery(
+                "speed",
+                player.handle.send(PlayerCmd::SetProperty {
+                    name: "speed".to_owned(),
+                    value: Value::from(speed),
+                }),
+            )?;
         }
-        handle.send(PlayerCmd::SetAudioFilter(self.current_audio_filter()));
-        self.player = Some(PlayerRuntime {
-            handle,
-            _guard: guard,
-        });
+        require_player_delivery(
+            "audio_filter",
+            player
+                .handle
+                .send(PlayerCmd::SetAudioFilter(self.current_audio_filter())),
+        )?;
+        self.player = Some(player);
         Ok(())
     }
 
@@ -2063,271 +2232,16 @@ impl DaemonEngine {
         )
         .unwrap_or_default()
     }
-
-    fn maybe_autoplay_extend(&mut self) -> Vec<EngineEffect> {
-        self.autoplay_extend(false)
-    }
-
-    fn force_autoplay_extend(&mut self) -> Vec<EngineEffect> {
-        self.autoplay_extend(true)
-    }
-
-    fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
-        if !self.streaming || self.streaming_pending {
-            return Vec::new();
-        }
-        if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {
-            return Vec::new();
-        }
-        if !force
-            && self
-                .last_extend
-                .is_some_and(|t| t.elapsed() < AUTOPLAY_COOLDOWN)
-        {
-            return Vec::new();
-        }
-        let Some(cur) = self.queue.current() else {
-            return Vec::new();
-        };
-        if cur.is_radio_station() {
-            return Vec::new();
-        }
-
-        let seed = format!("{} — {}", cur.title, cur.artist);
-        let seed_video_id = cur.video_id.clone();
-        let exclude_ids = self.streaming_exclude_ids(&seed_video_id);
-        self.last_extend = Some(Instant::now());
-        self.streaming_pending = true;
-        vec![EngineEffect::StreamingFallback {
-            seed,
-            seed_video_id,
-            exclude_ids,
-            limit: STREAMING_POOL_COUNT,
-            mode: self.config.streaming.mode,
-            config: self.config.effective_search(),
-        }]
-    }
-
-    pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
-        // Shared with the TUI App reducer — one implementation, so the two owners can never
-        // drift on which already-heard/queued tracks an autoplay top-up excludes.
-        crate::streaming::exclude_ids(
-            &self.config.streaming,
-            &self.queue,
-            &self.library,
-            seed_video_id,
-        )
-    }
-
-    fn plan_local_streaming(
-        &mut self,
-        seed_video_id: &str,
-        mut candidates: Vec<(Song, CandidateSource)>,
-    ) -> Vec<Song> {
-        let st = self.build_station_state(seed_video_id);
-        let cooc = Cooc::build(self.signals.play_log(), &self.config.streaming.cooc);
-        self.augment_streaming_candidates(seed_video_id, &mut candidates);
-        let pool = streaming::pool_from_tagged(candidates);
-        streaming::plan_local(
-            pool,
-            &st,
-            &self.signals,
-            &cooc,
-            &self.config.streaming,
-            STREAMING_FALLBACK_COUNT,
-            signals::unix_now(),
-        )
-    }
-
-    async fn extend_sanitized_streaming(
-        &mut self,
-        seed_video_id: &str,
-        songs: Vec<Song>,
-        fallback: &[Song],
-    ) -> Vec<EngineEffect> {
-        let sanitized = streaming::sanitize_final_picks(
-            songs,
-            fallback,
-            self.config.streaming.mode,
-            &self.config.streaming,
-        );
-        if !sanitized.is_empty()
-            && streaming::final_preflight_needed(
-                &sanitized,
-                fallback,
-                self.config.streaming.mode,
-                &self.config.streaming,
-            )
-        {
-            self.streaming_pending = true;
-            return vec![EngineEffect::StreamingPreflight {
-                seed_video_id: seed_video_id.to_owned(),
-                picks: sanitized,
-                fallback: fallback.to_vec(),
-                mode: self.config.streaming.mode,
-                config: self.config.streaming.clone(),
-            }];
-        }
-        self.extend_queue_from_streaming(sanitized).await
-    }
-
-    async fn extend_queue_from_streaming(&mut self, songs: Vec<Song>) -> Vec<EngineEffect> {
-        let added = self.queue.extend(songs);
-        if added == 0 {
-            self.note_streaming_failure("autoplay streaming found no new tracks".to_owned());
-            return Vec::new();
-        }
-        self.consecutive_streaming_failures = 0;
-        self.save_session();
-        if self.loaded_video_id.is_none() && self.queue.remaining() > 0 {
-            self.queue.next(false);
-            if let Err(e) = self.load_current().await {
-                self.last_error = Some(e.to_string());
-                self.stop_playback();
-            }
-        }
-        Vec::new()
-    }
-
-    fn note_streaming_failure(&mut self, status: String) {
-        self.last_error = Some(status);
-        if self.streaming {
-            self.consecutive_streaming_failures =
-                self.consecutive_streaming_failures.saturating_add(1);
-            if self.consecutive_streaming_failures >= AUTOPLAY_MAX_FAILURES {
-                self.streaming = false;
-                self.streaming_pending = false;
-                self.config.autoplay_streaming = Some(false);
-                if let Err(e) = self.config.save() {
-                    tracing::warn!(error = %e, "failed to save daemon streaming circuit-breaker");
-                }
-            }
-        }
-    }
-
-    fn augment_streaming_candidates(
-        &self,
-        seed_video_id: &str,
-        candidates: &mut Vec<(Song, CandidateSource)>,
-    ) {
-        let mode = self.config.streaming.mode;
-        let profile = mode.profile(&self.config.streaming);
-        let seed_artist = self.streaming_seed_artist_key(seed_video_id);
-        let mut seen: HashSet<String> = candidates
-            .iter()
-            .map(|(song, _)| song.video_id.clone())
-            .collect();
-        seen.extend(
-            self.queue
-                .ordered_iter()
-                .filter(|song| !song.is_radio_station())
-                .map(|song| song.video_id.clone()),
-        );
-        seen.insert(seed_video_id.to_owned());
-
-        let (liked_cap, history_cap) = match mode {
-            StreamingMode::Focused => (14, 8),
-            StreamingMode::Balanced => (10, 14),
-            StreamingMode::Discovery => (6, 24),
-        };
-
-        let mut favorites: Vec<Song> = self
-            .library
-            .favorites
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .cloned()
-            .collect();
-        favorites.sort_by(|a, b| {
-            local_neighbor_score(b, &seed_artist, &self.signals).total_cmp(&local_neighbor_score(
-                a,
-                &seed_artist,
-                &self.signals,
-            ))
-        });
-        for song in favorites.into_iter().take(liked_cap) {
-            if seen.insert(song.video_id.clone()) {
-                candidates.push((song, CandidateSource::LikedNeighbor));
-            }
-        }
-
-        let mut added_history = 0usize;
-        for song in self
-            .library
-            .history
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .skip(profile.history_block_horizon)
-        {
-            if seen.insert(song.video_id.clone()) {
-                candidates.push((song.clone(), CandidateSource::HistoryCooc));
-                added_history += 1;
-                if added_history >= history_cap {
-                    break;
-                }
-            }
-        }
-    }
-
-    fn build_station_state(&self, seed_video_id: &str) -> StationState {
-        let profile = self.config.streaming.mode.profile(&self.config.streaming);
-        // Single-sourced with the App reducer so the two owners can't drift.
-        let (recent_track_ids, recent_artist_keys) =
-            streaming::station_recent_context(&self.queue, &self.library, &profile);
-
-        let favorite_artist_keys: HashSet<String> = self
-            .library
-            .favorites
-            .iter()
-            .filter(|s| !s.is_radio_station())
-            .map(|s| signals::normalize_artist(&s.artist))
-            .collect();
-        let skip_streak = self.streaming_skip_streak();
-        let temporary_novelty_boost =
-            if self.config.streaming.mode == StreamingMode::Focused && skip_streak >= 2 {
-                0.12
-            } else {
-                0.0
-            };
-        let temporary_familiarity_boost =
-            if self.config.streaming.mode == StreamingMode::Discovery && skip_streak >= 2 {
-                0.20
-            } else {
-                0.0
-            };
-
-        StationState {
-            mode: self.config.streaming.mode,
-            seed_video_id: seed_video_id.to_owned(),
-            seed_artist_key: self.streaming_seed_artist_key(seed_video_id),
-            recent_track_ids,
-            recent_artist_keys,
-            banned_track_ids: HashSet::new(),
-            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
-            favorite_artist_keys,
-            session_artist_bias: self.session_artist_bias(),
-            temporary_novelty_boost,
-            temporary_familiarity_boost,
-        }
-    }
-
-    fn streaming_seed_artist_key(&self, seed_video_id: &str) -> String {
-        if let Some(cur) = self.queue.current()
-            && cur.video_id == seed_video_id
-            && !cur.is_radio_station()
-        {
-            return signals::normalize_artist(&cur.artist);
-        }
-        self.library
-            .history
-            .iter()
-            .filter(|s| !s.is_radio_station())
-            .find(|s| s.video_id == seed_video_id)
-            .map(|s| signals::normalize_artist(&s.artist))
-            .unwrap_or_default()
-    }
 }
 
+#[cfg(test)]
+mod delivery_tests;
+#[cfg(test)]
+mod gui_search_tests;
+#[cfg(test)]
+mod persistence_gate_tests;
+#[cfg(test)]
+mod transport_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2347,10 +2261,11 @@ mod tests {
         song
     }
 
-    fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
+    pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         let mut queue = Queue::default();
         queue.set(ids.iter().map(|id| song(id)).collect(), 0);
         DaemonEngine {
+            maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
             player: None,
             player_emit: Arc::new(|_| {}),
             queue,
@@ -2368,11 +2283,19 @@ mod tests {
             signals: Signals::default(),
             station: StationStore::default(),
             loaded_video_id: None,
+            transport_recovery: None,
+            transport_recovery_generation: 0,
+            transport_auto_recovery_armed: true,
+            test_player_starts: VecDeque::new(),
             streaming: false,
             streaming_pending: false,
             last_extend: None,
             consecutive_streaming_failures: 0,
             last_error: None,
+            remote_persistence_write_failed: false,
+            remote_persistence_error: None,
+            remote_persistence_command_active: false,
+            remote_persistence_read_only: false,
             consecutive_play_errors: 0,
             heal_pending: None,
             heal_attempted: HashSet::new(),
@@ -2383,7 +2306,61 @@ mod tests {
             inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
-            gui_search_index: std::collections::HashMap::new(),
+            gui_search_index: GuiSearchIndex::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_engine_aborts_maintainer_instead_of_detaching() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let mut engine = engine_with_queue(&[]);
+        engine.maintainer = crate::util::background_task::BackgroundTask::spawn(
+            "test daemon maintainer",
+            async move {
+                struct MarkDrop(Option<tokio::sync::oneshot::Sender<()>>);
+                impl Drop for MarkDrop {
+                    fn drop(&mut self) {
+                        if let Some(tx) = self.0.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+                let _mark = MarkDrop(Some(dropped_tx));
+                started_tx.send(()).unwrap();
+                std::future::pending::<()>().await;
+            },
+        );
+        started_rx.await.unwrap();
+
+        drop(engine);
+
+        tokio::time::timeout(Duration::from_millis(100), dropped_rx)
+            .await
+            .expect("engine drop must cancel maintainer")
+            .unwrap();
+    }
+
+    pub(super) fn install_accepting_player(
+        engine: &mut DaemonEngine,
+    ) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        engine.player = Some(PlayerRuntime {
+            handle: PlayerHandle::test_handle(tx),
+            _guard: None,
+        });
+        rx
+    }
+
+    fn gui_change(
+        group: &str,
+        field: &str,
+        value: serde_json::Value,
+    ) -> crate::remote::proto::GuiSettingChange {
+        crate::remote::proto::GuiSettingChange {
+            group: group.to_owned(),
+            field: field.to_owned(),
+            value,
         }
     }
 
@@ -2429,18 +2406,6 @@ mod tests {
                 engine.last_error.as_deref(),
                 Some("existing playback failure")
             );
-        }
-    }
-
-    fn gui_change(
-        group: &str,
-        field: &str,
-        value: serde_json::Value,
-    ) -> crate::remote::proto::GuiSettingChange {
-        crate::remote::proto::GuiSettingChange {
-            group: group.to_owned(),
-            field: field.to_owned(),
-            value,
         }
     }
 
@@ -2504,6 +2469,10 @@ mod tests {
         assert_eq!(engine.config.autoplay_on_start, Some(true));
         assert_eq!(engine.config.mouse_wheel_volume, Some(true));
         assert_eq!(engine.config.media_controls, Some(false));
+        assert!(!super::super::daemon_media_enabled(&engine, true));
+        apply_gui_ok(&mut engine, "playback", "media_controls", json!(true));
+        assert!(super::super::daemon_media_enabled(&engine, true));
+        assert!(!super::super::daemon_media_enabled(&engine, false));
         assert_eq!(engine.playback.volume, VOLUME_MAX);
         assert!(engine.queue.shuffle);
 
@@ -2654,6 +2623,7 @@ mod tests {
     #[test]
     fn gui_search_index_resolution_prefers_visible_rows_then_library_then_safe_fallback() {
         let mut engine = engine_with_queue(&[]);
+        let requester = RequesterKey::new(1, Some("page-a".to_owned()));
         let searched = Song::from_source(
             crate::search_source::SearchSource::Jamendo,
             "jam-1",
@@ -2665,14 +2635,18 @@ mod tests {
                 url: "https://cdn.example/audio.mp3".to_owned(),
             },
         );
-        engine.index_gui_search(&[crate::api::GuiSearchGroup {
-            source: crate::search_source::SearchSource::Jamendo,
-            songs: vec![searched.clone()],
-            error: None,
-        }]);
+        engine.index_gui_search(
+            &requester,
+            &[crate::api::GuiSearchGroup {
+                source: crate::search_source::SearchSource::Jamendo,
+                songs: vec![searched.clone()],
+                error: None,
+            }],
+        );
+        let searched_row_id = crate::api::gui_search_row_id(&searched);
         assert_eq!(
             engine
-                .resolve_video_id(&searched.video_id)
+                .resolve_video_id(Some(&requester), &searched_row_id)
                 .unwrap()
                 .watch_url(),
             "https://cdn.example/audio.mp3"
@@ -2680,12 +2654,21 @@ mod tests {
 
         engine.library.favorites.push(song("dQw4w9WgXcQ"));
         assert_eq!(
-            engine.resolve_video_id("dQw4w9WgXcQ").unwrap().title,
+            engine
+                .resolve_video_id(Some(&requester), "dQw4w9WgXcQ")
+                .unwrap()
+                .title,
             "title-dQw4w9WgXcQ"
         );
-        let fallback = engine.resolve_video_id("TAfHyXrULiM").unwrap();
+        let fallback = engine
+            .resolve_video_id(Some(&requester), "TAfHyXrULiM")
+            .unwrap();
         assert_eq!(fallback.title, "TAfHyXrULiM");
-        assert!(engine.resolve_video_id("bad/not/video").is_none());
+        assert!(
+            engine
+                .resolve_video_id(Some(&requester), "bad/not/video")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2729,6 +2712,7 @@ mod tests {
     #[tokio::test]
     async fn media_commands_and_snapshot_mutate_only_supported_headless_state() {
         let mut engine = engine_with_queue(&["seed", "next"]);
+        let _player_rx = install_accepting_player(&mut engine);
         engine.loaded_video_id = Some("seed".to_owned());
         engine.playback.paused = false;
         engine.playback.time_pos = Some(10.0);
@@ -2962,12 +2946,16 @@ mod tests {
         assert_eq!(response.reason.as_deref(), Some("query_too_long"));
         assert!(effects.is_empty());
 
+        let requester = RequesterKey::new(1, Some("engine-page".to_owned()));
         let (response, _, effects) = engine
-            .handle_remote(RemoteCommand::RunSearch {
-                ticket: 3,
-                query: "  city pop  ".to_owned(),
-                source: crate::search_source::SearchSource::SoundCloud,
-            })
+            .handle_session_remote(
+                RemoteCommand::RunSearch {
+                    ticket: 3,
+                    query: "  city pop  ".to_owned(),
+                    source: crate::search_source::SearchSource::SoundCloud,
+                },
+                requester,
+            )
             .await;
         assert!(response.ok);
         assert!(matches!(
@@ -2997,11 +2985,20 @@ mod tests {
         assert!(response.ok);
         assert!(engine.config.gemini_api_key.is_none());
 
+        engine.transport_recovery = Some(TransportRecovery {
+            video_id: "queued-before-quit".to_owned(),
+            paused: false,
+            generation: 9,
+            attempts: 0,
+        });
+        engine.transport_auto_recovery_armed = true;
         let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::Quit).await;
         assert!(response.ok);
         assert!(shutdown);
         assert!(effects.is_empty());
         assert!(engine.loaded_video_id.is_none());
+        assert!(engine.transport_recovery.is_none());
+        assert!(!engine.transport_auto_recovery_armed);
     }
 
     #[tokio::test]
@@ -3035,6 +3032,7 @@ mod tests {
 
         engine.streaming = false;
         engine.queue.repeat = crate::queue::Repeat::All;
+        engine.config.autoplay_streaming = Some(false);
         let (response, _, effects) = engine
             .handle_remote(RemoteCommand::Streaming {
                 state: ToggleState::On,
@@ -3048,12 +3046,13 @@ mod tests {
         );
         assert!(effects.is_empty());
         assert!(!engine.streaming);
-        assert_ne!(engine.config.autoplay_streaming, Some(true));
+        assert_eq!(engine.config.autoplay_streaming, Some(false));
     }
 
     #[tokio::test]
     async fn media_commands_ignore_invalid_or_disabled_operations() {
         let mut engine = engine_with_queue(&["seed"]);
+        let _player_rx = install_accepting_player(&mut engine);
         engine.loaded_video_id = Some("seed".to_owned());
         engine.playback.paused = false;
         engine.playback.time_pos = Some(5.0);
@@ -3080,10 +3079,19 @@ mod tests {
         assert!(engine.playback.paused);
         assert_eq!(engine.playback.position_epoch, epoch);
 
+        engine.transport_recovery = Some(TransportRecovery {
+            video_id: "queued-before-media-quit".to_owned(),
+            paused: false,
+            generation: 11,
+            attempts: 0,
+        });
+        engine.transport_auto_recovery_armed = true;
         let (shutdown, effects) = engine.handle_media(crate::media::MediaCommand::Quit).await;
         assert!(shutdown);
         assert!(effects.is_empty());
         assert!(engine.loaded_video_id.is_none());
+        assert!(engine.transport_recovery.is_none());
+        assert!(!engine.transport_auto_recovery_armed);
     }
 
     #[tokio::test]
@@ -3276,19 +3284,20 @@ mod tests {
         assert_eq!(resp.reason.as_deref(), Some("key_too_long"));
         assert!(engine.config.gemini_api_key.is_none());
 
-        // A request of only bogus (non-YouTube, unknown) ids resolves to nothing.
+        // A request containing an unknown row is rejected as an indivisible stale selection.
         let (resp, _, _) = engine
             .handle_remote(RemoteCommand::EnqueueTracks {
                 video_ids: vec!["not-a-valid-id".into(), "also/bad".into()],
             })
             .await;
         assert!(!resp.ok);
-        assert_eq!(resp.reason.as_deref(), Some("no_valid_tracks"));
+        assert_eq!(resp.reason.as_deref(), Some("stale_results"));
     }
 
     #[tokio::test]
     async fn remote_seek_to_is_clamped_when_duration_unknown() {
         let mut engine = engine_with_queue(&["seed"]);
+        let _player_rx = install_accepting_player(&mut engine);
         engine.loaded_video_id = Some("seed".to_owned());
         engine.playback.duration = None; // live / not-yet-probed
         let (resp, _, _) = engine

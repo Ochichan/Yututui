@@ -40,6 +40,9 @@ export class PlaylistsStore {
   createOpen = $state(false);
   deleteTarget = $state<PlaylistSummary | null>(null);
   addTarget = $state<TrackModel | null>(null);
+  creating = $state(false);
+  deleting = $state(false);
+  adding = $state(false);
 
   #seq = 0;
   readonly #client: Client;
@@ -81,11 +84,15 @@ export class PlaylistsStore {
   cancelCreate(): void {
     this.createOpen = false;
   }
-  submitCreate(name: string): void {
+  async submitCreate(name: string): Promise<boolean> {
     const n = name.trim();
-    if (!n) return;
-    this.#client.cmd('playlist_create', { name: n });
+    if (!n || this.creating) return false;
+    this.creating = true;
+    const result = await this.#client.cmd('playlist_create', { name: n });
+    this.creating = false;
+    if (!result.ok) return false;
     this.createOpen = false;
+    return true;
   }
 
   beginDelete(p: PlaylistSummary): void {
@@ -94,10 +101,13 @@ export class PlaylistsStore {
   cancelDelete(): void {
     this.deleteTarget = null;
   }
-  confirmDelete(): void {
+  async confirmDelete(): Promise<void> {
     const p = this.deleteTarget;
-    if (!p) return;
-    this.#client.cmd('playlist_delete', { playlist_id: p.id });
+    if (!p || this.deleting) return;
+    this.deleting = true;
+    const result = await this.#client.cmd('playlist_delete', { playlist_id: p.id });
+    this.deleting = false;
+    if (!result.ok || this.deleteTarget?.id !== p.id) return;
     if (this.detail?.id === p.id) this.closeDetail();
     this.deleteTarget = null;
   }
@@ -109,10 +119,16 @@ export class PlaylistsStore {
     this.addTarget = null;
   }
   /** Add the pending track to a playlist and dismiss the picker. */
-  addTo(playlistId: string): void {
+  async addTo(playlistId: string): Promise<void> {
     const t = this.addTarget;
-    if (!t) return;
-    this.#client.cmd('playlist_add_tracks', { playlist_id: playlistId, video_ids: [t.video_id] });
+    if (!t || this.adding) return;
+    this.adding = true;
+    const result = await this.#client.cmd('playlist_add_tracks', {
+      playlist_id: playlistId,
+      video_ids: [t.video_id],
+    });
+    this.adding = false;
+    if (!result.ok || this.addTarget?.video_id !== t.video_id) return;
     this.addTarget = null;
   }
 

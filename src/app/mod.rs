@@ -77,12 +77,25 @@ mod local_format;
 mod local_import;
 mod local_import_helpers;
 mod media_reducer;
+mod mode_transition;
 mod mouse;
 pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;
 mod playback_error;
 mod player;
+mod player_intent;
+pub use player_intent::{
+    PendingRemoteReply, PlayerCommit, PlayerControl, PlayerIntent, RemoteReplyPlan,
+};
+mod player_recovery;
+mod player_transport;
+mod track_load;
+mod track_transition;
+pub(in crate::app) use track_transition::QueueReplacementOptions;
+pub use track_transition::TrackTransitionPlan;
+mod video_transition;
+pub use video_transition::{VideoFinishPlan, VideoOpenPlan};
 pub(in crate::app) mod prefetch;
 pub use player::PlayerMsg;
 mod playlists_reducer;
@@ -92,6 +105,7 @@ mod remote_reducer;
 mod romanize;
 mod scrobble_reducer;
 mod search;
+mod settings_audio;
 mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;
@@ -113,6 +127,7 @@ pub(in crate::app) enum PositionEpochReason {
     RestoreSession,
     Seek,
     TrackRestart,
+    TransportRecovery,
     PlaybackCleared,
     Stop,
 }

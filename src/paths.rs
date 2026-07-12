@@ -6,7 +6,9 @@
 //!
 //! 1. An env override (`YTM_CONFIG_DIR` / `YTM_DATA_DIR` / `YTM_CACHE_DIR`) — used by the
 //!    CLI smoke test and the `verify` skill to run against a throwaway directory, and by
-//!    anyone who wants to relocate their stores.
+//!    anyone who wants to relocate their stores. In the unit-test build, only the test thread
+//!    which installed a scoped override through `test_util::env` can observe it; unrelated
+//!    parallel tests cannot escape their sandbox while that process-global variable is set.
 //! 2. Under `#[cfg(test)]`, a process-unique temp directory. In-crate tests drive real
 //!    `save()` calls (the daemon parity/engine tests persist the library and config while
 //!    exercising playback and settings commands); without this redirect those writes land
@@ -23,6 +25,13 @@ use std::path::PathBuf;
 /// `YTM_CONFIG_DIR` handling, so a literal `~` never creates a directory named `~`).
 /// Returns `None` when the variable is unset or blank.
 fn env_dir(name: &str) -> Option<PathBuf> {
+    // Unit tests share one process. Environment mutation is serialized by test_util, but path
+    // readers in unrelated test threads do not take that lock. Only expose an override to the
+    // thread which installed it; every parallel reader remains inside the process sandbox.
+    #[cfg(test)]
+    if !crate::test_util::env::scoped_mutation_active() {
+        return None;
+    }
     let raw = std::env::var(name).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -86,6 +95,25 @@ pub fn data_dir() -> Option<PathBuf> {
     }
 }
 
+/// The data directory containing the local-media index.
+///
+/// The default deliberately retains the historical `ytm-tui` application directory so existing
+/// indexes remain visible. An explicit data-directory override and the test sandbox follow the
+/// central `yututui` data domain like every other persistent store.
+pub fn local_index_data_dir() -> Option<PathBuf> {
+    if let Some(dir) = env_dir("YTM_DATA_DIR") {
+        return Some(dir);
+    }
+    #[cfg(test)]
+    {
+        Some(test_base().join("data"))
+    }
+    #[cfg(not(test))]
+    {
+        directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().to_path_buf())
+    }
+}
+
 /// The per-user **cache** directory (session resume snapshot, media artwork, art picker).
 /// `None` when unresolvable.
 pub fn cache_dir() -> Option<PathBuf> {
@@ -124,5 +152,29 @@ mod tests {
     fn config_data_cache_are_distinct_subdirs() {
         assert_ne!(config_dir(), data_dir());
         assert_ne!(data_dir(), cache_dir());
+    }
+
+    #[test]
+    fn local_index_uses_the_central_test_data_directory() {
+        assert_eq!(local_index_data_dir(), data_dir());
+    }
+
+    #[test]
+    fn scoped_override_does_not_escape_to_parallel_path_readers() {
+        let base = test_base();
+        let overridden = base.join("scoped-data-override");
+        let value = overridden.to_string_lossy().into_owned();
+
+        crate::test_util::env::with_var("YTM_DATA_DIR", Some(value.as_str()), || {
+            assert_eq!(data_dir(), Some(overridden.clone()));
+            assert_eq!(local_index_data_dir(), Some(overridden.clone()));
+
+            let parallel = std::thread::spawn(data_dir)
+                .join()
+                .expect("parallel path reader should not panic");
+            assert_eq!(parallel, Some(base.join("data")));
+        });
+
+        assert_eq!(data_dir(), Some(base.join("data")));
     }
 }

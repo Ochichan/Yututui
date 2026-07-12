@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::api::Song;
-use crate::app::{App, Cmd, Msg};
+use crate::app::{App, Cmd, Msg, PlayerControl};
 use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
@@ -34,6 +34,7 @@ use crate::remote::publish;
 use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
 use crate::signals::Signals;
 use crate::station::StationStore;
+use crate::util::delivery::DeliveryReceipt;
 
 use super::engine::{DaemonEngine, EngineState};
 
@@ -78,17 +79,43 @@ fn hermetic_pair() -> (App, DaemonEngine) {
     (app, engine)
 }
 
-/// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`).
+/// Admit every two-phase player intent emitted by a reducer turn, including intents emitted by
+/// an accepted commit. Other side effects remain outside this state-projection parity harness.
+fn admit_app_player_intents(app: &mut App, commands: Vec<Cmd>) {
+    let mut pending = std::collections::VecDeque::from(commands);
+    while let Some(command) = pending.pop_front() {
+        if let Cmd::PlayerControl(PlayerControl::Intent(intent)) = command {
+            pending.extend(crate::runtime::player_delivery::settle_player_intent(
+                app,
+                *intent,
+                Ok(DeliveryReceipt::Enqueued),
+            ));
+        }
+    }
+}
+
+/// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`) and
+/// deterministically model a player lane that accepts every typed intent.
 fn app_apply(app: &mut App, cmd: RemoteCommand) -> RemoteResponse {
     app_apply_with_cmds(app, cmd).0
 }
 
 fn app_apply_with_cmds(app: &mut App, cmd: RemoteCommand) -> (RemoteResponse, Vec<Cmd>) {
     let (tx, mut rx) = oneshot::channel();
-    let cmds = app.update(Msg::Remote(cmd, tx.into()));
+    let commands = app.update(Msg::Remote(cmd, tx.into()));
+    let commands = if commands
+        .iter()
+        .any(|command| matches!(command, Cmd::PlayerControl(PlayerControl::Intent(_))))
+    {
+        admit_app_player_intents(app, commands);
+        Vec::new()
+    } else {
+        commands
+    };
     (
-        rx.try_recv().expect("apply_remote replies synchronously"),
-        cmds,
+        rx.try_recv()
+            .expect("remote reply is ready after accepted player intents settle"),
+        commands,
     )
 }
 
@@ -225,15 +252,17 @@ fn assert_reply_before_player_event(
     assert!(rx.try_recv().is_err(), "{owner}: unexpected third frame");
 
     match reply {
-        SessionLine::Raw(bytes) => match serde_json::from_slice::<ServerFrame>(&bytes)
-            .unwrap_or_else(|error| panic!("{owner}: invalid reply frame: {error}"))
-        {
-            ServerFrame::Reply { id, resp } => {
-                assert_eq!(id, frame_id, "{owner}: wrong reply id");
-                assert!(resp.ok, "{owner}: mutation reply failed: {resp:?}");
+        SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => {
+            match serde_json::from_slice::<ServerFrame>(&bytes)
+                .unwrap_or_else(|error| panic!("{owner}: invalid reply frame: {error}"))
+            {
+                ServerFrame::Reply { id, resp } => {
+                    assert_eq!(id, frame_id, "{owner}: wrong reply id");
+                    assert!(resp.ok, "{owner}: mutation reply failed: {resp:?}");
+                }
+                other => panic!("{owner}: expected Reply first, got {other:?}"),
             }
-            other => panic!("{owner}: expected Reply first, got {other:?}"),
-        },
+        }
         SessionLine::Event { .. } => panic!("{owner}: Event overtook Reply"),
     }
     match event {
@@ -244,7 +273,7 @@ fn assert_reply_before_player_event(
         SessionLine::Event { topic, .. } => {
             panic!("{owner}: expected player event, got {topic:?}")
         }
-        SessionLine::Raw(bytes) => panic!(
+        SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => panic!(
             "{owner}: expected Event second, got {}",
             String::from_utf8_lossy(&bytes)
         ),
@@ -262,26 +291,33 @@ async fn persistent_v8_mutation_reply_precedes_event_for_both_owners() {
     let (app_hub, app_session, mut app_rx) = test_register(SessionTuning::default());
     let mut app_publisher = publish::Publisher::new(Arc::clone(&app_hub));
     app_publisher.observe(&app.core_view());
-    app_publisher.handle_subscribe(&app.core_view(), &app_session, 1, &[Topic::Player]);
+    app_publisher.handle_subscribe(&app.core_view(), &app_session, None, 1, &[Topic::Player]);
     while app_rx.try_recv().is_ok() {}
 
     let (engine_hub, engine_session, mut engine_rx) = test_register(SessionTuning::default());
     let mut engine_publisher = publish::Publisher::new(Arc::clone(&engine_hub));
     engine_publisher.observe(&engine.core_view());
-    engine_publisher.handle_subscribe(&engine.core_view(), &engine_session, 1, &[Topic::Player]);
+    engine_publisher.handle_subscribe(
+        &engine.core_view(),
+        &engine_session,
+        None,
+        1,
+        &[Topic::Player],
+    );
     while engine_rx.try_recv().is_ok() {}
 
     for turn in 0..64u64 {
         let volume = if turn % 2 == 0 { 23 } else { 77 };
         let frame_id = 100 + turn;
 
-        // Standalone TUI owner path: Msg::Remote completes the direct session reply inside
-        // App::update; runner.rs invokes Publisher::observe only after update/dispatch returns.
+        // Standalone TUI owner path: the runtime admits the typed player intent, whose commit
+        // completes the direct session reply before runner.rs observes the accepted state.
         let app_reply = test_command_reply(Arc::clone(&app_hub), app_session.clone(), frame_id);
-        let _effects = app.update(Msg::Remote(
+        let effects = app.update(Msg::Remote(
             RemoteCommand::SetVolume { percent: volume },
             app_reply,
         ));
+        admit_app_player_intents(&mut app, effects);
         app_publisher.observe(&app.core_view());
         assert_reply_before_player_event("tui", frame_id, &mut app_rx);
 

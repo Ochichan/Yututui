@@ -1,24 +1,32 @@
-//! Blocking disk work for the recorder, run off the main loop via `spawn_blocking`
-//! (mirrors `Cmd::Data(DataCmd::ScanDownloads)`). The reducer decides *what* to do
-//! (drop/keep/save); this
-//! module only moves bytes: size-stabilize the mpv temp file, copy it into the recordings
-//! folder, and best-effort tag it. Failures come back as [`RecorderEvent::SaveFailed`] and
-//! never panic the app.
+//! Blocking disk work for the radio recorder.
+//!
+//! Save requests cross a durable acceptance boundary before they enter Tokio's blocking pool.
+//! [`durable`] owns that journal, crash recovery, and the serialized final-name commit. Reducers
+//! still decide *what* to keep; this module only owns file lifetime and result reporting.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+mod durable;
 
-use crate::util::sanitize::sanitize_error_text;
+use std::path::PathBuf;
+use std::time::Instant;
 
-use super::ext_is_taggable;
+pub use durable::{AcceptedSave, RecoveryReport};
 
-/// A unit of disk work handed to `spawn_blocking`.
+/// A unit of disk work handed to the runtime's tracked blocking-task set.
 pub enum RecorderJob {
+    /// Wait for every exact mpv reply in one recorder transition. The runtime reports the
+    /// correlated outcome through [`RecorderEvent::TransitionResolved`].
+    AwaitTransition {
+        transition_id: u64,
+        close: Option<super::barrier::CommandBarrier>,
+        open: Option<super::barrier::CommandBarrier>,
+    },
     /// Copy a kept temp recording into the recordings folder and tag it.
     Save {
         /// Correlates the result back to the [`super::RecordedTrack`].
         id: u64,
         temp: PathBuf,
+        /// Stable cache-owned root used to discover accepted intents across destination changes.
+        temp_dir: PathBuf,
         final_dir: PathBuf,
         /// Sanitized base name (no extension).
         filename: String,
@@ -26,129 +34,145 @@ pub enum RecorderJob {
         title: Option<String>,
         artist: Option<String>,
         station: Option<String>,
+        /// Correlated acknowledgement of the final stream-record property command. `None` is
+        /// used by startup recovery and manual saves whose close was already acknowledged.
+        close_barrier: Option<super::barrier::CommandBarrier>,
+        /// Automatic Everything-mode work is subject to the durable spool ceilings. An explicit
+        /// Decide-mode Save remains available so the user can drain a kept local source.
+        automatic: bool,
+        /// Orderly shutdown may publish the single already-existing blocked source as an
+        /// automatic-origin journal without counting it as another live-recording admission.
+        bypass_limits: bool,
     },
     /// Delete a temp recording (too short, discarded, or evicted from history).
-    Discard { temp: PathBuf },
-    /// Wipe + recreate the temp dir at startup (nothing undecided survives a restart).
-    WipeTemp { dir: PathBuf },
+    Discard {
+        temp: PathBuf,
+        close_barrier: Option<super::barrier::CommandBarrier>,
+    },
+    /// Re-scan the durable spool after a blocked owner's terminal event reported no capacity.
+    /// Only this fresh correlated result may consume a later worker's positive capacity hint.
+    ProbeCapacity {
+        owner_id: u64,
+        temp_dir: PathBuf,
+        final_dir: PathBuf,
+    },
 }
 
-/// Result of a [`RecorderJob::Save`]. `Discard`/`WipeTemp` report nothing back.
+/// Result of a [`RecorderJob::Save`]. `Discard` reports nothing back.
+#[derive(Debug)]
 pub enum RecorderEvent {
-    Saved { id: u64, final_path: PathBuf },
-    SaveFailed { id: u64, error: String },
+    TransitionResolved {
+        transition_id: u64,
+        close: Option<Result<(), String>>,
+        open: Option<Result<(), String>>,
+    },
+    /// The runtime synchronously published and synced the Save journal before attempting worker
+    /// admission. From this point startup recovery owns the source even if shutdown wins.
+    SaveAccepted { id: u64 },
+    Saved {
+        id: u64,
+        final_path: PathBuf,
+        /// The destination is visible, but the journal/source remain owned by recovery until a
+        /// later retry proves the directory entry and removes the journal durably.
+        recovery_owned: bool,
+        /// The complete destination is visible, but syncing its directory entry failed. This is
+        /// a success (retrying would create a duplicate) with an observable durability warning.
+        durability_warning: Option<String>,
+        /// True only after rescanning the durable registry proves another automatic Save can fit.
+        capacity_available: bool,
+    },
+    /// A post-acceptance attempt failed. The UI must not offer a duplicate retry: the durable
+    /// journal and original source remain owned by startup recovery even if this event is lost.
+    SaveDeferred { id: u64, error: String },
+    /// Another worker/recovery process settled the exact durable intent first. The optimistic
+    /// saved state remains valid and retry must stay disabled, but this stale worker has no path.
+    AlreadySettled { id: u64, capacity_available: bool },
+    /// The request was rejected before its durable acceptance boundary (for example, because
+    /// the source was already missing). No recovery intent exists, so a visible retry is safe.
+    SaveFailed {
+        id: u64,
+        error: String,
+        /// Automatic pre-acceptance failures pause recording and retain their source; manual
+        /// Decide-mode failures remain directly retryable without affecting recorder admission.
+        automatic: bool,
+    },
+    /// Automatic saving was rejected before publication because the bounded durable spool is at
+    /// its item or byte ceiling. The source remains a normal kept recording.
+    CapacityBlocked {
+        id: u64,
+        pending_count: usize,
+        pending_bytes: u64,
+    },
+    CapacityProbed {
+        owner_id: u64,
+        capacity_available: bool,
+    },
+}
+
+/// Persist a Save intent before it is admitted to the blocking pool.
+///
+/// Once this returns `Ok`, a process cutoff can delay the copy but cannot silently turn the
+/// explicit user action back into an ordinary startup-wiped temp recording.
+pub fn accept_save(job: RecorderJob) -> Result<AcceptedSave, RecorderEvent> {
+    durable::accept(job)
+}
+
+/// Resume one already accepted Save intent on the current blocking thread.
+pub fn run_accepted(save: AcceptedSave) -> RecorderEvent {
+    durable::run_accepted(save)
+}
+
+/// Recover accepted Saves and then clean ordinary incomplete/Decide temp recordings.
+///
+/// This is blocking filesystem work. Callers must run it through the tracked runtime task set.
+pub fn recover_pending(temp_dir: &std::path::Path, final_dir: &std::path::Path) -> RecoveryReport {
+    durable::recover_pending(temp_dir, final_dir)
 }
 
 /// Execute a job on the current (blocking) thread. Returns an event only for `Save`.
+///
+/// Runtime dispatch uses [`accept_save`] before spawning and then [`run_accepted`]. This combined
+/// entry point remains useful for focused tests and non-runtime callers.
 pub fn run(job: RecorderJob) -> Option<RecorderEvent> {
     match job {
-        RecorderJob::Save {
-            id,
+        RecorderJob::AwaitTransition {
+            transition_id,
+            close,
+            open,
+        } => {
+            let deadline = Instant::now() + super::barrier::COMMAND_ACK_TIMEOUT;
+            Some(RecorderEvent::TransitionResolved {
+                transition_id,
+                close: close.map(|barrier| barrier.wait_until(deadline)),
+                open: open.map(|barrier| barrier.wait_until(deadline)),
+            })
+        }
+        save @ RecorderJob::Save { .. } => Some(match accept_save(save) {
+            Ok(accepted) => run_accepted(accepted),
+            Err(event) => event,
+        }),
+        RecorderJob::Discard {
             temp,
+            close_barrier,
+        } => {
+            if close_barrier.is_none_or(|barrier| barrier.wait().is_ok()) {
+                let _ = std::fs::remove_file(temp);
+            }
+            None
+        }
+        RecorderJob::ProbeCapacity {
+            owner_id,
+            temp_dir,
             final_dir,
-            filename,
-            ext,
-            title,
-            artist,
-            station,
-        } => Some(save(
-            id, &temp, &final_dir, &filename, ext, title, artist, station,
-        )),
-        RecorderJob::Discard { temp } => {
-            let _ = std::fs::remove_file(temp);
-            None
-        }
-        RecorderJob::WipeTemp { dir } => {
-            let _ = std::fs::remove_dir_all(&dir);
-            let _ = std::fs::create_dir_all(&dir);
-            None
-        }
+        } => Some(RecorderEvent::CapacityProbed {
+            owner_id,
+            capacity_available: durable::capacity_available(&temp_dir, &final_dir),
+        }),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn save(
-    id: u64,
-    temp: &Path,
-    final_dir: &Path,
-    filename: &str,
-    ext: &'static str,
-    title: Option<String>,
-    artist: Option<String>,
-    station: Option<String>,
-) -> RecorderEvent {
-    if let Err(e) = std::fs::create_dir_all(final_dir) {
-        return RecorderEvent::SaveFailed {
-            id,
-            error: sanitize_error_text(e.to_string()),
-        };
-    }
-    // mpv finalizes the container asynchronously after `stream-record` is cleared; wait for
-    // the file size to settle so we never copy a half-flushed file.
-    wait_for_stable(temp);
-
-    // Never silently overwrite an existing recording (common in Everything mode, or with
-    // duplicate/"Untitled" titles): probe for a free `<name> (N).<ext>`.
-    let final_path = unique_recording_path(final_dir, filename, ext);
-    if let Err(e) = std::fs::copy(temp, &final_path) {
-        return RecorderEvent::SaveFailed {
-            id,
-            error: sanitize_error_text(e.to_string()),
-        };
-    }
-    // Best-effort: a tag-write failure must not fail the save (the audio is already on disk).
-    if ext_is_taggable(ext) {
-        let _ = tag_file(
-            &final_path,
-            title.as_deref(),
-            artist.as_deref(),
-            station.as_deref(),
-        );
-    }
-    RecorderEvent::Saved { id, final_path }
-}
-
-/// Pick a destination that won't overwrite an existing recording: `<name>.<ext>`, then
-/// `<name> (2).<ext>`, `<name> (3).<ext>`, … Bounded so a pathological directory can't loop
-/// forever — in that extreme it falls back to the base name (accepting one overwrite).
-fn unique_recording_path(dir: &Path, filename: &str, ext: &str) -> std::path::PathBuf {
-    let base = dir.join(format!("{filename}.{ext}"));
-    if !base.exists() {
-        return base;
-    }
-    for n in 2..=999 {
-        let candidate = dir.join(format!("{filename} ({n}).{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    base
-}
-
-/// Poll the temp file's length until it stops growing (stable ~200ms), capped at ~2s.
-fn wait_for_stable(path: &Path) {
-    let start = Instant::now();
-    let mut last = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let mut stable_since = Instant::now();
-    loop {
-        std::thread::sleep(Duration::from_millis(50));
-        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(last);
-        if len != last {
-            last = len;
-            stable_since = Instant::now();
-        } else if stable_since.elapsed() >= Duration::from_millis(200) {
-            return;
-        }
-        if start.elapsed() >= Duration::from_secs(2) {
-            return;
-        }
-    }
-}
-
-/// Stamp title/artist/album onto the copied file. Uses whatever primary tag the container
-/// supports (ID3v2 for mp3/aac, VorbisComments for ogg/opus/flac).
-fn tag_file(
-    path: &Path,
+pub(super) fn tag_file_handle(
+    file: &mut std::fs::File,
     title: Option<&str>,
     artist: Option<&str>,
     album: Option<&str>,
@@ -158,7 +182,11 @@ fn tag_file(
     use lofty::probe::Probe;
     use lofty::tag::{Accessor, Tag, TagExt};
 
-    let mut tagged = Probe::open(path)
+    use std::io::{Seek as _, SeekFrom};
+
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut tagged = Probe::new(&mut *file)
+        .guess_file_type()
         .map_err(|e| e.to_string())?
         .read()
         .map_err(|e| e.to_string())?;
@@ -180,158 +208,10 @@ fn tag_file(
     if let Some(al) = album {
         tag.set_album(al.to_owned());
     }
-    tag.save_to_path(path, WriteOptions::default())
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    tag.save_to(&mut *file, WriteOptions::default())
         .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let mut bytes = [0u8; 8];
-        getrandom::fill(&mut bytes).unwrap();
-        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        std::env::temp_dir().join(format!(
-            "yututui-recorder-job-{name}-{}-{suffix}",
-            std::process::id()
-        ))
-    }
-
-    #[test]
-    fn wipe_and_discard_jobs_are_best_effort_without_events() {
-        let dir = temp_dir("wipe-discard");
-        let temp = dir.join("segment.tmp");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&temp, b"partial").unwrap();
-
-        assert!(run(RecorderJob::WipeTemp { dir: dir.clone() }).is_none());
-        assert!(dir.exists());
-        assert!(!temp.exists());
-
-        std::fs::write(&temp, b"partial").unwrap();
-        assert!(run(RecorderJob::Discard { temp: temp.clone() }).is_none());
-        assert!(!temp.exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn save_job_copies_to_first_free_recording_path() {
-        let dir = temp_dir("save");
-        let temp = dir.join("tmp").join("rec-1.mkv");
-        let final_dir = dir.join("final");
-        std::fs::create_dir_all(temp.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(&final_dir).unwrap();
-        std::fs::write(&temp, b"recording bytes").unwrap();
-        std::fs::write(final_dir.join("Song.mkv"), b"existing").unwrap();
-
-        let event = run(RecorderJob::Save {
-            id: 7,
-            temp: temp.clone(),
-            final_dir: final_dir.clone(),
-            filename: "Song".to_owned(),
-            ext: "mkv",
-            title: Some("Title".to_owned()),
-            artist: Some("Artist".to_owned()),
-            station: Some("Station".to_owned()),
-        })
-        .expect("save event");
-
-        match event {
-            RecorderEvent::Saved { id, final_path } => {
-                assert_eq!(id, 7);
-                assert_eq!(final_path, final_dir.join("Song (2).mkv"));
-                assert_eq!(std::fs::read(final_path).unwrap(), b"recording bytes");
-            }
-            RecorderEvent::SaveFailed { error, .. } => panic!("unexpected failure: {error}"),
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn save_job_reports_copy_failure_with_sanitized_error() {
-        let dir = temp_dir("missing-source");
-        let final_dir = dir.join("final");
-        let missing = dir.join("tmp").join("missing.mkv");
-
-        let event = run(RecorderJob::Save {
-            id: 8,
-            temp: missing,
-            final_dir,
-            filename: "Missing".to_owned(),
-            ext: "mkv",
-            title: None,
-            artist: None,
-            station: None,
-        })
-        .expect("save failure event");
-
-        match event {
-            RecorderEvent::SaveFailed { id, error } => {
-                assert_eq!(id, 8);
-                assert!(!error.is_empty());
-                assert!(
-                    !error.contains('\n'),
-                    "error text should be single-line sanitized"
-                );
-            }
-            RecorderEvent::Saved { final_path, .. } => {
-                panic!(
-                    "missing source unexpectedly saved to {}",
-                    final_path.display()
-                )
-            }
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn tag_write_failure_does_not_fail_the_audio_save() {
-        let dir = temp_dir("tag-failure");
-        let temp = dir.join("tmp").join("rec-1.mp3");
-        let final_dir = dir.join("final");
-        std::fs::create_dir_all(temp.parent().unwrap()).unwrap();
-        // Not a valid mp3; `tag_file` should fail internally, but the copied bytes are kept.
-        std::fs::write(&temp, b"not actually audio").unwrap();
-
-        let event = run(RecorderJob::Save {
-            id: 9,
-            temp,
-            final_dir: final_dir.clone(),
-            filename: "Tagged".to_owned(),
-            ext: "mp3",
-            title: Some("Title".to_owned()),
-            artist: Some("Artist".to_owned()),
-            station: Some("Station".to_owned()),
-        })
-        .expect("save event");
-
-        match event {
-            RecorderEvent::Saved { id, final_path } => {
-                assert_eq!(id, 9);
-                assert_eq!(final_path, final_dir.join("Tagged.mp3"));
-                assert_eq!(std::fs::read(final_path).unwrap(), b"not actually audio");
-            }
-            RecorderEvent::SaveFailed { error, .. } => panic!("tag failure leaked: {error}"),
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn unique_recording_path_advances_past_existing_names() {
-        let dir = temp_dir("unique");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("Track.flac"), b"1").unwrap();
-        std::fs::write(dir.join("Track (2).flac"), b"2").unwrap();
-
-        assert_eq!(
-            unique_recording_path(&dir, "Track", "flac"),
-            dir.join("Track (3).flac")
-        );
-        assert_eq!(
-            unique_recording_path(&dir, "Other", "flac"),
-            dir.join("Other.flac")
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-}
+mod tests;

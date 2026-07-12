@@ -54,7 +54,9 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 vec![
                     Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
-                    Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
+                    Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
+                        self.config.scrobble_settings(),
+                    ))),
                 ]
             }
             ScrobbleEvent::AuthFailed(error) => {
@@ -82,7 +84,11 @@ impl App {
                 Vec::new()
             }
             ScrobbleEvent::QueueStalled { pending } => {
-                self.status.text = if crate::i18n::is_korean() {
+                self.status.text = if pending == 0 && crate::i18n::is_korean() {
+                    "스크로블 저장소가 복구되어 대기 중인 항목을 저장했어요".to_owned()
+                } else if pending == 0 {
+                    "Scrobble storage recovered; retained listens were saved".to_owned()
+                } else if crate::i18n::is_korean() {
                     format!("스크로블 {pending}건이 전송 대기 중이에요")
                 } else {
                     format!("{pending} scrobbles waiting to be delivered")

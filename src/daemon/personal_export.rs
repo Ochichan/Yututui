@@ -2,24 +2,29 @@
 
 use std::path::PathBuf;
 
-#[cfg(test)]
-use tokio::sync::oneshot;
-
-use super::{DaemonEvent, DaemonEventSender, emit_daemon_event};
+use super::DaemonEventSender;
+use super::effects::DaemonEffectTasks;
 use crate::config::Config;
 use crate::library::Library;
+use crate::player::lifetime::ShutdownLatch;
 use crate::remote::{RemoteReply, proto::RemoteResponse};
 use crate::signals::Signals;
 use crate::station::StationStore;
 
 #[derive(Default)]
 pub(super) struct PersonalExport {
-    in_progress: bool,
+    next_generation: u64,
+    pending: Option<Pending>,
+}
+
+struct Pending {
+    generation: u64,
+    reply: RemoteReply,
 }
 
 pub(super) struct Finished {
-    pub reply: RemoteReply,
-    pub result: Result<PathBuf, String>,
+    pub(super) generation: u64,
+    pub(super) result: Result<PathBuf, String>,
 }
 
 impl PersonalExport {
@@ -28,13 +33,17 @@ impl PersonalExport {
         directory: String,
         reply: RemoteReply,
         engine: &super::engine::DaemonEngine,
-        event_tx: DaemonEventSender,
+        event_tx: &DaemonEventSender,
+        shutdown: &ShutdownLatch,
+        tasks: &mut DaemonEffectTasks,
     ) {
         self.start(
             directory,
             reply,
             || engine.personal_export_sources(),
             event_tx,
+            shutdown,
+            tasks,
         );
     }
 
@@ -43,11 +52,13 @@ impl PersonalExport {
         directory: String,
         reply: RemoteReply,
         sources: F,
-        event_tx: DaemonEventSender,
+        event_tx: &DaemonEventSender,
+        shutdown: &ShutdownLatch,
+        tasks: &mut DaemonEffectTasks,
     ) where
         F: FnOnce() -> Result<(Config, Library, Signals, StationStore, usize), String>,
     {
-        if self.in_progress {
+        if self.pending.is_some() {
             let _ = reply.send(RemoteResponse::err_with_message(
                 "personal_export_busy",
                 "another personal-data export is already running".to_owned(),
@@ -64,52 +75,121 @@ impl PersonalExport {
                 return;
             }
         };
-        self.in_progress = true;
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                let playlists = crate::data_export::load_playlists_read_only(live_estimated_bytes)
-                    .map_err(|error| {
-                        crate::util::sanitize::sanitize_error_text(error.to_string())
-                    })?;
-                let snapshot = crate::data_export::ExportSnapshot::new(
-                    &config, &library, &playlists, &signals, &station,
-                );
-                // Projection no longer borrows these stores; discard them before serialization to
-                // keep a daemon export's peak memory bounded by one full representation at a time.
-                drop((config, library, playlists, signals, station));
-                crate::data_export::export_snapshot(PathBuf::from(directory).as_path(), &snapshot)
-                    .map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))
-            })
-            .await
-            .unwrap_or_else(|error| Err(format!("personal-data export worker failed: {error}")));
-            emit_daemon_event(
-                &event_tx,
-                DaemonEvent::PersonalExportFinished(Finished { reply, result }),
+
+        self.next_generation = self.next_generation.wrapping_add(1);
+        if self.next_generation == 0 {
+            self.next_generation = 1;
+        }
+        let generation = self.next_generation;
+        self.pending = Some(Pending { generation, reply });
+
+        let scheduled = tasks.schedule_personal_export(event_tx, shutdown, generation, move || {
+            let playlists = crate::data_export::load_playlists_read_only(live_estimated_bytes)
+                .map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))?;
+            let snapshot = crate::data_export::ExportSnapshot::new(
+                &config, &library, &playlists, &signals, &station,
             );
+            // Projection no longer borrows these stores; discard them before serialization to
+            // keep a daemon export's peak memory bounded by one full representation at a time.
+            drop((config, library, playlists, signals, station));
+            crate::data_export::export_snapshot(PathBuf::from(directory).as_path(), &snapshot)
+                .map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))
         });
+        if !scheduled {
+            self.settle_generation(generation, RemoteResponse::err("shutting_down"));
+        }
     }
 
+    /// Complete the exact retained request for this worker generation. Taking `pending` is the
+    /// busy-state transition and deliberately happens before the synchronous reply ordering
+    /// barrier.
     pub(super) fn finish(&mut self, finished: Finished) {
-        self.in_progress = false;
+        let Some(reply) = self.take_reply(finished.generation) else {
+            tracing::debug!(
+                generation = finished.generation,
+                "retired stale personal-data export completion"
+            );
+            return;
+        };
         let response = match finished.result {
             Ok(path) => RemoteResponse::ok(path.display().to_string()),
             Err(message) => RemoteResponse::err_with_message("personal_export_failed", message),
         };
-        let _ = finished.reply.send(response);
+        let _ = reply.send(response);
+    }
+
+    /// Settle an accepted request whose worker could not re-enter before owner admission closed.
+    /// This runs before the daemon waits for wire settlements.
+    pub(super) fn shutdown(&mut self) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let _ = pending.reply.send(RemoteResponse::err("shutting_down"));
+    }
+
+    fn settle_generation(&mut self, generation: u64, response: RemoteResponse) {
+        if let Some(reply) = self.take_reply(generation) {
+            let _ = reply.send(response);
+        }
+    }
+
+    fn take_reply(&mut self, generation: u64) -> Option<RemoteReply> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.generation == generation)
+        {
+            self.pending.take().map(|pending| pending.reply)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    fn is_in_progress(&self) -> bool {
+        self.pending.is_some()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::oneshot;
+
     use super::*;
+
+    fn event_channel() -> (
+        DaemonEventSender,
+        tokio::sync::mpsc::Receiver<super::super::DaemonEvent>,
+    ) {
+        let (raw, rx) = crate::util::backpressure::bounded_channel(
+            crate::util::backpressure::DAEMON_EVENT_QUEUE,
+        );
+        (DaemonEventSender::new(raw), rx)
+    }
+
+    fn sources() -> (Config, Library, Signals, StationStore, usize) {
+        (
+            Config::default(),
+            Library::default(),
+            Signals::default(),
+            StationStore::default(),
+            0,
+        )
+    }
 
     #[tokio::test]
     async fn duplicate_start_is_rejected_without_launching_more_work() {
-        let (raw, _rx) = crate::util::backpressure::bounded_channel(
-            crate::util::backpressure::DAEMON_EVENT_QUEUE,
-        );
-        let events = DaemonEventSender::new(raw);
-        let mut export = PersonalExport { in_progress: true };
+        let (events, _event_rx) = event_channel();
+        let shutdown = ShutdownLatch::new();
+        let mut tasks = DaemonEffectTasks::new();
+        let (first_reply, first_response) = oneshot::channel();
+        let mut export = PersonalExport {
+            next_generation: 1,
+            pending: Some(Pending {
+                generation: 1,
+                reply: first_reply.into(),
+            }),
+        };
         let (reply, response) = oneshot::channel();
         let sources_called = std::cell::Cell::new(false);
 
@@ -118,33 +198,38 @@ mod tests {
             reply.into(),
             || {
                 sources_called.set(true);
-                Ok((
-                    Config::default(),
-                    Library::default(),
-                    Signals::default(),
-                    StationStore::default(),
-                    0,
-                ))
+                Ok(sources())
             },
-            events,
+            &events,
+            &shutdown,
+            &mut tasks,
         );
 
         let response = response.await.expect("busy response");
         assert!(!response.ok);
         assert_eq!(response.reason.as_deref(), Some("personal_export_busy"));
-        assert!(export.in_progress);
+        assert!(export.is_in_progress());
         assert!(
             !sources_called.get(),
             "busy requests must not clone sources"
         );
+        export.shutdown();
+        assert_eq!(
+            first_response
+                .await
+                .expect("retained request shutdown response")
+                .reason
+                .as_deref(),
+            Some("shutting_down")
+        );
+        tasks.shutdown().await;
     }
 
     #[tokio::test]
     async fn unsafe_live_source_is_rejected_before_busy_or_worker_start() {
-        let (raw, _rx) = crate::util::backpressure::bounded_channel(
-            crate::util::backpressure::DAEMON_EVENT_QUEUE,
-        );
-        let events = DaemonEventSender::new(raw);
+        let (events, _event_rx) = event_channel();
+        let shutdown = ShutdownLatch::new();
+        let mut tasks = DaemonEffectTasks::new();
         let mut export = PersonalExport::default();
         let (reply, response) = oneshot::channel();
 
@@ -152,7 +237,9 @@ mod tests {
             "/unused".to_owned(),
             reply.into(),
             || Err("live source exceeds safe clone budget".to_owned()),
-            events,
+            &events,
+            &shutdown,
+            &mut tasks,
         );
 
         let response = response.await.expect("preflight rejection");
@@ -161,21 +248,79 @@ mod tests {
             response.reason.as_deref(),
             Some("personal_export_too_large")
         );
-        assert!(!export.in_progress);
+        assert!(!export.is_in_progress());
+        tasks.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_race_clears_busy_and_settles_without_spawning() {
+        let (events, _event_rx) = event_channel();
+        let shutdown = ShutdownLatch::new();
+        shutdown.trigger();
+        let mut tasks = DaemonEffectTasks::new();
+        let mut export = PersonalExport::default();
+        let (reply, response) = oneshot::channel();
+
+        export.start(
+            "/unused".to_owned(),
+            reply.into(),
+            || Ok(sources()),
+            &events,
+            &shutdown,
+            &mut tasks,
+        );
+
+        assert!(!export.is_in_progress());
+        assert_eq!(
+            response.await.expect("shutdown response").reason.as_deref(),
+            Some("shutting_down")
+        );
+        tasks.shutdown().await;
     }
 
     #[tokio::test]
     async fn finish_clears_busy_and_returns_the_published_path() {
-        let mut export = PersonalExport { in_progress: true };
         let (reply, response) = oneshot::channel();
+        let mut export = PersonalExport {
+            next_generation: 7,
+            pending: Some(Pending {
+                generation: 7,
+                reply: reply.into(),
+            }),
+        };
         export.finish(Finished {
-            reply: reply.into(),
+            generation: 7,
             result: Ok(PathBuf::from("/tmp/export.json")),
         });
 
+        assert!(!export.is_in_progress());
         let response = response.await.expect("success response");
         assert!(response.ok);
         assert_eq!(response.message.as_deref(), Some("/tmp/export.json"));
-        assert!(!export.in_progress);
+    }
+
+    #[tokio::test]
+    async fn stale_completion_cannot_clear_or_reply_to_the_current_generation() {
+        let (reply, mut response) = oneshot::channel();
+        let mut export = PersonalExport {
+            next_generation: 8,
+            pending: Some(Pending {
+                generation: 8,
+                reply: reply.into(),
+            }),
+        };
+
+        export.finish(Finished {
+            generation: 7,
+            result: Ok(PathBuf::from("/tmp/stale.json")),
+        });
+
+        assert!(export.is_in_progress());
+        assert!(response.try_recv().is_err());
+        export.shutdown();
+        assert_eq!(
+            response.await.expect("shutdown response").reason.as_deref(),
+            Some("shutting_down")
+        );
     }
 }

@@ -179,22 +179,21 @@ export class SettingsStore {
     this.#pendingGeneration.set(key, generation);
     this.#acknowledgedGeneration.delete(key);
     this.#pending = { ...this.#pending, [key]: value };
-    void this.#client
-      .req('apply', { change: { group, field, value } })
-      .then(() => {
-        if (this.#pendingGeneration.get(key) === generation) {
-          this.#acknowledgedGeneration.set(key, generation);
-        }
-      })
-      .catch((error) => {
-        // Values are not request identities: A → B → A can leave a newer edit with
-        // the same value as an older rejected request. Only the owning generation
-        // may clear its optimistic overlay.
-        if (this.#pendingGeneration.get(key) !== generation) return;
-        this.#dropPending(key);
-        const reason = error instanceof Error ? error.message : String(error);
-        this.#onError?.(settingsErrorMessage(reason));
-      });
+    void this.#client.cmd('apply', { change: { group, field, value } }).then((result) => {
+      // Values are not request identities: A → B → A can leave a newer edit with
+      // the same value as an older result. Only the owning generation may settle
+      // its optimistic overlay.
+      if (this.#pendingGeneration.get(key) !== generation) return;
+      if (result.ok) {
+        this.#acknowledgedGeneration.set(key, generation);
+        return;
+      }
+      // The mutation may already have reached the owner. Keep the optimistic value until a
+      // future user edit/reset establishes a new owner rather than falsely rolling it back.
+      if (result.reason === 'confirmation_lost') return;
+      this.#dropPending(key);
+      this.#onError?.(settingsErrorMessage(result.reason));
+    });
   }
 
   /** Write-only: the core stores the key; only `streaming.has_gemini_key` comes back. */
@@ -202,18 +201,19 @@ export class SettingsStore {
     this.#client.cmd('set_gemini_key', { key });
   }
 
-  /** Clears cached romanizations; resolves to the count for a feedback toast. */
-  async clearRomanizationCache(): Promise<number> {
-    const res = await this.#client.req<{ cleared: number }>('clear_romanization_cache');
-    return res?.cleared ?? 0;
+  /** Clears cached romanizations; null means the acknowledged mutation was rejected. */
+  async clearRomanizationCache(): Promise<number | null> {
+    const result = await this.#client.cmd<{ cleared: number }>('clear_romanization_cache');
+    return result.ok ? (result.payload?.cleared ?? 0) : null;
   }
 
   /** Factory-reset every setting (danger zone). The confirming push refills the model. */
-  resetAll(): void {
+  async resetAll(): Promise<boolean> {
     this.#pending = {};
     this.#pendingGeneration.clear();
     this.#acknowledgedGeneration.clear();
-    this.#client.cmd('reset_all_settings');
+    const result = await this.#client.cmd('reset_all_settings');
+    return result.ok;
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────

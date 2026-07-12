@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "doctor/directory_probe.rs"]
+mod directory_probe;
+#[cfg(test)]
+use directory_probe::dir_is_writable;
+use directory_probe::report_dir;
+
 /// Run the diagnostic, printing a report, and return the process exit code.
 pub fn run() -> i32 {
     run_inner(false)
@@ -1217,39 +1223,6 @@ fn tool_role(bin: &str, kr: bool) -> &'static str {
 /// The per-user data directory, resolved through the shared [`crate::paths::data_dir`].
 fn data_dir() -> Option<PathBuf> {
     crate::paths::data_dir()
-}
-
-/// Print one directory line and return whether it's usable.
-fn report_dir(label: &str, dir: &Path, kr: bool) -> bool {
-    if dir_is_writable(dir) {
-        println!("  ✓ {label} — {}", dir.display());
-        true
-    } else {
-        let note = if kr { "쓰기 불가" } else { "not writable" };
-        println!("  ✗ {label} — {} ({note})", dir.display());
-        false
-    }
-}
-
-/// Whether the app could write into `dir` (creating it on demand). Diagnostic-pure: it never
-/// creates the target tree itself — it walks up to the nearest existing ancestor and probes a
-/// throwaway file there, since a writable ancestor means `create_dir_all` would later succeed.
-fn dir_is_writable(dir: &Path) -> bool {
-    let mut anchor = dir;
-    while !anchor.exists() {
-        match anchor.parent() {
-            Some(parent) => anchor = parent,
-            None => return false,
-        }
-    }
-    let probe = anchor.join(".ytt-doctor-write-probe");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 #[cfg(test)]

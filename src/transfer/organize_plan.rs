@@ -1,7 +1,6 @@
 //! Preview path planning for import-session files before committing them to a library root.
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, bail};
@@ -111,14 +110,9 @@ pub fn apply_import_organize_plan(
     plan: &ImportOrganizePlan,
 ) -> anyhow::Result<ImportOrganizeApplyReport> {
     let _guard = super::session::ImportRecordGuard::try_acquire(&plan.session_id)?;
-    for row in &plan.rows {
-        if matches!(row.decision, ImportOrganizeDecision::Move)
-            && let Some(target) = row.target_path.as_ref().filter(|path| path.exists())
-        {
-            anyhow::bail!("organize target already exists: {}", target.display());
-        }
-    }
-    ImportSession::load(&plan.session_id).with_context(|| {
+    super::artifact_move::reconcile_session_locked(&plan.session_id)
+        .context("reconcile pending artifact moves before organizing")?;
+    let current_session = ImportSession::load(&plan.session_id).with_context(|| {
         format!(
             "reload import session {} before organizing",
             plan.session_id
@@ -138,15 +132,31 @@ pub fn apply_import_organize_plan(
                     .target_path
                     .as_ref()
                     .context("move row missing target path")?;
-                move_audio_and_sidecar(from, to, &plan.root)?;
-                super::session::record_download_done_unlocked(
-                    &plan.session_id,
+                let already_committed = current_session.rows.iter().any(|current| {
+                    current.source_order == row.source_order
+                        && current.row_id == row.row_id
+                        && current.written
+                        && current
+                            .local_path
+                            .as_deref()
+                            .is_some_and(|path| paths_equivalent(path, to))
+                        && to.is_file()
+                });
+                if already_committed {
+                    already_count += 1;
+                    continue;
+                }
+                let request = super::artifact_move::ArtifactMoveRequest::organize(
+                    plan.session_id.clone(),
+                    row.row_id.clone(),
                     row.source_order,
+                    from.clone(),
                     to.clone(),
-                )
-                .with_context(|| {
+                    plan.root.clone(),
+                );
+                super::artifact_move::commit_locked(request).with_context(|| {
                     format!(
-                        "update import session {} row #{} after move",
+                        "commit import artifact move {} row #{}",
                         plan.session_id, row.source_order
                     )
                 })?;
@@ -195,7 +205,14 @@ fn plan_row(
         .and_then(|ext| ext.to_str())
         .filter(|ext| !ext.trim().is_empty())
         .unwrap_or("m4a");
-    let target = unique_target(root, &relative, extension, reserved, &mut warnings)?;
+    let target = unique_target(
+        root,
+        &relative,
+        extension,
+        Some(&current_path),
+        reserved,
+        &mut warnings,
+    )?;
     let decision = if paths_equivalent(&current_path, &target) {
         ImportOrganizeDecision::AlreadyAtTarget
     } else {
@@ -390,6 +407,7 @@ fn unique_target(
     root: &Path,
     relative: &Path,
     extension: &str,
+    current_path: Option<&Path>,
     reserved: &mut HashSet<PathBuf>,
     warnings: &mut Vec<String>,
 ) -> anyhow::Result<PathBuf> {
@@ -407,7 +425,10 @@ fn unique_target(
     let first = base.clone();
     let mut candidate = first.clone();
     let mut suffix = 2u32;
-    while reserved.contains(&candidate) || candidate.exists() {
+    while reserved.contains(&candidate)
+        || (candidate.exists()
+            && !current_path.is_some_and(|current| paths_equivalent(current, &candidate)))
+    {
         candidate = suffix_path(&first, suffix)
             .with_context(|| format!("could not suffix target path {}", first.display()))?;
         suffix += 1;
@@ -434,33 +455,10 @@ fn suffix_path(path: &Path, suffix: u32) -> Option<PathBuf> {
 
 fn paths_equivalent(a: &Path, b: &Path) -> bool {
     a == b
-}
-
-fn move_audio_and_sidecar(from: &Path, to: &Path, root: &Path) -> anyhow::Result<()> {
-    if !to.starts_with(root) {
-        bail!("target path escaped organize root: {}", to.display());
-    }
-    if !from.is_file() {
-        bail!("source audio file is missing: {}", from.display());
-    }
-    if to.exists() {
-        bail!("target audio file already exists: {}", to.display());
-    }
-    let from_sidecar = crate::downloads::sidecar_path(from);
-    let to_sidecar = crate::downloads::sidecar_path(to);
-    if to_sidecar.exists() {
-        bail!("target sidecar already exists: {}", to_sidecar.display());
-    }
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create organize target dir {}", parent.display()))?;
-    }
-    fs::rename(from, to).with_context(|| format!("move import audio to {}", to.display()))?;
-    if from_sidecar.exists() {
-        fs::rename(&from_sidecar, &to_sidecar)
-            .with_context(|| format!("move import sidecar to {}", to_sidecar.display()))?;
-    }
-    Ok(())
+        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
 }
 
 #[cfg(test)]
@@ -499,6 +497,16 @@ mod tests {
             "yututui-organize-plan-{name}-{}",
             std::process::id()
         ))
+    }
+
+    fn private_import_session_dir(root: &Path, session_id: &str) -> PathBuf {
+        let private_root = root.join(".yututui-inbox");
+        crate::util::safe_fs::ensure_private_dir(&private_root)
+            .expect("create private import inbox root");
+        let session_dir = private_root.join(session_id);
+        crate::util::safe_fs::ensure_private_dir(&session_dir)
+            .expect("create private import session directory");
+        session_dir
     }
 
     #[test]
@@ -594,8 +602,7 @@ mod tests {
     #[test]
     fn apply_moves_audio_sidecar_and_updates_session() {
         let root = temp_root("apply");
-        let inbox = root.join(".yututui-inbox").join("sp2yt-organize-apply");
-        std::fs::create_dir_all(&inbox).unwrap();
+        let inbox = private_import_session_dir(&root, "sp2yt-organize-apply");
         let audio = inbox.join("Song.m4a");
         std::fs::write(&audio, b"audio").unwrap();
         let sidecar = crate::downloads::sidecar_path(&audio);
@@ -619,17 +626,35 @@ mod tests {
         assert!(crate::downloads::sidecar_path(&target).exists());
         let saved = ImportSession::load("sp2yt-organize-apply").unwrap();
         assert_eq!(saved.rows[0].local_path.as_deref(), Some(target.as_path()));
+        let retry = apply_import_organize_plan(&plan).unwrap();
+        assert_eq!(retry.moved_count, 0);
+        assert_eq!(retry.already_count, 1);
+        assert_eq!(
+            std::fs::read_dir(target.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .count(),
+            2
+        );
+        let _ = ImportSession::delete_record("sp2yt-organize-apply");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn apply_rejects_target_race_without_moving_source() {
         let root = temp_root("apply-race");
-        let inbox = root.join(".yututui-inbox").join("sp2yt-organize-race");
-        std::fs::create_dir_all(&inbox).unwrap();
+        let inbox = private_import_session_dir(&root, "sp2yt-organize-race");
         let audio = inbox.join("Song.m4a");
         std::fs::write(&audio, b"audio").unwrap();
-        let session = session(vec![row(1, "Song", &audio.to_string_lossy())]);
+        let sidecar = crate::downloads::sidecar_path(&audio);
+        std::fs::write(&sidecar, b"{}").unwrap();
+        let session = ImportSession {
+            session_id: "sp2yt-organize-race".to_owned(),
+            rows: vec![row(1, "Song", &audio.to_string_lossy())],
+            ..ImportSession::default()
+        };
+        session.save().unwrap();
         let plan = build_import_organize_plan(&session, &ImportOrganizeOptions::new(root.clone()))
             .unwrap();
         let target = plan.rows[0].target_path.clone().unwrap();
@@ -638,19 +663,30 @@ mod tests {
 
         let err = apply_import_organize_plan(&plan).unwrap_err();
 
-        assert!(err.to_string().contains("already exists"));
+        assert!(format!("{err:#}").contains("artifact conflict"));
         assert!(audio.exists());
+        assert!(sidecar.exists());
         assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+
+        std::fs::remove_file(&target).unwrap();
+        let retry = apply_import_organize_plan(&plan).unwrap();
+        assert_eq!(retry.moved_count, 0);
+        assert_eq!(retry.already_count, 1);
+        assert!(!audio.exists());
+        assert!(!sidecar.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"audio");
+        assert_eq!(
+            std::fs::read(crate::downloads::sidecar_path(&target)).unwrap(),
+            b"{}"
+        );
+        let _ = ImportSession::delete_record("sp2yt-organize-race");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn apply_does_not_move_files_after_import_record_was_deleted() {
         let root = temp_root("apply-deleted-record");
-        let inbox = root
-            .join(".yututui-inbox")
-            .join("sp2yt-organize-deleted-record");
-        std::fs::create_dir_all(&inbox).unwrap();
+        let inbox = private_import_session_dir(&root, "sp2yt-organize-deleted-record");
         let audio = inbox.join("Song.m4a");
         std::fs::write(&audio, b"audio").unwrap();
         let session = ImportSession {

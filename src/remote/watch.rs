@@ -335,6 +335,8 @@ where
 
     let subscribe = ClientFrame {
         id: SUBSCRIBE_ID,
+        request_id: None,
+        page_id: None,
         op: ClientOp::Subscribe {
             topics: config.topics.clone(),
         },
@@ -386,7 +388,12 @@ where
                 next_id = next_id.checked_add(1).ok_or_else(|| {
                     WatchError::transport("watch frame id overflowed.")
                 })?;
-                let ping = ClientFrame { id, op: ClientOp::Ping };
+                let ping = ClientFrame {
+                    id,
+                    request_id: None,
+                    page_id: None,
+                    op: ClientOp::Ping,
+                };
                 write_json_line(&mut write_half, &ping, config.io_timeout, "ping").await?;
                 pending_ping = Some(id);
                 pong_deadline = Some(Instant::now() + config.io_timeout);

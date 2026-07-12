@@ -66,12 +66,36 @@ fn enqueue_and_import_keys_map_to_their_playlist_intents() {
 fn playlist_tracks_play_replaces_the_queue() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
-    let cmds = app.update(Msg::PlaylistTracks {
+    let before = serde_json::to_value(app.queue.snapshot()).unwrap();
+    let before_rev = app.queue.rev();
+    let rejected = app.update(Msg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Play,
         songs: songs(3),
     });
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert!(!app.status.text.contains("Rainy Mix"));
+    assert!(
+        reject_player_transition(
+            &mut app,
+            rejected,
+            crate::util::delivery::DeliveryError::Busy,
+        )
+        .is_empty()
+    );
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert!(!app.status.text.contains("Rainy Mix"));
+
+    let mut cmds = app.update(Msg::PlaylistTracks {
+        title: "Rainy Mix".to_owned(),
+        intent: crate::api::PlaylistIntent::Play,
+        songs: songs(3),
+    });
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 3);
+    assert_ne!(app.queue.rev(), before_rev);
     assert_eq!(current(&app), "id0");
     assert_loads_video(&cmds, "id0");
     assert!(app.status.text.contains("Rainy Mix"));

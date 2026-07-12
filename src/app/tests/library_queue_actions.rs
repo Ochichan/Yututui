@@ -15,10 +15,11 @@ fn enter_on_library_plays_selected_song_keeping_the_queue() {
     app.library_ui.selected = 0;
     let target = app.selected_library_song().unwrap().video_id;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     // The picked track plays immediately and we jump to the Player…
-    assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, target.as_str());
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
     assert_eq!(
         app.prefetch.loaded_video_id.as_deref(),
         Some(target.as_str())
@@ -112,10 +113,11 @@ fn enter_on_library_drag_selection_plays_all_selected_tracks() {
     app.library_ui.selected = 2;
     let before_len = app.queue.len();
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, "f0");
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("f0"));
     assert_eq!(app.queue.len(), before_len + 3);
     let ids: Vec<&str> = app
@@ -169,11 +171,31 @@ fn a_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     let rows = app.library_songs().len();
     assert_eq!(rows, 3);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    let before = serde_json::to_value(app.queue.snapshot()).unwrap();
+    let before_rev = app.queue.rev();
+    let rejected = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Library, "mode changes only after admission");
+    assert!(
+        reject_player_transition(
+            &mut app,
+            rejected,
+            crate::util::delivery::DeliveryError::Busy,
+        )
+        .is_empty()
+    );
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Library);
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    admit_player_transition(&mut app, &mut cmds);
     // The whole tab replaces the queue: the old id0/id1 are gone, playback starts at f1.
     assert_eq!(app.mode, Mode::Player);
     assert_loads_video(&cmds, "f1");
     assert_eq!(app.queue.len(), rows);
+    assert_ne!(app.queue.rev(), before_rev);
     assert!(app.queue.video_ids().all(|v| v != "id0" && v != "id1"));
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("f1"));
 }

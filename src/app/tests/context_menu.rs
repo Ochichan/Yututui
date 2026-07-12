@@ -45,9 +45,10 @@ fn immediate_right_double_click_activates_original_row_under_menu_hit_region() {
         Some(MouseTarget::ContextMenuItem(0))
     );
 
-    let cmds = app.update(Msg::MouseRightDoubleClick { col, row });
+    let mut cmds = app.update(Msg::MouseRightDoubleClick { col, row });
 
     assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id1");
     assert!(app.overlays.context_menu.is_none());
 }
@@ -131,13 +132,16 @@ fn queue_menu_play_from_here_preserves_the_existing_queue() {
     assert_eq!(menu.items[0].label(menu.target_count()), "Play from here");
 
     app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(0));
-    let cmds = app.update(Msg::MouseClick {
+    let mut cmds = app.update(Msg::MouseClick {
         col,
         row,
         multi: false,
     });
 
     assert_loads_video(&cmds, "id2");
+    assert_eq!(current(&app), "id0");
+    assert!(app.queue_popup.open);
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id2");
     assert!(!app.queue_popup.open);
     let ids: Vec<&str> = app

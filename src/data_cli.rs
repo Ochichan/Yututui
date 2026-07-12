@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-use yututui::data_ownership::{self, AcquireError};
 use yututui::remote::{self, PERSONAL_EXPORT_CAPABILITY};
 
 const EXIT_OK: i32 = 0;
@@ -125,16 +124,16 @@ fn run_export(args: &[String]) -> i32 {
     }
 }
 
-/// Close the discovery-to-read race with a cross-process exclusive guard. A primary that starts
-/// between the first lookup and lock acquisition is retried through its live owner; a secondary
-/// or unpublished owner fails with guidance instead of permitting a mixed disk snapshot.
+/// Close the discovery-to-read race with the same process-wide writer lease used by every other
+/// mutating owner. A primary that starts between the first lookup and lease acquisition is retried
+/// through its live owner; an unpublished owner fails closed instead of permitting a mixed disk
+/// snapshot.
 fn export_offline_with_guard(
     runtime: &tokio::runtime::Runtime,
     directory: &Path,
 ) -> Result<PathBuf, String> {
-    let guard = match data_ownership::acquire_offline_export() {
-        Ok(guard) => guard,
-        Err(AcquireError::Busy) => {
+    if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
             return match runtime.block_on(remote::client::instance_with_capability(
                 PERSONAL_EXPORT_CAPABILITY,
             )) {
@@ -148,43 +147,34 @@ fn export_offline_with_guard(
                 ),
             };
         }
-        Err(AcquireError::Io(error)) => {
-            return Err(format!(
-                "could not secure a coherent offline snapshot: {}",
-                yututui::util::sanitize::sanitize_error_text(error.to_string())
-            ));
-        }
-    };
+        return Err(format!(
+            "could not secure a coherent offline snapshot: {}",
+            yututui::util::sanitize::sanitize_error_text(error.to_string())
+        ));
+    }
 
-    // Recheck while holding the exclusive guard. Current-version owners cannot cross this point;
-    // this catches an older primary that published after the initial lookup.
+    // Recheck after establishing the process-wide lease. Current-version owners cannot cross this
+    // point; this catches a compatible older primary that published during acquisition.
     match runtime.block_on(remote::client::instance_with_capability(
         PERSONAL_EXPORT_CAPABILITY,
     )) {
-        Ok(Some(instance)) => {
-            drop(guard);
-            export_through_owner_or_recover_stale(runtime, instance, directory)
-        }
+        Ok(Some(instance)) => export_through_owner_or_recover_stale(runtime, instance, directory),
         Ok(None) => {
-            let result = yututui::data_export::export_from_disk(directory)
-                .map_err(offline_export_error_message);
-            drop(guard);
-            result
+            yututui::data_export::export_from_disk(directory).map_err(offline_export_error_message)
         }
         Err(error) => Err(error.human_message()),
     }
 }
 
 /// Recover only from a stale advertised transport endpoint. The descriptor remains in place;
-/// the exclusive ownership guard prevents current-version owners from starting while the
+/// the process-wide writer lease prevents current-version owners from starting while the
 /// canonical current and legacy primary endpoints are independently checked for absence.
 fn export_offline_after_stale_descriptor(
     runtime: &tokio::runtime::Runtime,
     directory: &Path,
 ) -> Result<PathBuf, String> {
-    let guard = match data_ownership::acquire_offline_export() {
-        Ok(guard) => guard,
-        Err(AcquireError::Busy) => {
+    if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
             return Err(
                 "the advertised primary became unreachable, but another ytt process still owns \
                  personal data; refusing an offline snapshot. Export from that instance's \
@@ -193,22 +183,17 @@ fn export_offline_after_stale_descriptor(
                     .to_string(),
             );
         }
-        Err(AcquireError::Io(error)) => {
-            return Err(format!(
-                "could not secure a coherent offline snapshot: {}",
-                yututui::util::sanitize::sanitize_error_text(error.to_string())
-            ));
-        }
-    };
+        return Err(format!(
+            "could not secure a coherent offline snapshot: {}",
+            yututui::util::sanitize::sanitize_error_text(error.to_string())
+        ));
+    }
 
     if let Err(error) = runtime.block_on(remote::client::prove_primary_endpoints_absent()) {
         return Err(error.human_message());
     }
 
-    let result =
-        yututui::data_export::export_from_disk(directory).map_err(offline_export_error_message);
-    drop(guard);
-    result
+    yututui::data_export::export_from_disk(directory).map_err(offline_export_error_message)
 }
 
 fn offline_export_error_message(error: yututui::data_export::ExportError) -> String {

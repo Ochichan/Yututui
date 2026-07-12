@@ -17,7 +17,8 @@ fn f_toggles_favorite_of_current_track() {
 #[test]
 fn playing_records_history_most_recent_first() {
     let mut app = app_playing(3, 0); // loads id0 -> history [id0]
-    app.update(Msg::Key(key(KeyCode::Char('.')))); // id1 -> [id1, id0]
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // id1 -> [id1, id0]
+    admit_player_transition(&mut app, &mut cmds);
     let hist: Vec<&str> = app
         .library
         .history
@@ -32,7 +33,8 @@ fn playing_radio_records_radio_tab_only() {
     let mut app = App::new(100);
     let station = radio_station("station-a");
     app.queue.set(vec![station.clone()], 0);
-    let cmds = app.load_song(app.queue.current().cloned());
+    let mut cmds = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut cmds);
 
     assert!(
         cmds.iter()
@@ -57,7 +59,8 @@ fn playing_radio_records_radio_tab_only() {
     app.library_ui.tab = LibraryTab::Radio;
     assert!(app.library_rows().is_empty());
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    admit_player_transition(&mut app, &mut cmds);
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::Radio;
     assert_eq!(row_ids(&app), vec!["rad:station-a"]);
@@ -91,7 +94,8 @@ fn radio_favorite_is_separate_from_song_favorites() {
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert!(app.library_rows().is_empty());
 
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    admit_player_transition(&mut app, &mut cmds);
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert_eq!(row_ids(&app), vec!["rad:station-fav"]);
@@ -124,10 +128,11 @@ fn l_opens_library_and_enter_plays_selected() {
     assert_eq!(app.mode, Mode::Library);
     assert_eq!(app.library_ui.tab, LibraryTab::All);
     app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     assert_eq!(current(&app), "id1");
-    assert_loads_video(&cmds, "id1");
 }
 
 #[test]
@@ -143,10 +148,11 @@ fn other_screens_keep_remapped_confirm_key() {
     assert_eq!(app.mode, Mode::Library);
     app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
 
-    let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::F(5))));
+    assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     assert_eq!(current(&app), "id1");
-    assert_loads_video(&cmds, "id1");
 }
 
 #[test]
@@ -186,9 +192,10 @@ fn library_all_includes_downloaded_tracks_and_loads_local_path() {
     assert_eq!(app.library_ui.tab, LibraryTab::All);
     assert_eq!(app.library_len(), 1);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.mode, Mode::Player);
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(load_url(&cmds), Some("/tmp/local-track.m4a"));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.mode, Mode::Player);
     assert_eq!(app.queue.current().unwrap().video_id, local.video_id);
 }
 

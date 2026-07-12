@@ -17,7 +17,7 @@ pub const REMOTE_MAX_QUERY_BYTES: usize = crate::util::query::MAX_SEARCH_QUERY_B
 /// Track ids in GUI commands are rows from prior search/library snapshots. Match the queue cap.
 pub const REMOTE_MAX_TRACK_IDS: usize = 999;
 /// A single row id should be tiny; this covers YouTube IDs and source-prefixed provider IDs.
-pub const REMOTE_MAX_TRACK_ID_BYTES: usize = 256;
+pub const REMOTE_MAX_TRACK_ID_BYTES: usize = crate::api::GUI_SEARCH_ROW_ID_MAX_BYTES;
 /// Gemini keys are normally well below this; reject large pasted blobs at the protocol edge.
 pub const REMOTE_MAX_GEMINI_KEY_BYTES: usize = 256;
 /// GUI setting group/field identifiers are short ASCII tokens.
@@ -34,6 +34,15 @@ pub const REMOTE_MAX_TOPICS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteCommandValidationError {
     reason: &'static str,
+}
+
+/// Whether a repeated stable request identity joins one retained owner outcome or safely starts a
+/// fresh read-only/query execution. The exhaustive classifier makes adding a command an explicit
+/// retry-semantics decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestRetryClass {
+    RetainedOutcome,
+    ReexecuteReadOnly,
 }
 
 impl RemoteCommandValidationError {
@@ -105,7 +114,8 @@ pub enum RemoteCommand {
     /// GUI search (additive, v8 sessions): run a grouped multi-catalog search and push
     /// the outcome on the `search` topic as
     /// [`PushEvent::SearchCompleted`](super::PushEvent::SearchCompleted), keyed by
-    /// `ticket`. Fire-and-forget: the reply only acknowledges the dispatch.
+    /// `ticket`. Fire-and-forget: the reply only acknowledges the dispatch. That page/session
+    /// acknowledgement is not cached; a same-ID retry deliberately runs a fresh provider query.
     RunSearch {
         ticket: u64,
         query: String,
@@ -147,6 +157,47 @@ impl RemoteCommand {
             | Self::QueueRemoveIfRevision { expected_rev, .. } => Some(*expected_rev),
             _ => None,
         }
+    }
+
+    pub(crate) fn request_retry_class(&self) -> RequestRetryClass {
+        match self {
+            RemoteCommand::Status | RemoteCommand::RunSearch { .. } => {
+                RequestRetryClass::ReexecuteReadOnly
+            }
+            RemoteCommand::Next
+            | RemoteCommand::Prev
+            | RemoteCommand::TogglePause
+            | RemoteCommand::Play { .. }
+            | RemoteCommand::Enqueue { .. }
+            | RemoteCommand::VolumeUp
+            | RemoteCommand::VolumeDown
+            | RemoteCommand::SetVolume { .. }
+            | RemoteCommand::SeekBack
+            | RemoteCommand::SeekForward
+            | RemoteCommand::SeekTo { .. }
+            | RemoteCommand::ToggleShuffle
+            | RemoteCommand::CycleRepeat
+            | RemoteCommand::QueuePlay { .. }
+            | RemoteCommand::QueueRemove { .. }
+            | RemoteCommand::QueuePlayIfRevision { .. }
+            | RemoteCommand::QueueRemoveIfRevision { .. }
+            | RemoteCommand::Streaming { .. }
+            | RemoteCommand::SetSetting { .. }
+            | RemoteCommand::ResumeSession
+            | RemoteCommand::Quit
+            | RemoteCommand::PlayTracks { .. }
+            | RemoteCommand::EnqueueTracks { .. }
+            | RemoteCommand::Apply { .. }
+            | RemoteCommand::SetGeminiKey { .. }
+            | RemoteCommand::ResetAllSettings
+            | RemoteCommand::ExportPersonalData { .. } => RequestRetryClass::RetainedOutcome,
+        }
+    }
+
+    /// Whether losing the reply can leave the caller unsure whether observable state changed.
+    /// `RunSearch` is included: its acknowledgement confirms dispatch of the later push.
+    pub(crate) fn requires_confirmation(&self) -> bool {
+        !matches!(self, RemoteCommand::Status)
     }
 
     pub fn validate(&self) -> Result<(), RemoteCommandValidationError> {
@@ -382,6 +433,41 @@ pub enum RemoteSettingChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_class_separates_reexecuted_queries_from_retained_mutations() {
+        assert_eq!(
+            RemoteCommand::Status.request_retry_class(),
+            RequestRetryClass::ReexecuteReadOnly
+        );
+        assert!(!RemoteCommand::Status.requires_confirmation());
+        let search = RemoteCommand::RunSearch {
+            ticket: 1,
+            query: "query".to_string(),
+            source: SearchSource::Youtube,
+        };
+        assert_eq!(
+            search.request_retry_class(),
+            RequestRetryClass::ReexecuteReadOnly
+        );
+        assert!(
+            search.requires_confirmation(),
+            "reexecution policy does not make a lost dispatch acknowledgement definitive"
+        );
+        assert_eq!(
+            RemoteCommand::TogglePause.request_retry_class(),
+            RequestRetryClass::RetainedOutcome
+        );
+        assert!(RemoteCommand::TogglePause.requires_confirmation());
+        let export = RemoteCommand::ExportPersonalData {
+            directory: std::env::temp_dir().to_string_lossy().into_owned(),
+        };
+        assert_eq!(
+            export.request_retry_class(),
+            RequestRetryClass::RetainedOutcome
+        );
+        assert!(export.requires_confirmation());
+    }
 
     #[test]
     fn command_validation_caps_queries_keys_and_track_lists() {

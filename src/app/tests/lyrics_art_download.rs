@@ -46,7 +46,8 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
         lines: lyric_lines(),
     });
     assert!(app.lyrics.track.is_some());
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // -> id1
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // -> id1
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.lyrics.track.is_none());
     assert!(app.lyrics.loading);
     assert!(
@@ -61,7 +62,8 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
 fn album_art_off_emits_no_fetch() {
     let mut app = app_playing(3, 0);
     // Opt-in: off by default → advancing a track issues no artwork fetch.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::FetchArtwork { .. })));
     assert!(!app.art.loading);
 }
@@ -74,7 +76,8 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     let (resize_tx, _) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(resize_tx);
     // Advancing to id1 now fetches its thumbnail from the remote source.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.art.loading);
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -139,7 +142,7 @@ fn d_starts_download_of_current_track() {
     let mut app = app_playing(3, 0); // playing id0
     let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
     match cmds.as_slice() {
-        [Cmd::Download(song)] => assert_eq!(song.video_id, "id0"),
+        [Cmd::Download(DownloadCmd::Start(song))] => assert_eq!(song.video_id, "id0"),
         _ => panic!("expected a Download cmd"),
     }
     assert_eq!(
@@ -164,18 +167,18 @@ fn d_ignores_local_tracks() {
 #[test]
 fn download_progress_and_done_update_state() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::DownloadProgress {
+    app.update(Msg::Download(DownloadMsg::Progress {
         video_id: "id0".to_owned(),
         percent: 42.6,
-    });
+    }));
     assert_eq!(
         app.downloads.active.get("id0"),
         Some(&DownloadState::Running(43))
     );
-    app.update(Msg::DownloadDone {
+    app.update(Msg::Download(DownloadMsg::Done {
         video_id: "id0".to_owned(),
         path: "/tmp/x.m4a".to_owned(),
-    });
+    }));
     assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Done));
     assert!(app.status.text.contains("/tmp/x.m4a"));
     assert_eq!(app.library_ui.downloaded.len(), 1);
@@ -185,10 +188,10 @@ fn download_progress_and_done_update_state() {
 #[test]
 fn download_error_marks_failed() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::DownloadError {
+    app.update(Msg::Download(DownloadMsg::Error {
         video_id: "id0".to_owned(),
         error: "boom".to_owned(),
-    });
+    }));
     assert_eq!(
         app.downloads.active.get("id0"),
         Some(&DownloadState::Failed)
@@ -204,7 +207,8 @@ fn loading_prefetches_the_next_track() {
     let mut app = App::new(100);
     app.queue.set(songs(3), 0);
     let song = app.queue.current().cloned();
-    let cmds = app.load_song(song);
+    let mut cmds = app.load_song(song);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(resolve_cmd(&cmds, "id1").is_some_and(|u| u.contains("id1")));
 }
 
@@ -214,9 +218,11 @@ fn skip_uses_prefetched_url_when_available() {
     app.update(StreamingMsg::Resolved {
         video_id: "id1".to_owned(),
         stream_url: "https://cdn.example/stream-id1".to_owned(),
+        self_heal: false,
     });
     // Skip: id1 should load via the prefetched direct URL, not its watch URL.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     let url = load_url(&cmds).expect("a Load cmd");
     assert_eq!(url, "https://cdn.example/stream-id1");
     // And it should now prefetch id2.
@@ -243,6 +249,7 @@ fn prefetch_cache_lru_caps_without_clearing_everything() {
         app.update(StreamingMsg::Resolved {
             video_id: format!("id{i}"),
             stream_url: format!("https://cdn.example/stream-id{i}"),
+            self_heal: false,
         });
     }
 

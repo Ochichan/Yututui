@@ -1,5 +1,7 @@
 //! Status-line and zoom feedback helpers.
 
+use std::time::Instant;
+
 use super::*;
 
 impl App {
@@ -12,18 +14,21 @@ impl App {
     pub(crate) fn set_status_info(&mut self, text: impl Into<String>) {
         self.status.kind = StatusKind::Info;
         self.status.text = text.into();
+        self.status.set_at = (!self.status.text.is_empty()).then(Instant::now);
         self.dirty = true;
     }
 
     pub(crate) fn set_status_error(&mut self, text: impl Into<String>) {
         self.status.kind = StatusKind::Error;
         self.status.text = text.into();
+        self.status.set_at = (!self.status.text.is_empty()).then(Instant::now);
         self.dirty = true;
     }
 
     pub(crate) fn clear_status(&mut self) {
         self.status.kind = StatusKind::Error;
         self.status.text.clear();
+        self.status.set_at = None;
         self.dirty = true;
     }
 
