@@ -179,6 +179,24 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::SetVolume { percent: 100 }, // upper clamp behavior
         RemoteCommand::VolumeUp,
         RemoteCommand::QueueRemove { position: 0 }, // before the cursor: no track load
+        // Order surgery on the shared Queue methods (v8 GUI wires): reorder around the
+        // cursor, out-of-range rejection, then trim everything upcoming — none of these
+        // may touch the current track or need a player.
+        RemoteCommand::QueueMove {
+            from: 2,
+            to: 0,
+            expected_rev: None,
+        },
+        RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: None,
+        },
+        RemoteCommand::QueueMove {
+            from: 99,
+            to: 0,
+            expected_rev: None,
+        }, // queue_index on both owners
         RemoteCommand::ToggleShuffle,
         RemoteCommand::CycleRepeat,
         RemoteCommand::CycleRepeat,
@@ -207,6 +225,10 @@ fn b0_script() -> Vec<RemoteCommand> {
         },
         RemoteCommand::ToggleShuffle, // back to natural order
         RemoteCommand::CycleRepeat,   // Off → All remains allowed after streaming is off
+        // Last: membership trimming (leaves one track, so it must not weaken the
+        // shuffle steps above). Cursor track survives; the repeat is an ok no-op.
+        RemoteCommand::QueueClearUpcoming { expected_rev: None },
+        RemoteCommand::QueueClearUpcoming { expected_rev: None },
     ]
 }
 
@@ -437,6 +459,63 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
     assert_eq!(app.core_view().queue.rev(), app_rev);
     assert_eq!(engine.core_view().queue.rev(), engine_rev);
     assert_parity("fresh revision-checked play validation", &app, &engine);
+}
+
+#[tokio::test]
+async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent() {
+    let (mut app, mut engine) = hermetic_pair();
+
+    // Stale guard: both owners reject before any mutation.
+    let stale = RemoteCommand::QueueMove {
+        from: 0,
+        to: 1,
+        expected_rev: Some(u64::MAX),
+    };
+    let app_resp = app_apply(&mut app, stale.clone());
+    let (engine_resp, shutdown, effects) = engine.handle_remote(stale).await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("stale revision-checked move", &app, &engine);
+
+    // Fresh guard: accepted on both owners.
+    let app_rev = app.core_view().queue.rev();
+    let engine_rev = engine.core_view().queue.rev();
+    let app_resp = app_apply(
+        &mut app,
+        RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: Some(app_rev),
+        },
+    );
+    let (engine_resp, shutdown, _) = engine
+        .handle_remote(RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: Some(engine_rev),
+        })
+        .await;
+    assert!(!shutdown);
+    assert!(app_resp.ok && engine_resp.ok);
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("fresh revision-checked move", &app, &engine);
+
+    // Absent guard (the keyboard path): stale check skipped, clear applies.
+    let stale_clear = RemoteCommand::QueueClearUpcoming {
+        expected_rev: Some(u64::MAX),
+    };
+    let app_resp = app_apply(&mut app, stale_clear.clone());
+    let (engine_resp, ..) = engine.handle_remote(stale_clear).await;
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    let unguarded = RemoteCommand::QueueClearUpcoming { expected_rev: None };
+    let app_resp = app_apply(&mut app, unguarded.clone());
+    let (engine_resp, ..) = engine.handle_remote(unguarded).await;
+    assert!(app_resp.ok && engine_resp.ok);
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("unguarded clear-upcoming", &app, &engine);
 }
 
 #[tokio::test]

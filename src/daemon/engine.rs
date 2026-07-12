@@ -163,6 +163,10 @@ pub struct DaemonEngine {
     /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
     /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
     gui_search_index: GuiSearchIndex,
+    /// The `PlayVideo` overlay child, held so the window outlives the command turn.
+    /// A replacement spawn drops (closes) the previous window — one overlay at a time,
+    /// like the TUI. The daemon has no IPC observer; closing the window is the user's.
+    video_overlay: Option<crate::util::process_tree::OwnedProcessTree>,
 }
 
 struct PlayerRuntime {
@@ -324,6 +328,7 @@ impl DaemonEngine {
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: GuiSearchIndex::default(),
+            video_overlay: None,
         }
     }
 
@@ -558,15 +563,30 @@ impl DaemonEngine {
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
             }
+            // Queue order surgery never touches the current track or playback position
+            // (no position_epoch interaction); the shared Queue methods keep both
+            // owners byte-identical for the parity harness.
+            RemoteCommand::QueueMove { from, to, .. } => {
+                if self.queue.move_item(from, to).is_none() {
+                    RemoteResponse::err("queue_index")
+                } else {
+                    self.save_session();
+                    RemoteResponse::status(self.status())
+                }
+            }
+            RemoteCommand::QueueClearUpcoming { .. } => {
+                if self.queue.clear_upcoming() > 0 {
+                    self.save_session();
+                }
+                RemoteResponse::status(self.status())
+            }
+            RemoteCommand::PlayVideo { video_id } => self.play_video(requester.as_ref(), video_id),
             // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
             // gateway stops answering bad_command; each stream replaces its arms with
             // real dispatch. Until then the reason is an honest not_supported (the
             // frontend gates these paths behind the v8-commands capability anyway).
             RemoteCommand::Rate { .. }
-            | RemoteCommand::QueueMove { .. }
             | RemoteCommand::QueueRemoveMany { .. }
-            | RemoteCommand::QueueClearUpcoming { .. }
-            | RemoteCommand::PlayVideo { .. }
             | RemoteCommand::AskAi { .. }
             | RemoteCommand::LibraryPlay { .. }
             | RemoteCommand::LibraryEnqueue { .. }
@@ -1064,6 +1084,49 @@ impl DaemonEngine {
     /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
     /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
     /// buggy client or script can't enter the queue as a permanently-unplayable row.
+    /// `PlayVideo` host: spawn the shared mpv overlay for a track and pause the audio
+    /// instance (the same intent as the TUI's admission-atomic transition, minus its
+    /// IPC observer — the daemon cannot watch the window, so closing it and resuming
+    /// audio stay with the user/GUI). One overlay at a time; a new spawn replaces it.
+    fn play_video(&mut self, requester: Option<&RequesterKey>, video_id: String) -> RemoteResponse {
+        let song = self
+            .queue
+            .ordered_iter()
+            .find(|song| song.video_id == video_id)
+            .cloned()
+            .or_else(|| self.resolve_video_id(requester, &video_id));
+        let Some(song) = song else {
+            return RemoteResponse::err("unknown_track");
+        };
+        let Some(youtube_id) = song.youtube_id().map(str::to_owned) else {
+            // Non-YouTube rows have no watch page to open a video for.
+            return RemoteResponse::err("not_supported");
+        };
+        let url = format!("https://music.youtube.com/watch?v={youtube_id}");
+        let cookies = self.config.cookies_file.clone();
+        let overlay = crate::video_overlay::spawn_video_overlay(
+            &url,
+            cookies.as_deref(),
+            self.config.video_layout,
+            None,
+        );
+        let Some(overlay) = overlay else {
+            return RemoteResponse::err("player_spawn_failed");
+        };
+        self.video_overlay = Some(overlay);
+        // Don't fight the video for audio focus. Best-effort: a dead transport just
+        // means there was nothing playing to pause.
+        if !self.playback.paused
+            && self.loaded_video_id.is_some()
+            && self
+                .send_active_player_command("cycle_pause", PlayerCmd::CyclePause)
+                .is_ok()
+        {
+            self.playback.paused = true;
+        }
+        RemoteResponse::ok("video overlay started".to_string())
+    }
+
     fn resolve_video_id(&self, requester: Option<&RequesterKey>, video_id: &str) -> Option<Song> {
         if let Some(song) = requester.and_then(|key| self.gui_search_index.resolve(key, video_id)) {
             return Some(song);

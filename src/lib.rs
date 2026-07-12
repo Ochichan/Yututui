@@ -56,6 +56,7 @@ pub mod tui;
 pub mod ui;
 pub mod update;
 pub mod util;
+pub mod video_overlay;
 pub mod zoom;
 
 #[cfg(test)]

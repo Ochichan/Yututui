@@ -90,9 +90,7 @@ impl App {
             // the GUI attaches to a daemon owner; the standalone TUI keeps its own paths.
             // One exhaustive arm so the parity harness can never see divergent reasons.
             | RemoteCommand::Rate { .. }
-            | RemoteCommand::QueueMove { .. }
             | RemoteCommand::QueueRemoveMany { .. }
-            | RemoteCommand::QueueClearUpcoming { .. }
             | RemoteCommand::PlayVideo { .. }
             | RemoteCommand::AskAi { .. }
             | RemoteCommand::LibraryPlay { .. }
@@ -216,6 +214,25 @@ impl App {
             RemoteCommand::QueueRemove { position }
             | RemoteCommand::QueueRemoveIfRevision { position, .. } => {
                 self.remote_queue_remove(position)
+            }
+            // Order surgery on the shared Queue methods: never touches the current
+            // track or playback (no player commands, no position_epoch) — the daemon
+            // arm is line-for-line the same semantics for the parity harness.
+            RemoteCommand::QueueMove { from, to, .. } => {
+                if self.queue.move_item(from, to).is_none() {
+                    (RemoteResponse::err("queue_index"), Vec::new())
+                } else {
+                    self.commit_queue_removal_ui(self.queue_popup.cursor);
+                    self.dirty = true;
+                    (RemoteResponse::status(self.status_snapshot()), Vec::new())
+                }
+            }
+            RemoteCommand::QueueClearUpcoming { .. } => {
+                if self.queue.clear_upcoming() > 0 {
+                    self.commit_queue_removal_ui(self.queue_popup.cursor);
+                    self.dirty = true;
+                }
+                (RemoteResponse::status(self.status_snapshot()), Vec::new())
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),

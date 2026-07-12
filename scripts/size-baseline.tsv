@@ -8,9 +8,10 @@
 1600	src/ui/anim.rs
 1596	src/ui/views/settings.rs
 1559	src/ai/mod.rs
+1527	src/queue.rs
 1525	src/runtime/tests.rs
-1516	src/transfer/engine/album_prefill.rs
 1516	src/desktop/gateway.rs
+1516	src/transfer/engine/album_prefill.rs
 1515	src/download/tests.rs
 1503	src/app/local_import.rs
 1502	src/transfer/session.rs
@@ -18,8 +19,8 @@
 1482	src/app/mouse.rs
 1479	src/api/mod.rs
 1469	src/transfer/engine.rs
-1389	src/transfer/matching.rs
 1389	src/settings.rs
+1389	src/transfer/matching.rs
 1315	src/daemon/mod.rs
 1251	src/tools/ytdlp.rs
 800	src/util/delivery.rs
