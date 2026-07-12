@@ -78,6 +78,21 @@ pub struct ArtworkRef {
     pub mime: Option<String>,
 }
 
+/// One synced-lyrics line on the `lyrics` topic (docs/gui/02 §7). `ms` is `None` for
+/// unsynced lines — the client renders them without a highlight clock.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LyricLineModel {
+    // ms fit a JS number safely (same rule as TrackModel::duration_ms).
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub ms: Option<u64>,
+    pub text: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

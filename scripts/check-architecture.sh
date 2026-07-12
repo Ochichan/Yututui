@@ -191,7 +191,7 @@ if grep -q 'fn store_latest' src/media/mpris.rs src/media/smtc.rs; then
   fail=1
 fi
 
-for file in src/runtime.rs src/runtime/ingress.rs src/daemon/mod.rs; do
+for file in src/runtime.rs src/runtime/ingress.rs src/daemon/mod.rs src/daemon/events.rs; do
   if matches=$(grep -nE 'must_deliver_overflow|emit_(daemon_)?direct|emit_(daemon_)?coalesced' "$file"); then
     echo "error: owner event delivery bypasses the shared ingress ($file):" >&2
     echo "$matches" >&2
@@ -204,7 +204,8 @@ grep -q 'OwnerEventIngress' src/runtime/ingress.rs || {
   fail=1
 }
 
-grep -q 'OwnerEventIngress' src/daemon/mod.rs || {
+# The daemon's event taxonomy/ingress lives in events.rs (extracted from mod.rs).
+grep -q 'OwnerEventIngress' src/daemon/events.rs || {
   echo "error: daemon runtime must use the shared owner-event ingress" >&2
   fail=1
 }

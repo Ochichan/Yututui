@@ -16,7 +16,7 @@
 //
 // Full handoff narrative: gui/WIRING.md.
 
-export type FeatureId = 'lyrics.live' | 'artwork.live' | 'core.v8-commands';
+export type FeatureId = 'artwork.live' | 'core.v8-commands';
 
 export interface WiringSpec {
   /** Human title shown in the not-wired-yet modal. */
@@ -36,14 +36,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'lyrics.live': {
-    title: 'Synced lyrics topic',
-    milestone: 'B1',
-    brief: 'docs/gui/02-remote-protocol-v8.md §7 (lyrics topic) + docs/gui/07 §1',
-    protocol:
-      '`lyrics` topic push — the demo shape { kind: "lyrics_snapshot", lines: [{ ms, text }] } is PROVISIONAL; align with the B1 wire and regenerate ts-rs types',
-    seam: 'gui/src/lib/stores/lyrics.svelte.ts already consumes the provisional shape — reconcile it with the real PushEvent variant',
-  },
   'artwork.live': {
     title: 'Artwork pipeline',
     milestone: 'B1',

@@ -67,15 +67,20 @@ then dissolves without a frontend release.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`lyrics.live` · `artwork.live` · `core.v8-commands`
+`artwork.live` · `core.v8-commands`
 
-(these two are B1 reconciles — the stores already consume the PROVISIONAL demo shapes; they
-can only be _verified/aligned_ against a real core push once B1 lands.)
+(artwork.live is a B1 reconcile — the store already consumes the shape riding the player
+snapshot; it can only be _verified/aligned_ against a real core push once B1-B lands.)
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
 `help.keymap`, `library.playlists`, `settings.accounts`, `transfer.wizard`, `ai.whygem`,
-`queue.reorder`, and `i18n.catalog` are now wired — deleted from the registry.)
+`queue.reorder`, `i18n.catalog`, and `lyrics.live` are now wired — deleted from the
+registry. `lyrics.live` rides the real B1 daemon wire: `PushEvent::LyricsSnapshot` +
+`LyricLineModel` (generated types), published by `src/daemon/lyrics_host.rs`, retained
+as the subscribe snapshot in `src/remote/publish.rs`, fetch gated on a live `lyrics`
+subscriber. Daemon-owner only — a standalone TUI owner keeps its own lyrics panel and
+pushes nothing on the topic.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -85,9 +90,9 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
 
 ### 3. Provisional — placeholder shapes to reconcile, not extend
 
-- **Lyrics wire shape** `{ kind: 'lyrics_snapshot', lines: [{ ms, text }] }` in
-  `lyrics.svelte.ts` — only the demo core speaks it. Align with the real B1 topic + ts-rs
-  types when they exist.
+- **Lyrics wire shape** (wired, `lyrics.live`): `PushEvent::LyricsSnapshot { video_id,
+  lines: LyricLineModel[] }` — canonical generated types; the daemon publishes it
+  (`src/daemon/lyrics_host.rs`), the demo core speaks the same shape.
 - **Keyboard** (wired): the live keymap read model (`stores/keymap.svelte.ts`) drives the
   dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` + `App.svelte`),
   Settings→Hotkeys, and the Help overlay from one source. The demo core speaks a PROVISIONAL

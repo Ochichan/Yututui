@@ -96,9 +96,9 @@ describe('App against the demo core', () => {
     render(App, { props: { ctx } });
     await settle();
 
-    ctx.wip.gate('lyrics.live');
+    ctx.wip.gate('artwork.live');
     await settle();
-    expect(ctx.wip.active).toBe('lyrics.live');
+    expect(ctx.wip.active).toBe('artwork.live');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
   });

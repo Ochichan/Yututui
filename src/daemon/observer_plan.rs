@@ -30,7 +30,9 @@ impl DaemonEvent {
             DaemonEvent::Player(
                 crate::player::PlayerEvent::TimePos(_) | crate::player::PlayerEvent::CacheTime(_),
             ) => ObserverPlan::PROGRESS,
+            // A lyrics result never changes player/queue/media state — skip projections.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
+            | DaemonEvent::Lyrics(_)
             | DaemonEvent::Signal
             | DaemonEvent::TelemetryWake => ObserverPlan::INERT,
             _ => ObserverPlan::PROJECTED,

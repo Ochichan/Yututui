@@ -234,6 +234,14 @@ pub enum PushEvent {
     SettingsSnapshot {
         model: Box<super::model_settings::SettingsModelV8>,
     },
+    /// `lyrics` topic: the current track's lyrics — the initial snapshot for the topic,
+    /// a clearing push (empty `lines`) on track change, and the resolved lines when the
+    /// fetch completes. `video_id` names the track the lines belong to; empty `lines`
+    /// means none found (or none yet).
+    LyricsSnapshot {
+        video_id: Option<String>,
+        lines: Vec<super::model::LyricLineModel>,
+    },
 }
 
 /// One catalog's slice of a completed search: a concrete source (never `all`), its

@@ -22,6 +22,7 @@ mod effects;
 mod engine;
 mod events;
 mod gui_search_pending;
+mod lyrics_host;
 mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
@@ -317,6 +318,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
         record_daemon_event(&scrobble_event_tx, DaemonEvent::Scrobble(event));
     });
+    // Lyrics topic host (B1): keeps the session `lyrics` topic tracking the current
+    // song; fetches only while a lyrics subscriber exists.
+    let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -627,6 +631,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
             DaemonEvent::Scrobble(event) => log_scrobble_event(event),
+            DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
+                lyrics_host.on_result(&mut publisher, video_id, &lines);
+            }
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 engine.suppress_transport_recovery_for_shutdown();
@@ -691,7 +698,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         }
         // Preserve origin's baseline-refresh/event ordering on every dispatched daemon event.
         // The view is borrowed and unchanged topics do not allocate or serialize models.
-        publisher.observe(&engine.core_view());
+        let view = engine.core_view();
+        publisher.observe(&view);
+        lyrics_host.observe(&mut publisher, view.queue.current());
     }
     shutdown.trigger();
     engine.suppress_transport_recovery_for_shutdown();

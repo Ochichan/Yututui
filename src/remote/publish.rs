@@ -157,6 +157,11 @@ pub struct Publisher {
     /// immune to forgotten-field drift, unlike a hand-listed fingerprint struct.
     last_settings: Option<Vec<u8>>,
     settings_rev: u64,
+    /// Retained serialized `lyrics_snapshot` payload — the event-driven lyrics lane's
+    /// initial-snapshot source for `handle_subscribe`. Unlike player/queue/settings,
+    /// lyrics never ride `observe`: the host publishes explicitly on track change and
+    /// fetch completion (B1, docs/gui/02 §7).
+    last_lyrics: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -178,6 +183,7 @@ impl Publisher {
             last_queue_rev: None,
             last_settings: None,
             settings_rev: 0,
+            last_lyrics: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -336,6 +342,9 @@ impl Publisher {
                         Topic::Settings => Some(event_payload(&PushEvent::SettingsSnapshot {
                             model: Box::new(settings_model(view, self.settings_rev)),
                         })),
+                        // Event-driven lane: serve the retained payload (None before the
+                        // host's first publish — the client's empty default covers that).
+                        Topic::Lyrics => self.last_lyrics.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
                         _ => None,
@@ -380,6 +389,27 @@ impl Publisher {
                 )
             })
             .unwrap_or(false)
+    }
+
+    /// Whether any session wants lyrics right now — the host gates its lrclib fetches
+    /// on this so a headless daemon with no GUI attached never talks to the network.
+    pub fn lyrics_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Lyrics)
+    }
+
+    /// Publish the current track's lyrics (`lines` empty = cleared / none found). The
+    /// payload is retained as the topic's initial snapshot for later subscribers, and
+    /// broadcast only when someone is subscribed.
+    pub fn publish_lyrics(
+        &mut self,
+        video_id: Option<String>,
+        lines: Vec<super::proto::LyricLineModel>,
+    ) {
+        let payload = event_payload(&PushEvent::LyricsSnapshot { video_id, lines });
+        self.last_lyrics = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Lyrics) {
+            self.hub.broadcast(Topic::Lyrics, &payload);
+        }
     }
 
     /// Fan a completed GUI search out on the `search` topic (one-off event, not a
@@ -1237,6 +1267,47 @@ mod tests {
             "a subscribed settings change still pushes"
         );
         assert_eq!(settings_revs(&changed), vec![3]);
+    }
+
+    #[test]
+    fn lyrics_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
+        use super::super::proto::LyricLineModel;
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let queue = Queue::default();
+
+        assert!(!publisher.lyrics_subscribed());
+        // No subscriber: publish retains silently.
+        publisher.publish_lyrics(
+            Some("v1".to_owned()),
+            vec![LyricLineModel {
+                ms: Some(5_000),
+                text: "line".to_owned(),
+            }],
+        );
+        assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+        // Subscribe: the retained payload is the initial snapshot, before the reply.
+        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Lyrics]);
+        let lines = drain(&mut rx);
+        assert_eq!(kinds(&lines), vec!["event:lyrics", "raw:frame"]);
+        let SessionLine::Event { payload, .. } = &lines[0] else {
+            panic!("expected the retained lyrics snapshot");
+        };
+        match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+            PushEvent::LyricsSnapshot { video_id, lines } => {
+                assert_eq!(video_id.as_deref(), Some("v1"));
+                assert_eq!(lines.len(), 1);
+                assert_eq!(lines[0].ms, Some(5_000));
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(publisher.lyrics_subscribed());
+
+        // Subscribed: a publish broadcasts (e.g. the track-change clearing push).
+        publisher.publish_lyrics(Some("v2".to_owned()), Vec::new());
+        let lines = drain(&mut rx);
+        assert_eq!(kinds(&lines), vec!["event:lyrics"]);
     }
 
     #[test]

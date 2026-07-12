@@ -22,6 +22,9 @@ pub(super) enum DaemonEvent {
     /// Scrobble-actor notices. The daemon has no UI and never runs the interactive auth
     /// flow (`ytt auth lastfm` does), so these only reach the log.
     Scrobble(crate::scrobble::ScrobbleEvent),
+    /// The lyrics actor resolved (or failed to find) lines for a track. Fetches are
+    /// gated on a live `lyrics` subscriber; see [`super::lyrics_host::LyricsHost`].
+    Lyrics(crate::lyrics::LyricsEvent),
     /// A playback-self-heal yt-dlp update check finished (see
     /// [`super::engine::EngineEffect::YtdlpSelfHeal`]).
     YtdlpHeal {
@@ -133,6 +136,9 @@ impl DaemonEvent {
                     }
                 }
             },
+            DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
@@ -159,6 +165,7 @@ impl DaemonEvent {
             DaemonEvent::Media(_) => "media",
             DaemonEvent::MediaArt(_) => "media_art",
             DaemonEvent::Scrobble(_) => "scrobble",
+            DaemonEvent::Lyrics(_) => "lyrics",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",

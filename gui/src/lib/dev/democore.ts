@@ -6,8 +6,7 @@
 //
 // Wiring agents: when you connect a new feature, teach it here too (answer the command,
 // push the topic) so the browser demo keeps exercising the whole surface. Keep shapes
-// identical to the generated protocol types — this file must never invent wire forms
-// except the PROVISIONAL lyrics shape flagged in lyrics.svelte.ts.
+// identical to the generated protocol types — this file must never invent wire forms.
 
 import type { InEnvelope, OutEnvelope } from '../ipc/envelope';
 import type { Transport } from '../ipc/transport';
@@ -1473,7 +1472,7 @@ export class DemoCoreTransport implements Transport {
       v: 1,
       kind: 'event',
       topic: 'lyrics',
-      // PROVISIONAL shape — see TODO(wire:B1/lyrics.live) in lyrics.svelte.ts.
+      // Canonical B1 shape — PushEvent::LyricsSnapshot (generated LyricLineModel lines).
       payload: {
         kind: 'lyrics_snapshot',
         video_id: t?.video_id ?? null,

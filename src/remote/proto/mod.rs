@@ -33,7 +33,7 @@ pub use command::{
     REMOTE_MAX_TOPICS, REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand,
     RemoteSettingChange,
 };
-pub use model::{ArtworkRef, TrackModel};
+pub use model::{ArtworkRef, LyricLineModel, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
