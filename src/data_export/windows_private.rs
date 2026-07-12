@@ -236,47 +236,6 @@ fn require_real_directory(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Open the stable cross-process ownership lock with a protected current-user-only DACL.
-///
-/// The file is deliberately never removed. While any process holds it, read/write sharing allows
-/// peers to acquire OS locks on the same file but delete sharing is denied so the rendezvous name
-/// cannot be replaced underneath live owners.
-pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<File> {
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "personal-data lock has no parent directory",
-        )
-    })?;
-    let _parent_chain = verify_private_destination_chain(parent)?;
-
-    let current_user = current_user_sid()?;
-    let private_acl = AclBuffer::for_sid(current_user.as_ptr())?;
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL_ACCESS | WRITE_DAC_ACCESS)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "personal-data lock is not a regular non-reparse file",
-        ));
-    }
-
-    apply_private_dacl(&file, private_acl.as_ptr())?;
-    verify_private_dacl(&file, current_user.as_ptr())?;
-    let identity = file_identity(&file)?;
-    revalidate_path_identity(path, identity)?;
-    Ok(file)
-}
-
 fn verify_directory_security(
     directory: &File,
     trusted: &TrustedSids,

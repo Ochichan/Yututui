@@ -283,7 +283,7 @@ pub async fn send_to(
     send_to_instance_with_request_id(instance, command, &request_id).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn send_to_instance(
     instance: InstanceFile,
     command: RemoteCommand,
