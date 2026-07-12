@@ -780,7 +780,25 @@ where
         let backup_name = backup
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "backup has no basename"))?;
+        #[cfg(not(windows))]
         let backup_generation = original.publish_noreplace(&parent, backup_name)?;
+        #[cfg(windows)]
+        let backup_generation = {
+            // A second hard link to the live destination prevents MoveFileExW from replacing its
+            // original name on Windows. Preserve the exact validated bytes in an independent,
+            // exclusive generation instead.
+            let mut backup = parent.create_new(backup_name)?;
+            let mut source = original.file()?.try_clone()?;
+            source.seek(SeekFrom::Start(0))?;
+            let copied = copy_exact_snapshot(&mut source, backup.file_mut()?, initial.len())?;
+            if copied != initial.len() {
+                return Err(io::Error::other(
+                    "downloaded audio changed while creating its recovery backup",
+                ));
+            }
+            backup.sync_durable()?;
+            backup
+        };
         if let Some(fault) = fault {
             fault(StagedAudioRewriteFaultPoint::BeforePublish, &stage)?;
         }
