@@ -13,9 +13,9 @@ pub fn render_dj_gem(frame: &mut Frame, app: &App, inner: Rect) {
     let asset = if app.ai.thinking {
         &generated::dj_gem::DJ_GEM_THINKING
     } else if app.ai_mascot_active() {
-        &generated::dj_gem::DJ_GEM_GROOVE
+        &generated::cat_laptop::CAT_LAPTOP_GROOVE
     } else {
-        &generated::dj_gem::DJ_GEM_IDLE
+        &generated::cat_laptop::CAT_LAPTOP_IDLE
     };
     if inner.width < TEXT_W + asset.width || inner.height < asset.height + 3 {
         return;
@@ -109,63 +109,71 @@ mod tests {
         }
     }
 
+    const GROOVE_ASSETS: [&crate::ui::mascot::asset::MascotAsset; 2] = [
+        &generated::dj_gem::DJ_GEM_GROOVE,
+        &generated::cat_laptop::CAT_LAPTOP_GROOVE,
+    ];
+
     #[test]
     fn groove_animation_stays_under_cell_change_budget() {
-        let asset = &generated::dj_gem::DJ_GEM_GROOVE;
-        let total_cells = usize::from(asset.width) * usize::from(asset.height);
-        let max_changed = total_cells * 15 / 100;
-        for pair in asset.frames.windows(2) {
-            let changed = changed_cells(pair[0].lines, pair[1].lines);
+        for asset in GROOVE_ASSETS {
+            let total_cells = usize::from(asset.width) * usize::from(asset.height);
+            let max_changed = total_cells * 15 / 100;
+            for pair in asset.frames.windows(2) {
+                let changed = changed_cells(pair[0].lines, pair[1].lines);
+                assert!(
+                    changed <= max_changed,
+                    "{} changed {changed}/{total_cells} cells",
+                    asset.name
+                );
+            }
+
+            let changed = changed_cells(
+                asset.frames.last().unwrap().lines,
+                asset.frames.first().unwrap().lines,
+            );
             assert!(
                 changed <= max_changed,
-                "{} changed {changed}/{total_cells} cells",
+                "{} loop seam changed {changed}/{total_cells} cells",
                 asset.name
             );
         }
-
-        let changed = changed_cells(
-            asset.frames.last().unwrap().lines,
-            asset.frames.first().unwrap().lines,
-        );
-        assert!(
-            changed <= max_changed,
-            "{} loop seam changed {changed}/{total_cells} cells",
-            asset.name
-        );
     }
 
     #[test]
     fn groove_loop_returns_to_rest_pose_without_a_large_seam() {
-        let asset = &generated::dj_gem::DJ_GEM_GROOVE;
-        let total_cells = usize::from(asset.width) * usize::from(asset.height);
-        let changed = changed_cells(
-            asset.frames.last().unwrap().lines,
-            asset.frames.first().unwrap().lines,
-        );
-        assert!(
-            changed * 100 <= total_cells * 6,
-            "{} loop seam changed {changed}/{total_cells} cells",
-            asset.name
-        );
-        assert_eq!(
-            nonblank_bounds(asset.frames.last().unwrap().lines),
-            nonblank_bounds(asset.frames.first().unwrap().lines),
-            "{} loop seam bounds should not jump",
-            asset.name
-        );
+        for asset in GROOVE_ASSETS {
+            let total_cells = usize::from(asset.width) * usize::from(asset.height);
+            let changed = changed_cells(
+                asset.frames.last().unwrap().lines,
+                asset.frames.first().unwrap().lines,
+            );
+            assert!(
+                changed * 100 <= total_cells * 6,
+                "{} loop seam changed {changed}/{total_cells} cells",
+                asset.name
+            );
+            assert_eq!(
+                nonblank_bounds(asset.frames.last().unwrap().lines),
+                nonblank_bounds(asset.frames.first().unwrap().lines),
+                "{} loop seam bounds should not jump",
+                asset.name
+            );
+        }
     }
 
     #[test]
     fn groove_animation_keeps_nonblank_bounds_stable() {
-        let asset = &generated::dj_gem::DJ_GEM_GROOVE;
-        let expected = nonblank_bounds(asset.frames[0].lines).unwrap();
-        for frame in asset.frames {
-            assert_eq!(
-                nonblank_bounds(frame.lines),
-                Some(expected),
-                "{} frame bounds should not jump by a cell",
-                asset.name
-            );
+        for asset in GROOVE_ASSETS {
+            let expected = nonblank_bounds(asset.frames[0].lines).unwrap();
+            for frame in asset.frames {
+                assert_eq!(
+                    nonblank_bounds(frame.lines),
+                    Some(expected),
+                    "{} frame bounds should not jump by a cell",
+                    asset.name
+                );
+            }
         }
     }
 
@@ -216,11 +224,15 @@ mod tests {
 
     #[test]
     fn retro_asset_is_ascii_safe() {
-        for asset in [
-            &generated::dj_gem::DJ_GEM_IDLE_RETRO,
-            &generated::dj_gem::DJ_GEM_GROOVE_RETRO,
-            &generated::dj_gem::DJ_GEM_THINKING_RETRO,
-        ] {
+        let retro_assets: Vec<_> = generated::all_assets()
+            .iter()
+            .filter(|asset| asset.name.ends_with("_retro"))
+            .collect();
+        assert!(
+            retro_assets.len() >= 5,
+            "every asset family should register its retro variants"
+        );
+        for asset in retro_assets {
             for frame in asset.frames {
                 for line in frame.lines {
                     for ch in line.chars() {

@@ -531,18 +531,34 @@ fn ai_mascot_animation_redraws_only_when_pose_can_change() {
     app.playback.paused = false;
     app.config.animations.master = true;
     app.config.animations.fps = 30;
+    let asset = &crate::ui::mascot::generated::cat_laptop::CAT_LAPTOP_GROOVE;
 
     assert!(app.animation_active());
     assert_eq!(app.animation_tick_fps(), 30);
-    assert_eq!(app.animation_draw_fps(), 3);
+    assert_eq!(app.animation_draw_fps(), asset.fps);
 
+    let mut last_redrawn_frame = crate::ui::mascot::render::frame_index_for_tick(
+        app.anim.anim_frame,
+        app.animation_tick_fps(),
+        asset,
+    );
     let mut redraws = 0;
     for _ in 0..30 {
         app.dirty = false;
         app.update(Msg::AnimTick);
+        let frame = crate::ui::mascot::render::frame_index_for_tick(
+            app.anim.anim_frame,
+            app.animation_tick_fps(),
+            asset,
+        );
         redraws += usize::from(app.dirty);
+        if app.dirty {
+            last_redrawn_frame = frame;
+        } else {
+            assert_eq!(frame, last_redrawn_frame, "pose changed without redraw");
+        }
     }
-    assert_eq!(redraws, 3);
+    assert_eq!(redraws, usize::from(asset.fps));
 }
 
 #[test]
