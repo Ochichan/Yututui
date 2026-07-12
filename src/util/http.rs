@@ -83,6 +83,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "GitHub Windows loopback can abort or stall this raw-socket fixture"
+    )]
     async fn bounded_client_exposes_redirects_without_following_them() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -110,6 +114,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "GitHub Windows loopback can abort or stall this raw-socket fixture"
+    )]
     async fn streamed_body_cap_rejects_chunked_overflow() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
