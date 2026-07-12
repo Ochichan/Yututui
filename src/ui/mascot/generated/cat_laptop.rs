@@ -1,5 +1,8 @@
-// Hand-maintained braille/ASCII art. Every frame must stay exactly 24x15 single-width
-// cells, groove frames within the changed-cell budget — see the tests in ui/mascot/mod.rs.
+// Hand-maintained braille/ASCII art (no in-repo generator; the old "YutuAssetForge /
+// .djgemasset" header was stale). If an asset pipeline is ever revived for this file it
+// must preserve the `regions` color maps and the heavy retro glyph ramp (+ # @ 8) below.
+// Every frame must stay exactly 24x15 single-width cells, groove frames within the
+// changed-cell budget — see the tests in ui/mascot/mod.rs.
 use crate::theme::ThemeRole;
 use crate::ui::mascot::asset::{MascotAsset, MascotFrame, MascotRegion, MascotStyle};
 

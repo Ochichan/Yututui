@@ -27,7 +27,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         width: area.width,
         height: 1,
     };
-    control_box::render_title_row(frame, app, row(0), animated);
+    // Mini replaces the whole UI, so it is the one caller allowed to marquee the title
+    // (no competing marquee surface can render in the same frame — see render_title_row).
+    control_box::render_title_row(frame, app, row(0), animated, true);
     if area.height >= 2 {
         control_box::render_seekbar(frame, app, row(1), animated);
     }
