@@ -64,6 +64,41 @@ pub const PERSIST_CONTROL_QUEUE: QueuePolicy = QueuePolicy::Bounded {
     capacity: 32,
 };
 
+pub const AI_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "ai",
+    capacity: 64,
+};
+
+pub const LYRICS_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
+    name: "lyrics",
+    capacity: 1,
+};
+
+pub const TRANSFER_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "transfer",
+    capacity: 64,
+};
+
+pub const TRANSFER_CONTROL_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "transfer-control",
+    capacity: 1,
+};
+
+pub const SCROBBLE_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "scrobble",
+    capacity: 512,
+};
+
+pub const SCROBBLE_CONTROL_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "scrobble-control",
+    capacity: 1,
+};
+
+pub const DESKTOP_GATEWAY_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "desktop-gateway",
+    capacity: 512,
+};
+
 pub fn bounded_channel<T>(policy: QueuePolicy) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     let capacity = policy
         .capacity()
@@ -86,6 +121,13 @@ mod tests {
         assert_eq!(ART_RESIZE_QUEUE.capacity(), Some(8));
         assert_eq!(MEDIA_ARTWORK_QUEUE.capacity(), Some(128));
         assert_eq!(PERSIST_CONTROL_QUEUE.capacity(), Some(32));
+        assert_eq!(AI_QUEUE.capacity(), Some(64));
+        assert_eq!(LYRICS_QUEUE.capacity(), Some(1));
+        assert_eq!(TRANSFER_QUEUE.capacity(), Some(64));
+        assert_eq!(TRANSFER_CONTROL_QUEUE.capacity(), Some(1));
+        assert_eq!(SCROBBLE_QUEUE.capacity(), Some(512));
+        assert_eq!(SCROBBLE_CONTROL_QUEUE.capacity(), Some(1));
+        assert_eq!(DESKTOP_GATEWAY_QUEUE.capacity(), Some(512));
         assert_eq!(
             QueuePolicy::Bounded {
                 name: "tiny",

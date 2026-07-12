@@ -12,6 +12,9 @@ pub enum StreamingMsg {
     Resolved {
         video_id: String,
         stream_url: String,
+        /// True only for a forced resolve started after the self-heal tool update.
+        /// An older ordinary prefetch for the same track must never consume the heal latch.
+        self_heal: bool,
     },
     /// Related tracks returned by the non-DJ Gem streaming fallback, each tagged with the source it
     /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can

@@ -71,7 +71,9 @@ fn runtime_base() -> PathBuf {
 /// Private app runtime directory. Unix callers get a `0700` directory.
 pub fn app_runtime_dir() -> io::Result<PathBuf> {
     let dir = runtime_base().join(format!("yututui-{}", uid_tag()));
-    safe_fs::ensure_private_dir(&dir)?;
+    // Runtime sockets/descriptors are coordination state, not durable user persistence. They
+    // must remain available before writer-lease selection and to a read-only secondary.
+    safe_fs::ensure_private_coordination_dir(&dir)?;
     Ok(dir)
 }
 

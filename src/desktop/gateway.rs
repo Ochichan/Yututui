@@ -11,29 +11,71 @@
 //! ([`GatewayHandle::send`]) and the session fans `event`/`reply` server frames back to the
 //! window as [`GatewayEvent::Frame`] (rendered via `bridge::receive_script`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::{Instant, timeout};
 
 use crate::desktop::bridge::{InEnvelope, OutEnvelope, OutKind};
 use crate::remote::endpoint;
+#[cfg(test)]
+use crate::remote::proto::Topic;
 use crate::remote::proto::{
     ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, InstanceFile, InstanceMode,
-    PROTOCOL_VERSION, PushEvent, RemoteCommand, RemoteResponse, ServerFrame, Topic,
+    PROTOCOL_VERSION, PushEvent, RemoteCommand, ServerFrame,
+};
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
+
+mod page_lifetime;
+
+use page_lifetime::{
+    FrontendCorrelation, SubscriptionState, activate_page_state, apply_subscription_change,
+    correlation, drain_offline_commands, event_envelope, initial_topics, parse_topics,
+    reconcile_subscriptions, reject_offline_command, reject_pending, reply_envelope,
+    request_identity, validate_page_id,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// A subscription is owner-loop work and can be admitted before its snapshot/reply is produced.
+/// Bound that acknowledgement window so a wedged owner cannot leave the tray optimistically
+/// "subscribed" forever; reconnect replays the watch lane's latest desired snapshot.
+#[cfg(not(test))]
+const SUBSCRIPTION_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SUBSCRIPTION_REPLY_TIMEOUT: Duration = Duration::from_millis(50);
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
+
+/// One serialized subscription transition. The server replies once per wire operation; only
+/// after every reply succeeds may `run_session` advance its confirmed applied state.
+struct PendingSubscriptionTransition {
+    target: SubscriptionState,
+    remaining_ids: HashSet<u64>,
+    deadline: Instant,
+}
+
+impl PendingSubscriptionTransition {
+    fn new(target: SubscriptionState, ids: impl IntoIterator<Item = u64>) -> Self {
+        let remaining_ids: HashSet<u64> = ids.into_iter().collect();
+        debug_assert!(!remaining_ids.is_empty());
+        Self {
+            target,
+            remaining_ids,
+            deadline: Instant::now() + SUBSCRIPTION_REPLY_TIMEOUT,
+        }
+    }
+}
 
 /// Live connection state, mirrored into the frontend's `connection` store as `conn` frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,48 +127,182 @@ pub enum GatewayEvent {
 }
 
 /// Handle to the gateway thread; dropping it (or calling [`GatewayHandle::stop`]) tears the
-/// session down.
+/// session down and joins the worker before returning.
 pub struct GatewayHandle {
     shutdown: Option<oneshot::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     commands: mpsc::Sender<OutEnvelope>,
+    /// Latest desired GUI topic set. This lane is independent from the bounded command queue:
+    /// subscription churn replaces one tiny snapshot instead of consuming command capacity.
+    subscriptions: watch::Sender<SubscriptionState>,
+    online: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayAdmissionError {
+    Offline,
+    InvalidPage,
+    InvalidSubscription,
+    Delivery(DeliveryError),
+}
+
+impl GatewayAdmissionError {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::InvalidPage => "bad_page_id",
+            Self::InvalidSubscription => "bad_subscription",
+            Self::Delivery(error) => error.reason(),
+        }
+    }
+
+    fn delivery_error(self) -> DeliveryError {
+        match self {
+            // `DeliveryError` is shared across actors and has no gateway-specific offline
+            // variant. `send_or_reject` retains the precise machine reason for the UI.
+            Self::Offline => DeliveryError::Closed,
+            Self::InvalidPage | Self::InvalidSubscription => DeliveryError::StaleOrFull,
+            Self::Delivery(error) => error,
+        }
+    }
 }
 
 impl GatewayHandle {
     pub fn stop(mut self) {
+        self.shutdown_and_join();
+    }
+
+    fn shutdown_and_join(&mut self) {
+        self.online.store(false, Ordering::Release);
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            tracing::warn!(target: "ytt_desktop", "gateway thread panicked during shutdown");
+        }
     }
 
-    /// Forward a webview envelope (`cmd`/`req`/`sub`/`unsub`) to the live session. Queued
-    /// commands are dropped when the session next (re)connects, so a send while offline is a
-    /// harmless no-op rather than a stale replay.
-    pub fn send(&self, env: OutEnvelope) {
-        let _ = self.commands.try_send(env);
+    /// Forward a webview envelope (`cmd`/`req`/`sub`/`unsub`) to the live session. Commands
+    /// are rejected while offline; subscription declarations remain admissible so their desired
+    /// state can be replayed after reconnect. Saturation and shutdown remain typed outcomes.
+    pub fn send(&self, env: OutEnvelope) -> DeliveryResult {
+        self.admit(env)
+            .map_err(GatewayAdmissionError::delivery_error)
+    }
+
+    fn admit(&self, env: OutEnvelope) -> Result<DeliveryReceipt, GatewayAdmissionError> {
+        if matches!(env.kind, OutKind::Sub | OutKind::Unsub) {
+            return self.update_subscriptions(&env);
+        }
+        self.activate_page(&env)?;
+        if matches!(env.kind, OutKind::Cmd | OutKind::Req) && !self.online.load(Ordering::Acquire) {
+            return Err(GatewayAdmissionError::Offline);
+        }
+        match self.commands.try_send(env) {
+            Ok(()) => Ok(DeliveryReceipt::Enqueued),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(GatewayAdmissionError::Delivery(DeliveryError::Busy))
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(GatewayAdmissionError::Delivery(DeliveryError::Closed))
+            }
+        }
+    }
+
+    fn update_subscriptions(
+        &self,
+        env: &OutEnvelope,
+    ) -> Result<DeliveryReceipt, GatewayAdmissionError> {
+        validate_page_id(env.page_id.as_deref())?;
+        let Some(topics) = parse_topics(&env.payload) else {
+            return Err(GatewayAdmissionError::InvalidSubscription);
+        };
+        let changed = self.subscriptions.send_if_modified(|desired| {
+            let page_changed = activate_page_state(env.page_id.as_deref(), desired);
+            let topics_changed = apply_subscription_change(env.kind, &topics, &mut desired.topics);
+            page_changed || topics_changed
+        });
+        Ok(DeliveryReceipt::Coalesced {
+            replaced_existing: changed,
+            evicted_oldest: false,
+        })
+    }
+
+    /// Observe a page-aware command before it enters the bounded lane. This closes the previous
+    /// page's subscription lifetime even if the replacement issues a command before its stores
+    /// declare topics. Legacy envelopes omit `page_id` and retain their previous behavior.
+    fn activate_page(&self, env: &OutEnvelope) -> Result<(), GatewayAdmissionError> {
+        validate_page_id(env.page_id.as_deref())?;
+        self.subscriptions
+            .send_if_modified(|desired| activate_page_state(env.page_id.as_deref(), desired));
+        Ok(())
+    }
+}
+
+/// Try to admit one webview envelope and render an immediate local error for a correlated
+/// `req`/`cmd` when the bounded queue cannot accept it. Subscription declarations bypass that
+/// queue and atomically replace the separate latest-desired-state lane.
+pub(crate) fn send_or_reject(
+    handle: Option<&GatewayHandle>,
+    env: OutEnvelope,
+) -> Option<InEnvelope> {
+    let correlation = correlation(&env);
+    let kind = env.kind;
+    let name = env.name.clone();
+    let result = match handle {
+        Some(handle) => handle.admit(env),
+        None => Err(GatewayAdmissionError::Delivery(DeliveryError::Closed)),
+    };
+    match result {
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(
+                target: "ytt_desktop",
+                envelope_kind = ?kind,
+                envelope_name = %name,
+                delivery_outcome = error.reason(),
+                correlated = correlation.is_some(),
+                "gateway command was not accepted"
+            );
+            correlation.map(|correlation| {
+                InEnvelope::err_for_page(
+                    correlation.id,
+                    correlation.page_id,
+                    serde_json::json!({ "reason": error.reason() }),
+                )
+            })
+        }
     }
 }
 
 impl Drop for GatewayHandle {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
+        self.shutdown_and_join();
     }
 }
 
-/// Spawn the gateway thread. `emit` runs on the gateway thread; the platform wrapper must
-/// forward to the loop via `EventLoopProxy::send_event` (it is `!Send`-safe to just clone a
-/// proxy into the closure).
+/// Spawn the gateway thread. `emit` runs on the gateway thread and must not block; the platform
+/// wrapper forwards to the loop via `EventLoopProxy::send_event` (it is `!Send`-safe to just clone
+/// a proxy into the closure).
 pub fn spawn<F>(emit: F) -> GatewayHandle
 where
     F: Fn(GatewayEvent) + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     // Bounded with a generous cap; a webview that floods commands while the session is stalled
-    // drops new envelopes (`try_send`) rather than growing the queue without bound.
-    let (cmd_tx, cmd_rx) = mpsc::channel(512);
+    // gets an explicit admission failure rather than growing the queue without bound.
+    let (cmd_tx, cmd_rx) = crate::util::backpressure::bounded_channel(
+        crate::util::backpressure::DESKTOP_GATEWAY_QUEUE,
+    );
+    let (subscription_tx, subscription_rx) = watch::channel(SubscriptionState::default());
+    let online = Arc::new(AtomicBool::new(false));
+    let thread_online = Arc::clone(&online);
+    let request_namespace: Arc<str> = Arc::from(crate::remote::requests::fresh_request_id());
+    let thread_request_namespace = Arc::clone(&request_namespace);
     let builder = std::thread::Builder::new().name("yututray-gateway".to_string());
-    if let Err(e) = builder.spawn(move || {
+    let worker = match builder.spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -136,13 +312,27 @@ where
             }));
             return;
         };
-        rt.block_on(run(emit, shutdown_rx, cmd_rx));
+        rt.block_on(run(
+            emit,
+            shutdown_rx,
+            cmd_rx,
+            subscription_rx,
+            thread_online,
+            thread_request_namespace,
+        ));
     }) {
-        tracing::warn!(target: "ytt_desktop", error = %e, "could not start gateway thread");
-    }
+        Ok(worker) => Some(worker),
+        Err(e) => {
+            tracing::warn!(target: "ytt_desktop", error = %e, "could not start gateway thread");
+            None
+        }
+    };
     GatewayHandle {
         shutdown: Some(shutdown_tx),
+        worker,
         commands: cmd_tx,
+        subscriptions: subscription_tx,
+        online,
     }
 }
 
@@ -150,42 +340,86 @@ async fn run<F: Fn(GatewayEvent)>(
     emit: F,
     mut shutdown_rx: oneshot::Receiver<()>,
     mut cmd_rx: mpsc::Receiver<OutEnvelope>,
+    mut subscription_rx: watch::Receiver<SubscriptionState>,
+    online: Arc<AtomicBool>,
+    request_namespace: Arc<str>,
 ) {
+    online.store(false, Ordering::Release);
     let mut backoff = BACKOFF_MIN;
-    // The union of topics any window asked for, kept ACROSS sessions. Subscriptions are
-    // declarations of interest, not one-shot actions: a window that booted while the core
-    // was down (or that outlives a core restart) sent its one `sub` into a dead session,
-    // so every fresh session must replay the set or that window stays empty forever.
-    let mut desired: Vec<Topic> = Vec::new();
     loop {
         emit(GatewayEvent::Connection(ConnState::Connecting));
-        match open_session().await {
+        let opened = tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => {
+                online.store(false, Ordering::Release);
+                drain_offline_commands(&mut cmd_rx, &emit, "shutdown");
+                return;
+            }
+            opened = open_session() => opened,
+        };
+        let reason = match opened {
             Ok((conn, ack)) => {
+                // Reject commands that raced the previous session's offline transition. Topic
+                // intent lives in `subscription_rx`, so it cannot be drained or lost here.
+                drain_offline_commands(&mut cmd_rx, &emit, "offline");
                 backoff = BACKOFF_MIN; // healthy connection resets the backoff
+                online.store(true, Ordering::Release);
                 emit(GatewayEvent::Connection(ConnState::Online {
                     protocol_version: ack.version,
                     capabilities: ack.capabilities,
                     owner_mode: ack.owner_mode,
                 }));
-                let reason =
-                    run_session(conn, &mut shutdown_rx, &mut cmd_rx, &mut desired, &emit).await;
+                let reason = run_session(
+                    conn,
+                    &mut shutdown_rx,
+                    &mut cmd_rx,
+                    &mut subscription_rx,
+                    &emit,
+                    online.as_ref(),
+                    request_namespace.as_ref(),
+                )
+                .await;
+                online.store(false, Ordering::Release);
                 tracing::info!(target: "ytt_desktop", %reason, "gateway session ended");
-                emit(GatewayEvent::Connection(ConnState::Offline {
-                    reason: reason.clone(),
-                }));
-                if reason == "shutdown" {
-                    return;
-                }
+                reason
             }
             Err(reason) => {
-                emit(GatewayEvent::Connection(ConnState::Offline { reason }));
+                online.store(false, Ordering::Release);
+                reason
             }
+        };
+        // Commands left in the local lane never reached the session. Reject those definitively
+        // before the offline notification causes the frontend to conservatively classify any
+        // still-pending mutation as confirmation-lost.
+        drain_offline_commands(&mut cmd_rx, &emit, &reason);
+        emit(GatewayEvent::Connection(ConnState::Offline {
+            reason: reason.clone(),
+        }));
+        if reason == "shutdown" {
+            return;
         }
 
-        // Wait out the backoff, but wake immediately on shutdown.
-        tokio::select! {
-            _ = &mut shutdown_rx => return,
-            _ = tokio::time::sleep(backoff) => {}
+        // Subscription updates need no consumer during backoff: the watch lane retains only
+        // the latest bounded snapshot and the next session replays it in full.
+        let delay = tokio::time::sleep(backoff);
+        tokio::pin!(delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut shutdown_rx => {
+                    online.store(false, Ordering::Release);
+                    drain_offline_commands(&mut cmd_rx, &emit, "shutdown");
+                    return;
+                },
+                _ = &mut delay => break,
+                maybe = cmd_rx.recv() => match maybe {
+                    Some(env) => reject_offline_command(env, &emit, &reason),
+                    None => {
+                        online.store(false, Ordering::Release);
+                        return;
+                    }
+                }
+            }
         }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
@@ -241,114 +475,268 @@ async fn connect_and_hello(instance: InstanceFile) -> Result<(Stream, HelloAck),
     Ok((conn, ack))
 }
 
+/// Start the next delta only when the previous subscription transition has been acknowledged.
+/// A transition with no wire delta (for example a page generation change with no page-owned
+/// topics) is confirmed locally and needs no pending entry.
+async fn begin_subscription_transition(
+    conn: &Stream,
+    next_id: &mut u64,
+    applied: &mut SubscriptionState,
+    desired: &SubscriptionState,
+) -> io::Result<Option<PendingSubscriptionTransition>> {
+    let ids = reconcile_subscriptions(conn, next_id, applied, desired).await?;
+    if ids.is_empty() {
+        applied.clone_from(desired);
+        Ok(None)
+    } else {
+        Ok(Some(PendingSubscriptionTransition::new(
+            desired.clone(),
+            ids,
+        )))
+    }
+}
+
+fn subscription_rejection_reason(resp: &crate::remote::proto::RemoteResponse) -> &'static str {
+    if resp.reason.as_deref() == Some("server_busy") {
+        "subscription_busy"
+    } else {
+        "subscription_rejected"
+    }
+}
+
 /// Drive an established session until it closes; returns the machine reason.
 async fn run_session<F: Fn(GatewayEvent)>(
     conn: Stream,
     shutdown_rx: &mut oneshot::Receiver<()>,
     cmd_rx: &mut mpsc::Receiver<OutEnvelope>,
-    desired: &mut Vec<Topic>,
+    subscription_rx: &mut watch::Receiver<SubscriptionState>,
     emit: &F,
+    online: &AtomicBool,
+    request_namespace: &str,
 ) -> String {
+    if !matches!(
+        shutdown_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ) {
+        online.store(false, Ordering::Release);
+        return "shutdown".to_string();
+    }
     let mut reader = BufReader::new(&conn);
     let mut next_id = 1u64;
-    // Session id of a forwarded `req` → the frontend's own request id, so its `reply` can be
-    // correlated back. Only `req` frames insert; every reply removes; the map dies with the
-    // session, so it cannot leak across reconnects.
-    let mut pending: HashMap<u64, u64> = HashMap::new();
-
-    // Commands queued while we were offline are stale on this fresh session — discard them,
-    // EXCEPT sub/unsub, which fold into `desired` so the (re)subscribe below replays them.
-    drain_offline_envelopes(cmd_rx, desired);
+    // Session id of a correlated `req` or `cmd` → frontend identity plus operation kind. Every
+    // reply removes one entry; session exit marks written mutations as confirmation-lost while
+    // ordinary requests retain the transport reason.
+    let mut pending: HashMap<u64, FrontendCorrelation> = HashMap::new();
 
     // Subscribe to `system` (so we notice owner shutdown even with no window open, and to
     // keep the session non-idle) plus every topic a window already declared. New sessions
     // send fresh snapshots for all of these, which is exactly the rehydrate the frontend
     // expects after a reconnect.
+    let mut desired_subscriptions = subscription_rx.borrow_and_update().clone();
+    let mut applied_subscriptions = SubscriptionState::default();
     let sub = ClientFrame {
         id: next_id,
+        request_id: None,
+        page_id: desired_subscriptions.page_id.clone(),
         op: ClientOp::Subscribe {
-            topics: initial_topics(desired),
+            topics: initial_topics(&desired_subscriptions.topics),
         },
     };
     next_id += 1;
     if write_line(&conn, &sub).await.is_err() {
+        online.store(false, Ordering::Release);
         return "disconnected".to_string();
     }
+    let mut pending_subscription = Some(PendingSubscriptionTransition::new(
+        desired_subscriptions.clone(),
+        [sub.id],
+    ));
 
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.tick().await; // consume the immediate first tick
     let mut awaiting_pong = false;
+    let mut subscriptions_open = true;
 
-    loop {
+    let reason = 'session: loop {
         tokio::select! {
-            _ = &mut *shutdown_rx => return "shutdown".to_string(),
+            biased;
+            _ = &mut *shutdown_rx => break 'session "shutdown".to_string(),
             _ = ping.tick() => {
                 if awaiting_pong {
-                    return "ping_timeout".to_string();
+                    break 'session "ping_timeout".to_string();
                 }
-                let frame = ClientFrame { id: next_id, op: ClientOp::Ping };
+                let frame = ClientFrame {
+                    id: next_id,
+                    request_id: None,
+                    page_id: None,
+                    op: ClientOp::Ping,
+                };
                 next_id += 1;
                 if write_line(&conn, &frame).await.is_err() {
-                    return "disconnected".to_string();
+                    break 'session "disconnected".to_string();
                 }
                 awaiting_pong = true;
             }
-            maybe = cmd_rx.recv() => {
-                if let Some(env) = maybe {
-                    track_subscriptions(&env, desired);
-                    if let Some(reason) =
-                        forward_command(&conn, env, &mut next_id, &mut pending, emit).await
-                    {
-                        return reason;
-                    }
+            _ = tokio::time::sleep_until(
+                pending_subscription
+                    .as_ref()
+                    .map_or_else(Instant::now, |pending| pending.deadline)
+            ), if pending_subscription.is_some() => {
+                break 'session "subscription_timeout".to_string();
+            }
+            changed = subscription_rx.changed(), if subscriptions_open => {
+                if changed.is_err() {
+                    subscriptions_open = false;
+                    continue;
                 }
-                // `None` = the handle was dropped; the shutdown branch will fire too.
+                desired_subscriptions = subscription_rx.borrow_and_update().clone();
+                if pending_subscription.is_none() {
+                    pending_subscription = match begin_subscription_transition(
+                        &conn,
+                        &mut next_id,
+                        &mut applied_subscriptions,
+                        &desired_subscriptions,
+                    )
+                    .await
+                    {
+                        Ok(pending) => pending,
+                        Err(_) => break 'session "disconnected".to_string(),
+                    };
+                }
+            }
+            // A page-scoped command cannot overtake the subscription transition that makes
+            // that page current in the core. This also keeps an initial RunSearch behind its
+            // Search subscription acknowledgement, so an accepted completion has a live sink.
+            maybe = cmd_rx.recv(), if pending_subscription.is_none()
+                && applied_subscriptions == desired_subscriptions => {
+                match maybe {
+                    Some(env) => {
+                        if env.page_id.is_some()
+                            && env.page_id != applied_subscriptions.page_id
+                        {
+                            reject_offline_command(env, emit, "stale_page");
+                            continue;
+                        }
+                        if let Some(reason) =
+                            forward_command(
+                                &conn,
+                                env,
+                                &mut next_id,
+                                &mut pending,
+                                emit,
+                                request_namespace,
+                            )
+                            .await
+                        {
+                            break 'session reason;
+                        }
+                    }
+                    // The handle was dropped. Do not spin on an always-ready closed receiver.
+                    None => break 'session "shutdown".to_string(),
+                }
             }
             line = read_line(&mut reader) => match line {
                 Ok(Some(l)) => match serde_json::from_str::<ServerFrame>(l.trim()) {
                     Ok(ServerFrame::Pong { .. }) => awaiting_pong = false,
-                    Ok(ServerFrame::Goodbye { reason }) => return reason,
+                    Ok(ServerFrame::Goodbye { reason }) => break 'session reason,
                     Ok(ServerFrame::Reply { id, resp }) => {
-                        if let Some(fid) = pending.remove(&id) {
-                            emit(GatewayEvent::Frame(reply_envelope(fid, resp)));
+                        if pending_subscription
+                            .as_ref()
+                            .is_some_and(|pending| pending.remaining_ids.contains(&id))
+                        {
+                            if !resp.ok {
+                                break 'session subscription_rejection_reason(&resp).to_string();
+                            }
+                            let transition_complete = {
+                                let pending = pending_subscription
+                                    .as_mut()
+                                    .expect("the subscription reply id was just matched");
+                                pending.remaining_ids.remove(&id);
+                                pending.remaining_ids.is_empty()
+                            };
+                            if transition_complete {
+                                let completed = pending_subscription
+                                    .take()
+                                    .expect("a completed transition must still be pending");
+                                applied_subscriptions = completed.target;
+                                if applied_subscriptions != desired_subscriptions {
+                                    pending_subscription = match begin_subscription_transition(
+                                        &conn,
+                                        &mut next_id,
+                                        &mut applied_subscriptions,
+                                        &desired_subscriptions,
+                                    )
+                                    .await
+                                    {
+                                        Ok(pending) => pending,
+                                        Err(_) => break 'session "disconnected".to_string(),
+                                    };
+                                }
+                            }
+                            continue;
                         }
-                        // Unmapped ids are the gateway's own subscribe/ping replies — ignore.
+                        if let Some(correlation) = pending.remove(&id) {
+                            emit(GatewayEvent::Frame(reply_envelope(correlation, resp)));
+                        }
+                        // Other unmapped ids are stale/invalid peer replies. Pings use `Pong`.
                     }
                     Ok(ServerFrame::Event { topic, event, .. }) => {
-                        let payload =
-                            serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
-                        emit(GatewayEvent::Frame(InEnvelope::event(topic.wire_str(), payload)));
+                        emit(GatewayEvent::Frame(event_envelope(topic, &event)));
                         if matches!(event, PushEvent::ShuttingDown) {
-                            return "shutting_down".to_string();
+                            break 'session "shutting_down".to_string();
                         }
                     }
                     Err(_) => {}
                 },
-                Ok(None) | Err(_) => return "disconnected".to_string(),
+                Ok(None) | Err(_) => break 'session "disconnected".to_string(),
             }
         }
-    }
+    };
+    // Close admission before emitting terminal errors so callbacks cannot enqueue new
+    // correlated work into a session that has already ended.
+    online.store(false, Ordering::Release);
+    reject_pending(&mut pending, &reason, emit);
+    reason
 }
 
 /// Translate a webview envelope into a [`ClientFrame`] and write it to the session. Returns
 /// `Some(reason)` only on a socket write failure (which ends the session); a command that
-/// can't be translated is rejected (for `req`) or dropped (for `cmd`) without tearing down.
+/// can't be translated is rejected when correlated or logged when uncorrelated, without tearing
+/// down the session.
 async fn forward_command<F: Fn(GatewayEvent)>(
     conn: &Stream,
     env: OutEnvelope,
     next_id: &mut u64,
-    pending: &mut HashMap<u64, u64>,
+    pending: &mut HashMap<u64, FrontendCorrelation>,
     emit: &F,
+    request_namespace: &str,
 ) -> Option<String> {
+    let mut correlation = correlation(&env);
+    if validate_page_id(env.page_id.as_deref()).is_err() {
+        if let Some(correlation) = correlation {
+            emit(GatewayEvent::Frame(InEnvelope::err_for_page(
+                correlation.id,
+                correlation.page_id,
+                serde_json::json!({ "reason": "bad_page_id" }),
+            )));
+        }
+        return None;
+    }
     let op = match env.kind {
         OutKind::Cmd | OutKind::Req => match to_remote_command(&env.name, &env.payload) {
-            Some(cmd) => ClientOp::Command(cmd),
+            Some(cmd) => {
+                if let Some(correlation) = &mut correlation {
+                    correlation.mutation = cmd.requires_confirmation();
+                }
+                ClientOp::Command(cmd)
+            }
             None => {
-                // Unsupported command name/shape. A correlated req must not hang for its 10 s
-                // timeout, so reject it; a fire-and-forget cmd is just logged and dropped.
-                if let (OutKind::Req, Some(fid)) = (env.kind, env.id) {
-                    emit(GatewayEvent::Frame(InEnvelope::err(
-                        fid,
+                // Unsupported command name/shape. Any correlated command must not hang for its
+                // frontend timeout; an uncorrelated command is only logged.
+                if let Some(correlation) = correlation.clone() {
+                    emit(GatewayEvent::Frame(InEnvelope::err_for_page(
+                        correlation.id,
+                        correlation.page_id,
                         serde_json::json!({ "reason": "bad_command" }),
                     )));
                 } else {
@@ -361,24 +749,41 @@ async fn forward_command<F: Fn(GatewayEvent)>(
                 return None;
             }
         },
-        OutKind::Sub => match parse_topics(&env.payload) {
-            Some(topics) => ClientOp::Subscribe { topics },
-            None => return None,
-        },
-        OutKind::Unsub => match parse_topics(&env.payload) {
-            Some(topics) => ClientOp::Unsubscribe { topics },
-            None => return None,
-        },
+        // Subscription declarations are consumed synchronously by `GatewayHandle` and can
+        // never enter this bounded command lane.
+        OutKind::Sub | OutKind::Unsub => return None,
         // `win` never reaches the gateway (bridge routes it natively); ignore defensively.
         OutKind::Win => return None,
     };
 
     let sid = *next_id;
     *next_id += 1;
-    if let (OutKind::Req, Some(fid)) = (env.kind, env.id) {
-        pending.insert(sid, fid);
+    let request_id = if matches!(&op, ClientOp::Command(_)) {
+        match request_identity(&env, correlation.as_ref(), request_namespace, sid) {
+            Ok(request_id) => Some(request_id),
+            Err(()) => {
+                if let Some(correlation) = correlation.clone() {
+                    emit(GatewayEvent::Frame(InEnvelope::err_for_page(
+                        correlation.id,
+                        correlation.page_id,
+                        serde_json::json!({ "reason": "bad_request_id" }),
+                    )));
+                }
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(correlation) = correlation {
+        pending.insert(sid, correlation);
     }
-    let frame = ClientFrame { id: sid, op };
+    let frame = ClientFrame {
+        id: sid,
+        request_id,
+        page_id: env.page_id.clone(),
+        op,
+    };
     if write_line(conn, &frame).await.is_err() {
         return Some("disconnected".to_string());
     }
@@ -401,71 +806,37 @@ fn to_remote_command(name: &str, payload: &serde_json::Value) -> Option<RemoteCo
     serde_json::from_value(serde_json::Value::Object(obj)).ok()
 }
 
-/// A `sub`/`unsub` payload is a JSON array of wire topic strings. Empty is treated as nothing
-/// to do (the client already guards this, but be defensive).
-fn parse_topics(payload: &serde_json::Value) -> Option<Vec<Topic>> {
-    let topics: Vec<Topic> = serde_json::from_value(payload.clone()).ok()?;
-    (!topics.is_empty()).then_some(topics)
-}
-
-/// Fold a `sub`/`unsub` envelope into the reconnect-surviving desired-topic set; every other
-/// kind passes through untouched. Order-preserving and deduplicated (the set stays small —
-/// at most the 13 wire topics).
-fn track_subscriptions(env: &OutEnvelope, desired: &mut Vec<Topic>) {
-    match env.kind {
-        OutKind::Sub => {
-            if let Some(topics) = parse_topics(&env.payload) {
-                for topic in topics {
-                    if !desired.contains(&topic) {
-                        desired.push(topic);
-                    }
-                }
-            }
-        }
-        OutKind::Unsub => {
-            if let Some(topics) = parse_topics(&env.payload) {
-                desired.retain(|topic| !topics.contains(topic));
-            }
-        }
-        _ => {}
-    }
-}
-
-fn drain_offline_envelopes(cmd_rx: &mut mpsc::Receiver<OutEnvelope>, desired: &mut Vec<Topic>) {
-    while let Ok(env) = cmd_rx.try_recv() {
-        track_subscriptions(&env, desired);
-    }
-}
-
-/// The session-opening subscribe: `system` first (the gateway's own keep-alive/shutdown
-/// listener), then every window-declared topic.
-fn initial_topics(desired: &[Topic]) -> Vec<Topic> {
-    let mut topics = vec![Topic::System];
-    for topic in desired {
-        if !topics.contains(topic) {
-            topics.push(*topic);
-        }
-    }
-    topics
-}
-
-/// Render a correlated [`RemoteResponse`] as the `res`/`err` envelope the frontend awaits.
-fn reply_envelope(fid: u64, resp: RemoteResponse) -> InEnvelope {
-    if resp.ok {
-        let payload = serde_json::to_value(&resp).unwrap_or(serde_json::Value::Null);
-        InEnvelope::res(fid, payload)
-    } else {
-        let reason = resp.reason.unwrap_or_else(|| "error".to_string());
-        InEnvelope::err(fid, serde_json::json!({ "reason": reason }))
-    }
-}
-
 async fn write_line<T: serde::Serialize>(conn: &Stream, value: &T) -> io::Result<()> {
     let mut buf = serde_json::to_vec(value).map_err(io::Error::other)?;
     buf.push(b'\n');
+    write_bytes_with_timeout(conn, &buf, WRITE_TIMEOUT).await
+}
+
+async fn write_bytes_with_timeout(
+    conn: &Stream,
+    buf: &[u8],
+    write_timeout: Duration,
+) -> io::Result<()> {
     let mut w = conn;
-    w.write_all(&buf).await?;
-    w.flush().await
+    match timeout(write_timeout, async {
+        w.write_all(buf).await?;
+        w.flush().await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                target: "ytt_desktop",
+                timeout_ms = write_timeout.as_millis(),
+                "gateway socket write timed out"
+            );
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "gateway write timed out",
+            ))
+        }
+    }
 }
 
 /// Session-frame cap for the v8 gateway protocol, matching the remote server's
@@ -491,10 +862,160 @@ async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Option<St
 // Envelope→frame translation is platform-agnostic, so these run on every target (the socket
 // tests below need a unix domain path and are gated separately).
 #[cfg(test)]
+mod shutdown_tests;
+
+#[cfg(test)]
 mod translate_tests {
     use super::*;
+    use std::sync::Mutex;
+
     use crate::desktop::bridge::InKind;
     use crate::remote::proto::{RemoteCommand, ToggleState};
+
+    fn command_env(kind: OutKind, id: Option<u64>) -> OutEnvelope {
+        OutEnvelope {
+            v: 1,
+            id,
+            page_id: None,
+            request_id: None,
+            kind,
+            name: "next".to_string(),
+            payload: serde_json::Value::Null,
+        }
+    }
+
+    fn test_handle(
+        capacity: usize,
+        online: bool,
+    ) -> (
+        GatewayHandle,
+        mpsc::Receiver<OutEnvelope>,
+        watch::Receiver<SubscriptionState>,
+    ) {
+        let (shutdown, _shutdown_rx) = oneshot::channel();
+        let (commands, receiver) = mpsc::channel(capacity);
+        let (subscriptions, subscription_rx) = watch::channel(SubscriptionState::default());
+        (
+            GatewayHandle {
+                shutdown: Some(shutdown),
+                worker: None,
+                commands,
+                subscriptions,
+                online: Arc::new(AtomicBool::new(online)),
+            },
+            receiver,
+            subscription_rx,
+        )
+    }
+
+    #[test]
+    fn send_reports_full_and_closed_admission() {
+        let (handle, receiver, _subscription_rx) = test_handle(1, true);
+
+        assert_eq!(
+            handle.send(command_env(OutKind::Cmd, None)),
+            Ok(DeliveryReceipt::Enqueued)
+        );
+        assert_eq!(
+            handle.send(command_env(OutKind::Cmd, None)),
+            Err(DeliveryError::Busy)
+        );
+
+        drop(receiver);
+        assert_eq!(
+            handle.send(command_env(OutKind::Cmd, None)),
+            Err(DeliveryError::Closed)
+        );
+    }
+
+    #[test]
+    fn correlated_rejection_becomes_an_immediate_error_envelope() {
+        let (handle, receiver, _subscription_rx) = test_handle(1, true);
+        let _ = handle
+            .send(command_env(OutKind::Cmd, None))
+            .expect("fill the one-slot queue");
+
+        let busy = send_or_reject(Some(&handle), command_env(OutKind::Req, Some(41)))
+            .expect("correlated rejection should be returned to the webview");
+        assert_eq!(busy.id, Some(41));
+        assert_eq!(busy.kind, InKind::Err);
+        assert_eq!(busy.payload, Some(serde_json::json!({ "reason": "busy" })));
+
+        drop(receiver);
+        let closed = send_or_reject(None, command_env(OutKind::Cmd, Some(42)))
+            .expect("a correlated command should also receive a local error");
+        assert_eq!(closed.id, Some(42));
+        assert_eq!(closed.kind, InKind::Err);
+        assert_eq!(
+            closed.payload,
+            Some(serde_json::json!({ "reason": "closed" }))
+        );
+    }
+
+    #[test]
+    fn offline_gateway_rejects_correlated_commands_but_accepts_subscriptions() {
+        let (handle, mut receiver, subscription_rx) = test_handle(4, false);
+
+        for (kind, id) in [(OutKind::Req, 51), (OutKind::Cmd, 52)] {
+            let rejected = send_or_reject(Some(&handle), command_env(kind, Some(id)))
+                .expect("offline correlated command receives a local error");
+            assert_eq!(rejected.id, Some(id));
+            assert_eq!(rejected.kind, InKind::Err);
+            assert_eq!(
+                rejected.payload,
+                Some(serde_json::json!({ "reason": "offline" }))
+            );
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "offline correlated commands never enter the bounded queue"
+        );
+
+        for kind in [OutKind::Sub, OutKind::Unsub] {
+            assert!(matches!(
+                handle.send(sub_env(kind, serde_json::json!(["player"]))),
+                Ok(DeliveryReceipt::Coalesced { .. })
+            ));
+        }
+        assert!(receiver.try_recv().is_err());
+        assert!(subscription_rx.borrow().topics.is_empty());
+    }
+
+    #[test]
+    fn latest_subscription_lane_survives_command_saturation_and_replays_after_reconnect() {
+        let (handle, _receiver, subscription_rx) = test_handle(1, true);
+        let _ = handle
+            .send(command_env(OutKind::Cmd, Some(60)))
+            .expect("fill the command lane");
+        assert_eq!(
+            handle.send(command_env(OutKind::Cmd, Some(61))),
+            Err(DeliveryError::Busy)
+        );
+
+        for env in [
+            sub_env(OutKind::Sub, serde_json::json!(["player", "queue"])),
+            sub_env(OutKind::Sub, serde_json::json!(["settings"])),
+            sub_env(OutKind::Unsub, serde_json::json!(["player"])),
+        ] {
+            assert!(matches!(
+                handle.send(env),
+                Ok(DeliveryReceipt::Coalesced { .. })
+            ));
+        }
+
+        let desired = subscription_rx.borrow().clone();
+        assert_eq!(desired.topics, vec![Topic::Queue, Topic::Settings]);
+        assert_eq!(
+            initial_topics(&desired.topics),
+            vec![Topic::System, Topic::Queue, Topic::Settings],
+            "a fresh session replays the final coalesced state"
+        );
+    }
+
+    #[test]
+    fn uncorrelated_rejection_has_no_synthetic_reply() {
+        assert_eq!(send_or_reject(None, command_env(OutKind::Cmd, None)), None);
+    }
 
     #[test]
     fn cmd_names_and_payloads_map_to_remote_commands() {
@@ -591,6 +1112,8 @@ mod translate_tests {
         OutEnvelope {
             v: 1,
             id: None,
+            page_id: None,
+            request_id: None,
             kind,
             name: String::new(),
             payload: topics,
@@ -600,62 +1123,134 @@ mod translate_tests {
     #[test]
     fn subscriptions_fold_into_the_desired_set_across_kinds() {
         let mut desired = Vec::new();
-        track_subscriptions(
-            &sub_env(OutKind::Sub, serde_json::json!(["player", "queue"])),
-            &mut desired,
-        );
+        assert!(apply_subscription_change(
+            OutKind::Sub,
+            &[Topic::Player, Topic::Queue],
+            &mut desired
+        ));
         // Overlapping re-sub dedups instead of duplicating.
-        track_subscriptions(
-            &sub_env(OutKind::Sub, serde_json::json!(["queue", "settings"])),
-            &mut desired,
-        );
-        track_subscriptions(
-            &sub_env(OutKind::Unsub, serde_json::json!(["queue"])),
-            &mut desired,
-        );
+        assert!(apply_subscription_change(
+            OutKind::Sub,
+            &[Topic::Queue, Topic::Settings],
+            &mut desired
+        ));
+        assert!(apply_subscription_change(
+            OutKind::Unsub,
+            &[Topic::Queue],
+            &mut desired
+        ));
         assert_eq!(desired, vec![Topic::Player, Topic::Settings]);
-
-        // Non-subscription envelopes never touch the set.
-        track_subscriptions(
-            &OutEnvelope {
-                v: 1,
-                id: Some(1),
-                kind: OutKind::Cmd,
-                name: "next".to_string(),
-                payload: serde_json::Value::Null,
-            },
-            &mut desired,
-        );
+        assert!(!apply_subscription_change(
+            OutKind::Sub,
+            &[Topic::Player],
+            &mut desired
+        ));
         assert_eq!(desired, vec![Topic::Player, Topic::Settings]);
     }
 
     #[test]
-    fn offline_reconnect_drain_drops_commands_but_keeps_subscriptions() {
+    fn offline_reconnect_drain_rejects_every_correlated_command() {
         let (tx, mut rx) = mpsc::channel(8);
-        tx.try_send(OutEnvelope {
-            v: 1,
-            id: None,
-            kind: OutKind::Cmd,
-            name: "next".to_string(),
-            payload: serde_json::Value::Null,
-        })
-        .unwrap();
-        tx.try_send(sub_env(
-            OutKind::Sub,
-            serde_json::json!(["player", "queue"]),
-        ))
-        .unwrap();
-        tx.try_send(sub_env(OutKind::Unsub, serde_json::json!(["queue"])))
-            .unwrap();
+        tx.try_send(command_env(OutKind::Cmd, Some(61))).unwrap();
+        tx.try_send(command_env(OutKind::Req, Some(62))).unwrap();
+        tx.try_send(command_env(OutKind::Cmd, None)).unwrap();
 
-        let mut desired = Vec::new();
-        drain_offline_envelopes(&mut rx, &mut desired);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&errors);
+        drain_offline_commands(
+            &mut rx,
+            &move |event| {
+                if let GatewayEvent::Frame(frame) = event {
+                    captured
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(frame);
+                }
+            },
+            "disconnected",
+        );
 
-        assert_eq!(desired, vec![Topic::Player]);
+        let errors = errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].id, Some(61));
+        assert_eq!(errors[1].id, Some(62));
+        assert!(errors.iter().all(|error| {
+            error.kind == InKind::Err
+                && error.payload == Some(serde_json::json!({ "reason": "disconnected" }))
+        }));
         assert!(matches!(
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn session_exit_rejects_every_pending_req_and_cmd_id() {
+        assert_eq!(
+            correlation(&command_env(OutKind::Req, Some(71))),
+            Some(FrontendCorrelation {
+                page_id: None,
+                id: 71,
+                mutation: false,
+            })
+        );
+        assert_eq!(
+            correlation(&command_env(OutKind::Cmd, Some(72))),
+            Some(FrontendCorrelation {
+                page_id: None,
+                id: 72,
+                mutation: true,
+            })
+        );
+
+        let mut pending = HashMap::from([
+            (
+                100,
+                FrontendCorrelation {
+                    page_id: None,
+                    id: 72,
+                    mutation: true,
+                },
+            ),
+            (
+                101,
+                FrontendCorrelation {
+                    page_id: None,
+                    id: 71,
+                    mutation: false,
+                },
+            ),
+        ]);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&errors);
+        reject_pending(&mut pending, "disconnected", &move |event| {
+            if let GatewayEvent::Frame(frame) = event {
+                captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(frame);
+            }
+        });
+
+        assert!(pending.is_empty());
+        let errors = errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].id, Some(71));
+        assert_eq!(errors[1].id, Some(72));
+        assert_eq!(
+            errors[0].payload,
+            Some(serde_json::json!({ "reason": "disconnected" })),
+            "a read-only request can be failed with the transport reason"
+        );
+        assert_eq!(
+            errors[1].payload,
+            Some(serde_json::json!({ "reason": "confirmation_lost" })),
+            "a written mutation must not be reported as definitively rejected"
+        );
     }
 
     #[test]
@@ -669,29 +1264,6 @@ mod translate_tests {
         assert_eq!(
             initial_topics(&[Topic::System, Topic::Player]),
             vec![Topic::System, Topic::Player]
-        );
-    }
-
-    #[test]
-    fn reply_envelope_maps_ok_and_error() {
-        let ok = reply_envelope(5, RemoteResponse::ok("done".to_string()));
-        assert_eq!(ok.id, Some(5));
-        assert_eq!(ok.kind, InKind::Res);
-
-        let bad = reply_envelope(
-            6,
-            RemoteResponse {
-                ok: false,
-                reason: Some("bad_request".to_string()),
-                message: None,
-                status: None,
-            },
-        );
-        assert_eq!(bad.id, Some(6));
-        assert_eq!(bad.kind, InKind::Err);
-        assert_eq!(
-            bad.payload,
-            Some(serde_json::json!({ "reason": "bad_request" }))
         );
     }
 }
@@ -827,17 +1399,28 @@ mod tests {
         let server = tokio::spawn(accept_one_line(listener));
         let conn = connect(&endpoint).await;
 
-        // The frontend's own id (99) must never reach the wire — the session allocates its own.
+        // The frontend's id is not the wire correlation id; its stable retry identity is bound to
+        // the page lifetime while the session allocates its own monotonically increasing id.
         let env = OutEnvelope {
             v: 1,
             id: Some(99),
+            page_id: Some("test-page".to_string()),
+            request_id: Some("gui:test-page:99".to_string()),
             kind: OutKind::Cmd,
             name: "seek_to".to_string(),
             payload: serde_json::json!({ "ms": 1234 }),
         };
         let mut next_id = 5u64;
         let mut pending = HashMap::new();
-        let reason = forward_command(&conn, env, &mut next_id, &mut pending, &|_| {}).await;
+        let reason = forward_command(
+            &conn,
+            env,
+            &mut next_id,
+            &mut pending,
+            &|_| {},
+            "test-gateway",
+        )
+        .await;
         assert!(reason.is_none(), "a good write must not end the session");
 
         let line = server.await.unwrap();
@@ -851,10 +1434,19 @@ mod tests {
             frame.op,
             ClientOp::Command(RemoteCommand::SeekTo { ms: 1234 })
         );
+        assert_eq!(
+            frame.request_id.as_deref(),
+            Some("page:test-page:gui:test-page:99")
+        );
+        assert_eq!(frame.page_id.as_deref(), Some("test-page"));
         assert_eq!(next_id, 6, "id counter advanced");
-        assert!(
-            pending.is_empty(),
-            "a fire-and-forget cmd is not correlated"
+        assert_eq!(
+            pending.get(&5),
+            Some(&FrontendCorrelation {
+                page_id: Some("test-page".to_string()),
+                id: 99,
+                mutation: true,
+            })
         );
     }
 
@@ -871,20 +1463,41 @@ mod tests {
         let env = OutEnvelope {
             v: 1,
             id: Some(77),
+            page_id: None,
+            request_id: None,
             kind: OutKind::Req,
             name: "status".to_string(),
             payload: serde_json::Value::Null,
         };
         let mut next_id = 1u64;
         let mut pending = HashMap::new();
-        forward_command(&conn, env, &mut next_id, &mut pending, &|_| {}).await;
+        forward_command(
+            &conn,
+            env,
+            &mut next_id,
+            &mut pending,
+            &|_| {},
+            "test-gateway",
+        )
+        .await;
 
         let line = server.await.unwrap();
         let _ = std::fs::remove_file(&endpoint);
         let frame: ClientFrame = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(frame.id, 1);
+        assert_eq!(frame.request_id.as_deref(), Some("test-gateway:client:77"));
         assert_eq!(frame.op, ClientOp::Command(RemoteCommand::Status));
         // Session id 1 maps back to the frontend's request id 77 so its reply can be routed.
-        assert_eq!(pending.get(&1), Some(&77));
+        assert_eq!(
+            pending.get(&1),
+            Some(&FrontendCorrelation {
+                page_id: None,
+                id: 77,
+                mutation: false,
+            })
+        );
     }
 }
+
+#[cfg(all(test, unix))]
+mod subscription_tests;

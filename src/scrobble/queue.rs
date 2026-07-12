@@ -9,13 +9,17 @@
 //!
 //! Single-writer story: the app's single-instance guard means one playback-owning process
 //! at a time, so appends and compactions normally have one owner. The `--new-instance`
-//! escape hatch can create more; appends stay safe (O_APPEND single lines) and compaction
-//! races are prevented by a sibling `.lock` file (O_EXCL, stale after 10 minutes) — a
-//! flusher that can't take the lock just skips its round.
+//! escape hatch can create more; both append and compaction take the same sibling advisory
+//! lock. Ownership belongs to the open file handle and no process ever unlinks a "stale"
+//! lock inode, so a slow but live owner cannot be bypassed.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -29,8 +33,6 @@ pub const QUEUE_CAP: usize = 2000;
 /// Last.fm silently ignores scrobbles older than two weeks; stop owing it those. Other
 /// services (ListenBrainz imports) accept arbitrary ages and keep their markers.
 const LASTFM_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
-/// A `.lock` older than this belongs to a dead process and is reclaimed.
-const LOCK_STALE: Duration = Duration::from_secs(600);
 /// Queue reads cap at this size; the CAP-compaction keeps real files far below it.
 const QUEUE_READ_MAX: u64 = 4 * 1024 * 1024;
 static ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -134,11 +136,73 @@ pub struct LoadedQueue {
 
 pub struct QueueFile {
     path: PathBuf,
+    /// Deterministic append fault injection. Production builds have no extra state or branch.
+    #[cfg(test)]
+    append_failures: AtomicUsize,
+    /// Deterministic ambiguous append fault: the durable write succeeds, but the caller sees an
+    /// error as if a later acknowledgement or sync boundary had failed.
+    #[cfg(test)]
+    post_append_failures: AtomicUsize,
+    /// Deterministic rewrite failures before and after the atomic replacement boundary.
+    #[cfg(test)]
+    rewrite_failures: AtomicUsize,
+    #[cfg(test)]
+    post_rewrite_failures: AtomicUsize,
+    /// Deterministic blocking-I/O hook used to prove production actor isolation.
+    #[cfg(test)]
+    append_block: Option<Arc<AppendBlockState>>,
+}
+
+#[cfg(test)]
+struct AppendBlockState {
+    state: Mutex<AppendBlockStatus>,
+    released: Condvar,
+    blocked: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AppendBlockStatus {
+    armed: bool,
+    release: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct AppendBlockHandle(Arc<AppendBlockState>);
+
+#[cfg(test)]
+impl AppendBlockHandle {
+    pub(crate) async fn wait_until_blocked(&self) {
+        self.0.blocked.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.release = true;
+        self.0.released.notify_all();
+    }
 }
 
 impl QueueFile {
     pub fn at(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            #[cfg(test)]
+            append_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            post_append_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            rewrite_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            post_rewrite_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            append_block: None,
+        }
     }
 
     /// The production location, following the other data-dir stores.
@@ -151,10 +215,100 @@ impl QueueFile {
         &self.path
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_appends(&self, count: usize) {
+        self.append_failures.store(count, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_appends_after_write(&self, count: usize) {
+        self.post_append_failures.store(count, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_rewrites(&self, count: usize) {
+        self.rewrite_failures.store(count, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_rewrites_after_replace(&self, count: usize) {
+        self.post_rewrite_failures.store(count, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn block_next_append(&mut self) -> AppendBlockHandle {
+        let state = Arc::new(AppendBlockState {
+            state: Mutex::new(AppendBlockStatus {
+                armed: true,
+                release: false,
+            }),
+            released: Condvar::new(),
+            blocked: tokio::sync::Notify::new(),
+        });
+        self.append_block = Some(Arc::clone(&state));
+        AppendBlockHandle(state)
+    }
+
     /// Durably append one entry (0600, O_APPEND, file + parent dir synced before return).
     pub fn append(&self, entry: &QueueEntry) -> std::io::Result<()> {
+        let Some(lock) = self.try_lock_result()? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "scrobble queue is owned by another process",
+            ));
+        };
+        self.append_locked(entry, &lock)
+    }
+
+    pub(super) fn append_locked(
+        &self,
+        entry: &QueueEntry,
+        _lock: &QueueFlushLock,
+    ) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self
+            .append_failures
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(std::io::Error::other(
+                "fault injection: no space left on device",
+            ));
+        }
+        #[cfg(test)]
+        if let Some(block) = &self.append_block {
+            let mut state = block
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.armed {
+                state.armed = false;
+                block.blocked.notify_one();
+                while !state.release {
+                    state = block
+                        .released
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
         let line = serde_json::to_string(entry)?;
-        safe_fs::append_private_jsonl_durable(&self.path, &line)
+        safe_fs::append_private_jsonl_durable(&self.path, &line)?;
+        #[cfg(test)]
+        if self
+            .post_append_failures
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(std::io::Error::other(
+                "fault injection: append durability acknowledgement lost",
+            ));
+        }
+        Ok(())
     }
 
     /// Read and parse the whole queue. A missing file is an empty queue.
@@ -193,68 +347,76 @@ impl QueueFile {
     /// Atomically replace the file with `entries` (compaction). An empty queue removes
     /// the file entirely so an idle setup leaves no residue.
     pub fn rewrite(&self, entries: &[QueueEntry]) -> std::io::Result<()> {
+        let Some(lock) = self.try_lock_result()? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "scrobble queue is owned by another process",
+            ));
+        };
+        self.rewrite_locked(entries, &lock)
+    }
+
+    pub(super) fn rewrite_locked(
+        &self,
+        entries: &[QueueEntry],
+        _lock: &QueueFlushLock,
+    ) -> std::io::Result<()> {
+        #[cfg(test)]
+        if consume_failure(&self.rewrite_failures) {
+            return Err(std::io::Error::other(
+                "fault injection: rewrite failed before replacement",
+            ));
+        }
         if entries.is_empty() {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e),
+            safe_fs::remove_private_file_durable(&self.path)?;
+        } else {
+            let mut buf = String::new();
+            for e in entries {
+                buf.push_str(&serde_json::to_string(e)?);
+                buf.push('\n');
             }
+            safe_fs::write_private_atomic(&self.path, buf.as_bytes())?;
         }
-        let mut buf = String::new();
-        for e in entries {
-            buf.push_str(&serde_json::to_string(e)?);
-            buf.push('\n');
+        #[cfg(test)]
+        if consume_failure(&self.post_rewrite_failures) {
+            return Err(std::io::Error::other(
+                "fault injection: rewrite durability acknowledgement lost after replacement",
+            ));
         }
-        safe_fs::write_private_atomic(&self.path, buf.as_bytes())
+        Ok(())
     }
 
-    /// Take the flush lock (sibling `.lock`, O_EXCL). `None` = another live process is
-    /// flushing; skip this round. A lock whose mtime is older than [`LOCK_STALE`] belongs
-    /// to a dead process and is reclaimed once.
+    /// Take the queue ownership lock. `None` means another live process owns it; kernel lock
+    /// lifetime, not wall-clock age, decides ownership.
     pub fn try_lock(&self) -> Option<QueueFlushLock> {
-        let lock_path = self.path.with_extension("jsonl.lock");
-        for attempt in 0..2 {
-            if let Some(dir) = lock_path.parent() {
-                let _ = safe_fs::ensure_private_dir(dir);
-            }
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(mut f) => {
-                    use std::io::Write;
-                    let _ = write!(f, "{}", std::process::id());
-                    return Some(QueueFlushLock { path: lock_path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt == 0 => {
-                    let stale = std::fs::metadata(&lock_path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|m| m.elapsed().ok())
-                        .is_some_and(|age| age > LOCK_STALE);
-                    if stale {
-                        let _ = std::fs::remove_file(&lock_path);
-                        continue; // one retry with the stale lock cleared
-                    }
-                    return None;
-                }
-                Err(_) => return None,
+        match self.try_lock_result() {
+            Ok(lock) => lock,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to acquire scrobble queue lock");
+                None
             }
         }
-        None
+    }
+
+    pub(super) fn try_lock_result(&self) -> std::io::Result<Option<QueueFlushLock>> {
+        let lock_path = self.path.with_extension("jsonl.lock");
+        Ok(safe_fs::try_lock_private_file(&lock_path)?
+            .map(|guard| QueueFlushLock { _guard: guard }))
     }
 }
 
-/// Held while flushing; releasing (drop) removes the lock file.
+#[cfg(test)]
+fn consume_failure(counter: &AtomicUsize) -> bool {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+}
+
+/// Held while flushing; releasing drops the kernel advisory lock. The path remains stable.
 pub struct QueueFlushLock {
-    path: PathBuf,
-}
-
-impl Drop for QueueFlushLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
+    _guard: safe_fs::AdvisoryFileLock,
 }
 
 /// Compaction policy, pure so it's testable: age out Last.fm markers past two weeks,
@@ -464,17 +626,14 @@ mod tests {
     }
 
     #[test]
-    fn lock_excludes_and_stale_lock_reclaims() {
+    fn advisory_lock_excludes_until_owner_drops_even_if_lockfile_is_old() {
         let (dir, q) = temp_queue("lock");
         q.append(&entry("a", 1, vec![ServiceKind::Lastfm])).unwrap();
         let lock = q.try_lock().expect("first lock succeeds");
         assert!(q.try_lock().is_none(), "second concurrent lock is refused");
-        drop(lock);
-        let lock2 = q.try_lock().expect("released lock can be retaken");
-        // Simulate a dead process: age the lock file past the stale window.
+        // Aging the persistent lock path must never grant ownership while the kernel still has
+        // a live owner. This is the race the former stale-file unlink could violate.
         let lock_path = q.path().with_extension("jsonl.lock");
-        drop(lock2);
-        std::fs::write(&lock_path, b"999999").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         let f = std::fs::OpenOptions::new()
             .write(true)
@@ -482,7 +641,52 @@ mod tests {
             .unwrap();
         f.set_modified(old).unwrap();
         drop(f);
-        assert!(q.try_lock().is_some(), "stale lock is reclaimed");
+        assert!(
+            q.try_lock().is_none(),
+            "mtime never overrides a live advisory-lock owner"
+        );
+        drop(lock);
+        assert!(
+            q.try_lock().is_some(),
+            "dropping the owner releases the lock"
+        );
+        assert!(
+            lock_path.exists(),
+            "the stable lock inode is never unlinked"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn append_cannot_cross_an_in_progress_rewrite_from_another_queue_owner() {
+        let (dir, writer) = temp_queue("append-rewrite-exclusion");
+        let contender = QueueFile::at(writer.path().to_path_buf());
+        let retained = entry("retained", 1, vec![ServiceKind::Lastfm]);
+        let appended = entry("appended", 2, vec![ServiceKind::Lastfm]);
+        writer.append(&retained).unwrap();
+
+        let rewrite_owner = writer.try_lock().expect("rewrite takes ownership");
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let contender_start = Arc::clone(&start);
+        let contender_entry = appended.clone();
+        let attempt = std::thread::spawn(move || {
+            contender_start.wait();
+            contender.append(&contender_entry)
+        });
+        start.wait();
+        writer
+            .rewrite_locked(std::slice::from_ref(&retained), &rewrite_owner)
+            .unwrap();
+        let error = attempt
+            .join()
+            .expect("append contender thread joins")
+            .expect_err("append cannot enter while rewrite owns the queue");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(writer.load().entries, vec![retained.clone()]);
+
+        drop(rewrite_owner);
+        writer.append(&appended).unwrap();
+        assert_eq!(writer.load().entries, vec![retained, appended]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

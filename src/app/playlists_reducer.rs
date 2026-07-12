@@ -86,14 +86,16 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        let romanize_cmds = self.request_romanization_for_songs(&songs);
-        self.queue.set(songs, 0);
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        cmds
+        self.replace_queue_and_load(
+            songs,
+            0,
+            None,
+            QueueReplacementOptions {
+                player_mode: true,
+                romanize_all: true,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     /// Append the playlist under the root cursor to the queue without interrupting playback.

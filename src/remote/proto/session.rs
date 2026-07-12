@@ -12,7 +12,9 @@
 //!   so client state is always "snapshot + subsequent events" with no missed window.
 //! - `seq` is per-session monotonic across all topics; gaps are impossible — a session
 //!   that can't keep up is evicted with `Goodbye { reason: "slow_consumer" }`.
-//! - Reconnect is stateless: re-Hello → re-Subscribe → fresh snapshots. No replay.
+//! - Reconnect rebuilds session state: re-Hello → re-Subscribe → fresh snapshots. There is
+//!   no unsolicited event replay. Stable-ID state-changing commands can join a retained owner
+//!   outcome, while `Status` and session-scoped `RunSearch` queries execute again.
 //! - A command's `Reply` is written before any same-turn `Event`s it caused.
 
 use serde::{Deserialize, Serialize};
@@ -54,7 +56,7 @@ pub struct HelloAck {
     /// Live per-owner feature strings (docs/gui/02 §10); mirrors the instance descriptor.
     pub capabilities: Vec<String>,
     pub owner_mode: InstanceMode,
-    /// On `!ok`: `"bad_token"` | `"bad_version"` | `"sessions_full"`.
+    /// On `!ok`: `"bad_token"` | `"bad_version"` | `"sessions_full"` | `"shutting_down"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -66,6 +68,16 @@ pub struct HelloAck {
 pub struct ClientFrame {
     /// Client-monotonic; echoed in [`ServerFrame::Reply`] / [`ServerFrame::Pong`].
     pub id: u64,
+    /// Stable command identity across response timeouts or reconnects to the same advertised
+    /// owner within the current 60-second retention window. Never reuse a mutation identity after
+    /// that window or after the descriptor token/owner changes. State-changing outcomes are
+    /// retained under this identity; read-only `Status` and `RunSearch` execute again for a fresh
+    /// live-session result. Ignored for non-command operations and optional for shipped v8 clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Page/WebView lifetime namespace. Additive for shipped v8 clients; legacy peers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<String>,
     #[serde(flatten)]
     pub op: ClientOp,
 }
@@ -206,6 +218,12 @@ pub enum PushEvent {
     SearchCompleted {
         #[cfg_attr(feature = "ts-export", ts(type = "number"))]
         ticket: u64,
+        // Echo the requesting WebView lifetime so a replacement page cannot consume it. This is
+        // deliberately not a field doc: ts-rs emits such docs after a comma-space, introducing
+        // trailing whitespace into the committed generated binding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-export", ts(optional))]
+        page_id: Option<String>,
         query: String,
         source: crate::search_source::SearchSource,
         groups: Vec<SearchGroup>,
@@ -313,6 +331,8 @@ mod tests {
     fn client_frames_are_flat_objects() {
         let sub = ClientFrame {
             id: 1,
+            request_id: None,
+            page_id: None,
             op: ClientOp::Subscribe {
                 topics: vec![Topic::Player, Topic::Queue],
             },
@@ -324,15 +344,19 @@ mod tests {
 
         let cmd = ClientFrame {
             id: 2,
+            request_id: None,
+            page_id: Some("page-a".to_string()),
             op: ClientOp::Command(RemoteCommand::TogglePause),
         };
         assert_eq!(
             serde_json::to_string(&cmd).unwrap(),
-            r#"{"id":2,"op":"command","cmd":"toggle_pause"}"#
+            r#"{"id":2,"page_id":"page-a","op":"command","cmd":"toggle_pause"}"#
         );
 
         let ping = ClientFrame {
             id: 3,
+            request_id: None,
+            page_id: None,
             op: ClientOp::Ping,
         };
         assert_eq!(

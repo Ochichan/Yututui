@@ -3,9 +3,11 @@ use super::*;
 #[test]
 fn next_and_prev_keys_move_through_queue() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id1");
-    app.update(Msg::Key(key(KeyCode::Char(','))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char(','))));
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id0");
 }
 
@@ -13,15 +15,18 @@ fn next_and_prev_keys_move_through_queue() {
 fn delete_on_player_removes_current_and_loads_next() {
     let mut app = app_playing(3, 0);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Delete)));
 
+    assert_eq!(app.queue.len(), 3, "removal waits for player admission");
+    assert_eq!(current(&app), "id0");
+    assert_loads_video(&cmds, "id1");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(current(&app), "id1");
     assert!(
         app.queue.ordered().iter().all(|s| s.video_id != "id0"),
         "deleted current track should be removed from the queue"
     );
-    assert_loads_video(&cmds, "id1");
 }
 
 #[test]
@@ -58,16 +63,23 @@ fn e_cycles_eq_preset_and_emits_filter() {
     let mut app = app_playing(3, 0);
     assert_eq!(app.audio.preset, EqPreset::Flat);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('e'))));
-    assert_eq!(app.audio.preset, EqPreset::BassBoost);
+    assert_eq!(
+        app.audio.preset,
+        EqPreset::Flat,
+        "preset waits for player admission"
+    );
     assert!(
         af(&cmds)
             .expect("a SetAudioFilter cmd")
             .contains("equalizer")
     );
+    app.admit_player_intents_for_test(&cmds);
+    assert_eq!(app.audio.preset, EqPreset::BassBoost);
     // Cycle the rest of the way back to Flat → the chain is cleared (empty string).
     let mut last = Vec::new();
     for _ in 0..(EqPreset::CYCLE.len() - 1) {
         last = app.update(Msg::Key(key(KeyCode::Char('e'))));
+        app.admit_player_intents_for_test(&last);
     }
     assert_eq!(app.audio.preset, EqPreset::Flat);
     assert_eq!(af(&last), Some(""));
@@ -77,27 +89,37 @@ fn e_cycles_eq_preset_and_emits_filter() {
 fn shift_n_toggles_normalization() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
-    assert!(app.audio.normalize);
+    assert!(!app.audio.normalize, "normalize waits for player admission");
     assert!(
         af(&cmds)
             .expect("a SetAudioFilter cmd")
             .contains("dynaudnorm")
     );
+    app.admit_player_intents_for_test(&cmds);
+    assert!(app.audio.normalize);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
-    assert!(!app.audio.normalize);
     assert_eq!(af(&cmds), Some(""));
+    assert!(app.audio.normalize, "disable also waits for admission");
+    app.admit_player_intents_for_test(&cmds);
+    assert!(!app.audio.normalize);
 }
 
 #[test]
 fn speed_up_and_down_clamp_and_emit() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::Key(key(KeyCode::Char(']'))));
+    assert!((app.playback.speed - 1.0).abs() < 1e-9);
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd.player_command(),
+        Some(PlayerCmd::SetProperty { name, value })
+            if name == "speed" && value == &serde_json::Value::from(1.1)
+    )));
+    app.admit_player_intents_for_test(&cmds);
     assert!((app.playback.speed - 1.1).abs() < 1e-9);
-    assert!(cmds.iter().any(|c| matches!(c,
-        Cmd::Player(PlayerCmd::SetProperty { name, .. }) if name == "speed")));
     // Floor at SPEED_MIN no matter how many times we press down.
     for _ in 0..50 {
-        app.update(Msg::Key(key(KeyCode::Char('['))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('['))));
+        app.admit_player_intents_for_test(&cmds);
     }
     assert!((app.playback.speed - SPEED_MIN).abs() < 1e-9);
 }

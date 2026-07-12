@@ -18,15 +18,30 @@ pub mod client;
 pub mod endpoint;
 pub mod proto;
 pub mod publish;
+pub(crate) mod requests;
 pub mod server;
 mod sessions;
+mod settlement;
 
-pub use sessions::{RemoteSessionHub, RemoteSessionRef};
+pub(crate) use sessions::MAX_SESSIONS;
+pub use sessions::{RemoteSessionHub, RemoteSessionRef, RemoteSessionScope};
+#[cfg(test)]
+pub(crate) use sessions::{SessionLine, SessionTuning, SubscribeIngress, test_register};
 
 pub use server::{BindOutcome, RemoteServer, bind_or_detect};
+pub(crate) use settlement::{WireSettlement, WireSettlements};
 
 const QUICK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const PLAYBACK_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
+
+/// An owner reply first crosses an internal oneshot (or a bounded session queue), then a socket
+/// task serializes and flushes it. Hub shutdown cancels those tasks, so hosts which settled
+/// pre-close requests wait this bounded handoff window before latching the hub.
+pub(crate) async fn await_shutdown_reply_grace() {
+    tokio::time::sleep(SHUTDOWN_REPLY_GRACE).await;
+}
 
 pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
     use proto::RemoteCommand;

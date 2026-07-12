@@ -30,6 +30,7 @@ is_allowed() {
     src/util/process.rs) return 0 ;;
     src/util/runtime.rs) return 0 ;;
     src/util/safe_fs.rs) return 0 ;;
+    src/util/safe_fs/pinned.rs) return 0 ;;
     *) return 1 ;;
   esac
 }

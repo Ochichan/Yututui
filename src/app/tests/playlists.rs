@@ -66,7 +66,9 @@ fn esc_backs_out_of_an_opened_playlist() {
 fn a_on_the_playlist_root_plays_that_playlist_as_a_fresh_queue() {
     let mut app = app_with_playlists();
     app.update(Msg::Key(key(KeyCode::Down))); // cursor to "Beta"
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    assert_eq!(app.mode, Mode::Library, "mode changes only after admission");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     assert_eq!(app.queue.len(), 1);
     assert_eq!(current(&app), "b1");
@@ -78,10 +80,11 @@ fn enter_in_the_drilldown_plays_the_selected_song() {
     let mut app = app_with_playlists();
     app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
     app.update(Msg::Key(key(KeyCode::Down))); // cursor to a2
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_loads_video(&cmds, "a2");
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.mode, Mode::Player);
     assert_eq!(current(&app), "a2");
-    assert_loads_video(&cmds, "a2");
 }
 
 #[test]

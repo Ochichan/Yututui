@@ -88,18 +88,29 @@ pub struct Signals {
 }
 
 impl Signals {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = signals_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Signals,
+            &path,
+            SIGNALS_MAX_BYTES,
+        )
+    }
+
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         let Some(path) = signals_path() else {
             return Signals::default();
         };
         // Schema-drift tolerant: a renamed field can no longer wipe the whole play history.
-        let mut sig = safe_fs::load_json_or_default_limited::<Signals>(&path, SIGNALS_MAX_BYTES);
-        sig = crate::persist::replay_journaled_snapshot(
+        let mut sig = crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::Signals,
             &path,
-            sig,
             SIGNALS_MAX_BYTES,
+            || safe_fs::load_json_or_default_limited::<Signals>(&path, SIGNALS_MAX_BYTES),
         );
         sig.enforce_caps();
         sig
@@ -107,10 +118,11 @@ impl Signals {
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = signals_path() else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        crate::persist::write_store_json(&path, self)
     }
 
     /// Whether the track is explicitly disliked.

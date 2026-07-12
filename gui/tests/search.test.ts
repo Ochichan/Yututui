@@ -10,6 +10,7 @@ import type { Transport } from '../src/lib/ipc/transport';
 import type { InEnvelope, OutEnvelope } from '../src/lib/ipc/envelope';
 import type { PlayerModel } from '../src/generated/protocol/PlayerModel';
 import type { QueueModel } from '../src/generated/protocol/QueueModel';
+import type { TrackModel } from '../src/generated/protocol/TrackModel';
 
 class MockTransport implements Transport {
   readonly live = false;
@@ -41,6 +42,26 @@ function completion(ticket: number, query: string): SearchCompleted {
   };
 }
 
+function track(videoId: string): TrackModel {
+  return {
+    video_id: videoId,
+    title: 'External row',
+    artist: 'Provider artist',
+    album: null,
+    duration_ms: 120_000,
+    source: 'jamendo',
+    is_local: false,
+    downloaded: false,
+    favorite: false,
+    disliked: false,
+    display_title: null,
+    display_artist: null,
+    artwork: null,
+    watch_url: null,
+    is_live: false,
+  };
+}
+
 describe('SearchStore', () => {
   it('applies the completion whose ticket matches the latest query', () => {
     const t = new MockTransport();
@@ -48,7 +69,12 @@ describe('SearchStore', () => {
     store.run('cats', 'youtube');
     expect(store.pending).toBe(true);
     expect(store.ran).toBe(true);
-    t.emit({ v: 1, kind: 'event', topic: 'search', payload: completion(t.ticketOf('run_search'), 'cats') });
+    t.emit({
+      v: 1,
+      kind: 'event',
+      topic: 'search',
+      payload: completion(t.ticketOf('run_search'), 'cats'),
+    });
     expect(store.pending).toBe(false);
     expect(store.query).toBe('cats');
   });
@@ -78,6 +104,36 @@ describe('SearchStore', () => {
     expect(t.sent.length).toBe(0);
     expect(store.ran).toBe(false);
   });
+
+  it('clears the pending spinner when search admission is rejected', async () => {
+    const t = new MockTransport();
+    const store = new SearchStore(new Client(t));
+    store.run('cats', 'youtube');
+    const command = t.sent.at(-1)!;
+    t.emit({ v: 1, id: command.id, kind: 'err', payload: { reason: 'offline' } });
+    await vi.waitFor(() => expect(store.pending).toBe(false));
+  });
+
+  it('retires external rows across disconnect and rejects their late completion', () => {
+    const t = new MockTransport();
+    const store = new SearchStore(new Client(t));
+    store.run('provider row', 'jamendo');
+    const ticket = t.ticketOf('run_search');
+    const result = completion(ticket, 'provider row');
+    result.source = 'jamendo';
+    result.groups = [{ source: 'jamendo', tracks: [track('gui:jamendo:stale')], error: null }];
+
+    t.emit({ v: 1, kind: 'event', topic: 'search', payload: result });
+    expect(store.total).toBe(1);
+
+    t.emit({ v: 1, kind: 'conn', payload: { state: 'offline', reason: 'disconnected' } });
+    t.emit({ v: 1, kind: 'conn', payload: { state: 'online' } });
+    t.emit({ v: 1, kind: 'event', topic: 'search', payload: result });
+
+    expect(store.pending).toBe(false);
+    expect(store.total).toBe(0);
+    expect(store.groups).toEqual([]);
+  });
 });
 
 describe('demo core search', () => {
@@ -97,13 +153,17 @@ describe('demo core search', () => {
     [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'search')!
       .payload as SearchCompleted;
   const lastQueue = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
-      model: QueueModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
+        model: QueueModel;
+      }
+    ).model;
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('run_search over all catalogs returns groups incl. the Jamendo error chip', () => {
     const { t, frames } = boot();

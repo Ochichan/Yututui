@@ -24,9 +24,8 @@
   );
 
   let newName = $state('');
-  function submitCreate() {
-    playlists.submitCreate(newName);
-    newName = '';
+  async function submitCreate() {
+    if (await playlists.submitCreate(newName)) newName = '';
   }
 </script>
 
@@ -110,7 +109,7 @@
       class="form"
       onsubmit={(e) => {
         e.preventDefault();
-        submitCreate();
+        void submitCreate();
       }}
     >
       <label class="fl" for="pl-name">{t('playlists.name')}</label>
@@ -119,6 +118,7 @@
         id="pl-name"
         class="ti"
         bind:value={newName}
+        disabled={playlists.creating}
         placeholder={t('playlists.namePlaceholder')}
         autofocus
       />
@@ -126,7 +126,7 @@
         <button type="button" class="btn" onclick={() => playlists.cancelCreate()}
           >{t('common.cancel')}</button
         >
-        <button type="submit" class="btn primary" disabled={!newName.trim()}
+        <button type="submit" class="btn primary" disabled={!newName.trim() || playlists.creating}
           >{t('playlists.create')}</button
         >
       </div>
@@ -147,8 +147,10 @@
     </p>
     <div class="frow">
       <button class="btn" onclick={() => playlists.cancelDelete()}>{t('common.cancel')}</button>
-      <button class="btn danger" onclick={() => playlists.confirmDelete()}
-        >{t('common.delete')}</button
+      <button
+        class="btn danger"
+        disabled={playlists.deleting}
+        onclick={() => void playlists.confirmDelete()}>{t('common.delete')}</button
       >
     </div>
   </Modal>
@@ -166,7 +168,11 @@
     {:else}
       <div class="picklist" role="list">
         {#each playlists.list as p (p.id)}
-          <button class="pick" onclick={() => playlists.addTo(p.id)}>
+          <button
+            class="pick"
+            disabled={playlists.adding}
+            onclick={() => void playlists.addTo(p.id)}
+          >
             <span class="pname">{p.name}</span>
             <span class="pcount mono">{p.count}</span>
           </button>

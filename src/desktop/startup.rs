@@ -393,9 +393,9 @@ fn macos_startup_paths() -> Result<MacStartupPaths, StartupError> {
     let base = directories::BaseDirs::new()
         .ok_or_else(|| StartupError::LaunchAgent("could not resolve home directory".to_string()))?;
     let launch_agents_dir = base.home_dir().join("Library/LaunchAgents");
-    let log_dir = directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.cache_dir().join("logs"))
-        .unwrap_or_else(|| base.home_dir().join("Library/Caches/yututui/logs"));
+    let log_dir = crate::desktop::persistence::cache_dir()
+        .map(|dir| dir.join("logs"))
+        .unwrap_or_else(|| base.home_dir().join("Library/Caches/yututray/logs"));
     Ok(MacStartupPaths {
         plist: launch_agents_dir.join(LAUNCH_AGENT_FILE),
         launch_agents_dir,

@@ -84,37 +84,59 @@ pub struct RomanizeCache {
     key_scratch: std::cell::RefCell<String>,
 }
 
+/// Immutable, thread-shareable representation used by background persistence.
+/// Render-only revision and scratch state are deliberately absent (both are serde-skipped).
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RomanizePersistSnapshot {
+    entries: BTreeMap<String, RomanizedEntry>,
+}
+
 impl RomanizeCache {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = cache_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::RomanizedTitles,
+            &path,
+            CACHE_MAX_BYTES,
+        )
+    }
+
+    pub(crate) fn into_persist_snapshot(self) -> RomanizePersistSnapshot {
+        RomanizePersistSnapshot {
+            entries: self.entries,
+        }
+    }
+
     pub fn load() -> Self {
         let Some(path) = cache_path() else {
             return Self::default();
         };
         // Schema-drift tolerant: keeps cached romanizations across incompatible changes.
-        let cache = safe_fs::load_json_or_default_limited::<RomanizeCache>(&path, CACHE_MAX_BYTES);
-        crate::persist::replay_journaled_snapshot(
+        crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::RomanizedTitles,
             &path,
-            cache,
             CACHE_MAX_BYTES,
+            || safe_fs::load_json_or_default_limited::<RomanizeCache>(&path, CACHE_MAX_BYTES),
         )
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = cache_path() else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        crate::persist::write_store_json(&path, self)
     }
 
     pub fn delete_saved() -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = cache_path() else {
             return Ok(());
         };
-        match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
+        crate::persist::remove_store_file(&path).map(|_| ())
     }
 
     pub fn clear(&mut self) {
@@ -221,6 +243,16 @@ impl RomanizeCache {
             self.rev = self.rev.wrapping_add(1);
         }
         changed
+    }
+}
+
+impl RomanizePersistSnapshot {
+    pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
+        let Some(path) = cache_path() else {
+            return Ok(());
+        };
+        crate::persist::write_store_json(&path, self)
     }
 }
 
@@ -572,6 +604,37 @@ fn clean_display(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persistence_dto_is_json_identical_and_round_trips_through_the_public_cache() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "artist\u{0}title".to_owned(),
+            RomanizedEntry {
+                title: "Title".to_owned(),
+                artist: "Artist".to_owned(),
+                quality: RomanizeQuality::Gemini,
+                gemini_checked: true,
+                confidence: Some(0.91),
+            },
+        );
+        let cache = RomanizeCache {
+            entries,
+            rev: 17,
+            key_scratch: std::cell::RefCell::new("render scratch".to_owned()),
+        };
+        let cache_json = serde_json::to_vec_pretty(&cache).unwrap();
+        let dto_json = serde_json::to_vec_pretty(&cache.clone().into_persist_snapshot()).unwrap();
+
+        assert_eq!(
+            dto_json, cache_json,
+            "the private DTO must not change disk bytes"
+        );
+        let restored: RomanizeCache = serde_json::from_slice(&dto_json).unwrap();
+        assert_eq!(restored.entries, cache.entries);
+        assert_eq!(restored.rev, 0, "render-only revision stays serde-skipped");
+        assert!(restored.key_scratch.borrow().is_empty());
+    }
 
     #[test]
     fn local_romanizes_hangul_and_kana_without_touching_ascii() {

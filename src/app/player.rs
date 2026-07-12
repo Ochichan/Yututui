@@ -30,6 +30,11 @@ pub enum PlayerMsg {
     Eof,
     /// mpv reported a playback error.
     Error(String),
+    /// The mpv IPC transport ended unexpectedly. This is a runtime-lifetime failure, not
+    /// a bad track, so recovery must not advance the queue or record skip/play signals.
+    TransportClosed(String),
+    /// The runtime accepted an admission-sensitive command batch; apply its projected state.
+    IntentAdmitted(PlayerCommit),
     /// An event from the video-overlay mpv's IPC client, tagged with the spawn
     /// generation it was connected for — the reducer drops events from a window it
     /// already closed (`v`) or respawned (`Shift+V`).
@@ -93,31 +98,7 @@ impl App {
             && !self.prefetch.watch_retry_attempted.contains(&song.video_id)
         {
             let video_id = song.video_id.clone();
-            let prefetch_paused = self.prefetch.record_direct_url_failure();
-            self.prefetch.resolved.remove(&video_id);
-            self.prefetch.watch_retry_attempted.insert(video_id.clone());
-            self.prefetch.last_load_prefetched = false;
-            self.status.kind = StatusKind::Info;
-            self.status.text = if prefetch_paused {
-                t!(
-                    "Prefetched streams are being rejected — pausing prefetch and retrying this track",
-                    "미리 받은 스트림이 반복 거부됨 — 프리페치를 쉬고 같은 곡을 다시 시도"
-                )
-                .to_owned()
-            } else {
-                t!(
-                    "Prefetched stream was rejected — retrying this track",
-                    "미리 받은 스트림이 거부됨 — 같은 곡을 다시 시도"
-                )
-                .to_owned()
-            };
-            self.dirty = true;
-            tracing::info!(
-                video_id = %video_id,
-                prefetch_paused,
-                "retrying failed prefetched stream via watch URL"
-            );
-            return vec![Cmd::Player(PlayerCmd::Load(watch_url))];
+            return self.prefetch_watch_retry_intent(video_id, watch_url);
         }
         // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
         // the stale-yt-dlp signature. Update it in the background and retry this
@@ -167,8 +148,13 @@ impl App {
             && self.queue.peek_next().is_some()
         {
             // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
-            let cmds = self.advance(false);
+            let mut cmds = self.advance(false);
             self.status.text = playback_error::skipped_status_for_failure(failure_class);
+            Self::attach_track_commit_status(
+                &mut cmds,
+                StatusKind::Error,
+                self.status.text.clone(),
+            );
             self.dirty = true;
             return cmds;
         }
@@ -185,19 +171,6 @@ impl App {
     /// nothing is active (the caller then clears `af`).
     pub(in crate::app) fn current_af(&self) -> Option<String> {
         eq::build_af_string(&self.audio.bands, self.audio.normalize)
-    }
-
-    /// Change playback speed by `delta`, clamped and rounded to one decimal, and emit the
-    /// `set_property speed` command.
-    pub(in crate::app) fn adjust_speed(&mut self, delta: f64) -> Vec<Cmd> {
-        self.playback.speed =
-            (((self.playback.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
-        self.status.text = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.playback.speed);
-        self.dirty = true;
-        vec![Cmd::Player(PlayerCmd::SetProperty {
-            name: "speed".to_owned(),
-            value: serde_json::Value::from(self.playback.speed),
-        })]
     }
 
     /// Whether an mpv video overlay is currently open. Reaps the handle if the user closed mpv
@@ -221,8 +194,7 @@ impl App {
     /// closes the connection (Windows named pipes self-clean).
     pub fn close_video(&mut self) {
         if let Some(mut child) = self.video.proc.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.terminate_and_wait();
         }
         #[cfg(unix)]
         if let Some(path) = self.video.ipc_path.take() {
@@ -285,7 +257,9 @@ impl App {
     }
 
     /// Convert the current remappable overlay keymap into mpv keybind commands.
-    fn video_overlay_bindings(&self) -> Vec<crate::player::video::VideoKeyBinding> {
+    pub(in crate::app) fn video_overlay_bindings(
+        &self,
+    ) -> Vec<crate::player::video::VideoKeyBinding> {
         use crate::keymap::{Action, KeyContext};
         use crate::player::video::{VideoKeyAction, VideoKeyBinding};
 
@@ -318,153 +292,6 @@ impl App {
         .collect()
     }
 
-    /// Spawn the overlay window for YouTube id `id` in `layout` and wire up its IPC client
-    /// under a fresh spawn generation. Returns `false` when mpv failed to launch. When the
-    /// IPC endpoint path can't be prepared, the window still opens — it just degrades to
-    /// the pre-IPC fire-and-forget behavior (no EOF detection, no auto-continue).
-    fn open_video_overlay(
-        &mut self,
-        id: &str,
-        layout: crate::config::VideoOverlay,
-        cmds: &mut Vec<Cmd>,
-    ) -> bool {
-        let url = format!("https://www.youtube.com/watch?v={id}");
-        let data_dir = crate::paths::data_dir();
-        let (cookies, cookies_warning) = self
-            .config
-            .cookies_file_for_external_tools_with_warning(data_dir.as_deref());
-        if let Some(warning) = cookies_warning {
-            self.set_status_error(warning);
-        }
-        self.video.generation = self.video.generation.wrapping_add(1);
-        let generation = self.video.generation;
-        let ipc_path = crate::player::mpv::video_ipc_path(generation)
-            .inspect_err(|e| tracing::warn!(error = %e, "video overlay IPC path unavailable"))
-            .ok();
-        match spawn_video_overlay(&url, cookies.as_deref(), layout, ipc_path.as_deref()) {
-            Some(child) => {
-                self.video.proc = Some(child);
-                self.video.ipc_path = ipc_path.clone();
-                if let Some(ipc_path) = ipc_path {
-                    cmds.push(Cmd::VideoConnect {
-                        ipc_path,
-                        generation,
-                        bindings: self.video_overlay_bindings(),
-                    });
-                }
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Close the overlay and resume the audio the overlay paused (per
-    /// [`Video::paused_audio`]), leaving `status` as the transient info line. Shared by
-    /// the manual close (`v`), the overlay's own end/quit events, and the fallback paths.
-    fn finish_video_overlay(&mut self, status: &str) -> Vec<Cmd> {
-        let mut cmds = Vec::new();
-        self.close_video();
-        if self.video.paused_audio {
-            self.video.paused_audio = false;
-            self.playback.paused = false;
-            cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-                name: "pause".to_owned(),
-                value: serde_json::Value::Bool(false),
-            }));
-        }
-        self.status.kind = StatusKind::Info;
-        self.status.text = status.to_owned();
-        self.dirty = true;
-        cmds
-    }
-
-    /// `v`: toggle the external mpv video overlay. Open → close it and resume the audio we
-    /// paused; closed → launch it for the current track and pause the audio.
-    pub(in crate::app) fn toggle_video_overlay(&mut self) -> Vec<Cmd> {
-        let mut cmds = Vec::new();
-        if self.video_open() {
-            return self.finish_video_overlay(t!("Video closed", "영상 닫음"));
-        }
-        if let Some(song) = self.queue.current().cloned() {
-            let Some(id) = self.recover_youtube_id(&song) else {
-                // Local-only track with no recoverable YouTube origin → nothing to show.
-                self.status.text = t!(
-                    "This track is local-only — no video",
-                    "로컬 전용 트랙이라 영상이 없어요"
-                )
-                .to_owned();
-                self.dirty = true;
-                return cmds;
-            };
-            if self.open_video_overlay(&id, self.config.video_layout, &mut cmds) {
-                if !self.playback.paused {
-                    self.playback.paused = true;
-                    self.video.paused_audio = true;
-                    cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-                        name: "pause".to_owned(),
-                        value: serde_json::Value::Bool(true),
-                    }));
-                }
-                self.status.kind = StatusKind::Info;
-                self.status.text =
-                    t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
-            } else {
-                self.status.text = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
-            }
-        } else {
-            self.status.text = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
-        }
-        self.dirty = true;
-        cmds
-    }
-
-    /// `Shift+V`: toggle the overlay layout (top-right 30% ↔ center 50%), persist it, and — if
-    /// a video is open — respawn it in the new layout (mpv can't reliably resize a live window).
-    pub(in crate::app) fn toggle_video_layout(&mut self) -> Vec<Cmd> {
-        self.config.video_layout = self.config.video_layout.toggled();
-        let layout = self.config.video_layout;
-        let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
-            self.config.clone(),
-        )))];
-        if self.video_open() {
-            // Respawn in the new layout (mpv can't reliably resize a live window). If the
-            // current track has no recoverable YouTube origin, close the overlay and resume
-            // audio rather than leave a stale window falsely reporting the new layout.
-            let id = self
-                .queue
-                .current()
-                .cloned()
-                .and_then(|song| self.recover_youtube_id(&song));
-            self.close_video();
-            match id {
-                Some(id) => {
-                    if !self.open_video_overlay(&id, layout, &mut cmds) {
-                        // The respawn failed: resume audio rather than strand it paused
-                        // behind a window that no longer exists.
-                        cmds.extend(self.finish_video_overlay(t!(
-                            "Failed to launch mpv",
-                            "mpv 실행에 실패했습니다"
-                        )));
-                        self.status.kind = StatusKind::Error;
-                        return cmds;
-                    }
-                    // Audio stays paused (video.paused_audio unchanged).
-                }
-                None => {
-                    cmds.extend(self.finish_video_overlay(t!(
-                        "This track is local-only — no video",
-                        "로컬 전용 트랙이라 영상이 없어요"
-                    )));
-                    return cmds;
-                }
-            }
-        }
-        self.status.kind = StatusKind::Info;
-        self.status.text = format!("{}: {}", t!("Video", "영상"), layout.label());
-        self.dirty = true;
-        cmds
-    }
-
     /// An event from the overlay window's IPC client ([`PlayerMsg::VideoOverlay`]). Events carry
     /// the spawn generation they were connected for; anything from a window we already
     /// closed (`v`) or respawned (`Shift+V`) is stale and ignored.
@@ -484,7 +311,10 @@ impl App {
                 } else {
                     // Pre-IPC, an ended video meant audio stayed stranded paused until the
                     // user pressed `v` twice; with EOF observable it reads as a close.
-                    self.finish_video_overlay(t!("Video ended", "영상이 끝났어요"))
+                    self.finish_video_overlay(
+                        t!("Video ended", "영상이 끝났어요"),
+                        StatusKind::Info,
+                    )
                 }
             }
             VideoEvent::Failed(detail) => {
@@ -496,11 +326,11 @@ impl App {
                         t!("Video playback failed", "영상 재생에 실패했어요")
                     )
                 };
-                let cmds = self.finish_video_overlay(&msg);
-                self.status.kind = StatusKind::Error;
-                cmds
+                self.finish_video_overlay(&msg, StatusKind::Error)
             }
-            VideoEvent::Quit => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
+            VideoEvent::Quit => {
+                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
+            }
             VideoEvent::Next => self.video_skip(true),
             VideoEvent::Prev => self.video_skip(false),
             VideoEvent::TogglePause => vec![Cmd::VideoTogglePause],
@@ -514,7 +344,9 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            VideoEvent::Close => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
+            VideoEvent::Close => {
+                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
+            }
             VideoEvent::ToggleFullscreen => {
                 self.status.kind = StatusKind::Info;
                 self.status.text =
@@ -534,7 +366,7 @@ impl App {
                 if self.video_open() {
                     return Vec::new();
                 }
-                self.finish_video_overlay(t!("Video closed", "영상 닫음"))
+                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
             }
         }
     }
@@ -546,8 +378,7 @@ impl App {
         // Identical bookkeeping to the audio EOF path (`PlayerMsg::Eof`): full-play
         // signal, repeat/shuffle-aware advance, streaming top-up — so queue semantics
         // never diverge between audio and video continuation.
-        let mut cmds = self.record_outgoing(true);
-        cmds.extend(self.advance(true));
+        let cmds = self.advance_with_outgoing(true, true);
         self.video_follow_queue(cmds, t!("Next video…", "다음 영상…"))
     }
 
@@ -556,13 +387,13 @@ impl App {
     pub(in crate::app) fn video_skip(&mut self, forward: bool) -> Vec<Cmd> {
         let (cmds, status) = if forward {
             // Mirror `Action::NextTrack`: a manual skip (ignores repeat-one).
-            let mut cmds = self.record_outgoing(false);
-            cmds.extend(self.advance(false));
-            (cmds, t!("Next video…", "다음 영상…"))
+            (
+                self.advance_with_outgoing(false, false),
+                t!("Next video…", "다음 영상…"),
+            )
         } else {
             // Mirror `Action::PrevTrack`.
-            let song = self.queue.prev().cloned();
-            (self.load_song(song), t!("Previous video…", "이전 영상…"))
+            (self.previous_track(), t!("Previous video…", "이전 영상…"))
         };
         self.video_follow_queue(cmds, status)
     }
@@ -571,64 +402,27 @@ impl App {
     /// under the video and load the landed track's video into the same window (or wind
     /// the overlay down when the queue ended / the track is local-only).
     fn video_follow_queue(&mut self, mut cmds: Vec<Cmd>, status: &str) -> Vec<Cmd> {
-        if self.prefetch.loaded_video_id.is_none() {
-            // Queue ended (the move loaded nothing): close the overlay and drop the
-            // stale paused track from mpv, mirroring the audio queue-end (idle, paused).
-            self.close_video();
-            self.video.paused_audio = false;
-            cmds.push(Cmd::Player(PlayerCmd::Stop));
-            self.status.kind = StatusKind::Info;
-            self.status.text = t!("Queue ended", "큐가 끝났어요").to_owned();
-            self.dirty = true;
+        if self.attach_video_track_follow_up(&mut cmds, status) {
             return cmds;
         }
-        // load_song() loaded the landed track into the (still paused) audio engine, but
-        // reset_progress() cleared our pause flag — re-pin both sides so audio never
-        // plays under the video and a later close resumes at this track.
-        self.playback.paused = true;
-        self.video.paused_audio = true;
-        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-            name: "pause".to_owned(),
-            value: serde_json::Value::Bool(true),
-        }));
-        match self
-            .queue
-            .current()
-            .cloned()
-            .and_then(|song| self.recover_youtube_id(&song))
-        {
-            Some(id) => {
-                cmds.push(Cmd::VideoLoad(format!(
-                    "https://www.youtube.com/watch?v={id}"
-                )));
-                self.status.kind = StatusKind::Info;
-                self.status.text = status.to_owned();
-            }
-            None => {
-                // The landed track is local-only (no recoverable video): fall back to
-                // audio playback instead of skipping tracks hunting for one.
-                cmds.extend(self.finish_video_overlay(t!(
-                    "This track is local-only — continuing with audio",
-                    "로컬 전용 트랙이라 소리로 이어서 재생해요"
-                )));
-            }
-        }
-        self.dirty = true;
+        // Next/previous always produces a typed Track intent, including an empty/end queue.
+        // If a future caller violates that contract, fail closed through the typed video-finish
+        // path instead of projecting pause ownership around an unadmitted raw player command.
+        tracing::error!("video queue move did not produce a Track intent");
+        cmds.extend(self.finish_video_overlay(
+            t!(
+                "Video queue transition failed",
+                "영상 대기열 전환에 실패했습니다"
+            ),
+            StatusKind::Error,
+        ));
         cmds
     }
 
     /// Apply an EQ preset chosen from the dropdown and close it. Mirrors the `e`-key cycle
     /// ([`Action::CycleEq`]) — applied live to mpv, session-scoped (persisted via Settings).
     pub(in crate::app) fn select_eq_preset(&mut self, preset: EqPreset) -> Vec<Cmd> {
-        self.audio.preset = preset;
-        self.audio.bands = preset.gains();
-        self.dropdowns.eq_open = false;
-        self.dropdowns.search_source_open = false;
-        self.status.text = format!("EQ: {}", preset.label());
-        self.dirty = true;
-        vec![Cmd::Player(PlayerCmd::SetAudioFilter(
-            self.current_af().unwrap_or_default(),
-        ))]
+        self.eq_preset_intent(preset, false)
     }
 
     pub(in crate::app) fn select_streaming_mode(&mut self, mode: StreamingMode) -> Vec<Cmd> {
@@ -659,61 +453,80 @@ impl App {
             Action::ToggleRadioMode => self.request_radio_mode_switch(),
             Action::TogglePause => {
                 if self.current_needs_load() {
-                    let song = self.queue.current().cloned();
-                    return self.load_song(song);
+                    return self.stay_on_current_track();
                 }
-                // Optimistic toggle; mpv confirms via a `pause` property-change.
-                self.playback.paused = !self.playback.paused;
-                // Manual pause/resume takes over from the video overlay: once the user controls
-                // playback themselves, closing the overlay must not auto-resume on their behalf.
-                self.video.paused_audio = false;
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::CyclePause)]
+                let paused = !self.playback.paused;
+                // Absolute pause is idempotent when rapid inputs are coalesced/retried. Commit
+                // only after admission; manual control then takes ownership from the overlay.
+                self.player_intent(
+                    "set_pause",
+                    PlayerCmd::SetProperty {
+                        name: "pause".to_owned(),
+                        value: serde_json::Value::Bool(paused),
+                    },
+                    PlayerCommit::Pause {
+                        paused,
+                        clear_video_pause: true,
+                    },
+                )
             }
-            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(
-                -self.audio.seek_seconds,
-            ))],
-            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(
-                self.audio.seek_seconds,
-            ))],
+            Action::SeekBack => self.player_intent(
+                "seek_relative",
+                PlayerCmd::SeekRelative(-self.audio.seek_seconds),
+                PlayerCommit::Seek {
+                    optimistic_position: None,
+                },
+            ),
+            Action::SeekForward => self.player_intent(
+                "seek_relative",
+                PlayerCmd::SeekRelative(self.audio.seek_seconds),
+                PlayerCommit::Seek {
+                    optimistic_position: None,
+                },
+            ),
             Action::VolUp => {
-                // A manual volume change takes over from mute, so a later `m` doesn't restore.
-                self.playback.pre_mute_volume = None;
-                self.playback.volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
+                let volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
+                self.player_intent(
+                    "set_volume",
+                    PlayerCmd::SetVolume(volume),
+                    PlayerCommit::Volume {
+                        volume,
+                        pre_mute_volume: None,
+                    },
+                )
             }
             Action::VolDown => {
-                self.playback.pre_mute_volume = None;
-                self.playback.volume = (self.playback.volume - VOLUME_STEP).max(0);
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
+                let volume = (self.playback.volume - VOLUME_STEP).max(0);
+                self.player_intent(
+                    "set_volume",
+                    PlayerCmd::SetVolume(volume),
+                    PlayerCommit::Volume {
+                        volume,
+                        pre_mute_volume: None,
+                    },
+                )
             }
             // mpv-style mute: remember the level and drop to 0; toggling restores it. The
             // volume readout naturally shows 0 while muted, and the change rides the existing
             // SetVolume path so the daemon / OS media session stay in sync.
             Action::ToggleMute => {
-                match self.playback.pre_mute_volume.take() {
-                    Some(prev) => self.playback.volume = prev,
-                    None => {
-                        self.playback.pre_mute_volume = Some(self.playback.volume);
-                        self.playback.volume = 0;
-                    }
-                }
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
+                let (volume, pre_mute_volume) = match self.playback.pre_mute_volume {
+                    Some(previous) => (previous, None),
+                    None => (0, Some(self.playback.volume)),
+                };
+                self.player_intent(
+                    "set_volume",
+                    PlayerCmd::SetVolume(volume),
+                    PlayerCommit::Volume {
+                        volume,
+                        pre_mute_volume,
+                    },
+                )
             }
             // Manual next: always moves on, even under repeat-one. A manual skip of the
             // current track is a (position-discounted) negative signal before advancing.
-            Action::NextTrack => {
-                let mut cmds = self.record_outgoing(false);
-                cmds.extend(self.advance(false));
-                cmds
-            }
-            Action::PrevTrack => {
-                let song = self.queue.prev().cloned();
-                self.load_song(song)
-            }
+            Action::NextTrack => self.advance_with_outgoing(false, false),
+            Action::PrevTrack => self.previous_track(),
             // Cycle the current track's rating through one tri-state control: neutral → 👍 like
             // → 👎 dislike → neutral. `like` is favorite membership (library); `dislike` is the
             // persistent flag the streaming engine treats as a hard block. The two are mutually
@@ -853,30 +666,8 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             // Cycle the EQ preset and apply it immediately.
-            Action::CycleEq => {
-                self.audio.preset = self.audio.preset.cycled();
-                self.audio.bands = self.audio.preset.gains();
-                self.dropdowns.eq_open = false;
-                self.dropdowns.streaming_open = false;
-                self.dropdowns.search_source_open = false;
-                self.status.text = format!("EQ: {}", self.audio.preset.label());
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetAudioFilter(
-                    self.current_af().unwrap_or_default(),
-                ))]
-            }
-            Action::ToggleNormalize => {
-                self.audio.normalize = !self.audio.normalize;
-                self.status.text = format!(
-                    "{}: {}",
-                    t!("Normalize", "음량 평준화"),
-                    if self.audio.normalize { "✓" } else { "✗" }
-                );
-                self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetAudioFilter(
-                    self.current_af().unwrap_or_default(),
-                ))]
-            }
+            Action::CycleEq => self.eq_preset_intent(self.audio.preset.cycled(), true),
+            Action::ToggleNormalize => self.normalize_intent(!self.audio.normalize, false),
             Action::SpeedUp => self.adjust_speed(SPEED_STEP),
             Action::SpeedDown => self.adjust_speed(-SPEED_STEP),
             Action::OpenSettings => {
@@ -970,16 +761,16 @@ impl App {
     /// Into an empty queue it just becomes the sole track. This is the unified Enter / double-
     /// click "play" gesture in both the Library and the Search results.
     pub(in crate::app) fn play_now(&mut self, song: Song) -> Vec<Cmd> {
-        if !self.queue.play_now(song) {
+        let (plan, outcome) = self.queue.prepare_play_now_many(vec![song]);
+        debug_assert_eq!(outcome.requested(), 1);
+        if outcome.added() == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
             return Vec::new();
         }
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        self.load_song(song)
+        debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
+        self.load_prepared_queue_mutation(plan, Vec::new())
     }
 
     /// Play several tracks now without wiping the queue: insert them immediately after the
@@ -989,18 +780,16 @@ impl App {
             return Vec::new();
         }
         let requested_songs = songs.clone();
-        if self.queue.play_now_many(songs) == 0 {
+        let (plan, outcome) = self.queue.prepare_play_now_many(songs);
+        debug_assert_eq!(outcome.requested(), requested_songs.len());
+        if outcome.added() == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
             return Vec::new();
         }
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(self.request_romanization_for_songs(&requested_songs));
-        cmds
+        debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
+        self.load_prepared_queue_mutation(plan, requested_songs)
     }
 
     /// Add `song` to the queue without interrupting playback — the unified `\` / right-click
@@ -1020,9 +809,21 @@ impl App {
         }
         let queued_songs = songs.clone();
         let requested = songs.len();
-        let old_len = self.queue.len();
         let was_idle = self.prefetch.loaded_video_id.is_none();
-        let enqueue_next = self.config.effective_enqueue_next() && !was_idle;
+        if was_idle {
+            let (plan, outcome) = self.queue.prepare_idle_enqueue(songs);
+            debug_assert_eq!(outcome.requested(), requested);
+            if outcome.added() == 0 {
+                self.status.kind = StatusKind::Error;
+                self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+                self.dirty = true;
+                return Vec::new();
+            }
+            debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
+            return self.load_prepared_queue_mutation(plan, queued_songs);
+        }
+
+        let enqueue_next = self.config.effective_enqueue_next();
         let added = if enqueue_next {
             self.queue.insert_next_many(songs)
         } else {
@@ -1033,17 +834,6 @@ impl App {
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
             return Vec::new();
-        }
-        if was_idle {
-            // Nothing was playing → jump to the first track we just appended and start it.
-            self.queue
-                .goto(old_len.min(self.queue.len().saturating_sub(1)));
-            self.mode = Mode::Player;
-            self.status.text.clear();
-            let song = self.queue.current().cloned();
-            let mut cmds = self.load_song(song);
-            cmds.extend(self.request_romanization_for_songs(&queued_songs));
-            return cmds;
         }
         let cmds = self.request_romanization_for_songs(&queued_songs);
         let first_title = self.display_title(&queued_songs[0]).into_owned();
@@ -1169,175 +959,6 @@ impl App {
         self.session.last_activity_at = Some(now);
     }
 
-    /// Move to the next queue track (auto = end-of-track) and load it, or stop. Also runs
-    /// the autoplay/streaming top-up check now that the queue has advanced.
-    pub(in crate::app) fn advance(&mut self, auto: bool) -> Vec<Cmd> {
-        let song = self.queue.next(auto).cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(self.maybe_autoplay_extend());
-        cmds
-    }
-
-    /// Given an optional track, record it in history, reset progress, and emit a load
-    /// command (or nothing when the queue produced no track). Always marks the UI dirty.
-    pub(in crate::app) fn load_song(&mut self, song: Option<Song>) -> Vec<Cmd> {
-        self.dirty = true;
-        match song {
-            Some(mut song) => {
-                let mut skip_budget = self.queue.len();
-                let playback_target = loop {
-                    if let Some(reason) = song.unplayable_youtube_ref_reason() {
-                        tracing::warn!(
-                            video_id = %song.video_id,
-                            title = %song.title,
-                            artist = %song.artist,
-                            reason = %reason,
-                            "skipping non-playable YouTube entry"
-                        );
-                        self.status.text = t!(
-                            "Skipped a non-playable YouTube entry",
-                            "재생할 수 없는 YouTube 항목을 건너뜀"
-                        )
-                        .to_owned();
-                    } else {
-                        match song.playback_target_checked() {
-                            Ok(target) => break target,
-                            Err(error) => {
-                                tracing::warn!(
-                                    video_id = %song.video_id,
-                                    title = %song.title,
-                                    artist = %song.artist,
-                                    %error,
-                                    "skipping track with invalid playback URL"
-                                );
-                                self.status.text = t!(
-                                    "Skipped a track with an invalid playback URL",
-                                    "잘못된 재생 URL의 트랙을 건너뜀"
-                                )
-                                .to_owned();
-                            }
-                        }
-                    }
-                    self.status.kind = StatusKind::Error;
-                    self.prefetch.loaded_video_id = None;
-                    // Skip forward to the next playable track iteratively, bounded to one pass
-                    // over the queue. The old form recursed (`load_song` -> `advance` ->
-                    // `load_song`), so a run of unplayable refs -- or repeat-all wrapping over an
-                    // all-unplayable queue -- drove the stack to overflow.
-                    if skip_budget == 0 || self.queue.peek_next().is_none() {
-                        return Vec::new();
-                    }
-                    skip_budget -= 1;
-                    let Some(next) = self.queue.next(false).cloned() else {
-                        return Vec::new();
-                    };
-                    song = next;
-                };
-                self.reset_progress();
-                // A new track is a clean slate: drop any stale status (e.g. a prior
-                // "Playback error" / "Track unavailable") so the UI matches what's loading.
-                self.status.text.clear();
-                self.library.record_play(&song);
-                if !song.is_radio_station() {
-                    self.note_session_activity();
-                }
-                self.prefetch.loaded_video_id = Some(song.video_id.clone());
-                // Drop the previous track's lyrics; refresh if the panel is open.
-                self.lyrics.track = None;
-                // Drop the previous track's art; a fetch (below) refreshes it when enabled.
-                self.clear_artwork();
-                // Use a prefetched direct URL if we have one (instant skip); else hand mpv
-                // the track's own playback target (watch URL or local file path).
-                let prefetched_url = self.prefetch.resolved.get_fresh_url(&song.video_id);
-                let (url, prefetched) = match prefetched_url {
-                    Some(prefetched) => {
-                        match crate::api::validate_playable_url(song.source, &prefetched) {
-                            Ok(url) => (url, true),
-                            Err(error) => {
-                                tracing::warn!(
-                                    video_id = %song.video_id,
-                                    %error,
-                                    "dropping invalid prefetched stream URL"
-                                );
-                                self.prefetch.resolved.remove(&song.video_id);
-                                (playback_target, false)
-                            }
-                        }
-                    }
-                    None => (playback_target, false),
-                };
-                self.prefetch.last_load_prefetched = prefetched;
-                tracing::info!(url = %url, prefetched, "load track");
-                // Stop any in-progress radio recording BEFORE the new `Load`, so mpv can't
-                // append the incoming track onto the previous recording's temp file.
-                let mut cmds = self.recorder_teardown();
-                cmds.push(Cmd::Player(PlayerCmd::Load(url)));
-                cmds.push(Cmd::Persist(PersistCmd::Library));
-                // Re-apply the EQ/normalization chain: a gapless graph rebuild on track
-                // change can drop the labeled `@eqN` filters, so push it after every load.
-                // While the settings screen is open the *draft* is the source of truth (it's
-                // been previewing live), so a track change mid-edit keeps mpv matching what
-                // the user sees — and leaves the labels in place for the next `af-command`.
-                let af = match self.settings.as_deref() {
-                    Some(st) => eq::build_af_string(&st.draft.eq_bands, st.draft.normalize),
-                    None => self.current_af(),
-                };
-                if let Some(af) = af {
-                    cmds.push(Cmd::Player(PlayerCmd::SetAudioFilter(af)));
-                }
-                if self.lyrics.visible {
-                    self.lyrics.loading = true;
-                    cmds.push(fetch_lyrics_cmd(&song));
-                }
-                // Fetch album art for the new track when the feature is on.
-                if let Some(source) = self.artwork_source(&song) {
-                    self.art.loading = true;
-                    cmds.push(Cmd::FetchArtwork {
-                        video_id: song.video_id.clone(),
-                        source,
-                    });
-                }
-                // Prefetch the upcoming track's stream so the next skip is instant.
-                if self.prefetch.enabled()
-                    && let Some(next) = self.queue.peek_next()
-                    && let Some(watch_url) = next.prefetch_target()
-                {
-                    let video_id = next.video_id.clone();
-                    if !self.prefetch.resolved.contains_fresh(&video_id) {
-                        cmds.push(Cmd::Resolve {
-                            video_id,
-                            watch_url,
-                        });
-                    }
-                }
-                // Start the autoplay-streaming top-up as the track *starts* (not only at its end)
-                // so a low/single-song queue fetches its next tracks while this one still
-                // plays — closing the silent gap. Guarded + cooldown'd inside, and idempotent
-                // with the call in `advance` (the second one sees `streaming.pending` and no-ops).
-                cmds.extend(self.maybe_autoplay_extend());
-                cmds.extend(self.request_romanization_for_songs(std::slice::from_ref(&song)));
-                cmds
-            }
-            None => {
-                self.playback.time_pos = None;
-                self.playback.time_pos_at = None;
-                self.bump_position_epoch(PositionEpochReason::PlaybackCleared);
-                self.playback.duration = None;
-                self.playback.paused = true;
-                self.playback.stream_now_playing = None;
-                self.playback.cache_time = None;
-                self.playback.cache_time_at = None;
-                self.anim.last_shown_sec = -1;
-                self.anim.last_shown_cache_sec = -1;
-                self.radio_resync_at = None;
-                self.prefetch.loaded_video_id = None;
-                self.clear_artwork();
-                // Playback cleared: cut any in-progress recording (mid-song → dropped).
-                self.recorder_teardown()
-            }
-        }
-    }
-
     pub(in crate::app) fn current_needs_load(&self) -> bool {
         self.queue.current().is_some_and(|song| {
             self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str())
@@ -1421,9 +1042,9 @@ impl App {
     /// demuxed data when a usable edge is known; reconnects the stream when it isn't, or
     /// when a recent seek demonstrably didn't take. Resumes playback either way.
     pub(in crate::app) fn resync_radio_to_live(&mut self) -> Vec<Cmd> {
-        let Some(song) = self.queue.current().cloned() else {
+        if self.queue.current().is_none() {
             return Vec::new();
-        };
+        }
         let behind = self.radio_behind_secs();
         if let Some(b) = behind
             && b <= LIVE_SYNC_THRESHOLD_SECS
@@ -1437,36 +1058,16 @@ impl App {
         let seek_failed_recently = self
             .radio_resync_at
             .is_some_and(|at| at.elapsed().as_secs_f64() < RESYNC_RETRY_WINDOW_SECS);
-        self.radio_resync_at = Some(Instant::now());
-        self.status.kind = StatusKind::Info;
         if let Some(edge) = self.playback.cache_time
             && behind.is_some()
             && !seek_failed_recently
         {
-            // Optimistic unpause, like TogglePause: mpv confirms via `pause`.
-            let mut cmds = Vec::new();
-            if self.playback.paused {
-                self.playback.paused = false;
-                self.video.paused_audio = false;
-                cmds.push(Cmd::Player(PlayerCmd::CyclePause));
-            }
-            cmds.push(Cmd::Player(PlayerCmd::SeekAbsolute(
-                (edge - LIVE_EDGE_SEEK_MARGIN_SECS).max(0.0),
-            )));
-            self.status.text = t!("Re-synced to live", "실시간으로 다시 맞췄어요").to_owned();
-            self.dirty = true;
-            return cmds;
+            return self.radio_live_seek_intent((edge - LIVE_EDGE_SEEK_MARGIN_SECS).max(0.0));
         }
         // No usable edge (cache-less stream) or the seek didn't take → reconnect. A fresh
-        // connection starts at the live edge by construction; `load_song` resets progress
-        // (incl. `paused = false`).
-        self.status.text = t!(
-            "Reconnected to the live stream",
-            "라이브 스트림에 다시 연결했어요"
-        )
-        .to_owned();
-        self.dirty = true;
-        self.load_song(Some(song))
+        // connection starts at the live edge by construction. The typed Stay transition owns
+        // recorder teardown, reload bookkeeping, and the success toast.
+        self.reconnect_radio_to_live()
     }
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).

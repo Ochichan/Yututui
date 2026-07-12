@@ -30,6 +30,7 @@ pub mod notify;
 pub mod paths;
 pub mod persist;
 pub mod playback_policy;
+pub mod playback_target;
 pub mod player;
 pub mod playlists;
 pub mod queue;

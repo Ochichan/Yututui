@@ -20,6 +20,8 @@ export class PlaybackStore {
   #localVolume = $state<number | null>(null);
   #volumeEchoUntil = 0;
   #volumeTimer: ReturnType<typeof setTimeout> | null = null;
+  #seekSeq = 0;
+  #volumeSeq = 0;
   #ticker: ReturnType<typeof setInterval> | null = null;
   readonly #client: Client;
 
@@ -78,46 +80,32 @@ export class PlaybackStore {
     return this.model?.volume ?? 0;
   }
 
-  // ── commands (fire-and-forget; truth arrives via the next push) ──────────────────
+  // ── acknowledged commands; truth arrives via the next push ──────────────────────
 
   togglePause(): void {
-    if (this.model) {
-      // Freeze the interpolated position before flipping so pause doesn't rewind.
-      const pos = this.positionMs;
-      if (pos != null) this.model.elapsed_ms = pos;
-      this.model.paused = !this.model.paused; // optimistic
-    }
-    this.#anchorRebase();
-    this.#client.cmd('toggle_pause');
-    this.#retick();
+    void this.#client.cmd('toggle_pause');
   }
 
   next(): void {
-    this.#client.cmd('next');
+    void this.#client.cmd('next');
   }
 
   prev(): void {
-    this.#client.cmd('prev');
+    void this.#client.cmd('prev');
   }
 
   toggleShuffle(): void {
-    if (this.model) this.model.shuffle = !this.model.shuffle; // optimistic
-    this.#client.cmd('toggle_shuffle');
+    void this.#client.cmd('toggle_shuffle');
   }
 
   cycleRepeat(): void {
-    if (this.model) {
-      this.model.repeat =
-        this.model.repeat === 'off' ? 'all' : this.model.repeat === 'all' ? 'one' : 'off';
-    }
-    this.#client.cmd('cycle_repeat');
+    void this.#client.cmd('cycle_repeat');
   }
 
   /** Music ⇄ Radio mode. Truth is `player.radio_mode`; the switch flips it via the existing
    *  RadioMode setting change (works v7+), reflected on the next player push. */
   setRadioMode(on: boolean): void {
-    if (this.model) this.model.radio_mode = on; // optimistic
-    this.#client.cmd('set_setting', {
+    void this.#client.cmd('set_setting', {
       change: { setting: 'radio_mode', state: on ? 'on' : 'off' },
     });
   }
@@ -126,11 +114,7 @@ export class PlaybackStore {
   cycleRating(): void {
     const t = this.track;
     if (!t) return;
-    // Optimistic mirror of the TUI's CycleRating: none → up → down → none.
-    if (!t.favorite && !t.disliked) t.favorite = true;
-    else if (t.favorite) [t.favorite, t.disliked] = [false, true];
-    else t.disliked = false;
-    this.#client.cmd('rate', { video_id: t.video_id, rating: 'cycle' });
+    void this.#client.cmd('rate', { video_id: t.video_id, rating: 'cycle' });
   }
 
   /** Optimistic seek: anchor locally, hold off authoritative pushes (panel.rs:1797). */
@@ -138,21 +122,34 @@ export class PlaybackStore {
     const m = this.model;
     if (!m) return;
     const clamped = m.duration_ms == null ? ms : Math.max(0, Math.min(ms, m.duration_ms));
+    const previous = m.elapsed_ms;
+    const seq = ++this.#seekSeq;
     m.elapsed_ms = clamped;
     this.#anchorRebase();
     this.#holdUntil = performance.now() + SEEK_HOLD_MS;
-    this.#client.cmd('seek_to', { ms: Math.round(clamped) });
+    void this.#client.cmd('seek_to', { ms: Math.round(clamped) }).then((result) => {
+      if (result.ok || seq !== this.#seekSeq || this.model !== m) return;
+      m.elapsed_ms = previous;
+      this.#holdUntil = 0;
+      this.#anchorRebase();
+      this.#retick();
+    });
   }
 
   /** Local echo + 70 ms debounce so dragging is smooth (panel.rs:1845,2006). */
   setVolume(percent: number): void {
     const v = Math.max(0, Math.min(100, Math.round(percent)));
+    const seq = ++this.#volumeSeq;
     this.#localVolume = v;
     this.#volumeEchoUntil = performance.now() + VOLUME_ECHO_MS;
     if (this.#volumeTimer) clearTimeout(this.#volumeTimer);
     this.#volumeTimer = setTimeout(() => {
       this.#volumeTimer = null;
-      this.#client.cmd('set_volume', { percent: v });
+      void this.#client.cmd('set_volume', { percent: v }).then((result) => {
+        if (result.ok || seq !== this.#volumeSeq) return;
+        this.#localVolume = null;
+        this.#volumeEchoUntil = 0;
+      });
     }, VOLUME_SEND_DEBOUNCE_MS);
   }
 

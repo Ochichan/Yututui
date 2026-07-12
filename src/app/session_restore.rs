@@ -125,9 +125,6 @@ impl App {
         if !self.config.effective_autoplay_on_start() || !self.current_needs_load() {
             return Vec::new();
         }
-        // Optimistic: mpv will confirm via a `pause` property-change once the track opens.
-        self.playback.paused = false;
-        let song = self.queue.current().cloned();
-        self.load_song(song)
+        self.stay_on_current_track()
     }
 }

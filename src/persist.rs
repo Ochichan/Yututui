@@ -20,11 +20,67 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, mpsc, oneshot};
+
+#[path = "persist/durable.rs"]
+mod durable;
+#[path = "persist/handle.rs"]
+mod handle;
+#[path = "persist/locking.rs"]
+mod locking;
+#[path = "persist/ordered_fallback.rs"]
+mod ordered_fallback;
+#[path = "persist/owned_snapshot.rs"]
+mod owned_snapshot;
+#[path = "persist/panic_ownership.rs"]
+mod panic_ownership;
+#[path = "persist/panic_shadow.rs"]
+mod panic_shadow;
+#[path = "persist/recovery.rs"]
+mod recovery;
+#[path = "persist/startup.rs"]
+mod startup;
+#[path = "persist/writer_lease.rs"]
+mod writer_lease;
+#[cfg(test)]
+use durable::allocate_process_epoch_at;
+use durable::{AcceptedJournalOrder, JournalGeneration, JournalOrder, JournalOrderSource};
+use locking::{acquire_intent_lock, acquire_intent_lock_with_budget, acquire_private_lock};
+pub use ordered_fallback::PersistenceFallbackError;
+use owned_snapshot::OwnedSnapshot;
+pub use panic_ownership::install_panic_flush;
+use panic_ownership::{
+    PanicOperation, PanicOwnedOperation, lock_inflight, remove_inflight_if_order,
+    retain_newest_inflight, write_panic_operation,
+};
+use panic_shadow::{PanicShadow, PanicShadowSealed};
+#[cfg(test)]
+use recovery::replay_journaled_snapshot;
+pub use recovery::{
+    StartupRecoveryError, StartupRecoveryFailure, ensure_startup_recovery_coherent,
+};
+#[cfg(test)]
+pub(crate) use recovery::{
+    clear_startup_recovery_error_for_test, latch_startup_recovery_error_for_test,
+};
+pub(crate) use recovery::{
+    ensure_persistence_writes_allowed, load_with_journal_recovery, load_with_journal_recovery_then,
+    preflight_journal_recovery, remove_store_file, write_store_json,
+};
+pub use startup::{
+    StartupStoreSet, load_startup_store_set, load_verified_startup_state,
+    preflight_all_startup_stores,
+};
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) use writer_lease::with_test_writer_domain;
+pub use writer_lease::{
+    PersistenceAccess, initialize_persistence_reader, initialize_persistence_writer,
+    initialize_persistence_writer_for_roots,
+};
+pub(crate) use writer_lease::{persistence_access, writer_lease_allows_mutation};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StoreKind {
@@ -81,6 +137,7 @@ pub enum Snapshot {
     Test {
         kind: StoreKind,
         label: &'static str,
+        storage_path: Option<PathBuf>,
         writer: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
     },
 }
@@ -99,59 +156,6 @@ impl Snapshot {
             #[cfg(test)]
             Snapshot::Test { kind, .. } => *kind,
         }
-    }
-
-    fn write(&self) -> std::io::Result<()> {
-        match self {
-            Snapshot::Library(s) => s.save(),
-            Snapshot::Signals(s) => s.save(),
-            Snapshot::Downloads(s) => s.save(),
-            Snapshot::Config(s) => s.save(),
-            Snapshot::Playlists(s) => s.save(),
-            Snapshot::Station(s) => s.save(),
-            Snapshot::RomanizedTitles(s) => s.save(),
-            Snapshot::Session(s) => s.save(),
-            #[cfg(test)]
-            Snapshot::Test { writer, .. } => writer(),
-        }
-    }
-
-    fn storage_path(&self) -> Option<PathBuf> {
-        match self {
-            Snapshot::Library(_) => crate::library::library_path(),
-            Snapshot::Signals(_) => crate::signals::signals_path(),
-            Snapshot::Downloads(_) => crate::downloads::store_path(),
-            Snapshot::Config(_) => crate::config::config_path(),
-            Snapshot::Playlists(_) => crate::playlists::playlists_path(),
-            Snapshot::Station(_) => crate::station::station_path(),
-            Snapshot::RomanizedTitles(_) => crate::romanize::cache_path(),
-            Snapshot::Session(_) => crate::session::session_cache_path(),
-            #[cfg(test)]
-            Snapshot::Test { .. } => None,
-        }
-    }
-
-    fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
-        match self {
-            Snapshot::Library(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Signals(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Downloads(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Config(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Playlists(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Station(s) => serde_json::to_vec_pretty(s),
-            Snapshot::RomanizedTitles(s) => serde_json::to_vec_pretty(s),
-            Snapshot::Session(s) => serde_json::to_vec_pretty(s),
-            #[cfg(test)]
-            Snapshot::Test { .. } => serde_json::to_vec(&serde_json::Value::Null),
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        #[cfg(test)]
-        if let Snapshot::Test { label, .. } = self {
-            return label;
-        }
-        self.kind().label()
     }
 }
 
@@ -172,19 +176,170 @@ fn debounce(kind: StoreKind) -> Duration {
     }
 }
 
-type SharedPending = Arc<Mutex<HashMap<StoreKind, Snapshot>>>;
+enum PendingAction {
+    Save(Arc<OwnedSnapshot>),
+    DeleteRomanizedTitles,
+    #[cfg(test)]
+    TestDeleteRomanizedTitles {
+        deleter: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    },
+}
+
+#[derive(Clone)]
+struct PendingOperation {
+    order: JournalOrder,
+    kind: StoreKind,
+    ordering_error: Option<Arc<str>>,
+    journaled: bool,
+    action: Arc<PendingAction>,
+}
+
+impl PendingOperation {
+    fn save(snapshot: Snapshot, accepted: AcceptedJournalOrder) -> Self {
+        let snapshot = OwnedSnapshot::from(snapshot);
+        let kind = snapshot.kind();
+        Self {
+            order: accepted.order,
+            kind,
+            ordering_error: accepted.error,
+            journaled: false,
+            action: Arc::new(PendingAction::Save(Arc::new(snapshot))),
+        }
+    }
+
+    fn new(action: PendingAction, accepted: AcceptedJournalOrder) -> Self {
+        Self {
+            order: accepted.order,
+            kind: StoreKind::RomanizedTitles,
+            ordering_error: accepted.error,
+            journaled: false,
+            action: Arc::new(action),
+        }
+    }
+
+    fn kind(&self) -> StoreKind {
+        self.kind
+    }
+
+    fn label(&self) -> &'static str {
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => snapshot.label(),
+            PendingAction::DeleteRomanizedTitles => StoreKind::RomanizedTitles.label(),
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { .. } => "romanized title cache delete",
+        }
+    }
+
+    fn storage_path(&self) -> Option<PathBuf> {
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => snapshot.storage_path(),
+            PendingAction::DeleteRomanizedTitles => crate::romanize::cache_path(),
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { .. } => None,
+        }
+    }
+
+    fn write(&self) -> std::io::Result<()> {
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => snapshot.write(),
+            PendingAction::DeleteRomanizedTitles => crate::romanize::RomanizeCache::delete_saved(),
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { deleter } => deleter(),
+        }
+    }
+
+    fn ensure_ordering(&self) -> std::io::Result<()> {
+        match &self.ordering_error {
+            Some(error) => Err(std::io::Error::other(error.to_string())),
+            None => Ok(()),
+        }
+    }
+
+    fn debounce(&self) -> Duration {
+        match self.action.as_ref() {
+            PendingAction::Save(_) => debounce(self.kind),
+            PendingAction::DeleteRomanizedTitles => Duration::ZERO,
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { .. } => Duration::ZERO,
+        }
+    }
+
+    fn journal_intent(&self) -> Option<JournalIntent> {
+        if self.ordering_error.is_some() {
+            return None;
+        }
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => {
+                let path = snapshot.storage_path()?;
+                let bytes = match snapshot.to_json_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::warn!(
+                            store = snapshot.kind().label(),
+                            error = %error,
+                            "failed to encode persistence intent"
+                        );
+                        return None;
+                    }
+                };
+                Some(JournalIntent::Replace {
+                    order: self.order,
+                    kind: snapshot.kind(),
+                    path,
+                    bytes,
+                })
+            }
+            PendingAction::DeleteRomanizedTitles => Some(JournalIntent::Delete {
+                order: self.order,
+                kind: StoreKind::RomanizedTitles,
+                path: crate::romanize::cache_path()?,
+            }),
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<&OwnedSnapshot> {
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => Some(snapshot),
+            PendingAction::DeleteRomanizedTitles
+            | PendingAction::TestDeleteRomanizedTitles { .. } => None,
+        }
+    }
+}
+
+type SharedPending = Arc<Mutex<HashMap<StoreKind, PendingOperation>>>;
+type SharedInflight = Arc<Mutex<HashMap<StoreKind, PanicOperation>>>;
 
 const INTENT_JOURNAL_MAX_BYTES: u64 = 1024 * 1024;
 const INTENT_SNAPSHOT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const INTENT_ORPHAN_SCAN_LIMIT: usize = 1024;
+const INTENT_SIDECAR_MAX_COUNT: usize = 64;
 
-struct JournalIntent {
-    kind: StoreKind,
-    path: PathBuf,
-    bytes: Vec<u8>,
+enum JournalIntent {
+    Replace {
+        order: JournalOrder,
+        kind: StoreKind,
+        path: PathBuf,
+        bytes: Vec<u8>,
+    },
+    Delete {
+        order: JournalOrder,
+        kind: StoreKind,
+        path: PathBuf,
+    },
+}
+
+impl JournalIntent {
+    fn order(&self) -> JournalOrder {
+        match self {
+            Self::Replace { order, .. } | Self::Delete { order, .. } => *order,
+        }
+    }
 }
 
 enum PersistMsg {
-    DeleteRomanizedTitles,
     Flush(oneshot::Sender<bool>),
 }
 
@@ -192,107 +347,55 @@ enum PersistMsg {
 pub struct PersistHandle {
     tx: mpsc::Sender<PersistMsg>,
     pending: SharedPending,
+    inflight: SharedInflight,
     dirty: Arc<Notify>,
     events: EventSinkSlot,
+    order_source: Arc<JournalOrderSource>,
+    admission_open: Arc<std::sync::atomic::AtomicBool>,
+    panic_shadow: Arc<PanicShadow>,
 }
 
-impl PersistHandle {
-    pub fn save(&self, snapshot: Snapshot) {
-        let kind = snapshot.kind();
-        lock(&self.pending).insert(kind, snapshot);
-        self.dirty.notify_one();
-    }
-
-    /// Delete the romanize cache file. Routed through the actor so channel order makes
-    /// it impossible for an older pending save to resurrect the file afterwards.
-    pub fn delete_romanized_titles(&self) {
-        lock(&self.pending).remove(&StoreKind::RomanizedTitles);
-        match self.tx.try_send(PersistMsg::DeleteRomanizedTitles) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(msg)) => {
-                let tx = self.tx.clone();
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let _ = tx.send(msg).await;
-                    });
-                } else {
-                    tracing::warn!("persist control queue full; romanized cache delete deferred");
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::warn!("persist actor stopped before romanized cache delete");
-            }
-        }
-    }
-
-    /// Drain every pending write, bounded by `budget`. Returns `false` on timeout or when a
-    /// failed write remains dirty for retry.
-    pub async fn flush(&self, budget: Duration) -> bool {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        let deadline = tokio::time::Instant::now() + budget;
-        match tokio::time::timeout_at(deadline, self.tx.send(PersistMsg::Flush(ack_tx))).await {
-            Ok(Ok(())) => {}
-            _ => return false,
-        }
-        match tokio::time::timeout_at(deadline, ack_rx).await {
-            Ok(Ok(clean)) => clean,
-            _ => false,
-        }
-    }
-
-    /// The shared dirty-snapshot map, for [`install_panic_flush`].
-    pub fn pending(&self) -> SharedPending {
-        Arc::clone(&self.pending)
-    }
-
-    pub fn set_event_sink<F>(&self, emit: F)
-    where
-        F: Fn(PersistEvent) + Send + Sync + 'static,
-    {
-        *lock_event_sink(&self.events) = Some(Arc::new(emit));
-    }
+/// Opaque handle used by the panic hook without exposing the actor's pending-operation map.
+#[derive(Clone)]
+pub struct PanicPending {
+    #[cfg(test)]
+    inner: SharedPending,
+    shadow: Arc<PanicShadow>,
 }
 
 pub fn spawn() -> PersistHandle {
+    // Reserve the process epoch before this handle can accept snapshots. This one-time startup
+    // fsync establishes predecessor/successor order without adding disk I/O to any user action.
+    let order_source = Arc::new(match persistence_access() {
+        PersistenceAccess::Writable => JournalOrderSource::allocate(),
+        PersistenceAccess::ReadOnly { reason } => JournalOrderSource::unavailable(reason),
+    });
     let (tx, rx) = crate::util::backpressure::bounded_channel(
         crate::util::backpressure::PERSIST_CONTROL_QUEUE,
     );
     let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
     let dirty = Arc::new(Notify::new());
     let events: EventSinkSlot = Arc::new(Mutex::new(None));
+    let panic_shadow = Arc::new(PanicShadow::new());
     tokio::spawn(run_actor(
         rx,
         Arc::clone(&pending),
+        Arc::clone(&inflight),
         Arc::clone(&dirty),
         Arc::clone(&events),
+        Arc::clone(&panic_shadow),
     ));
     PersistHandle {
         tx,
         pending,
+        inflight,
         dirty,
         events,
+        order_source,
+        admission_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        panic_shadow,
     }
-}
-
-/// Wrap the current panic hook so pending snapshots hit disk before the inherited chain
-/// (mpv kill, terminal restore) runs. Must be installed *after*
-/// `player::lifetime::install_panic_hook` — last installed runs first.
-///
-/// `try_lock` (never block): if the persist actor itself panicked while holding the
-/// lock, skipping beats deadlocking. The lock is only ever held for a map insert/remove,
-/// so in practice this always succeeds. A snapshot the actor already removed and was
-/// mid-writing when another thread panicked is not re-written here; the temp+rename
-/// write keeps the old file intact (same exposure as a SIGKILL mid-write today).
-pub fn install_panic_flush(pending: SharedPending) {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if let Ok(map) = pending.try_lock() {
-            for snapshot in map.values() {
-                let _ = snapshot.write();
-            }
-        }
-        previous(info);
-    }));
 }
 
 const RETRY_INITIAL: Duration = Duration::from_millis(500);
@@ -311,8 +414,10 @@ type RetryMap = HashMap<StoreKind, RetryState>;
 async fn run_actor(
     mut rx: mpsc::Receiver<PersistMsg>,
     pending: SharedPending,
+    inflight: SharedInflight,
     dirty: Arc<Notify>,
     events: EventSinkSlot,
+    panic_shadow: Arc<PanicShadow>,
 ) {
     let mut due: HashMap<StoreKind, tokio::time::Instant> = HashMap::new();
     let mut retries: RetryMap = HashMap::new();
@@ -320,45 +425,40 @@ async fn run_actor(
         let next_due = due.values().min().copied();
         tokio::select! {
             msg = rx.recv() => match msg {
-                Some(PersistMsg::DeleteRomanizedTitles) => {
-                    lock(&pending).remove(&StoreKind::RomanizedTitles);
-                    due.remove(&StoreKind::RomanizedTitles);
-                    retries.remove(&StoreKind::RomanizedTitles);
-                    clear_store_journal_for_kind(StoreKind::RomanizedTitles);
-                    let result = crate::util::blocking::spawn_io(
-                        crate::romanize::RomanizeCache::delete_saved,
-                    )
-                    .await;
-                    if let Ok(Err(e)) = result {
-                        tracing::warn!(error = %e, "failed to delete romanized title cache");
-                    }
-                }
                 Some(PersistMsg::Flush(ack)) => {
-                    journal_pending_snapshots(&pending).await;
-                    let clean = write_stores(&pending, &mut due, &mut retries, &events, true).await;
+                    journal_pending_operations(&pending).await;
+                    let clean = write_stores_with_inflight(
+                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, true,
+                    ).await;
                     let _ = ack.send(clean);
                 }
                 // All senders dropped (quit already flushed; this is a backstop).
                 None => {
-                    journal_pending_snapshots(&pending).await;
-                    write_stores(&pending, &mut due, &mut retries, &events, true).await;
+                    journal_pending_operations(&pending).await;
+                    write_stores_with_inflight(
+                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, true,
+                    ).await;
                     break;
                 }
             },
             _ = dirty.notified() => {
-                journal_pending_snapshots(&pending).await;
+                journal_pending_operations(&pending).await;
                 arm_due_for_pending(&pending, &mut due);
             },
             _ = tokio::time::sleep_until(next_due.unwrap_or_else(tokio::time::Instant::now)),
                 if next_due.is_some() =>
             {
-                write_stores(&pending, &mut due, &mut retries, &events, false).await;
+                write_stores_with_inflight(
+                    &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, false,
+                ).await;
             }
         }
     }
 }
 
-fn lock(pending: &SharedPending) -> std::sync::MutexGuard<'_, HashMap<StoreKind, Snapshot>> {
+fn lock(
+    pending: &SharedPending,
+) -> std::sync::MutexGuard<'_, HashMap<StoreKind, PendingOperation>> {
     // A panicking writer can't leave the map half-mutated in a harmful way (it's a
     // plain insert/remove), so recover from poisoning instead of propagating it.
     pending.lock().unwrap_or_else(PoisonError::into_inner)
@@ -375,7 +475,10 @@ fn queue_pending_save(
     snapshot: Snapshot,
 ) {
     let kind = snapshot.kind();
-    lock(pending).insert(kind, snapshot);
+    lock(pending).insert(
+        kind,
+        PendingOperation::save(snapshot, JournalOrderSource::for_test(1).accept()),
+    );
     due.entry(kind)
         .or_insert_with(|| tokio::time::Instant::now() + debounce(kind));
 }
@@ -385,9 +488,12 @@ fn arm_due_for_pending(
     due: &mut HashMap<StoreKind, tokio::time::Instant>,
 ) {
     let now = tokio::time::Instant::now();
-    let kinds: Vec<StoreKind> = lock(pending).keys().copied().collect();
-    for kind in kinds {
-        due.entry(kind).or_insert_with(|| now + debounce(kind));
+    let operations: Vec<(StoreKind, Duration)> = lock(pending)
+        .iter()
+        .map(|(kind, operation)| (*kind, operation.debounce()))
+        .collect();
+    for (kind, delay) in operations {
+        due.entry(kind).or_insert_with(|| now + delay);
     }
 }
 
@@ -406,183 +512,446 @@ fn emit_persist_event(events: &EventSinkSlot, event: PersistEvent) {
     }
 }
 
-async fn journal_pending_snapshots(pending: &SharedPending) {
+async fn journal_pending_operations(pending: &SharedPending) {
     let intents: Vec<JournalIntent> = {
         let guard = lock(pending);
         guard
             .values()
-            .filter_map(|snapshot| {
-                let path = snapshot.storage_path()?;
-                let bytes = match snapshot.to_json_bytes() {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        tracing::warn!(
-                            store = snapshot.kind().label(),
-                            error = %error,
-                            "failed to encode persistence intent"
-                        );
-                        return None;
-                    }
-                };
-                Some(JournalIntent {
-                    kind: snapshot.kind(),
-                    path,
-                    bytes,
-                })
-            })
+            .filter(|operation| !operation.journaled)
+            .filter_map(PendingOperation::journal_intent)
             .collect()
     };
     if intents.is_empty() {
         return;
     }
+    let io_pending = Arc::clone(pending);
     let result = crate::util::blocking::spawn_io(move || {
+        let mut written = Vec::new();
         for intent in intents {
-            if let Err(error) = write_journal_intent(&intent) {
-                tracing::warn!(
-                    store = intent.kind.label(),
-                    error = %error,
-                    "failed to write persistence intent"
-                );
+            match write_journal_intent_if_current(&intent, &io_pending) {
+                Ok(JournalAppend::Written(order) | JournalAppend::Superseded(order)) => {
+                    written.push((intent.kind(), order));
+                }
+                Ok(JournalAppend::Stale) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        store = intent.kind().label(),
+                        error = %error,
+                        "failed to write persistence intent"
+                    );
+                }
             }
         }
+        written
     })
     .await;
-    if let Err(error) = result {
-        tracing::warn!(error = %error, "persistence intent task failed");
+    match result {
+        Ok(written) => {
+            let mut guard = lock(pending);
+            for (kind, order) in written {
+                if let Some(operation) = guard.get_mut(&kind)
+                    && operation.order == order
+                {
+                    operation.journaled = true;
+                }
+            }
+        }
+        Err(error) => tracing::warn!(error = %error, "persistence intent task failed"),
     }
 }
 
+impl JournalIntent {
+    fn kind(&self) -> StoreKind {
+        match self {
+            Self::Replace { kind, .. } | Self::Delete { kind, .. } => *kind,
+        }
+    }
+}
+
+enum JournalAppend {
+    Written(JournalOrder),
+    Superseded(JournalOrder),
+    Stale,
+}
+
+#[derive(Clone)]
+enum JournalOperation {
+    Replace { sidecar: String, sha256: String },
+    Delete,
+}
+
+#[derive(Clone)]
+struct JournalCandidate {
+    order: Option<JournalOrder>,
+    operation: JournalOperation,
+    raw_line: String,
+}
+
+#[derive(Default)]
+struct JournalState {
+    committed_through: Option<JournalOrder>,
+    candidate: Option<JournalCandidate>,
+}
+
+struct PreparedJournalRecord {
+    value: serde_json::Value,
+    created_sidecar: Option<PathBuf>,
+}
+
+impl PreparedJournalRecord {
+    fn without_sidecar(value: serde_json::Value) -> Self {
+        Self {
+            value,
+            created_sidecar: None,
+        }
+    }
+
+    fn remove_created_sidecar(&self) {
+        if let Some(path) = &self.created_sidecar {
+            remove_file_if_exists(path, "failed to remove uncommitted persistence sidecar");
+        }
+    }
+}
+
+#[cfg(test)]
 fn write_journal_intent(intent: &JournalIntent) -> std::io::Result<()> {
-    let Some(journal_path) = intent_journal_path(&intent.path) else {
-        return Ok(());
-    };
-    let Some(sidecar_path) = intent_sidecar_path(&intent.path) else {
-        return Ok(());
-    };
-    crate::util::safe_fs::write_private_atomic(&sidecar_path, &intent.bytes)?;
-    let sidecar = sidecar_path
+    ensure_persistence_writes_allowed()?;
+    let (kind, path) = intent_kind_path(intent);
+    let _lock = acquire_intent_lock(path)?;
+    let record = prepare_journal_record(intent)?;
+    let state = replace_journal_with_record_locked(kind, path, &record)?;
+    verify_intent_state(&state, intent.order()).map(|_| ())
+}
+
+fn write_journal_intent_if_current(
+    intent: &JournalIntent,
+    pending: &SharedPending,
+) -> std::io::Result<JournalAppend> {
+    ensure_persistence_writes_allowed()?;
+    let (kind, path) = intent_kind_path(intent);
+    let _lock = acquire_intent_lock(path)?;
+    let record = prepare_journal_record(intent)?;
+    let current = lock(pending)
+        .get(&kind)
+        .is_some_and(|operation| operation.order == intent.order());
+    if !current {
+        record.remove_created_sidecar();
+        return Ok(JournalAppend::Stale);
+    }
+    let state = replace_journal_with_record_locked(kind, path, &record)?;
+    match verify_intent_state(&state, intent.order())? {
+        IntentState::Current => Ok(JournalAppend::Written(intent.order())),
+        IntentState::Superseded => Ok(JournalAppend::Superseded(intent.order())),
+    }
+}
+
+fn intent_kind_path(intent: &JournalIntent) -> (StoreKind, &Path) {
+    match intent {
+        JournalIntent::Replace { kind, path, .. } | JournalIntent::Delete { kind, path, .. } => {
+            (*kind, path)
+        }
+    }
+}
+
+fn prepare_journal_record(intent: &JournalIntent) -> std::io::Result<PreparedJournalRecord> {
+    ensure_persistence_writes_allowed()?;
+    let (kind, path) = intent_kind_path(intent);
+    let order = intent.order();
+    let generation = order.generation.to_hex();
+    let process_epoch = order.process_epoch.to_string();
+    let sequence = order.sequence.to_string();
+    // Keep the original v1/op/kind/sidecar/sha256 shape and add ordering fields. A rolled-back
+    // reader can replay immutable sidecars and simply ignores `commit` records. Concurrent old
+    // and new binaries are not a supported coordination mode because the old binary does not
+    // take this advisory lock. A complete generation-less record on an otherwise clean segment
+    // after the ordered frontier is treated as a sequential rollback boundary.
+    match intent {
+        JournalIntent::Replace { bytes, .. } => {
+            let sidecar_path = unique_intent_sidecar_path(path, order)
+                .ok_or_else(|| std::io::Error::other("invalid persistence intent path"))?;
+            let sidecar = sidecar_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| std::io::Error::other("invalid intent sidecar name"))?
+                .to_owned();
+            let created = write_immutable_sidecar(&sidecar_path, bytes)?;
+            Ok(PreparedJournalRecord {
+                value: serde_json::json!({
+                    "v": 1,
+                    "op": "replace",
+                    "kind": kind.label(),
+                    "sidecar": sidecar,
+                    "sha256": sha256_hex(bytes),
+                    "generation": generation,
+                    "process_epoch": process_epoch,
+                    "sequence": sequence,
+                }),
+                created_sidecar: created.then_some(sidecar_path),
+            })
+        }
+        JournalIntent::Delete { .. } => {
+            Ok(PreparedJournalRecord::without_sidecar(serde_json::json!({
+                "v": 1,
+                "op": "delete",
+                "kind": kind.label(),
+                "generation": generation,
+                "process_epoch": process_epoch,
+                "sequence": sequence,
+            })))
+        }
+    }
+}
+
+fn write_immutable_sidecar(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    if bytes.len() as u64 > INTENT_SNAPSHOT_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "persistence intent snapshot exceeds the recovery limit",
+        ));
+    }
+    match crate::util::safe_fs::read_no_symlink_limited(path, INTENT_SNAPSHOT_MAX_BYTES) {
+        Ok(existing) if existing == bytes => Ok(false),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "refusing to overwrite an immutable persistence sidecar",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure_sidecar_artifact_capacity(path)?;
+            crate::util::safe_fs::write_private_atomic(path, bytes)?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_sidecar_artifact_capacity(path: &Path) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("invalid persistence sidecar directory"))?;
+    let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| std::io::Error::other("invalid intent sidecar name"))?;
-    let record = serde_json::json!({
-        "v": 1,
-        "op": "replace",
-        "kind": intent.kind.label(),
-        "sidecar": sidecar,
-        "sha256": sha256_hex(&intent.bytes),
-    });
+        .ok_or_else(|| std::io::Error::other("invalid persistence sidecar name"))?;
+    let (base_name, _) = file_name
+        .rsplit_once(".intent.")
+        .ok_or_else(|| std::io::Error::other("invalid persistence sidecar name"))?;
+    let prefix = format!("{base_name}.intent.");
+    let mut artifacts = 0_usize;
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        {
+            artifacts += 1;
+            if artifacts >= INTENT_SIDECAR_MAX_COUNT {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::StorageFull,
+                    "persistence sidecar artifact limit reached",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn append_journal_record(path: &Path, record: &serde_json::Value) -> std::io::Result<()> {
+    let Some(journal_path) = intent_journal_path(path) else {
+        return Ok(());
+    };
     crate::util::safe_fs::append_private_jsonl_durable(&journal_path, &record.to_string())
 }
 
-fn clear_store_journal_for_kind(kind: StoreKind) {
-    let path = match kind {
-        StoreKind::Library => crate::library::library_path(),
-        StoreKind::Signals => crate::signals::signals_path(),
-        StoreKind::Downloads => crate::downloads::store_path(),
-        StoreKind::Config => crate::config::config_path(),
-        StoreKind::Playlists => crate::playlists::playlists_path(),
-        StoreKind::Station => crate::station::station_path(),
-        StoreKind::RomanizedTitles => crate::romanize::cache_path(),
-        StoreKind::Session => crate::session::session_cache_path(),
-    };
-    if let Some(path) = path {
-        clear_store_journal(&path);
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntentState {
+    Current,
+    Superseded,
 }
 
-fn clear_store_journal(path: &Path) {
-    for path in [intent_journal_path(path), intent_sidecar_path(path)]
-        .into_iter()
-        .flatten()
+fn verify_intent_state(state: &JournalState, order: JournalOrder) -> std::io::Result<IntentState> {
+    if state
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.order == Some(order))
     {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %error,
-                    "failed to remove persistence intent"
-                );
-            }
-        }
+        return Ok(IntentState::Current);
     }
+    if state
+        .committed_through
+        .is_some_and(|frontier| frontier >= order)
+        || state.candidate.as_ref().is_some_and(|candidate| {
+            candidate
+                .order
+                .is_none_or(|candidate_order| candidate_order > order)
+        })
+    {
+        return Ok(IntentState::Superseded);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "persistence journal did not retain or supersede the appended generation",
+    ))
 }
 
-pub(crate) fn replay_journaled_snapshot<T>(
+fn replace_journal_with_record_locked(
     kind: StoreKind,
     path: &Path,
-    current: T,
-    max_bytes: u64,
-) -> T
+    record: &PreparedJournalRecord,
+) -> std::io::Result<JournalState> {
+    ensure_persistence_writes_allowed()?;
+    replace_journal_with_record_locked_by(kind, path, record, |journal_path, bytes| {
+        crate::util::safe_fs::write_private_atomic(journal_path, bytes)
+    })
+}
+
+fn replace_journal_with_record_locked_by<F>(
+    kind: StoreKind,
+    path: &Path,
+    record: &PreparedJournalRecord,
+    writer: F,
+) -> std::io::Result<JournalState>
 where
-    T: DeserializeOwned,
+    F: FnOnce(&Path, &[u8]) -> std::io::Result<()>,
 {
     let Some(journal_path) = intent_journal_path(path) else {
-        return current;
+        return Ok(JournalState::default());
     };
-    let Ok(bytes) =
-        crate::util::safe_fs::read_no_symlink_limited(&journal_path, INTENT_JOURNAL_MAX_BYTES)
-    else {
-        return current;
+    let current = match read_journal_state(kind, path) {
+        Ok(current) => current,
+        Err(error) => {
+            // No journal mutation has been attempted yet, so the newly prepared sidecar cannot
+            // be referenced and is always safe to remove.
+            record.remove_created_sidecar();
+            return Err(error);
+        }
     };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return current;
-    };
-    for line in text.lines().rev() {
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if record.get("v").and_then(|v| v.as_u64()) != Some(1)
-            || record.get("op").and_then(|v| v.as_str()) != Some("replace")
-            || record.get("kind").and_then(|v| v.as_str()) != Some(kind.label())
-        {
-            continue;
-        }
-        let Some(sidecar_name) = record.get("sidecar").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(expected_hash) = record.get("sha256").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(sidecar_path) = sibling_path_from_record(path, sidecar_name) else {
-            continue;
-        };
-        let cap = max_bytes.min(INTENT_SNAPSHOT_MAX_BYTES);
-        let Ok(snapshot_bytes) = crate::util::safe_fs::read_no_symlink_limited(&sidecar_path, cap)
-        else {
-            continue;
-        };
-        if sha256_hex(&snapshot_bytes) != expected_hash {
-            tracing::warn!(
-                store = kind.label(),
-                "discarding persistence intent with checksum mismatch"
-            );
-            continue;
-        }
-        match serde_json::from_slice::<T>(&snapshot_bytes) {
-            Ok(snapshot) => {
-                tracing::info!(store = kind.label(), "replayed pending persistence intent");
-                return snapshot;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    store = kind.label(),
-                    error = %error,
-                    "discarding invalid persistence intent"
-                );
-            }
-        }
+    let mut proposed = compacted_journal_text(kind, &current);
+    proposed.push_str(&record.value.to_string());
+    proposed.push('\n');
+    let desired_state = parse_journal_state(kind, &proposed);
+    let desired = compacted_journal_text(kind, &desired_state);
+    if desired.len() as u64 > INTENT_JOURNAL_MAX_BYTES {
+        cleanup_journal_sidecars_locked(path, &current);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compacted persistence journal exceeds its size limit",
+        ));
     }
-    current
+
+    let write_result = writer(&journal_path, desired.as_bytes());
+    let observed = read_journal_state(kind, path);
+    if let Ok(state) = &observed {
+        // On a pre-rename failure this removes the just-prepared unreferenced sidecar. If rename
+        // became visible but parent sync failed, it preserves the single referenced generation;
+        // retry reuses the same immutable path and cannot grow artifacts.
+        cleanup_journal_sidecars_locked(path, state);
+    }
+    write_result?;
+    observed
+}
+
+fn compacted_journal_text(kind: StoreKind, state: &JournalState) -> String {
+    let mut compacted = String::new();
+    if let Some(frontier) = state.committed_through {
+        compacted.push_str(&commit_record(kind, frontier).to_string());
+        compacted.push('\n');
+    }
+    if let Some(candidate) = &state.candidate {
+        compacted.push_str(&candidate.raw_line);
+        compacted.push('\n');
+    }
+    compacted
+}
+
+fn cleanup_journal_sidecars_locked(path: &Path, state: &JournalState) {
+    let retained = state.candidate.as_ref().and_then(|candidate| {
+        if let JournalOperation::Replace { sidecar, .. } = &candidate.operation {
+            Some(sidecar.as_str())
+        } else {
+            None
+        }
+    });
+    cleanup_orphan_sidecars_locked(path, retained);
+}
+
+#[cfg(test)]
+fn commit_journal_generation(
+    kind: StoreKind,
+    path: &Path,
+    order: JournalOrder,
+) -> std::io::Result<()> {
+    let _lock = acquire_intent_lock(path)?;
+    commit_journal_generation_locked(kind, path, order)
+}
+
+fn commit_journal_generation_locked(
+    kind: StoreKind,
+    path: &Path,
+    order: JournalOrder,
+) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let record = PreparedJournalRecord::without_sidecar(commit_record(kind, order));
+    let state = replace_journal_with_record_locked(kind, path, &record)?;
+    if state
+        .committed_through
+        .is_some_and(|frontier| frontier >= order)
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "persistence journal did not retain the committed generation frontier",
+        ))
+    }
+}
+
+fn commit_record(kind: StoreKind, order: JournalOrder) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1,
+        "op": "commit",
+        "kind": kind.label(),
+        "generation": order.generation.to_hex(),
+        "process_epoch": order.process_epoch.to_string(),
+        "sequence": order.sequence.to_string(),
+    })
+}
+
+#[cfg(test)]
+fn clear_store_journal(path: &Path) {
+    let Ok(_lock) = acquire_intent_lock(path) else {
+        return;
+    };
+    if let Some(journal_path) = intent_journal_path(path) {
+        remove_file_if_exists(&journal_path, "failed to remove persistence intent");
+    }
+    cleanup_orphan_sidecars_locked(path, None);
 }
 
 fn intent_journal_path(path: &Path) -> Option<PathBuf> {
     sibling_with_suffix(path, ".intent.jsonl")
 }
 
+#[cfg(test)]
 fn intent_sidecar_path(path: &Path) -> Option<PathBuf> {
     sibling_with_suffix(path, ".intent.latest.json")
+}
+
+fn unique_intent_sidecar_path(path: &Path, order: JournalOrder) -> Option<PathBuf> {
+    sibling_with_suffix(
+        path,
+        &format!(
+            ".intent.{}.{}.{}.json",
+            order.process_epoch,
+            order.sequence,
+            order.generation.to_hex()
+        ),
+    )
+}
+
+fn intent_lock_path(path: &Path) -> Option<PathBuf> {
+    sibling_with_suffix(path, ".intent.lock")
 }
 
 fn sibling_with_suffix(path: &Path, suffix: &str) -> Option<PathBuf> {
@@ -598,6 +967,200 @@ fn sibling_path_from_record(path: &Path, name: &str) -> Option<PathBuf> {
     path.parent().map(|parent| parent.join(name))
 }
 
+fn parse_journal_order(record: &serde_json::Value) -> Option<JournalOrder> {
+    let generation = JournalGeneration::from_hex(record.get("generation")?.as_str()?)?;
+    if let (Some(process_epoch), Some(sequence)) =
+        (record.get("process_epoch"), record.get("sequence"))
+    {
+        let process_epoch = process_epoch
+            .as_str()
+            .and_then(|value| value.parse().ok())
+            .or_else(|| process_epoch.as_u64())?;
+        let sequence = sequence
+            .as_str()
+            .and_then(|value| value.parse().ok())
+            .or_else(|| sequence.as_u64().map(u128::from))?;
+        return Some(JournalOrder {
+            process_epoch,
+            sequence,
+            generation,
+        });
+    }
+    // Transitional development records used wall-clock nanos. Keep them replayable below every
+    // durable process epoch; no released reader depended on this ordering field.
+    let accepted = record.get("accepted_unix_nanos")?;
+    let sequence = accepted
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .or_else(|| accepted.as_u64().map(u128::from))?;
+    Some(JournalOrder {
+        process_epoch: 0,
+        sequence,
+        generation,
+    })
+}
+
+enum ParsedJournalEvent {
+    Commit(JournalOrder),
+    Candidate(JournalCandidate),
+}
+
+fn parse_journal_event(kind: StoreKind, line: &str) -> Option<ParsedJournalEvent> {
+    let record = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if record.get("v").and_then(|value| value.as_u64()) != Some(1)
+        || record.get("kind").and_then(|value| value.as_str()) != Some(kind.label())
+    {
+        return None;
+    }
+    let order = parse_journal_order(&record);
+    let declares_order = [
+        "generation",
+        "process_epoch",
+        "sequence",
+        "accepted_unix_nanos",
+    ]
+    .iter()
+    .any(|field| record.get(field).is_some());
+    if declares_order && order.is_none() {
+        return None;
+    }
+    let operation = match record.get("op").and_then(|value| value.as_str()) {
+        Some("commit") => return order.map(ParsedJournalEvent::Commit),
+        Some("replace") => {
+            let sidecar = record.get("sidecar")?.as_str()?.to_owned();
+            let sha256 = record.get("sha256")?.as_str()?.to_owned();
+            JournalOperation::Replace { sidecar, sha256 }
+        }
+        Some("delete") => JournalOperation::Delete,
+        _ => return None,
+    };
+    Some(ParsedJournalEvent::Candidate(JournalCandidate {
+        order,
+        operation,
+        raw_line: line.to_owned(),
+    }))
+}
+
+fn parse_journal_state(kind: StoreKind, text: &str) -> JournalState {
+    let mut committed_through = None;
+    let mut latest_ordered: Option<JournalCandidate> = None;
+    let mut latest_legacy: Option<(usize, JournalCandidate)> = None;
+    let mut latest_ordered_line = None;
+    let mut invalid_after_latest_ordered = false;
+    for (line_index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(event) = parse_journal_event(kind, line) else {
+            if latest_ordered_line.is_some() {
+                invalid_after_latest_ordered = true;
+            }
+            continue;
+        };
+        match event {
+            ParsedJournalEvent::Commit(order) => {
+                latest_ordered_line = Some(line_index);
+                invalid_after_latest_ordered = false;
+                committed_through = Some(
+                    committed_through.map_or(order, |current: JournalOrder| current.max(order)),
+                );
+            }
+            ParsedJournalEvent::Candidate(candidate) => {
+                if let Some(order) = candidate.order {
+                    latest_ordered_line = Some(line_index);
+                    invalid_after_latest_ordered = false;
+                    if latest_ordered
+                        .as_ref()
+                        .and_then(|current| current.order)
+                        .is_none_or(|current| order > current)
+                    {
+                        latest_ordered = Some(candidate);
+                    }
+                } else {
+                    latest_legacy = Some((line_index, candidate));
+                }
+            }
+        }
+    }
+    let ordered_candidate = latest_ordered.filter(|candidate| {
+        committed_through.is_none_or(|frontier| candidate.order.is_some_and(|o| o > frontier))
+    });
+    // Generation-less v1 records cannot participate in epoch ordering. A *complete* legacy line
+    // physically after the last ordered event is nevertheless a machine-checkable sequential
+    // rollback boundary: the old binary ran after the new writer stopped. Concurrent old/new
+    // writers remain unsupported because old binaries do not acquire the journal lock.
+    let later_legacy = latest_legacy.and_then(|(line_index, candidate)| {
+        (latest_ordered_line.is_none_or(|ordered_line| line_index > ordered_line)
+            && !invalid_after_latest_ordered)
+            .then_some(candidate)
+    });
+    let candidate = later_legacy.or(ordered_candidate);
+    JournalState {
+        committed_through,
+        candidate,
+    }
+}
+
+fn read_journal_state(kind: StoreKind, path: &Path) -> std::io::Result<JournalState> {
+    let Some(journal_path) = intent_journal_path(path) else {
+        return Ok(JournalState::default());
+    };
+    let bytes = match crate::util::safe_fs::read_no_symlink_limited(
+        &journal_path,
+        INTENT_JOURNAL_MAX_BYTES,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(JournalState::default());
+        }
+        Err(error) => return Err(error),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(parse_journal_state(kind, &text))
+}
+
+fn cleanup_orphan_sidecars_locked(path: &Path, retained: Option<&str>) {
+    let (Some(parent), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|value| value.to_str()),
+    ) else {
+        return;
+    };
+    let prefix = format!("{name}.intent.");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut inspected = 0_usize;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix) || !file_name.ends_with(".json") {
+            continue;
+        }
+        inspected += 1;
+        if inspected > INTENT_ORPHAN_SCAN_LIMIT {
+            break;
+        }
+        if retained == Some(file_name) {
+            continue;
+        }
+        remove_file_if_exists(
+            &entry.path(),
+            "failed to remove obsolete persistence sidecar",
+        );
+    }
+}
+
+fn remove_file_if_exists(path: &Path, message: &'static str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(path = %path.display(), error = %error, message),
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);
@@ -607,16 +1170,68 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn requeue_failed_snapshot(
+fn write_operation_durable(operation: &PendingOperation) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let Some(path) = operation.storage_path() else {
+        return operation.write();
+    };
+    operation.ensure_ordering()?;
+    let kind = operation.kind();
+    let _lock = acquire_intent_lock(&path)?;
+    let mut journaled = operation.journaled;
+    if !journaled {
+        let intent = operation
+            .journal_intent()
+            .ok_or_else(|| std::io::Error::other("failed to prepare persistence journal intent"))?;
+        let record = prepare_journal_record(&intent)?;
+        let state = replace_journal_with_record_locked(kind, &path, &record)?;
+        if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
+            return Ok(());
+        }
+        journaled = true;
+    }
+    if journaled {
+        let state = read_journal_state(kind, &path)?;
+        if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
+            // A newer accepted operation (possibly from another process) superseded this one.
+            // Treat it as settled without touching the store; its unique sidecar was discarded
+            // by compaction only after the newer record became durable.
+            return Ok(());
+        }
+    }
+    operation.write()?;
+    if journaled {
+        commit_journal_generation_locked(kind, &path, operation.order)?;
+    }
+    Ok(())
+}
+
+fn write_operation_caught(operation: &PendingOperation) -> std::io::Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write_operation_durable(operation)
+    }))
+    .unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        Err(std::io::Error::other(format!(
+            "persistence writer panicked: {message}"
+        )))
+    })
+}
+
+fn requeue_failed_operation(
     pending: &SharedPending,
     due: &mut HashMap<StoreKind, tokio::time::Instant>,
     retries: &mut RetryMap,
     events: &EventSinkSlot,
-    snapshot: Snapshot,
+    operation: PendingOperation,
     error: String,
 ) {
-    let kind = snapshot.kind();
-    let label = snapshot.label();
+    let kind = operation.kind();
+    let label = operation.label();
     let sanitized = crate::util::sanitize::sanitize_error_text(error);
     let now = tokio::time::Instant::now();
     let state = retries.entry(kind).or_default();
@@ -653,7 +1268,7 @@ fn requeue_failed_snapshot(
             );
         }
         std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(snapshot);
+            entry.insert(operation);
             due.insert(kind, retry_at);
             tracing::warn!(
                 error = %last_error,
@@ -677,12 +1292,53 @@ fn requeue_failed_snapshot(
     }
 }
 
-/// Write every store whose deadline has passed (`all: false`) or everything pending
-/// (`all: true`). Snapshots are removed from the map before writing — short lock, and
-/// the panic-flush hook then can't double-write a file the actor is mid-writing.
-/// Writes run sequentially, which is what guarantees per-file ordering.
+fn schedule_retained_failure(
+    kind: StoreKind,
+    due: &mut HashMap<StoreKind, tokio::time::Instant>,
+    retries: &mut RetryMap,
+    events: &EventSinkSlot,
+    error: String,
+) {
+    let sanitized = crate::util::sanitize::sanitize_error_text(error);
+    let state = retries.entry(kind).or_default();
+    let first_failure = state.retry_count == 0;
+    state.retry_count = state.retry_count.saturating_add(1);
+    let retry_at = tokio::time::Instant::now() + retry_delay(state.retry_count);
+    state.retry_not_before = Some(retry_at);
+    state.last_error = Some(sanitized.clone());
+    state.last_failed_at = Some(tokio::time::Instant::now());
+    due.insert(kind, retry_at);
+    tracing::warn!(store = kind.label(), error = %sanitized, "persistence ownership remains pending");
+    if first_failure && kind.user_visible_failure() {
+        emit_persist_event(
+            events,
+            PersistEvent::WriteFailed {
+                store: kind,
+                error: sanitized,
+            },
+        );
+    }
+}
+
+#[cfg(test)]
 async fn write_stores(
     pending: &SharedPending,
+    due: &mut HashMap<StoreKind, tokio::time::Instant>,
+    retries: &mut RetryMap,
+    events: &EventSinkSlot,
+    all: bool,
+) -> bool {
+    let inflight = Arc::new(Mutex::new(HashMap::new()));
+    let panic_shadow = PanicShadow::new();
+    write_stores_with_inflight(pending, &inflight, &panic_shadow, due, retries, events, all).await
+}
+
+/// Apply every due operation. Before ownership leaves `pending`, an immutable equivalent is
+/// published to `inflight`; the panic hook can therefore recover it during blocking-pool waits.
+async fn write_stores_with_inflight(
+    pending: &SharedPending,
+    inflight: &SharedInflight,
+    panic_shadow: &PanicShadow,
     due: &mut HashMap<StoreKind, tokio::time::Instant>,
     retries: &mut RetryMap,
     events: &EventSinkSlot,
@@ -700,313 +1356,82 @@ async fn write_stores(
     };
     for kind in kinds {
         due.remove(&kind);
-        let Some(snapshot) = lock(pending).remove(&kind) else {
-            continue;
+        let prepared = {
+            let guard = lock(pending);
+            let Some(operation) = guard.get(&kind) else {
+                continue;
+            };
+            match operation.panic_operation() {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    drop(guard);
+                    schedule_retained_failure(
+                        kind,
+                        due,
+                        retries,
+                        events,
+                        format!("failed to prepare panic-safe persistence ownership: {error}"),
+                    );
+                    continue;
+                }
+            }
+        };
+        let order = prepared.order;
+        match panic_shadow.publish(PanicOwnedOperation::Prepared(Arc::new(prepared.clone()))) {
+            Ok(()) => {}
+            Err(PanicShadowSealed) => {
+                // Admission published the Pending form before the panic boundary, so the
+                // hook's sealed snapshot still owns this operation while the actor continues.
+            }
+        }
+        retain_newest_inflight(inflight, prepared);
+        let operation = {
+            let mut guard = lock(pending);
+            if guard
+                .get(&kind)
+                .is_none_or(|operation| operation.order != order)
+            {
+                remove_inflight_if_order(inflight, kind, order);
+                continue;
+            }
+            guard
+                .remove(&kind)
+                .expect("persistence order was rechecked")
         };
         let result = crate::util::blocking::spawn_io(move || {
-            let outcome = snapshot.write();
-            (outcome, snapshot)
+            let outcome = write_operation_caught(&operation);
+            (outcome, operation)
         })
         .await;
         match result {
-            Ok((Err(e), snapshot)) => {
-                requeue_failed_snapshot(pending, due, retries, events, snapshot, e.to_string());
+            Ok((Err(error), operation)) => {
+                requeue_failed_operation(
+                    pending,
+                    due,
+                    retries,
+                    events,
+                    operation,
+                    error.to_string(),
+                );
+                remove_inflight_if_order(inflight, kind, order);
             }
-            Err(e) => tracing::warn!(error = %e, "persist write task failed"),
-            Ok((Ok(()), snapshot)) => {
-                if let Some(path) = snapshot.storage_path() {
-                    clear_store_journal(&path);
-                }
-                retries.remove(&snapshot.kind());
+            Err(error) => {
+                tracing::warn!(
+                    store = kind.label(),
+                    error = %error,
+                    "persist write task failed; panic recovery retains ownership"
+                );
+            }
+            Ok((Ok(()), operation)) => {
+                remove_inflight_if_order(inflight, kind, order);
+                panic_shadow.clear_through(kind, order);
+                retries.remove(&operation.kind());
             }
         }
     }
-    lock(pending).is_empty()
+    lock(pending).is_empty() && lock_inflight(inflight).is_empty()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::panic::AssertUnwindSafe;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use serde::{Deserialize, Serialize};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let mut bytes = [0u8; 8];
-        getrandom::fill(&mut bytes).unwrap();
-        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        std::env::temp_dir().join(format!(
-            "yututui-persist-{name}-{}-{suffix}",
-            std::process::id()
-        ))
-    }
-
-    #[test]
-    fn debounce_windows_match_store_durability_policy() {
-        assert_eq!(debounce(StoreKind::Library), Duration::from_millis(300));
-        assert_eq!(debounce(StoreKind::Signals), Duration::from_millis(300));
-        assert_eq!(debounce(StoreKind::Downloads), Duration::from_millis(500));
-        assert_eq!(debounce(StoreKind::Config), Duration::from_millis(500));
-        assert_eq!(debounce(StoreKind::Playlists), Duration::from_millis(500));
-        assert_eq!(debounce(StoreKind::Station), Duration::from_millis(500));
-        assert_eq!(debounce(StoreKind::RomanizedTitles), Duration::from_secs(3));
-        assert_eq!(debounce(StoreKind::Session), Duration::ZERO);
-    }
-
-    #[test]
-    fn pending_lock_recovers_from_poisoned_mutex() {
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-
-        let _ = std::panic::catch_unwind(AssertUnwindSafe({
-            let pending = Arc::clone(&pending);
-            move || {
-                let _guard = pending.lock().unwrap();
-                panic!("poison pending map");
-            }
-        }));
-
-        let guard = lock(&pending);
-        assert!(guard.is_empty());
-    }
-
-    #[test]
-    fn journaled_snapshot_replays_and_clears() {
-        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-        struct Tiny {
-            value: u8,
-        }
-
-        let dir = temp_dir("intent");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("tiny.json");
-        let bytes = serde_json::to_vec_pretty(&Tiny { value: 7 }).unwrap();
-
-        write_journal_intent(&JournalIntent {
-            kind: StoreKind::Config,
-            path: path.clone(),
-            bytes,
-        })
-        .unwrap();
-
-        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
-        assert_eq!(replayed, Tiny { value: 7 });
-
-        clear_store_journal(&path);
-        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
-        assert_eq!(replayed, Tiny { value: 1 });
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[tokio::test]
-    async fn write_stores_clears_stale_due_entries_when_snapshot_is_missing() {
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-        let mut due = HashMap::from([(StoreKind::Library, tokio::time::Instant::now())]);
-        let mut retries = HashMap::new();
-        let events = Arc::new(Mutex::new(None));
-
-        write_stores(&pending, &mut due, &mut retries, &events, false).await;
-
-        assert!(due.is_empty());
-        assert!(lock(&pending).is_empty());
-    }
-
-    #[test]
-    fn queued_saves_are_latest_wins_without_extending_deadline() {
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-        let mut due = HashMap::new();
-        let mut created = crate::playlists::Playlists::default();
-        created.create("Focus").expect("playlist created");
-        let mut added = created.clone();
-        assert_eq!(
-            added.add(
-                "Focus",
-                crate::api::Song::remote("id0", "Track", "Artist", "3:00")
-            ),
-            crate::playlists::AddResult::Added
-        );
-
-        queue_pending_save(&pending, &mut due, Snapshot::Playlists(created));
-        let first_due = due[&StoreKind::Playlists];
-        queue_pending_save(&pending, &mut due, Snapshot::Playlists(added));
-
-        assert_eq!(due[&StoreKind::Playlists], first_due);
-        let guard = lock(&pending);
-        let Snapshot::Playlists(playlists) = guard.get(&StoreKind::Playlists).unwrap() else {
-            panic!("expected playlists snapshot");
-        };
-        let focus = playlists.find("Focus").expect("focus playlist");
-        assert_eq!(focus.songs.len(), 1);
-        assert_eq!(focus.songs[0].video_id, "id0");
-    }
-
-    #[test]
-    fn save_replaces_pending_without_queueing_payloads() {
-        let (tx, mut rx) = crate::util::backpressure::bounded_channel(
-            crate::util::backpressure::PERSIST_CONTROL_QUEUE,
-        );
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-        let handle = PersistHandle {
-            tx,
-            pending: Arc::clone(&pending),
-            dirty: Arc::new(Notify::new()),
-            events: Arc::new(Mutex::new(None)),
-        };
-        let mut created = crate::playlists::Playlists::default();
-        created.create("Focus").expect("playlist created");
-        let mut added = created.clone();
-        assert_eq!(
-            added.add(
-                "Focus",
-                crate::api::Song::remote("id0", "Track", "Artist", "3:00")
-            ),
-            crate::playlists::AddResult::Added
-        );
-
-        handle.save(Snapshot::Playlists(created));
-        handle.save(Snapshot::Playlists(added));
-
-        assert!(rx.try_recv().is_err(), "save must not enqueue snapshots");
-        let guard = lock(&pending);
-        let Snapshot::Playlists(playlists) = guard.get(&StoreKind::Playlists).unwrap() else {
-            panic!("expected playlists snapshot");
-        };
-        let focus = playlists.find("Focus").expect("focus playlist");
-        assert_eq!(focus.songs.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn write_stores_requeues_failed_snapshot_and_retries_until_success() {
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-        let mut due = HashMap::from([(StoreKind::Config, tokio::time::Instant::now())]);
-        let mut retries = HashMap::new();
-        let events = Arc::new(Mutex::new(None));
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let writer_attempts = Arc::clone(&attempts);
-        lock(&pending).insert(
-            StoreKind::Config,
-            Snapshot::Test {
-                kind: StoreKind::Config,
-                label: "config",
-                writer: Arc::new(move || {
-                    if writer_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                        Err(std::io::Error::other("disk full"))
-                    } else {
-                        Ok(())
-                    }
-                }),
-            },
-        );
-
-        let clean = write_stores(&pending, &mut due, &mut retries, &events, false).await;
-
-        assert!(!clean);
-        assert!(lock(&pending).contains_key(&StoreKind::Config));
-        assert!(due.contains_key(&StoreKind::Config));
-        assert_eq!(retries[&StoreKind::Config].retry_count, 1);
-
-        let clean = write_stores(&pending, &mut due, &mut retries, &events, true).await;
-
-        assert!(clean);
-        assert!(lock(&pending).is_empty());
-        assert!(!retries.contains_key(&StoreKind::Config));
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn failed_snapshot_does_not_overwrite_newer_pending_snapshot() {
-        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
-        let mut due = HashMap::new();
-        let mut retries = HashMap::new();
-        let events = Arc::new(Mutex::new(None));
-        lock(&pending).insert(
-            StoreKind::Config,
-            Snapshot::Test {
-                kind: StoreKind::Config,
-                label: "newer",
-                writer: Arc::new(|| Ok(())),
-            },
-        );
-
-        requeue_failed_snapshot(
-            &pending,
-            &mut due,
-            &mut retries,
-            &events,
-            Snapshot::Test {
-                kind: StoreKind::Config,
-                label: "older",
-                writer: Arc::new(|| Ok(())),
-            },
-            "transient".to_owned(),
-        );
-
-        let guard = lock(&pending);
-        let Snapshot::Test { label, .. } = guard.get(&StoreKind::Config).unwrap() else {
-            panic!("expected test snapshot");
-        };
-        assert_eq!(*label, "newer");
-    }
-
-    #[tokio::test]
-    async fn flush_returns_false_when_write_keeps_failing() {
-        let handle = spawn();
-        handle.save(Snapshot::Test {
-            kind: StoreKind::Config,
-            label: "config",
-            writer: Arc::new(|| Err(std::io::Error::other("still full"))),
-        });
-
-        assert!(!handle.flush(Duration::from_secs(1)).await);
-        assert!(lock(&handle.pending()).contains_key(&StoreKind::Config));
-    }
-
-    #[tokio::test]
-    async fn first_high_value_failure_emits_one_status_event() {
-        let handle = spawn();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&events);
-        handle.set_event_sink(move |event| {
-            captured.lock().unwrap().push(event);
-        });
-        handle.save(Snapshot::Test {
-            kind: StoreKind::Library,
-            label: "library",
-            writer: Arc::new(|| Err(std::io::Error::other("permission denied"))),
-        });
-
-        assert!(!handle.flush(Duration::from_secs(1)).await);
-        assert!(!handle.flush(Duration::from_secs(1)).await);
-
-        let guard = events.lock().unwrap();
-        assert_eq!(guard.len(), 1);
-        let PersistEvent::WriteFailed { store, error } = &guard[0];
-        assert_eq!(*store, StoreKind::Library);
-        assert!(error.contains("permission denied"));
-    }
-
-    #[tokio::test]
-    async fn delete_romanized_titles_removes_older_pending_save() {
-        let handle = spawn();
-        handle.save(Snapshot::Test {
-            kind: StoreKind::RomanizedTitles,
-            label: "romanized title cache",
-            writer: Arc::new(|| Ok(())),
-        });
-
-        handle.delete_romanized_titles();
-
-        assert!(
-            !lock(&handle.pending()).contains_key(&StoreKind::RomanizedTitles),
-            "delete must drop an older pending cache save before actor deletion"
-        );
-    }
-
-    #[tokio::test]
-    async fn flush_acknowledges_when_there_is_no_pending_work() {
-        let handle = spawn();
-
-        assert!(handle.flush(Duration::from_secs(1)).await);
-        assert!(lock(&handle.pending()).is_empty());
-    }
-}
+#[path = "persist/tests.rs"]
+mod tests;

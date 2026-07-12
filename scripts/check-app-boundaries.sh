@@ -37,8 +37,10 @@ if [ -n "$position_hits" ]; then
   fail "direct position_epoch writes are only allowed in App/daemon helper definitions and explicit test fixtures"
 fi
 
-# INVARIANT(ART-MASK-001): overlay mask bit definitions stay centralized.
-mask_hits=$(grep -RInE '1u16[[:space:]]*<<|1[[:space:]]*<<[[:space:]]*(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)' src/app \
+# INVARIANT(ART-MASK-001): overlay mask bit definitions stay centralized. The mask is u32 and
+# currently reaches bit 16; match every literal bit claim so a type suffix or future higher bit
+# cannot bypass the ratchet.
+mask_hits=$(grep -RInE '1(u16|u32|usize)?[[:space:]]*<<[[:space:]]*[0-9]+' src/app \
   | grep -E 'overlay|popup|art_mask|art_overlay_mask' \
   | grep -Ev 'src/app/artwork.rs' \
   | grep -Ev 'src/app/tests.rs' \

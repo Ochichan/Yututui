@@ -1,4 +1,4 @@
-// DJ Gem chat wiring (docs/gui/07 §12): the store's optimistic user bubble + push replace,
+// DJ Gem chat wiring (docs/gui/07 §12): authoritative push state,
 // and the demo core's ask_ai thinking→reply→suggestions flow (suggestions play via play_tracks).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,13 +28,13 @@ class MockTransport implements Transport {
 const stub = (id: string) => ({ video_id: id, title: id }) as unknown as TrackModel;
 
 describe('AiStore', () => {
-  it('ask adds an optimistic user bubble, marks thinking, and sends ask_ai', () => {
+  it('ask sends ask_ai and waits for authoritative transcript state', () => {
     const t = new MockTransport();
     const store = new AiStore(new Client(t));
     store.ask('play something jazzy');
-    expect(store.messages.at(-1)).toEqual({ role: 'user', text: 'play something jazzy' });
-    expect(store.thinking).toBe(true);
-    expect(store.started).toBe(true);
+    expect(store.messages).toEqual([]);
+    expect(store.thinking).toBe(false);
+    expect(store.started).toBe(false);
     const sent = t.sent.at(-1)!;
     expect(sent).toMatchObject({ kind: 'cmd', name: 'ask_ai' });
     expect((sent.payload as { prompt: string }).prompt).toBe('play something jazzy');
@@ -66,6 +66,16 @@ describe('AiStore', () => {
     expect(store.messages.length).toBe(0);
     expect(t.sent.length).toBe(0);
   });
+
+  it('does not invent a bubble or spinner when admission is rejected', async () => {
+    const t = new MockTransport();
+    const store = new AiStore(new Client(t));
+    store.ask('hello');
+    const command = t.sent.at(-1)!;
+    t.emit({ v: 1, id: command.id, kind: 'err', payload: { reason: 'busy' } });
+    await vi.waitFor(() => expect(store.messages).toEqual([]));
+    expect(store.thinking).toBe(false);
+  });
 });
 
 describe('demo core DJ Gem', () => {
@@ -84,9 +94,11 @@ describe('demo core DJ Gem', () => {
   const lastAi = (frames: InEnvelope[]) =>
     [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'ai')!.payload as AiState;
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('ask_ai pushes thinking first, then a reply with suggestions', () => {
     const { t, frames } = boot();

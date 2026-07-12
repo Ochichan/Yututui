@@ -7,11 +7,14 @@
 //! (or replaying) costs no network.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 
+use crate::util::backpressure::{LYRICS_QUEUE, bounded_channel};
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use crate::util::{http, sanitize};
 
 /// Session cache cap (bounded memory; cleared wholesale when exceeded).
@@ -108,27 +111,53 @@ pub enum LyricsEvent {
 }
 
 pub struct LyricsHandle {
-    tx: UnboundedSender<LyricsCmd>,
+    /// A capacity-one wake queue. The command itself lives in `latest`, so replacing a
+    /// pending fetch never needs to allocate another queue entry.
+    wake_tx: mpsc::Sender<()>,
+    latest: Arc<Mutex<Option<LyricsCmd>>>,
 }
 
 impl LyricsHandle {
-    pub fn fetch(&self, video_id: String, artist: String, title: String) {
-        let _ = self.tx.send(LyricsCmd::Fetch {
-            video_id,
-            artist,
-            title,
-        });
+    pub fn fetch(&self, video_id: String, artist: String, title: String) -> DeliveryResult {
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let replaced_existing = latest
+            .replace(LyricsCmd::Fetch {
+                video_id,
+                artist,
+                title,
+            })
+            .is_some();
+
+        match self.wake_tx.try_send(()) {
+            // A full wake queue already guarantees the actor will inspect `latest`. A full
+            // queue with an empty previous slot is possible when a redundant wake remains
+            // after the actor consumed a replacement; the new command is still accepted.
+            Ok(()) | Err(mpsc::error::TrySendError::Full(())) => {
+                if replaced_existing {
+                    Ok(DeliveryReceipt::Coalesced {
+                        replaced_existing: true,
+                        evicted_oldest: false,
+                    })
+                } else {
+                    Ok(DeliveryReceipt::Enqueued)
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                // Nothing can consume this slot after the actor has gone away.
+                latest.take();
+                Err(DeliveryError::Closed)
+            }
+        }
     }
 }
 
-/// Collapse a burst of queued fetches to the newest one (rapid skips) — see the artwork
-/// actor. Non-blocking: drains only already-buffered commands, never awaits a new one.
-fn take_latest(first: LyricsCmd, rx: &mut UnboundedReceiver<LyricsCmd>) -> LyricsCmd {
-    let mut cmd = first;
-    while let Ok(next) = rx.try_recv() {
-        cmd = next;
-    }
-    cmd
+fn actor_channel() -> (LyricsHandle, mpsc::Receiver<()>) {
+    let (wake_tx, wake_rx) = bounded_channel(LYRICS_QUEUE);
+    let latest = Arc::new(Mutex::new(None));
+    (LyricsHandle { wake_tx, latest }, wake_rx)
 }
 
 /// Spawn the lyrics actor; results return as [`LyricsEvent`]s.
@@ -136,13 +165,16 @@ pub fn spawn<F>(emit: F) -> LyricsHandle
 where
     F: Fn(LyricsEvent) + Send + Sync + 'static,
 {
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_actor(rx, emit));
-    LyricsHandle { tx }
+    let (handle, wake_rx) = actor_channel();
+    tokio::spawn(run_actor(wake_rx, Arc::clone(&handle.latest), emit));
+    handle
 }
 
-async fn run_actor<F>(mut rx: UnboundedReceiver<LyricsCmd>, emit: F)
-where
+async fn run_actor<F>(
+    mut wake_rx: mpsc::Receiver<()>,
+    latest: Arc<Mutex<Option<LyricsCmd>>>,
+    emit: F,
+) where
     F: Fn(LyricsEvent) + Send + Sync + 'static,
 {
     let client = reqwest::Client::builder()
@@ -152,15 +184,21 @@ where
         .unwrap_or_else(|_| reqwest::Client::new());
     let mut cache: HashMap<String, CacheEntry> = HashMap::new();
 
-    while let Some(cmd) = rx.recv().await {
-        // Latest-only: rapid track-skips queue several fetches, but only the current track's
-        // lyrics are shown, so drain to the newest (see the artwork actor) instead of walking
-        // a backlog. The per-`video_id` cache still serves a track revisited later.
+    while wake_rx.recv().await.is_some() {
+        // Latest-only: rapid track-skips replace this one slot, so the actor never walks a
+        // backlog. A redundant wake can remain after a replacement was consumed; skip it.
+        let Some(cmd) = latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            continue;
+        };
         let LyricsCmd::Fetch {
             video_id,
             artist,
             title,
-        } = take_latest(cmd, &mut rx);
+        } = cmd;
         // A resolved result (even empty) is reused; a transient failure is reused only until
         // its cooldown expires, after which we re-fetch instead of showing "no lyrics" forever.
         let cached = match cache.get(&video_id) {
@@ -277,5 +315,57 @@ mod tests {
     fn empty_is_handled() {
         assert!(parse_lrc("").is_empty());
         assert_eq!(current_index(&[], 5.0), None);
+    }
+
+    #[test]
+    fn fetches_coalesce_to_one_latest_pending_command() {
+        let (handle, mut wake_rx) = actor_channel();
+
+        assert_eq!(
+            handle.fetch("old".into(), "old artist".into(), "old title".into()),
+            Ok(DeliveryReceipt::Enqueued)
+        );
+        assert_eq!(
+            handle.fetch("new".into(), "new artist".into(), "new title".into()),
+            Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            })
+        );
+
+        wake_rx.try_recv().expect("one wake is queued");
+        assert!(wake_rx.try_recv().is_err(), "the wake queue stays bounded");
+        let latest = handle
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("latest command is retained");
+        let LyricsCmd::Fetch {
+            video_id,
+            artist,
+            title,
+        } = latest;
+        assert_eq!(video_id, "new");
+        assert_eq!(artist, "new artist");
+        assert_eq!(title, "new title");
+    }
+
+    #[test]
+    fn fetch_reports_closed_actor_and_discards_unconsumable_command() {
+        let (handle, wake_rx) = actor_channel();
+        drop(wake_rx);
+
+        assert_eq!(
+            handle.fetch("video".into(), "artist".into(), "title".into()),
+            Err(DeliveryError::Closed)
+        );
+        assert!(
+            handle
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        );
     }
 }

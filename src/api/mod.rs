@@ -2,7 +2,7 @@
 //! yt-dlp (`ytsearch`) when anonymous — see [`ytmusic`]. A `MusicApi` trait + raw-Innertube
 //! fallback arrive when home/charts need endpoints ytmapi-rs lacks.
 
-mod url_guard;
+mod gui_search;
 pub mod ytmusic;
 
 #[cfg(test)]
@@ -20,7 +20,15 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
 
-pub use url_guard::{validate_playable_url_destination, validate_playback_target_for_handoff};
+pub use crate::playback_target::{
+    PlayableUrlError, validate_playable_url, validate_playable_url_destination,
+    validate_playback_target_for_handoff,
+};
+pub(crate) use gui_search::gui_search_row_id;
+pub use gui_search::{GUI_SEARCH_ROW_ID_MAX_BYTES, GuiSearchGroup, GuiSearchRequestId};
+
+#[cfg(test)]
+use crate::playback_target::MAX_PLAYABLE_URL_BYTES;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const STREAMING_YTDLP_CACHE_MAX: usize = 512;
@@ -32,7 +40,6 @@ pub const MAX_ALBUM_CHARS: usize = 200;
 pub const MAX_DURATION_CHARS: usize = 32;
 pub const MAX_PROVIDER_ID_CHARS: usize = 256;
 pub const MAX_ORIGIN_URL_CHARS: usize = 512;
-const MAX_PLAYABLE_URL_BYTES: usize = 4096;
 
 pub fn is_youtube_video_id(id: &str) -> bool {
     id.len() == 11
@@ -235,109 +242,6 @@ pub enum PlayableRef {
     RadioStream {
         url: String,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlayableUrlError {
-    Empty,
-    TooLong { max: usize },
-    ControlCharacter,
-    Invalid(String),
-    UnsupportedScheme(String),
-    MissingHost,
-    Credentials,
-    Localhost,
-    BlockedIp(String),
-    DnsResolution { host: String },
-    DestinationBlockedIp { host: String, ip: String },
-    RedirectLimit { max: usize },
-    RedirectMissingLocation,
-    RedirectInvalid(String),
-    ProbeFailed(String),
-}
-
-impl std::fmt::Display for PlayableUrlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PlayableUrlError::Empty => write!(f, "playable URL is empty"),
-            PlayableUrlError::TooLong { max } => write!(f, "playable URL exceeds {max} bytes"),
-            PlayableUrlError::ControlCharacter => {
-                write!(f, "playable URL contains a control character")
-            }
-            PlayableUrlError::Invalid(error) => write!(f, "invalid playable URL: {error}"),
-            PlayableUrlError::UnsupportedScheme(scheme) => {
-                write!(f, "unsupported playable URL scheme: {scheme}")
-            }
-            PlayableUrlError::MissingHost => write!(f, "playable URL is missing a host"),
-            PlayableUrlError::Credentials => {
-                write!(f, "playable URL must not include credentials")
-            }
-            PlayableUrlError::Localhost => write!(f, "playable URL host is local-only"),
-            PlayableUrlError::BlockedIp(ip) => write!(f, "playable URL host is not public: {ip}"),
-            PlayableUrlError::DnsResolution { host } => {
-                write!(f, "playable URL host did not resolve: {host}")
-            }
-            PlayableUrlError::DestinationBlockedIp { host, ip } => {
-                write!(
-                    f,
-                    "playable URL host resolved to a non-public address: {host} -> {ip}"
-                )
-            }
-            PlayableUrlError::RedirectLimit { max } => {
-                write!(f, "playable URL exceeded {max} redirects")
-            }
-            PlayableUrlError::RedirectMissingLocation => {
-                write!(f, "playable URL redirect is missing a Location header")
-            }
-            PlayableUrlError::RedirectInvalid(error) => {
-                write!(f, "invalid playable URL redirect target: {error}")
-            }
-            PlayableUrlError::ProbeFailed(error) => {
-                write!(f, "playable URL destination probe failed: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PlayableUrlError {}
-
-pub fn validate_playable_url(_source: SearchSource, raw: &str) -> Result<String, PlayableUrlError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(PlayableUrlError::Empty);
-    }
-    if trimmed.len() > MAX_PLAYABLE_URL_BYTES {
-        return Err(PlayableUrlError::TooLong {
-            max: MAX_PLAYABLE_URL_BYTES,
-        });
-    }
-    if trimmed.bytes().any(|b| b.is_ascii_control()) {
-        return Err(PlayableUrlError::ControlCharacter);
-    }
-
-    let url = reqwest::Url::parse(trimmed).map_err(|e| PlayableUrlError::Invalid(e.to_string()))?;
-    match url.scheme() {
-        "http" | "https" => {}
-        scheme => return Err(PlayableUrlError::UnsupportedScheme(scheme.to_owned())),
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(PlayableUrlError::Credentials);
-    }
-    let host = url.host_str().ok_or(PlayableUrlError::MissingHost)?;
-    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
-    let ip_host = normalized_host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(&normalized_host);
-    if normalized_host == "localhost" || normalized_host.ends_with(".localhost") {
-        return Err(PlayableUrlError::Localhost);
-    }
-    if let Ok(ip) = ip_host.parse::<std::net::IpAddr>()
-        && url_guard::is_blocked_playable_ip(ip)
-    {
-        return Err(PlayableUrlError::BlockedIp(ip.to_string()));
-    }
-    Ok(url.to_string())
 }
 
 impl Song {
@@ -773,10 +677,11 @@ pub enum ApiCmd {
         config: SearchConfig,
     },
     /// A GUI-session search (`RemoteCommand::RunSearch`): per-catalog result groups,
-    /// answered as [`ApiEvent::GuiSearchCompleted`] keyed by `ticket` — its own lane, so
-    /// it never disturbs the TUI Search screen's [`ApiEvent::SearchResults`].
+    /// answered as [`ApiEvent::GuiSearchCompleted`] through an opaque request id. Requester
+    /// routing remains in the daemon owner, and this independent lane never disturbs the TUI
+    /// Search screen's [`ApiEvent::SearchResults`].
     GuiSearch {
-        ticket: u64,
+        request_id: GuiSearchRequestId,
         query: String,
         source: SearchSource,
         config: SearchConfig,
@@ -955,21 +860,11 @@ pub enum ApiEvent {
         title: String,
         error: String,
     },
-    /// Per-catalog groups answering [`ApiCmd::GuiSearch`], keyed by `ticket`.
+    /// Per-catalog groups answering [`ApiCmd::GuiSearch`], correlated only by an opaque id.
     GuiSearchCompleted {
-        ticket: u64,
-        query: String,
-        source: SearchSource,
+        request_id: GuiSearchRequestId,
         groups: Vec<GuiSearchGroup>,
     },
-}
-
-/// One catalog's slice of a [`ApiCmd::GuiSearch`] answer, still in [`Song`] terms —
-/// the publisher projects it to wire [`TrackModel`](crate::remote::proto::TrackModel)s.
-pub struct GuiSearchGroup {
-    pub source: SearchSource,
-    pub songs: Vec<Song>,
-    pub error: Option<String>,
 }
 
 /// Handle for issuing API requests; results return as [`ApiEvent`]s.
@@ -979,6 +874,17 @@ pub struct ApiHandle {
 }
 
 impl ApiHandle {
+    #[cfg(test)]
+    pub(crate) fn from_test_senders(
+        interactive_tx: Sender<ApiCmd>,
+        bulk_tx: Sender<ApiCmd>,
+    ) -> Self {
+        Self {
+            interactive_tx,
+            bulk_tx,
+        }
+    }
+
     fn enqueue(&self, cmd: ApiCmd) -> Result<(), ApiEnqueueError> {
         let tx = match cmd.kind().lane() {
             ApiLane::Interactive => &self.interactive_tx,
@@ -1007,13 +913,13 @@ impl ApiHandle {
 
     pub fn gui_search(
         &self,
-        ticket: u64,
+        request_id: GuiSearchRequestId,
         query: impl Into<String>,
         source: SearchSource,
         config: SearchConfig,
     ) -> Result<(), ApiEnqueueError> {
         self.enqueue(ApiCmd::GuiSearch {
-            ticket,
+            request_id,
             query: query.into(),
             source,
             config,
@@ -1104,9 +1010,9 @@ where
     F: Fn(ApiEvent) + Send + Sync + 'static,
 {
     let had_cookie = cookie.is_some();
-    // Bounded with a generous cap; the human-rate UI producer never fills it in normal use,
-    // but a stalled network + command burst drops new commands (`try_send`) rather than
-    // growing the inbox without bound.
+    // Bounded with a generous cap; the human-rate UI producer never fills it in normal use.
+    // A stalled network + command burst rejects new commands through `ApiEnqueueError`, which
+    // every owner maps to a visible terminal result instead of silently losing the request.
     let (interactive_tx, interactive_rx) = mpsc::channel(API_INTERACTIVE_QUEUE);
     let (bulk_tx, bulk_rx) = mpsc::channel(API_BULK_QUEUE);
     tokio::spawn(async move {
@@ -1232,7 +1138,7 @@ async fn run_interactive_actor<F>(
                 emit(event);
             }
             ApiCmd::GuiSearch {
-                ticket,
+                request_id,
                 query,
                 source,
                 config,
@@ -1240,7 +1146,7 @@ async fn run_interactive_actor<F>(
                 let groups = gui_search_groups(&api, &query, source, &config).await;
                 let query_log = crate::util::query::query_log_preview(&query);
                 tracing::info!(
-                    ticket,
+                    request_id = ?request_id,
                     query_bytes = query_log.bytes,
                     query_chars = query_log.chars,
                     query_preview = %query_log.preview,
@@ -1249,12 +1155,7 @@ async fn run_interactive_actor<F>(
                     groups = groups.len(),
                     "gui search completed"
                 );
-                emit(ApiEvent::GuiSearchCompleted {
-                    ticket,
-                    query,
-                    source,
-                    groups,
-                });
+                emit(ApiEvent::GuiSearchCompleted { request_id, groups });
             }
             ApiCmd::ResolveTrack { seq, query, config } => {
                 // The same innertube→yt-dlp search as the Search screen, but the answer

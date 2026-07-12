@@ -42,6 +42,7 @@ use objc2_media_player::{
 use super::{CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot};
 use crate::queue::Repeat;
 use crate::t;
+use crate::util::delivery::{DeliveryReceipt, DeliveryResult};
 
 /// Claim the Now Playing slot lazily (first actual playback), never at launch —
 /// macOS has a single system-wide slot and merely opening the app must not steal it
@@ -139,7 +140,7 @@ impl Backend {
         }
     }
 
-    pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
+    pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) -> DeliveryResult {
         // SAFETY: the backend owns all retained MediaPlayer/Foundation objects on the
         // main thread and writes only Foundation object values matching Apple's keys.
         unsafe {
@@ -252,6 +253,7 @@ impl Backend {
                 self.commands.dislikeCommand().setActive(disliked);
             }
         }
+        Ok(DeliveryReceipt::Enqueued)
     }
 
     /// Build a fresh now-playing dictionary for the current track.
@@ -398,10 +400,10 @@ where
             // the duration of the callback; we do not store the borrowed reference.
             let event = unsafe { event.as_ref() };
             match map(event) {
-                Some(cmd) => {
-                    sink(cmd);
-                    MPRemoteCommandHandlerStatus::Success
-                }
+                Some(cmd) => match sink(cmd) {
+                    Ok(_) => MPRemoteCommandHandlerStatus::Success,
+                    Err(_) => MPRemoteCommandHandlerStatus::CommandFailed,
+                },
                 None => MPRemoteCommandHandlerStatus::CommandFailed,
             }
         },

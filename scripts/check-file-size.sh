@@ -14,6 +14,6 @@ while IFS= read -r f; do
     echo "error: $f is $lines lines (cap $cap, +$GRACE grace). Split it, or re-bless: scripts/size-baseline.sh" >&2
     fail=1
   fi
-done < <(git ls-files -- src | grep -E '\.rs$')
+done < <(git ls-files --cached --others --exclude-standard -- src | grep -E '\.rs$' | sort -u)
 [ "$fail" = 0 ] && echo "file-size ratchet ok"
 exit "$fail"

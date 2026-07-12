@@ -548,18 +548,21 @@ impl App {
             PlaylistIntent::Play => {
                 // Mirror `AiMsg::PlayTracks`: replace the queue and start at the top.
                 let requested_len = songs.len();
-                let romanize_cmds = self.request_romanization_for_songs(&songs);
-                self.queue.set(songs, 0);
-                let song = self.queue.current().cloned();
-                let mut cmds = self.load_song(song);
-                cmds.extend(romanize_cmds);
-                // After load_song, which clears the transient status.
-                self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
+                let status = if crate::i18n::is_korean() {
                     format!("플레이리스트 재생: {title} ({requested_len}곡)")
                 } else {
                     format!("Playing playlist: {title} ({requested_len} tracks)")
                 };
+                let mut cmds = self.replace_queue_and_load(
+                    songs,
+                    0,
+                    None,
+                    QueueReplacementOptions {
+                        romanize_all: true,
+                        ..QueueReplacementOptions::default()
+                    },
+                );
+                Self::attach_track_commit_status(&mut cmds, StatusKind::Info, status);
                 cmds
             }
             PlaylistIntent::Enqueue => {

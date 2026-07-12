@@ -10,6 +10,9 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use serde::{Deserialize, Serialize};
 
 /// The UI language. `English` is the default; the value persists in `config.json`.
@@ -146,14 +149,38 @@ impl DjGemLanguage {
 /// synchronizes against.
 static CURRENT: AtomicU8 = AtomicU8::new(Language::English as u8);
 
+// Tests that deliberately select a language need a scoped value: unrelated reducer tests can
+// call `apply_config` in parallel, which also publishes the configured language process-wide.
+// The production global remains the fallback so tests without an explicit language scope keep
+// exercising the real behavior.
+#[cfg(test)]
+std::thread_local! {
+    static TEST_CURRENT: Cell<Option<Language>> = const { Cell::new(None) };
+}
+
 /// Set the active UI language. Called once at startup from config and again whenever the user
 /// changes the Settings dropdown, so the whole UI re-renders translated on the next frame.
 pub fn set_language(lang: Language) {
+    #[cfg(test)]
+    if TEST_CURRENT.with(|current| {
+        if current.get().is_some() {
+            current.set(Some(lang));
+            true
+        } else {
+            false
+        }
+    }) {
+        return;
+    }
     CURRENT.store(lang as u8, Ordering::Relaxed);
 }
 
 /// The active UI language.
 pub fn current() -> Language {
+    #[cfg(test)]
+    if let Some(lang) = TEST_CURRENT.with(Cell::get) {
+        return lang;
+    }
     Language::from_u8(CURRENT.load(Ordering::Relaxed))
 }
 
@@ -195,17 +222,35 @@ macro_rules! t {
     };
 }
 
-/// Serializes tests that read or write the process-wide language. The language lives in a
-/// single global atomic, so a test that flips it to Korean would otherwise race any parallel
-/// test asserting an English label. Every such test takes this lock first and resets the
-/// language to English, making them deterministic regardless of scheduling. Poison is ignored
-/// (a panicking test only leaves the unit `()` behind).
+/// Serializes tests that explicitly select a language and installs a scoped per-thread value.
+///
+/// Reducer tests that exercise config application can publish the configured language through
+/// the production setter without caring about translated output. Keeping this scope separate
+/// prevents those concurrent writes from changing a render halfway through. Poison is ignored
+/// (a panicking test only leaves the unit `()` behind), and dropping the guard restores any
+/// surrounding scope.
 #[cfg(test)]
-pub(crate) fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) struct TestLanguageGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<Language>,
+}
+
+#[cfg(test)]
+impl Drop for TestLanguageGuard {
+    fn drop(&mut self) {
+        TEST_CURRENT.with(|current| current.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_for_test() -> TestLanguageGuard {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    set_language(Language::English);
-    guard
+    let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = TEST_CURRENT.with(|current| current.replace(Some(Language::English)));
+    TestLanguageGuard {
+        _lock: lock,
+        previous,
+    }
 }
 
 #[cfg(test)]
@@ -242,14 +287,22 @@ mod tests {
 
     #[test]
     fn macro_and_global_track_the_active_language() {
-        // The language is a process-wide global; this lock serializes against any parallel
-        // test that asserts an English label, and resets to English on acquire.
+        // The scope is isolated from process-wide writes made by unrelated reducer tests.
         let _guard = lock_for_test();
 
         set_language(Language::Korean);
         assert!(is_korean());
         assert_eq!(current(), Language::Korean);
         assert_eq!(t!("Settings", "설정"), "설정");
+
+        std::thread::spawn(|| set_language(Language::English))
+            .join()
+            .unwrap();
+        assert_eq!(
+            current(),
+            Language::Korean,
+            "a concurrent config application must not change this test's render language"
+        );
 
         set_language(Language::English);
         assert!(!is_korean());

@@ -309,13 +309,16 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
         MouseTarget::EqSelect(EqPreset::Vocal),
     );
     let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
+    assert_eq!(app.audio.preset, EqPreset::Flat);
+    assert!(app.dropdowns.eq_open, "dropdown waits for admission");
+    assert!(matches!(
+        cmds.as_slice(),
+        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SetAudioFilter(filter)) if filter.contains("equalizer"))
+    ));
+    app.admit_player_intents_for_test(&cmds);
     assert_eq!(app.audio.preset, EqPreset::Vocal);
     assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
     assert!(!app.dropdowns.eq_open);
-    assert!(matches!(
-        cmds.as_slice(),
-        [Cmd::Player(PlayerCmd::SetAudioFilter(_))]
-    ));
 }
 
 #[test]

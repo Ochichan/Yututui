@@ -55,7 +55,7 @@ describe('reorder math', () => {
 });
 
 describe('QueueStore.move', () => {
-  it('optimistically reorders and sends queue_move with the current rev', () => {
+  it('sends queue_move with the current rev and waits for an authoritative snapshot', () => {
     const t = new MockTransport();
     const store = new QueueStore(new Client(t));
     t.emit({
@@ -68,7 +68,7 @@ describe('QueueStore.move', () => {
       },
     });
     store.move(0, 2);
-    expect(store.items.map((x) => x.video_id)).toEqual(['b', 'c', 'a']);
+    expect(store.items.map((x) => x.video_id)).toEqual(['a', 'b', 'c']);
     const sent = t.sent.at(-1)!;
     expect(sent).toMatchObject({ kind: 'cmd', name: 'queue_move' });
     expect(sent.payload).toEqual({ from: 0, to: 2, expected_rev: 7 });
@@ -103,13 +103,17 @@ describe('demo core queue_move', () => {
     return { t, frames };
   }
   const lastQueue = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
-      model: QueueModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
+        model: QueueModel;
+      }
+    ).model;
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('reorders the queue, bumps rev, and keeps the cursor on the same track', () => {
     const { t, frames } = boot();

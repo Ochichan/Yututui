@@ -32,7 +32,8 @@ fn local_deck_track(
 fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
     let mut app = App::new(100);
     app.mode = Mode::Library;
-    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let mut cmds = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    admit_player_transition(&mut app, &mut cmds);
     let mut index = crate::local::LocalIndex::default();
     index.set_tracks(tracks);
     app.update(Msg::Local(LocalMsg::ScanFinished {
@@ -210,11 +211,15 @@ fn temp_import_root(name: &str) -> PathBuf {
 }
 
 fn save_organizable_import_session(session_id: &str, root: &std::path::Path) -> PathBuf {
-    let inbox = root
-        .join(".yututui-inbox")
-        .join(session_id)
-        .join("complete");
-    fs::create_dir_all(&inbox).expect("create import inbox");
+    let private_root = root.join(".yututui-inbox");
+    crate::util::safe_fs::ensure_private_dir(&private_root)
+        .expect("create private import inbox root");
+    let session_dir = private_root.join(session_id);
+    crate::util::safe_fs::ensure_private_dir(&session_dir)
+        .expect("create private import session directory");
+    let inbox = session_dir.join("complete");
+    crate::util::safe_fs::ensure_private_dir(&inbox)
+        .expect("create private completed-import directory");
     let audio = inbox.join("Move Me.m4a");
     fs::write(&audio, b"audio").expect("write inbox audio");
     fs::write(crate::downloads::sidecar_path(&audio), b"{}").expect("write inbox sidecar");
@@ -222,6 +227,7 @@ fn save_organizable_import_session(session_id: &str, root: &std::path::Path) -> 
     let session = crate::transfer::session::ImportSession {
         schema_version: 1,
         session_id: session_id.to_owned(),
+        session_instance_id: "test-local-inbox-instance".to_owned(),
         job_id: session_id.to_owned(),
         created_at: 0,
         updated_at: 101,
@@ -451,8 +457,9 @@ fn local_deck_import_sessions_drill_down_in_source_order() {
     );
     assert!(lines.iter().any(|line| line == "Source order: #1"));
 
-    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut play = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!play.is_empty());
+    admit_player_transition(&mut app, &mut play);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
         Some("First")
@@ -465,6 +472,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
     let session = crate::transfer::session::ImportSession {
         schema_version: 1,
         session_id: session_id.to_owned(),
+        session_instance_id: "test-local-deck-instance".to_owned(),
         job_id: session_id.to_owned(),
         created_at: 0,
         updated_at: 99,
@@ -608,8 +616,9 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
         );
     }
 
-    let root_play = app.update(Msg::Key(key(KeyCode::Char('P'))));
+    let mut root_play = app.update(Msg::Key(key(KeyCode::Char('P'))));
     assert!(!root_play.is_empty());
+    admit_player_transition(&mut app, &mut root_play);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
         Some("Linked")
@@ -692,8 +701,9 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
 
     app.local_mode.ui.selected = 0;
     app.local_mode.ui.anchor = 0;
-    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    let mut play = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!play.is_empty());
+    admit_player_transition(&mut app, &mut play);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
         Some("Linked")
@@ -912,10 +922,12 @@ fn local_deck_import_row_download_queues_import_inbox_request() {
     app.local_mode.ui.filter_query.clear();
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
-    let [Cmd::Download(song)] = cmds.as_slice() else {
+    let [Cmd::Download(DownloadCmd::Start(song))] = cmds.as_slice() else {
         panic!("expected download command");
     };
-    let request = crate::download::import_request_for_song(song).expect("import request");
+    let request = crate::download::import_request_for_song(song)
+        .expect("import admission")
+        .expect("import request");
     assert_eq!(request.session_id, session_id);
     assert_eq!(request.row_id, "row-00007");
     assert_eq!(request.source_order, 7);
@@ -951,10 +963,12 @@ fn local_deck_import_failed_row_r_retries_download() {
     );
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
-    let [Cmd::Download(song)] = cmds.as_slice() else {
+    let [Cmd::Download(DownloadCmd::Start(song))] = cmds.as_slice() else {
         panic!("expected retry download command");
     };
-    let request = crate::download::import_request_for_song(song).expect("import request");
+    let request = crate::download::import_request_for_song(song)
+        .expect("import admission")
+        .expect("import request");
     assert_eq!(request.session_id, session_id);
     assert_eq!(request.row_id, "row-00009");
     assert_eq!(request.source_order, 9);
@@ -1101,7 +1115,10 @@ fn local_deck_import_review_keys_accept_and_reject_rows() {
     }
 
     let download = app.update(Msg::Key(key(KeyCode::Char('d'))));
-    assert!(matches!(download.as_slice(), [Cmd::Download(_)]));
+    assert!(matches!(
+        download.as_slice(),
+        [Cmd::Download(DownloadCmd::Start(_))]
+    ));
 
     let reject_id = "sp2yt-local-review-reject";
     save_ambiguous_import_job(reject_id);

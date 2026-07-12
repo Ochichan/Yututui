@@ -18,12 +18,7 @@ impl App {
 
     /// Jump playback to a queue order position and close the window.
     pub(in crate::app) fn queue_popup_play(&mut self, pos: usize) -> Vec<Cmd> {
-        let song = self.queue.goto(pos).cloned();
-        self.queue_popup.open = false;
-        self.queue_popup.cursor = self.queue.cursor_pos();
-        self.queue_popup.anchor = self.queue_popup.cursor;
-        self.status.text.clear();
-        self.load_song(song)
+        self.move_to_queue_track(pos)
     }
 
     /// Move the queue-window cursor by `lines`, clamped to the queue. When `extend` is
@@ -54,55 +49,33 @@ impl App {
     /// after the removed range, wraps only under repeat-all, or stops when no next track
     /// exists. Also clamps/closes the window's selection.
     pub(in crate::app) fn remove_queue_range(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
-        let len_before = self.queue.len();
-        if len_before == 0 || lo > hi {
+        let Some((mutation, outcome)) = self.queue.prepare_remove_range(lo, hi) else {
             return Vec::new();
-        }
-        let lo = lo.min(len_before - 1);
-        let hi = hi.min(len_before - 1);
-        let current_pos = self.queue.cursor_pos();
-        let removed_current = lo <= current_pos && current_pos <= hi;
-        let removed_count = hi - lo + 1;
-        let next_pos_after_removal = if removed_current && removed_count < len_before {
-            if hi + 1 < len_before {
-                Some(lo)
-            } else if self.queue.repeat == crate::queue::Repeat::All {
-                Some(0)
-            } else {
-                None
-            }
-        } else {
-            None
         };
-
-        let mut current_changed = false;
-        for pos in (lo..=hi).rev() {
-            if let Some(changed) = self.queue.remove_at(pos) {
-                current_changed |= changed;
+        debug_assert!(outcome.removed() > 0);
+        match outcome.playback() {
+            crate::queue::QueueRemovalPlayback::Unchanged => {
+                self.queue.commit_mutation(mutation);
+                self.commit_queue_removal_ui(outcome.popup_cursor());
+                self.dirty = true;
+                Vec::new()
+            }
+            playback => {
+                self.load_prepared_queue_removal(mutation, playback, outcome.popup_cursor())
             }
         }
-        let len = self.queue.len();
-        if len == 0 {
+    }
+
+    /// Apply the queue-window projection shared by immediate and admission-gated removals.
+    pub(in crate::app) fn commit_queue_removal_ui(&mut self, cursor: usize) {
+        if self.queue.is_empty() {
             self.queue_popup.open = false;
             self.queue_popup.cursor = 0;
             self.queue_popup.anchor = 0;
         } else {
-            let sel = lo.min(len - 1);
-            self.queue_popup.cursor = sel;
-            self.queue_popup.anchor = sel;
-        }
-        self.dirty = true;
-        if current_changed {
-            if let Some(pos) = next_pos_after_removal {
-                let song = self.queue.goto(pos).cloned();
-                self.load_song(song)
-            } else {
-                let mut cmds = self.load_song(None);
-                cmds.push(Cmd::Player(PlayerCmd::Stop));
-                cmds
-            }
-        } else {
-            Vec::new()
+            let cursor = cursor.min(self.queue.len() - 1);
+            self.queue_popup.cursor = cursor;
+            self.queue_popup.anchor = cursor;
         }
     }
 

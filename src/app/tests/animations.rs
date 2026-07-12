@@ -563,7 +563,8 @@ fn toggling_animations_while_settings_open_survives_close() {
     // The draft must mirror the flip; otherwise close commits the stale (off) draft over it.
     assert!(app.settings.as_ref().unwrap().draft.animations.master);
     // Closing settings commits the draft → config; the toggle must stick, not revert.
-    app.close_settings();
+    let mut cmds = app.close_settings();
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         app.config.animations.master,
         "close_settings must not revert the toggle"

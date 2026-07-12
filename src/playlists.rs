@@ -74,6 +74,18 @@ pub struct Playlists {
 }
 
 impl Playlists {
+    pub(crate) fn preflight_persistence_recovery()
+    -> Result<(), crate::persist::StartupRecoveryError> {
+        let Some(path) = playlists_path() else {
+            return Ok(());
+        };
+        crate::persist::preflight_journal_recovery::<Self>(
+            crate::persist::StoreKind::Playlists,
+            &path,
+            MAX_PLAYLISTS_BYTES,
+        )
+    }
+
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         Self::load_with_repair_report().0
@@ -87,13 +99,11 @@ impl Playlists {
         // Schema-drift tolerant *and* size-bounded: one changed field no longer discards saved
         // playlists, and a corrupt/hostile oversized file is set aside rather than read whole
         // into memory. Loaded entries are then count-repaired to the same caps as mutations.
-        let mut playlists =
-            safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES);
-        playlists = crate::persist::replay_journaled_snapshot(
+        let mut playlists = crate::persist::load_with_journal_recovery(
             crate::persist::StoreKind::Playlists,
             &path,
-            playlists,
             MAX_PLAYLISTS_BYTES,
+            || safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES),
         );
         let report = playlists.repair_loaded();
         (playlists, report)
@@ -101,10 +111,11 @@ impl Playlists {
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
     pub fn save(&self) -> std::io::Result<()> {
+        crate::persist::ensure_persistence_writes_allowed()?;
         let Some(path) = playlists_path() else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        crate::persist::write_store_json(&path, self)
     }
 
     pub fn list(&self) -> &[Playlist] {

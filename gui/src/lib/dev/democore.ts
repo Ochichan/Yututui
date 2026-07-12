@@ -484,7 +484,24 @@ export class DemoCoreTransport implements Transport {
         return;
       }
       case 'cmd':
+        if (env.name === 'clear_romanization_cache') {
+          const cleared = this.#romanizationCache;
+          this.#romanizationCache = 0;
+          this.#emit({ v: 1, id: env.id, kind: 'res', payload: { cleared } });
+          return;
+        }
+        if (env.name === 'keymap_bind') {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          const conflict = this.#keymapBind(
+            String(p.context ?? '') as KeyContext,
+            String(p.action ?? ''),
+            String(p.chord ?? ''),
+          );
+          this.#emit({ v: 1, id: env.id, kind: 'res', payload: { conflict } });
+          return;
+        }
         this.#command(env.name, (env.payload ?? {}) as Record<string, unknown>);
+        if (env.id != null) this.#emit({ v: 1, id: env.id, kind: 'res', payload: { ok: true } });
         return;
       case 'unsub':
       case 'win':

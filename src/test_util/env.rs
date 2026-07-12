@@ -13,6 +13,13 @@ thread_local! {
     static LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Whether this thread is inside a [`with_var`] / [`with_vars`] scope which owns the
+/// process-global environment lock. Path resolution uses this in unit tests so an override is
+/// visible to the test which installed it without leaking into unrelated parallel readers.
+pub(crate) fn scoped_mutation_active() -> bool {
+    LOCK_DEPTH.with(|depth| depth.get() > 0)
+}
+
 struct DepthGuard;
 
 impl Drop for DepthGuard {

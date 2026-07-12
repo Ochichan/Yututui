@@ -14,6 +14,6 @@ version: number, session_id: number,
  */
 capabilities: Array<string>, owner_mode: InstanceMode, 
 /**
- * On `!ok`: `"bad_token"` | `"bad_version"` | `"sessions_full"`.
+ * On `!ok`: `"bad_token"` | `"bad_version"` | `"sessions_full"` | `"shutting_down"`.
  */
 reason: string | null, };

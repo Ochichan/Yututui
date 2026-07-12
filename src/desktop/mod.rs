@@ -11,6 +11,7 @@ pub mod gateway;
 pub mod launch;
 pub mod menu_model;
 pub mod panel;
+pub mod persistence;
 pub mod single_instance;
 pub mod startup;
 pub mod status;

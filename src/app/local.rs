@@ -38,26 +38,7 @@ impl App {
         &mut self,
         confirm: LocalModeConfirm,
     ) -> Vec<Cmd> {
-        self.local_mode.pending_confirm = None;
-        match confirm {
-            LocalModeConfirm::Enter => self.enter_local_dedicated_mode(),
-            LocalModeConfirm::Exit => self.exit_local_dedicated_mode(),
-        }
-    }
-
-    fn enter_local_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if self.local_dedicated_mode || self.radio_dedicated_mode {
-            return Vec::new();
-        }
-        self.local_mode.normal_mode_queue = Some(self.queue.snapshot());
-        self.activate_local_dedicated_mode_ui();
-        let restore = self.local_mode.local_mode_queue.take();
-        let mut cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        cmds.extend(self.ensure_local_index_ready());
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐").to_owned();
-        self.dirty = true;
-        cmds
+        self.prepare_local_mode_transition(confirm)
     }
 
     pub(in crate::app) fn activate_local_dedicated_mode_ui(&mut self) {
@@ -78,22 +59,6 @@ impl App {
         self.clear_library_filter();
         self.reset_playlist_ui_state();
         self.dirty = true;
-    }
-
-    fn exit_local_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if !self.local_dedicated_mode {
-            return Vec::new();
-        }
-        self.local_mode.local_mode_queue = Some(self.queue.snapshot());
-        self.local_dedicated_mode = false;
-        self.local_mode.pending_confirm = None;
-        self.bridges.library_scroll.reset();
-        let restore = self.local_mode.normal_mode_queue.take();
-        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Local Player mode disabled", "로컬 플레이어 모드 꺼짐").to_owned();
-        self.dirty = true;
-        cmds
     }
 
     pub fn local_rows_len(&self) -> usize {
@@ -336,19 +301,18 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let romanize_cmds = self.request_romanization_for_songs(&songs);
         let shuffle_changed = !self.queue.shuffle;
-        self.queue.set(songs, start);
-        self.queue.set_shuffle(true);
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        if shuffle_changed {
-            cmds.push(self.save_playback_modes_cmd());
-        }
-        cmds
+        self.replace_queue_and_load(
+            songs,
+            start,
+            Some(true),
+            QueueReplacementOptions {
+                player_mode: true,
+                romanize_all: true,
+                persist_playback_modes: shuffle_changed,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     pub(in crate::app) fn local_download_selected(&mut self) -> Vec<Cmd> {
@@ -477,7 +441,7 @@ impl App {
         }
     }
 
-    fn ensure_local_index_ready(&mut self) -> Vec<Cmd> {
+    pub(in crate::app) fn ensure_local_index_ready(&mut self) -> Vec<Cmd> {
         if self.local_mode.index.loading || self.local_mode.index.scanning {
             return Vec::new();
         }

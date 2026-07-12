@@ -107,12 +107,34 @@ fn read_instance_bytes(path: &Path) -> Option<Vec<u8>> {
     safe_fs::read_no_symlink_limited(path, 8 * 1024).ok()
 }
 
-/// Best-effort removal of the descriptor on shutdown.
-pub fn remove_instance() {
-    if let Ok(path) = instance_path() {
-        let _ = std::fs::remove_file(path);
+/// Remove `path` only while it still advertises `expected`.
+///
+/// A retiring owner can overlap a fast successor which has already published a fresh atomic
+/// descriptor. Comparing the stable instance identity before unlinking prevents the old guard
+/// from deleting that successor's advertisement. Callers additionally release the socket path
+/// before their listener stops, so a cooperative successor cannot replace this file between the
+/// comparison and removal.
+pub(crate) fn remove_instance_file_if_matches(
+    path: &Path,
+    expected: &InstanceFile,
+) -> io::Result<bool> {
+    let current = match read_instance_bytes(path)
+        .and_then(|bytes| serde_json::from_slice::<InstanceFile>(&bytes).ok())
+    {
+        Some(current) => current,
+        None => return Ok(false),
+    };
+    if current.app_pid != expected.app_pid
+        || current.token != expected.token
+        || current.endpoint != expected.endpoint
+    {
+        return Ok(false);
     }
-    let _ = std::fs::remove_file(legacy_instance_path());
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// A 128-bit OS-CSPRNG token, hex-encoded.

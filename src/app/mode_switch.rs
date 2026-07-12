@@ -77,56 +77,7 @@ impl App {
         &mut self,
         confirm: RadioModeConfirm,
     ) -> Vec<Cmd> {
-        self.radio_mode.pending_radio_mode_confirm = None;
-        match confirm {
-            RadioModeConfirm::Enter => self.enter_radio_dedicated_mode(),
-            RadioModeConfirm::Exit => self.exit_radio_dedicated_mode(),
-        }
-    }
-
-    fn enter_radio_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if self.radio_dedicated_mode {
-            return Vec::new();
-        }
-        self.radio_mode.normal_mode_theme = Some(self.theme.clone());
-        self.radio_mode.normal_mode_queue = Some(self.queue.snapshot());
-        self.activate_radio_dedicated_mode_ui();
-        let restore = self.radio_mode.radio_mode_queue.take();
-        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Radio mode enabled", "라디오 모드 켜짐").to_owned();
-        self.dirty = true;
-        cmds
-    }
-
-    fn exit_radio_dedicated_mode(&mut self) -> Vec<Cmd> {
-        if !self.radio_dedicated_mode {
-            return Vec::new();
-        }
-        self.radio_mode.radio_mode_theme = Some(self.theme.clone());
-        self.radio_mode.radio_mode_queue = Some(self.queue.snapshot());
-        self.radio_dedicated_mode = false;
-        self.theme = self
-            .radio_mode
-            .normal_mode_theme
-            .take()
-            .unwrap_or_else(|| self.config.effective_theme());
-        if !self.library_tab_available(self.library_ui.tab) {
-            self.library_ui.tab = LibraryTab::All;
-            self.clear_library_filter();
-        }
-        let search = self.search_config_for_mode();
-        self.search.source = search.normalized_source(self.config.effective_search().source);
-        self.search.searching = false;
-        self.search.results.clear();
-        self.search.selected = 0;
-        self.dropdowns.search_source_open = false;
-        let restore = self.radio_mode.normal_mode_queue.take();
-        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Radio mode disabled", "라디오 모드 꺼짐").to_owned();
-        self.dirty = true;
-        cmds
+        self.prepare_radio_mode_transition(confirm)
     }
 
     pub(in crate::app) fn activate_radio_dedicated_mode_ui(&mut self) {
@@ -149,31 +100,6 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.ensure_radio_mode_constraints();
         self.dirty = true;
-    }
-
-    pub(in crate::app) fn stop_clear_and_restore_queue_for_mode_switch(
-        &mut self,
-        restore: Option<QueueSnapshot>,
-    ) -> Vec<Cmd> {
-        self.queue.set(Vec::new(), 0);
-        self.queue_popup.open = false;
-        self.queue_popup.cursor = 0;
-        self.queue_popup.anchor = 0;
-        self.search_filter.close();
-        self.streaming.pending = false;
-        self.streaming.pending_rerank = None;
-        self.ai.thinking = false;
-        let mut cmds = self.load_song(None);
-        self.art.force_clear_next_frame = true;
-        cmds.push(Cmd::Player(PlayerCmd::Stop));
-        if let Some(snapshot) = restore {
-            self.queue.restore_snapshot(snapshot);
-            if let Some(song) = self.queue.current().cloned() {
-                self.playback.paused = false;
-                cmds.extend(self.load_song(Some(song)));
-            }
-        }
-        cmds
     }
 
     pub(in crate::app) fn sync_playback_modes_to_config(&mut self) {

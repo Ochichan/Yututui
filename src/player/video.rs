@@ -6,12 +6,16 @@
 //! mutating the underlying audio engine. A user quit (window close) still arrives as
 //! `end-file reason=quit`; YuTuTui-owned keys arrive as `script-message` events.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use tokio::io::BufReader;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Duration, sleep};
 
 use super::ipc::{connect_retry, write_json};
 use super::proto::{self, MpvIncoming};
+use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 
 /// Events from the overlay mpv. Every event is delivered tagged with the spawn
 /// generation the connection was made for, so the reducer can drop events from a window
@@ -90,36 +94,268 @@ pub enum VideoCmd {
     CycleMute,
 }
 
+/// Bounded command ingress for one video-overlay generation.
+///
+/// A full IPC lane spills into one bounded, ordered backlog drained by one task. Only
+/// adjacent pending loads coalesce: toggles are ordering barriers because mpv state can
+/// also change outside YuTuTui, so combining them would not be semantically safe.
+pub struct VideoHandle {
+    tx: Sender<VideoCmd>,
+    pending: Arc<Mutex<VideoPending>>,
+}
+
+impl VideoHandle {
+    fn new(tx: Sender<VideoCmd>) -> Self {
+        let capacity = crate::util::backpressure::VIDEO_CMD_QUEUE
+            .capacity()
+            .expect("video command queue must be bounded");
+        Self::with_pending_capacity(tx, capacity)
+    }
+
+    fn with_pending_capacity(tx: Sender<VideoCmd>, capacity: usize) -> Self {
+        Self {
+            tx,
+            pending: Arc::new(Mutex::new(VideoPending::new(capacity))),
+        }
+    }
+
+    pub fn send(&self, cmd: VideoCmd) -> DeliveryResult {
+        let mut pending = lock_pending(&self.pending);
+        if pending.closed || self.tx.is_closed() {
+            pending.closed = true;
+            pending.cmds.clear();
+            return Err(DeliveryError::Closed);
+        }
+        if pending.drainer_running || !pending.cmds.is_empty() {
+            return pending.push(cmd).map(pending_receipt);
+        }
+
+        match self.tx.try_send(cmd) {
+            Ok(()) => Ok(DeliveryReceipt::Enqueued),
+            Err(mpsc::error::TrySendError::Full(cmd)) => {
+                let runtime =
+                    tokio::runtime::Handle::try_current().map_err(|_| DeliveryError::Busy)?;
+                let coalesced = pending.push(cmd)?;
+                pending.drainer_running = true;
+                drop(pending);
+                runtime.spawn(drain_video_queue(
+                    self.tx.clone(),
+                    Arc::clone(&self.pending),
+                ));
+                Ok(pending_receipt(coalesced))
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                pending.closed = true;
+                Err(DeliveryError::Closed)
+            }
+        }
+    }
+}
+
+impl Drop for VideoHandle {
+    fn drop(&mut self) {
+        let mut pending = lock_pending(&self.pending);
+        pending.closed = true;
+        pending.cmds.clear();
+    }
+}
+
+fn pending_receipt(coalesced: bool) -> DeliveryReceipt {
+    if coalesced {
+        DeliveryReceipt::Coalesced {
+            replaced_existing: true,
+            evicted_oldest: false,
+        }
+    } else {
+        DeliveryReceipt::Deferred
+    }
+}
+
+struct VideoPending {
+    cmds: VecDeque<VideoCmd>,
+    capacity: usize,
+    drainer_running: bool,
+    closed: bool,
+}
+
+impl VideoPending {
+    fn new(capacity: usize) -> Self {
+        Self {
+            cmds: VecDeque::new(),
+            capacity,
+            drainer_running: false,
+            closed: false,
+        }
+    }
+
+    /// Returns whether an existing command was replaced.
+    fn push(&mut self, cmd: VideoCmd) -> Result<bool, DeliveryError> {
+        if let VideoCmd::Load(url) = cmd {
+            if let Some(VideoCmd::Load(existing)) = self.cmds.back_mut() {
+                *existing = url;
+                return Ok(true);
+            }
+            return self.push_new(VideoCmd::Load(url));
+        }
+        self.push_new(cmd)
+    }
+
+    fn push_new(&mut self, cmd: VideoCmd) -> Result<bool, DeliveryError> {
+        if self.cmds.len() >= self.capacity {
+            return Err(DeliveryError::Busy);
+        }
+        self.cmds.push_back(cmd);
+        Ok(false)
+    }
+}
+
+fn lock_pending(pending: &Mutex<VideoPending>) -> MutexGuard<'_, VideoPending> {
+    pending.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("video command backlog mutex poisoned; recovering");
+        poisoned.into_inner()
+    })
+}
+
+async fn drain_video_queue(tx: Sender<VideoCmd>, pending: Arc<Mutex<VideoPending>>) {
+    loop {
+        let permit = match tx.reserve().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                let mut pending = lock_pending(&pending);
+                pending.cmds.clear();
+                pending.drainer_running = false;
+                pending.closed = true;
+                return;
+            }
+        };
+        let cmd = {
+            let mut pending = lock_pending(&pending);
+            if pending.closed {
+                pending.cmds.clear();
+            }
+            match pending.cmds.pop_front() {
+                Some(cmd) => Some(cmd),
+                None => {
+                    pending.drainer_running = false;
+                    None
+                }
+            }
+        };
+        match cmd {
+            Some(cmd) => permit.send(cmd),
+            None => {
+                drop(permit);
+                return;
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct VideoIpcFailure {
+    detail: String,
+}
+
+impl VideoIpcFailure {
+    fn new(operation: &'static str, error: &std::io::Error) -> Self {
+        let detail = crate::util::sanitize::sanitize_error_text(format!(
+            "video overlay IPC {operation} failed: {error}"
+        ));
+        tracing::warn!(error = %detail, operation, "video overlay IPC operation failed");
+        Self { detail }
+    }
+}
+
+enum VideoTerminal {
+    Closed,
+    Failed(VideoIpcFailure),
+    Quit,
+}
+
+impl VideoTerminal {
+    fn waits_for_process_exit(&self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    fn into_event(self) -> VideoEvent {
+        match self {
+            Self::Closed => VideoEvent::Closed,
+            Self::Failed(failure) => VideoEvent::Failed(failure.detail),
+            Self::Quit => VideoEvent::Quit,
+        }
+    }
+}
+
+async fn emit_terminal<F>(generation: u64, terminal: VideoTerminal, emit: &F)
+where
+    F: Fn(u64, VideoEvent),
+{
+    if terminal.waits_for_process_exit() {
+        // Give mpv a beat to finish exiting so the reducer's `try_wait` probe sees a
+        // dead process (a live-window IPC hiccup then reads as "still open" instead).
+        sleep(Duration::from_millis(300)).await;
+    }
+    // Every connection task has exactly one terminal emission. In particular, a Failed
+    // write never falls through to a second Closed event for the same generation.
+    emit(generation, terminal.into_event());
+}
+
+async fn write_video_json(
+    conn: &interprocess::local_socket::tokio::Stream,
+    json: &str,
+    operation: &'static str,
+) -> Result<(), VideoIpcFailure> {
+    write_json(conn, json)
+        .await
+        .map_err(|error| VideoIpcFailure::new(operation, &error))
+}
+
 /// Connect the IPC client for one overlay window and return its command sender
 /// immediately; the connection (with retry) and the read loop run on a spawned task.
-/// A connect failure is logged and the task ends silently — the overlay then degrades
-/// to the pre-IPC fire-and-forget behavior rather than falsely reporting a close.
+/// A connect, setup, or command-write failure emits one generation-tagged
+/// [`VideoEvent::Failed`] and does not also emit [`VideoEvent::Closed`], so an accepted
+/// overlay request cannot disappear.
 pub fn connect<F>(
     ipc_path: String,
     generation: u64,
     bindings: Vec<VideoKeyBinding>,
     emit: F,
-) -> Sender<VideoCmd>
+) -> VideoHandle
 where
     F: Fn(u64, VideoEvent) + Send + Sync + 'static,
 {
     let (tx, rx) =
         crate::util::backpressure::bounded_channel(crate::util::backpressure::VIDEO_CMD_QUEUE);
     tokio::spawn(async move {
-        let conn = match connect_retry(&ipc_path).await {
-            Ok(conn) => conn,
-            Err(e) => {
-                tracing::warn!(error = %e, "video overlay IPC connect failed");
-                return;
-            }
-        };
-        run(conn, rx, generation, bindings, &emit).await;
-        // Give mpv a beat to finish exiting so the reducer's `try_wait` probe sees a
-        // dead process (a live-window IPC hiccup then reads as "still open" instead).
-        sleep(Duration::from_millis(300)).await;
-        emit(generation, VideoEvent::Closed);
+        finish_connection(
+            connect_retry(&ipc_path).await,
+            rx,
+            generation,
+            bindings,
+            emit,
+        )
+        .await;
     });
-    tx
+    VideoHandle::new(tx)
+}
+
+async fn finish_connection<F>(
+    connection: std::io::Result<interprocess::local_socket::tokio::Stream>,
+    rx: mpsc::Receiver<VideoCmd>,
+    generation: u64,
+    bindings: Vec<VideoKeyBinding>,
+    emit: F,
+) where
+    F: Fn(u64, VideoEvent),
+{
+    let terminal = match connection {
+        Ok(conn) => match run(conn, rx, generation, bindings, &emit).await {
+            Ok(terminal) => terminal,
+            Err(failure) => VideoTerminal::Failed(failure),
+        },
+        Err(error) => VideoTerminal::Failed(VideoIpcFailure::new("connection", &error)),
+    };
+    emit_terminal(generation, terminal, &emit).await;
 }
 
 /// The connected loop: observe `eof-reached`, forward interpreted events, write
@@ -130,23 +366,33 @@ async fn run<F>(
     generation: u64,
     bindings: Vec<VideoKeyBinding>,
     emit: &F,
-) where
+) -> Result<VideoTerminal, VideoIpcFailure>
+where
     F: Fn(u64, VideoEvent),
 {
-    if let Err(e) = write_json(&conn, &proto::cmd_observe(1, "eof-reached")).await {
-        tracing::warn!(error = %e, "failed to observe eof-reached on the video overlay");
-    }
-    if let Err(e) = write_json(&conn, &proto::cmd_observe(2, "pause")).await {
-        tracing::warn!(error = %e, "failed to observe pause on the video overlay");
-    }
+    write_video_json(
+        &conn,
+        &proto::cmd_observe(1, "eof-reached"),
+        "eof-reached observer setup",
+    )
+    .await?;
+    write_video_json(
+        &conn,
+        &proto::cmd_observe(2, "pause"),
+        "pause observer setup",
+    )
+    .await?;
     // Route configured YuTuTui overlay keys plus fixed mpv-compatibility aliases
     // through the app. On an mpv too old for `keybind`, errors are harmless and the
     // affected keys keep their mpv defaults.
     let mut setup_request_id: u64 = 10;
     for (key, msg) in keybind_specs(&bindings) {
-        if let Err(e) = write_json(&conn, &proto::cmd_keybind(key, msg, setup_request_id)).await {
-            tracing::warn!(error = %e, key, "failed to bind a video overlay key");
-        }
+        write_video_json(
+            &conn,
+            &proto::cmd_keybind(key, msg, setup_request_id),
+            "key binding setup",
+        )
+        .await?;
         setup_request_id += 1;
     }
 
@@ -158,7 +404,6 @@ async fn run<F>(
     let mut eof_latched = false;
 
     loop {
-        line.clear();
         tokio::select! {
             // Bounded read (shared cap with the audio actor): a broken or hostile overlay
             // endpoint can't grow `line` without limit before a newline arrives.
@@ -171,8 +416,19 @@ async fn run<F>(
                 Ok(crate::util::io::BoundedLine::Line) => {
                     let text = String::from_utf8_lossy(&line);
                     if let Some(event) = interpret(&text, &mut eof_latched) {
-                        emit(generation, event);
+                        match event {
+                            VideoEvent::Failed(detail) => {
+                                return Ok(VideoTerminal::Failed(VideoIpcFailure {
+                                    detail: crate::util::sanitize::sanitize_error_text(detail),
+                                }));
+                            }
+                            VideoEvent::Quit => return Ok(VideoTerminal::Quit),
+                            event => emit(generation, event),
+                        }
                     }
+                    // A command can win the select while the newline-framed read is pending.
+                    // Retain that prefix and clear only after the complete frame is consumed.
+                    line.clear();
                 }
             },
             cmd = cmd_rx.recv() => match cmd {
@@ -186,33 +442,41 @@ async fn run<F>(
                         &serde_json::Value::Bool(false),
                         request_id,
                     );
-                    for json in [load, unpause] {
-                        if let Err(e) = write_json(&conn, &json).await {
-                            tracing::warn!(error = %e, "failed to write video overlay command");
-                        }
-                    }
+                    write_video_json(&conn, &load, "load command write").await?;
+                    write_video_json(&conn, &unpause, "unpause command write").await?;
                 }
                 Some(VideoCmd::CyclePause) => {
                     request_id += 1;
-                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("pause", request_id)).await {
-                        tracing::warn!(error = %e, "failed to toggle video overlay pause");
-                    }
+                    write_video_json(
+                        &conn,
+                        &proto::cmd_cycle("pause", request_id),
+                        "pause toggle command write",
+                    )
+                    .await?;
                 }
                 Some(VideoCmd::CycleFullscreen) => {
                     request_id += 1;
-                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("fullscreen", request_id)).await {
-                        tracing::warn!(error = %e, "failed to toggle video overlay fullscreen");
-                    }
+                    write_video_json(
+                        &conn,
+                        &proto::cmd_cycle("fullscreen", request_id),
+                        "fullscreen toggle command write",
+                    )
+                    .await?;
                 }
                 Some(VideoCmd::CycleMute) => {
                     request_id += 1;
-                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("mute", request_id)).await {
-                        tracing::warn!(error = %e, "failed to toggle video overlay mute");
-                    }
+                    write_video_json(
+                        &conn,
+                        &proto::cmd_cycle("mute", request_id),
+                        "mute toggle command write",
+                    )
+                    .await?;
                 }
             },
         }
     }
+
+    Ok(VideoTerminal::Closed)
 }
 
 fn keybind_specs(bindings: &[VideoKeyBinding]) -> Vec<(&str, &'static str)> {
@@ -253,7 +517,9 @@ fn interpret(line: &str, eof_latched: &mut bool) -> Option<VideoEvent> {
             name,
             value,
         } if name == "pause" => value.as_bool().map(VideoEvent::Paused),
-        MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
+        MpvIncoming::EndFile {
+            reason, file_error, ..
+        } => match reason.as_str() {
             "eof" if !*eof_latched => {
                 *eof_latched = true;
                 Some(VideoEvent::Eof)
@@ -435,5 +701,171 @@ mod tests {
         ] {
             assert!(interp(line, &mut latched).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn full_video_lane_coalesces_only_adjacent_pending_loads() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(VideoCmd::CycleMute)
+            .expect("occupy the direct lane");
+        let handle = VideoHandle::with_pending_capacity(tx, 4);
+
+        assert_eq!(
+            handle.send(VideoCmd::Load("old".to_owned())),
+            Ok(DeliveryReceipt::Deferred)
+        );
+        assert_eq!(
+            handle.send(VideoCmd::Load("new".to_owned())),
+            Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            })
+        );
+
+        assert!(matches!(rx.recv().await, Some(VideoCmd::CycleMute)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(VideoCmd::Load(url)) if url == "new"
+        ));
+    }
+
+    #[tokio::test]
+    async fn video_toggles_are_ordering_barriers_for_load_coalescing() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(VideoCmd::CycleMute)
+            .expect("occupy the direct lane");
+        let handle = VideoHandle::with_pending_capacity(tx, 4);
+
+        assert_eq!(
+            handle.send(VideoCmd::Load("old".to_owned())),
+            Ok(DeliveryReceipt::Deferred)
+        );
+        assert_eq!(
+            handle.send(VideoCmd::CyclePause),
+            Ok(DeliveryReceipt::Deferred)
+        );
+        assert_eq!(
+            handle.send(VideoCmd::Load("new".to_owned())),
+            Ok(DeliveryReceipt::Deferred)
+        );
+
+        assert!(matches!(rx.recv().await, Some(VideoCmd::CycleMute)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(VideoCmd::Load(url)) if url == "old"
+        ));
+        assert!(matches!(rx.recv().await, Some(VideoCmd::CyclePause)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(VideoCmd::Load(url)) if url == "new"
+        ));
+    }
+
+    #[tokio::test]
+    async fn video_pending_backlog_reports_busy_at_its_bound() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(VideoCmd::CycleMute)
+            .expect("occupy the direct lane");
+        let handle = VideoHandle::with_pending_capacity(tx, 1);
+
+        assert_eq!(
+            handle.send(VideoCmd::CyclePause),
+            Ok(DeliveryReceipt::Deferred)
+        );
+        assert_eq!(
+            handle.send(VideoCmd::CycleFullscreen),
+            Err(DeliveryError::Busy)
+        );
+    }
+
+    #[test]
+    fn closed_video_lane_reports_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let handle = VideoHandle::with_pending_capacity(tx, 1);
+
+        assert_eq!(
+            handle.send(VideoCmd::CyclePause),
+            Err(DeliveryError::Closed)
+        );
+    }
+
+    #[test]
+    fn full_video_lane_without_runtime_reports_busy() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(VideoCmd::CycleMute)
+            .expect("occupy the direct lane");
+        let handle = VideoHandle::with_pending_capacity(tx, 1);
+
+        assert_eq!(handle.send(VideoCmd::CyclePause), Err(DeliveryError::Busy));
+    }
+
+    #[tokio::test]
+    async fn connect_failure_emits_one_sanitized_failed_event_for_its_generation() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(1);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let secret = "short-secret";
+
+        finish_connection(
+            Err(std::io::Error::other(format!(
+                "refused access_token={secret}"
+            ))),
+            cmd_rx,
+            73,
+            Vec::new(),
+            move |generation, event| {
+                captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((generation, event));
+            },
+        )
+        .await;
+
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(events.len(), 1, "connect failure has one terminal event");
+        let (generation, event) = &events[0];
+        assert_eq!(*generation, 73);
+        let VideoEvent::Failed(detail) = event else {
+            panic!("connect failure must not be reported as Closed");
+        };
+        assert!(detail.contains("video overlay IPC connection failed"));
+        assert!(detail.contains("access_token=<redacted>"));
+        assert!(!detail.contains(secret));
+    }
+
+    #[tokio::test]
+    async fn write_failure_emits_one_sanitized_failed_event_without_closed() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let secret = "write-secret";
+        let emit = move |generation, event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((generation, event));
+        };
+        let failure = VideoIpcFailure::new(
+            "load command write",
+            &std::io::Error::other(format!("broken access_token={secret}")),
+        );
+
+        emit_terminal(91, VideoTerminal::Failed(failure), &emit).await;
+
+        let events = events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(events.len(), 1, "write failure has one terminal event");
+        let (generation, event) = &events[0];
+        assert_eq!(*generation, 91);
+        let VideoEvent::Failed(detail) = event else {
+            panic!("write failure must not fall through to Closed");
+        };
+        assert!(detail.contains("video overlay IPC load command write failed"));
+        assert!(detail.contains("access_token=<redacted>"));
+        assert!(!detail.contains(secret));
     }
 }

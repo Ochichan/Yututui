@@ -185,6 +185,7 @@ fn golden_v7_request_serialization_is_byte_stable() {
     let req = RemoteRequest {
         version: 7,
         token: "tok".to_string(),
+        request_id: None,
         command: RemoteCommand::TogglePause,
     };
     assert_eq!(
@@ -203,6 +204,29 @@ fn golden_v7_response_serialization_is_byte_stable() {
         serde_json::to_string(&RemoteResponse::ok("pong".to_string())).unwrap(),
         r#"{"ok":true,"reason":"ok","message":"pong"}"#
     );
+}
+
+#[test]
+fn retained_replay_proof_is_additive_and_old_response_shape_stays_frozen() {
+    let old_line = r#"{"ok":true,"reason":"ok","message":"pong"}"#;
+    let old: RemoteResponseEnvelope = serde_json::from_str(old_line).unwrap();
+    assert!(!old.retained_replay);
+    assert_eq!(serde_json::to_string(&old).unwrap(), old_line);
+
+    let replay = RemoteResponseEnvelope {
+        response: RemoteResponse::ok("pong".to_owned()),
+        retained_replay: true,
+    };
+    let replay_line = serde_json::to_string(&replay).unwrap();
+    assert_eq!(
+        replay_line,
+        r#"{"ok":true,"reason":"ok","message":"pong","retained_replay":true}"#
+    );
+
+    // A shipped client deserializes the marked response as its original response body because
+    // unknown additive fields remain ignored.
+    let legacy: RemoteResponse = serde_json::from_str(&replay_line).unwrap();
+    assert_eq!(legacy, RemoteResponse::ok("pong".to_owned()));
 }
 
 #[test]

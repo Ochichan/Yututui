@@ -52,6 +52,7 @@ pub async fn read_bounded_line<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn reads_a_line_including_newline() {
@@ -85,5 +86,27 @@ mod tests {
             BoundedLine::Eof
         );
         assert_eq!(line, b"partial");
+    }
+
+    #[tokio::test]
+    async fn caller_can_resume_a_partially_read_line_after_select_cancellation() {
+        let (mut peer, mut reader) = tokio::io::duplex(64);
+        peer.write_all(b"partial").await.unwrap();
+        let mut line = Vec::new();
+
+        tokio::select! {
+            result = read_bounded_line(&mut reader, &mut line, 64) => {
+                panic!("unterminated line unexpectedly completed: {result:?}");
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+        assert_eq!(line, b"partial");
+
+        peer.write_all(b"-tail\n").await.unwrap();
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 64).await.unwrap(),
+            BoundedLine::Line
+        );
+        assert_eq!(line, b"partial-tail\n");
     }
 }

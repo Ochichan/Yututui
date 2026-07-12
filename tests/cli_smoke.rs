@@ -50,6 +50,34 @@ fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, current: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries {
+            let entry = entry.expect("snapshot directory entry");
+            let path = entry.path();
+            let file_type = entry.file_type().expect("snapshot file type");
+            if file_type.is_dir() {
+                visit(root, &path, out);
+            } else if file_type.is_file() {
+                out.push((
+                    path.strip_prefix(root)
+                        .expect("snapshot path below root")
+                        .to_path_buf(),
+                    std::fs::read(&path).expect("snapshot file bytes"),
+                ));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(root, root, &mut out);
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    out
+}
+
 #[test]
 fn top_level_help_and_version_exit_before_tui_startup() {
     let help = run(&["--help"]);
@@ -61,6 +89,172 @@ fn top_level_help_and_version_exit_before_tui_startup() {
     let version = run(&["--version"]);
     assert!(version.status.success(), "stderr: {}", stderr(&version));
     assert!(stdout(&version).starts_with("ytt "));
+}
+
+#[test]
+fn observational_cli_does_not_create_persistence_roots_or_writer_locks() {
+    let root = isolated_root("reader-no-lease");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("isolated root should be creatable");
+    let config = root.join("config");
+    let data = root.join("data");
+    let cache = root.join("cache");
+
+    let output = isolated_command(&root, &["tools", "status"])
+        .env("YTM_DATA_DIR", &data)
+        .output()
+        .expect("ytt tools status should run read-only");
+    assert!(
+        matches!(output.status.code(), Some(0) | Some(1)),
+        "stdout={}, stderr={}",
+        stdout(&output),
+        stderr(&output)
+    );
+    for persistence_root in [&config, &data, &cache] {
+        assert!(
+            !persistence_root.exists(),
+            "reader created persistence root {}",
+            persistence_root.display()
+        );
+        assert!(
+            !persistence_root
+                .join(".ytt-persistence-writer.lock")
+                .exists(),
+            "reader created a writer lease at {}",
+            persistence_root.display()
+        );
+    }
+}
+
+#[test]
+fn read_only_transfer_views_and_missing_tools_args_do_not_create_persistence_roots() {
+    for (name, args, expected) in [
+        (
+            "download-view",
+            &[
+                "transfer",
+                "download",
+                "missing-session",
+                "--accepted",
+                "--dry-run",
+            ][..],
+            1,
+        ),
+        (
+            "review-view",
+            &["transfer", "review", "missing-session", "--all"][..],
+            1,
+        ),
+        (
+            "organize-view",
+            &[
+                "transfer",
+                "organize",
+                "missing-session",
+                "--root",
+                "/tmp/library",
+                "--dry-run",
+            ][..],
+            1,
+        ),
+        ("tools-use-missing", &["tools", "use"][..], 2),
+        ("tools-reset-missing", &["tools", "reset"][..], 2),
+        ("spotify-help", &["auth", "spotify", "--help"][..], 0),
+        (
+            "spotify-client-id-missing",
+            &["auth", "spotify", "--client-id"][..],
+            2,
+        ),
+    ] {
+        let root = isolated_root(name);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("isolated root should be creatable");
+        let config = root.join("config");
+        let data = root.join("data");
+        let cache = root.join("cache");
+
+        let output = isolated_command(&root, args)
+            .env("YTM_DATA_DIR", &data)
+            .output()
+            .expect("one-shot command should run");
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{args:?}: stdout={}, stderr={}",
+            stdout(&output),
+            stderr(&output)
+        );
+        for persistence_root in [&config, &data, &cache] {
+            assert!(
+                !persistence_root.exists(),
+                "{args:?} created persistence root {}",
+                persistence_root.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn organize_dry_run_with_existing_state_preserves_config_and_session_tree() {
+    let root = isolated_root("organize-existing-read-only");
+    let _ = std::fs::remove_dir_all(&root);
+    let config = root.join("config");
+    let data = root.join("data");
+    let cache = root.join("cache");
+    let sessions = data.join("transfers/sessions");
+    std::fs::create_dir_all(&config).expect("config directory");
+    std::fs::create_dir_all(&sessions).expect("session directory");
+
+    let config_path = config.join("config.json");
+    std::fs::write(
+        &config_path,
+        br#"{"local":{"import_path_template":"{artist}/{title}"}}"#,
+    )
+    .expect("write existing config");
+    let session_id = "sp2yt-organize-read-only";
+    let session_path = sessions.join(format!("{session_id}.json"));
+    std::fs::write(
+        &session_path,
+        format!(
+            r#"{{"schema_version":1,"session_id":"{session_id}","job_id":"{session_id}","stage":"writing","rows":[]}}"#
+        ),
+    )
+    .expect("write existing import session");
+    let library_root = root.join("library");
+    let library_arg = library_root.to_string_lossy().into_owned();
+    let config_before = snapshot_tree(&config);
+    let data_before = snapshot_tree(&data);
+
+    let output = isolated_command(
+        &root,
+        &[
+            "transfer",
+            "organize",
+            session_id,
+            "--root",
+            &library_arg,
+            "--dry-run",
+        ],
+    )
+    .env("YTM_DATA_DIR", &data)
+    .output()
+    .expect("organize dry-run should run");
+
+    assert!(
+        output.status.success(),
+        "stdout={}, stderr={}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("Organize preview: sp2yt-organize-read-only"),
+        "stdout={}",
+        stdout(&output)
+    );
+    assert_eq!(snapshot_tree(&config), config_before);
+    assert_eq!(snapshot_tree(&data), data_before);
+    assert!(!cache.exists(), "dry-run created cache state");
+    assert!(!library_root.exists(), "dry-run created the target root");
 }
 
 #[test]

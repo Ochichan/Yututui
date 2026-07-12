@@ -24,27 +24,27 @@ impl App {
 
         // Radio mode switching is modal: Enter or `y` confirms, anything else cancels.
         // It sits outside Settings so the shortcut works from the Player/Search/Library tabs too.
-        if let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() {
+        if let Some(confirm) = self.radio_mode.pending_radio_mode_confirm {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
-            return if confirmed {
-                self.apply_radio_mode_confirm(confirm)
-            } else {
-                Vec::new()
-            };
+            if confirmed {
+                return self.apply_radio_mode_confirm(confirm);
+            }
+            self.radio_mode.pending_radio_mode_confirm = None;
+            return Vec::new();
         }
 
         // Local Player mode switching is modal and follows the Radio confirmation rules.
-        if let Some(confirm) = self.local_mode.pending_confirm.take() {
+        if let Some(confirm) = self.local_mode.pending_confirm {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
-            return if confirmed {
-                self.apply_local_mode_confirm(confirm)
-            } else {
-                Vec::new()
-            };
+            if confirmed {
+                return self.apply_local_mode_confirm(confirm);
+            }
+            self.local_mode.pending_confirm = None;
+            return Vec::new();
         }
 
         // Local import organize is modal because it moves files on disk. Enter/`y` applies

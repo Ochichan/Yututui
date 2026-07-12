@@ -28,13 +28,26 @@ pub enum Acquire {
     AlreadyRunning,
 }
 
-/// RAII guard that releases the lock on drop (unix: closes the flocked fd; Windows: closes
-/// the mutex handle).
+/// RAII guard that releases the lock on drop (unix: explicitly unlocks the flocked fd;
+/// Windows: closes the mutex handle).
 pub struct InstanceGuard {
     #[cfg(unix)]
     _lock: std::fs::File,
     #[cfg(windows)]
     _handle: WindowsMutex,
+}
+
+#[cfg(unix)]
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+
+        // Explicitly release the open-file-description lock. Closing only this descriptor
+        // would leave the lock held if a clone (or an inherited descriptor) still existed.
+        // SAFETY: `_lock` owns a valid fd for the duration of this call. Unlock failure cannot
+        // be reported from Drop, and closing the owned descriptor remains the final fallback.
+        let _ = unsafe { libc::flock(self._lock.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 #[cfg(windows)]
@@ -222,6 +235,51 @@ mod tests {
         // SAFETY: after dropping `a`, `b` remains a valid fd and can acquire the lock.
         let rc_b2 = unsafe { libc::flock(b.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc_b2, 0, "after release the lock is available");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn guard_drop_unlocks_while_a_duplicated_fd_remains_open() {
+        let path =
+            std::env::temp_dir().join(format!("ytt-si-duplicate-test-{}.lock", std::process::id()));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        // SAFETY: `lock` owns a valid fd and flock reports errors through its return value.
+        let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "guard fixture should acquire the lock");
+
+        // `try_clone` duplicates the descriptor and keeps the same open file description alive.
+        // A close-only Drop would therefore leave the flock held through this clone.
+        let duplicated = lock.try_clone().unwrap();
+        let guard = super::InstanceGuard { _lock: lock };
+        let contender = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        // SAFETY: `contender` owns a distinct valid fd; non-blocking contention is reported as
+        // -1/EWOULDBLOCK.
+        let blocked = unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(blocked, -1, "guard should hold the lock before Drop");
+
+        drop(guard);
+        // SAFETY: explicit LOCK_UN in `InstanceGuard::drop` released the lock while `contender`
+        // remains a valid fd for this acquisition attempt.
+        let acquired = unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(
+            acquired, 0,
+            "guard Drop must release the lock even while a duplicated fd remains open"
+        );
+
+        drop(duplicated);
+        // SAFETY: `contender` still owns a valid fd and currently holds the lock.
+        let _ = unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_UN) };
+        drop(contender);
         let _ = std::fs::remove_file(&path);
     }
 }

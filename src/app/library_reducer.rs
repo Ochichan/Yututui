@@ -1,7 +1,6 @@
 //! Library data/delete reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
-use crate::util::sanitize;
 
 impl App {
     /// Number of rows currently shown in the active library tab — after the in-library
@@ -345,14 +344,16 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let romanize_cmds = self.request_romanization_for_songs(&songs);
-        self.queue.set(songs, self.library_ui.selected);
-        self.mode = Mode::Player;
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        cmds
+        self.replace_queue_and_load(
+            songs,
+            self.library_ui.selected,
+            None,
+            QueueReplacementOptions {
+                player_mode: true,
+                romanize_all: true,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     /// Delete the library list's current selection — the inclusive range between the drag
@@ -478,27 +479,23 @@ impl App {
         }
     }
 
-    /// Carry out a confirmed download deletion: remove each file from disk, drop the matching
-    /// rows for instant feedback, then rescan the folder as the source of truth. A failed
-    /// delete is logged but doesn't abort the rest.
+    /// Submit a confirmed deletion as an owned runtime effect. The reducer must never unlink a
+    /// file before the process read-only/recovery gate has admitted the mutation.
     pub(in crate::app) fn confirm_delete_files_apply(&mut self) -> Vec<Cmd> {
         let Some(paths) = self.library_ui.confirm_delete.take() else {
             return Vec::new();
         };
         let root = self.config.effective_download_dir();
-        let mut deleted = Vec::new();
-        for path in &paths {
-            match remove_download_file_if_safe(path, &root) {
-                Ok(()) => deleted.push(path.clone()),
-                Err(err) => {
-                    tracing::warn!(
-                        path = %sanitize::sanitize_error_text(path.display().to_string()),
-                        error = %sanitize::sanitize_error_text(err.to_string()),
-                        "refused or failed to delete downloaded file"
-                    );
-                }
-            }
-        }
+        self.dirty = true;
+        vec![Cmd::Download(DownloadCmd::Delete { paths, root })]
+    }
+
+    pub(in crate::app) fn apply_deleted_downloads(
+        &mut self,
+        root: PathBuf,
+        deleted: Vec<PathBuf>,
+        failed: usize,
+    ) -> Vec<Cmd> {
         self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
         self.library_ui.downloaded.retain(|song| {
             song.local_path
@@ -509,10 +506,18 @@ impl App {
         self.download_store.remove_paths(&deleted);
         self.clamp_library_selection();
         self.dirty = true;
-        vec![
-            Cmd::ScanDownloads(self.config.effective_download_dir()),
-            Cmd::Persist(PersistCmd::Downloads),
-        ]
+        if failed > 0 {
+            self.set_status_error(if crate::i18n::is_korean() {
+                format!("다운로드 파일 {failed}개를 삭제하지 못했습니다")
+            } else {
+                format!("Could not delete {failed} downloaded file(s)")
+            });
+        }
+        let mut commands = vec![Cmd::Download(DownloadCmd::Scan(root))];
+        if !deleted.is_empty() {
+            commands.push(Cmd::Persist(PersistCmd::Downloads));
+        }
+        commands
     }
 
     /// Clamp the library cursor and the drag anchor into the current tab's row count.
@@ -559,38 +564,3 @@ pub(in crate::app) struct LibraryRowsCache {
 /// (library_rev, downloaded_rev, favorites len, history len, downloaded len) — the All-tab
 /// count reads nothing else.
 pub(in crate::app) type AllCountKey = (u64, u64, usize, usize, usize);
-
-fn remove_download_file_if_safe(
-    path: &std::path::Path,
-    download_dir: &std::path::Path,
-) -> std::io::Result<()> {
-    let root = download_dir.canonicalize()?;
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "refusing to delete symlink",
-        ));
-    }
-    if !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "refusing to delete non-regular file",
-        ));
-    }
-    let target = path.canonicalize()?;
-    if !target.starts_with(&root) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "refusing to delete outside download directory",
-        ));
-    }
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "download file changed before delete",
-        ));
-    }
-    std::fs::remove_file(path)
-}

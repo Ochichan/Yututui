@@ -38,12 +38,10 @@
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   });
 
-  function video() {
+  async function video() {
     if (!track) return;
-    // Fire-and-forget per protocol; the mpv window spawns core-side once the desktop
-    // bridge forwards commands (gui/WIRING.md "already-wired tier").
-    client.cmd('play_video', { video_id: track.video_id });
-    toasts.show('info', t('np.videoRequested'));
+    const result = await client.cmd('play_video', { video_id: track.video_id });
+    if (result.ok) toasts.show('info', t('np.videoRequested'));
   }
 </script>
 
@@ -151,7 +149,8 @@
             <button
               class="chip"
               class:on={model.streaming}
-              onclick={() => client.cmd('streaming', { state: model.streaming ? 'off' : 'on' })}
+              onclick={() =>
+                void client.cmd('streaming', { state: model.streaming ? 'off' : 'on' })}
               {disabled}
             >
               ✦ {t('np.djGem')}

@@ -57,9 +57,69 @@ fn ai_submit_with_key_emits_ask_and_sets_thinking() {
 fn ai_play_tracks_on_empty_queue_starts_playback() {
     let mut app = App::new(100);
     assert!(app.queue.is_empty());
-    let cmds = app.update(AiMsg::PlayTracks(songs(3)));
+    let mut cmds = app.update(AiMsg::PlayTracks(songs(3)));
+    assert!(
+        app.queue.is_empty(),
+        "preparation must not replace the queue"
+    );
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id0");
     assert_loads_video(&cmds, "id0");
+}
+
+#[test]
+fn ai_play_tracks_busy_preserves_the_live_queue_until_retry_is_admitted() {
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Ai;
+    app.status.kind = StatusKind::Info;
+    app.status.text = "existing status".to_owned();
+    let before = serde_json::to_value(app.queue.snapshot()).unwrap();
+    let before_rev = app.queue.rev();
+
+    let cmds = app.update(AiMsg::PlayTracks(songs(3)));
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Ai);
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(app.status.text, "existing status");
+
+    assert!(
+        reject_player_transition(&mut app, cmds, crate::util::delivery::DeliveryError::Busy,)
+            .is_empty()
+    );
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Ai);
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(!app.status.text.is_empty());
+
+    let mut retry = app.update(AiMsg::PlayTracks(songs(3)));
+    admit_player_transition(&mut app, &mut retry);
+    assert_eq!(current(&app), "id0");
+    assert_ne!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Ai);
+}
+
+#[test]
+fn highlighted_ai_suggestion_replaces_from_the_selected_row_only_after_admission() {
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Ai;
+    app.ai.suggestions = songs(4);
+    app.ai.suggestions_selected = 2;
+    let before = serde_json::to_value(app.queue.snapshot()).unwrap();
+    let before_rev = app.queue.rev();
+
+    let mut cmds = app.play_ai_suggestion();
+    assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
+    assert_eq!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Ai);
+
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(current(&app), "id2");
+    assert_eq!(app.queue.len(), 4);
+    assert_ne!(app.queue.rev(), before_rev);
+    assert_eq!(app.mode, Mode::Ai);
+    assert_loads_video(&cmds, "id2");
 }
 
 #[test]
@@ -328,7 +388,8 @@ fn autoplay_extends_when_queue_runs_low() {
     app.autoplay_streaming = true;
     // A manual next advances and should fetch the candidate pool first (both DJ Gem and non-DJ Gem
     // paths share one pool; the DJ Gem reranks it once it returns).
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         streaming_fallback(&cmds).is_some(),
         "autoplay should fetch a candidate pool"
@@ -343,7 +404,8 @@ fn autoplay_extends_when_queue_runs_low() {
         "the rerank only starts once the pool returns"
     );
     // The cooldown / in-flight guard blocks an immediate second request.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(streaming_fallback(&cmds).is_none());
 }
 
@@ -844,7 +906,8 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
 
     // `w` opens the overlay; `w` again dismisses it.
     assert!(!app.overlays.why_ai_visible);
-    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let mut cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    admit_player_transition(&mut app, &mut cmds);
     assert!(app.radio_dedicated_mode);
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
@@ -920,7 +983,8 @@ fn autoplay_uses_streaming_fallback_without_ai_key() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
     app.autoplay_streaming = true;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
+    admit_player_transition(&mut app, &mut cmds);
     assert!(
         ask_ai(&cmds).is_none(),
         "no Gemini request without an API key"
@@ -1010,7 +1074,12 @@ fn ai_create_and_play_playlist_roundtrip() {
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
     );
     assert_eq!(app.playlists.find("Focus").unwrap().songs.len(), 2);
-    let cmds = app.update(AiMsg::PlayPlaylist("Focus".to_owned()));
+    let mut cmds = app.update(AiMsg::PlayPlaylist("Focus".to_owned()));
+    assert!(
+        app.queue.is_empty(),
+        "preparation must not replace the queue"
+    );
+    admit_player_transition(&mut app, &mut cmds);
     assert_eq!(current(&app), "id0");
     assert_loads_video(&cmds, "id0");
 }

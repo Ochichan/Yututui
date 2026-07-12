@@ -123,11 +123,19 @@ export class SettingsStore {
   model = $state<SettingsModelV8 | null>(null);
   /** Sparse optimistic overlay keyed `group.field`; reassigned immutably for reactivity. */
   #pending = $state<Record<string, unknown>>({});
+  #nextMutation = 0;
+  readonly #pendingMutation = new Map<string, number>();
   readonly #client: Client;
 
   constructor(client: Client) {
     this.#client = client;
     this.#client.on('settings', (payload) => this.#onPush(payload as SettingsSnapshot));
+    this.#client.onConn((info) => {
+      if (info.state === 'offline') {
+        this.#pending = {};
+        this.#pendingMutation.clear();
+      }
+    });
   }
 
   // ── merged per-group views (pending ?? model) ────────────────────────────────────────
@@ -165,8 +173,17 @@ export class SettingsStore {
 
   /** Live-apply a field: overlay it optimistically, then send. Cleared by the next push. */
   apply(group: SettingGroup, field: string, value: unknown): void {
-    this.#pending = { ...this.#pending, [`${group}.${field}`]: value };
-    this.#client.cmd('apply', { change: { group, field, value } });
+    const key = `${group}.${field}`;
+    const mutation = ++this.#nextMutation;
+    this.#pendingMutation.set(key, mutation);
+    this.#pending = { ...this.#pending, [key]: value };
+    void this.#client.cmd('apply', { change: { group, field, value } }).then((result) => {
+      if (result.ok || this.#pendingMutation.get(key) !== mutation) return;
+      const next = { ...this.#pending };
+      delete next[key];
+      this.#pending = next;
+      this.#pendingMutation.delete(key);
+    });
   }
 
   /** Write-only: the core stores the key; only `streaming.has_gemini_key` comes back. */
@@ -174,16 +191,18 @@ export class SettingsStore {
     this.#client.cmd('set_gemini_key', { key });
   }
 
-  /** Clears cached romanizations; resolves to the count for a feedback toast. */
-  async clearRomanizationCache(): Promise<number> {
-    const res = await this.#client.req<{ cleared: number }>('clear_romanization_cache');
-    return res?.cleared ?? 0;
+  /** Clears cached romanizations; null means the acknowledged mutation was rejected. */
+  async clearRomanizationCache(): Promise<number | null> {
+    const result = await this.#client.cmd<{ cleared: number }>('clear_romanization_cache');
+    return result.ok ? (result.payload?.cleared ?? 0) : null;
   }
 
   /** Factory-reset every setting (danger zone). The confirming push refills the model. */
-  resetAll(): void {
+  async resetAll(): Promise<boolean> {
     this.#pending = {};
-    this.#client.cmd('reset_all_settings');
+    this.#pendingMutation.clear();
+    const result = await this.#client.cmd('reset_all_settings');
+    return result.ok;
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────
@@ -206,6 +225,7 @@ export class SettingsStore {
     const next: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(this.#pending)) {
       if (!sameValue(readPath(snap.model, key), val)) next[key] = val;
+      else this.#pendingMutation.delete(key);
     }
     this.#pending = next;
   }

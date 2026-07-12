@@ -1,5 +1,4 @@
 //! Settings-screen reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
-
 use super::*;
 
 /// Decide the Spotify account row's state from the saved token's embedded Client ID
@@ -726,17 +725,8 @@ impl App {
                 );
                 Vec::new()
             }
-            Field::Normalize => {
-                let s = self.settings_mut();
-                s.draft.normalize = !s.draft.normalize;
-                self.settings_apply_af()
-            }
-            Field::Speed => {
-                let s = self.settings_mut();
-                s.draft.speed =
-                    settings::clamp_speed(s.draft.speed + f64::from(dir) * settings::SPEED_STEP);
-                self.settings_apply_speed()
-            }
+            Field::Normalize => self.settings_preview_normalize(),
+            Field::Speed => self.settings_preview_speed(dir),
             Field::SeekInterval => {
                 let s = self.settings_mut();
                 s.draft.seek_seconds = settings::clamp_seek_seconds(
@@ -773,30 +763,8 @@ impl App {
                 s.draft.animations.pause_unfocused = !s.draft.animations.pause_unfocused;
                 Vec::new()
             }
-            Field::EqPreset => {
-                let s = self.settings_mut();
-                // `Custom` isn't in CYCLE; rather than jump to a surprising neighbour,
-                // the first ←/→ from a hand-tuned state snaps back to Flat (a clean,
-                // known preset), and subsequent presses cycle normally.
-                s.draft.eq_preset = if s.draft.eq_preset == EqPreset::Custom {
-                    EqPreset::Flat
-                } else {
-                    let cur = EqPreset::CYCLE
-                        .iter()
-                        .position(|&p| p == s.draft.eq_preset)
-                        .unwrap_or(0);
-                    let n = EqPreset::CYCLE.len();
-                    let next = if dir >= 0 {
-                        (cur + 1) % n
-                    } else {
-                        (cur + n - 1) % n
-                    };
-                    EqPreset::CYCLE[next]
-                };
-                s.draft.eq_bands = s.draft.eq_preset.gains();
-                self.settings_apply_af()
-            }
-            Field::Band(i) => self.settings_change_band(i, dir),
+            Field::EqPreset => self.settings_preview_eq_preset(dir),
+            Field::Band(i) => self.settings_preview_band(i, dir),
             Field::GeminiModel => {
                 let s = self.settings_mut();
                 s.draft.gemini_model = s.draft.gemini_model.cycled(dir >= 0);
@@ -918,54 +886,6 @@ impl App {
         }
     }
 
-    /// Adjust one EQ band. Uses a glitch-free `af-command` when the labeled chain already
-    /// exists; otherwise rebuilds the chain (which creates or clears the `@eqN` labels).
-    pub(in crate::app) fn settings_change_band(&mut self, i: usize, dir: i32) -> Vec<Cmd> {
-        let Some(st) = self.settings.as_mut() else {
-            return Vec::new();
-        };
-        let was_active = st.draft.eq_bands.iter().any(|g| g.abs() > f64::EPSILON);
-        let gain =
-            settings::clamp_band(st.draft.eq_bands[i] + f64::from(dir) * settings::BAND_GAIN_STEP);
-        st.draft.eq_bands[i] = gain;
-        st.draft.eq_preset = EqPreset::Custom;
-        let bands = st.draft.eq_bands;
-        let normalize = st.draft.normalize;
-        let now_active = bands.iter().any(|g| g.abs() > f64::EPSILON);
-        if was_active && now_active {
-            vec![Cmd::Player(PlayerCmd::AfCommand {
-                label: eq::band_label(i),
-                param: "gain".to_owned(),
-                value: format!("{gain}"),
-            })]
-        } else {
-            vec![Cmd::Player(PlayerCmd::SetAudioFilter(
-                eq::build_af_string(&bands, normalize).unwrap_or_default(),
-            ))]
-        }
-    }
-
-    /// Rebuild and apply the EQ/normalization chain from the current draft.
-    pub(in crate::app) fn settings_apply_af(&self) -> Vec<Cmd> {
-        let Some(st) = self.settings.as_ref() else {
-            return Vec::new();
-        };
-        vec![Cmd::Player(PlayerCmd::SetAudioFilter(
-            eq::build_af_string(&st.draft.eq_bands, st.draft.normalize).unwrap_or_default(),
-        ))]
-    }
-
-    /// Apply the draft's playback speed.
-    pub(in crate::app) fn settings_apply_speed(&self) -> Vec<Cmd> {
-        let Some(st) = self.settings.as_ref() else {
-            return Vec::new();
-        };
-        vec![Cmd::Player(PlayerCmd::SetProperty {
-            name: "speed".to_owned(),
-            value: serde_json::Value::from(st.draft.speed),
-        })]
-    }
-
     /// Enter (Enter key): start editing a text field, or flip a toggle.
     pub(in crate::app) fn settings_activate(&mut self) -> Vec<Cmd> {
         let Some(field) = self.settings.as_ref().and_then(|s| s.current_field()) else {
@@ -1037,7 +957,7 @@ impl App {
                                 .to_owned();
                         self.status.kind = StatusKind::Info;
                         self.dirty = true;
-                        vec![Cmd::ScrobbleAuthStart]
+                        vec![Cmd::Scrobble(ScrobbleCmd::AuthStart)]
                     }
                 }
                 Field::SpotifyConnect => {
@@ -1577,6 +1497,20 @@ impl App {
                 }
                 self.status.kind = StatusKind::Info;
             }
+            TransferEvent::JobRejected { job_id, error } => {
+                // The actor still owns a different active job. Clear only bookkeeping for the
+                // rejected attempt; its terminal will never arrive, while the active job's guard
+                // must remain set until that job emits JobDone/JobFailed.
+                self.local_mode
+                    .pending_accept_write_summaries
+                    .remove(&job_id);
+                let error = crate::util::sanitize::sanitize_error_text(error);
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!("Import request rejected", "가져오기 요청 거부")
+                );
+                self.status.kind = StatusKind::Error;
+            }
             TransferEvent::JobFailed {
                 job_id,
                 error,
@@ -1631,7 +1565,9 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 vec![
                     Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
-                    Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
+                    Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
+                        self.config.scrobble_settings(),
+                    ))),
                 ]
             }
             SettingsConfirm::SpotifyDisconnect => {
@@ -1717,78 +1653,6 @@ impl App {
         .to_owned();
         self.dirty = true;
         vec![Cmd::Persist(PersistCmd::ClearRomanizedTitles)]
-    }
-
-    /// Reset every editable setting (and the Keys-tab keymap draft) back to its built-in
-    /// default. Mutates only the draft / working keymap — like any other settings edit, it
-    /// is committed and persisted when the screen closes. Live audio (speed, EQ, normalize)
-    /// is pushed to mpv immediately so the change is audible right away.
-    pub(in crate::app) fn settings_reset_all(&mut self) -> Vec<Cmd> {
-        {
-            let Some(st) = self.settings.as_mut() else {
-                return Vec::new();
-            };
-            let def = Config::default();
-            let d = &mut st.draft;
-            d.cookies_file = String::new();
-            d.download_dir = String::new();
-            d.search = def.effective_search();
-            d.mouse = def.effective_mouse();
-            d.album_art = def.effective_album_art();
-            d.autoplay_on_start = def.effective_autoplay_on_start();
-            d.enqueue_next = def.effective_enqueue_next();
-            d.speed = def.effective_speed();
-            d.seek_seconds = def.effective_seek_seconds();
-            d.gapless = def.effective_gapless();
-            d.autoplay_streaming = def.effective_autoplay_streaming();
-            d.curating_mode = crate::streaming::CuratingMode::from_ai(def.streaming.ai.enabled);
-            d.streaming_mode = def.streaming.mode;
-            d.eq_preset = def.eq_preset;
-            d.eq_bands = def.effective_eq_bands();
-            d.normalize = def.effective_normalize();
-            d.gemini_model = def.effective_gemini_model();
-            d.gemini_api_key = String::new();
-            d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand DJ Gem off)
-            d.romanized_titles = def.effective_romanized_titles();
-            d.dj_gem_language = def.dj_gem_language; // Auto (follow the interface)
-            d.theme = def.effective_theme();
-            d.retro_mode = def.effective_retro_mode();
-            d.language = def.effective_language();
-            d.animations = def.animations; // all effects off (the lightweight default)
-            // Accounts: behavior flags reset, but the connections themselves survive —
-            // "reset settings" should not disconnect Last.fm or wipe the LB token.
-            d.lastfm_enabled = true;
-            d.lastfm_love_sync = true;
-            d.listenbrainz_enabled = true;
-            d.scrobble_local_files = true;
-            d.spotify_redirect_port = String::new();
-            d.spotify_import_mode = def.spotify.import_mode;
-            // Radio recording: reset the settings, but never touch recordings already on disk.
-            d.recording_mode = def.recording.mode;
-            d.recording_min_seconds = def.effective_recording_min();
-            d.recording_max_seconds = def.effective_recording_max();
-            d.recording_dir = String::new();
-            d.recording_past_tracks = def.effective_recording_past_tracks();
-            d.recording_notify = def.recording.notify;
-            st.keymap = KeyMap::default();
-            st.mousemap.reset_all();
-            st.editing_text = false;
-        }
-        // Reflect the reset theme + language live so the open settings screen re-colors and
-        // re-translates immediately (the reset also restores the default English UI).
-        if let Some(st) = self.settings.as_ref() {
-            self.theme = st.draft.theme.normalized();
-            crate::i18n::set_language(st.draft.language);
-        }
-        self.status.text = t!(
-            "All settings reset to defaults",
-            "모든 설정을 기본값으로 되돌렸어요"
-        )
-        .to_owned();
-        self.dirty = true;
-        let mut cmds = self.settings_apply_speed();
-        cmds.extend(self.settings_apply_af());
-        cmds
     }
 
     /// Feed one key into the focused text field's buffer. Committing the edit (Enter/Esc)
@@ -1880,8 +1744,8 @@ impl App {
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
                 let new_dir = self.config.effective_download_dir();
                 if new_dir != old_dir {
-                    cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
-                    cmds.push(Cmd::ScanDownloads(new_dir));
+                    cmds.push(Cmd::Download(DownloadCmd::SetDir(new_dir.clone())));
+                    cmds.push(Cmd::Download(DownloadCmd::Scan(new_dir)));
                 }
                 if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
                     cmds.extend(self.request_local_scan(false));
@@ -1953,9 +1817,9 @@ impl App {
             Field::ListenBrainzToken => {
                 self.config.scrobble.listenbrainz.token = settings::blank_to_none(&value);
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
-                cmds.push(Cmd::ScrobbleReconfigure(Box::new(
+                cmds.push(Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
                     self.config.scrobble_settings(),
-                )));
+                ))));
             }
             Field::SpotifyClientId => {
                 self.config.spotify.client_id = settings::blank_to_none(&value);
@@ -2043,20 +1907,15 @@ impl App {
         }
     }
 
-    /// Leave the settings screen, copying the draft into live state + config and
-    /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
-    pub(in crate::app) fn close_settings(&mut self) -> Vec<Cmd> {
+    /// Apply a Settings snapshot whose complete player-audio batch was already admitted.
+    pub(in crate::app) fn apply_settings_save(&mut self, st: SettingsState) -> Vec<Cmd> {
         self.overlays.pending_settings_confirm = None;
         // Drop the top-level overlays that live over the Settings screen so leaving it (Esc/q,
         // or any early-return path below) can't strand them painting on top of the Player.
         self.overlays.recording_settings = None;
         self.overlays.recordings_browser = None;
         self.overlays.spotify_picker = None;
-        let Some(st) = self.settings.take() else {
-            self.mode = Mode::Player;
-            self.dirty = true;
-            return Vec::new();
-        };
+        self.settings = None;
         self.mode = Mode::Player;
         self.dirty = true;
         let d = &st.draft;
@@ -2132,16 +1991,9 @@ impl App {
             )
             .to_owned();
         }
-        // Re-assert the committed audio chain before persisting: the draft was
-        // previewing live, but a track change mid-edit (EOF auto-advance) would have
-        // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
-        // chain to guarantee the current track matches what was just saved.
-        let mut cmds = vec![
-            Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
-            Cmd::Player(PlayerCmd::SetAudioFilter(
-                self.current_af().unwrap_or_default(),
-            )),
-        ];
+        let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))];
         // A changed key rebuilds the DJ Gem actor live (the client is otherwise built once
         // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
         // rebuild already adopts the current model, so only hot-swap the model on the
@@ -2163,18 +2015,19 @@ impl App {
         }
         let new_download_dir = self.config.effective_download_dir();
         if new_download_dir != old_download_dir {
-            cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
-            cmds.push(Cmd::ScanDownloads(new_download_dir));
+            cmds.push(Cmd::Download(DownloadCmd::SetDir(new_download_dir.clone())));
+            cmds.push(Cmd::Download(DownloadCmd::Scan(new_download_dir)));
         }
         if self.local_dedicated_mode && self.local_scan_roots() != old_local_roots {
             cmds.extend(self.request_local_scan(false));
         }
+        cmds.extend(self.reconcile_recorder());
         // Hand the scrobble actor the committed account settings. Unconditional: the
         // snapshot is a few strings and the actor's swap is trivial, so this is cheaper
         // than tracking which of the scrobble fields changed.
-        cmds.push(Cmd::ScrobbleReconfigure(Box::new(
+        cmds.push(Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
             self.config.scrobble_settings(),
-        )));
+        ))));
         // React to an album-art toggle. Turning it off drops the held image (frees RAM).
         // Turning it on fetches the current track's art live: the graphics protocol is probed
         // unconditionally at startup, so the picker is always present and `artwork_source`

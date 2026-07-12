@@ -235,13 +235,15 @@ impl App {
             .suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         let requested_songs = self.ai.suggestions.clone();
-        let romanize_cmds = self.request_romanization_for_songs(&requested_songs);
-        self.queue.set(requested_songs, start);
-        self.status.text.clear();
-        let song = self.queue.current().cloned();
-        let mut cmds = self.load_song(song);
-        cmds.extend(romanize_cmds);
-        cmds
+        self.replace_queue_and_load(
+            requested_songs,
+            start,
+            None,
+            QueueReplacementOptions {
+                romanize_all: true,
+                ..QueueReplacementOptions::default()
+            },
+        )
     }
 
     /// Append a line to the DJ Gem transcript, bounding its length.

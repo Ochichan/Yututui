@@ -1,8 +1,8 @@
 // Theme editor wiring (docs/gui/06 §1–3, 07 §9). The store paints the 34 roles + OKLab
-// surface tints from the `settings` theme push, switches presets, applies optimistic
-// per-role overrides reconciled on the push, and settles the local-skin precedence rule.
+// surface tints from the `settings` theme push, switches presets, applies acknowledged
+// per-role overrides, and settles the local-skin precedence rule.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '../src/lib/ipc/client';
 import { ThemeStore, mixOklab, type ThemeModel } from '../src/lib/stores/theme.svelte';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
@@ -129,16 +129,15 @@ describe('ThemeStore against the demo core', () => {
     expect(cssVar('--role-accent')).toBe('#88c0d0');
   });
 
-  it('applies an override optimistically, then reconciles it on the push', async () => {
+  it('applies an override after acknowledgement and reconciles it on the push', async () => {
     const client = new Client(new DemoCoreTransport());
     const store = new ThemeStore(client);
     client.sub(['settings']);
     await settle();
 
     store.setOverride('accent', '#123456', client);
-    // Optimistic: the CSS var flips before any round-trip.
-    expect(cssVar('--role-accent')).toBe('#123456');
     await settle();
+    expect(cssVar('--role-accent')).toBe('#123456');
     expect(store.model?.overrides.accent).toBe('#123456');
     expect(store.isOverridden('accent')).toBe(true);
     expect(store.model?.roles.accent).toBe('#123456');
@@ -152,7 +151,7 @@ describe('ThemeStore against the demo core', () => {
 });
 
 describe('local-skin precedence', () => {
-  it('a push does not repaint while a local skin is active, and editing hands control back', () => {
+  it('a push does not repaint while a local skin is active, and acknowledged editing hands control back', async () => {
     const t = new MockTransport();
     const client = new Client(t);
     const store = new ThemeStore(client);
@@ -177,7 +176,17 @@ describe('local-skin precedence', () => {
 
     // Editing the core theme leaves the local skin and repaints the core theme + override.
     store.setOverride('accent', '#00ff88', client);
-    expect(store.localId).toBeNull();
+    expect(store.localId).toBe('crimson');
+    const command = t.sent.at(-1)!;
+    pushTheme(
+      t,
+      themeModel({
+        roles: { ...themeModel().roles, accent: '#00ff88' },
+        overrides: { accent: '#00ff88' },
+      }),
+    );
+    t.emit({ v: 1, id: command.id, kind: 'res', payload: { ok: true } });
+    await vi.waitFor(() => expect(store.localId).toBeNull());
     expect(cssVar('--role-accent')).toBe('#00ff88');
   });
 });

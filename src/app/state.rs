@@ -222,7 +222,7 @@ pub struct Session {
 pub struct Video {
     /// The detached mpv video-overlay process, if one is open. Tracked so a second `v` (or a
     /// `Shift+V` layout switch) closes/respawns it instead of stacking windows.
-    pub proc: Option<std::process::Child>,
+    pub proc: Option<crate::util::process_tree::OwnedProcessTree>,
     /// Whether opening the video overlay is what paused the audio, so closing it only resumes
     /// playback we paused (not audio the user had paused themselves).
     pub paused_audio: bool,
@@ -317,13 +317,14 @@ pub struct YtdlpHeal {
     pub last_check: Option<Instant>,
 }
 
-/// Download state, keyed by `video_id`: the in-flight/finished progress map shown in the UI,
-/// plus the original catalog metadata held while a download runs.
+/// Download state, keyed by ordinary `video_id` or a stable import-session row key: the
+/// in-flight/finished progress map shown in the UI, plus the original catalog metadata held while
+/// a download runs.
 #[derive(Default)]
 pub struct Downloads {
-    /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
+    /// In-flight / finished downloads, keyed by download owner, for the UI indicator.
     pub active: HashMap<String, DownloadState>,
-    /// Original catalog metadata for in-flight downloads, keyed by `video_id`. Reducer-only
+    /// Original catalog metadata for in-flight downloads, keyed by download owner. Reducer-only
     /// (was a private App field) — `pub(in crate::app)` keeps it off the render-facing surface.
     pub(in crate::app) sources: HashMap<String, Song>,
     /// Bulk-download overflow queue: deduped songs accepted for download but not yet handed to
@@ -698,16 +699,30 @@ pub struct Interaction {
     /// not message indexes, so wrapping and copy behavior line up exactly. `pub(crate)` (not
     /// `pub`) to match [`AiTranscriptDrag`]'s visibility — still reachable from the `ui` render.
     pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
-    /// Active seekbar (progress-bar) scrub: the last column we seeked to, so intra-cell drags
-    /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
-    /// or on mouse-up (so a dropped terminal `Up` can't strand it).
+    /// Active seekbar (progress-bar) scrub: the last requested column, used for intra-cell
+    /// dedupe only after its player intent was admitted. `None` = not scrubbing. Set on a
+    /// seekbar press, cleared on the next press or on mouse-up (so a dropped terminal `Up`
+    /// can't strand it).
     pub(in crate::app) seekbar_drag: Option<u16>,
+    /// Admission state for the active scrub request. A rejected request transitions to `Retry`,
+    /// allowing the same cell to be emitted again instead of being mistaken for a duplicate.
+    pub(in crate::app) seekbar_admission: SeekbarAdmission,
     /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
     /// the track rect captured at press, so pointer-x maps to a value even after the pointer
     /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
     pub(in crate::app) recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
+}
+
+/// Admission lifecycle for the most recent seekbar request. Keeping this inside
+/// [`Interaction`] prevents unrelated keyboard or remote seeks from arming a mouse retry.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::app) enum SeekbarAdmission {
+    #[default]
+    Settled,
+    Pending,
+    Retry,
 }
 
 /// Dedicated-Radio-mode stash: the normal- and radio-mode themes and queues that swap in and

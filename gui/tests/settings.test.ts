@@ -70,7 +70,14 @@ function baseModel(): SettingsModelV8 {
       mpv_cache_back: '8MiB',
     },
     animations: defaultAnimations(),
-    theme: { preset: 'Default', roles: {}, overrides: {}, background_none: false, retro: false, presets: [] },
+    theme: {
+      preset: 'Default',
+      roles: {},
+      overrides: {},
+      background_none: false,
+      retro: false,
+      presets: [],
+    },
     keymap: defaultKeymap(),
   };
 }
@@ -105,6 +112,17 @@ describe('SettingsStore', () => {
     expect(store.playback?.gapless).toBe(false);
     expect(store.model?.playback.gapless).toBe(true);
     expect(store.dirty).toBe(true);
+  });
+
+  it('rolls back a rejected optimistic edit instead of leaving dirty state stuck', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+    store.apply('playback', 'gapless', false);
+    const command = t.sent.at(-1)!;
+    t.emit({ v: 1, id: command.id, kind: 'err', payload: { reason: 'busy' } });
+    await vi.waitFor(() => expect(store.dirty).toBe(false));
+    expect(store.playback?.gapless).toBe(true);
   });
 
   it('clears a pending edit once a push confirms it', () => {
@@ -239,8 +257,9 @@ describe('demo core settings', () => {
   }
   const lastSettings = (frames: InEnvelope[]): SettingsModelV8 =>
     (
-      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'settings')!
-        .payload as { model: SettingsModelV8 }
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'settings')!.payload as {
+        model: SettingsModelV8;
+      }
     ).model;
 
   it('subscribing yields an initial settings snapshot', () => {

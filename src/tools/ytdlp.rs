@@ -26,7 +26,6 @@
 //! is `tools.ytdlp_managed = false`.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -35,11 +34,21 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::config::ToolsConfig;
+use crate::util::background_task::BackgroundTask;
 use crate::util::safe_fs;
 
 use super::{ToolsEvent, YtdlpChannel};
 
+#[cfg(test)]
+mod background_tests;
+mod download_temp;
 mod rollback;
+mod signature;
+#[cfg(test)]
+mod update_lock_tests;
+
+use download_temp::DownloadTemp;
+use signature::verify_sha256sums_signature;
 
 /// Upper bound on probe-cache entries (override + managed + system is 3; a few
 /// spares for paths that moved).
@@ -180,7 +189,7 @@ pub fn remove_update_lock_if_free() -> Result<bool, String> {
         return Ok(false);
     };
     drop(lock);
-    std::fs::remove_file(&lock_path)
+    safe_fs::remove_private_file_durable(&lock_path)
         .map(|()| true)
         .or_else(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -347,7 +356,9 @@ pub(crate) async fn cached_probe(path: &Path) -> Option<String> {
 
     let version = super::probe_version(&path_str).await?;
 
-    if let Some((mtime, len)) = stamp {
+    if let Some((mtime, len)) = stamp
+        && !crate::persist::persistence_access().is_read_only()
+    {
         let mut state = load_state();
         state.probe_cache.retain(|e| e.path != path_str);
         state.probe_cache.push(ProbeEntry {
@@ -414,41 +425,6 @@ const DOWNLOAD_MAX_BYTES: u64 = 100 * 1024 * 1024;
 const SUMS_MAX_BYTES: usize = 64 * 1024;
 /// Cap on the detached GPG signature for `SHA2-256SUMS`.
 const SUMS_SIG_MAX_BYTES: usize = 64 * 1024;
-const GPG_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Pinned from https://github.com/yt-dlp/yt-dlp/blob/master/public.key.
-/// The current signing identity is:
-/// Simon Sawicki (yt-dlp signing key) <contact@grub4k.xyz>
-const YTDLP_PUBLIC_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
-
-mQINBGP78C4BEAD0rF9zjGPAt0thlt5C1ebzccAVX7Nb1v+eqQjk+WEZdTETVCg3
-WAM5ngArlHdm/fZqzUgO+pAYrB60GKeg7ffUDf+S0XFKEZdeRLYeAaqqKhSibVal
-DjvOBOztu3W607HLETQAqA7wTPuIt2WqmpL60NIcyr27LxqmgdN3mNvZ2iLO+bP0
-nKR/C+PgE9H4ytywDa12zMx6PmZCnVOOOu6XZEFmdUxxdQ9fFDqd9LcBKY2LDOcS
-Yo1saY0YWiZWHtzVoZu1kOzjnS5Fjq/yBHJLImDH7pNxHm7s/PnaurpmQFtDFruk
-t+2lhDnpKUmGr/I/3IHqH/X+9nPoS4uiqQ5HpblB8BK+4WfpaiEg75LnvuOPfZIP
-KYyXa/0A7QojMwgOrD88ozT+VCkKkkJ+ijXZ7gHNjmcBaUdKK7fDIEOYI63Lyc6Q
-WkGQTigFffSUXWHDCO9aXNhP3ejqFWgGMtCUsrbkcJkWuWY7q5ARy/05HbSM3K4D
-U9eqtnxmiV1WQ8nXuI9JgJQRvh5PTkny5LtxqzcmqvWO9TjHBbrs14BPEO9fcXxK
-L/CFBbzXDSvvAgArdqqlMoncQ/yicTlfL6qzJ8EKFiqW14QMTdAn6SuuZTodXCTi
-InwoT7WjjuFPKKdvfH1GP4bnqdzTnzLxCSDIEtfyfPsIX+9GI7Jkk/zZjQARAQAB
-tDdTaW1vbiBTYXdpY2tpICh5dC1kbHAgc2lnbmluZyBrZXkpIDxjb250YWN0QGdy
-dWI0ay54eXo+iQJOBBMBCgA4FiEErAy75oSNaoc0ZK9OV89lkztadYEFAmP78C4C
-GwMFCwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQV89lkztadYEVqQ//cW7TxhXg
-7Xbh2EZQzXml0egn6j8QaV9KzGragMiShrlvTO2zXfLXqyizrFP4AspgjSn/4NrI
-8mluom+Yi+qr7DXT4BjQqIM9y3AjwZPdywe912Lxcw52NNoPZCm24I9T7ySc8lmR
-FQvZC0w4H/VTNj/2lgJ1dwMflpwvNRiWa5YzcFGlCUeDIPskLx9++AJE+xwU3LYm
-jQQsPBqpHHiTBEJzMLl+rfd9Fg4N+QNzpFkTDW3EPerLuvJniSBBwZthqxeAtw4M
-UiAXh6JvCc2hJkKCoygRfM281MeolvmsGNyQm+axlB0vyldiPP6BnaRgZlx+l6MU
-cPqgHblb7RW5j9lfr6OYL7SceBIHNv0CFrt1OnkGo/tVMwcs8LH3Ae4a7UJlIceL
-V54aRxSsZU7w4iX+PB79BWkEsQzwKrUuJVOeL4UDwWajp75OFaUqbS/slDDVXvK5
-OIeuth3mA/adjdvgjPxhRQjA3l69rRWIJDrqBSHldmRsnX6cvXTDy8wSXZgy51lP
-m4IVLHnCy9m4SaGGoAsfTZS0cC9FgjUIyTyrq9M67wOMpUxnuB0aRZgJE1DsI23E
-qdvcSNVlO+39xM/KPWUEh6b83wMn88QeW+DCVGWACQq5N3YdPnAJa50617fGbY6I
-gXIoRHXkDqe23PZ/jURYCv0sjVtjPoVC+bg=
-=bJkn
------END PGP PUBLIC KEY BLOCK-----
-"#;
 
 /// What a [`check_and_update`] run concluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -682,23 +658,23 @@ const ATTEMPT_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// each pass is a no-op while the last successful check is within the channel TTL.
 const MAINTAIN_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// Background maintainer: keeps the managed binary present and fresh without ever
-/// blocking startup or playback. Spawned once by the TUI and the daemon; `emit`
-/// carries download progress/outcomes (the TUI routes them to the status line, the
-/// daemon passes a no-op — `check_and_update` already logs).
-pub fn spawn_maintainer<F>(cfg: ToolsConfig, emit: F)
+/// Background maintainer: keeps the managed binary fresh without blocking startup.
+/// Returns an abort-on-drop owner that the TUI/daemon retains through teardown; `emit`
+/// carries progress/outcomes (the TUI routes them to the status line, while the daemon
+/// passes a no-op because `check_and_update` already logs).
+pub fn spawn_maintainer<F>(cfg: ToolsConfig, emit: F) -> BackgroundTask
 where
     F: Fn(ToolsEvent) + Send + Sync + 'static,
 {
     if !cfg.managed_enabled() || asset_name().is_none() {
-        return;
+        return BackgroundTask::disabled("yt-dlp maintainer");
     }
-    tokio::spawn(async move {
+    BackgroundTask::spawn("yt-dlp maintainer", async move {
         loop {
             maintain_once(&cfg, &emit).await;
             tokio::time::sleep(MAINTAIN_INTERVAL).await;
         }
-    });
+    })
 }
 
 async fn maintain_once(cfg: &ToolsConfig, emit: &(dyn Fn(ToolsEvent) + Sync)) {
@@ -756,6 +732,17 @@ impl UpdateLock {
     }
 }
 
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // A cloned descriptor can outlive this guard while sharing its locked file
+        // description. Unlock explicitly so the guard's lexical lifetime remains the
+        // ownership boundary instead of waiting for the last duplicate to close.
+        if let Err(error) = self._file.unlock() {
+            tracing::warn!(%error, "failed to explicitly release yt-dlp update lock");
+        }
+    }
+}
+
 fn download_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("yututui/", env!("CARGO_PKG_VERSION")))
@@ -777,7 +764,7 @@ async fn fetch_expected_sha(
     let sums = fetch_release_file(client, &sums_url, SUMS_MAX_BYTES, "checksum manifest").await?;
     let sig =
         fetch_release_file(client, &sig_url, SUMS_SIG_MAX_BYTES, "checksum signature").await?;
-    verify_sha256sums_signature(&sums, &sig)?;
+    verify_sha256sums_signature(&sums, &sig).await?;
     parse_sha256sums(&String::from_utf8_lossy(&sums), asset)
         .ok_or_else(|| format!("SHA2-256SUMS has no entry for {asset}"))
 }
@@ -800,213 +787,6 @@ async fn fetch_release_file(
         .map_err(|e| format!("{label} fetch failed: {e}"))
 }
 
-struct GpgTools {
-    gpg: PathBuf,
-    gpgv: Option<PathBuf>,
-}
-
-fn resolve_gpg_tools() -> Result<GpgTools, String> {
-    let Some(gpg) = crate::deps::resolve_on_path("gpg") else {
-        return Err("GnuPG `gpg` is required to verify yt-dlp release signatures".to_owned());
-    };
-    Ok(GpgTools {
-        gpg,
-        gpgv: crate::deps::resolve_on_path("gpgv"),
-    })
-}
-
-fn verify_sha256sums_signature(sums: &[u8], signature: &[u8]) -> Result<(), String> {
-    let tools = resolve_gpg_tools()?;
-    let work = signature_work_dir()?;
-    let result = verify_sha256sums_signature_in(&tools, sums, signature, &work);
-    let _ = std::fs::remove_dir_all(&work);
-    result
-}
-
-fn signature_work_dir() -> Result<PathBuf, String> {
-    let base = signature_temp_base();
-    for attempt in 0..16u8 {
-        let dir = base.join(format!(
-            "yututui-ytdlp-gpg-{}-{}-{attempt}",
-            std::process::id(),
-            now_unix()
-        ));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {
-                safe_fs::ensure_private_dir(&dir)
-                    .map_err(|e| format!("cannot prepare signature verifier dir: {e}"))?;
-                return Ok(dir);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("cannot prepare signature verifier dir: {e}")),
-        }
-    }
-    Err("cannot allocate signature verifier temp dir".to_owned())
-}
-
-fn signature_temp_base() -> PathBuf {
-    #[cfg(unix)]
-    {
-        let tmp = PathBuf::from("/tmp");
-        if tmp.is_dir() {
-            return tmp;
-        }
-    }
-    std::env::temp_dir()
-}
-
-fn verify_sha256sums_signature_in(
-    tools: &GpgTools,
-    sums: &[u8],
-    signature: &[u8],
-    dir: &Path,
-) -> Result<(), String> {
-    let home = dir.join("gnupg-home");
-    let sums_path = dir.join("SHA2-256SUMS");
-    let sig_path = dir.join("SHA2-256SUMS.sig");
-    let key_path = dir.join("yt-dlp-public.key");
-    let keyring = "trustedkeys.kbx";
-
-    std::fs::create_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
-    safe_fs::ensure_private_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
-    std::fs::write(&sums_path, sums).map_err(|e| format!("cannot write checksum manifest: {e}"))?;
-    std::fs::write(&sig_path, signature)
-        .map_err(|e| format!("cannot write checksum signature: {e}"))?;
-    std::fs::write(&key_path, YTDLP_PUBLIC_KEY.as_bytes())
-        .map_err(|e| format!("cannot write yt-dlp public key: {e}"))?;
-    let home_arg = gpg_path_arg(tools, &home);
-    let sums_arg = gpg_path_arg(tools, &sums_path);
-    let sig_arg = gpg_path_arg(tools, &sig_path);
-    let key_arg = gpg_path_arg(tools, &key_path);
-
-    let mut import = crate::util::process::std_command(
-        &tools.gpg.to_string_lossy(),
-        crate::util::process::ProcessProfile::YtDlp,
-    );
-    import
-        .arg("--batch")
-        .arg("--quiet")
-        .arg("--homedir")
-        .arg(&home_arg)
-        .arg("--no-default-keyring")
-        .arg("--keyring")
-        .arg(keyring)
-        .arg("--import")
-        .arg(&key_arg)
-        .stdin(Stdio::null())
-        .current_dir(&home);
-    run_verifier(import, "import yt-dlp signing key")?;
-
-    if let Some(gpgv) = &tools.gpgv {
-        let mut verify = crate::util::process::std_command(
-            &gpgv.to_string_lossy(),
-            crate::util::process::ProcessProfile::YtDlp,
-        );
-        verify
-            .arg("--homedir")
-            .arg(&home_arg)
-            .arg("--keyring")
-            .arg(keyring)
-            .arg(&sig_arg)
-            .arg(&sums_arg)
-            .stdin(Stdio::null())
-            .current_dir(&home);
-        run_verifier(verify, "verify yt-dlp checksum signature")
-    } else {
-        let mut verify = crate::util::process::std_command(
-            &tools.gpg.to_string_lossy(),
-            crate::util::process::ProcessProfile::YtDlp,
-        );
-        verify
-            .arg("--batch")
-            .arg("--quiet")
-            .arg("--homedir")
-            .arg(&home_arg)
-            .arg("--no-default-keyring")
-            .arg("--keyring")
-            .arg(keyring)
-            .arg("--verify")
-            .arg(&sig_arg)
-            .arg(&sums_arg)
-            .stdin(Stdio::null())
-            .current_dir(&home);
-        run_verifier(verify, "verify yt-dlp checksum signature")
-    }
-}
-
-#[cfg(not(windows))]
-fn gpg_path_arg(_tools: &GpgTools, path: &Path) -> std::ffi::OsString {
-    path.as_os_str().to_os_string()
-}
-
-#[cfg(windows)]
-fn gpg_path_arg(tools: &GpgTools, path: &Path) -> std::ffi::OsString {
-    if !gpg_uses_msys_paths(tools) {
-        return path.as_os_str().to_os_string();
-    }
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    let bytes = normalized.as_bytes();
-    if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' && bytes[0].is_ascii_alphabetic() {
-        let drive = (bytes[0] as char).to_ascii_lowercase();
-        return format!("/{drive}/{}", &normalized[3..]).into();
-    }
-    normalized.into()
-}
-
-#[cfg(windows)]
-fn gpg_uses_msys_paths(tools: &GpgTools) -> bool {
-    let exe = tools
-        .gpg
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase();
-    exe.contains("/git/usr/bin/")
-        || exe.contains("/msys64/")
-        || exe.contains("/mingw64/")
-        || exe.contains("/mingw32/")
-}
-
-fn run_verifier(mut cmd: std::process::Command, label: &str) -> Result<(), String> {
-    use std::io::Read;
-
-    let mut child = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{label} failed to start: {e}"))?;
-    let mut stderr = child.stderr.take();
-    let start = std::time::Instant::now();
-    let status = loop {
-        match child
-            .try_wait()
-            .map_err(|e| format!("{label} failed to poll: {e}"))?
-        {
-            Some(status) => break status,
-            None if start.elapsed() >= GPG_VERIFY_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{label} timed out"));
-            }
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    };
-    let mut err = String::new();
-    if let Some(mut stderr) = stderr.take() {
-        let mut limited = stderr.by_ref().take(8 * 1024 + 1);
-        let _ = limited.read_to_string(&mut err);
-        if err.len() > 8 * 1024 {
-            err.truncate(8 * 1024);
-        }
-    }
-    if status.success() {
-        Ok(())
-    } else if err.trim().is_empty() {
-        Err(format!("{label} failed with {status}"))
-    } else {
-        Err(format!("{label} failed with {status}: {}", err.trim()))
-    }
-}
-
 /// `<64-hex>  <filename>` lines → the (lowercased) hash for `asset`.
 pub(crate) fn parse_sha256sums(sums: &str, asset: &str) -> Option<String> {
     sums.lines().find_map(|line| {
@@ -1019,7 +799,7 @@ pub(crate) fn parse_sha256sums(sums: &str, asset: &str) -> Option<String> {
 }
 
 /// Stream `url` into `<dir>/.yt-dlp.tmp-<pid>`, hashing as it goes. Returns the temp
-/// path and the hex SHA-256. The temp file is removed on any error.
+/// path and the hex SHA-256. The temp file is removed on any error or task cancellation.
 async fn download_to_temp(
     client: &reqwest::Client,
     url: &str,
@@ -1040,14 +820,10 @@ async fn download_to_temp(
         return Err(format!("download too large: {len} bytes"));
     }
 
-    let tmp = dir.join(format!(".yt-dlp.tmp-{}", std::process::id()));
-    let cleanup = |file: Option<tokio::fs::File>| {
-        drop(file);
-        let _ = std::fs::remove_file(&tmp);
-    };
-    let mut file = match tokio::fs::File::create(&tmp).await {
-        Ok(f) => f,
-        Err(e) => return Err(format!("cannot write {}: {e}", tmp.display())),
+    let tmp_path = dir.join(format!(".yt-dlp.tmp-{}", std::process::id()));
+    let mut tmp = match DownloadTemp::create(tmp_path.clone()) {
+        Ok(temp) => temp,
+        Err(e) => return Err(format!("cannot write {}: {e}", tmp_path.display())),
     };
 
     let mut hasher = Sha256::new();
@@ -1057,22 +833,17 @@ async fn download_to_temp(
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => {
-                cleanup(Some(file));
-                return Err(format!("download failed: {e}"));
-            }
+            Err(e) => return Err(format!("download failed: {e}")),
         };
         received = received.saturating_add(chunk.len() as u64);
         if received > DOWNLOAD_MAX_BYTES {
-            cleanup(Some(file));
             return Err(format!(
                 "download too large: more than {DOWNLOAD_MAX_BYTES} bytes"
             ));
         }
         hasher.update(&chunk);
-        if let Err(e) = file.write_all(&chunk).await {
-            cleanup(Some(file));
-            return Err(format!("cannot write {}: {e}", tmp.display()));
+        if let Err(e) = tmp.file_mut().write_all(&chunk).await {
+            return Err(format!("cannot write {}: {e}", tmp.path().display()));
         }
         // Throttle progress to 10% buckets so the status line isn't spammed.
         if let Some(total) = total
@@ -1088,12 +859,10 @@ async fn download_to_temp(
             }
         }
     }
-    if let Err(e) = file.sync_all().await {
-        cleanup(Some(file));
-        return Err(format!("cannot write {}: {e}", tmp.display()));
+    if let Err(e) = tmp.file_mut().sync_all().await {
+        return Err(format!("cannot write {}: {e}", tmp.path().display()));
     }
-    drop(file);
-    Ok((tmp, format!("{:x}", hasher.finalize())))
+    Ok((tmp.finish(), format!("{:x}", hasher.finalize())))
 }
 
 /// Make the verified temp file executable and atomically move it into place.
@@ -1328,13 +1097,6 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
         assert_eq!(parse_sha256sums("", "yt-dlp_linux"), None);
     }
 
-    #[test]
-    fn pinned_public_key_is_yt_dlp_signing_key() {
-        assert!(YTDLP_PUBLIC_KEY.contains("BEGIN PGP PUBLIC KEY BLOCK"));
-        assert!(YTDLP_PUBLIC_KEY.contains("tDdTaW1vbiBTYXdpY2tp"));
-        assert!(YTDLP_PUBLIC_KEY.contains("dWI0ay54eXo+"));
-    }
-
     #[tokio::test]
     async fn disabled_managed_update_reports_unavailable_without_network() {
         let cfg = ToolsConfig {
@@ -1372,24 +1134,6 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
             events.as_slice(),
             [ToolsEvent::Failed { error }] if error.contains("managed yt-dlp is disabled")
         ));
-    }
-
-    #[test]
-    fn signature_verifier_rejects_invalid_signature_when_gpg_is_available() {
-        let Ok(tools) = resolve_gpg_tools() else {
-            return;
-        };
-        let dir = signature_work_dir().unwrap();
-
-        let err =
-            verify_sha256sums_signature_in(&tools, b"not a sums file\n", b"not a signature", &dir)
-                .expect_err("invalid detached signature must be rejected");
-
-        assert!(
-            err.contains("verify yt-dlp checksum signature"),
-            "unexpected error: {err}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
@@ -1500,21 +1244,6 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
         );
         drop(held);
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn update_lock_is_exclusive() {
-        let dir = std::env::temp_dir().join(format!("ytt-lock-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let first = UpdateLock::try_acquire(&dir);
-        assert!(first.is_some());
-        assert!(
-            UpdateLock::try_acquire(&dir).is_none(),
-            "second acquire fails while the first is held"
-        );
-        drop(first);
-        assert!(UpdateLock::try_acquire(&dir).is_some(), "released on drop");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

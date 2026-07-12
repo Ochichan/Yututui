@@ -179,7 +179,8 @@ fn retro_render_scrubs_cjk_metadata_without_unsupported_cells() {
         vec![Song::remote("cjk", "한글 제목 日本語", "가수 简体", "3:00")],
         0,
     );
-    app.load_song(app.queue.current().cloned());
+    let mut load = app.load_song(app.queue.current().cloned());
+    admit_player_transition(&mut app, &mut load);
 
     let buf = render_app_buffer(&app, 80, 24);
 

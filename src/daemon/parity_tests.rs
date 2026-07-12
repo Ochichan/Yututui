@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::api::Song;
-use crate::app::{App, Msg};
+use crate::app::{App, Cmd, Msg, PlayerControl};
 use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot};
@@ -33,6 +33,7 @@ use crate::remote::proto::{
 use crate::remote::publish;
 use crate::signals::Signals;
 use crate::station::StationStore;
+use crate::util::delivery::DeliveryReceipt;
 
 use super::engine::{DaemonEngine, EngineState};
 
@@ -76,13 +77,29 @@ fn hermetic_pair() -> (App, DaemonEngine) {
     (app, engine)
 }
 
-/// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`).
+/// Admit every two-phase player intent emitted by a reducer turn, including intents emitted by
+/// an accepted commit. Other side effects remain outside this state-projection parity harness.
+fn admit_app_player_intents(app: &mut App, commands: Vec<Cmd>) {
+    let mut pending = std::collections::VecDeque::from(commands);
+    while let Some(command) = pending.pop_front() {
+        if let Cmd::PlayerControl(PlayerControl::Intent(intent)) = command {
+            pending.extend(crate::runtime::player_delivery::settle_player_intent(
+                app,
+                *intent,
+                Ok(DeliveryReceipt::Enqueued),
+            ));
+        }
+    }
+}
+
+/// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`) and
+/// deterministically model a player lane that accepts every typed intent.
 fn app_apply(app: &mut App, cmd: RemoteCommand) -> RemoteResponse {
     let (tx, mut rx) = oneshot::channel();
-    // Side-effect Cmds are deliberately dropped: parity compares state projections;
-    // effect parity (which PlayerCmds each owner emits) is an S1 extension.
-    let _cmds = app.update(Msg::Remote(cmd, tx));
-    rx.try_recv().expect("apply_remote replies synchronously")
+    let commands = app.update(Msg::Remote(cmd, tx));
+    admit_app_player_intents(app, commands);
+    rx.try_recv()
+        .expect("remote reply is ready after accepted player intents settle")
 }
 
 fn models_of(view: &publish::CoreView<'_>) -> (PlayerModel, QueueModel) {

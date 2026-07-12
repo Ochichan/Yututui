@@ -16,15 +16,20 @@ pub fn finite_or_f32(x: f32, default: f32) -> f32 {
 }
 
 pub mod art;
+pub mod background_task;
 pub mod backpressure;
 pub mod blocking;
 pub mod browser;
+pub(crate) mod command_barrier;
+pub mod delivery;
 pub mod event_policy;
 pub mod format;
 pub mod github;
 pub mod http;
 pub mod io;
 pub mod process;
+pub(crate) mod process_guard;
+pub mod process_tree;
 pub mod query;
 pub mod runtime;
 pub mod safe_fs;

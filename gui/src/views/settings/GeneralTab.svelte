@@ -33,10 +33,11 @@
   ]);
 
   let confirmingReset = $state(false);
-  function resetAll(): void {
-    settings.resetAll();
-    confirmingReset = false;
-    toasts.show('success', t('settings.general.resetDone'));
+  async function resetAll(): Promise<void> {
+    if (await settings.resetAll()) {
+      confirmingReset = false;
+      toasts.show('success', t('settings.general.resetDone'));
+    }
   }
 </script>
 
@@ -165,7 +166,9 @@
   <SettingRow label={t('settings.general.resetAll')} hint={t('settings.general.resetAllHint')}>
     {#if confirmingReset}
       <button class="mini" onclick={() => (confirmingReset = false)}>{t('common.cancel')}</button>
-      <button class="danger" onclick={resetAll}>{t('settings.general.resetAllConfirm')}</button>
+      <button class="danger" onclick={() => void resetAll()}
+        >{t('settings.general.resetAllConfirm')}</button
+      >
     {:else}
       <button class="danger" onclick={() => (confirmingReset = true)}
         >{t('settings.general.resetAllCta')}</button

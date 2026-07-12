@@ -18,20 +18,22 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
-use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::{Notify, mpsc};
 use tokio::time::timeout;
 
 use super::proto::{
     ClientFrame, ClientOp, HelloAck, HelloRequest, InstanceMode, PROTOCOL_VERSION,
     REMOTE_MAX_TOPICS, RemoteResponse, ServerFrame, Topic,
 };
+use super::requests::{CommandDeduper, RequestKey};
 use super::server::{ReadLineOutcome, RemoteEvent, read_bounded_line};
+use super::{WireSettlement, WireSettlements};
 
 /// Hard cap on concurrent sessions per owner (`sessions_full` on the next Hello).
 /// TUI + GUI + tray + tests is ≤ 4 realistic.
@@ -52,6 +54,11 @@ pub(crate) struct SessionTuning {
     pub reply_timeout: Duration,
     /// How long playback-loading `Command` frames may wait on the owner loop.
     pub playback_reply_timeout: Duration,
+    /// Upper bound for one socket frame write/flush and for writer teardown.
+    pub write_timeout: Duration,
+    /// Deterministic fault injection: hold an accepted response before its actual socket write.
+    #[cfg(test)]
+    pub wire_write_delay: Duration,
 }
 
 impl Default for SessionTuning {
@@ -62,6 +69,9 @@ impl Default for SessionTuning {
             max_queued_bytes: 8 * 1024 * 1024,
             reply_timeout: Duration::from_secs(2),
             playback_reply_timeout: Duration::from_secs(20),
+            write_timeout: Duration::from_secs(2),
+            #[cfg(test)]
+            wire_write_delay: Duration::ZERO,
         }
     }
 }
@@ -88,39 +98,260 @@ impl CloseReason {
     }
 }
 
+/// First-writer-wins cancellation shared by the connection reader and socket writer. A hub-side
+/// eviction must wake both halves even when the peer never reads or sends another byte.
+#[derive(Default)]
+struct SessionClose {
+    closed: std::sync::atomic::AtomicBool,
+    reason: Mutex<Option<CloseReason>>,
+    notify: Notify,
+}
+
+impl SessionClose {
+    fn request(&self, reason: CloseReason) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        *self.reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+        self.notify.notify_waiters();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) -> CloseReason {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(reason) = *self.reason.lock().unwrap_or_else(|e| e.into_inner()) {
+                return reason;
+            }
+            notified.await;
+        }
+    }
+}
+
 /// One outbound line: either a fully-serialized raw frame, or a push event whose
 /// payload is shared across sessions (`Arc`) with the tiny per-session envelope —
 /// `{"frame":"event","seq":N,"topic":"…","event":<payload>}` — spliced by the writer at
 /// write time. Serialize-once fan-out without a per-session payload copy.
 pub(crate) enum SessionLine {
     Raw(Vec<u8>),
+    TrackedRaw {
+        bytes: Vec<u8>,
+        _settlement: WireSettlement,
+    },
     Event {
+        #[cfg(test)]
         seq: u64,
+        #[cfg(test)]
         topic: Topic,
+        /// Exact serialized envelope prefix, built at admission so byte accounting and the
+        /// bytes written to the socket cannot drift apart as sequence/topic widths change.
+        prefix: Vec<u8>,
         payload: Arc<Vec<u8>>,
     },
 }
 
 impl SessionLine {
-    fn cost(&self) -> usize {
+    fn cost(&self) -> Option<usize> {
         match self {
-            SessionLine::Raw(bytes) => bytes.len(),
-            // Envelope overhead is ~64 bytes; close enough for the byte budget.
-            SessionLine::Event { payload, .. } => payload.len() + 64,
+            SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => Some(bytes.len()),
+            SessionLine::Event {
+                prefix, payload, ..
+            } => prefix.len().checked_add(payload.len())?.checked_add(2),
         }
+    }
+}
+
+#[derive(Debug)]
+struct OutboundBudgetState {
+    /// Whether the writer can still accept a newly admitted frame. This is cleared under the
+    /// same lock used by reservation, making close-vs-send a single ordered decision.
+    writer_alive: bool,
+    /// Includes the frame currently owned by the writer as well as frames still in the channel.
+    items: usize,
+    /// Exact newline-delimited wire bytes for every counted item, including the in-flight frame.
+    bytes: usize,
+}
+
+struct OutboundBudget {
+    state: Mutex<OutboundBudgetState>,
+    max_items: usize,
+    max_bytes: usize,
+}
+
+impl OutboundBudget {
+    fn new(max_items: usize, max_bytes: usize) -> Self {
+        Self {
+            state: Mutex::new(OutboundBudgetState {
+                writer_alive: true,
+                items: 0,
+                bytes: 0,
+            }),
+            max_items,
+            max_bytes,
+        }
+    }
+
+    /// Reserve and enqueue while holding one mutex. The writer may receive the channel item in
+    /// parallel, but it cannot release the matching reservation until this decision completes.
+    fn try_send(
+        &self,
+        line_tx: &mpsc::Sender<SessionLine>,
+        close: &SessionClose,
+        line: SessionLine,
+    ) -> bool {
+        let Some(cost) = line.cost() else {
+            return false;
+        };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.writer_alive || close.is_closed() {
+            return false;
+        }
+        let Some(next_items) = state.items.checked_add(1) else {
+            return false;
+        };
+        let Some(next_bytes) = state.bytes.checked_add(cost) else {
+            return false;
+        };
+        if next_items > self.max_items || next_bytes > self.max_bytes {
+            return false;
+        }
+        state.items = next_items;
+        state.bytes = next_bytes;
+
+        match line_tx.try_send(line) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(line))
+            | Err(mpsc::error::TrySendError::Closed(line)) => {
+                let rollback = line
+                    .cost()
+                    .expect("an admitted session line must retain a representable cost");
+                Self::release_locked(&mut state, rollback);
+                false
+            }
+        }
+    }
+
+    fn release(&self, cost: usize) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Self::release_locked(&mut state, cost);
+    }
+
+    fn release_locked(state: &mut OutboundBudgetState, cost: usize) {
+        state.items = state
+            .items
+            .checked_sub(1)
+            .expect("session item accounting underflow");
+        state.bytes = state
+            .bytes
+            .checked_sub(cost)
+            .expect("session byte accounting underflow");
+    }
+
+    /// Serialize cancellation against admission. A producer either completes its send first, or
+    /// observes `writer_alive == false`; it can never reserve against a reset counter.
+    fn request_close(&self, close: &SessionClose, reason: CloseReason) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.writer_alive = false;
+        close.request(reason);
+    }
+
+    /// Stop admission, close the channel, and release every queued reservation exactly. The
+    /// caller has already released any in-flight frame before entering this method.
+    fn finish_writer(&self, line_rx: &mut mpsc::Receiver<SessionLine>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.writer_alive = false;
+        line_rx.close();
+        while let Ok(line) = line_rx.try_recv() {
+            let cost = line
+                .cost()
+                .expect("a queued session line must retain a representable cost");
+            Self::release_locked(&mut state, cost);
+        }
+        assert_eq!(state.items, 0, "writer closed with an in-flight item");
+        assert_eq!(state.bytes, 0, "writer closed with in-flight bytes");
+    }
+
+    /// Abort-safe fallback. Dropping the receiver releases the actual frames immediately after
+    /// this guard runs; clearing the state under the admission lock prevents stale counters or a
+    /// close/reset rollback race even when the writer task itself is aborted.
+    fn force_closed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.writer_alive = false;
+        state.items = 0;
+        state.bytes = 0;
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> (bool, usize, usize) {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.writer_alive, state.items, state.bytes)
+    }
+}
+
+struct WriterBudgetGuard {
+    budget: Arc<OutboundBudget>,
+}
+
+impl Drop for WriterBudgetGuard {
+    fn drop(&mut self) {
+        self.budget.force_closed();
+    }
+}
+
+/// A connection task owns its writer. If the server aborts the connection during shutdown, do
+/// not let dropping the writer's `JoinHandle` detach a socket task from that ownership tree.
+struct WriterTask {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for WriterTask {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 
 /// One registered session as the hub sees it.
 pub(crate) struct RemoteSessionHandle {
     line_tx: mpsc::Sender<SessionLine>,
-    queued_bytes: Arc<AtomicUsize>,
+    budget: Arc<OutboundBudget>,
     subscriptions: Mutex<std::collections::HashSet<Topic>>,
+    current_page: Mutex<Option<String>>,
+    subscribe_admission: Mutex<SubscribeAdmission>,
     /// Per-session monotonic event sequence (docs/gui/02 §6).
     seq: AtomicU64,
-    /// Set on eviction: every further enqueue fails, so the reader tears down on its
-    /// next frame (worst case it lingers until the idle GC; pushes stop immediately).
-    evicted: std::sync::atomic::AtomicBool,
+    /// Wakes both socket halves immediately on eviction/shutdown.
+    close: Arc<SessionClose>,
+}
+
+#[derive(Clone, Default)]
+struct SubscribeAdmission {
+    revision: u64,
+    page_id: Option<String>,
+}
+
+struct SessionRegistry {
+    sessions: HashMap<u64, Arc<RemoteSessionHandle>>,
+    owner_admission_open: bool,
+    shutting_down: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisterError {
+    SessionsFull,
+    ShuttingDown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubscribeIngress {
+    Accepted,
+    Busy,
+    ShuttingDown,
+    StalePage,
 }
 
 /// A host-visible reference to one live session, carried inside
@@ -132,6 +363,52 @@ pub struct RemoteSessionRef {
     pub(crate) handle: Arc<RemoteSessionHandle>,
 }
 
+/// Identity and live routing handle for one session-originated command. `page_id` is optional
+/// only for compatibility with shipped protocol-v8 clients that predate page generations.
+#[derive(Clone, Debug)]
+pub struct RemoteSessionScope {
+    session: Option<RemoteSessionRef>,
+    session_id: u64,
+    page_id: Option<String>,
+}
+
+impl RemoteSessionScope {
+    pub(crate) fn new(session: RemoteSessionRef, page_id: Option<String>) -> Self {
+        Self {
+            session_id: session.session_id,
+            session: Some(session),
+            page_id,
+        }
+    }
+
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    pub fn page_id(&self) -> Option<&str> {
+        self.page_id.as_deref()
+    }
+
+    pub(crate) fn session(&self) -> Option<&RemoteSessionRef> {
+        self.session.as_ref()
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_none_or(|session| !session.handle.close.is_closed())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(session_id: u64, page_id: Option<&str>) -> Self {
+        Self {
+            session: None,
+            session_id,
+            page_id: page_id.map(str::to_owned),
+        }
+    }
+}
+
 impl std::fmt::Debug for RemoteSessionRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteSessionRef")
@@ -141,9 +418,34 @@ impl std::fmt::Debug for RemoteSessionRef {
 }
 
 impl RemoteSessionRef {
-    /// Record subscriptions, returning only the newly added topics (idempotence).
-    pub(crate) fn subscribe(&self, topics: &[Topic]) -> Vec<Topic> {
-        self.handle.subscribe(topics)
+    /// Commit a page transition only for an event accepted by the owner ingress. A rejected
+    /// event never exposes the desired page, so `server_busy` cannot advance the command generation.
+    pub(crate) fn admit_subscribe<F>(&self, page_id: Option<&str>, emit: F) -> SubscribeIngress
+    where
+        F: FnOnce() -> Option<bool>,
+    {
+        self.handle.admit_subscribe(page_id, emit)
+    }
+
+    pub(crate) fn apply_subscribe<R, F>(
+        &self,
+        page_id: Option<&str>,
+        topics: &[Topic],
+        apply: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&[Topic]) -> R,
+    {
+        self.handle.apply_subscribe(page_id, topics, apply)
+    }
+
+    pub(crate) fn unsubscribe_if_current(&self, page_id: Option<&str>, topics: &[Topic]) -> bool {
+        self.handle.unsubscribe_if_current(page_id, topics)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_for_test(&self) {
+        self.handle.request_close(CloseReason::ClientGone);
     }
 }
 
@@ -170,11 +472,28 @@ pub(crate) fn test_register(
     )
 }
 
+#[cfg(test)]
+pub(crate) fn test_register_next(
+    hub: &Arc<RemoteSessionHub>,
+) -> (RemoteSessionRef, mpsc::Receiver<SessionLine>) {
+    let (session_id, handle, rx) = hub.register().expect("test hub has room");
+    (RemoteSessionRef { session_id, handle }, rx)
+}
+
 /// The per-owner session registry. The server's accept path registers sessions here;
 /// the Publisher fans events out through [`broadcast`](Self::broadcast).
 pub struct RemoteSessionHub {
     next_id: AtomicU64,
-    sessions: Mutex<HashMap<u64, Arc<RemoteSessionHandle>>>,
+    registry: Mutex<SessionRegistry>,
+    /// Wakes the accept owner without relying on the bounded remote event lane. The registry
+    /// boolean remains the monotonic source of truth; this notification only makes waiting
+    /// prompt.
+    shutdown_notify: Notify,
+    /// Wakes the accept owner when producer admission closes without cancelling established
+    /// sessions; those writers remain alive through the wire-settlement barrier.
+    quiesce_notify: Notify,
+    settlements: WireSettlements,
+    pub(crate) requests: CommandDeduper,
     tuning: SessionTuning,
     pub(crate) owner_mode: InstanceMode,
     pub(crate) capabilities: Vec<String>,
@@ -188,50 +507,186 @@ impl RemoteSessionHub {
     ) -> Self {
         Self {
             next_id: AtomicU64::new(1),
-            sessions: Mutex::new(HashMap::new()),
+            registry: Mutex::new(SessionRegistry {
+                sessions: HashMap::new(),
+                owner_admission_open: true,
+                shutting_down: false,
+            }),
+            shutdown_notify: Notify::new(),
+            quiesce_notify: Notify::new(),
+            settlements: WireSettlements::default(),
+            requests: CommandDeduper::default(),
             tuning,
             owner_mode,
             capabilities,
         }
     }
 
-    pub(crate) fn register(
+    fn register(
         &self,
-    ) -> Option<(u64, Arc<RemoteSessionHandle>, mpsc::Receiver<SessionLine>)> {
-        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        if sessions.len() >= MAX_SESSIONS {
-            return None;
+    ) -> Result<(u64, Arc<RemoteSessionHandle>, mpsc::Receiver<SessionLine>), RegisterError> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.shutting_down || !registry.owner_admission_open {
+            return Err(RegisterError::ShuttingDown);
         }
-        // +1 as a best-effort goodbye reserve: pushes may consume it under sustained
-        // overflow (the goodbye is then dropped — eviction itself never depends on it).
-        let (line_tx, line_rx) = mpsc::channel(self.tuning.max_queued_items + 1);
+        if registry.sessions.len() >= MAX_SESSIONS {
+            return Err(RegisterError::SessionsFull);
+        }
+        let (line_tx, line_rx) = mpsc::channel(self.tuning.max_queued_items.max(1));
         let handle = Arc::new(RemoteSessionHandle {
             line_tx,
-            queued_bytes: Arc::new(AtomicUsize::new(0)),
+            budget: Arc::new(OutboundBudget::new(
+                self.tuning.max_queued_items,
+                self.tuning.max_queued_bytes,
+            )),
             subscriptions: Mutex::new(std::collections::HashSet::new()),
+            current_page: Mutex::new(None),
+            subscribe_admission: Mutex::new(SubscribeAdmission::default()),
             seq: AtomicU64::new(0),
-            evicted: std::sync::atomic::AtomicBool::new(false),
+            close: Arc::new(SessionClose::default()),
         });
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        sessions.insert(id, Arc::clone(&handle));
-        Some((id, handle, line_rx))
+        // Session identity is retained by bounded value-only indexes after a socket closes.
+        // Never wrap the allocator: reusing `0` after `u64::MAX` could make a stale key alias a
+        // later session. Exhaustion maps onto the existing admission-safe `sessions_full` path.
+        let id = self
+            .next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .map_err(|_| RegisterError::SessionsFull)?;
+        registry.sessions.insert(id, Arc::clone(&handle));
+        Ok((id, handle, line_rx))
     }
 
     fn unregister(&self, id: u64) {
-        self.sessions
+        self.registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .sessions
             .remove(&id);
     }
 
     /// Whether any live session subscribes to `topic` — lets the Publisher skip building
     /// a model nobody would receive.
     pub(crate) fn any_subscribed(&self, topic: Topic) -> bool {
-        self.sessions
+        self.registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .sessions
             .values()
             .any(|handle| handle.subscribed(topic))
+    }
+
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutting_down
+    }
+
+    pub(crate) fn owner_admission_is_open(&self) -> bool {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry.owner_admission_open && !registry.shutting_down
+    }
+
+    /// Monotonically stop new connections and owner events while preserving established socket
+    /// tasks. Token creation uses this same registry lock, so no settlement can begin after this
+    /// method returns.
+    pub(crate) fn quiesce_owner_admission(&self) -> bool {
+        let changed = {
+            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let changed = registry.owner_admission_open;
+            registry.owner_admission_open = false;
+            changed
+        };
+        if changed {
+            self.quiesce_notify.notify_waiters();
+        }
+        changed
+    }
+
+    pub(crate) async fn wait_for_owner_quiesce(&self) {
+        loop {
+            let notified = self.quiesce_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.owner_admission_is_open() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Wait for the monotonic shutdown latch without losing a notification between the state
+    /// check and waiter registration.
+    pub(crate) async fn wait_for_shutdown(&self) {
+        loop {
+            let notified = self.shutdown_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_shutting_down() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Linearize a non-blocking action against the shutdown latch. Holding the registry lock
+    /// means the action either happens before shutdown begins or is rejected after the latch.
+    #[cfg(test)]
+    pub(crate) fn run_if_running<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        (!registry.shutting_down).then(action)
+    }
+
+    pub(crate) fn run_if_owner_admission_open<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        (registry.owner_admission_open && !registry.shutting_down).then(action)
+    }
+
+    /// Linearize one owner-event attempt and its wire token against quiesce. The action either
+    /// returns a token created under this lock or observes the closed admission frontier.
+    pub(crate) fn admit_tracked<T>(&self, action: impl FnOnce(WireSettlement) -> T) -> Option<T> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if registry.shutting_down || !registry.owner_admission_open {
+            return None;
+        }
+        Some(action(self.settlements.begin()))
+    }
+
+    /// Admit an untracked owner event only while the pre-shutdown frontier is open. Kept for
+    /// tests and validation-only paths; requests with wire replies use `admit_tracked`.
+    #[cfg(test)]
+    pub(crate) fn emit_if_running(&self, emit: impl FnOnce() -> bool) -> bool {
+        self.run_if_owner_admission_open(emit).unwrap_or(false)
+    }
+
+    pub(crate) async fn wait_for_wire_settlements(&self) -> bool {
+        let budget = self
+            .tuning
+            .write_timeout
+            .max(super::RESPONSE_WRITE_TIMEOUT)
+            .saturating_add(Duration::from_millis(250));
+        let settled = self.settlements.wait_for_idle(budget).await;
+        if !settled {
+            let active = self.settlements.active();
+            tracing::warn!(
+                active,
+                ?budget,
+                "remote shutdown timed out waiting for accepted replies to flush"
+            );
+        }
+        settled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_wire_settlements(&self) -> usize {
+        self.settlements.active()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wire_write_delay(&self) -> Duration {
+        self.tuning.wire_write_delay
     }
 
     /// Fan one pre-serialized push payload out to every session subscribed to `topic`.
@@ -239,15 +694,16 @@ impl RemoteSessionHub {
     /// owner loop never blocks on a wedged client.
     pub(crate) fn broadcast(&self, topic: Topic, payload: &Arc<Vec<u8>>) {
         let subscribed: Vec<(u64, Arc<RemoteSessionHandle>)> = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions
+            let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            registry
+                .sessions
                 .iter()
                 .filter(|(_, handle)| handle.subscribed(topic))
                 .map(|(id, handle)| (*id, Arc::clone(handle)))
                 .collect()
         };
         for (id, handle) in subscribed {
-            if !handle.push_event(topic, payload, self.tuning.max_queued_bytes) {
+            if !handle.push_event(topic, payload) {
                 self.evict(id, &handle);
             }
         }
@@ -261,14 +717,43 @@ impl RemoteSessionHub {
         topic: Topic,
         payload: &Arc<Vec<u8>>,
     ) -> bool {
-        if session
-            .handle
-            .push_event(topic, payload, self.tuning.max_queued_bytes)
-        {
+        if session.handle.push_event(topic, payload) {
             true
         } else {
             self.evict(session.session_id, &session.handle);
             false
+        }
+    }
+
+    /// Target a live session only while it still owns the topic subscription. A stale
+    /// `RemoteSessionRef` retained by asynchronous work cannot publish into a replacement.
+    pub(crate) fn send_event_to_subscriber(
+        &self,
+        session: &RemoteSessionRef,
+        page_id: Option<&str>,
+        topic: Topic,
+        payload: &Arc<Vec<u8>>,
+    ) -> bool {
+        let live = self
+            .registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sessions
+            .get(&session.session_id)
+            .is_some_and(|handle| Arc::ptr_eq(handle, &session.handle));
+        if !live {
+            return false;
+        }
+        match session
+            .handle
+            .push_event_to_subscriber(page_id, topic, payload)
+        {
+            None => false,
+            Some(true) => true,
+            Some(false) => {
+                self.evict(session.session_id, &session.handle);
+                false
+            }
         }
     }
 
@@ -277,10 +762,26 @@ impl RemoteSessionHub {
         if session
             .handle
             .try_send_line(SessionLine::Raw(frame_line(frame)))
-            && !session
-                .handle
-                .over_byte_budget(self.tuning.max_queued_bytes)
         {
+            true
+        } else {
+            self.evict(session.session_id, &session.handle);
+            false
+        }
+    }
+
+    /// Enqueue the final frame for one owner-accepted request. The settlement token stays inside
+    /// the FIFO item until the writer flushes it (or proves the peer/write is gone).
+    pub(crate) fn send_tracked_raw_to(
+        &self,
+        session: &RemoteSessionRef,
+        frame: &ServerFrame,
+        settlement: WireSettlement,
+    ) -> bool {
+        if session.handle.try_send_line(SessionLine::TrackedRaw {
+            bytes: frame_line(frame),
+            _settlement: settlement,
+        }) {
             true
         } else {
             self.evict(session.session_id, &session.handle);
@@ -291,36 +792,38 @@ impl RemoteSessionHub {
     /// Broadcast a goodbye to every live session and drop them — the owner is exiting.
     /// Best-effort: full queues just close without the goodbye.
     pub(crate) fn shutdown_all(&self) {
-        let all: Vec<Arc<RemoteSessionHandle>> = {
-            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let drained = sessions.values().cloned().collect();
-            sessions.clear();
-            drained
+        let (all, first_shutdown): (Vec<Arc<RemoteSessionHandle>>, bool) = {
+            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let first_shutdown = !registry.shutting_down;
+            registry.owner_admission_open = false;
+            registry.shutting_down = true;
+            let drained = registry.sessions.values().cloned().collect();
+            registry.sessions.clear();
+            (drained, first_shutdown)
         };
         for handle in all {
-            let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
-                reason: "shutting_down".to_string(),
-            })));
-            handle.evicted.store(true, Ordering::Relaxed);
+            handle.request_close(CloseReason::ShuttingDown);
+        }
+        if first_shutdown {
+            self.quiesce_notify.notify_waiters();
+            self.shutdown_notify.notify_waiters();
         }
     }
 
-    /// Evict one session: best-effort goodbye through the reserve slot, then remove it
-    /// from the registry. Its reader notices on the next frame (its replies stop
-    /// enqueueing) and tears the connection down.
+    /// Evict one session and remove it from the registry. Cancellation wakes a blocked reader
+    /// and interrupts a blocked writer; the writer sends the goodbye directly within its own
+    /// deadline, outside the user-frame queue.
     fn evict(&self, id: u64, handle: &RemoteSessionHandle) {
-        let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
-            reason: "slow_consumer".to_string(),
-        })));
-        handle.evicted.store(true, Ordering::Relaxed);
+        handle.request_close(CloseReason::SlowConsumer);
         self.unregister(id);
     }
 
     #[cfg(test)]
-    fn active(&self) -> usize {
-        self.sessions
+    pub(crate) fn active(&self) -> usize {
+        self.registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .sessions
             .len()
     }
 }
@@ -329,32 +832,56 @@ impl RemoteSessionHandle {
     /// Enqueue one outbound line. `false` means the session was evicted, the item
     /// budget tripped, or the writer is gone — the caller must treat it as dead.
     fn try_send_line(&self, line: SessionLine) -> bool {
-        if self.evicted.load(Ordering::Relaxed) {
-            return false;
-        }
-        // (Ordering is Relaxed: the counter is advisory backpressure, not a lock.)
-        self.queued_bytes.fetch_add(line.cost(), Ordering::Relaxed);
-        match self.line_tx.try_send(line) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(line))
-            | Err(mpsc::error::TrySendError::Closed(line)) => {
-                self.queued_bytes.fetch_sub(line.cost(), Ordering::Relaxed);
-                false
-            }
-        }
+        self.budget.try_send(&self.line_tx, &self.close, line)
     }
 
     /// Enqueue one push event with the next per-session `seq`; `false` on budget trip.
-    fn push_event(&self, topic: Topic, payload: &Arc<Vec<u8>>, max_bytes: usize) -> bool {
-        if self.over_byte_budget(max_bytes) {
-            return false;
-        }
+    fn push_event(&self, topic: Topic, payload: &Arc<Vec<u8>>) -> bool {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let prefix = format!(
+            "{{\"frame\":\"event\",\"seq\":{seq},\"topic\":\"{}\",\"event\":",
+            topic.wire_str()
+        )
+        .into_bytes();
         self.try_send_line(SessionLine::Event {
+            #[cfg(test)]
             seq,
+            #[cfg(test)]
             topic,
+            prefix,
             payload: Arc::clone(payload),
         })
+    }
+
+    /// Check the topic/page generations and enqueue while holding both generation locks. This
+    /// prevents a reader-thread page replacement or unsubscribe from racing between validation
+    /// and the targeted push. `None` is a generation mismatch; `Some(false)` is overflow/close.
+    fn push_event_to_subscriber(
+        &self,
+        page_id: Option<&str>,
+        topic: Topic,
+        payload: &Arc<Vec<u8>>,
+    ) -> Option<bool> {
+        let subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        if !subscriptions.contains(&topic) {
+            return None;
+        }
+        let current_page = self.current_page.lock().unwrap_or_else(|e| e.into_inner());
+        if current_page.as_deref() != page_id {
+            return None;
+        }
+        let admission = self
+            .subscribe_admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if admission.page_id.as_deref() != page_id {
+            return None;
+        }
+        Some(self.push_event(topic, payload))
+    }
+
+    fn request_close(&self, reason: CloseReason) {
+        self.budget.request_close(&self.close, reason);
     }
 
     pub(crate) fn subscribed(&self, topic: Topic) -> bool {
@@ -364,19 +891,103 @@ impl RemoteSessionHandle {
             .contains(&topic)
     }
 
-    /// Record subscriptions, returning the topics that were newly added (idempotence:
-    /// duplicates produce no second snapshot stream).
+    #[cfg(test)]
     pub(crate) fn subscribe(&self, topics: &[Topic]) -> Vec<Topic> {
-        let mut subs = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
         topics
             .iter()
             .copied()
-            .filter(|topic| subs.insert(*topic))
+            .filter(|topic| subscriptions.insert(*topic))
             .collect()
     }
 
-    fn over_byte_budget(&self, max_bytes: usize) -> bool {
-        self.queued_bytes.load(Ordering::Relaxed) > max_bytes
+    fn admit_subscribe<F>(&self, page_id: Option<&str>, emit: F) -> SubscribeIngress
+    where
+        F: FnOnce() -> Option<bool>,
+    {
+        // The event sink is a synchronous, non-blocking ingress attempt. Keep the admission lock
+        // through that linearization point: an owner concurrently applying an older accepted
+        // event must not observe a provisional page that a saturated newer send will roll back.
+        let mut admission = self
+            .subscribe_admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if page_id.is_none() && admission.page_id.is_some() {
+            return SubscribeIngress::StalePage;
+        }
+        let Some(revision) = admission.revision.checked_add(1) else {
+            return SubscribeIngress::Busy;
+        };
+        let result = emit();
+        if result == Some(true) {
+            admission.revision = revision;
+            if let Some(page_id) = page_id {
+                admission.page_id = Some(page_id.to_owned());
+            }
+        }
+        match result {
+            Some(true) => SubscribeIngress::Accepted,
+            Some(false) => SubscribeIngress::Busy,
+            None => SubscribeIngress::ShuttingDown,
+        }
+    }
+
+    /// Apply a subscribe event as one page-generation transaction. The lock order matches
+    /// targeted pushes: subscriptions, then applied page, then admitted page. Holding all three
+    /// through the callback makes page validation, topic insertion, initial snapshots, and the
+    /// final reply indivisible with respect to a newer page admission or unsubscribe.
+    fn apply_subscribe<R, F>(&self, page_id: Option<&str>, topics: &[Topic], apply: F) -> Option<R>
+    where
+        F: FnOnce(&[Topic]) -> R,
+    {
+        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current_page = self.current_page.lock().unwrap_or_else(|e| e.into_inner());
+        let admission = self
+            .subscribe_admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if admission.page_id.as_deref() != page_id {
+            return None;
+        }
+        match page_id {
+            Some(page_id) if current_page.as_deref() != Some(page_id) => {
+                subscriptions.clear();
+                *current_page = Some(page_id.to_owned());
+            }
+            None if current_page.is_some() => return None,
+            _ => {}
+        }
+        let newly_added = topics
+            .iter()
+            .copied()
+            .filter(|topic| subscriptions.insert(*topic))
+            .collect::<Vec<_>>();
+        Some(apply(&newly_added))
+    }
+
+    fn unsubscribe_if_current(&self, page_id: Option<&str>, topics: &[Topic]) -> bool {
+        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let current_page = self.current_page.lock().unwrap_or_else(|e| e.into_inner());
+        let admission = self
+            .subscribe_admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if current_page.as_deref() != page_id || admission.page_id.as_deref() != page_id {
+            return false;
+        }
+        for topic in topics {
+            subscriptions.remove(topic);
+        }
+        true
+    }
+
+    fn page_is_current(&self, page_id: Option<&str>) -> bool {
+        self.subscribe_admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .page_id
+            .as_deref()
+            == page_id
     }
 }
 
@@ -386,6 +997,94 @@ fn frame_line(frame: &ServerFrame) -> Vec<u8> {
         .unwrap_or_else(|_| br#"{"frame":"goodbye","reason":"shutting_down"}"#.to_vec());
     bytes.push(b'\n');
     bytes
+}
+
+async fn write_session_line<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    line: &SessionLine,
+) -> io::Result<()> {
+    match line {
+        SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => {
+            writer.write_all(bytes).await?
+        }
+        SessionLine::Event {
+            prefix, payload, ..
+        } => {
+            writer.write_all(prefix).await?;
+            writer.write_all(payload).await?;
+            writer.write_all(b"}\n").await?;
+        }
+    }
+    writer.flush().await
+}
+
+async fn run_session_writer<W: AsyncWrite + Unpin>(
+    mut writer: W,
+    mut line_rx: mpsc::Receiver<SessionLine>,
+    budget: Arc<OutboundBudget>,
+    close: Arc<SessionClose>,
+    write_timeout: Duration,
+    #[cfg(test)] wire_write_delay: Duration,
+) {
+    let _budget_guard = WriterBudgetGuard {
+        budget: Arc::clone(&budget),
+    };
+    let mut final_reason = None;
+    let mut goodbye_is_frame_safe = true;
+    loop {
+        let next = tokio::select! {
+            biased;
+            reason = close.cancelled() => Err(reason),
+            line = line_rx.recv() => Ok(line),
+        };
+        let Some(line) = (match next {
+            Ok(line) => line,
+            Err(reason) => {
+                final_reason = Some(reason);
+                break;
+            }
+        }) else {
+            break;
+        };
+
+        let cost = line
+            .cost()
+            .expect("an admitted session line must retain a representable cost");
+        #[cfg(test)]
+        if !wire_write_delay.is_zero() {
+            tokio::time::sleep(wire_write_delay).await;
+        }
+        let outcome = tokio::select! {
+            biased;
+            reason = close.cancelled() => Err(reason),
+            result = timeout(write_timeout, write_session_line(&mut writer, &line)) => Ok(result),
+        };
+        budget.release(cost);
+        match outcome {
+            Err(reason) => {
+                // Cancelling `write_all` may leave an arbitrary prefix on the stream. Appending a
+                // Goodbye would concatenate two JSON objects into one corrupt line, so close the
+                // socket without another frame whenever cancellation raced an in-flight write.
+                goodbye_is_frame_safe = false;
+                final_reason = Some(reason);
+                break;
+            }
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(_)) | Err(_)) => {
+                budget.request_close(&close, CloseReason::ClientGone);
+                break;
+            }
+        }
+    }
+
+    budget.finish_writer(&mut line_rx);
+    if goodbye_is_frame_safe && let Some(reason) = final_reason.and_then(CloseReason::goodbye) {
+        let goodbye = SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
+            reason: reason.to_string(),
+        }));
+        let _ = timeout(write_timeout, write_session_line(&mut writer, &goodbye)).await;
+    }
+    let _ = timeout(write_timeout, writer.shutdown()).await;
 }
 
 /// Run one accepted session connection to completion. `conn` has already consumed its
@@ -402,6 +1101,7 @@ pub(crate) async fn run_session(
     emit: Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>,
 ) -> io::Result<()> {
     let (read_half, mut write_half) = tokio::io::split(conn);
+    let tuning = hub.tuning;
 
     // --- Handshake: validate, then ack (the ack is written directly — the writer task
     // only exists for accepted sessions).
@@ -425,12 +1125,29 @@ pub(crate) async fn run_session(
         None
     };
     if let Some(ack) = ack {
-        write_ack(&mut write_half, &ack).await?;
+        write_ack(&mut write_half, &ack, tuning.write_timeout).await?;
         return Ok(());
     }
-    let Some((session_id, handle, mut line_rx)) = hub.register() else {
-        write_ack(&mut write_half, &reject("sessions_full")).await?;
-        return Ok(());
+    let (session_id, handle, line_rx) = match hub.register() {
+        Ok(registered) => registered,
+        Err(RegisterError::SessionsFull) => {
+            write_ack(
+                &mut write_half,
+                &reject("sessions_full"),
+                tuning.write_timeout,
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(RegisterError::ShuttingDown) => {
+            write_ack(
+                &mut write_half,
+                &reject("shutting_down"),
+                tuning.write_timeout,
+            )
+            .await?;
+            return Ok(());
+        }
     };
     let ack = HelloAck {
         ok: true,
@@ -440,51 +1157,51 @@ pub(crate) async fn run_session(
         owner_mode: hub.owner_mode,
         reason: None,
     };
-    if write_ack(&mut write_half, &ack).await.is_err() {
+    if write_ack(&mut write_half, &ack, tuning.write_timeout)
+        .await
+        .is_err()
+    {
+        handle.request_close(CloseReason::ClientGone);
         hub.unregister(session_id);
         return Ok(());
     }
 
     // --- Writer task: drains the outbound queue to the socket, splicing the tiny event
-    // envelope around shared payloads at write time (serialize-once fan-out). Ends when
-    // the channel closes (reader side dropped every sender) or the socket dies.
-    let queued_bytes = Arc::clone(&handle.queued_bytes);
-    let writer = tokio::spawn(async move {
-        while let Some(line) = line_rx.recv().await {
-            queued_bytes.fetch_sub(line.cost(), Ordering::Relaxed);
-            let ok = match line {
-                SessionLine::Raw(bytes) => write_half.write_all(&bytes).await.is_ok(),
-                SessionLine::Event {
-                    seq,
-                    topic,
-                    payload,
-                } => {
-                    let prefix = format!(
-                        "{{\"frame\":\"event\",\"seq\":{seq},\"topic\":\"{}\",\"event\":",
-                        topic.wire_str()
-                    );
-                    write_half.write_all(prefix.as_bytes()).await.is_ok()
-                        && write_half.write_all(&payload).await.is_ok()
-                        && write_half.write_all(b"}\n").await.is_ok()
-                }
-            };
-            if !ok || write_half.flush().await.is_err() {
-                break;
-            }
-        }
-        let _ = write_half.shutdown().await;
-    });
+    // envelope around shared payloads at write time (serialize-once fan-out). Every write and
+    // flush is deadline-bounded, and hub cancellation interrupts an in-flight write.
+    let budget = Arc::clone(&handle.budget);
+    let writer_close = Arc::clone(&handle.close);
+    let mut writer = WriterTask {
+        handle: tokio::spawn(run_session_writer(
+            write_half,
+            line_rx,
+            budget,
+            writer_close,
+            tuning.write_timeout,
+            #[cfg(test)]
+            tuning.wire_write_delay,
+        )),
+    };
 
     // --- Reader loop: one ClientFrame line per iteration, idle-GC'd.
     let mut reader = BufReader::new(read_half);
-    let tuning = hub.tuning;
     let close_reason = loop {
+        // Quiesce stops new owner work but must not close this writer: it may still own a tracked
+        // reply accepted on the preceding turn. Full hub shutdown wakes this wait after the wire
+        // barrier has observed that reply's flush.
+        if !hub.owner_admission_is_open() {
+            hub.wait_for_shutdown().await;
+            break CloseReason::ShuttingDown;
+        }
         let mut line = Vec::new();
-        let read = timeout(
-            tuning.idle_timeout,
-            read_bounded_line(&mut reader, &mut line, SESSION_MAX_FRAME_BYTES),
-        )
-        .await;
+        let read = tokio::select! {
+            biased;
+            reason = handle.close.cancelled() => break reason,
+            read = timeout(
+                tuning.idle_timeout,
+                read_bounded_line(&mut reader, &mut line, SESSION_MAX_FRAME_BYTES),
+            ) => read,
+        };
         let frame: ClientFrame = match read {
             Err(_) => break CloseReason::IdleTimeout,
             Ok(Err(_)) => break CloseReason::ClientGone,
@@ -499,18 +1216,36 @@ pub(crate) async fn run_session(
                 }
             }
         };
+        if hub.is_shutting_down() {
+            break CloseReason::ShuttingDown;
+        }
 
-        let reply = match frame.op {
+        let ClientFrame {
+            id: frame_id,
+            request_id,
+            page_id,
+            op,
+        } = frame;
+        let mut reply_settlement = None;
+        let reply = match op {
             // Pings never touch the owner loop: answered right here.
-            ClientOp::Ping => Some(ServerFrame::Pong { id: frame.id }),
+            ClientOp::Ping => Some(ServerFrame::Pong { id: frame_id }),
             // Subscribe runs on the owner loop (docs/gui/02 §8): the Publisher records
             // the subscriptions, emits one initial snapshot per newly subscribed topic,
             // and only then enqueues the Reply — all into this session's queue, so the
             // snapshot-before-Reply order is structural, not raced.
             ClientOp::Subscribe { topics } => {
-                if topics.len() > REMOTE_MAX_TOPICS {
+                if page_id
+                    .as_deref()
+                    .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
+                {
                     Some(ServerFrame::Reply {
-                        id: frame.id,
+                        id: frame_id,
+                        resp: RemoteResponse::err("bad_page_id"),
+                    })
+                } else if topics.len() > REMOTE_MAX_TOPICS {
+                    Some(ServerFrame::Reply {
+                        id: frame_id,
                         resp: RemoteResponse::err("too_many_topics"),
                     })
                 } else {
@@ -518,181 +1253,197 @@ pub(crate) async fn run_session(
                         session_id,
                         handle: Arc::clone(&handle),
                     };
-                    if !emit(RemoteEvent::SessionSubscribe {
-                        session,
-                        frame_id: frame.id,
-                        topics,
+                    let event_page_id = page_id.clone();
+                    match session.admit_subscribe(page_id.as_deref(), || {
+                        hub.admit_tracked(|settlement| {
+                            emit(RemoteEvent::SessionSubscribe {
+                                session: session.clone(),
+                                frame_id,
+                                page_id: event_page_id,
+                                topics,
+                                settlement,
+                            })
+                        })
                     }) {
-                        break CloseReason::ShuttingDown;
+                        SubscribeIngress::Accepted => None,
+                        SubscribeIngress::Busy => Some(ServerFrame::Reply {
+                            id: frame_id,
+                            resp: RemoteResponse::err("server_busy"),
+                        }),
+                        SubscribeIngress::StalePage => Some(ServerFrame::Reply {
+                            id: frame_id,
+                            resp: RemoteResponse::err("stale_page"),
+                        }),
+                        SubscribeIngress::ShuttingDown => Some(ServerFrame::Reply {
+                            id: frame_id,
+                            resp: RemoteResponse::err("shutting_down"),
+                        }),
                     }
-                    None
                 }
             }
             ClientOp::Unsubscribe { topics } => {
-                if topics.len() > REMOTE_MAX_TOPICS {
+                if page_id
+                    .as_deref()
+                    .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
+                {
                     Some(ServerFrame::Reply {
-                        id: frame.id,
+                        id: frame_id,
+                        resp: RemoteResponse::err("bad_page_id"),
+                    })
+                } else if topics.len() > REMOTE_MAX_TOPICS {
+                    Some(ServerFrame::Reply {
+                        id: frame_id,
                         resp: RemoteResponse::err("too_many_topics"),
                     })
                 } else {
-                    let mut subs = handle
-                        .subscriptions
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    for topic in topics {
-                        subs.remove(&topic);
+                    let session = RemoteSessionRef {
+                        session_id,
+                        handle: Arc::clone(&handle),
+                    };
+                    if session.unsubscribe_if_current(page_id.as_deref(), &topics) {
+                        Some(ServerFrame::Reply {
+                            id: frame_id,
+                            resp: RemoteResponse::ok("unsubscribed".to_string()),
+                        })
+                    } else {
+                        Some(ServerFrame::Reply {
+                            id: frame_id,
+                            resp: RemoteResponse::err("stale_page"),
+                        })
                     }
-                    drop(subs);
-                    Some(ServerFrame::Reply {
-                        id: frame.id,
-                        resp: RemoteResponse::ok("unsubscribed".to_string()),
-                    })
                 }
             }
             ClientOp::Command(command) => {
-                if let Err(err) = command.validate() {
+                if page_id
+                    .as_deref()
+                    .is_some_and(|page_id| !super::requests::valid_page_id(page_id))
+                {
                     Some(ServerFrame::Reply {
-                        id: frame.id,
+                        id: frame_id,
+                        resp: RemoteResponse::err("bad_page_id"),
+                    })
+                } else if !handle.page_is_current(page_id.as_deref()) {
+                    Some(ServerFrame::Reply {
+                        id: frame_id,
+                        resp: RemoteResponse::err("stale_page"),
+                    })
+                } else if let Err(err) = command.validate() {
+                    Some(ServerFrame::Reply {
+                        id: frame_id,
                         resp: RemoteResponse::err(err.reason()),
                     })
                 } else {
+                    let origin = RemoteSessionScope::new(
+                        RemoteSessionRef {
+                            session_id,
+                            handle: Arc::clone(&handle),
+                        },
+                        page_id,
+                    );
                     let reply_timeout = if super::reply_timeout_for(&command) > tuning.reply_timeout
                     {
                         tuning.playback_reply_timeout
                     } else {
                         tuning.reply_timeout
                     };
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    let resp = if emit(RemoteEvent::Command(command, reply_tx)) {
-                        match timeout(reply_timeout, reply_rx).await {
-                            Ok(Ok(resp)) => resp,
-                            _ => RemoteResponse::err("timeout"),
+                    let request_key = if let Some(request_id) = request_id {
+                        RequestKey::stable(request_id)
+                    } else {
+                        Some(RequestKey::Session {
+                            session_id,
+                            frame_id,
+                        })
+                    };
+                    let resp = if let Some(request_key) = request_key {
+                        if let Some(settlement) = hub.admit_tracked(std::convert::identity) {
+                            reply_settlement = Some(settlement);
+                            let owner_command = command.clone();
+                            let owner_origin = origin.clone();
+                            let hub_for_admission = Arc::clone(&hub);
+                            let emit_for_admission = Arc::clone(&emit);
+                            let execution = hub.requests.execute(
+                                request_key,
+                                &command,
+                                reply_timeout,
+                                move |reply| {
+                                    hub_for_admission
+                                        .run_if_owner_admission_open(|| {
+                                            emit_for_admission(RemoteEvent::SessionCommand {
+                                                command: owner_command,
+                                                origin: owner_origin,
+                                                reply,
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                                },
+                            );
+                            tokio::pin!(execution);
+                            tokio::select! {
+                                biased;
+                                reason = handle.close.cancelled() => break reason,
+                                resp = &mut execution => resp,
+                            }
+                        } else {
+                            RemoteResponse::err("shutting_down")
                         }
                     } else {
-                        RemoteResponse::err("server_busy")
+                        RemoteResponse::err("bad_request_id")
                     };
-                    Some(ServerFrame::Reply { id: frame.id, resp })
+                    Some(ServerFrame::Reply { id: frame_id, resp })
                 }
             }
         };
 
-        if let Some(reply) = reply
-            && (!handle.try_send_line(SessionLine::Raw(frame_line(&reply)))
-                || handle.over_byte_budget(tuning.max_queued_bytes))
-        {
-            break CloseReason::SlowConsumer;
+        if let Some(reply) = reply {
+            let line = match reply_settlement.take() {
+                Some(settlement) => SessionLine::TrackedRaw {
+                    bytes: frame_line(&reply),
+                    _settlement: settlement,
+                },
+                None => SessionLine::Raw(frame_line(&reply)),
+            };
+            if !handle.try_send_line(line) {
+                break CloseReason::SlowConsumer;
+            }
         }
     };
 
-    // --- Teardown: best-effort goodbye through the reserved queue slot, then close the
-    // outbound lane so the writer drains and exits.
-    if let Some(reason) = close_reason.goodbye() {
-        let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
-            reason: reason.to_string(),
-        })));
-    }
+    // --- Teardown: signal both socket halves. The writer emits a best-effort goodbye directly,
+    // then exits within the write deadline even if this peer never reads.
+    handle.request_close(close_reason);
     hub.unregister(session_id);
     drop(handle);
-    let _ = writer.await;
+    if timeout(tuning.write_timeout.saturating_mul(3), &mut writer.handle)
+        .await
+        .is_err()
+    {
+        writer.handle.abort();
+        let _ = (&mut writer.handle).await;
+    }
     Ok(())
 }
 
 async fn write_ack<W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
     ack: &HelloAck,
+    write_timeout: Duration,
 ) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(ack).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
     bytes.push(b'\n');
-    write.write_all(&bytes).await?;
-    write.flush().await
+    match timeout(write_timeout, async {
+        write.write_all(&bytes).await?;
+        write.flush().await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "remote Hello Ack write timed out",
+        )),
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hub(tuning: SessionTuning) -> RemoteSessionHub {
-        RemoteSessionHub::new(
-            InstanceMode::StandaloneTui,
-            vec!["events-v8".to_string()],
-            tuning,
-        )
-    }
-
-    #[test]
-    fn registry_caps_sessions_and_frees_slots() {
-        let hub = hub(SessionTuning::default());
-        let mut held = Vec::new();
-        for _ in 0..MAX_SESSIONS {
-            held.push(hub.register().expect("under the cap"));
-        }
-        assert!(hub.register().is_none(), "9th session must be rejected");
-        let (id, _, _) = held.pop().unwrap();
-        hub.unregister(id);
-        assert!(hub.register().is_some(), "slot frees on unregister");
-        assert_eq!(hub.active(), MAX_SESSIONS);
-    }
-
-    #[test]
-    fn outbound_queue_trips_on_items_and_bytes() {
-        let tuning = SessionTuning {
-            max_queued_items: 2,
-            max_queued_bytes: 64,
-            ..SessionTuning::default()
-        };
-        let hub = hub(tuning);
-        let (_, handle, _rx) = hub.register().unwrap();
-
-        let raw = |n: usize| SessionLine::Raw(vec![b'a'; n]);
-
-        // Item cap: capacity is max_queued_items + 1 (goodbye reserve); the reserve slot
-        // still accepts, then the queue is full.
-        assert!(handle.try_send_line(raw(8)));
-        assert!(handle.try_send_line(raw(8)));
-        assert!(handle.try_send_line(raw(8)), "goodbye reserve slot");
-        assert!(!handle.try_send_line(raw(8)), "item cap trips");
-
-        // Byte budget: a fresh session with a fat line crosses max_queued_bytes and the
-        // caller-visible check reports it even though the item queue accepted it.
-        let (_, fat, _rx2) = hub.register().unwrap();
-        assert!(fat.try_send_line(raw(65)));
-        assert!(fat.over_byte_budget(tuning.max_queued_bytes));
-    }
-
-    #[test]
-    fn broadcast_reaches_only_subscribers_with_per_session_seq_and_evicts_overflow() {
-        let tuning = SessionTuning {
-            max_queued_items: 2,
-            max_queued_bytes: 1024,
-            ..SessionTuning::default()
-        };
-        let hub = hub(tuning);
-        let (_, sub, mut sub_rx) = hub.register().unwrap();
-        let (_, other, mut other_rx) = hub.register().unwrap();
-        assert_eq!(sub.subscribe(&[Topic::Player]), vec![Topic::Player]);
-        assert!(sub.subscribe(&[Topic::Player]).is_empty(), "idempotent");
-        other.subscribe(&[Topic::Queue]);
-
-        let payload = Arc::new(br#"{"kind":"shutting_down"}"#.to_vec());
-        // Fill without draining: capacity is max_items+1 (best-effort goodbye reserve),
-        // so pushes 1–3 land, push 4 trips and evicts the subscriber.
-        for _ in 0..4 {
-            hub.broadcast(Topic::Player, &payload);
-        }
-        assert_eq!(hub.active(), 1, "overflowing subscriber evicted");
-        assert!(other_rx.try_recv().is_err(), "non-subscriber got nothing");
-        assert!(
-            !sub.try_send_line(SessionLine::Raw(vec![b'x'])),
-            "evicted sessions accept nothing"
-        );
-        for want_seq in 1..=3u64 {
-            match sub_rx.try_recv().expect("queued events survive eviction") {
-                SessionLine::Event { seq, topic, .. } => {
-                    assert_eq!(seq, want_seq, "per-session monotonic");
-                    assert_eq!(topic, Topic::Player);
-                }
-                SessionLine::Raw(_) => panic!("expected event"),
-            }
-        }
-    }
-}
+#[path = "sessions/tests.rs"]
+mod tests;

@@ -20,8 +20,9 @@ pub(super) fn checkpointed(cp: &mut Checkpoint, err: JobError) -> JobError {
 }
 
 pub(super) fn save_import_session(cp: &Checkpoint) {
-    let session = super::super::session::ImportSession::from_checkpoint(cp);
-    if let Err(error) = session.save_unlocked() {
+    if let Err(error) =
+        super::super::session::ImportSession::save_checkpoint_projection_unlocked(cp)
+    {
         tracing::warn!(error = %error, "could not save import session");
     }
 }

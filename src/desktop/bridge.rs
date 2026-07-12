@@ -14,6 +14,14 @@ pub struct OutEnvelope {
     pub v: u8,
     #[serde(default)]
     pub id: Option<u64>,
+    /// Page/WebView lifetime namespace. New frontends always send it; `None` keeps envelopes from
+    /// the previous GUI contract valid while accepting that those clients cannot isolate reloads.
+    #[serde(default)]
+    pub page_id: Option<String>,
+    /// Stable mutation identity minted by one webview lifetime. It is distinct from `id`, which
+    /// only correlates the response inside that page and can restart after a reload.
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub kind: OutKind,
     pub name: String,
     #[serde(default)]
@@ -36,6 +44,9 @@ pub struct InEnvelope {
     pub v: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
+    /// Echoed on correlated replies so a replacement page can discard an older page's response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<String>,
     pub kind: InKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
@@ -54,18 +65,26 @@ pub enum InKind {
 
 impl InEnvelope {
     pub fn res(id: u64, payload: serde_json::Value) -> Self {
+        Self::res_for_page(id, None, payload)
+    }
+    pub fn res_for_page(id: u64, page_id: Option<String>, payload: serde_json::Value) -> Self {
         InEnvelope {
             v: 1,
             id: Some(id),
+            page_id,
             kind: InKind::Res,
             topic: None,
             payload: Some(payload),
         }
     }
     pub fn err(id: u64, payload: serde_json::Value) -> Self {
+        Self::err_for_page(id, None, payload)
+    }
+    pub fn err_for_page(id: u64, page_id: Option<String>, payload: serde_json::Value) -> Self {
         InEnvelope {
             v: 1,
             id: Some(id),
+            page_id,
             kind: InKind::Err,
             topic: None,
             payload: Some(payload),
@@ -75,15 +94,24 @@ impl InEnvelope {
         InEnvelope {
             v: 1,
             id: None,
+            page_id: None,
             kind: InKind::Conn,
             topic: None,
             payload: Some(payload),
         }
     }
     pub fn event(topic: &str, payload: serde_json::Value) -> Self {
+        Self::event_for_page(topic, None, payload)
+    }
+    pub fn event_for_page(
+        topic: &str,
+        page_id: Option<String>,
+        payload: serde_json::Value,
+    ) -> Self {
         InEnvelope {
             v: 1,
             id: None,
+            page_id,
             kind: InKind::Event,
             topic: Some(topic.to_string()),
             payload: Some(payload),
@@ -126,7 +154,11 @@ pub fn dispatch(body: &str) -> BridgeAction {
     match env.kind {
         // M0 self-test: the IPC bridge echoes `req ping` → `res pong` locally (docs/gui/09 §3).
         OutKind::Req if env.name == "ping" => match env.id {
-            Some(id) => BridgeAction::Reply(InEnvelope::res(id, serde_json::json!("pong"))),
+            Some(id) => BridgeAction::Reply(InEnvelope::res_for_page(
+                id,
+                env.page_id.clone(),
+                serde_json::json!("pong"),
+            )),
             None => BridgeAction::Ignore,
         },
         OutKind::Win => BridgeAction::Win(parse_win(&env)),
@@ -180,6 +212,19 @@ mod tests {
                 assert_eq!(env.id, Some(7));
                 assert_eq!(env.kind, InKind::Res);
                 assert_eq!(env.payload, Some(serde_json::json!("pong")));
+            }
+            other => panic!("expected reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn page_aware_ping_echoes_the_page_namespace() {
+        let action = dispatch(r#"{"v":1,"id":7,"page_id":"page-a","kind":"req","name":"ping"}"#);
+        match action {
+            BridgeAction::Reply(env) => {
+                assert_eq!(env.id, Some(7));
+                assert_eq!(env.page_id.as_deref(), Some("page-a"));
+                assert_eq!(env.kind, InKind::Res);
             }
             other => panic!("expected reply, got {other:?}"),
         }

@@ -5,6 +5,13 @@ use std::time::Duration;
 /// font size. Falls back to a halfblocks-only picker if the query fails (e.g. a terminal
 /// that doesn't answer the control sequences), so album art still renders — just blocky.
 pub fn build_art_picker() -> ratatui_image::picker::Picker {
+    build_art_picker_with_access(&crate::persist::persistence_access())
+}
+
+/// Variant used by startup to carry its already-decided writer capability explicitly.
+pub fn build_art_picker_with_access(
+    persistence_access: &crate::persist::PersistenceAccess,
+) -> ratatui_image::picker::Picker {
     use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
     use std::io::IsTerminal;
     let override_protocol = image_protocol_override();
@@ -48,7 +55,7 @@ pub fn build_art_picker() -> ratatui_image::picker::Picker {
         picker.set_protocol_type(protocol);
     }
     if picker.protocol_type() == ProtocolType::Halfblocks {
-        store_halfblocks_art_picker_cache();
+        store_halfblocks_art_picker_cache(persistence_access);
     }
     picker
 }
@@ -77,8 +84,8 @@ fn cached_halfblocks_art_picker() -> Option<ratatui_image::picker::Picker> {
     Some(ratatui_image::picker::Picker::halfblocks())
 }
 
-fn store_halfblocks_art_picker_cache() {
-    if terminal_has_native_image_hint() {
+fn store_halfblocks_art_picker_cache(persistence_access: &crate::persist::PersistenceAccess) {
+    if persistence_access.is_read_only() || terminal_has_native_image_hint() {
         return;
     }
     let Some(path) = art_picker_cache_path() else {
@@ -93,8 +100,7 @@ fn store_halfblocks_art_picker_cache() {
 }
 
 fn art_picker_cache_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui")
-        .map(|dirs| dirs.cache_dir().join("art-picker.cache"))
+    crate::paths::cache_dir().map(|cache_dir| cache_dir.join("art-picker.cache"))
 }
 
 fn terminal_probe_cache_key() -> u64 {
@@ -259,6 +265,37 @@ mod tests {
         let mut scoped = TERMINAL_ENV.to_vec();
         scoped.extend_from_slice(vars);
         with_vars(&scoped, f)
+    }
+
+    #[test]
+    fn art_cache_uses_the_override_and_read_only_access_never_creates_it() {
+        let mut suffix = [0_u8; 8];
+        getrandom::fill(&mut suffix).unwrap();
+        let suffix = suffix
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let cache =
+            std::env::temp_dir().join(format!("yututui-art-cache-{}-{suffix}", std::process::id()));
+        let cache_env = cache.to_string_lossy().into_owned();
+
+        with_terminal_env(&[("YTM_CACHE_DIR", Some(cache_env.as_str()))], || {
+            assert_eq!(
+                art_picker_cache_path(),
+                Some(cache.join("art-picker.cache"))
+            );
+            store_halfblocks_art_picker_cache(&crate::persist::PersistenceAccess::ReadOnly {
+                reason: std::sync::Arc::from("test observational owner"),
+            });
+            assert!(
+                !cache.exists(),
+                "read-only art probing must not create the overridden cache root"
+            );
+
+            store_halfblocks_art_picker_cache(&crate::persist::PersistenceAccess::Writable);
+            assert!(cache.join("art-picker.cache").is_file());
+        });
+        let _ = std::fs::remove_dir_all(cache);
     }
 
     #[test]

@@ -174,11 +174,20 @@ export class KeymapStore {
   conflict = $state<KeymapConflict | null>(null);
   /** Sparse optimistic overlay `"<ctx>.<action>" → chord | null(unbound)`. */
   #pending = $state<Record<string, string | null>>({});
+  #nextMutation = 0;
+  readonly #pendingMutation = new Map<string, number>();
   readonly #client: Client;
 
   constructor(client: Client) {
     this.#client = client;
     this.#client.on('settings', (payload) => this.#onPush(payload as SettingsSnapshot));
+    this.#client.onConn((info) => {
+      if (info.state === 'offline') {
+        this.#pending = {};
+        this.#pendingMutation.clear();
+        this.conflict = null;
+      }
+    });
   }
 
   get actions(): ActionInfo[] {
@@ -228,26 +237,35 @@ export class KeymapStore {
   /** Bind a chord (optimistic); the reply carries any core-side conflict for inline display. */
   async rebind(context: KeyContext, action: string, chord: string): Promise<void> {
     const key = `${context}.${action}`;
+    const mutation = ++this.#nextMutation;
+    this.#pendingMutation.set(key, mutation);
     this.#pending = { ...this.#pending, [key]: chord };
     this.conflict = null;
-    try {
-      const res = await this.#client.req<{ conflict?: { shadows?: string } }>('keymap_bind', {
-        context,
-        action,
-        chord,
-      });
-      const shadows = res?.conflict?.shadows;
-      this.conflict = shadows ? { key, chord, shadows: String(shadows) } : null;
-    } catch {
-      // The real core may not speak keymap yet — keep the optimistic overlay, no conflict info.
+    const result = await this.#client.cmd<{ conflict?: { shadows?: string } }>('keymap_bind', {
+      context,
+      action,
+      chord,
+    });
+    if (!result.ok) {
+      this.#rejectPending(key, mutation);
+      return;
     }
+    if (this.#pendingMutation.get(key) !== mutation) return;
+    const shadows = result.payload?.conflict?.shadows;
+    this.conflict = shadows ? { key, chord, shadows: String(shadows) } : null;
+    this.#pendingMutation.delete(key);
   }
 
   unbind(context: KeyContext, action: string): void {
     const key = `${context}.${action}`;
+    const mutation = ++this.#nextMutation;
+    this.#pendingMutation.set(key, mutation);
     this.#pending = { ...this.#pending, [key]: null };
     this.conflict = null;
-    this.#client.cmd('keymap_unbind', { context, action });
+    void this.#client.cmd('keymap_unbind', { context, action }).then((result) => {
+      if (!result.ok) this.#rejectPending(key, mutation);
+      else if (this.#pendingMutation.get(key) === mutation) this.#pendingMutation.delete(key);
+    });
   }
 
   /** Per-row reset: rebind the action to its factory chord. */
@@ -258,8 +276,17 @@ export class KeymapStore {
   /** Restore every chord to its default (danger zone). The confirming push refills bindings. */
   resetAll(): void {
     this.#pending = {};
+    this.#pendingMutation.clear();
     this.conflict = null;
-    this.#client.cmd('keymap_reset_all');
+    void this.#client.cmd('keymap_reset_all');
+  }
+
+  #rejectPending(key: string, mutation: number): void {
+    if (this.#pendingMutation.get(key) !== mutation) return;
+    const next = { ...this.#pending };
+    delete next[key];
+    this.#pending = next;
+    this.#pendingMutation.delete(key);
   }
 
   // ── capture ──────────────────────────────────────────────────────────────────────────
