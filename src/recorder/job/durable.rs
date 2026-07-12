@@ -244,9 +244,12 @@ where
                 "recording source has no basename",
             )
         })?;
+        // Acceptance must flush the mpv-owned source before publishing its recovery journal.
+        // Windows rejects FlushFileBuffers on a read-only handle, so retain write access on this
+        // exact pinned generation through the durability boundary.
         let source = at_stage(
-            "open recording source",
-            source_parent.open_child_readonly(source_name),
+            "open recording source for durability flush",
+            source_parent.open_child(source_name),
         )?;
         let source_metadata = source.file()?.metadata()?;
         if source_metadata.len() == 0 && close_barrier.is_none() {
@@ -266,7 +269,7 @@ where
         // A durable journal is useful only if its mpv-created source inode, bytes, and owner
         // directory entry survive the same cutoff. This remains pre-acceptance: a sync failure
         // returns truthful SaveFailed and never publishes recovery ownership.
-        sync_source(source.file()?)?;
+        at_stage("flush recording source", sync_source(source.file()?))?;
         let _publication = ownership::acquire_publication_lock(&temp_dir)?;
         if automatic && !bypass_limits {
             let usage = spool_usage(&temp_dir, &final_dir)?;
