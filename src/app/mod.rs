@@ -57,6 +57,8 @@ pub(in crate::app) use helpers::{
 };
 mod mode_switch;
 mod navigation;
+mod onboarding;
+pub use onboarding::OnboardingState;
 mod reducer;
 mod session_restore;
 
@@ -91,8 +93,10 @@ pub use player_intent::{
 };
 mod player_recovery;
 mod player_transport;
+mod tool_setup;
 mod track_load;
 mod track_transition;
+pub use tool_setup::{ToolSetupContext, ToolSetupPrompt};
 pub(in crate::app) use track_transition::QueueReplacementOptions;
 pub use track_transition::TrackTransitionPlan;
 mod video_transition;
@@ -274,6 +278,10 @@ pub struct App {
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
     pub config: Config,
+    /// First-run Search coaching and the modal external-tool setup card.
+    pub onboarding: OnboardingState,
+    pub tool_setup: Option<ToolSetupPrompt>,
+    pub(crate) runtime_tool_checks: bool,
     /// The settings screen state, present only while `Mode::Settings` is active.
     pub settings: Option<Box<SettingsState>>,
 

@@ -12,7 +12,10 @@ One thing before anything else: **you can always press `?` inside the app.** It 
 
 ### Install and open it
 
-Follow the one-line install for your computer in the [README](README.md#install). Then open your terminal app — that's the window where you type commands:
+Follow the one-line install for your computer in the [README](README.md#install). On Windows,
+you can now choose **YuTuTui!** in the Start Menu; it opens Windows Terminal and the player for
+you. The tray icon's **Open Player** action does the same. On the other systems, open your terminal
+app — that's the window where you type commands:
 
 - **macOS** — the app called *Terminal* (or iTerm2 if you have it)
 - **Windows** — *Windows Terminal* from the Start menu
@@ -25,6 +28,10 @@ ytt
 ```
 
 That's the whole launch. The player appears in the window.
+
+The first launch points to Search for ten seconds; press its displayed key (normally `s`) or click
+**Search**. If mpv, yt-dlp, or ffmpeg is missing, use the setup card's copy/guide buttons and choose
+**Check again** after installing it. The technical details remain available through `ytt doctor`.
 
 ### Play your first song
 

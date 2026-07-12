@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn missing_download_tools_keep_the_queue_pending_and_open_setup() {
+    let mut app = App::new(100);
+    app.downloads
+        .pending
+        .push_back(Song::remote("id", "title", "artist", "1:00"));
+    assert!(app.block_downloads_for_missing(vec!["ffmpeg"]));
+    assert_eq!(app.downloads.pending.len(), 1);
+    assert!(matches!(
+        app.tool_setup.as_ref().map(|prompt| prompt.context),
+        Some(ToolSetupContext::Downloads)
+    ));
+}
+
 fn test_import_context(
     session_id: &str,
     row_id: &str,

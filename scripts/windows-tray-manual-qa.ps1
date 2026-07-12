@@ -310,11 +310,18 @@ try {
     Read-Host "Close the main window so it hides to the tray, then press Enter"
     Ask-Check -Key "hidden_main_leaves_task_switchers" -Prompt "After hiding the main window, only the tray remains and YuTuTray! is absent from the taskbar and Alt-Tab"
 
-    Read-Host "Use the tray menu to choose Open TUI, then press Enter"
-    Ask-Check -Key "open_tui_launches_terminal" -Prompt "Open TUI launches Windows Terminal, PowerShell, or cmd"
+    Read-Host "Use the tray menu to choose Open Player, then press Enter"
+    Ask-Check -Key "open_tui_launches_terminal" -Prompt "Open Player launches a new Windows Terminal (or a persistent PowerShell/cmd fallback)"
     Ask-Check -Key "ytt_taskbar_clicks_do_not_crash" -Prompt "With the launched ytt.exe window open, left and right clicking its taskbar button does not close or crash ytt.exe"
     Ask-Check -Key "shortcut_icon_correct" -Prompt "Start Menu/Explorer shortcut displays the expected icon"
-    Read-Host "Close any ytt terminal/player opened by Open TUI, then press Enter"
+    Read-Host "Close any ytt terminal/player opened by Open Player, then press Enter"
+
+    Read-Host "Choose YuTuTui! from the Start Menu, then press Enter"
+    Ask-Check -Key "start_menu_opens_player_terminal" -Prompt "The YuTuTui! shortcut opens a new Windows Terminal and starts ytt"
+    Read-Host "Quit ytt with Ctrl+Q, verify the PowerShell prompt remains, close that terminal, then press Enter"
+    Ask-Check -Key "start_menu_terminal_persists" -Prompt "The Start Menu terminal stayed open after ytt exited"
+    Read-Host "Double-click ytt.exe in Explorer, quit it with Ctrl+Q, then press Enter"
+    Ask-Check -Key "explorer_double_click_waits" -Prompt "The direct ytt.exe console shows the exit result and waits for Enter instead of closing immediately"
 
     $requiredScales = @("100", "150", "200")
     $results["display_scaling_values"] = $requiredScales -join ","

@@ -127,6 +127,13 @@ impl App {
     /// on every enqueue and again as each download finishes, so the queue keeps flowing without
     /// ever exceeding the channel bound.
     pub(in crate::app) fn pump_downloads(&mut self) -> Vec<Cmd> {
+        let missing = self
+            .runtime_tool_checks
+            .then(crate::deps::missing_for_downloads)
+            .unwrap_or_default();
+        if self.block_downloads_for_missing(missing) {
+            return Vec::new();
+        }
         let mut cmds = Vec::new();
         while self.downloads.dispatched < BULK_INFLIGHT_CAP {
             let Some(song) = self.downloads.pending.pop_front() else {
@@ -149,6 +156,17 @@ impl App {
             cmds.push(Cmd::Download(DownloadCmd::Start(Box::new(song))));
         }
         cmds
+    }
+
+    pub(in crate::app) fn block_downloads_for_missing(
+        &mut self,
+        missing: Vec<&'static str>,
+    ) -> bool {
+        if self.downloads.pending.is_empty() || missing.is_empty() {
+            return false;
+        }
+        self.show_tool_setup(ToolSetupContext::Downloads, missing);
+        true
     }
 
     pub(in crate::app) fn apply_download_progress(&mut self, tracking_key: String, percent: f64) {

@@ -452,9 +452,9 @@ impl super::RuntimeHandles {
                         )
                     ));
                 } else if app.status.text.is_empty() {
-                    app.set_status_error(format!(
-                        "{}: {e}",
-                        crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
+                    app.set_status_error(crate::t!(
+                        "Playback tool setup is required",
+                        "재생 도구 설치가 필요합니다"
                     ));
                 }
             }
