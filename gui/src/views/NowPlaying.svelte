@@ -14,7 +14,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { playback, lyrics, ui, connection, toasts, client } = ctx;
+  const { playback, lyrics, ui, connection, toasts, client, wip } = ctx;
 
   const track = $derived(playback.track);
   const model = $derived(playback.model);
@@ -40,8 +40,16 @@
 
   async function video() {
     if (!track) return;
+    // TODO(wire:B2/core.v8-commands) — play_video is demo-core-only until the variant lands.
+    if (!wip.gate('core.v8-commands')) return;
     const result = await client.cmd('play_video', { video_id: track.video_id });
     if (result.ok) toasts.show('info', t('np.videoRequested'));
+  }
+
+  function cycleRating() {
+    // TODO(wire:B2/core.v8-commands) — rate is demo-core-only until the variant lands.
+    if (!wip.gate('core.v8-commands')) return;
+    playback.cycleRating();
   }
 </script>
 
@@ -89,7 +97,7 @@
             class="tp rate"
             class:up={rating === 'up'}
             class:down={rating === 'down'}
-            onclick={() => playback.cycleRating()}
+            onclick={cycleRating}
             disabled={disabled || !track}
             title={t('np.cycleRating')}
             >{rating === 'up' ? '👍' : rating === 'down' ? '👎' : '–'}</button

@@ -16,7 +16,7 @@
 //
 // Full handoff narrative: gui/WIRING.md.
 
-export type FeatureId = 'lyrics.live' | 'artwork.live';
+export type FeatureId = 'lyrics.live' | 'artwork.live' | 'core.v8-commands';
 
 export interface WiringSpec {
   /** Human title shown in the not-wired-yet modal. */
@@ -51,6 +51,17 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     protocol:
       '`artwork` topic + ytm://app/art/<key> custom-scheme serving (already implemented shell-side in src/desktop/assets.rs)',
     seam: 'gui/src/lib/components/AlbumArt.svelte already resolves ArtworkRef → URL; verify against a real core push, then delete the generated-placeholder fallback note',
+  },
+  'core.v8-commands': {
+    title: 'Deferred v8 core commands',
+    milestone: 'B2',
+    brief: 'docs/gui/02-remote-protocol-v8.md §13 (command surface) + gui/WIRING.md §Deferred',
+    protocol:
+      'The frozen src/remote/proto/command.rs still lacks the v8 command variants the GUI already speaks: rate, queue_move, queue_clear_upcoming, play_video, ask_ai, library_play/enqueue/remove, fetch_library_page, download, delete_download, keymap_unbind, keymap_reset_all, lastfm_connect, spotify_connect, listen_brainz_configure, account_set, transfer_*, playlist_*, fetch_playlist_detail, fetch_why_gem — the desktop gateway answers bad_command for each (src/desktop/gateway.rs) until the variants exist',
+    seam: 'The stores already send the final shapes (playback/queue/ai/library/downloads/keymap/accounts/transfer/playlists) and the demo core answers all of them, so demo mode is always wired. Main-screen entry points (rate, video, queue reorder/clear, AI composer) gate through wip.gate; deeper surfaces (playlists CRUD, accounts connect, transfer wizard, hotkey editing, downloads) still surface the bad_command toast until the variants land',
+    capability: 'v8-commands',
+    notes:
+      'Server-side work first: add the RemoteCommand variants + core dispatch + parity tests (lockstep), regenerate ts-rs types, then advertise the capability — the gates dissolve without a frontend release.',
   },
 };
 

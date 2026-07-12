@@ -68,7 +68,7 @@ const ctx: AppCtx = {
   lyrics: new LyricsStore(client),
   whygem: new WhyGemStore(client),
   toasts,
-  wip: new WipStore(connection),
+  wip: new WipStore(connection, !transport.live),
 };
 
 // One subscription for the whole window; the gateway aggregates across windows. Topics

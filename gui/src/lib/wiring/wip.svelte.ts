@@ -9,13 +9,19 @@ import type { ConnectionStore } from '../stores/connection.svelte';
 export class WipStore {
   active = $state<FeatureId | null>(null);
   readonly #connection: ConnectionStore;
+  readonly #demo: boolean;
 
-  constructor(connection: ConnectionStore) {
+  constructor(connection: ConnectionStore, demo = false) {
     this.#connection = connection;
+    this.#demo = demo;
   }
 
-  /** True once the core advertises the feature's capability (auto-dissolve). */
+  /**
+   * True once the core advertises the feature's capability (auto-dissolve). The in-page
+   * demo core genuinely implements every gated surface, so demo mode is always wired.
+   */
   wired(id: FeatureId): boolean {
+    if (this.#demo) return true;
     const cap = WIRING[id].capability;
     return cap != null && this.#connection.has(cap);
   }

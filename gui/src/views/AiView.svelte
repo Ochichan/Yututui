@@ -10,12 +10,14 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ai } = ctx;
+  const { ai, wip } = ctx;
 
   let prompt = $state('');
 
   function send() {
     if (prompt.trim().length === 0) return;
+    // TODO(wire:B2/core.v8-commands) — ask_ai is demo-core-only until the variant lands.
+    if (!wip.gate('core.v8-commands')) return;
     ai.ask(prompt);
     prompt = '';
   }

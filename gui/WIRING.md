@@ -12,7 +12,7 @@ for continuing that work. Read it before touching anything.
 | Surface                            | How it's wired                                                                                                                                                                                                                                                                                                                            |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `player` / `queue` topic rendering | `playback.svelte.ts` / `queue.svelte.ts` consume `player_snapshot` / `queue_snapshot` pushes (the B0 wire), incl. interpolation with the ported mini-player constants (`lib/time.ts` — do not re-derive)                                                                                                                                  |
-| Transport commands                 | `toggle_pause` `next` `prev` `seek_to` `set_volume` `toggle_shuffle` `cycle_repeat` `streaming` (v7-frozen) + `rate` `queue_play` `queue_remove_many` `queue_clear_upcoming` `play_video` (v8) — every mutation has a correlated acknowledgement, a page-scoped `request_id`, a bounded timeout, and a visible busy/offline/error outcome |
+| Transport commands                 | Exactly the surface `src/remote/proto/command.rs` accepts today: `toggle_pause` `next` `prev` `play` `enqueue` `seek_to` `seek_back` `seek_forward` `set_volume` `vol_up` `vol_down` `toggle_shuffle` `cycle_repeat` `queue_play_if_revision` `queue_remove_if_revision` `streaming` `run_search` `play_tracks` `enqueue_tracks` `set_setting` `apply` `set_gemini_key` `reset_all_settings` `export_personal_data` `status` `resume_session` — every mutation has a correlated acknowledgement, a page-scoped `request_id`, a bounded timeout, and a visible busy/offline/error outcome. **Anything not in that enum is a Deferred v8 command (next section), not wired.** |
 | Local themes                       | `lib/theme/local.ts` + `ThemeStore.applyLocal` — 5 GUI-owned skins (incl. Crimson Mono and Ember Wine), applied live, persisted in localStorage                                                                                                                                                                                           |
 | Demo core                          | `lib/dev/democore.ts` — a stateful in-page core for `npm run dev` / browsers: transport, queue ops, rating, auto-advance, lyrics all actually behave                                                                                                                                                                                      |
 
@@ -36,12 +36,38 @@ again because its immediate reply only acknowledges a completion push scoped to 
 session, `page_id`, and ticket. Replaying that acknowledgement after reconnect would point at a
 dead session and leave the replacement page waiting for a result it can never receive.
 
+### 1.5 Deferred v8 commands — demo-core-only (registry id `core.v8-commands`)
+
+Earlier revisions of this file listed several of these as "wired (v8)". That overclaimed:
+the stores and views are finished and speak the final shapes, and the **demo core**
+implements all of them, but the frozen `src/remote/proto/command.rs` has no variants for
+them — against a real core the gateway answers **`bad_command`** (`src/desktop/gateway.rs`)
+for every one of:
+
+`rate` · `queue_move` · `queue_clear_upcoming` · `play_video` · `ask_ai` ·
+`library_play` / `library_enqueue` / `library_remove` / `fetch_library_page` ·
+`download` / `delete_download` · `keymap_unbind` / `keymap_reset_all` ·
+`lastfm_connect` / `spotify_connect` / `listen_brainz_configure` / `account_set` ·
+`transfer_start` / `transfer_list_spotify` / `transfer_cancel` ·
+`playlist_create` / `playlist_delete` / `playlist_play` / `playlist_add_tracks` /
+`playlist_remove_track` / `fetch_playlist_detail` · `fetch_why_gem`
+
+The registry entry `core.v8-commands` (capability `v8-commands`) carries the plan. The
+main-screen entry points — rating, 🎬 video, queue drag-reorder / clear-upcoming, and the
+DJ Gem composer — gate through `wip.gate('core.v8-commands')`, so a real core shows the
+WipModal (with the agent brief) instead of a raw error toast; demo mode is always wired
+(the demo core genuinely implements everything). Deeper surfaces (playlists CRUD, accounts
+connect, transfer wizard, hotkey editing, downloads) still surface the plain toast until
+the variants land. Server-side landing order: `RemoteCommand` variants + core dispatch +
+parity tests (lockstep), regenerate ts-rs types, advertise the capability — every gate
+then dissolves without a frontend release.
+
 ### 2. Pending — the patch-bay registry
 
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`lyrics.live` · `artwork.live`
+`lyrics.live` · `artwork.live` · `core.v8-commands`
 
 (these two are B1 reconciles — the stores already consume the PROVISIONAL demo shapes; they
 can only be _verified/aligned_ against a real core push once B1 lands.)
