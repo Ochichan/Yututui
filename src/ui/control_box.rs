@@ -143,7 +143,17 @@ pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, 
                 } else {
                     ""
                 };
-                format!("{heart}{title} — {artist}")
+                // Scroll an overflowing title so it stays readable in the mini/docked
+                // player. `selected_marquee` is deliberately independent of the animation
+                // masters (like the radio card's title) and returns the text unchanged
+                // when it already fits, so the fits case stays byte-identical.
+                crate::ui::anim::selected_marquee(
+                    app,
+                    crate::app::ScrollSurface::PlayerTitle,
+                    0,
+                    &format!("{heart}{title} — {artist}"),
+                    usize::from(area.width),
+                )
             }
             None => {
                 // The search key respects rebinds (the chord bound to `OpenSearch`, not a
