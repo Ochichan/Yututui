@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn playing_menu_has_expected_labels_and_primary_action() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu(&TrayState::Connected(playing_status()));
+        let model = build_menu_with_main_window(&TrayState::Connected(playing_status()), true);
         assert_eq!(model.state, TrayStateKind::ConnectedPlaying);
         assert_eq!(model.primary_action, MenuAction::PlayPause);
         assert_eq!(model.summary_line(), "ConnectedPlaying: Artist - Song");
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn native_menu_uses_the_product_structure_and_nested_sections() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu(&TrayState::Connected(playing_status()));
+        let model = build_menu_with_main_window(&TrayState::Connected(playing_status()), true);
         assert_eq!(model.entries.len(), 17);
         assert!(matches!(
             &model.entries[0],
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn disconnected_menu_only_offers_resume_when_a_session_is_available() {
         let _guard = crate::i18n::lock_for_test();
-        let model = build_menu(&TrayState::disconnected(false));
+        let model = build_menu_with_main_window(&TrayState::disconnected(false), true);
         assert_eq!(model.state, TrayStateKind::Disconnected);
         assert_eq!(model.primary_action, MenuAction::OpenTui);
         assert!(!model.action_item(MenuAction::PlayPause).unwrap().enabled);
@@ -773,7 +773,7 @@ mod tests {
         );
         assert!(model.action_item(MenuAction::QuitTray).unwrap().enabled);
 
-        let resumable = build_menu(&TrayState::disconnected(true));
+        let resumable = build_menu_with_main_window(&TrayState::disconnected(true), true);
         assert!(
             resumable
                 .action_item(MenuAction::ResumeDaemon)

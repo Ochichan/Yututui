@@ -117,7 +117,8 @@ impl EndpointLease {
         // exact socket now and never retry from delayed publication/guard cleanup: a late retry
         // would have an unavoidable ABA window on filesystems that immediately reuse inodes.
         #[cfg(unix)]
-        match remove_socket_file_if_matches(&self.socket, self.socket_identity) {
+        let current_identity = super::socket_file_identity(&self.socket).ok();
+        match remove_socket_file_if_matches(&self.socket, current_identity) {
             Ok(_) => {}
             Err(error) => tracing::warn!(
                 %error,
