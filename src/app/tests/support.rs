@@ -701,14 +701,16 @@ pub(super) fn centered_fixed(area: ratatui::layout::Rect, w: u16, h: u16) -> rat
 }
 
 pub(super) fn about_icon_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let popup = centered_fixed(area, 60, 25);
+    // Mirrors the About card geometry (ui/views/about.rs: CARD_WIDTH 66, normal height
+    // 27, NORMAL_TEXT_ROWS 13, ICON_ROWS 12) — keep in lockstep with those constants.
+    let popup = centered_fixed(area, 66, 27);
     let inner = ratatui::layout::Rect {
         x: popup.x.saturating_add(1),
         y: popup.y.saturating_add(1),
         width: popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
     };
-    let icon_rows = inner.height.saturating_sub(11).clamp(1, 12);
+    let icon_rows = inner.height.saturating_sub(13).clamp(1, 12);
     let band = ratatui::layout::Rect {
         height: icon_rows.min(inner.height),
         ..inner
