@@ -85,7 +85,42 @@ impl App {
             | RemoteCommand::EnqueueTracks { .. }
             | RemoteCommand::Apply { .. }
             | RemoteCommand::SetGeminiKey { .. }
-            | RemoteCommand::ResetAllSettings => {
+            | RemoteCommand::ResetAllSettings
+            // The deferred v8 GUI surface (gui/WIRING.md §1.5) is daemon-only by design:
+            // the GUI attaches to a daemon owner; the standalone TUI keeps its own paths.
+            // One exhaustive arm so the parity harness can never see divergent reasons.
+            | RemoteCommand::Rate { .. }
+            | RemoteCommand::QueueMove { .. }
+            | RemoteCommand::QueueRemoveMany { .. }
+            | RemoteCommand::QueueClearUpcoming { .. }
+            | RemoteCommand::PlayVideo { .. }
+            | RemoteCommand::AskAi { .. }
+            | RemoteCommand::LibraryPlay { .. }
+            | RemoteCommand::LibraryEnqueue { .. }
+            | RemoteCommand::LibraryRemove { .. }
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::Download { .. }
+            | RemoteCommand::DeleteDownload { .. }
+            | RemoteCommand::KeymapBind { .. }
+            | RemoteCommand::KeymapUnbind { .. }
+            | RemoteCommand::KeymapResetAll
+            | RemoteCommand::ThemeSetOverride { .. }
+            | RemoteCommand::ThemeClearOverride { .. }
+            | RemoteCommand::ClearRomanizationCache
+            | RemoteCommand::PlaylistCreate { .. }
+            | RemoteCommand::PlaylistDelete { .. }
+            | RemoteCommand::PlaylistAddTracks { .. }
+            | RemoteCommand::PlaylistRemoveTrack { .. }
+            | RemoteCommand::PlaylistPlay { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. }
+            | RemoteCommand::TransferListSpotify
+            | RemoteCommand::TransferStart { .. }
+            | RemoteCommand::TransferCancel
+            | RemoteCommand::LastfmConnect
+            | RemoteCommand::SpotifyConnect
+            | RemoteCommand::ListenBrainzConfigure { .. }
+            | RemoteCommand::AccountSet { .. } => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
             // Intercepted by the top-level reducer before this playback/settings dispatcher so

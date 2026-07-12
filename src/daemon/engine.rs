@@ -558,6 +558,42 @@ impl DaemonEngine {
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
             }
+            // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
+            // gateway stops answering bad_command; each stream replaces its arms with
+            // real dispatch. Until then the reason is an honest not_supported (the
+            // frontend gates these paths behind the v8-commands capability anyway).
+            RemoteCommand::Rate { .. }
+            | RemoteCommand::QueueMove { .. }
+            | RemoteCommand::QueueRemoveMany { .. }
+            | RemoteCommand::QueueClearUpcoming { .. }
+            | RemoteCommand::PlayVideo { .. }
+            | RemoteCommand::AskAi { .. }
+            | RemoteCommand::LibraryPlay { .. }
+            | RemoteCommand::LibraryEnqueue { .. }
+            | RemoteCommand::LibraryRemove { .. }
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::Download { .. }
+            | RemoteCommand::DeleteDownload { .. }
+            | RemoteCommand::KeymapBind { .. }
+            | RemoteCommand::KeymapUnbind { .. }
+            | RemoteCommand::KeymapResetAll
+            | RemoteCommand::ThemeSetOverride { .. }
+            | RemoteCommand::ThemeClearOverride { .. }
+            | RemoteCommand::ClearRomanizationCache
+            | RemoteCommand::PlaylistCreate { .. }
+            | RemoteCommand::PlaylistDelete { .. }
+            | RemoteCommand::PlaylistAddTracks { .. }
+            | RemoteCommand::PlaylistRemoveTrack { .. }
+            | RemoteCommand::PlaylistPlay { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. }
+            | RemoteCommand::TransferListSpotify
+            | RemoteCommand::TransferStart { .. }
+            | RemoteCommand::TransferCancel
+            | RemoteCommand::LastfmConnect
+            | RemoteCommand::SpotifyConnect
+            | RemoteCommand::ListenBrainzConfigure { .. }
+            | RemoteCommand::AccountSet { .. } => RemoteResponse::err("not_supported"),
         };
         self.finish_remote_persistence(response, shutdown, effects)
     }

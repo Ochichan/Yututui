@@ -148,6 +148,168 @@ pub enum RemoteCommand {
     ExportPersonalData {
         directory: String,
     },
+    // ── Deferred v8 GUI commands (additive; capability-gated by `v8-commands`) ─────────
+    //
+    // Wire shapes are pinned to what the GUI's stores already send (the demo core in
+    // gui/src/lib/dev/democore.ts is the reference implementation; gui/WIRING.md §1.5).
+    // Owners implement them stream-by-stream; until an owner dispatches a variant it
+    // answers `not_supported` (daemon) / `daemon_required` (TUI App).
+    /// Cycle or set the current rating of a track by id (favorite/dislike synthesis).
+    Rate {
+        video_id: String,
+        rating: RateChange,
+    },
+    /// Move an order position to another (queue drag-reorder). `expected_rev` guards
+    /// against a stale queue snapshot like the *_if_revision commands.
+    QueueMove {
+        from: usize,
+        to: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Remove several order positions atomically (multi-select remove).
+    QueueRemoveMany {
+        positions: Vec<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Drop everything after the current track.
+    QueueClearUpcoming {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<u64>,
+    },
+    /// Spawn the mpv video overlay for a track (core-host side effect).
+    PlayVideo {
+        video_id: String,
+    },
+    /// DJ Gem chat: fire-and-forget like `RunSearch`; the transcript rides the `ai`
+    /// topic, keyed by `ticket`.
+    AskAi {
+        ticket: u64,
+        prompt: String,
+    },
+    /// Replace the queue with a library scope's (filtered) tracks and play.
+    LibraryPlay {
+        scope: String,
+        #[serde(default)]
+        filter: String,
+    },
+    /// Append a library scope's (filtered) tracks to the queue.
+    LibraryEnqueue {
+        scope: String,
+        #[serde(default)]
+        filter: String,
+    },
+    /// Remove one track from a library scope (favorites/history/…).
+    LibraryRemove {
+        scope: String,
+        video_id: String,
+    },
+    /// Page through a library scope; the reply's data lane carries the page model.
+    FetchLibraryPage {
+        scope: String,
+        #[serde(default)]
+        filter: String,
+        #[serde(default)]
+        offset: usize,
+        limit: usize,
+    },
+    /// Start a managed yt-dlp download for a track.
+    Download {
+        video_id: String,
+        #[serde(default)]
+        title: String,
+    },
+    /// Remove a download entry, optionally deleting the on-disk file.
+    DeleteDownload {
+        video_id: String,
+        #[serde(default)]
+        delete_file: bool,
+    },
+    /// Bind a chord; the reply's data lane carries core-side conflict/shadow info.
+    KeymapBind {
+        context: String,
+        action: String,
+        chord: String,
+    },
+    KeymapUnbind {
+        context: String,
+        action: String,
+    },
+    KeymapResetAll,
+    /// Override one theme role with a hex color.
+    ThemeSetOverride {
+        role: String,
+        hex: String,
+    },
+    ThemeClearOverride {
+        role: String,
+    },
+    /// Drop every cached romanization; the reply's data lane carries `{ cleared }`.
+    ClearRomanizationCache,
+    PlaylistCreate {
+        name: String,
+    },
+    PlaylistDelete {
+        playlist_id: String,
+    },
+    PlaylistAddTracks {
+        playlist_id: String,
+        video_ids: Vec<String>,
+    },
+    PlaylistRemoveTrack {
+        playlist_id: String,
+        video_id: String,
+    },
+    PlaylistPlay {
+        playlist_id: String,
+    },
+    /// Pull one playlist's tracks; the reply's data lane carries the detail model.
+    FetchPlaylistDetail {
+        playlist_id: String,
+    },
+    /// Which DJ Gem provenance is known for a track; data lane carries it (or nothing).
+    FetchWhyGem {
+        video_id: String,
+    },
+    /// List the connected Spotify account's playlists; results ride the `transfer` topic.
+    TransferListSpotify,
+    /// Start a Spotify import job. The spec is validated by the transfer engine; results
+    /// and progress ride the `transfer` topic. Typed model lands with the B4 stream.
+    TransferStart {
+        spec: Value,
+    },
+    TransferCancel,
+    /// Begin the Last.fm browser auth flow; the auth URL rides the `accounts` topic.
+    LastfmConnect,
+    /// Begin the Spotify browser auth flow; the auth URL rides the `accounts` topic.
+    SpotifyConnect,
+    /// Configure ListenBrainz submission (token is write-only).
+    ListenBrainzConfigure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        submit: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_url: Option<String>,
+    },
+    /// Uniform account-block field setter (scrobbling toggles, love-sync, …).
+    AccountSet {
+        service: String,
+        field: String,
+        value: Value,
+    },
+}
+
+/// One rating step for [`RemoteCommand::Rate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateChange {
+    Up,
+    Down,
+    Clear,
+    /// The TUI's 👍/–/👎 cycle; the GUI's rating chip sends this today.
+    Cycle,
 }
 
 impl RemoteCommand {
@@ -155,15 +317,24 @@ impl RemoteCommand {
         match self {
             Self::QueuePlayIfRevision { expected_rev, .. }
             | Self::QueueRemoveIfRevision { expected_rev, .. } => Some(*expected_rev),
+            // Optional guards: absent means the caller opted out of the stale check
+            // (the keyboard path sends no revision; the drag path always does).
+            Self::QueueMove { expected_rev, .. }
+            | Self::QueueRemoveMany { expected_rev, .. }
+            | Self::QueueClearUpcoming { expected_rev } => *expected_rev,
             _ => None,
         }
     }
 
     pub(crate) fn request_retry_class(&self) -> RequestRetryClass {
         match self {
-            RemoteCommand::Status | RemoteCommand::RunSearch { .. } => {
-                RequestRetryClass::ReexecuteReadOnly
-            }
+            // Pure reads (paging, drill-downs, provenance) re-execute freshly on a
+            // same-ID retry — replaying a retained page would pin stale data.
+            RemoteCommand::Status
+            | RemoteCommand::RunSearch { .. }
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. } => RequestRetryClass::ReexecuteReadOnly,
             RemoteCommand::Next
             | RemoteCommand::Prev
             | RemoteCommand::TogglePause
@@ -190,14 +361,51 @@ impl RemoteCommand {
             | RemoteCommand::Apply { .. }
             | RemoteCommand::SetGeminiKey { .. }
             | RemoteCommand::ResetAllSettings
-            | RemoteCommand::ExportPersonalData { .. } => RequestRetryClass::RetainedOutcome,
+            | RemoteCommand::ExportPersonalData { .. }
+            | RemoteCommand::Rate { .. }
+            | RemoteCommand::QueueMove { .. }
+            | RemoteCommand::QueueRemoveMany { .. }
+            | RemoteCommand::QueueClearUpcoming { .. }
+            | RemoteCommand::PlayVideo { .. }
+            | RemoteCommand::AskAi { .. }
+            | RemoteCommand::LibraryPlay { .. }
+            | RemoteCommand::LibraryEnqueue { .. }
+            | RemoteCommand::LibraryRemove { .. }
+            | RemoteCommand::Download { .. }
+            | RemoteCommand::DeleteDownload { .. }
+            | RemoteCommand::KeymapBind { .. }
+            | RemoteCommand::KeymapUnbind { .. }
+            | RemoteCommand::KeymapResetAll
+            | RemoteCommand::ThemeSetOverride { .. }
+            | RemoteCommand::ThemeClearOverride { .. }
+            | RemoteCommand::ClearRomanizationCache
+            | RemoteCommand::PlaylistCreate { .. }
+            | RemoteCommand::PlaylistDelete { .. }
+            | RemoteCommand::PlaylistAddTracks { .. }
+            | RemoteCommand::PlaylistRemoveTrack { .. }
+            | RemoteCommand::PlaylistPlay { .. }
+            | RemoteCommand::TransferListSpotify
+            | RemoteCommand::TransferStart { .. }
+            | RemoteCommand::TransferCancel
+            | RemoteCommand::LastfmConnect
+            | RemoteCommand::SpotifyConnect
+            | RemoteCommand::ListenBrainzConfigure { .. }
+            | RemoteCommand::AccountSet { .. } => RequestRetryClass::RetainedOutcome,
         }
     }
 
     /// Whether losing the reply can leave the caller unsure whether observable state changed.
     /// `RunSearch` is included: its acknowledgement confirms dispatch of the later push.
+    /// Pure reads are excluded so a lost fetch reply surfaces as `timeout`, never as the
+    /// alarming `confirmation_lost`.
     pub(crate) fn requires_confirmation(&self) -> bool {
-        !matches!(self, RemoteCommand::Status)
+        !matches!(
+            self,
+            RemoteCommand::Status
+                | RemoteCommand::FetchLibraryPage { .. }
+                | RemoteCommand::FetchPlaylistDetail { .. }
+                | RemoteCommand::FetchWhyGem { .. }
+        )
     }
 
     pub fn validate(&self) -> Result<(), RemoteCommandValidationError> {
@@ -227,9 +435,157 @@ impl RemoteCommand {
             RemoteCommand::Apply { change } => validate_gui_setting_change(change),
             RemoteCommand::SetGeminiKey { key } => validate_gemini_key(key),
             RemoteCommand::ExportPersonalData { directory } => validate_export_directory(directory),
+            RemoteCommand::QueueMove { from, to, .. }
+                if *from >= REMOTE_MAX_TRACK_IDS || *to >= REMOTE_MAX_TRACK_IDS =>
+            {
+                Err(validation_error("bad_queue_position"))
+            }
+            RemoteCommand::QueueRemoveMany { positions, .. } => {
+                if positions.is_empty() {
+                    return Err(validation_error("empty_selection"));
+                }
+                if positions.len() > REMOTE_MAX_TRACK_IDS
+                    || positions.iter().any(|p| *p >= REMOTE_MAX_TRACK_IDS)
+                {
+                    return Err(validation_error("bad_queue_position"));
+                }
+                Ok(())
+            }
+            RemoteCommand::Rate { video_id, .. }
+            | RemoteCommand::PlayVideo { video_id }
+            | RemoteCommand::LibraryRemove { video_id, .. }
+            | RemoteCommand::Download { video_id, .. }
+            | RemoteCommand::DeleteDownload { video_id, .. }
+            | RemoteCommand::PlaylistRemoveTrack { video_id, .. }
+            | RemoteCommand::FetchWhyGem { video_id } => validate_wire_id(video_id),
+            RemoteCommand::AskAi { prompt, .. } => validate_query(prompt),
+            RemoteCommand::LibraryPlay { scope, filter }
+            | RemoteCommand::LibraryEnqueue { scope, filter } => {
+                validate_scope_and_filter(scope, filter)
+            }
+            RemoteCommand::FetchLibraryPage {
+                scope,
+                filter,
+                limit,
+                ..
+            } => {
+                if !(1..=REMOTE_MAX_PAGE_LIMIT).contains(limit) {
+                    return Err(validation_error("bad_page_limit"));
+                }
+                validate_scope_and_filter(scope, filter)
+            }
+            RemoteCommand::KeymapBind {
+                context,
+                action,
+                chord,
+            } => {
+                validate_wire_token(context)?;
+                validate_wire_token(action)?;
+                validate_wire_string(chord)
+            }
+            RemoteCommand::KeymapUnbind { context, action } => {
+                validate_wire_token(context)?;
+                validate_wire_token(action)
+            }
+            RemoteCommand::ThemeSetOverride { role, hex } => {
+                validate_wire_token(role)?;
+                validate_wire_string(hex)
+            }
+            RemoteCommand::ThemeClearOverride { role } => validate_wire_token(role),
+            RemoteCommand::PlaylistCreate { name } => validate_wire_string_nonempty(name),
+            RemoteCommand::PlaylistDelete { playlist_id }
+            | RemoteCommand::PlaylistPlay { playlist_id }
+            | RemoteCommand::FetchPlaylistDetail { playlist_id } => validate_wire_id(playlist_id),
+            RemoteCommand::PlaylistAddTracks {
+                playlist_id,
+                video_ids,
+            } => {
+                validate_wire_id(playlist_id)?;
+                validate_track_ids(video_ids)
+            }
+            RemoteCommand::TransferStart { spec } => {
+                if !spec.is_object() {
+                    return Err(validation_error("bad_request"));
+                }
+                Ok(())
+            }
+            RemoteCommand::ListenBrainzConfigure {
+                token, custom_url, ..
+            } => {
+                if let Some(token) = token {
+                    validate_wire_string(token)?;
+                }
+                if let Some(url) = custom_url {
+                    validate_wire_string(url)?;
+                }
+                Ok(())
+            }
+            RemoteCommand::AccountSet {
+                service,
+                field,
+                value,
+            } => {
+                validate_wire_token(service)?;
+                validate_wire_token(field)?;
+                match value {
+                    Value::Bool(_) | Value::Null => Ok(()),
+                    Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => Ok(()),
+                    Value::String(s) => validate_wire_string(s),
+                    _ => Err(validation_error("bad_setting_value")),
+                }
+            }
             _ => Ok(()),
         }
     }
+}
+
+/// Page fetches are viewport-driven; anything past this is a bulk export, not a page.
+pub const REMOTE_MAX_PAGE_LIMIT: usize = 500;
+
+fn validate_wire_id(id: &str) -> Result<(), RemoteCommandValidationError> {
+    let id = id.trim();
+    if id.is_empty()
+        || id.len() > REMOTE_MAX_TRACK_ID_BYTES
+        || id.chars().any(forbidden_command_char)
+    {
+        return Err(validation_error("bad_track_id"));
+    }
+    Ok(())
+}
+
+fn validate_wire_token(token: &str) -> Result<(), RemoteCommandValidationError> {
+    // Contexts/actions/roles/services are identifier-like but mixed-case (e.g. "Player").
+    if token.is_empty()
+        || token.len() > REMOTE_MAX_SETTING_NAME_BYTES
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+    {
+        return Err(validation_error("bad_request"));
+    }
+    Ok(())
+}
+
+fn validate_wire_string(raw: &str) -> Result<(), RemoteCommandValidationError> {
+    validate_setting_string(raw).map_err(|_| validation_error("bad_request"))
+}
+
+fn validate_wire_string_nonempty(raw: &str) -> Result<(), RemoteCommandValidationError> {
+    if raw.trim().is_empty() {
+        return Err(validation_error("bad_request"));
+    }
+    validate_wire_string(raw)
+}
+
+fn validate_scope_and_filter(
+    scope: &str,
+    filter: &str,
+) -> Result<(), RemoteCommandValidationError> {
+    validate_wire_token(scope)?;
+    if filter.len() > REMOTE_MAX_QUERY_BYTES || filter.chars().any(forbidden_command_char) {
+        return Err(validation_error("bad_request"));
+    }
+    Ok(())
 }
 
 /// One GUI settings edit: `group` and `field` name a [`super::SettingsModelV8`] slot;

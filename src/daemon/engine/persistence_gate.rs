@@ -8,7 +8,13 @@ use crate::remote::proto::{RemoteCommand, RemoteResponse};
 fn may_continue_read_only(command: &RemoteCommand) -> bool {
     matches!(
         command,
-        RemoteCommand::Status | RemoteCommand::RunSearch { .. } | RemoteCommand::Quit
+        RemoteCommand::Status
+            | RemoteCommand::RunSearch { .. }
+            | RemoteCommand::Quit
+            // v8 pure reads: paging/drill-down/provenance never touch durable state.
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. }
     )
 }
 
