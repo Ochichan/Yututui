@@ -355,9 +355,13 @@ fn gui_apply_routes_settings_to_live_daemon_state() {
     apply_gui_ok(&mut engine, "animations", "fps", json!(999));
     apply_gui_ok(&mut engine, "animations", "master", json!(true));
     apply_gui_ok(&mut engine, "animations", "bounce", json!(true));
+    apply_gui_ok(&mut engine, "animations", "plasma", json!(true));
+    apply_gui_ok(&mut engine, "animations", "error_shake", json!(true));
     assert_eq!(engine.config.animations.fps, crate::config::FPS_MAX);
     assert!(engine.config.animations.master);
     assert!(engine.config.animations.bounce);
+    assert!(engine.config.animations.plasma);
+    assert!(engine.config.animations.error_shake);
 
     apply_gui_ok(&mut engine, "theme", "preset", json!("light"));
     apply_gui_ok(&mut engine, "theme", "retro", json!(true));

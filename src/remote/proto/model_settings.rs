@@ -136,7 +136,7 @@ pub struct AudioSettingsModel {
 }
 
 /// Mirrors [`crate::config::AnimationsConfig`] field-for-field (minus the TUI-only
-/// `radio_master` scope selector): master/behaviour knobs + the 25 effect flags.
+/// `radio_master` scope selector): master/behaviour knobs + the 40 effect flags.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts-export",
@@ -167,11 +167,26 @@ pub struct AnimationsModel {
     pub popup_fade: bool,
     pub activity: bool,
     pub about_fx: bool,
+    pub time_glow: bool,
+    pub progress_sparkle: bool,
+    pub border_chase: bool,
+    pub pause_flash: bool,
+    pub error_shake: bool,
     pub visualizer: bool,
     pub rain: bool,
     pub donut: bool,
     pub starfield: bool,
     pub bounce: bool,
+    pub comets: bool,
+    pub snow: bool,
+    pub fireflies: bool,
+    pub cube: bool,
+    pub aquarium: bool,
+    pub waves: bool,
+    pub fireworks: bool,
+    pub life: bool,
+    pub pipes: bool,
+    pub plasma: bool,
 }
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]

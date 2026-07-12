@@ -149,8 +149,10 @@ impl App {
                 || a.eq_bars
                 || a.controls
                 || a.border
-                || (!self.lyrics.visible
-                    && (a.rain || a.donut || a.visualizer || a.starfield || a.bounce)))
+                || a.time_glow
+                || a.progress_sparkle
+                || a.border_chase
+                || (!self.lyrics.visible && a.any_canvas()))
     }
 
     /// Whether an enabled one-shot feedback effect is still inside its window. While true the clock
@@ -271,11 +273,7 @@ impl App {
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
-        if player_running
-            && a.master
-            && !self.lyrics.visible
-            && (a.rain || a.donut || a.visualizer || a.starfield)
-        {
+        if player_running && a.master && !self.lyrics.visible && a.any_canvas_heavy() {
             return fps.min(20);
         }
         if player_running
@@ -402,8 +400,29 @@ impl App {
             self.fx.seek = Some(self.fx_arm(w::SEEK_MS));
         }
 
+        // Play/pause toggled on a current track → light wave across the transport controls.
+        // Track loading flips the paused flag as a side effect — same-turn (`track_changed`)
+        // and again asynchronously when playback commits — but both loader flips happen right
+        // after `time_pos` was cleared to `None` (`reset_progress` / `commit_playback_cleared`),
+        // while a user toggle always lands mid-track with a live position. Gating on
+        // `time_pos.is_some()` therefore keeps every track start quiet without suppressing
+        // real toggles.
+        if self.playback.paused != self.fx.last_paused {
+            self.fx.last_paused = self.playback.paused;
+            if on(a.pause_flash)
+                && !track_changed
+                && self.queue.current().is_some()
+                && self.playback.time_pos.is_some()
+            {
+                self.fx.pause = Some(self.fx_arm(w::PAUSE_MS));
+            }
+        }
+
         // A fresh status message → typewriter reveal, window scaled to the text length.
-        if status_changed && !self.status.text.is_empty() && on(a.toast) {
+        // The error-shake rides the same anchor/window (its renderer gates on the kind), so
+        // an error message arms it even when the typewriter itself is off.
+        let shake = on(a.error_shake) && matches!(self.status.kind, crate::app::StatusKind::Error);
+        if status_changed && !self.status.text.is_empty() && (on(a.toast) || shake) {
             let cols = unicode_width::UnicodeWidthStr::width(self.status.text.as_str());
             self.fx.toast = Some(self.fx_arm(w::toast_ms(cols)));
         }
@@ -502,10 +521,7 @@ impl App {
     /// atomic swap that prevents tearing/ghosting on terminals that support it.
     pub fn synchronized_draw_active(&self) -> bool {
         let a = self.animations();
-        self.art_active()
-            || (matches!(self.mode, Mode::Player)
-                && a.master
-                && (a.rain || a.donut || a.visualizer || a.starfield))
+        self.art_active() || (matches!(self.mode, Mode::Player) && a.master && a.any_canvas_heavy())
     }
 
     /// Whether the "Gemini-tan" mascot on the DJ Gem start screen should be dancing right now. True
