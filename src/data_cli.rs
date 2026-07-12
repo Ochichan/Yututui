@@ -412,9 +412,11 @@ fn resolve_destination(requested: Option<&str>) -> Result<PathBuf, String> {
     if path
         .to_string_lossy()
         .chars()
-        .any(|character| character.is_control())
+        .any(is_terminal_unsafe_character)
     {
-        return Err("destination paths cannot contain control characters".to_string());
+        return Err(
+            "destination paths cannot contain control or bidirectional characters".to_string(),
+        );
     }
     let metadata = fs::symlink_metadata(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -441,7 +443,20 @@ fn resolve_destination(requested: Option<&str>) -> Result<PathBuf, String> {
             path.display()
         ));
     }
-    Ok(path)
+    let canonical = fs::canonicalize(&path).map_err(|error| {
+        format!(
+            "could not resolve destination `{}`: {error}",
+            path.display()
+        )
+    })?;
+    if canonical
+        .to_string_lossy()
+        .chars()
+        .any(is_terminal_unsafe_character)
+    {
+        return Err("destination paths cannot contain control or bidirectional characters".into());
+    }
+    Ok(canonical)
 }
 
 fn expand_tilde(raw: &str) -> Result<PathBuf, String> {
@@ -539,12 +554,22 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
 
-        assert_eq!(resolve_destination(root.to_str()).unwrap(), root);
+        assert_eq!(
+            resolve_destination(root.to_str()).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+        let via_parent = root.join("child").join("..");
+        fs::create_dir(root.join("child")).unwrap();
+        assert_eq!(
+            resolve_destination(via_parent.to_str()).unwrap(),
+            fs::canonicalize(&root).unwrap(),
+            "the CLI and live owner must compare the same canonical directory"
+        );
         let missing = root.join("missing");
         assert!(resolve_destination(missing.to_str()).is_err());
         assert!(resolve_destination(Some("bad\npath")).is_err());
 
-        fs::remove_dir(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]
@@ -564,6 +589,61 @@ mod tests {
 
         fs::remove_file(link).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn intermediate_symlink_is_canonicalized_before_owner_path_validation() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = std::env::temp_dir().join(format!(
+            "yututui-data-cli-intermediate-link-{}",
+            std::process::id()
+        ));
+        let alias = root.with_extension("alias");
+        let _ = fs::remove_file(&alias);
+        let _ = fs::remove_dir_all(&root);
+        let destination = root.join("exports");
+        fs::create_dir_all(&destination).unwrap();
+        symlink(&root, &alias).unwrap();
+
+        let resolved = resolve_destination(alias.join("exports").to_str()).unwrap();
+        assert_eq!(resolved, fs::canonicalize(&destination).unwrap());
+        let export = resolved.join("yututui-personal-data-v1-1783704534-0123456789abcdef.json");
+        fs::write(&export, b"{}\n").unwrap();
+        fs::set_permissions(&export, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            validate_owner_export_path(&resolved, export.to_str().unwrap()).unwrap(),
+            export
+        );
+
+        fs::remove_file(alias).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_destination_rejects_hidden_terminal_controls() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "yututui-data-cli-hidden-control-{}",
+            std::process::id()
+        ));
+        let alias = root.with_extension("alias");
+        let _ = fs::remove_file(&alias);
+        let _ = fs::remove_dir_all(&root);
+        let hidden = root.join("private\u{202e}target");
+        fs::create_dir_all(hidden.join("exports")).unwrap();
+        symlink(&hidden, &alias).unwrap();
+
+        assert!(
+            resolve_destination(alias.join("exports").to_str()).is_err(),
+            "canonical target controls must be rejected before export"
+        );
+
+        fs::remove_file(alias).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

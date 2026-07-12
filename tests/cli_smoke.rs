@@ -21,6 +21,16 @@ fn isolated_root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ytt-cli-smoke-{name}-{}", std::process::id()))
 }
 
+fn create_private_dir_all(path: &Path) {
+    std::fs::create_dir_all(path).expect("isolated private directory should be creatable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("isolated private directory should be private");
+    }
+}
+
 fn isolated_command(root: &Path, args: &[&str]) -> Command {
     let runtime = root.join("runtime");
     std::fs::create_dir_all(&runtime).expect("isolated runtime dir should be creatable");
@@ -256,8 +266,9 @@ fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
     let data_dir = root.join("data");
     let export_dir = root.join("exports");
     for directory in [&config_dir, &data_dir, &export_dir] {
-        std::fs::create_dir_all(directory).expect("isolated export directory");
+        create_private_dir_all(directory);
     }
+    create_private_dir_all(&root);
 
     const SECRET: &str = "cli-export-secret-sentinel";
     const PRIVATE_PATH: &str = "/Users/alice/private/music.flac";
@@ -328,7 +339,8 @@ fn personal_data_export_recovers_from_a_stale_descriptor_without_deleting_it() {
     let root = isolated_root("stale-personal-export");
     let _ = std::fs::remove_dir_all(&root);
     let export_dir = root.join("exports");
-    std::fs::create_dir_all(&export_dir).expect("isolated export directory");
+    create_private_dir_all(&export_dir);
+    create_private_dir_all(&root);
 
     // A one-shot remote probe creates the same private runtime directory that the later export
     // will use, without starting the TUI or publishing an instance descriptor.
