@@ -293,6 +293,7 @@ fn default_capabilities() -> Vec<String> {
         "remote-control".to_string(),
         "status".to_string(),
         "queue-control".to_string(),
+        super::PERSONAL_EXPORT_CAPABILITY.to_string(),
         // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
         "events-v8".to_string(),
@@ -515,6 +516,15 @@ mod tests {
 
     fn parse(resp: &str) -> RemoteResponse {
         serde_json::from_str(resp.trim()).unwrap()
+    }
+
+    #[test]
+    fn standalone_owner_advertises_personal_export_capability() {
+        assert!(
+            default_capabilities()
+                .iter()
+                .any(|capability| capability == super::super::PERSONAL_EXPORT_CAPABILITY)
+        );
     }
 
     #[tokio::test]

@@ -211,6 +211,7 @@ impl App {
             mousemap: self.mousemap.clone(),
             capturing: None,
             spotify_import_mode_dropdown: None,
+            personal_data_export: self.personal_export_status(),
             // Show the radio-recording item whenever the user is in a radio context —
             // dedicated Radio mode OR a radio station is currently loaded/playing (recording
             // runs on any station, not only in the dedicated UI), so it's never hidden when
@@ -892,8 +893,6 @@ impl App {
                 s.draft.scrobble_local_files = !s.draft.scrobble_local_files;
                 Vec::new()
             }
-            // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
-            // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile
             | Field::DownloadDir
             | Field::LocalMusicRoot
@@ -908,6 +907,7 @@ impl App {
             | Field::SpotifyClientId
             | Field::SpotifyRedirectPort
             | Field::ThemeColor(_)
+            | Field::ExportPersonalData
             | Field::ResetKeybindings
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
@@ -1011,6 +1011,7 @@ impl App {
                 Vec::new()
             }
             FieldKind::Button => match field {
+                Field::ExportPersonalData => self.start_personal_export_to_downloads(),
                 Field::ResetKeybindings => {
                     self.settings_request_confirm(SettingsConfirm::ResetKeybindings);
                     Vec::new()
@@ -1881,7 +1882,7 @@ impl App {
                 let new_dir = self.config.effective_download_dir();
                 if new_dir != old_dir {
                     cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
-                    cmds.push(Cmd::ScanDownloads(new_dir));
+                    cmds.push(Cmd::Data(DataCmd::ScanDownloads(new_dir)));
                 }
                 if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
                     cmds.extend(self.request_local_scan(false));
@@ -2164,7 +2165,7 @@ impl App {
         let new_download_dir = self.config.effective_download_dir();
         if new_download_dir != old_download_dir {
             cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
-            cmds.push(Cmd::ScanDownloads(new_download_dir));
+            cmds.push(Cmd::Data(DataCmd::ScanDownloads(new_download_dir)));
         }
         if self.local_dedicated_mode && self.local_scan_roots() != old_local_roots {
             cmds.extend(self.request_local_scan(false));

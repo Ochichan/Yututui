@@ -84,6 +84,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제"
         )
         .to_owned()
+    } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
+        format!(
+            "{} {}",
+            k(Action::Confirm),
+            t!(
+                "export · unencrypted JSON · includes private listening history",
+                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함"
+            )
+        )
     } else if st.tab == SettingsTab::Keys {
         let mouse_row = st.row >= keymap::editable_entries().len();
         if ko && mouse_row {
@@ -512,6 +521,7 @@ fn slider_str(bar: &str, num: &str) -> String {
 /// blinking edit caret swaps `▏`↔space — both one cell, so the math holds mid-blink too).
 fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
     match (field, field.kind()) {
+        (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
         (f, _) if f.is_secret() && focused && st.editing_text => {
@@ -740,6 +750,12 @@ fn register_field_controls(
                 let last = vx.saturating_add(w.saturating_sub(1));
                 put(last, 1, y, MouseTarget::SettingsChange { row: i, delta: 1 });
             }
+            FieldKind::Button
+                if field == Field::ExportPersonalData && st.personal_data_export.is_busy() =>
+            {
+                // Keep the row focusable while work is running, but do not publish an action
+                // target that could enqueue a duplicate export from a second click.
+            }
             FieldKind::Button | FieldKind::Text => {
                 put(vx, w, y, MouseTarget::SettingsActivate(i));
             }
@@ -893,7 +909,9 @@ fn field_row<'a>(
     // column lines up regardless of label length. The value text itself is produced by the
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
-    let value_role = if focused {
+    let value_role = if field == Field::ExportPersonalData && st.personal_data_export.is_busy() {
+        R::TextMuted
+    } else if focused {
         R::SettingsValueFocused
     } else {
         R::SettingsValue

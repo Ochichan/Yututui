@@ -79,7 +79,7 @@ fn private_file_mode() -> u32 {
 }
 
 #[cfg(unix)]
-fn is_owned_by_current_user(meta: &fs::Metadata) -> bool {
+pub fn is_owned_by_current_user(meta: &fs::Metadata) -> bool {
     // SAFETY: `geteuid` has no preconditions and cannot fail; the returned uid is
     // only compared against metadata ownership.
     let euid = unsafe { libc::geteuid() };
@@ -328,6 +328,15 @@ pub fn read_to_string_no_symlink(path: &Path) -> io::Result<String> {
 pub fn read_no_symlink_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     let file = open_no_symlink(path)?;
     let meta = file.metadata()?;
+    read_opened_limited(file, &meta, path, max_bytes)
+}
+
+fn read_opened_limited(
+    file: File,
+    meta: &fs::Metadata,
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
     if !meta.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

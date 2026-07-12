@@ -18,6 +18,7 @@ impl App {
             local_mode: LocalMode::default(),
             overlays: Overlays::default(),
             transfer_running: false,
+            personal_export: PersonalDataExportState::default(),
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,

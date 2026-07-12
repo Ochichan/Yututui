@@ -406,6 +406,21 @@ For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to
 - Downloads: `~/Music/yututui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
 - `GEMINI_API_KEY` and `YTM_DOWNLOAD_DIR` override saved settings at launch.
 
+**Portable personal-data export.** Choose **Settings (`o`) → General → Export personal data**, or run:
+
+```sh
+ytt data export                         # save to the OS Downloads folder
+ytt data export --to ~/existing-folder # choose an existing directory
+```
+
+`--to` takes a directory, not a filename, and does not create it. A destination where another local account could replace the finished file is rejected. The result is a new, owner-private, never-overwritten, versioned JSON file containing sanitized portable settings; track and radio favorites; listening and radio history; playlists and safe track metadata/public catalog IDs; and recommendation signals, artist affinities and station preferences.
+
+If the primary app or daemon is running, the CLI exports that owner's current in-memory state. With additional `--new-instance` players, the CLI still exports only the advertised primary; use each secondary's Settings screen for its live state. Offline export refuses to read the stores while any current-version ytt owner is active.
+
+It excludes authentication cookies, API keys, OAuth tokens and account identifiers; every filesystem path and machine-specific audio setting; playable, origin, artwork and radio-stream URLs; downloaded/recorded media, manifests and sidecars; pending scrobbles, transfer jobs/reports and session queues; AI usage logs, generated caches, artwork caches and application logs; managed-tool binaries and paths, desktop geometry and recovery backups.
+
+The JSON is **not encrypted** and still contains private listening history, so store or share it accordingly. This version is export-only: there is no import or restore command yet.
+
 </details>
 
 <details>

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::remote::PERSONAL_EXPORT_CAPABILITY;
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
@@ -21,9 +22,10 @@ use crate::util::process::{self, ProcessProfile};
 
 mod engine;
 mod must_deliver;
+mod ownership;
 #[cfg(test)]
 mod parity_tests;
-
+mod personal_export;
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
 const EXIT_USAGE: i32 = 2;
@@ -124,6 +126,10 @@ pub fn run_cli(args: &[String]) -> i32 {
         }
     };
 
+    let Ok(data_owner) = ownership::acquire_for(&command) else {
+        return EXIT_TRANSPORT;
+    };
+
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -134,7 +140,8 @@ pub fn run_cli(args: &[String]) -> i32 {
             return EXIT_TRANSPORT;
         }
     };
-    rt.block_on(run_command(command))
+    let result = rt.block_on(run_command(command));
+    ownership::finish_runtime(rt, data_owner, result)
 }
 
 async fn run_command(command: DaemonCommand) -> i32 {
@@ -188,6 +195,7 @@ enum DaemonEvent {
         video_id: String,
         updated: bool,
     },
+    PersonalExportFinished(personal_export::Finished),
     Signal,
     TelemetryWake,
 }
@@ -272,6 +280,9 @@ impl DaemonEvent {
             DaemonEvent::YtdlpHeal { .. } => EventPolicy::DropIfStale {
                 stale_key: Key::YtdlpHealVideo,
             },
+            DaemonEvent::PersonalExportFinished { .. } => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::Signal => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -290,6 +301,7 @@ impl DaemonEvent {
             DaemonEvent::MediaArt(_) => "media_art",
             DaemonEvent::Scrobble(_) => "scrobble",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
+            DaemonEvent::PersonalExportFinished { .. } => "personal_export_finished",
             DaemonEvent::Signal => "signal",
             DaemonEvent::TelemetryWake => "telemetry_wake",
         }
@@ -536,6 +548,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     dispatch_engine_effects(&api, &event_tx, engine.initial_effects());
 
     let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
+    let mut personal_export = personal_export::PersonalExport::default();
 
     loop {
         let event = if let Some(event) = pending_events.pop_front() {
@@ -557,16 +570,21 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             continue;
         }
         match event {
-            DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => {
-                let (response, shutdown, effects) = engine.handle_remote(command).await;
-                let _ = reply.send(response);
-                dispatch_engine_effects(&api, &event_tx, effects);
-                if shutdown {
-                    publisher.shutting_down();
-                    tokio::time::sleep(SHUTDOWN_REPLY_GRACE).await;
-                    break;
+            DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
+                RemoteCommand::ExportPersonalData { directory } => {
+                    personal_export.start_engine(directory, reply, &engine, event_tx.clone());
                 }
-            }
+                command => {
+                    let (response, shutdown, effects) = engine.handle_remote(command).await;
+                    let _ = reply.send(response);
+                    dispatch_engine_effects(&api, &event_tx, effects);
+                    if shutdown {
+                        publisher.shutting_down();
+                        tokio::time::sleep(SHUTDOWN_REPLY_GRACE).await;
+                        break;
+                    }
+                }
+            },
             // Owner lane (docs/gui/02 §8/§14): initial snapshots + reply from current
             // engine state, in order, into this session's queue.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe {
@@ -609,6 +627,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 let effects = engine.handle_heal_result(video_id, updated).await;
                 dispatch_engine_effects(&api, &event_tx, effects);
             }
+            DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
             DaemonEvent::Scrobble(event) => log_scrobble_event(event),
             DaemonEvent::Signal => break,
             DaemonEvent::TelemetryWake => unreachable!("telemetry wake is handled before dispatch"),
@@ -779,6 +798,7 @@ fn daemon_capabilities() -> Vec<String> {
         "search-playback".to_string(),
         // v8 sessions with live push (docs/gui/02 §10).
         "events-v8".to_string(),
+        PERSONAL_EXPORT_CAPABILITY.to_string(),
     ]
 }
 
@@ -1162,6 +1182,7 @@ mod tests {
     fn daemon_capabilities_advertise_headless_playback() {
         assert!(daemon_capabilities().contains(&"headless-playback".to_string()));
         assert!(daemon_capabilities().contains(&"queue-control".to_string()));
+        assert!(daemon_capabilities().contains(&PERSONAL_EXPORT_CAPABILITY.to_string()));
     }
 
     #[test]

@@ -34,6 +34,8 @@ use crate::playback_policy::{
 
 const SESSION_EVENTS_CAP: usize = 20;
 
+mod personal_export;
+
 pub struct EngineOptions {
     pub resume: bool,
 }
@@ -441,6 +443,11 @@ impl DaemonEngine {
                 self.config = Config::default();
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
+            }
+            // The serve loop intercepts this command because the response must stay pending while
+            // a blocking writer runs and because the engine intentionally owns no playlists.
+            RemoteCommand::ExportPersonalData { .. } => {
+                RemoteResponse::err("invalid_export_dispatch")
             }
         };
         (response, shutdown, effects)

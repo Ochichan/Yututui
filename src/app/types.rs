@@ -112,8 +112,8 @@ pub enum Msg {
         title: String,
         error: String,
     },
-    /// Download folder scan completed.
-    DownloadsScanned(crate::library::DownloadScan),
+    /// Local-data work completed: a download scan or portable personal-data export.
+    Data(DataMsg),
     /// Local Deck index load/scan result.
     Local(LocalMsg),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
@@ -209,6 +209,61 @@ pub enum Msg {
     Transfer(crate::transfer::actor::TransferEvent),
 }
 
+/// Results from local-data workers that are applied on the owner lane.
+pub enum DataMsg {
+    /// Download folder scan completed.
+    DownloadsScanned(crate::library::DownloadScan),
+    /// A portable personal-data export worker event.
+    PersonalDataExport(PersonalDataExportMsg),
+}
+
+/// Events produced by the portable personal-data export worker.
+pub enum PersonalDataExportMsg {
+    /// The off-loop writer completed.
+    Finished {
+        result: Result<PathBuf, String>,
+        /// Kept on the owner-lane completion event so busy state is cleared before a remote
+        /// success/failure becomes observable and an immediate retry can arrive.
+        reply: Option<tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+    },
+}
+
+/// Small owner-lane guard shared by Settings and authenticated remote exports.
+#[derive(Debug, Default)]
+pub(crate) struct PersonalDataExportState {
+    pub(crate) in_progress: bool,
+}
+
+/// Owned source state for a personal-data export. This deliberately carries the original
+/// secret-bearing types only as far as the blocking worker; projection there produces the
+/// allowlisted [`crate::data_export::ExportSnapshot`] before anything is written.
+pub struct PersonalDataExportSources {
+    pub(crate) config: Config,
+    pub(crate) library: Library,
+    pub(crate) playlists: Playlists,
+    pub(crate) signals: Signals,
+    pub(crate) station: StationStore,
+}
+
+/// Local-data effects dispatched by the runtime.
+pub enum DataCmd {
+    /// Refresh the local downloads list from this folder.
+    ScanDownloads(PathBuf),
+    /// Run one portable personal-data export.
+    PersonalDataExport(PersonalDataExportCmd),
+}
+
+/// Effects in the portable personal-data export domain.
+pub enum PersonalDataExportCmd {
+    /// Project owned source state and write its sanitized snapshot off the UI loop. A remote
+    /// reply channel is carried only for `ytt data export`; the in-TUI button uses `None`.
+    Export {
+        directory: PathBuf,
+        sources: Box<PersonalDataExportSources>,
+        reply: Option<tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>>,
+    },
+}
+
 /// Side effects the reducer asks the run loop to perform.
 pub enum Cmd {
     Player(PlayerCmd),
@@ -254,8 +309,8 @@ pub enum Cmd {
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
     Persist(PersistCmd),
-    /// Refresh the local downloads list from this folder.
-    ScanDownloads(PathBuf),
+    /// Local-data work: download scans and portable personal-data exports.
+    Data(DataCmd),
     /// Load or rebuild the Local Deck index off the UI thread.
     Local(LocalCmd),
     /// Fetch synced lyrics for a track.

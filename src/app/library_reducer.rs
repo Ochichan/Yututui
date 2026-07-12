@@ -510,7 +510,7 @@ impl App {
         self.clamp_library_selection();
         self.dirty = true;
         vec![
-            Cmd::ScanDownloads(self.config.effective_download_dir()),
+            Cmd::Data(DataCmd::ScanDownloads(self.config.effective_download_dir())),
             Cmd::Persist(PersistCmd::Downloads),
         ]
     }

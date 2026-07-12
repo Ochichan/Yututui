@@ -1,15 +1,31 @@
 use yututui::{
-    auth_cli, config, daemon, doctor, i18n, media, remote,
+    auth_cli, config, daemon, data_ownership, doctor, i18n, media, remote,
     terminal_runtime::{self, StartupTrace},
     tools, transfer, tui, update, zoom,
 };
 
 use anyhow::Result;
 
+mod data_cli;
+
 fn cli_identity() -> (&'static str, &'static str) {
     match option_env!("CARGO_BIN_NAME") {
         Some("ytt-dev") => ("ytt-dev", concat!(env!("CARGO_PKG_VERSION"), "-dev")),
         _ => ("ytt", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+/// One-shot commands that may update exported stores participate in the same shared ownership
+/// protocol as the TUI/daemon. This prevents an offline export from reading across their writes.
+fn cli_data_owner_or_exit(surface: &str) -> data_ownership::OwnerGuard {
+    match data_ownership::acquire_owner() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!(
+                "{surface}: cannot run while an offline personal-data export is active: {error}"
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -40,6 +56,7 @@ fn main() -> Result<()> {
                 println!(
                     "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
+                println!("       {bin} data <cmd>       Export portable personal data");
                 println!("       {bin} doctor [-v]      Check your environment and exit");
                 println!("       {bin} doctor audio [-v]");
                 println!("       {bin} doctor privacy [--cleanup]");
@@ -87,6 +104,7 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                let _data_owner = cli_data_owner_or_exit("ytt auth");
                 std::process::exit(auth_cli::run(&rest));
             }
             // Playlist transfer (Spotify ↔ YTM ↔ files) - batch jobs, never the TUI.
@@ -95,7 +113,17 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                let _data_owner = cli_data_owner_or_exit("ytt transfer");
                 std::process::exit(transfer::cli::run(&rest));
+            }
+            // Portable settings/library export. This one-shot path never initializes the TUI;
+            // it delegates to a capable live owner or snapshots persisted state when offline.
+            "data" => {
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
+                std::process::exit(data_cli::run(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
@@ -105,6 +133,7 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                let _data_owner = cli_data_owner_or_exit("ytt doctor");
                 std::process::exit(doctor::run_with_args(&rest));
             }
             // Managed yt-dlp maintenance (status / forced update) - same one-shot,
@@ -114,6 +143,7 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                let _data_owner = cli_data_owner_or_exit("ytt tools");
                 std::process::exit(tools::cli::run(&rest));
             }
             // App update check - reports whether a newer YuTuTui! release exists and how to
@@ -123,6 +153,7 @@ fn main() -> Result<()> {
                     .skip(2)
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
+                let _data_owner = cli_data_owner_or_exit("ytt update");
                 std::process::exit(update::cli::run(&rest));
             }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
@@ -145,13 +176,22 @@ fn main() -> Result<()> {
     // Custom runtime: 2 workers + 512 KB stacks keeps stack RSS ~1.5 MB (vs ~4.5 MB
     // at the 2 MB default). The render loop runs on the main task; actors run on the
     // worker threads so a blocked IPC read never stalls rendering.
+    // Acquire before the first config/store read and keep the claim outside the Tokio runtime.
+    // Runtime shutdown can finish detached/spawn_blocking writers after the top-level future
+    // returns, so the ownership lock must outlive that shutdown too.
+    let data_owner = data_ownership::acquire_owner().map_err(|error| {
+        anyhow::anyhow!("could not start while an offline personal-data export is active: {error}")
+    })?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_stack_size(512 * 1024)
         .enable_all()
         .build()?;
     startup.mark("runtime_built");
-    rt.block_on(async_main(new_instance, startup))
+    let result = rt.block_on(async_main(new_instance, startup));
+    drop(rt);
+    drop(data_owner);
+    result
 }
 
 async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {

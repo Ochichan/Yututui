@@ -702,7 +702,10 @@ fn downloads_delete_confirms_then_removes_file() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.library_ui.confirm_delete.is_none());
     assert!(!file.exists());
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Data(DataCmd::ScanDownloads(_))))
+    );
 }
 
 #[test]
@@ -718,7 +721,10 @@ fn downloads_delete_refuses_file_outside_download_dir() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(file.exists());
     assert_eq!(app.library_ui.downloaded.len(), 1);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Data(DataCmd::ScanDownloads(_))))
+    );
     let _ = std::fs::remove_file(&file);
     let _ = std::fs::remove_dir_all(root);
 }
