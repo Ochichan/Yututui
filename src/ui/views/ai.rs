@@ -161,8 +161,8 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::Warning)),
             Line::from(t!(
-                "Add one in Settings (press , then the DJ Gem tab),",
-                "설정에서 추가하거나 ( , 를 누른 뒤 DJ Gem 탭),"
+                "Add one in Settings under the DJ Gem tab,",
+                "설정의 DJ Gem 탭에서 추가하거나,"
             ))
             .style(app.theme.style(R::TextPrimary)),
             Line::from(t!(
@@ -925,6 +925,8 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("DJ"));
         assert!(text.contains("GEM"));
+        assert!(text.contains("Settings under the DJ Gem tab"));
+        assert!(!text.contains("press ,"));
     }
 
     #[test]

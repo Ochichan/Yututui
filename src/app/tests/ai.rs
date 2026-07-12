@@ -24,7 +24,12 @@ fn ai_submit_without_key_shows_onboarding_error() {
     assert!(ask_ai(&cmds).is_none(), "no AskAi without a key");
     assert!(!app.ai.thinking);
     // Transcript holds the user prompt plus an error line.
-    assert_eq!(app.ai.messages.last().unwrap().role, AiRole::Error);
+    let error = app.ai.messages.last().unwrap();
+    assert_eq!(error.role, AiRole::Error);
+    assert_eq!(
+        error.text,
+        "No Gemini API key. Add one under Settings > DJ Gem or set GEMINI_API_KEY."
+    );
     assert!(
         app.ai
             .messages

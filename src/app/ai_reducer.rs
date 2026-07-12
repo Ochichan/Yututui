@@ -208,7 +208,7 @@ impl App {
             self.push_ai_message(
                 AiRole::Error,
                 // Saving a key in Settings now brings the assistant up live (no restart).
-                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY."
+                "No Gemini API key. Add one under Settings > DJ Gem or set GEMINI_API_KEY."
                     .to_owned(),
             );
             return Vec::new();
