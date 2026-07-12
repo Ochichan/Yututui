@@ -287,6 +287,28 @@ struct UpdateState {
     /// The newest tag the reducer has accepted and requested notification for.
     #[serde(alias = "toasted_tag")]
     notified_tag: Option<String>,
+    /// The running version everything above was learned under.
+    checked_for: Option<String>,
+}
+
+/// `state` with every cached conclusion voided when the binary version changed since it
+/// was saved (files from before this field always mismatch). Without this, a cached
+/// `latest_tag` that outranks the freshly installed build — e.g. v1.6.27 cached, then
+/// v1.6.3 installed — nags to "update" backwards until the TTL expires. `notified_tag`
+/// survives: it only suppresses the one-shot toast/notification for a tag the user
+/// already saw, which stays true across an upgrade. Callers key on
+/// `env!("CARGO_PKG_VERSION")`, never the display version — `ytt` and `ytt-dev`
+/// (`X.Y.Z-dev`) share one `update.json` and must agree on the stamp.
+fn revalidated(state: UpdateState, current: &str) -> UpdateState {
+    if state.checked_for.as_deref() == Some(current) {
+        state
+    } else {
+        UpdateState {
+            checked_for: Some(current.to_owned()),
+            notified_tag: state.notified_tag,
+            ..UpdateState::default()
+        }
+    }
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -391,7 +413,7 @@ pub async fn resolve_latest() -> Result<String, String> {
 /// only when a cached latest is strictly newer than the running build. `ytt doctor` uses this
 /// to report update availability offline.
 pub fn cached_newer_tag() -> Option<String> {
-    let latest = load_state().latest_tag?;
+    let latest = revalidated(load_state(), env!("CARGO_PKG_VERSION")).latest_tag?;
     is_newer(&latest, env!("CARGO_PKG_VERSION")).then_some(latest)
 }
 
@@ -415,7 +437,7 @@ where
 
     BackgroundTask::spawn("application update check", async move {
         tokio::time::sleep(POST_START_DELAY).await;
-        let mut state = load_state();
+        let mut state = revalidated(load_state(), env!("CARGO_PKG_VERSION"));
         let now = now_unix();
 
         let within_ttl = state
@@ -597,6 +619,68 @@ mod tests {
         assert_eq!(sparse.latest_tag, None);
         assert_eq!(sparse.last_check_unix, None);
         assert_eq!(sparse.notified_tag, None);
+        assert_eq!(sparse.checked_for, None);
+    }
+
+    #[test]
+    fn version_change_voids_cached_state() {
+        let cached = || UpdateState {
+            last_check_unix: Some(100),
+            last_attempt_unix: Some(100),
+            latest_tag: Some("v1.6.27".to_owned()),
+            notified_tag: Some("v1.6.27".to_owned()),
+            checked_for: Some("1.6.27".to_owned()),
+        };
+
+        // Same binary as when the cache was written — state survives untouched.
+        let kept = revalidated(cached(), "1.6.27");
+        assert_eq!(kept.latest_tag.as_deref(), Some("v1.6.27"));
+        assert_eq!(kept.last_check_unix, Some(100));
+
+        // The reported bug: 1.6.3 installed while v1.6.27 (semver-higher) is still
+        // cached. The cache must not survive to nag a downgrade to v1.6.27 — but the
+        // already-acknowledged notification stays acknowledged.
+        let reset = revalidated(cached(), "1.6.3");
+        assert_eq!(reset.latest_tag, None);
+        assert_eq!(reset.last_check_unix, None);
+        assert_eq!(reset.last_attempt_unix, None);
+        assert_eq!(reset.notified_tag.as_deref(), Some("v1.6.27"));
+        assert_eq!(reset.checked_for.as_deref(), Some("1.6.3"));
+
+        // Files from before `checked_for` existed carry no version — always voided.
+        let legacy = revalidated(
+            UpdateState {
+                latest_tag: Some("v1.6.27".to_owned()),
+                ..Default::default()
+            },
+            "1.6.3",
+        );
+        assert_eq!(legacy.latest_tag, None);
+        assert_eq!(legacy.checked_for.as_deref(), Some("1.6.3"));
+    }
+
+    #[test]
+    fn cached_tag_from_another_version_is_ignored() {
+        // Wiring guard for the load path itself (tests redirect the data dir): a
+        // semver-higher tag cached under some other running version must not surface,
+        // while the same tag stamped with this build's version must.
+        save_state(&UpdateState {
+            last_check_unix: Some(100),
+            latest_tag: Some("v99.0.0".to_owned()),
+            checked_for: Some("0.0.0-some-other-build".to_owned()),
+            ..Default::default()
+        });
+        assert_eq!(cached_newer_tag(), None);
+
+        save_state(&UpdateState {
+            last_check_unix: Some(100),
+            latest_tag: Some("v99.0.0".to_owned()),
+            checked_for: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            ..Default::default()
+        });
+        assert_eq!(cached_newer_tag().as_deref(), Some("v99.0.0"));
+
+        save_state(&UpdateState::default());
     }
 
     #[test]
