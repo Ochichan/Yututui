@@ -139,6 +139,14 @@ impl RomanizeCache {
         crate::persist::remove_store_file(&path).map(|_| ())
     }
 
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.rev = self.rev.wrapping_add(1);
         self.entries.clear();

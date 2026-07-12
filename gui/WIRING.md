@@ -54,9 +54,8 @@ daemon dispatches most of them for real:
   the wire) · `spotify_connect` / `transfer_list_spotify` / `transfer_start` /
   `transfer_cancel` (transfer topic; GUI imports land in the app's LOCAL playlist
   store — create-or-append by name, never the YouTube Music account)
-- **Still `not_supported` (the last stream)**: `queue_remove_many` (no frontend
-  sender yet) · `keymap_bind` / `keymap_unbind` / `keymap_reset_all` ·
-  `theme_set_override` / `theme_clear_override` · `clear_romanization_cache`
+- **Still `not_supported`**: `queue_remove_many` only (no frontend sender exists;
+  the variant waits for a multi-select remove UI)
 - The standalone TUI owner answers `daemon_required` for the whole set (the GUI
   surface is daemon-only by design)
 
@@ -70,12 +69,15 @@ the variants land. Server-side landing order: `RemoteCommand` variants + core di
 parity tests (lockstep), regenerate ts-rs types, advertise the capability — every gate
 then dissolves without a frontend release.
 
-### 2. Pending — the patch-bay registry
+### 2. Pending — the patch-bay registry (RETIRED)
 
-`gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
-UI is finished but whose wire is not. Current entries (delete each as you wire it):
-
-`core.v8-commands`
+**The registry is empty and the patch-bay machinery is gone.** `core.v8-commands` was
+the last entry: the daemon now dispatches the full deferred surface and advertises the
+`v8-commands` capability, so the wiring module (`lib/wiring/`), WipModal/WireTag/
+PendingSurface, the `TODO(wire:…)` markers, and `tests/wiring.test.ts` were all retired
+with it. Against a standalone **TUI** owner the deep surfaces answer `daemon_required`,
+which the global mutation-failure toast reports — the GUI is a daemon-owner client by
+design.
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
@@ -104,11 +106,18 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
 - **Lyrics wire shape** (wired, `lyrics.live`): `PushEvent::LyricsSnapshot { video_id,
   lines: LyricLineModel[] }` — canonical generated types; the daemon publishes it
   (`src/daemon/lyrics_host.rs`), the demo core speaks the same shape.
-- **Keyboard** (wired): the live keymap read model (`stores/keymap.svelte.ts`) drives the
-  dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` + `App.svelte`),
-  Settings→Hotkeys, and the Help overlay from one source. The demo core speaks a PROVISIONAL
-  `keymap` block; the Korean 2-set table + chord format are self-consistent with the demo
-  bindings until the Rust chord-fixture cross-test (05 §8.5) lands.
+- **Keyboard** (wired, real vocabulary): the live keymap read model (`stores/keymap.svelte.ts`)
+  drives the dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` +
+  `App.svelte`), Settings→Hotkeys, and the Help overlay from one source. The wire is the C6
+  `KeymapSettingsModel`: `wire_bindings()`'s FULL effective map (`"" = unbound`) + the
+  `wire_actions()` catalog — src/keymap.rs snake_case context/action ids and canonical
+  config-format chords (`ctrl+u`, `space`; `displayChord` prettifies for the UI). Alt-modified
+  chords read the physical `e.code` (macOS Option composes layout glyphs into `e.key`), like
+  IME composition. The demo core's seed mirrors `default_bindings()` row-for-row, and mirrors
+  the bind semantics: a
+  shadow conflict answers `{conflict}` display text and does NOT apply. GUI-fixed keys (rail
+  digits 1–5, Esc-close) stay hardcoded in App.svelte, like the TUI's fixed handlers. Still
+  deferred: the Rust chord-fixture cross-test (05 §8.5).
 - **Settings tab values**: General / Playback / DJ Gem now bind the live `settings` read
   model via `stores/settings.svelte.ts` (model + pending overlay + dirty, docs/gui/05 §5.2);
   the demo core speaks the PROVISIONAL `settings_snapshot` + `apply {group,field,value}`

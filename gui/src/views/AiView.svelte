@@ -10,14 +10,12 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ai, wip } = ctx;
+  const { ai } = ctx;
 
   let prompt = $state('');
 
   function send() {
     if (prompt.trim().length === 0) return;
-    // TODO(wire:B2/core.v8-commands) — ask_ai is demo-core-only until the variant lands.
-    if (!wip.gate('core.v8-commands')) return;
     ai.ask(prompt);
     prompt = '';
   }
@@ -79,7 +77,7 @@
       placeholder={t('ai.placeholder')}
       bind:value={prompt}
       aria-label={t('ai.messageLabel')}
-      data-kctx="AiInput"
+      data-kctx="ai_input"
       data-ui-draft-key="ai-prompt"
     />
     <button class="send" type="submit" title={t('ai.send')}>➤</button>

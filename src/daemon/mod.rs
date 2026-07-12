@@ -1044,6 +1044,10 @@ fn daemon_capabilities() -> Vec<String> {
         // v8 sessions with live push (docs/gui/02 §10).
         "events-v8".to_string(),
         PERSONAL_EXPORT_CAPABILITY.to_string(),
+        // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
+        // rating, video, library, playlists, downloads, AI, accounts, transfer,
+        // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.
+        "v8-commands".to_string(),
     ]
 }
 

@@ -18,10 +18,6 @@
   const { keymap } = ctx;
 
   const groups = $derived(keymap.groups);
-
-  function labelFor(shadows: string): string {
-    return keymap.actions.find((a) => a.id === shadows)?.label ?? shadows;
-  }
 </script>
 
 {#if groups.length === 0}
@@ -42,11 +38,9 @@
         {#if conflicted}
           <span
             class="conflict"
-            title={t('settings.hotkeys.alsoBoundTo', {
-              name: labelFor(keymap.conflict!.shadows),
-            })}
+            title={t('settings.hotkeys.alsoBoundTo', { name: keymap.conflict!.shadows })}
           >
-            ⚠ {labelFor(keymap.conflict!.shadows)}
+            ⚠ {keymap.conflict!.shadows}
           </span>
         {/if}
         <button class="mini" onclick={() => keymap.startCapture(a.context, a.id)}

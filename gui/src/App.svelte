@@ -15,7 +15,6 @@
   import TransportBar from './views/TransportBar.svelte';
   import HelpOverlay from './views/overlays/HelpOverlay.svelte';
   import AboutCard from './views/overlays/AboutCard.svelte';
-  import WipModal from './lib/components/WipModal.svelte';
   import ChordCapture from './lib/components/ChordCapture.svelte';
   import { chordFromEvent, isTypeableTarget, isPlainTypeable } from './lib/keyboard/chord';
   import { resolveContext } from './lib/keyboard/dispatcher';
@@ -28,7 +27,7 @@
   // The ctx bundle is assembled once in main.ts and its identity never changes — the
   // stores inside are the reactive things, so capturing them at init is intended.
   // svelte-ignore state_referenced_locally
-  const { ui, connection, playback, settings, toasts, wip, client, boot, demo, keymap } = ctx;
+  const { ui, connection, playback, settings, toasts, client, boot, demo, keymap } = ctx;
 
   // Live-switch the whole UI language off the settings model (i18n.catalog).
   $effect(() => {
@@ -115,7 +114,7 @@
   }
 
   // The real keymap dispatcher (docs/gui/05 §8): normalize the chord (3-branch Korean rule),
-  // resolve the focus context, look it up in the user's keymap (specific → Common → Global),
+  // resolve the focus context, look it up in the user's keymap (specific → common → global),
   // and run the action. The is_typeable guard keeps plain keys flowing into text fields.
   function onkeydown(e: KeyboardEvent) {
     // While a chord is being captured, ChordCapture owns the keyboard.
@@ -125,7 +124,20 @@
     if (isTypeableTarget(e.target) && isPlainTypeable(e)) return;
     const context = resolveContext(ui.view, document.activeElement);
     const action = keymap.match(context, chord);
-    if (!action) return;
+    if (!action) {
+      // GUI-fixed keys, like the TUI's own fixed handlers (not remappable): plain digits
+      // jump the rail (the rail buttons advertise them), Esc closes the top overlay.
+      if (/^[1-9]$/.test(chord)) {
+        const item = NAV_ITEMS[Number(chord) - 1];
+        if (item) {
+          ui.setView(item.id);
+          e.preventDefault();
+        }
+        return;
+      }
+      if (chord === 'esc' && ui.closeTopOverlay()) e.preventDefault();
+      return;
+    }
     if (runAction(action, ctx)) e.preventDefault();
   }
 </script>
@@ -226,7 +238,6 @@
 {#if ui.aboutOpen}
   <AboutCard {ctx} />
 {/if}
-<WipModal {wip} {client} {toasts} transportLive={!demo} />
 <ChordCapture {keymap} />
 
 <div class="toasts" aria-live="polite">

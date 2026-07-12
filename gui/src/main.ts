@@ -27,7 +27,6 @@ import { KeymapStore } from './lib/stores/keymap.svelte';
 import { LyricsStore } from './lib/stores/lyrics.svelte';
 import { WhyGemStore } from './lib/stores/whygem.svelte';
 import { ToastStore } from './lib/stores/toasts.svelte';
-import { WipStore } from './lib/wiring/wip.svelte';
 
 const boot = readBoot();
 
@@ -68,7 +67,6 @@ const ctx: AppCtx = {
   lyrics: new LyricsStore(client),
   whygem: new WhyGemStore(client),
   toasts,
-  wip: new WipStore(connection, !transport.live),
 };
 
 // One subscription for the whole window; the gateway aggregates across windows. Topics

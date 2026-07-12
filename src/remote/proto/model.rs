@@ -335,6 +335,19 @@ pub struct SpotifyAccountModel {
     pub redirect_port: Option<u16>,
 }
 
+/// Core-side keymap conflict info for `keymap_bind` replies (the shadowed binding, as
+/// display text). The bind is NOT applied on conflict — the authoritative settings push
+/// reconciles the GUI's optimistic chord back while this explains why.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapConflictModel {
+    pub shadows: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

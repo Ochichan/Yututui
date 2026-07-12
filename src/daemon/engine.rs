@@ -30,6 +30,7 @@ mod ai_context;
 mod delivery;
 mod gui_library;
 mod gui_search;
+mod keymap_theme;
 mod persistence_gate;
 mod personal_export;
 mod streaming;
@@ -653,14 +654,26 @@ impl DaemonEngine {
             RemoteCommand::Download { .. } | RemoteCommand::DeleteDownload { .. } => {
                 RemoteResponse::err("not_supported")
             }
+            RemoteCommand::KeymapBind {
+                context,
+                action,
+                chord,
+            } => self.gui_keymap_bind(&context, &action, &chord),
+            RemoteCommand::KeymapUnbind { context, action } => {
+                self.gui_keymap_unbind(&context, &action)
+            }
+            RemoteCommand::KeymapResetAll => self.gui_keymap_reset_all(),
+            RemoteCommand::ThemeSetOverride { role, hex } => {
+                let (response, theme_effects) = self.gui_theme_set_override(role, hex);
+                effects.extend(theme_effects);
+                response
+            }
+            RemoteCommand::ThemeClearOverride { role } => self.gui_theme_clear_override(&role),
+            RemoteCommand::ClearRomanizationCache => self.gui_clear_romanization_cache(),
+            // queue_remove_many has no frontend sender yet; ask_ai and lastfm_connect
+            // are intercepted by the owner-loop hosts before engine dispatch (backstops).
             RemoteCommand::QueueRemoveMany { .. }
             | RemoteCommand::AskAi { .. }
-            | RemoteCommand::KeymapBind { .. }
-            | RemoteCommand::KeymapUnbind { .. }
-            | RemoteCommand::KeymapResetAll
-            | RemoteCommand::ThemeSetOverride { .. }
-            | RemoteCommand::ThemeClearOverride { .. }
-            | RemoteCommand::ClearRomanizationCache
             | RemoteCommand::LastfmConnect => RemoteResponse::err("not_supported"),
             // Defensive backstop: the daemon owner loop owns the transfer actor and
             // intercepts these before engine dispatch.

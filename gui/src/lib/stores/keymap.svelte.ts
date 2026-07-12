@@ -3,73 +3,72 @@
 // in-webview dispatcher (lib/keyboard/) and the Settings→Hotkeys / Help surfaces from one
 // source of truth. Rides the `settings` push, exactly like `anim`/`theme`.
 //
-// ── PROVISIONAL wire shape (settings.hotkeys) ────────────────────────────────────────────
-// `KeymapModel` rides the `settings` snapshot (docs/gui/02 §11.6). Only the demo core speaks
-// it today; reconcile with the ts-rs export + the real `Apply(Keymap(Bind|Unbind|ResetAll))`
-// wire when settings-v8 lands. **Conflict detection stays core-side** — the demo does a
-// simple shadow check and returns it in the `keymap_bind` reply; the GUI never reimplements
-// the `src/keymap.rs` shadowing rules.
+// The wire is the real one (C6): `KeymapSettingsModel` carries the FULL effective map from
+// `KeyMap::wire_bindings()` (`"" = unbound`) plus the `wire_actions()` catalog — snake_case
+// context/action ids and canonical config-format chords, the exact persisted form of
+// src/keymap.rs (05 §8.1). **Conflict detection stays core-side** — `keymap_bind`'s reply
+// carries the shadowed binding as display text; the GUI never reimplements the shadowing
+// rules. The demo core speaks the identical vocabulary (its seed mirrors default_bindings()).
 
 import type { Client } from '../ipc/client';
 import type { SettingsSnapshot } from './settings.svelte';
+import type { ActionInfoModel } from '../../generated/protocol/ActionInfoModel';
 
-/** The 13 KeyContexts in src/keymap.rs, in GUI display order (specific → fallbacks). */
+/** The KeyContext ids of src/keymap.rs (CONTEXT_META), in GUI display order. */
 export type KeyContext =
-  | 'Player'
-  | 'NowPlaying'
-  | 'MpvOverlay'
-  | 'Queue'
-  | 'SearchInput'
-  | 'SearchResults'
-  | 'Library'
-  | 'Playlists'
-  | 'Settings'
-  | 'AiInput'
-  | 'AiSuggestions'
-  | 'Common'
-  | 'Global';
+  | 'player'
+  | 'now_playing'
+  | 'mpv_overlay'
+  | 'queue'
+  | 'search_input'
+  | 'search_results'
+  | 'library'
+  | 'local_deck'
+  | 'playlists'
+  | 'settings'
+  | 'ai_input'
+  | 'ai_suggestions'
+  | 'common'
+  | 'global';
 
 export const KEY_CONTEXTS: KeyContext[] = [
-  'Player',
-  'NowPlaying',
-  'MpvOverlay',
-  'Queue',
-  'SearchInput',
-  'SearchResults',
-  'Library',
-  'Playlists',
-  'Settings',
-  'AiInput',
-  'AiSuggestions',
-  'Common',
-  'Global',
+  'player',
+  'now_playing',
+  'mpv_overlay',
+  'queue',
+  'search_input',
+  'search_results',
+  'library',
+  'local_deck',
+  'playlists',
+  'settings',
+  'ai_input',
+  'ai_suggestions',
+  'common',
+  'global',
 ];
 
-/** Human titles (the GUI stand-in for CONTEXT_META, src/keymap.rs:453). */
+/** Human titles (the GUI stand-in for CONTEXT_META's localized names, src/keymap.rs). */
 export const CONTEXT_LABELS: Record<KeyContext, string> = {
-  Player: 'Now Playing',
-  NowPlaying: "What's playing card",
-  MpvOverlay: 'mpv video overlay',
-  Queue: 'Queue',
-  SearchInput: 'Search box',
-  SearchResults: 'Search results',
-  Library: 'Library',
-  Playlists: 'Playlists',
-  Settings: 'Settings',
-  AiInput: 'DJ Gem — input',
-  AiSuggestions: 'DJ Gem — suggestions',
-  Common: 'Common',
-  Global: 'Global',
+  player: 'Now Playing',
+  now_playing: "What's playing card",
+  mpv_overlay: 'mpv video overlay',
+  queue: 'Queue',
+  search_input: 'Search box',
+  search_results: 'Search results',
+  library: 'Library',
+  local_deck: 'Local Deck',
+  playlists: 'Playlists',
+  settings: 'Settings',
+  ai_input: 'DJ Gem — input',
+  ai_suggestions: 'DJ Gem — suggestions',
+  common: 'Common',
+  global: 'Global',
 };
 
-export interface ActionInfo {
-  /** Stable id, unique within its context. */
-  id: string;
+/** One catalog row — the generated wire model, with `context` narrowed to the known ids. */
+export interface ActionInfo extends Omit<ActionInfoModel, 'context'> {
   context: KeyContext;
-  /** Localized action label (per-(context, action), so Help reads like the TUI). */
-  label: string;
-  /** The factory chord, for per-row reset. */
-  default_chord: string;
 }
 
 export interface KeymapModel {
@@ -81,81 +80,140 @@ export interface KeymapModel {
 
 /** Inline conflict info surfaced from the core's bind reply (shadowing stays core-side). */
 export interface KeymapConflict {
-  /** `"<context>.<action>"` key of the binding we just set. */
+  /** `"<context>.<action>"` key of the binding we just tried to set. */
   key: string;
   chord: string;
-  /** The action id the chord already resolves to (what it shadows / collides with). */
+  /** Display text for the binding the chord already resolves to (`"<ctx> — <label>"`). */
   shadows: string;
 }
 
 // ── the canonical GUI keymap seed (the demo core emits it; the real core replaces it) ──────
-// Representative actions across all 13 contexts. Runtime effect lives in lib/keyboard/actions
-// for the ones with a GUI handler; the rest still render + rebind (their effect lands later).
-const ACTIONS: ActionInfo[] = [
-  { id: 'play_pause', context: 'Player', label: 'Play / pause', default_chord: 'Space' },
-  { id: 'seek_back', context: 'Player', label: 'Seek −5 s', default_chord: 'Left' },
-  { id: 'seek_forward', context: 'Player', label: 'Seek +5 s', default_chord: 'Right' },
-  { id: 'volume_up', context: 'Player', label: 'Volume +5', default_chord: 'Up' },
-  { id: 'volume_down', context: 'Player', label: 'Volume −5', default_chord: 'Down' },
-  { id: 'toggle_mute', context: 'Player', label: 'Mute / unmute', default_chord: 'm' },
-  { id: 'next', context: 'Player', label: 'Next track', default_chord: '.' },
-  { id: 'prev', context: 'Player', label: 'Previous track', default_chord: ',' },
-  { id: 'toggle_shuffle', context: 'Player', label: 'Shuffle', default_chord: 'S' },
-  { id: 'cycle_repeat', context: 'Player', label: 'Repeat mode', default_chord: 'r' },
-  { id: 'cycle_rating', context: 'Player', label: 'Cycle rating', default_chord: 'f' },
-  { id: 'identify_now_playing', context: 'Player', label: "What's playing", default_chord: 'i' },
-  { id: 'play_video', context: 'Player', label: 'Video overlay (mpv)', default_chord: 'v' },
-  {
-    id: 'toggle_video_layout',
-    context: 'Player',
-    label: 'Video size / position',
-    default_chord: 'V',
-  },
-  {
-    id: 'now_playing_favorite',
-    context: 'NowPlaying',
-    label: 'Favorite / unfavorite',
-    default_chord: 'f',
-  },
-  { id: 'now_playing_ask_ai', context: 'NowPlaying', label: 'Ask DJ Gem', default_chord: 'g' },
-  {
-    id: 'video_toggle_pause',
-    context: 'MpvOverlay',
-    label: 'Video play / pause',
-    default_chord: 'Space',
-  },
-  { id: 'video_next', context: 'MpvOverlay', label: 'Next video', default_chord: '.' },
-  { id: 'video_prev', context: 'MpvOverlay', label: 'Previous video', default_chord: ',' },
-  { id: 'video_close', context: 'MpvOverlay', label: 'Close video', default_chord: 'q' },
-  { id: 'video_toggle_fullscreen', context: 'MpvOverlay', label: 'Fullscreen', default_chord: 'f' },
-  { id: 'video_toggle_mute', context: 'MpvOverlay', label: 'Mute / unmute', default_chord: 'm' },
-  { id: 'clear_upcoming', context: 'Queue', label: 'Clear upcoming', default_chord: 'c' },
-  { id: 'play_pause', context: 'Queue', label: 'Play / pause', default_chord: 'Space' },
-  { id: 'focus_query', context: 'SearchInput', label: 'Edit query', default_chord: '/' },
-  { id: 'clear_query', context: 'SearchInput', label: 'Clear query', default_chord: 'Ctrl+u' },
-  { id: 'play_result', context: 'SearchResults', label: 'Play selection', default_chord: 'Enter' },
-  { id: 'enqueue_result', context: 'SearchResults', label: 'Enqueue', default_chord: 'e' },
-  { id: 'play_item', context: 'Library', label: 'Play selection', default_chord: 'Enter' },
-  { id: 'enqueue_item', context: 'Library', label: 'Enqueue', default_chord: 'e' },
-  { id: 'open_playlist', context: 'Playlists', label: 'Open playlist', default_chord: 'Enter' },
-  { id: 'next_tab', context: 'Settings', label: 'Next tab', default_chord: 'Tab' },
-  { id: 'prev_tab', context: 'Settings', label: 'Previous tab', default_chord: 'BackTab' },
-  { id: 'send_message', context: 'AiInput', label: 'Send message', default_chord: 'Enter' },
-  {
-    id: 'play_suggestion',
-    context: 'AiSuggestions',
-    label: 'Play suggestion',
-    default_chord: 'Enter',
-  },
-  { id: 'toggle_queue', context: 'Common', label: 'Toggle queue panel', default_chord: 'q' },
-  { id: 'back', context: 'Common', label: 'Close overlay / dialog', default_chord: 'Esc' },
-  { id: 'help', context: 'Global', label: 'Help', default_chord: '?' },
-  { id: 'view_now', context: 'Global', label: 'Now Playing', default_chord: '1' },
-  { id: 'view_search', context: 'Global', label: 'Search', default_chord: '2' },
-  { id: 'view_library', context: 'Global', label: 'Library', default_chord: '3' },
-  { id: 'view_ai', context: 'Global', label: 'DJ Gem', default_chord: '4' },
-  { id: 'view_settings', context: 'Global', label: 'Settings', default_chord: '5' },
+// Mirrors `default_bindings()` + ACTION_META / `human_label_for` in src/keymap.rs exactly
+// (context ids, action ids, English labels, config-format chords) — update from that table,
+// never invent rows. Runtime effect lives in lib/keyboard/actions for the ids with a GUI
+// handler; the rest still render + rebind (they drive the shared TUI keymap).
+type SeedRow = [KeyContext, string, string, string]; // context, id, label, default chord
+const SEED_ROWS: SeedRow[] = [
+  ['player', 'toggle_pause', 'Play / pause', 'space'],
+  ['player', 'toggle_radio_mode', 'Radio/Normal mode', 'alt+shift+r'],
+  ['player', 'toggle_recordings', 'Radio recordings', 'alt+shift+e'],
+  ['player', 'seek_back', 'Seek backward', 'left'],
+  ['player', 'seek_forward', 'Seek forward', 'right'],
+  ['player', 'vol_up', 'Volume up', 'up'],
+  ['player', 'vol_down', 'Volume down', 'down'],
+  ['player', 'toggle_mute', 'Mute / unmute', 'm'],
+  ['player', 'prev_track', 'Previous track', ','],
+  ['player', 'next_track', 'Next track', '.'],
+  ['player', 'cycle_rating', 'Rate: like / dislike', 'f'],
+  ['player', 'open_library', 'Open library', 'l'],
+  ['player', 'open_queue', 'Open queue', 'c'],
+  ['player', 'queue_remove', 'Remove current from queue', 'delete'],
+  ['player', 'toggle_lyrics', 'Toggle lyrics', 'L'],
+  ['player', 'download', 'Download track', 'd'],
+  ['player', 'toggle_shuffle', 'Toggle shuffle', 'S'],
+  ['player', 'cycle_repeat', 'Cycle repeat', 'r'],
+  ['player', 'identify_now_playing', "What's playing (radio)", 'i'],
+  ['player', 'cycle_eq', 'Cycle EQ preset', 'e'],
+  ['player', 'toggle_normalize', 'Toggle normalization', 'N'],
+  ['player', 'speed_up', 'Speed up', ']'],
+  ['player', 'speed_down', 'Speed down', '['],
+  ['player', 'open_settings', 'Open settings', 'o'],
+  ['player', 'open_ai', 'Open DJ Gem assistant', 'g'],
+  ['player', 'open_search', 'Open search', 's'],
+  ['player', 'add_to_playlist', 'Add to playlist', 'P'],
+  ['player', 'copy_link', 'Copy track link', 'y'],
+  ['player', 'play_video', 'Video overlay (mpv)', 'v'],
+  ['player', 'toggle_video_layout', 'Video size / position', 'V'],
+  ['player', 'back', 'Back / close', 'q'],
+  ['now_playing', 'now_playing_favorite', 'Save to music favorites', 'f'],
+  ['now_playing', 'now_playing_ask_ai', 'Tell me more (DJ Gem)', 'g'],
+  ['mpv_overlay', 'video_toggle_pause', 'Video play / pause', 'space'],
+  ['mpv_overlay', 'video_next', 'Next video', '.'],
+  ['mpv_overlay', 'video_prev', 'Previous video', ','],
+  ['mpv_overlay', 'video_close', 'Close video', 'q'],
+  ['mpv_overlay', 'video_toggle_fullscreen', 'Fullscreen', 'f'],
+  ['mpv_overlay', 'video_toggle_mute', 'Mute / unmute', 'm'],
+  ['common', 'move_up', 'Move up', 'up'],
+  ['common', 'move_down', 'Move down', 'down'],
+  ['common', 'page_up', 'Page up', 'pageup'],
+  ['common', 'page_down', 'Page down', 'pagedown'],
+  ['common', 'jump_top', 'Jump to top', 'home'],
+  ['common', 'jump_bottom', 'Jump to bottom', 'end'],
+  ['common', 'select_up', 'Extend selection up', 'shift+up'],
+  ['common', 'select_down', 'Extend selection down', 'shift+down'],
+  ['common', 'select_page_up', 'Extend selection a page up', 'shift+pageup'],
+  ['common', 'select_page_down', 'Extend selection a page down', 'shift+pagedown'],
+  ['common', 'select_to_top', 'Extend selection to top', 'shift+home'],
+  ['common', 'select_to_bottom', 'Extend selection to bottom', 'shift+end'],
+  ['common', 'confirm', 'Confirm / select', 'enter'],
+  ['common', 'focus_prev', 'Previous tab / focus', 'backtab'],
+  ['common', 'focus_next', 'Next tab / focus', 'tab'],
+  ['common', 'delete_char', 'Delete character', 'backspace'],
+  ['common', 'back', 'Back / close', 'q'],
+  ['global', 'home', 'Go home', 'ctrl+h'],
+  ['global', 'toggle_streaming', 'Toggle autoplay', 'ctrl+r'],
+  ['global', 'toggle_help', 'Toggle help', '?'],
+  ['global', 'open_context_menu', 'Open context menu', 'shift+f10'],
+  ['global', 'toggle_about', 'About YuTuTui!', 'f1'],
+  ['global', 'toggle_animations', 'Toggle animations', 'A'],
+  ['global', 'toggle_control_box', 'Collapse / expand player bar', 'B'],
+  ['global', 'why_ai', 'Why these DJ Gem picks', 'w'],
+  ['global', 'text_zoom_in', 'Text size up', 'ctrl+='],
+  ['global', 'text_zoom_out', 'Text size down', 'ctrl+-'],
+  ['global', 'toggle_zoom_wheel_lock', 'Ctrl+wheel zoom lock', 'ctrl+l'],
+  ['global', 'quit', 'Quit', 'ctrl+q'],
+  ['library', 'confirm', 'Play selected', 'enter'],
+  ['library', 'toggle_local_mode', 'Enter / exit Local Deck', 'alt+shift+l'],
+  ['library', 'enqueue', 'Add to queue', '\\'],
+  ['library', 'play_all', 'Play whole tab', 'a'],
+  ['library', 'favorite', 'Favorite / unfavorite', 'f'],
+  ['library', 'download', 'Download track', 'd'],
+  ['library', 'download_all', 'Download whole list', 'D'],
+  ['library', 'open_ai', 'Open DJ Gem assistant', 'g'],
+  ['library', 'add_to_playlist', 'Add to playlist', 'p'],
+  ['library', 'library_remove', 'Remove / delete', 'delete'],
+  ['library', 'library_filter', 'Filter library', '/'],
+  ['library', 'back', 'Close Library', 'q'],
+  ['local_deck', 'accept_all_import_review', 'Accept all import candidates', 'A'],
+  ['playlists', 'confirm', 'Open / play selected', 'enter'],
+  ['playlists', 'play_all', 'Play playlist', 'a'],
+  ['playlists', 'enqueue', 'Enqueue playlist / song', '\\'],
+  ['playlists', 'playlist_create', 'New playlist', 'n'],
+  ['playlists', 'favorite', 'Favorite / unfavorite', 'f'],
+  ['playlists', 'download', 'Download track', 'd'],
+  ['playlists', 'download_all', 'Download playlist', 'D'],
+  ['playlists', 'open_ai', 'Open DJ Gem assistant', 'g'],
+  ['playlists', 'add_to_playlist', 'Add to playlist', 'p'],
+  ['playlists', 'library_remove', 'Delete playlist / remove song', 'delete'],
+  ['playlists', 'library_filter', 'Filter library', '/'],
+  ['playlists', 'back', 'Back / close', 'q'],
+  ['queue', 'confirm', 'Play / jump to track', 'enter'],
+  ['queue', 'queue_remove', 'Remove selected from queue', 'delete'],
+  ['queue', 'back', 'Close queue', 'q'],
+  ['search_input', 'select_all', 'Select all', 'ctrl+a'],
+  ['search_input', 'toggle_search_source_menu', 'Open source menu', 'tab'],
+  ['search_input', 'toggle_search_kind', 'Search songs / playlists', 'ctrl+p'],
+  ['search_input', 'focus_prev', 'Focus search results', 'backtab'],
+  ['search_results', 'focus_prev', 'Focus search box', 'backtab'],
+  ['search_results', 'toggle_search_source_menu', 'Open source menu', 'tab'],
+  ['search_results', 'toggle_search_kind', 'Search songs / playlists', 'ctrl+p'],
+  ['search_results', 'enqueue', 'Add to queue', '\\'],
+  ['search_results', 'favorite', 'Favorite / unfavorite', 'f'],
+  ['search_results', 'download', 'Download track', 'd'],
+  ['search_results', 'add_to_playlist', 'Add to playlist', 'p'],
+  ['search_results', 'search_filter', 'Filter results (popup)', '/'],
+  ['search_results', 'back', 'Close Search Results', 'q'],
+  ['ai_input', 'select_all', 'Select all', 'ctrl+a'],
+  ['settings', 'change_decrease', 'Decrease value', 'left'],
+  ['settings', 'change_increase', 'Increase value', 'right'],
+  ['settings', 'settings_cancel', 'Save + quit', 'q'],
 ];
+const ACTIONS: ActionInfo[] = SEED_ROWS.map(([context, id, label, default_chord]) => ({
+  context,
+  id,
+  label,
+  default_chord,
+}));
 
 /** The default keymap read model — the demo core's seed and the per-row reset target. */
 export function defaultKeymap(): KeymapModel {
@@ -214,16 +272,16 @@ export class KeymapStore {
 
   /**
    * Resolve a normalized chord in `context` to an action id, honoring the lookup order
-   * specific-context → Common → Global (first binding wins), matching keymap.rs.
+   * specific-context → common → global (first binding wins), matching keymap.rs.
    */
   match(context: KeyContext, chord: string): string | null {
     const bindings = this.#merged();
     const order: KeyContext[] =
-      context === 'Common'
-        ? ['Common', 'Global']
-        : context === 'Global'
-          ? ['Global']
-          : [context, 'Common', 'Global'];
+      context === 'common'
+        ? ['common', 'global']
+        : context === 'global'
+          ? ['global']
+          : [context, 'common', 'global'];
     for (const ctx of order) {
       for (const a of this.actions) {
         if (a.context === ctx && bindings[`${ctx}.${a.id}`] === chord) return a.id;
@@ -252,7 +310,14 @@ export class KeymapStore {
     }
     if (this.#pendingMutation.get(key) !== mutation) return;
     const shadows = result.payload?.conflict?.shadows;
-    this.conflict = shadows ? { key, chord, shadows: String(shadows) } : null;
+    if (shadows) {
+      // The core does NOT apply a conflicted bind (and pushes nothing, since nothing
+      // changed) — roll the optimistic chord back ourselves and explain why inline.
+      this.conflict = { key, chord, shadows: String(shadows) };
+      this.#rejectPending(key, mutation);
+      return;
+    }
+    this.conflict = null;
     this.#pendingMutation.delete(key);
   }
 
@@ -321,11 +386,13 @@ export class KeymapStore {
     const km = snap?.model?.keymap;
     if (!km) return;
     this.model = km;
-    // Drop the overlay entries the authoritative model now agrees with.
+    // Drop the overlay entries the authoritative model now agrees with. The wire's
+    // unbound form is the EMPTY string (wire_bindings), so '' and a missing key both
+    // agree with a pending unbind (null).
     const next: Record<string, string | null> = {};
     for (const [key, val] of Object.entries(this.#pending)) {
-      const authoritative = km.bindings[key] ?? null;
-      if (authoritative !== (val ?? null)) next[key] = val;
+      const authoritative = km.bindings[key] || null;
+      if (authoritative !== (val || null)) next[key] = val;
     }
     this.#pending = next;
   }

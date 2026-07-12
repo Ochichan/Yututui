@@ -2,7 +2,7 @@
 2382	src/api/ytmusic.rs
 2295	src/config.rs
 2106	src/app/settings_reducer.rs
-1710	src/keymap.rs
+1784	src/keymap.rs
 1691	src/ui/views/player.rs
 1610	src/app/local.rs
 1600	src/ui/anim.rs
@@ -22,6 +22,6 @@
 1389	src/settings.rs
 1389	src/transfer/matching.rs
 1251	src/tools/ytdlp.rs
-1144	src/daemon/mod.rs
+1161	src/daemon/mod.rs
 800	src/util/delivery.rs
 798	src/app/track_transition.rs

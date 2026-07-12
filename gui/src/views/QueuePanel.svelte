@@ -14,7 +14,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { queue, playback, ui, whygem, wip } = ctx;
+  const { queue, playback, ui, whygem } = ctx;
 
   const currentPos = $derived(playback.model?.queue_pos ?? -1);
   const totalMs = $derived(queue.items.reduce((n, track) => n + (track.duration_ms ?? 0), 0));
@@ -26,14 +26,13 @@
   }
 </script>
 
-<aside class="dock" aria-label={t('queue.title')} data-kctx="Queue">
+<aside class="dock" aria-label={t('queue.title')} data-kctx="queue">
   <header>
     <h2>{t('queue.title')}</h2>
     <div class="head-actions">
-      <!-- TODO(wire:B2/core.v8-commands) — queue_clear_upcoming is demo-core-only until the variant lands. -->
       <button
         class="ha"
-        onclick={() => wip.gate('core.v8-commands') && queue.clearUpcoming()}
+        onclick={() => queue.clearUpcoming()}
         title={t('queue.clearUpcoming')}
         disabled={queue.items.length === 0}>⌫</button
       >
@@ -45,7 +44,7 @@
     <VirtualList
       items={queue.items}
       rowHeight={52}
-      reorder={(from, to) => wip.gate('core.v8-commands') && queue.move(from, to)}
+      reorder={(from, to) => queue.move(from, to)}
       snapshotKey="queue-list"
     >
       {#snippet row(track, i)}

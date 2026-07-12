@@ -846,9 +846,22 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
                 })
                 .collect(),
         },
-        keymap: KeymapSettingsModel {
-            bindings: c.keybindings.clone(),
-            actions: Vec::new(),
+        keymap: {
+            // The wire carries the FULL effective map ("" = unbound), not just the
+            // config overrides — the Hotkeys tab renders every row from it.
+            let keymap = crate::keymap::KeyMap::from_config(c);
+            KeymapSettingsModel {
+                bindings: keymap.wire_bindings(),
+                actions: crate::keymap::wire_actions()
+                    .into_iter()
+                    .map(|action| super::proto::ActionInfoModel {
+                        context: action.context.to_owned(),
+                        id: action.id.to_owned(),
+                        label: action.label,
+                        default_chord: action.default_chord,
+                    })
+                    .collect(),
+            }
         },
     }
 }

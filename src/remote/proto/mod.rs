@@ -35,9 +35,10 @@ pub use command::{
 };
 pub use model::{
     AiMessageModel, AiRoleModel, ArtworkRef, DownloadStateModel, DownloadStatusModel,
-    LastfmAccountModel, LibraryPageModel, ListenBrainzAccountModel, LyricLineModel,
-    PlaylistDetailModel, PlaylistSummaryModel, SpotifyAccountModel, SpotifyPlaylistModel,
-    TrackModel, TransferJobModel, TransferPhaseModel, TransferReportModel, WhyGemModel,
+    KeymapConflictModel, LastfmAccountModel, LibraryPageModel, ListenBrainzAccountModel,
+    LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel, SpotifyAccountModel,
+    SpotifyPlaylistModel, TrackModel, TransferJobModel, TransferPhaseModel, TransferReportModel,
+    WhyGemModel,
 };
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
@@ -163,6 +164,11 @@ pub enum ResponseData {
     /// `fetch_why_gem` → the pick rationale; the command replies with NO data (the
     /// gateway projects null) when the track has no recorded provenance.
     WhyGem(model::WhyGemModel),
+    /// `keymap_bind` → `{ conflict: { shadows } }` when the chord shadows another
+    /// binding (folded into the cmd reply body by the gateway).
+    KeymapConflict {
+        conflict: model::KeymapConflictModel,
+    },
 }
 
 impl RemoteResponse {

@@ -27,7 +27,6 @@ import { KeymapStore } from '../src/lib/stores/keymap.svelte';
 import { LyricsStore } from '../src/lib/stores/lyrics.svelte';
 import { WhyGemStore } from '../src/lib/stores/whygem.svelte';
 import { ToastStore } from '../src/lib/stores/toasts.svelte';
-import { WipStore } from '../src/lib/wiring/wip.svelte';
 
 function assemble(): AppCtx {
   const client = new Client(new DemoCoreTransport());
@@ -56,7 +55,6 @@ function assemble(): AppCtx {
     lyrics: new LyricsStore(client),
     whygem: new WhyGemStore(client),
     toasts,
-    wip: new WipStore(connection),
   };
   client.sub([
     'player',
@@ -91,17 +89,6 @@ describe('App against the demo core', () => {
     expect(ctx.playback.track?.video_id).toBe('demo-001');
   });
 
-  it('a pending feature opens the patch-bay modal instead of doing nothing', async () => {
-    const ctx = assemble();
-    render(App, { props: { ctx } });
-    await settle();
-
-    ctx.wip.gate('core.v8-commands');
-    await settle();
-    expect(ctx.wip.active).toBe('core.v8-commands');
-    expect(screen.getByText('Not wired up yet')).toBeTruthy();
-    expect(screen.getByText('Copy agent brief')).toBeTruthy();
-  });
 
   it('the library playlists tab lists demo playlists (wired, not the pending card)', async () => {
     const ctx = assemble();
@@ -124,11 +111,16 @@ describe('App against the demo core', () => {
     await settle(); // let the settings push seed the keymap model
 
     expect(ctx.ui.view).toBe('now');
-    // '2' is Global view_search; the dispatcher resolves + runs it against the live keymap.
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }));
+    // 's' is player open_search; the dispatcher resolves + runs it against the live keymap.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
     expect(ctx.ui.view).toBe('search');
 
-    // '?' is Global help.
+    // '2' is a GUI-fixed rail digit (not in the core keymap) — jumps back to view 2 = search,
+    // then '1' back home so the next assertion starts from a known view.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
+    expect(ctx.ui.view).toBe('now');
+
+    // '?' is global toggle_help.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));
     expect(ctx.ui.helpOpen).toBe(true);
   });
@@ -160,7 +152,7 @@ describe('App against the demo core', () => {
 
     // Filtering narrows the rows.
     await fireEvent.input(q.getByLabelText('Filter shortcuts'), { target: { value: 'volume' } });
-    expect(q.getByText('Volume +5')).toBeTruthy();
+    expect(q.getByText('Volume up')).toBeTruthy();
     expect(q.queryByText('Play / pause')).toBeNull();
   });
 });
