@@ -202,7 +202,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Make it yours
 
-13 themes with all 34 color roles hex-editable, 25 animations — up to a spinning ASCII donut — and a 10-band EQ with presets plus loudness normalization.
+13 themes with all 34 color roles hex-editable, 40 animations — from shooting stars up to a full plasma field — and a 10-band EQ with presets plus loudness normalization.
 
 > 🖼️ *GIFs coming soon.*
 <!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:

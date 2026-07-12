@@ -196,21 +196,34 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
             format::seekbar_label(app.playback.time_pos, app.playback.duration),
         )
     };
+    // With the time-glow animation on, the gauge and its label pulse toward the accent for
+    // a beat as each playback second lands (identity style/plain label otherwise).
+    let gauge_style = Style::default()
+        .fg(app.theme.color(R::GaugeFilled))
+        .bg(app.theme.color(R::GaugeEmpty));
+    let gauge_style = if animated {
+        crate::ui::anim::time_glow_gauge_style(app, gauge_style)
+    } else {
+        gauge_style
+    };
+    let label = if animated {
+        crate::ui::anim::time_glow_label(app, label)
+    } else {
+        ratatui::text::Span::raw(label)
+    };
     let seekbar = Gauge::default()
-        .gauge_style(
-            Style::default()
-                .fg(app.theme.color(R::GaugeFilled))
-                .bg(app.theme.color(R::GaugeEmpty)),
-        )
+        .gauge_style(gauge_style)
         .ratio(ratio)
         .label(label);
     frame.render_widget(seekbar, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
-    // otherwise), and a short ripple marks the head right after a seek. Skipped in the
-    // static (off-Player) forms — a frozen comet is a permanent bright smear.
+    // otherwise), a short ripple marks the head right after a seek, and sparks dance on
+    // the playhead while the sparkle flag is on. Skipped in the static (off-Player)
+    // forms — a frozen comet is a permanent bright smear.
     if animated {
         crate::ui::anim::seekbar_overlay(frame, app, area, ratio);
         crate::ui::anim::seek_flash_overlay(frame, app, area, ratio);
+        crate::ui::anim::progress_sparkle_overlay(frame, app, area, ratio);
     }
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.hits.set_seekbar_rect(area);
@@ -585,6 +598,9 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     // wheel hit rects registered above stay live, so the buttons keep taking clicks
     // while the gauge covers their glyphs (repeated +/+/+ nudges land blind).
     crate::ui::anim::volume_flash_overlay(frame, app, vol_rect);
+    // And right after a play/pause toggle, a light wave washes across the row (recolour
+    // only — glyphs and hit rects untouched; no-op outside its window).
+    crate::ui::anim::pause_flash_overlay(frame, app, area);
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets

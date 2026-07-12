@@ -154,6 +154,17 @@ pub struct AnimationsConfig {
     pub activity: bool,
     /// The About card twinkles: sparkles around the icon and a gradient sweep on the name.
     pub about_fx: bool,
+    // Second-wave Now Playing element effects ----------------------------------
+    /// The seekbar's gauge and time label glow briefly as each playback second lands.
+    pub time_glow: bool,
+    /// Tiny sparks twinkle around the seekbar head while playback runs.
+    pub progress_sparkle: bool,
+    /// A short bright comet chases clockwise around the Player view's outer border.
+    pub border_chase: bool,
+    /// A light wave washes across the transport controls when play/pause toggles.
+    pub pause_flash: bool,
+    /// Error status messages shake side-to-side with a decaying oscillation.
+    pub error_shake: bool,
     // Filler-canvas effects (drawn only in blank zones) ------------------------
     /// Matrix-style digital rain in the free zone(s).
     pub rain: bool,
@@ -165,6 +176,26 @@ pub struct AnimationsConfig {
     pub starfield: bool,
     /// DVD-style bouncing logo.
     pub bounce: bool,
+    /// Occasional diagonal shooting-star streaks.
+    pub comets: bool,
+    /// Sparse drifting snowfall.
+    pub snow: bool,
+    /// Fireflies wandering on smooth glowing paths.
+    pub fireflies: bool,
+    /// Rotating 3-D wireframe cube.
+    pub cube: bool,
+    /// ASCII aquarium: fish swimming both ways plus rising bubbles.
+    pub aquarium: bool,
+    /// Layered ocean waves along the bottom of the free zone.
+    pub waves: bool,
+    /// Periodic firework launches with radial particle bursts.
+    pub fireworks: bool,
+    /// Conway's Game of Life colony, colour-coded by cell age.
+    pub life: bool,
+    /// The classic pipes screensaver growing across the free zone.
+    pub pipes: bool,
+    /// Demoscene plasma colour field over the whole free zone (the heaviest effect).
+    pub plasma: bool,
     // Behaviour knobs (not effects) -------------------------------------------
     /// Park the animation tick while the terminal is unfocused (minimized or behind another
     /// window). Defaults to `true`; opt out to keep animating off-screen. No-op on terminals that
@@ -211,11 +242,26 @@ impl Default for AnimationsConfig {
             popup_fade: false,
             activity: false,
             about_fx: false,
+            time_glow: false,
+            progress_sparkle: false,
+            border_chase: false,
+            pause_flash: false,
+            error_shake: false,
             rain: false,
             donut: false,
             visualizer: false,
             starfield: false,
             bounce: false,
+            comets: false,
+            snow: false,
+            fireflies: false,
+            cube: false,
+            aquarium: false,
+            waves: false,
+            fireworks: false,
+            life: false,
+            pipes: false,
+            plasma: false,
             pause_unfocused: true,
             fps: FPS_DEFAULT,
         }
@@ -251,11 +297,37 @@ impl AnimationsConfig {
             || self.popup_fade
             || self.activity
             || self.about_fx
-            || self.rain
+            || self.time_glow
+            || self.progress_sparkle
+            || self.border_chase
+            || self.pause_flash
+            || self.error_shake
+            || self.any_canvas()
+    }
+
+    /// Whether any filler-canvas effect is enabled — the group `ui::anim::render_canvas`
+    /// dispatches, drawn only into blank zones.
+    pub fn any_canvas(&self) -> bool {
+        self.bounce || self.any_canvas_heavy()
+    }
+
+    /// Canvas effects that repaint enough cells per frame to earn the reduced draw-fps cap
+    /// and DEC synchronized update: every canvas effect except the single-label `bounce`.
+    pub fn any_canvas_heavy(&self) -> bool {
+        self.rain
             || self.donut
             || self.visualizer
             || self.starfield
-            || self.bounce
+            || self.comets
+            || self.snow
+            || self.fireflies
+            || self.cube
+            || self.aquarium
+            || self.waves
+            || self.fireworks
+            || self.life
+            || self.pipes
+            || self.plasma
     }
 
     /// Whether animations should actually run: the master switch is on *and* at least one

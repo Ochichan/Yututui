@@ -1,6 +1,6 @@
 <script lang="ts">
   // Settings → Graphics (docs/gui/07 §9): preset gallery, the 34-role color editor, and
-  // the 25-effect animation grid — all live now.
+  // the 40-effect animation grid — all live now.
   //
   // The LOCAL themes section is frontend-owned skins (applied live, persisted). The core
   // theme is wired (settings.theme-editor): the preset gallery renders from the pushed
@@ -44,11 +44,32 @@
   const ANIM_GROUPS = $derived(
     EFFECT_GROUPS.map((group) => ({
       title: t(`settings.graphics.animGroup.${group.id}`),
-      tui: group.id === 'filler',
+      tui: group.id === 'filler' || group.id === 'showpiece',
       effects: group.effects,
     })),
   );
-  const TUI_ONLY = new Set(['rain', 'donut', 'starfield', 'bounce']);
+  // Effects only the terminal renders today (the web port lands consumers incrementally).
+  const TUI_ONLY = new Set([
+    'rain',
+    'donut',
+    'starfield',
+    'bounce',
+    'comets',
+    'snow',
+    'fireflies',
+    'cube',
+    'aquarium',
+    'waves',
+    'fireworks',
+    'life',
+    'pipes',
+    'plasma',
+    'time_glow',
+    'progress_sparkle',
+    'border_chase',
+    'pause_flash',
+    'error_shake',
+  ]);
 </script>
 
 <SettingSection title={t('settings.graphics.localThemes')}>

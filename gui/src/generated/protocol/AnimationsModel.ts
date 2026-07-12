@@ -2,6 +2,6 @@
 
 /**
  * Mirrors [`crate::config::AnimationsConfig`] field-for-field (minus the TUI-only
- * `radio_master` scope selector): master/behaviour knobs + the 25 effect flags.
+ * `radio_master` scope selector): master/behaviour knobs + the 40 effect flags.
  */
-export type AnimationsModel = { master: boolean, pause_unfocused: boolean, fps: number, title: boolean, heart: boolean, seekbar: boolean, spinner: boolean, eq_bars: boolean, controls: boolean, border: boolean, track_intro: boolean, lyrics: boolean, toast: boolean, volume_flash: boolean, like_burst: boolean, seek_flash: boolean, selection: boolean, stagger: boolean, caret: boolean, tabs: boolean, popup_fade: boolean, activity: boolean, about_fx: boolean, visualizer: boolean, rain: boolean, donut: boolean, starfield: boolean, bounce: boolean, };
+export type AnimationsModel = { master: boolean, pause_unfocused: boolean, fps: number, title: boolean, heart: boolean, seekbar: boolean, spinner: boolean, eq_bars: boolean, controls: boolean, border: boolean, track_intro: boolean, lyrics: boolean, toast: boolean, volume_flash: boolean, like_burst: boolean, seek_flash: boolean, selection: boolean, stagger: boolean, caret: boolean, tabs: boolean, popup_fade: boolean, activity: boolean, about_fx: boolean, time_glow: boolean, progress_sparkle: boolean, border_chase: boolean, pause_flash: boolean, error_shake: boolean, visualizer: boolean, rain: boolean, donut: boolean, starfield: boolean, bounce: boolean, comets: boolean, snow: boolean, fireflies: boolean, cube: boolean, aquarium: boolean, waves: boolean, fireworks: boolean, life: boolean, pipes: boolean, plasma: boolean, };

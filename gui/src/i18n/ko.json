@@ -214,6 +214,7 @@
   "settings.graphics.animGroup.element": "현재 재생",
   "settings.graphics.animGroup.filler": "배경 캔버스 / 터미널 전용",
   "settings.graphics.animGroup.oneShot": "이벤트 피드백",
+  "settings.graphics.animGroup.showpiece": "캔버스 쇼피스 / 터미널 전용",
   "settings.graphics.animGroup.uiWide": "인터페이스 동작",
   "settings.graphics.animations": "애니메이션",
   "settings.graphics.backgroundNone": "배경: 없음",

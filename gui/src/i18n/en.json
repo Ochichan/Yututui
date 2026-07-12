@@ -214,6 +214,7 @@
   "settings.graphics.animGroup.element": "Now playing",
   "settings.graphics.animGroup.filler": "Ambient canvas / terminal-only",
   "settings.graphics.animGroup.oneShot": "Event feedback",
+  "settings.graphics.animGroup.showpiece": "Canvas showpieces / terminal-only",
   "settings.graphics.animGroup.uiWide": "Interface motion",
   "settings.graphics.animations": "Animations",
   "settings.graphics.backgroundNone": "Background: none",

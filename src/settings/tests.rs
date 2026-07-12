@@ -142,8 +142,8 @@ fn graphics_tab_groups_theme_colors_and_animations() {
     let _guard = crate::i18n::lock_for_test();
     crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Graphics.fields();
-    // Three base fields, every color role, and 28 animation fields.
-    assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 28);
+    // Three base fields, every color role, and 43 animation fields.
+    assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 43);
     assert_eq!(f[0], Field::RetroMode);
     assert_eq!(f[1], Field::ThemePreset);
     assert_eq!(f[2], Field::BackgroundNone);
@@ -165,7 +165,7 @@ fn graphics_tab_groups_theme_colors_and_animations() {
     assert_eq!(total, f.len());
     assert_eq!(
         sections.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
-        vec![3, ThemeRole::ALL.len(), 3, 5, 7, 8, 5]
+        vec![3, ThemeRole::ALL.len(), 3, 7, 7, 11, 9, 6]
     );
     assert_eq!(
         sections
@@ -173,7 +173,7 @@ fn graphics_tab_groups_theme_colors_and_animations() {
             .map(|(title, _)| *title)
             .collect::<Vec<_>>()
             .join(","),
-        "Theme,Colors,Animation controls,Event feedback,Interface motion,Now playing,Ambient canvas"
+        "Theme,Colors,Animation controls,Event feedback,Interface motion,Now playing,Ambient canvas,Canvas showpieces"
     );
     let order = f[anim_start..]
         .iter()
@@ -182,7 +182,12 @@ fn graphics_tab_groups_theme_colors_and_animations() {
         .join(",");
     assert_eq!(
         order,
-        "AnimMaster,AnimPauseUnfocused,AnimFps,AnimLikeBurst,AnimTrackIntro,AnimSeekFlash,AnimVolumeFlash,AnimToast,AnimAboutFx,AnimPopupFade,AnimTabs,AnimStagger,AnimActivity,AnimCaret,AnimSelection,AnimHeart,AnimSpinner,AnimControls,AnimEqBars,AnimSeekbar,AnimTitle,AnimLyrics,AnimBorder,AnimBounce,AnimStarfield,AnimVisualizer,AnimRain,AnimDonut"
+        "AnimMaster,AnimPauseUnfocused,AnimFps,\
+         AnimErrorShake,AnimLikeBurst,AnimTrackIntro,AnimSeekFlash,AnimPauseFlash,AnimVolumeFlash,AnimToast,\
+         AnimAboutFx,AnimPopupFade,AnimTabs,AnimStagger,AnimActivity,AnimCaret,AnimSelection,\
+         AnimTimeGlow,AnimHeart,AnimSpinner,AnimControls,AnimEqBars,AnimSeekbar,AnimProgressSparkle,AnimTitle,AnimLyrics,AnimBorderChase,AnimBorder,\
+         AnimBounce,AnimComets,AnimSnow,AnimStarfield,AnimFireflies,AnimCube,AnimAquarium,AnimWaves,AnimVisualizer,\
+         AnimFireworks,AnimRain,AnimLife,AnimPipes,AnimDonut,AnimPlasma"
     );
 
     let mut draft = base_draft();
