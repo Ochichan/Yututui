@@ -25,8 +25,8 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel, PushEvent, QueueModel,
-    RemoteResponse, ServerFrame, Topic, TrackModel,
+    DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel, PushEvent,
+    QueueModel, RemoteResponse, ServerFrame, Topic, TrackModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -199,6 +199,7 @@ pub struct Publisher {
     /// fetch completion (B1, docs/gui/02 §7).
     last_lyrics: Option<Arc<Vec<u8>>>,
     last_playlists: Option<Arc<Vec<u8>>>,
+    last_downloads: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -222,6 +223,7 @@ impl Publisher {
             settings_rev: 0,
             last_lyrics: None,
             last_playlists: None,
+            last_downloads: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -384,6 +386,7 @@ impl Publisher {
                         // host's first publish — the client's empty default covers that).
                         Topic::Lyrics => self.last_lyrics.clone(),
                         Topic::Playlists => self.last_playlists.clone(),
+                        Topic::Downloads => self.last_downloads.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
                         _ => None,
@@ -460,6 +463,18 @@ impl Publisher {
         self.last_playlists = Some(Arc::clone(&payload));
         if self.hub.any_subscribed(Topic::Playlists) {
             self.hub.broadcast(Topic::Playlists, &payload);
+        }
+    }
+
+    pub fn downloads_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Downloads)
+    }
+
+    pub fn publish_downloads(&mut self, items: Vec<DownloadStatusModel>) {
+        let payload = event_payload(&PushEvent::DownloadsSnapshot { items });
+        self.last_downloads = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Downloads) {
+            self.hub.broadcast(Topic::Downloads, &payload);
         }
     }
 

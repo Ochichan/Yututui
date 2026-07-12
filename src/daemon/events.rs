@@ -25,6 +25,9 @@ pub(super) enum DaemonEvent {
     /// The lyrics actor resolved (or failed to find) lines for a track. Fetches are
     /// gated on a live `lyrics` subscriber; see [`super::lyrics_host::LyricsHost`].
     Lyrics(crate::lyrics::LyricsEvent),
+    /// Download actor progress/results. Import-owned variants are transfer-lane work and
+    /// are ignored by the daemon downloads host.
+    Download(crate::download::DownloadEvent),
     /// A playback-self-heal yt-dlp update check finished (see
     /// [`super::engine::EngineEffect::YtdlpSelfHeal`]).
     YtdlpHeal {
@@ -139,6 +142,16 @@ impl DaemonEvent {
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
+            DaemonEvent::Download(
+                crate::download::DownloadEvent::Progress { .. }
+                | crate::download::DownloadEvent::ImportProgress { .. },
+            ) => EventPolicy::CoalesceLatest {
+                lane: Lane::Telemetry,
+                key: Key::DownloadProgress,
+            },
+            DaemonEvent::Download(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
@@ -166,6 +179,7 @@ impl DaemonEvent {
             DaemonEvent::MediaArt(_) => "media_art",
             DaemonEvent::Scrobble(_) => "scrobble",
             DaemonEvent::Lyrics(_) => "lyrics",
+            DaemonEvent::Download(_) => "download",
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",
@@ -181,6 +195,9 @@ impl DaemonEvent {
     pub(super) fn telemetry_slot(&self) -> Option<DaemonTelemetrySlot> {
         match self {
             DaemonEvent::MediaArt(ready) => Some(DaemonTelemetrySlot::MediaArt(ready.key.clone())),
+            DaemonEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id, ..
+            }) => Some(DaemonTelemetrySlot::DownloadProgress(video_id.clone())),
             DaemonEvent::Api(crate::api::ApiEvent::SearchResults { request_id, .. })
             | DaemonEvent::Api(crate::api::ApiEvent::SearchError { request_id, .. }) => {
                 Some(DaemonTelemetrySlot::StaleSearch(*request_id))
@@ -206,6 +223,7 @@ const DAEMON_TELEMETRY_SLOTS: usize = 256;
 pub(crate) enum DaemonTelemetrySlot {
     Static(Key),
     MediaArt(String),
+    DownloadProgress(String),
     StaleSearch(u64),
     StaleStreaming(String),
 }

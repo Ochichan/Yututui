@@ -329,6 +329,27 @@ fn daemon_event_policy_covers_representative_events() {
         }
     );
     assert_eq!(
+        DaemonEvent::Download(crate::download::DownloadEvent::Progress {
+            video_id: "track".to_owned(),
+            percent: 40.0,
+        })
+        .policy(),
+        EventPolicy::CoalesceLatest {
+            lane: EventLane::Telemetry,
+            key: EventKey::DownloadProgress,
+        }
+    );
+    assert_eq!(
+        DaemonEvent::Download(crate::download::DownloadEvent::Done {
+            video_id: "track".to_owned(),
+            path: "track.m4a".to_owned(),
+        })
+        .policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+    assert_eq!(
         DaemonEvent::YtdlpHeal {
             video_id: "v".to_owned(),
             updated: true,
@@ -393,6 +414,14 @@ fn daemon_event_kind_and_telemetry_slots_are_stable() {
         "scrobble"
     );
     assert_eq!(
+        DaemonEvent::Download(crate::download::DownloadEvent::Error {
+            video_id: "v".to_owned(),
+            error: "failed".to_owned(),
+        })
+        .kind(),
+        "download"
+    );
+    assert_eq!(
         DaemonEvent::YtdlpHeal {
             video_id: "v".to_owned(),
             updated: false,
@@ -428,6 +457,14 @@ fn daemon_event_kind_and_telemetry_slots_are_stable() {
         })
         .telemetry_slot(),
         Some(DaemonTelemetrySlot::MediaArt("track-a".to_owned()))
+    );
+    assert_eq!(
+        DaemonEvent::Download(crate::download::DownloadEvent::Progress {
+            video_id: "track-a".to_owned(),
+            percent: 50.0,
+        })
+        .telemetry_slot(),
+        Some(DaemonTelemetrySlot::DownloadProgress("track-a".to_owned()))
     );
     assert_eq!(DaemonEvent::Signal.telemetry_slot(), None);
     assert_eq!(

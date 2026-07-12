@@ -543,6 +543,39 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
 }
 
 #[tokio::test]
+async fn radio_station_rating_cycle_stays_in_parity() {
+    // The radio branch of the rating cycle is dual-implemented by hand (App
+    // player.rs vs daemon gui_rate) — pin it: the cycle toggles radio-favorite
+    // membership, which projects through TrackModel.favorite on both owners.
+    let (mut app, mut engine) = hermetic_pair();
+    let mut station = Song::remote("st1", "station-st1", "", "");
+    station.playable = Some(crate::api::PlayableRef::RadioStream {
+        url: "https://radio.example/st1.mp3".to_owned(),
+    });
+    let mut queue = Queue::default();
+    queue.set(vec![station], 0);
+    let snap = queue.snapshot();
+    engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
+    app.queue.restore_snapshot(snap);
+    assert_parity("radio baseline", &app, &engine);
+
+    for step in ["favorite", "unfavorite"] {
+        let cmd = RemoteCommand::Rate {
+            video_id: "st1".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        let app_resp = app_apply(&mut app, cmd.clone());
+        let (engine_resp, shutdown, _) = engine.handle_remote(cmd).await;
+        assert!(!shutdown);
+        assert_eq!(
+            app_resp.reason, engine_resp.reason,
+            "radio rating {step}: owners disagree on the reason"
+        );
+        assert_parity(&format!("radio rating {step}"), &app, &engine);
+    }
+}
+
+#[tokio::test]
 async fn daemon_conflicts_reject_without_state_or_effects() {
     for command in [
         RemoteCommand::Streaming {

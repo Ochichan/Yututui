@@ -295,10 +295,13 @@ impl DaemonEngine {
                 self.signals
                     .toggle_dislike(&song.video_id, &artist_key, now);
             }
-            // dislike → neutral
+            // dislike → neutral: signals-only, like the App leg — no library write and
+            // no invalidation push for a mutation the library never saw.
             (false, true) => {
                 self.signals
                     .toggle_dislike(&song.video_id, &artist_key, now);
+                self.save_signals("daemon GUI rating signals");
+                return RemoteResponse::ok("rating cycled".to_string());
             }
         }
         self.save_library("daemon GUI rating library");

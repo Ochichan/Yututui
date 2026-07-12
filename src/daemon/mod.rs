@@ -18,6 +18,7 @@ use crate::remote::server::{self, BindOutcome, RemoteEvent};
 use crate::util::process::{self, ProcessProfile};
 
 mod cli;
+mod downloads_host;
 mod effects;
 mod engine;
 mod events;
@@ -264,9 +265,15 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let (mut remote_guard, session_hub) = server.start(move |event| {
         emit_daemon_event(&remote_event_tx, DaemonEvent::Remote(event)).is_ok()
     });
-    // The v8 publisher runs on this loop (the owner lane), next to the media/scrobble
-    // post-event observers below.
     let mut publisher = crate::remote::publish::Publisher::new(session_hub);
+    let download_runtime = engine.download_runtime();
+    let mut downloads_host = downloads_host::DownloadsHost::spawn(
+        event_tx.clone(),
+        download_runtime.dir,
+        download_runtime.cookies_file,
+        download_runtime.max_concurrent,
+    );
+    publisher.publish_downloads(downloads_host.models());
 
     let shutdown = crate::player::lifetime::ShutdownLatch::new();
     let signal_event_tx = event_tx.clone();
@@ -318,8 +325,6 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
         record_daemon_event(&scrobble_event_tx, DaemonEvent::Scrobble(event));
     });
-    // Lyrics topic host (B1): keeps the session `lyrics` topic tracking the current
-    // song; fetches only while a lyrics subscriber exists.
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
     let mut published_playlists_rev = None;
     let mut published_library_invalidations = engine.library_invalidations();
@@ -409,6 +414,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
+        let Some(event) = downloads_host.intercept(event, &engine, &mut publisher) else {
+            continue;
+        };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
@@ -636,6 +644,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
+            DaemonEvent::Download(_) => unreachable!("downloads are intercepted above"),
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 engine.suppress_transport_recovery_for_shutdown();

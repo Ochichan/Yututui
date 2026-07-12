@@ -361,6 +361,13 @@ impl DaemonEngine {
         self.config.effective_cookie()
     }
 
+    pub(crate) fn download_runtime(&self) -> crate::config::DownloadRuntimeConfig {
+        self.config.download_runtime(
+            self.config
+                .cookies_file_for_external_tools(data_dir().as_deref()),
+        )
+    }
+
     /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
     pub async fn shutdown_background(&mut self) {
         self.maintainer.shutdown().await;
@@ -628,10 +635,13 @@ impl DaemonEngine {
             // gateway stops answering bad_command; each stream replaces its arms with
             // real dispatch. Until then the reason is an honest not_supported (the
             // frontend gates these paths behind the v8-commands capability anyway).
+            // Defensive backstop: the daemon owner loop owns the download actor and
+            // intercepts these before engine dispatch.
+            RemoteCommand::Download { .. } | RemoteCommand::DeleteDownload { .. } => {
+                RemoteResponse::err("not_supported")
+            }
             RemoteCommand::QueueRemoveMany { .. }
             | RemoteCommand::AskAi { .. }
-            | RemoteCommand::Download { .. }
-            | RemoteCommand::DeleteDownload { .. }
             | RemoteCommand::KeymapBind { .. }
             | RemoteCommand::KeymapUnbind { .. }
             | RemoteCommand::KeymapResetAll
@@ -1183,6 +1193,14 @@ impl DaemonEngine {
             return Some(song.clone());
         }
         crate::api::is_youtube_video_id(video_id).then(|| Song::remote(video_id, video_id, "", ""))
+    }
+
+    pub(crate) fn resolve_gui_track(
+        &self,
+        requester: Option<&RequesterKey>,
+        video_id: &str,
+    ) -> Option<Song> {
+        self.resolve_video_id(requester, video_id)
     }
 
     async fn play_tracks(

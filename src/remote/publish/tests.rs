@@ -635,6 +635,41 @@ fn playlists_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed()
 }
 
 #[test]
+fn downloads_publish_retains_for_subscribe_and_broadcasts_only_when_subscribed() {
+    use super::super::proto::{DownloadStateModel, DownloadStatusModel};
+
+    let (hub, session, mut rx) = test_register(SessionTuning::default());
+    let mut publisher = Publisher::new(hub);
+    let queue = Queue::default();
+    let item = DownloadStatusModel {
+        video_id: "v1".to_owned(),
+        title: "Track".to_owned(),
+        state: DownloadStateModel::Running,
+        pct: 10.0,
+        error: None,
+    };
+
+    assert!(!publisher.downloads_subscribed());
+    publisher.publish_downloads(vec![item.clone()]);
+    assert!(drain(&mut rx).is_empty(), "no subscriber → no broadcast");
+
+    publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Downloads]);
+    let lines = drain(&mut rx);
+    assert_eq!(kinds(&lines), vec!["event:downloads", "raw:frame"]);
+    let SessionLine::Event { payload, .. } = &lines[0] else {
+        panic!("expected retained downloads snapshot");
+    };
+    match serde_json::from_slice::<PushEvent>(payload).unwrap() {
+        PushEvent::DownloadsSnapshot { items } => assert_eq!(items, vec![item]),
+        other => panic!("unexpected event {other:?}"),
+    }
+    assert!(publisher.downloads_subscribed());
+
+    publisher.publish_downloads(Vec::new());
+    assert_eq!(kinds(&drain(&mut rx)), vec!["event:downloads"]);
+}
+
+#[test]
 fn library_invalidated_is_gated_and_has_no_subscribe_snapshot() {
     let (hub, session, mut rx) = test_register(SessionTuning::default());
     let mut publisher = Publisher::new(hub);

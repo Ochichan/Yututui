@@ -34,8 +34,8 @@ pub use command::{
     REMOTE_MAX_TRACK_IDS, RateChange, RemoteCommand, RemoteSettingChange,
 };
 pub use model::{
-    ArtworkRef, LibraryPageModel, LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel,
-    TrackModel,
+    ArtworkRef, DownloadStateModel, DownloadStatusModel, LibraryPageModel, LyricLineModel,
+    PlaylistDetailModel, PlaylistSummaryModel, TrackModel,
 };
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{

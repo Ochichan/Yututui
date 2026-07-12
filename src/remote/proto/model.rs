@@ -98,6 +98,34 @@ pub struct LyricLineModel {
     feature = "ts-export",
     ts(export, export_to = "gui/src/generated/protocol/")
 )]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadStateModel {
+    Running,
+    Done,
+    Failed,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DownloadStatusModel {
+    pub video_id: String,
+    pub title: String,
+    pub state: DownloadStateModel,
+    pub pct: f64,
+    #[cfg_attr(feature = "ts-export", ts(type = "string | null"))]
+    pub error: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryPageModel {
     pub scope: String,
@@ -148,6 +176,20 @@ mod tests {
         assert!(!track.disliked);
         assert_eq!(track.duration_ms, None);
         assert_eq!(track.artwork, None);
+    }
+
+    #[test]
+    fn download_status_serializes_absent_error_as_null() {
+        let status = DownloadStatusModel {
+            video_id: "v".to_owned(),
+            title: "Track".to_owned(),
+            state: DownloadStateModel::Running,
+            pct: 0.0,
+            error: None,
+        };
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["state"], "running");
+        assert!(value["error"].is_null());
     }
 
     #[test]

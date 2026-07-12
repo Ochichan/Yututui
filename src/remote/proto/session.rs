@@ -248,6 +248,10 @@ pub enum PushEvent {
     PlaylistsSnapshot {
         items: Vec<super::model::PlaylistSummaryModel>,
     },
+    /// `downloads` topic: the retained ordered projection of daemon-owned downloads.
+    DownloadsSnapshot {
+        items: Vec<super::model::DownloadStatusModel>,
+    },
 }
 
 /// One catalog's slice of a completed search: a concrete source (never `all`), its

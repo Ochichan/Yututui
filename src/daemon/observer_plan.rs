@@ -33,6 +33,7 @@ impl DaemonEvent {
             // A lyrics result never changes player/queue/media state — skip projections.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
             | DaemonEvent::Lyrics(_)
+            | DaemonEvent::Download(_)
             | DaemonEvent::Signal
             | DaemonEvent::TelemetryWake => ObserverPlan::INERT,
             _ => ObserverPlan::PROJECTED,
