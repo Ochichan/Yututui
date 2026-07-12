@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, RateChange, RemoteCommand, RemoteResponse,
     RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
@@ -89,7 +89,6 @@ impl App {
             // The deferred v8 GUI surface (gui/WIRING.md §1.5) is daemon-only by design:
             // the GUI attaches to a daemon owner; the standalone TUI keeps its own paths.
             // One exhaustive arm so the parity harness can never see divergent reasons.
-            | RemoteCommand::Rate { .. }
             | RemoteCommand::QueueRemoveMany { .. }
             | RemoteCommand::PlayVideo { .. }
             | RemoteCommand::AskAi { .. }
@@ -233,6 +232,22 @@ impl App {
                     self.dirty = true;
                 }
                 (RemoteResponse::status(self.status_snapshot()), Vec::new())
+            }
+            // The GUI's rating chip binds the player model's CURRENT track (its only
+            // sender uses the current id), so both owners accept exactly that; the
+            // cycle rides the same reducer path as the `f` key. The daemon mirrors
+            // these guards and the cycle transitions lockstep (parity-tested).
+            RemoteCommand::Rate { video_id, rating } => {
+                if rating != RateChange::Cycle {
+                    return (RemoteResponse::err("not_supported"), Vec::new());
+                }
+                if self.queue.current().map(|song| song.video_id.as_str())
+                    != Some(video_id.as_str())
+                {
+                    return (RemoteResponse::err("unknown_track"), Vec::new());
+                }
+                let cmds = self.on_player_action(Action::CycleRating);
+                (RemoteResponse::ok("rating cycled".to_string()), cmds)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
@@ -582,6 +597,8 @@ impl App {
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
             config: &self.config,
+            library: &self.library,
+            signals: &self.signals,
             // Same current-track gate as status_snapshot above.
             artwork: cur.and_then(|song| {
                 self.media_art

@@ -623,12 +623,12 @@ impl DaemonEngine {
             RemoteCommand::FetchPlaylistDetail { playlist_id } => {
                 self.gui_fetch_playlist_detail(&playlist_id)
             }
+            RemoteCommand::Rate { video_id, rating } => self.gui_rate(&video_id, rating),
             // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
             // gateway stops answering bad_command; each stream replaces its arms with
             // real dispatch. Until then the reason is an honest not_supported (the
             // frontend gates these paths behind the v8-commands capability anyway).
-            RemoteCommand::Rate { .. }
-            | RemoteCommand::QueueRemoveMany { .. }
+            RemoteCommand::QueueRemoveMany { .. }
             | RemoteCommand::AskAi { .. }
             | RemoteCommand::Download { .. }
             | RemoteCommand::DeleteDownload { .. }
@@ -1696,6 +1696,16 @@ impl DaemonEngine {
     /// `App::core_view`; docs/gui/02 §14). Interpolates elapsed to "now" from the same
     /// anchor the OS media session uses. EQ reflects config (the daemon's live EQ apply
     /// lands at S4/B3); the daemon has no ICY now-playing surface yet.
+    /// Read-only store accessors for the owner loop's push projections (search rows
+    /// carry the rating halves too).
+    pub(crate) fn library(&self) -> &Library {
+        &self.library
+    }
+
+    pub(crate) fn signals(&self) -> &Signals {
+        &self.signals
+    }
+
     pub(crate) fn core_view(&self) -> crate::remote::publish::CoreView<'_> {
         let cur = self.queue.current();
         crate::remote::publish::CoreView {
@@ -1726,6 +1736,8 @@ impl DaemonEngine {
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
             config: &self.config,
+            library: &self.library,
+            signals: &self.signals,
             // Same current-track gate as status()/media_snapshot: stale art from the
             // previous track never rides a push.
             artwork: cur.and_then(|song| {

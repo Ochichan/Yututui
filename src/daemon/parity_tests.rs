@@ -27,8 +27,8 @@ use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
-    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse,
-    RemoteSettingChange, ServerFrame, ToggleState, Topic,
+    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RateChange, RemoteCommand,
+    RemoteResponse, RemoteSettingChange, ServerFrame, ToggleState, Topic,
 };
 use crate::remote::publish;
 use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
@@ -198,6 +198,29 @@ fn b0_script() -> Vec<RemoteCommand> {
             to: 0,
             expected_rev: None,
         }, // queue_index on both owners
+        // The rating cycle on the current track ("b" since the seed): the projected
+        // TrackModel favorite/disliked halves must stay equal through a full
+        // neutral → like → dislike → neutral revolution, and the guards must agree.
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "not-current".to_owned(),
+            rating: RateChange::Cycle,
+        }, // unknown_track on both owners
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Up,
+        }, // not_supported on both owners (only the cycle is wired today)
         RemoteCommand::ToggleShuffle,
         RemoteCommand::CycleRepeat,
         RemoteCommand::CycleRepeat,

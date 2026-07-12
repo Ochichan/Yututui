@@ -73,7 +73,7 @@ impl DaemonEngine {
             .iter()
             .skip(offset)
             .take(limit)
-            .map(crate::remote::publish::track_model)
+            .map(|song| crate::remote::publish::track_model(song, &self.library, &self.signals))
             .collect();
         response_with_data(
             "library page",
@@ -242,10 +242,69 @@ impl DaemonEngine {
                 tracks: playlist
                     .songs
                     .iter()
-                    .map(crate::remote::publish::track_model)
+                    .map(|song| {
+                        crate::remote::publish::track_model(song, &self.library, &self.signals)
+                    })
                     .collect(),
             }),
         )
+    }
+
+    /// The GUI rating chip's `rate` command. Only `cycle` on the CURRENT track is
+    /// accepted (its sole sender binds the player model's current track); the cycle
+    /// transitions mirror the TUI's `Action::CycleRating` (src/app/player.rs) lockstep —
+    /// neutral → like → dislike → neutral over library favorites + dislike signals.
+    /// The daemon skips the App-only session-event/affinity recorder, matching its
+    /// OS-media rating path (`media_set_rating`).
+    pub(super) fn gui_rate(
+        &mut self,
+        video_id: &str,
+        rating: crate::remote::proto::RateChange,
+    ) -> RemoteResponse {
+        if rating != crate::remote::proto::RateChange::Cycle {
+            return RemoteResponse::err("not_supported");
+        }
+        let Some(song) = self.queue.current().cloned() else {
+            return RemoteResponse::err("unknown_track");
+        };
+        if song.video_id != video_id {
+            return RemoteResponse::err("unknown_track");
+        }
+        if song.is_radio_station() {
+            self.library.toggle_favorite(&song);
+            self.save_library("daemon GUI radio rating");
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
+            return RemoteResponse::ok("rating cycled".to_string());
+        }
+        let artist_key = crate::signals::normalize_artist(&song.artist);
+        let now = crate::signals::unix_now();
+        let liked = self.library.is_favorite(&song.video_id);
+        let disliked = self.signals.is_disliked(&song.video_id);
+        match (liked, disliked) {
+            // neutral → like
+            (false, false) => {
+                let now_fav = self.library.toggle_favorite(&song);
+                self.signals
+                    .record_like(&song.video_id, &artist_key, now_fav, now);
+            }
+            // like → dislike
+            (true, _) => {
+                self.library.toggle_favorite(&song);
+                self.signals
+                    .record_like(&song.video_id, &artist_key, false, now);
+                self.signals
+                    .toggle_dislike(&song.video_id, &artist_key, now);
+            }
+            // dislike → neutral
+            (false, true) => {
+                self.signals
+                    .toggle_dislike(&song.video_id, &artist_key, now);
+            }
+        }
+        self.save_library("daemon GUI rating library");
+        self.save_signals("daemon GUI rating signals");
+        self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        RemoteResponse::ok("rating cycled".to_string())
     }
 
     async fn gui_replace_queue(&mut self, songs: Vec<Song>) -> RemoteResponse {

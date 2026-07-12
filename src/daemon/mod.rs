@@ -794,6 +794,10 @@ fn route_gui_search_completion(
             &pending.query,
             pending.source,
             groups,
+            crate::remote::publish::RatingStores {
+                library: engine.library(),
+                signals: engine.signals(),
+            },
         )
     {
         return false;
