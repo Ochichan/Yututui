@@ -16,10 +16,10 @@ pub enum UiTier {
     Mini,
 }
 
-/// Below this height the tallest fixed layout (the Player screen's legacy Top chrome:
-/// 2 border + 8 control rows + 1 footer) no longer renders whole — every normal screen is
-/// clipped chrome with zero content, exactly when a purpose-built layout wins.
-pub const MINI_MIN_H: u16 = 11;
+/// Below this height the Bottom-default Search and DJ Gem layouts cannot fit their border,
+/// fixed input/dock/footer chrome, and one useful content row. Enter Mini before ratatui has to
+/// compress or clip those fixed rows; the legacy Top layout simply gets the same stable boundary.
+pub const MINI_MIN_H: u16 = 14;
 /// Below this width even the tight transport strip clips when centered: 26 cells of
 /// controls in English, ~28 with the Korean `볼륨` label and a 3-digit volume, plus the
 /// 2 border columns and a margin.
@@ -51,9 +51,9 @@ mod tests {
     #[test]
     fn tier_thresholds_are_pinned() {
         // The smallest Full frame, and the boundary cells around it.
-        assert_eq!(tier(size(32, 11)), UiTier::Full);
-        assert_eq!(tier(size(31, 11)), UiTier::Mini);
-        assert_eq!(tier(size(32, 10)), UiTier::Mini);
+        assert_eq!(tier(size(32, 14)), UiTier::Full);
+        assert_eq!(tier(size(31, 14)), UiTier::Mini);
+        assert_eq!(tier(size(32, 13)), UiTier::Mini);
         assert_eq!(tier(size(80, 24)), UiTier::Full);
         assert_eq!(tier(size(28, 8)), UiTier::Mini);
     }

@@ -4,7 +4,7 @@
 //! control-box renderer, so the controls stay clickable and byte-consistent.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 
 use crate::app::{App, Mode};
 use crate::ui::control_box;
@@ -18,23 +18,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let animated = app.mode == Mode::Player;
     // Row budget, most important first: title, seekbar, transport, then a minimal status
     // line only when a 4th row exists. Any residual rows stay blank.
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(area);
-    control_box::render_title_row(frame, app, rows[0], animated);
+    // Build only rows that actually exist. Asking ratatui to solve four fixed one-row
+    // constraints inside a 2–3-row terminal can collapse an earlier critical row; direct
+    // offsets keep the documented title → seek → transport degradation order stable.
+    let row = |offset: u16| Rect {
+        x: area.x,
+        y: area.y.saturating_add(offset),
+        width: area.width,
+        height: 1,
+    };
+    control_box::render_title_row(frame, app, row(0), animated);
     if area.height >= 2 {
-        control_box::render_seekbar(frame, app, rows[1], animated);
+        control_box::render_seekbar(frame, app, row(1), animated);
     }
     if area.height >= 3 {
-        control_box::render_controls(frame, app, rows[2], animated);
+        control_box::render_controls(frame, app, row(2), animated);
     }
     if area.height >= 4 {
-        control_box::render_status_line(frame, app, rows[3], animated);
+        control_box::render_status_line(frame, app, row(3), animated);
     }
     // The status line's `eq:`/`streaming:` toggles and the queue position stay live in the
     // miniplayer, so their surfaces must render here too — an open popup that isn't drawn

@@ -13,6 +13,10 @@ impl App {
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: impl Into<Msg>) -> Vec<Cmd> {
         let msg = msg.into();
+        // Rendering is the only place that knows the real cell grid (text zoom can change it
+        // without a terminal resize). Apply the bridged tier before routing this event so a
+        // hidden Search/DJ input cannot consume the first global key after entering Mini.
+        self.sync_ui_tier();
         let mut status_before = std::mem::take(&mut self.status_text_prev);
         status_before.clear();
         status_before.push_str(&self.status.text);

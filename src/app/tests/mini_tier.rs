@@ -46,11 +46,24 @@ fn mini_keeps_the_transport_clickable() {
     let cmds = app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::CyclePause)]
     ));
+}
+
+#[test]
+fn ultra_narrow_mini_preserves_the_primary_transport_target_in_bounds() {
+    let app = app_playing(2, 0);
+    render_mini(&app, 10, 3);
+    let rect = app
+        .hits
+        .rect_of_target(MouseTarget::Player(Action::TogglePause))
+        .expect("pause remains the primary narrow-width control");
+    assert!(rect.width > 0);
+    assert!(rect.x.saturating_add(rect.width) <= 10);
 }
 
 #[test]
@@ -78,14 +91,13 @@ fn mini_entry_drops_search_input_focus() {
     assert_eq!(app.mode, Mode::Search);
     assert!(app.in_text_entry());
     render_mini(&app, 28, 8);
-    app.update(Msg::Resize); // any event runs the tier sync
+    // The very first event after render must run tier hygiene before it is routed.
+    let before = app.search.input.clone();
+    app.update(Msg::Key(key(KeyCode::Char('B'))));
     assert!(
         !app.in_text_entry(),
         "the invisible search input must not keep eating keys"
     );
-    // Typeable globals work again: `B` reaches the collapse toggle, not the input.
-    let before = app.search.input.clone();
-    app.update(Msg::Key(key(KeyCode::Char('B'))));
     assert_eq!(app.search.input, before, "B must not type into the input");
 }
 
@@ -145,8 +157,13 @@ fn mini_hygiene_is_level_triggered_and_covers_the_ai_input() {
     app.update(Msg::Key(key(KeyCode::Char('g')))); // DJ Gem, input focused
     assert_eq!(app.mode, Mode::Ai);
     render_mini(&app, 28, 8);
-    app.update(Msg::Resize);
+    app.update(Msg::Key(key(KeyCode::Char('?'))));
     assert!(!app.in_text_entry(), "the hidden DJ Gem input must blur");
+    assert!(
+        app.overlays.help_visible,
+        "the first global key must route after Mini hygiene"
+    );
+    app.overlays.help_visible = false;
     // Navigating inside mini re-focuses the search input — the hygiene must re-fire on the
     // next event (level-triggered), not only on the tier transition.
     app.update(Msg::Key(key(KeyCode::Char('s'))));
@@ -157,6 +174,24 @@ fn mini_hygiene_is_level_triggered_and_covers_the_ai_input() {
         !app.in_text_entry(),
         "re-focused inputs must blur again while the mini tier holds"
     );
+}
+
+#[test]
+fn every_mode_uses_mini_until_the_bottom_layout_has_a_content_row() {
+    for mode in [
+        Mode::Player,
+        Mode::Search,
+        Mode::Library,
+        Mode::Settings,
+        Mode::Ai,
+    ] {
+        let mut app = app_playing(2, 0);
+        app.mode = mode;
+        render_mini(&app, 32, 13);
+        assert_eq!(app.bridges.ui_tier.get(), UiTier::Mini, "{mode:?} at 32x13");
+        render_mini(&app, 32, 14);
+        assert_eq!(app.bridges.ui_tier.get(), UiTier::Full, "{mode:?} at 32x14");
+    }
 }
 
 #[test]
@@ -174,6 +209,7 @@ fn queue_pos_click_opens_the_queue_in_mini_even_with_the_bar_hidden() {
     app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     assert!(app.queue_popup.open, "N/M opens the queue window in place");
 }

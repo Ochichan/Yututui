@@ -76,6 +76,7 @@ fn docked_transport_clicks_dispatch_from_other_screens() {
     let cmds = app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     assert!(
         matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]),
@@ -132,6 +133,7 @@ fn queue_pos_click_from_other_screen_follows_to_player() {
     app.update(Msg::MouseClick {
         col: rect.x,
         row: rect.y,
+        multi: false,
     });
     // The queue window lives on the Player screen — the click navigates there and opens it,
     // never an invisible popup over Search.
@@ -300,6 +302,7 @@ fn eq_dropdown_drops_up_from_the_docked_status_line() {
     app.update(Msg::MouseClick {
         col: anchor.x,
         row: anchor.y,
+        multi: false,
     });
     assert!(app.dropdowns.eq_open);
     render_at_size(&app, 80, 24);
