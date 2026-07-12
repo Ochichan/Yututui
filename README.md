@@ -47,6 +47,12 @@ Windows direct installer:
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
+On Windows, launch **YuTuTui!** from the Start Menu. The tray companion opens Windows Terminal
+and starts `ytt` for you; its right-click menu also has **Open Player**. Double-clicking
+`ytt.exe` directly is supported too, and the console stays open after exit so an error is not
+lost. macOS offers the same **Open Player** action from its menu-bar companion. Linux keeps the
+lightweight native path: run `ytt` from your terminal or make a desktop launcher for that command.
+
 Then run `ytt`. If anything's off, `ytt doctor` tells you exactly what to fix — more in [Troubleshooting](#troubleshooting).
 
 <details>
@@ -77,11 +83,22 @@ stay out of the taskbar/Dock and app switcher.
 
 </details>
 
+### Runtime tools
+
+YuTuTui! uses **mpv** for playback, **yt-dlp** for search/stream resolution, and **ffmpeg** for
+download post-processing. Packaged installs include them. If a direct or source install is
+missing one, the app shows a friendly setup card with a copyable OS command, setup guide, and
+**Check again** button instead of exposing a process error. `ytt doctor` remains the detailed
+diagnostic command.
+
 ## Quick start
 
 ```sh
 ytt
 ```
+
+On a new profile, a ten-second hint points to **Search**. Press the displayed search key
+(normally `s`) or click **Search**; completing the hint once keeps later launches clean.
 
 1. Press **`s`**, type a song, hit **`Enter`**.
 2. Move with **`↑`/`↓`**, press **`Enter`** to play.

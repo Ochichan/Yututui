@@ -696,6 +696,7 @@ impl App {
                 Vec::new()
             }
             Action::OpenSearch => {
+                let cmds = self.complete_search_onboarding();
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
                 let search = self.search_config_for_mode();
@@ -704,7 +705,7 @@ impl App {
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
-                Vec::new()
+                cmds
             }
             // `P` opens the add-to-playlist picker for the track that's playing.
             Action::AddToPlaylist => {

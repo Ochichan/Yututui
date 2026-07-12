@@ -332,7 +332,7 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
         playback,
         MenuEntry::Separator,
         item(
-            crate::t!("Open TUI", "TUI 열기"),
+            crate::t!("Open Player", "플레이어 열기"),
             true,
             Some(MenuAction::OpenTui),
         ),

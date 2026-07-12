@@ -197,8 +197,9 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
     result
 }
 
-/// Write `%APPDATA%\Microsoft\Windows\Start Menu\Programs\YuTuTui!.lnk` targeting this
-/// exe, with `System.AppUserModel.ID` stamped to [`APP_USER_MODEL_ID`]. The Windows
+/// Write `%APPDATA%\Microsoft\Windows\Start Menu\Programs\YuTuTui!.lnk` targeting the
+/// adjacent tray launcher when packaged, with `System.AppUserModel.ID` stamped to
+/// [`APP_USER_MODEL_ID`]. The Windows
 /// AppResolver maps a media session's explicit AUMID to a display name/icon **only**
 /// through a Start-Menu shortcut carrying that property (the Chrome/Spotify route) —
 /// the HKCU `AppUserModelId` key alone leaves the flyout on "Unknown app" (proven
@@ -227,6 +228,12 @@ fn write_start_menu_shortcut(icon: Option<&std::path::Path>) -> Result<std::path
     // Must live in the Start Menu: the AppResolver only indexes Start-Menu shortcuts.
     let lnk = programs.join(format!("{DISPLAY_NAME}.lnk"));
     let exe = std::env::current_exe().map_err(|e| format!("could not resolve ytt.exe: {e}"))?;
+    let tray = exe.with_file_name("yututray.exe");
+    let (target, arguments) = if tray.is_file() {
+        (tray, Some("--open-tui"))
+    } else {
+        (exe.clone(), None)
+    };
 
     struct ComGuard;
     impl Drop for ComGuard {
@@ -250,7 +257,19 @@ fn write_start_menu_shortcut(icon: Option<&std::path::Path>) -> Result<std::path
             unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }?;
         // SAFETY: the executable path buffer is NUL-terminated UTF-16 and lives until
         // SetPath returns; ShellLink copies the value.
-        unsafe { link.SetPath(PCWSTR(wide(&exe.display().to_string()).as_ptr())) }?;
+        unsafe { link.SetPath(PCWSTR(wide(&target.display().to_string()).as_ptr())) }?;
+        if let Some(arguments) = arguments {
+            // SAFETY: the argument buffer is NUL-terminated UTF-16 and lives until
+            // SetArguments returns; ShellLink copies the value.
+            unsafe { link.SetArguments(PCWSTR(wide(arguments).as_ptr())) }?;
+        }
+        if let Some(parent) = target.parent() {
+            // SAFETY: the working-directory buffer is NUL-terminated UTF-16 and lives until
+            // SetWorkingDirectory returns; ShellLink copies the value.
+            unsafe {
+                link.SetWorkingDirectory(PCWSTR(wide(&parent.display().to_string()).as_ptr()))
+            }?;
+        }
         if let Some(icon) = icon {
             // SAFETY: the icon path buffer is NUL-terminated UTF-16 and lives until
             // SetIconLocation returns; ShellLink copies the value.

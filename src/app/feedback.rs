@@ -8,7 +8,7 @@ impl App {
     /// Whether a transient status is currently covering the title (drives the main loop's
     /// expiry tick - see [`Msg::StatusTick`]).
     pub fn status_visible(&self) -> bool {
-        self.status.set_at.is_some()
+        self.status.set_at.is_some() || self.onboarding.visible()
     }
 
     pub(crate) fn set_status_info(&mut self, text: impl Into<String>) {

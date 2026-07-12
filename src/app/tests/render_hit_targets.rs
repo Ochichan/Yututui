@@ -482,6 +482,9 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.overlays.why_ai_visible = true;
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_WHY_AI_BIT);
     app.overlays.why_ai_visible = false;
+    app.show_tool_setup(ToolSetupContext::Startup, vec!["mpv"]);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_TOOL_SETUP_BIT);
+    app.tool_setup = None;
     app.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,

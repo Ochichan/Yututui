@@ -165,6 +165,7 @@ fn json_round_trips() {
     let mut radio_theme = ThemeConfig::default();
     radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
     let c = Config {
+        search_onboarding_seen: true,
         cookie: Some("SID=abc".to_owned()),
         cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
         volume: 70,
@@ -358,6 +359,13 @@ fn json_round_trips() {
     );
     assert!(Config::default().radio_theme.is_none());
     assert!(Config::default().effective_radio_theme().is_none());
+}
+
+#[test]
+fn search_onboarding_is_fresh_only_for_new_profiles() {
+    assert!(!Config::default().search_onboarding_seen);
+    let legacy: Config = serde_json::from_str("{\"volume\": 42}").unwrap();
+    assert!(legacy.search_onboarding_seen);
 }
 
 #[test]

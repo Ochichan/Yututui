@@ -591,6 +591,10 @@ impl ToolsConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Whether the one-shot Search onboarding hint has been completed. Missing values belong to
+    /// pre-onboarding config files and deserialize as `true`; a genuinely fresh default is false.
+    #[serde(default = "legacy_search_onboarding_seen")]
+    pub search_onboarding_seen: bool,
     /// Raw `Cookie:` header for music.youtube.com (takes precedence over the file).
     pub cookie: Option<String>,
     /// Path to a Netscape `cookies.txt` exported from the browser.
@@ -868,6 +872,7 @@ pub struct AiRuntimeConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            search_onboarding_seen: false,
             cookie: None,
             cookies_file: None,
             volume: 100,
@@ -917,6 +922,10 @@ impl Default for Config {
             update_check_enabled: true,
         }
     }
+}
+
+fn legacy_search_onboarding_seen() -> bool {
+    true
 }
 
 impl Config {

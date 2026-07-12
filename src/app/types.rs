@@ -533,6 +533,10 @@ pub enum ImportReviewAction {
 pub enum MouseTarget {
     /// An action row in the open TUI context menu.
     ContextMenuItem(usize),
+    ToolSetupCopy,
+    ToolSetupGuide,
+    ToolSetupRetry,
+    ToolSetupLater,
     Global(Action),
     Player(Action),
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).

@@ -807,6 +807,7 @@ pub async fn run(
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
     let mut missing = deps::missing();
+    app.enable_runtime_tool_checks();
     if !missing.is_empty() {
         tracing::warn!(missing = ?missing, "required external tools not found on PATH");
         // A missing yt-dlp is about to be fetched by the maintainer spawned below -
@@ -820,8 +821,9 @@ pub async fn run(
         }
     }
     if !missing.is_empty() {
-        app.status.text = deps::install_hint(&missing);
+        app.show_tool_setup(app::ToolSetupContext::Startup, missing);
     }
+    app.prepare_search_onboarding(!persistence_read_only);
     startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
