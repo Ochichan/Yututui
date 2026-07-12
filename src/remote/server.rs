@@ -244,6 +244,8 @@ struct PublishedInstance {
 struct SocketFileIdentity {
     device: u64,
     inode: u64,
+    change_seconds: i64,
+    change_nanoseconds: i64,
 }
 
 #[cfg(unix)]
@@ -258,6 +260,11 @@ fn socket_file_identity(path: &str) -> io::Result<SocketFileIdentity> {
     Ok(SocketFileIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
+        // Linux can immediately reuse a just-unlinked socket inode. Pair the stable inode key
+        // with its change generation so a late owner cannot mistake the rebound socket for its
+        // own (an ABA collision on device + inode alone).
+        change_seconds: metadata.ctime(),
+        change_nanoseconds: metadata.ctime_nsec(),
     })
 }
 
