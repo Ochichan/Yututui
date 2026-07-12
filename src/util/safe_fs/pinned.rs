@@ -981,15 +981,21 @@ mod platform {
         STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
+        CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
-    const DIRECTORY_ACCESS: u32 =
-        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // NtFlushBuffersFileEx requires write or append access. For a directory those rights map to
+    // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY respectively; request both so metadata flushes are
+    // authorized on NTFS/ReFS instead of failing every durable publication with ACCESS_DENIED.
+    const DIRECTORY_ACCESS: u32 = FILE_LIST_DIRECTORY
+        | FILE_ADD_FILE
+        | FILE_ADD_SUBDIRECTORY
+        | FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE;
 
     pub(super) fn open_root(path: &Path) -> io::Result<File> {
         let wide = nul_terminated(path.as_os_str())?;
