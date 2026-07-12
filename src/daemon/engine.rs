@@ -1079,16 +1079,21 @@ impl DaemonEngine {
         assert!(self.gui_search_index.complete(requester, 0, groups));
     }
 
-    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
-    /// first, then the library (favorites/history), then a bare row mpv resolves at load time
-    /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
-    /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
-    /// buggy client or script can't enter the queue as a permanently-unplayable row.
     /// `PlayVideo` host: spawn the shared mpv overlay for a track and pause the audio
     /// instance (the same intent as the TUI's admission-atomic transition, minus its
     /// IPC observer — the daemon cannot watch the window, so closing it and resuming
     /// audio stay with the user/GUI). One overlay at a time; a new spawn replaces it.
     fn play_video(&mut self, requester: Option<&RequesterKey>, video_id: String) -> RemoteResponse {
+        // Reap a window the user already closed so it doesn't linger as a zombie until
+        // engine teardown (no IPC observer to notice the exit), and so a replacement
+        // spawn doesn't pay the drop path's kill-and-wait for an already-dead child.
+        if self
+            .video_overlay
+            .as_mut()
+            .is_some_and(|overlay| matches!(overlay.try_wait(), Ok(Some(_))))
+        {
+            self.video_overlay = None;
+        }
         let song = self
             .queue
             .ordered_iter()
@@ -1127,6 +1132,11 @@ impl DaemonEngine {
         RemoteResponse::ok("video overlay started".to_string())
     }
 
+    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
+    /// first, then the library (favorites/history), then a bare row mpv resolves at load time
+    /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
+    /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
+    /// buggy client or script can't enter the queue as a permanently-unplayable row.
     fn resolve_video_id(&self, requester: Option<&RequesterKey>, video_id: &str) -> Option<Song> {
         if let Some(song) = requester.and_then(|key| self.gui_search_index.resolve(key, video_id)) {
             return Some(song);

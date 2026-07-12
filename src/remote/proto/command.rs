@@ -454,10 +454,13 @@ impl RemoteCommand {
             RemoteCommand::Rate { video_id, .. }
             | RemoteCommand::PlayVideo { video_id }
             | RemoteCommand::LibraryRemove { video_id, .. }
-            | RemoteCommand::Download { video_id, .. }
             | RemoteCommand::DeleteDownload { video_id, .. }
             | RemoteCommand::PlaylistRemoveTrack { video_id, .. }
             | RemoteCommand::FetchWhyGem { video_id } => validate_wire_id(video_id),
+            RemoteCommand::Download { video_id, title } => {
+                validate_wire_id(video_id)?;
+                validate_wire_string(title)
+            }
             RemoteCommand::AskAi { prompt, .. } => validate_query(prompt),
             RemoteCommand::LibraryPlay { scope, filter }
             | RemoteCommand::LibraryEnqueue { scope, filter } => {

@@ -17,7 +17,16 @@ pub(super) struct LyricsHost {
     /// The track whose lyrics were last requested/published (`None` = nothing playing
     /// or no subscriber yet).
     current: Option<String>,
+    /// When the current track's fetch resolved to zero lines. The actor caches transient
+    /// failures under a ~2 min cooldown, so one bounded re-fetch after that window turns
+    /// a network blip at track start into late-arriving lyrics instead of a silent hole
+    /// (the TUI recovers by reopening the panel; the GUI has no such trigger).
+    empty_since: Option<std::time::Instant>,
+    retried_empty: bool,
 }
+
+/// Past the lyrics actor's negative-cache TTL, so the retry is a real re-fetch.
+const EMPTY_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(150);
 
 impl LyricsHost {
     /// Spawn the (cached, latest-only) lyrics actor; results come back on the owner
@@ -29,6 +38,8 @@ impl LyricsHost {
         Self {
             handle,
             current: None,
+            empty_since: None,
+            retried_empty: false,
         }
     }
 
@@ -41,9 +52,24 @@ impl LyricsHost {
         }
         let current_id = current.map(|song| song.video_id.as_str());
         if self.current.as_deref() == current_id {
+            // Same track: one bounded retry when the first answer was empty (possibly a
+            // transient failure the actor negative-cached) and its cooldown has passed.
+            if let (Some(song), Some(since), false) =
+                (current, self.empty_since, self.retried_empty)
+                && since.elapsed() >= EMPTY_RETRY_AFTER
+            {
+                self.retried_empty = true;
+                let _ = self.handle.fetch(
+                    song.video_id.clone(),
+                    song.artist.clone(),
+                    song.title.clone(),
+                );
+            }
             return;
         }
         self.current = current_id.map(str::to_owned);
+        self.empty_since = None;
+        self.retried_empty = false;
         publisher.publish_lyrics(self.current.clone(), Vec::new());
         if let Some(song) = current {
             // A delivery failure only means the actor is gone (process teardown); the
@@ -59,13 +85,20 @@ impl LyricsHost {
     /// A fetch resolved. Publish only when it still names the current track — a rapid
     /// skip's stale result must never overwrite the newer clearing push.
     pub(super) fn on_result(
-        &self,
+        &mut self,
         publisher: &mut Publisher,
         video_id: String,
         lines: &[LyricLine],
     ) {
         if self.current.as_deref() != Some(video_id.as_str()) {
             return;
+        }
+        if lines.is_empty() {
+            if self.empty_since.is_none() {
+                self.empty_since = Some(std::time::Instant::now());
+            }
+        } else {
+            self.empty_since = None;
         }
         publisher.publish_lyrics(Some(video_id), to_models(lines));
     }
