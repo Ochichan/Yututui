@@ -913,6 +913,12 @@ mod tests {
     fn full_barrier_chain_rejects_new_config_without_revoking_accepted_work() {
         let (handle, _rx, _shutdown_rx) = test_handle(1);
         assert!(handle.auth_start().is_ok());
+        {
+            let mut state = lock_pending(&handle.pending.state);
+            // Keep admission deterministic without a live drainer: model a delivery thread that
+            // is blocked in the already-full actor inbox.
+            state.drainer_running = true;
+        }
 
         for segment in 0..=PENDING_BARRIER_CAPACITY / 2 {
             let mut config = settings();

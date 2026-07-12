@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -7,17 +8,43 @@ const SEARCH_ONBOARDING_TTL: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub struct OnboardingState {
     pending: bool,
-    started_at: Option<Instant>,
+    armed: bool,
+    visible_elapsed: Cell<Duration>,
+    visible_since: Cell<Option<Instant>>,
 }
 
 impl OnboardingState {
+    /// Whether the one-shot hint is armed. The render pass separately records whether the
+    /// current frame can actually show it so hidden time never consumes the TTL.
     pub fn visible(&self) -> bool {
-        self.pending && self.started_at.is_some()
+        self.pending && self.armed
+    }
+
+    fn record_render_eligibility(&self, eligible: bool, now: Instant) {
+        if self.visible() && eligible {
+            if self.visible_since.get().is_none() {
+                self.visible_since.set(Some(now));
+            }
+            return;
+        }
+
+        if let Some(started) = self.visible_since.take() {
+            let elapsed = now.checked_duration_since(started).unwrap_or_default();
+            self.visible_elapsed
+                .set(self.visible_elapsed.get().saturating_add(elapsed));
+        }
     }
 
     fn tick_expired(&self, now: Instant) -> bool {
-        self.started_at
-            .is_some_and(|started| now.duration_since(started) >= SEARCH_ONBOARDING_TTL)
+        if !self.visible() {
+            return false;
+        }
+        let current = self
+            .visible_since
+            .get()
+            .and_then(|started| now.checked_duration_since(started))
+            .unwrap_or_default();
+        self.visible_elapsed.get().saturating_add(current) >= SEARCH_ONBOARDING_TTL
     }
 }
 
@@ -30,13 +57,32 @@ impl App {
     }
 
     pub(in crate::app) fn arm_search_onboarding(&mut self) {
-        if self.onboarding.pending
-            && self.onboarding.started_at.is_none()
-            && self.tool_setup.is_none()
-        {
-            self.onboarding.started_at = Some(Instant::now());
+        if self.onboarding.pending && !self.onboarding.armed && self.tool_setup.is_none() {
+            self.onboarding.armed = true;
             self.dirty = true;
         }
+    }
+
+    /// Record whether this frame can show the hint and return the same render verdict. The
+    /// renderer owns the exact cell grid; App owns screen/modal state, so this is their single
+    /// shared eligibility boundary.
+    pub(crate) fn search_onboarding_render_eligible(&self, layout_sufficient: bool) -> bool {
+        self.search_onboarding_render_eligible_at(layout_sufficient, Instant::now())
+    }
+
+    fn search_onboarding_render_eligible_at(&self, layout_sufficient: bool, now: Instant) -> bool {
+        let covering_surface = self.art_overlay_mask() != 0
+            || self.local_mode.pending_confirm.is_some()
+            || self.overlays.spotify_picker.is_some()
+            || self.overlays.recording_settings.is_some()
+            || self.overlays.recordings_browser.is_some()
+            || self.overlays.now_playing_overlay.is_some();
+        let eligible = self.onboarding.visible()
+            && self.mode == Mode::Player
+            && layout_sufficient
+            && !covering_surface;
+        self.onboarding.record_render_eligibility(eligible, now);
+        eligible
     }
 
     pub(in crate::app) fn complete_search_onboarding(&mut self) -> Vec<Cmd> {
@@ -81,9 +127,67 @@ mod tests {
     fn search_onboarding_expires_after_ten_visible_seconds() {
         let mut app = App::new(50);
         app.prepare_search_onboarding(true);
-        let started = app.onboarding.started_at.unwrap();
+        let started = Instant::now();
+        assert!(app.search_onboarding_render_eligible_at(true, started));
         let cmds = app.tick_search_onboarding(started + Duration::from_secs(10));
         assert!(!app.onboarding.visible());
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Persist(PersistCmd::Config(_))]
+        ));
+    }
+
+    #[test]
+    fn hidden_intervals_do_not_consume_the_onboarding_ttl() {
+        let mut app = App::new(50);
+        app.prepare_search_onboarding(true);
+        let started = Instant::now();
+        assert!(app.search_onboarding_render_eligible_at(true, started));
+
+        app.mode = Mode::Library;
+        assert!(!app.search_onboarding_render_eligible_at(true, started + Duration::from_secs(4)));
+        assert!(
+            app.tick_search_onboarding(started + Duration::from_secs(30))
+                .is_empty()
+        );
+
+        app.mode = Mode::Player;
+        assert!(app.search_onboarding_render_eligible_at(true, started + Duration::from_secs(30)));
+        assert!(
+            app.tick_search_onboarding(started + Duration::from_secs(35))
+                .is_empty()
+        );
+        let cmds = app.tick_search_onboarding(started + Duration::from_secs(36));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Persist(PersistCmd::Config(_))]
+        ));
+    }
+
+    #[test]
+    fn small_layouts_and_covering_modals_pause_the_onboarding_ttl() {
+        let mut app = App::new(50);
+        app.prepare_search_onboarding(true);
+        let started = Instant::now();
+        assert!(app.search_onboarding_render_eligible_at(true, started));
+
+        assert!(!app.search_onboarding_render_eligible_at(false, started + Duration::from_secs(3)));
+        assert!(
+            app.tick_search_onboarding(started + Duration::from_secs(20))
+                .is_empty()
+        );
+
+        assert!(app.search_onboarding_render_eligible_at(true, started + Duration::from_secs(20)));
+        app.show_tool_setup(ToolSetupContext::Startup, vec!["mpv"]);
+        assert!(!app.search_onboarding_render_eligible_at(true, started + Duration::from_secs(22)));
+        assert!(
+            app.tick_search_onboarding(started + Duration::from_secs(40))
+                .is_empty()
+        );
+
+        app.tool_setup = None;
+        assert!(app.search_onboarding_render_eligible_at(true, started + Duration::from_secs(40)));
+        let cmds = app.tick_search_onboarding(started + Duration::from_secs(45));
         assert!(matches!(
             cmds.as_slice(),
             [Cmd::Persist(PersistCmd::Config(_))]

@@ -245,6 +245,7 @@ pub struct ActionInfoModel {
     pub context: String,
     pub id: String,
     pub label: String,
-    /// The factory chord (the per-row reset target); the live chord rides `bindings`.
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // The factory chord (the per-row reset target); the live chord rides `bindings`.
     pub default_chord: String,
 }

@@ -131,10 +131,9 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
   return chordFromKey(e);
 }
 
-/** Capture is always code-based (works while an IME is active — §8.4 branch 3). */
+/** Capture follows dispatch normalization, including its IME/Alt physical-code fallback. */
 export function chordFromCapture(e: KeyboardEvent): string | null {
-  if (e.metaKey) return null;
-  return chordFromCode(e);
+  return chordFromEvent(e);
 }
 
 /** Pretty token for display: modifiers / named keys TitleCased, letter case preserved. */

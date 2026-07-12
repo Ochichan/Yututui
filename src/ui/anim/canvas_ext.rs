@@ -106,7 +106,7 @@ pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     for i in 0..u64::from(count) {
         // Size class picks glyph, speed and brightness together (big flakes fall faster).
         let class = (hash32(i * 3 + 7) % 4) as usize;
-        let speed = 3 + class as u64; // frames per row: fine flakes are the slowest
+        let speed = 6 - class as u64; // frames per row: fine flakes are the slowest
         let seed = u64::from(hash32(i * 5 + 1));
         let yv = (f / speed + seed) % (h + 5);
         if yv >= h {
@@ -118,7 +118,7 @@ pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
         if x < 0 || x >= i64::from(w) {
             continue;
         }
-        let color = lerp_color(dim, bright, 1.0 - class as f64 / 3.0);
+        let color = lerp_color(dim, bright, class as f64 / 3.0);
         put_char(
             buf,
             zone.left() + x as u16,

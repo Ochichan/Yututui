@@ -122,23 +122,15 @@ impl AiHost {
         if let Err(reason) = self.ensure_handle(key.as_deref(), model) {
             return Ok(RemoteResponse::err(reason));
         }
-        self.projection.push(AiRoleModel::User, prompt.clone());
-        self.projection.thinking = true;
-        self.publish(engine, publisher);
-        if self
-            .handle
-            .as_ref()
-            .expect("AI handle was ensured above")
-            .ask(prompt, Box::new(engine.build_ai_context()))
-            .is_err()
-        {
-            // The ask never entered the actor: pop the dangling user bubble so the
-            // retained transcript doesn't show a question that will never be answered.
-            self.projection.messages.pop();
-            self.projection.thinking = false;
-            self.publish(engine, publisher);
+        let handle = self.handle.as_ref().expect("AI handle was ensured above");
+        let context = Box::new(engine.build_ai_context());
+        let admitted = self
+            .projection
+            .admit_ask(&prompt, || handle.ask(prompt.clone(), context).is_ok());
+        if !admitted {
             return Ok(RemoteResponse::err("busy"));
         }
+        self.publish(engine, publisher);
         Ok(RemoteResponse::ok("asking".to_owned()))
     }
 
@@ -188,12 +180,14 @@ impl AiHost {
         let effects = match event {
             AiEvent::Thinking(thinking) => {
                 self.projection.thinking = thinking;
+                if !thinking {
+                    self.projection.ask_in_flight = false;
+                }
                 publish = true;
                 Vec::new()
             }
             AiEvent::Chat(text) => {
                 self.projection.push(AiRoleModel::Assistant, text);
-                self.projection.thinking = false;
                 publish = true;
                 Vec::new()
             }
@@ -251,10 +245,22 @@ const AI_HISTORY_MAX: usize = 999;
 struct AiProjection {
     messages: Vec<AiMessageModel>,
     thinking: bool,
+    ask_in_flight: bool,
     suggestions: Vec<Song>,
 }
 
 impl AiProjection {
+    /// Keep one retained chat turn in flight. Rejected actor admission is projection-neutral.
+    fn admit_ask(&mut self, prompt: &str, enqueue: impl FnOnce() -> bool) -> bool {
+        if self.ask_in_flight || !enqueue() {
+            return false;
+        }
+        self.push(AiRoleModel::User, prompt.to_owned());
+        self.thinking = true;
+        self.ask_in_flight = true;
+        true
+    }
+
     fn push(&mut self, role: AiRoleModel, text: String) {
         self.messages.push(AiMessageModel { role, text });
         if self.messages.len() > AI_HISTORY_MAX {
@@ -266,8 +272,14 @@ impl AiProjection {
     #[cfg(test)]
     fn reduce_chat(&mut self, event: AiEvent) {
         match event {
-            AiEvent::Thinking(thinking) => self.thinking = thinking,
-            AiEvent::Chat(text) | AiEvent::Error(text) => {
+            AiEvent::Thinking(thinking) => {
+                self.thinking = thinking;
+                if !thinking {
+                    self.ask_in_flight = false;
+                }
+            }
+            AiEvent::Chat(text) => self.push(AiRoleModel::Assistant, text),
+            AiEvent::Error(text) => {
                 self.push(AiRoleModel::Assistant, text);
                 self.thinking = false;
             }
@@ -288,19 +300,53 @@ mod tests {
     #[test]
     fn ask_thinking_chat_and_error_update_the_retained_transcript() {
         let mut state = AiProjection::default();
-        state.push(AiRoleModel::User, "hello".to_owned());
-        state.reduce_chat(AiEvent::Thinking(true));
+        assert!(state.admit_ask("hello", || true));
         assert!(state.thinking);
-        state.reduce_chat(AiEvent::Chat("hi".to_owned()));
-        assert!(!state.thinking);
-        assert_eq!(state.messages.len(), 2);
-        assert_eq!(state.messages[1].role, AiRoleModel::Assistant);
-        assert_eq!(state.messages[1].text, "hi");
+        state.reduce_chat(AiEvent::Chat("working".to_owned()));
+        assert!(state.thinking);
+        assert!(state.ask_in_flight);
+        assert!(!state.admit_ask("too soon", || panic!("interim chat is not terminal")));
 
-        state.reduce_chat(AiEvent::Thinking(true));
+        state.reduce_chat(AiEvent::Chat("hi".to_owned()));
+        assert!(state.thinking);
+        state.reduce_chat(AiEvent::Thinking(false));
+        assert!(!state.thinking);
+        assert!(!state.ask_in_flight);
+        assert_eq!(state.messages.len(), 3);
+        assert_eq!(state.messages[2].role, AiRoleModel::Assistant);
+        assert_eq!(state.messages[2].text, "hi");
+
+        assert!(state.admit_ask("fail", || true));
         state.reduce_chat(AiEvent::Error("failed".to_owned()));
         assert!(!state.thinking);
+        assert!(state.ask_in_flight);
+        assert!(!state.admit_ask("too soon", || panic!("error guard has not finished")));
+        state.reduce_chat(AiEvent::Thinking(false));
+        assert!(!state.ask_in_flight);
         assert_eq!(state.messages.last().unwrap().text, "failed");
+    }
+
+    #[test]
+    fn rejected_ask_admission_preserves_the_retained_projection() {
+        let mut state = AiProjection::default();
+        state.suggestions.push(song("suggestion"));
+        assert!(state.admit_ask("first", || true));
+        let messages = state.messages.clone();
+
+        assert!(!state.admit_ask("second", || panic!("duplicate ask must not enqueue")));
+        assert_eq!(state.messages, messages);
+        assert!(state.thinking);
+        assert_eq!(state.suggestions[0].video_id, "suggestion");
+
+        state.reduce_chat(AiEvent::Thinking(false));
+        assert!(!state.admit_ask("rejected", || false));
+        assert_eq!(state.messages, messages);
+        assert!(!state.thinking);
+
+        assert!(state.admit_ask("accepted", || true));
+        assert!(state.thinking);
+        assert_eq!(state.messages.last().unwrap().role, AiRoleModel::User);
+        assert_eq!(state.messages.last().unwrap().text, "accepted");
     }
 
     #[test]

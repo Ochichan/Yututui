@@ -61,13 +61,23 @@ describe('chordFromEvent (key-first)', () => {
   });
 });
 
-describe('chordFromCapture (code-first, IME-safe)', () => {
-  it('reads the physical key regardless of produced character', () => {
+describe('chordFromCapture (dispatch-parity, IME-safe)', () => {
+  it('uses produced characters for ordinary keys', () => {
     expect(chordFromCapture(ev({ key: 'ㄱ', code: 'KeyR' }))).toBe('r');
-    expect(chordFromCapture(ev({ code: 'KeyA', shiftKey: true }))).toBe('A');
-    expect(chordFromCapture(ev({ code: 'Space' }))).toBe('space');
-    expect(chordFromCapture(ev({ code: 'Digit1' }))).toBe('1');
-    expect(chordFromCapture(ev({ code: 'KeyK', ctrlKey: true }))).toBe('ctrl+k');
+    expect(chordFromCapture(ev({ key: 'A', code: 'KeyA', shiftKey: true }))).toBe('A');
+    expect(chordFromCapture(ev({ key: ' ', code: 'Space' }))).toBe('space');
+    expect(chordFromCapture(ev({ key: '1', code: 'Digit1' }))).toBe('1');
+    expect(chordFromCapture(ev({ key: 'k', code: 'KeyK', ctrlKey: true }))).toBe('ctrl+k');
+    expect(chordFromCapture(ev({ key: ',', code: 'Comma' }))).toBe(',');
+    expect(chordFromCapture(ev({ key: '?', code: 'Slash', shiftKey: true }))).toBe('?');
+    expect(chordFromCapture(ev({ key: '!', code: 'Digit1', shiftKey: true }))).toBe('!');
+  });
+
+  it('falls back to the physical code for composition and Alt chords', () => {
+    expect(chordFromCapture(ev({ key: 'Process', code: 'KeyR' }))).toBe('r');
+    expect(
+      chordFromCapture(ev({ key: '®', code: 'KeyR', altKey: true, shiftKey: true })),
+    ).toBe('alt+shift+r');
   });
 });
 

@@ -21,7 +21,7 @@ pub(in crate::app) const ART_OVERLAY_DELETE_PLAYLIST_BIT: u32 = 1 << 13;
 pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u32 = 1 << 14;
 pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u32 = 1 << 15;
 pub(in crate::app) const ART_OVERLAY_CONTEXT_MENU_BIT: u32 = 1 << 16;
-pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 19;
+pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 17;
 
 // INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
 // map before replacing, sharing, or widening any allocation.

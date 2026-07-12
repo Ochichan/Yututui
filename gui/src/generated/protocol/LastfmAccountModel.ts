@@ -4,8 +4,4 @@
  * Account blocks for the `accounts` topic (docs/gui/07 §accounts). Presence/booleans
  * only — session keys and tokens NEVER ride the wire (`has_token`, `connected`).
  */
-export type LastfmAccountModel = { connected: boolean, 
-/**
- * Display-only account name; null when disconnected.
- */
-user: string | null, scrobbling: boolean, love_sync: boolean, };
+export type LastfmAccountModel = { connected: boolean, user: string | null, scrobbling: boolean, love_sync: boolean, };

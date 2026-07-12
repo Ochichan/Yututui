@@ -282,12 +282,13 @@ pub struct PlaylistDetailModel {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WhyGemModel {
-    /// The autoplay slot / origin label, e.g. "DJ Gem" or the streaming mode.
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // The autoplay slot / origin label, e.g. "DJ Gem" or the streaming mode.
     pub slot: String,
     pub reasons: Vec<String>,
-    /// Model confidence `0..1`; null when the pick had no model score. A JSON `Number`
-    /// (not `f64`) because this rides `ResponseData`, whose `Eq` the response cache
-    /// relies on — `serde_json::Number` is `Eq`, floats are not.
+    // Model confidence `0..1`; null when the pick had no model score. A JSON `Number`
+    // (not `f64`) because this rides `ResponseData`, whose `Eq` the response cache
+    // relies on — `serde_json::Number` is `Eq`, floats are not.
     #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub confidence: Option<serde_json::Number>,
 }
@@ -302,7 +303,8 @@ pub struct WhyGemModel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastfmAccountModel {
     pub connected: bool,
-    /// Display-only account name; null when disconnected.
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // Display-only account name; null when disconnected.
     pub user: Option<String>,
     pub scrobbling: bool,
     pub love_sync: bool,
@@ -316,7 +318,8 @@ pub struct LastfmAccountModel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListenBrainzAccountModel {
     pub submit: bool,
-    /// Presence only — the token never round-trips.
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // Presence only — the token never round-trips.
     pub has_token: bool,
     pub custom_url: Option<String>,
 }

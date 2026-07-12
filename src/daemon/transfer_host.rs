@@ -385,6 +385,9 @@ fn dest_label(dest: &TransferDest) -> String {
             .clone()
             .unwrap_or_else(|| "New YouTube Music playlist".to_owned()),
         TransferDest::YtmExistingPlaylist { name } => name.clone(),
+        TransferDest::LocalPlaylist { name } => {
+            name.clone().unwrap_or_else(|| "Local playlist".to_owned())
+        }
         _ => "YouTube Music".to_owned(),
     }
 }
@@ -667,6 +670,7 @@ mod tests {
                 TransferDest::LocalPlaylist { ref name } if name.as_deref() == Some("Mix")
             ));
         }
+        assert_eq!(dest_label(&jobs[0].dest), "Mix");
         assert_eq!(jobs[0].min_score, 0.80);
         assert_eq!(jobs[0].match_policy, MatchPolicy::Balanced);
         assert_eq!(jobs[0].auto_accept_ambiguous_min_score, Some(0.75));
@@ -689,6 +693,7 @@ mod tests {
             jobs[0].dest,
             TransferDest::LocalPlaylist { ref name } if name.as_deref() == Some("City Pop")
         ));
+        assert_eq!(dest_label(&jobs[0].dest), "City Pop");
 
         let unknown = parse_jobs(
             &engine,
@@ -698,6 +703,14 @@ mod tests {
             }),
         );
         assert_eq!(unknown.unwrap_err().0, "unknown_playlist");
+    }
+
+    #[test]
+    fn unnamed_local_destination_has_a_local_fallback_label() {
+        assert_eq!(
+            dest_label(&TransferDest::LocalPlaylist { name: None }),
+            "Local playlist"
+        );
     }
 
     #[test]

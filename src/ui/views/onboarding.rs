@@ -12,10 +12,8 @@ use crate::ui::buttons::{self, Seg};
 
 pub fn render_search_hint(frame: &mut Frame, app: &App, area: Rect) {
     let mini = crate::ui::layout::tier(area) == crate::ui::layout::UiTier::Mini;
-    if !app.onboarding.visible()
-        || app.mode != crate::app::Mode::Player
-        || area.height < if mini { 4 } else { 3 }
-    {
+    let layout_sufficient = search_hint_layout_sufficient(area, mini);
+    if !app.search_onboarding_render_eligible(layout_sufficient) {
         return;
     }
     let key =
@@ -45,6 +43,10 @@ pub fn render_search_hint(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(text).style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD)),
         row,
     );
+}
+
+fn search_hint_layout_sufficient(area: Rect, mini: bool) -> bool {
+    area.width > 2 && area.height >= if mini { 4 } else { 3 }
 }
 
 pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
@@ -167,4 +169,17 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_hint_requires_a_nonzero_content_row() {
+        assert!(!search_hint_layout_sufficient(Rect::new(0, 0, 2, 4), true));
+        assert!(search_hint_layout_sufficient(Rect::new(0, 0, 3, 4), true));
+        assert!(!search_hint_layout_sufficient(Rect::new(0, 0, 3, 2), false));
+        assert!(search_hint_layout_sufficient(Rect::new(0, 0, 3, 3), false));
+    }
 }

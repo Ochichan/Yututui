@@ -6,14 +6,4 @@
  * whatever the pick context knew; `reasons` may be empty and `confidence` is null when
  * no model score exists (the popover renders both gracefully).
  */
-export type WhyGemModel = { 
-/**
- * The autoplay slot / origin label, e.g. "DJ Gem" or the streaming mode.
- */
-slot: string, reasons: Array<string>, 
-/**
- * Model confidence `0..1`; null when the pick had no model score. A JSON `Number`
- * (not `f64`) because this rides `ResponseData`, whose `Eq` the response cache
- * relies on — `serde_json::Number` is `Eq`, floats are not.
- */
-confidence: number | null, };
+export type WhyGemModel = { slot: string, reasons: Array<string>, confidence: number | null, };

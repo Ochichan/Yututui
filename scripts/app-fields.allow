@@ -27,6 +27,7 @@ lyrics
 media_art
 mode
 mousemap
+onboarding
 overlays
 personal_export
 playback
@@ -40,6 +41,7 @@ radio_mode
 radio_resync_at
 recorder
 romanization
+runtime_tool_checks
 search
 search_filter
 session
@@ -51,6 +53,7 @@ status
 status_text_prev
 streaming
 theme
+tool_setup
 transfer_running
 video
 yid_scan_memo

@@ -136,7 +136,7 @@ pub enum GatewayEvent {
     Push {
         sequence: u64,
         topic: Topic,
-        event: PushEvent,
+        event: Box<PushEvent>,
         envelope: InEnvelope,
     },
 }
@@ -866,7 +866,7 @@ async fn run_session<F: Fn(GatewayEvent)>(
                         emit(GatewayEvent::Push {
                             sequence: seq,
                             topic,
-                            event,
+                            event: Box::new(event),
                             envelope,
                         });
                         if shutting_down {

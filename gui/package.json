@@ -1,7 +1,7 @@
 {
   "name": "yututui-gui",
   "private": true,
-  "version": "1.6.3",
+  "version": "1.6.30",
   "type": "module",
   "description": "Svelte 5 frontend for the yututui desktop app (embedded into yututray).",
   "scripts": {

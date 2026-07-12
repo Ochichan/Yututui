@@ -17,6 +17,36 @@ use super::{ease_out_cubic, hash32, lerp_color, put_char};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
+/// Player album art can split the filler canvas into an upper and lower zone. Keep one
+/// simulation per full rectangle so those zones evolve independently without allowing an
+/// unbounded cache if the terminal is repeatedly resized.
+const STATEFUL_ZONE_CAPACITY: usize = 2;
+
+struct ZoneSlots<T> {
+    slots: Vec<(Rect, T)>,
+}
+
+impl<T> Default for ZoneSlots<T> {
+    fn default() -> Self {
+        Self { slots: Vec::new() }
+    }
+}
+
+impl<T: Default> ZoneSlots<T> {
+    fn get_mut(&mut self, zone: Rect) -> &mut T {
+        if let Some(index) = self.slots.iter().position(|(key, _)| *key == zone) {
+            let entry = self.slots.remove(index);
+            self.slots.push(entry);
+        } else {
+            if self.slots.len() == STATEFUL_ZONE_CAPACITY {
+                self.slots.remove(0);
+            }
+            self.slots.push((zone, T::default()));
+        }
+        &mut self.slots.last_mut().expect("zone slot was inserted").1
+    }
+}
+
 // ── fireworks ───────────────────────────────────────────────────────────────
 
 const FIREWORK_PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R::Error];
@@ -135,7 +165,7 @@ struct LifeScratch {
 }
 
 thread_local! {
-    static LIFE_SCRATCH: RefCell<LifeScratch> = RefCell::new(LifeScratch::default());
+    static LIFE_SCRATCH: RefCell<ZoneSlots<LifeScratch>> = RefCell::new(ZoneSlots::default());
 }
 
 /// Frames between generations (~7 steps/sec at the default 30 fps — fast enough to read as
@@ -160,7 +190,8 @@ pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     };
 
     LIFE_SCRATCH.with(|scratch| {
-        let mut s = scratch.borrow_mut();
+        let mut slots = scratch.borrow_mut();
+        let s = slots.get_mut(zone);
         let cells = w * h;
         if s.width != zone.width || s.height != zone.height || f < s.last_step {
             // Resize — or a frame-counter context change (f went backwards) — restarts the show.
@@ -280,7 +311,7 @@ struct PipesScratch {
 }
 
 thread_local! {
-    static PIPES_SCRATCH: RefCell<PipesScratch> = RefCell::new(PipesScratch::default());
+    static PIPES_SCRATCH: RefCell<ZoneSlots<PipesScratch>> = RefCell::new(ZoneSlots::default());
 }
 
 /// glyph_index → glyph, [straight-vertical, straight-horizontal, and the four elbows].
@@ -306,7 +337,8 @@ pub(super) fn pipes(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     };
 
     PIPES_SCRATCH.with(|scratch| {
-        let mut s = scratch.borrow_mut();
+        let mut slots = scratch.borrow_mut();
+        let s = slots.get_mut(zone);
         let cells = w * h;
         let clogged = s.filled * 10 >= cells * 6;
         if s.width != zone.width || s.height != zone.height || f < s.last_f || clogged {
@@ -468,5 +500,145 @@ pub(super) fn plasma(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
                 ramp[ci.min(15)],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    fn dual_zones() -> [Rect; 2] {
+        [Rect::new(4, 1, 40, 6), Rect::new(4, 10, 40, 7)]
+    }
+
+    fn render_dual(
+        app: &App,
+        zones: [Rect; 2],
+        f: u64,
+        effect: fn(&mut Frame, &App, Rect, u64),
+    ) -> Buffer {
+        let backend = TestBackend::new(50, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                for zone in zones {
+                    effect(frame, app, zone, f);
+                }
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn painted_cells(buffer: &Buffer, zone: Rect) -> usize {
+        let mut count = 0;
+        for y in zone.top()..zone.bottom() {
+            for x in zone.left()..zone.right() {
+                count += usize::from(buffer[(x, y)].symbol() != " ");
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn zone_slots_use_full_rect_keys_and_evict_lru_at_capacity() {
+        let first = Rect::new(0, 0, 20, 6);
+        let second = Rect::new(0, 8, 20, 6);
+        let third = Rect::new(22, 0, 20, 6);
+        let mut slots = ZoneSlots::<u8>::default();
+
+        *slots.get_mut(first) = 1;
+        *slots.get_mut(second) = 2;
+        assert_eq!(slots.slots.len(), STATEFUL_ZONE_CAPACITY);
+        assert_eq!(*slots.get_mut(first), 1);
+
+        *slots.get_mut(third) = 3;
+        assert_eq!(slots.slots.len(), STATEFUL_ZONE_CAPACITY);
+        assert!(slots.slots.iter().all(|(zone, _)| *zone != second));
+        assert_eq!(slots.slots.iter().map(|(_, value)| *value).sum::<u8>(), 4);
+    }
+
+    #[test]
+    fn life_keeps_both_player_zones_evolving_independently() {
+        LIFE_SCRATCH.with(|scratch| scratch.borrow_mut().slots.clear());
+        let app = App::new(100);
+        let zones = dual_zones();
+
+        render_dual(&app, zones, 0, life);
+        let before = LIFE_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            zones.map(|zone| {
+                let state = &scratch
+                    .slots
+                    .iter()
+                    .find(|(key, _)| *key == zone)
+                    .expect("life state for both zones")
+                    .1;
+                (state.epoch, state.age.clone())
+            })
+        });
+
+        let buffer = render_dual(&app, zones, LIFE_STEP_FRAMES, life);
+        LIFE_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
+            for (index, zone) in zones.into_iter().enumerate() {
+                let state = &scratch
+                    .slots
+                    .iter()
+                    .find(|(key, _)| *key == zone)
+                    .expect("life state for both zones")
+                    .1;
+                assert_eq!(state.epoch, before[index].0, "zone {index} was reseeded");
+                assert_eq!(state.last_step, LIFE_STEP_FRAMES);
+                assert_ne!(state.age, before[index].1, "zone {index} did not evolve");
+                assert!(painted_cells(&buffer, zone) > 0);
+            }
+        });
+    }
+
+    #[test]
+    fn pipes_paint_and_advance_in_both_player_zones() {
+        PIPES_SCRATCH.with(|scratch| scratch.borrow_mut().slots.clear());
+        let app = App::new(100);
+        let zones = dual_zones();
+
+        let first = render_dual(&app, zones, 1, pipes);
+        for zone in zones {
+            assert!(painted_cells(&first, zone) > 0);
+        }
+        let before = PIPES_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
+            zones.map(|zone| {
+                let state = &scratch
+                    .slots
+                    .iter()
+                    .find(|(key, _)| *key == zone)
+                    .expect("pipes state for both zones")
+                    .1;
+                (state.epoch, state.cells.clone())
+            })
+        });
+
+        let second = render_dual(&app, zones, 2, pipes);
+        PIPES_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
+            for (index, zone) in zones.into_iter().enumerate() {
+                let state = &scratch
+                    .slots
+                    .iter()
+                    .find(|(key, _)| *key == zone)
+                    .expect("pipes state for both zones")
+                    .1;
+                assert_eq!(state.epoch, before[index].0, "zone {index} was reset");
+                assert_eq!(state.last_f, 2);
+                assert_ne!(state.cells, before[index].1, "zone {index} did not advance");
+                assert!(painted_cells(&second, zone) > 0);
+            }
+        });
     }
 }
