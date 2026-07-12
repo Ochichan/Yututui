@@ -178,6 +178,17 @@ fn app_with_search_results(n: usize) -> App {
     app
 }
 
+fn app_with_one_search_pick_off_cursor() -> App {
+    let mut app = app_with_search_results(3);
+    // Toggle row 2 on and back off. The remaining picked row is 0, while the cursor stays
+    // where the last toggle happened (row 2).
+    app.search_toggle_pick(2);
+    app.search_toggle_pick(2);
+    assert_eq!(app.search_selection_indices(), vec![0]);
+    assert_eq!(app.search.selected, 2);
+    app
+}
+
 #[test]
 fn search_click_anchors_and_drag_extends_the_range() {
     let mut app = app_with_search_results(4);
@@ -253,6 +264,42 @@ fn search_ctrl_click_toggles_and_enter_plays_the_selection() {
         .map(|s| s.video_id.clone())
         .collect();
     assert_eq!(queued, ids);
+}
+
+#[test]
+fn every_single_search_action_uses_the_lone_picked_row_instead_of_the_cursor() {
+    let mut app = app_with_one_search_pick_off_cursor();
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_loads_video(&cmds, "id0");
+
+    let mut app = app_with_one_search_pick_off_cursor();
+    app.update(Msg::Key(key(KeyCode::Char('\\'))));
+    assert_eq!(current(&app), "id0", "enqueue must use the picked row");
+
+    let mut app = app_with_one_search_pick_off_cursor();
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
+    assert!(
+        matches!(cmds.as_slice(), [Cmd::Download(song)] if song.video_id == "id0"),
+        "download must use the picked row"
+    );
+
+    let mut app = app_with_one_search_pick_off_cursor();
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    assert_eq!(
+        app.playlist_picker.as_ref().expect("playlist picker").songs[0].video_id,
+        "id0"
+    );
+
+    let mut app = app_with_one_search_pick_off_cursor();
+    app.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(
+        app.library.is_favorite("id0"),
+        "favorite must use the picked row"
+    );
+    assert!(
+        !app.library.is_favorite("id2"),
+        "cursor row must remain untouched"
+    );
 }
 
 #[test]
@@ -388,28 +435,34 @@ fn search_context_menu_preserves_mixed_selection_when_target_filters_playlists()
 }
 
 #[test]
-fn double_click_inside_multi_selection_plays_all_selected_rows() {
+fn search_plain_click_inside_multi_selection_collapses_immediately() {
     let mut app = app_with_search_results(4);
+    app.search_toggle_pick(2);
     render_app(&app);
-    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
     let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
 
     app.update(Msg::MouseClick {
-        col: c0,
-        row: r0,
-        multi: false,
-    });
-    app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseClick {
-        col: c2,
-        row: r2,
-        multi: true,
-    });
-    app.update(Msg::MouseClick {
         col: c2,
         row: r2,
         multi: false,
     });
+    assert_eq!(app.search_selection_indices(), vec![2]);
+    assert!(app.search.picked.is_empty());
+}
+
+#[test]
+fn search_matching_double_click_restores_and_plays_pre_click_selection() {
+    let mut app = app_with_search_results(4);
+    app.search_toggle_pick(2);
+    render_app(&app);
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: false,
+    });
+    assert_eq!(app.search_selection_indices(), vec![2]);
     app.update(Msg::MouseLeftUp);
     app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
     let queued: Vec<&str> = app
@@ -418,28 +471,59 @@ fn double_click_inside_multi_selection_plays_all_selected_rows() {
         .map(|s| s.video_id.as_str())
         .collect();
     assert_eq!(queued, ["id0", "id2"]);
+}
 
-    let mut app = app_with_four_favorites();
+#[test]
+fn search_double_click_outside_selection_plays_only_clicked_row() {
+    let mut app = app_with_search_results(4);
+    app.search_toggle_pick(2);
     render_app(&app);
-    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
-    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+    let (c1, r1) = button_center(&app, MouseTarget::ListRow(1));
 
     app.update(Msg::MouseClick {
-        col: c0,
-        row: r0,
+        col: c1,
+        row: r1,
         multi: false,
     });
     app.update(Msg::MouseLeftUp);
-    app.update(Msg::MouseClick {
-        col: c2,
-        row: r2,
-        multi: true,
-    });
+    app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    let queued: Vec<&str> = app
+        .queue
+        .ordered_iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(queued, ["id1"]);
+}
+
+#[test]
+fn library_plain_click_inside_multi_selection_collapses_immediately() {
+    let mut app = app_with_four_favorites();
+    app.library_toggle_pick(2);
+    render_app(&app);
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
     app.update(Msg::MouseClick {
         col: c2,
         row: r2,
         multi: false,
     });
+    assert_eq!(app.library_selection_indices(), vec![2]);
+    assert!(app.library_ui.picked.is_empty());
+}
+
+#[test]
+fn library_matching_double_click_restores_and_plays_pre_click_selection() {
+    let mut app = app_with_four_favorites();
+    app.library_toggle_pick(2);
+    render_app(&app);
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+
+    app.update(Msg::MouseClick {
+        col: c2,
+        row: r2,
+        multi: false,
+    });
+    assert_eq!(app.library_selection_indices(), vec![2]);
     app.update(Msg::MouseLeftUp);
     app.update(Msg::MouseDoubleClick { col: c2, row: r2 });
     let queued: Vec<&str> = app
@@ -448,4 +532,26 @@ fn double_click_inside_multi_selection_plays_all_selected_rows() {
         .map(|s| s.video_id.as_str())
         .collect();
     assert_eq!(queued, ["a", "c"]);
+}
+
+#[test]
+fn library_double_click_outside_selection_plays_only_clicked_row() {
+    let mut app = app_with_four_favorites();
+    app.library_toggle_pick(2);
+    render_app(&app);
+    let (c1, r1) = button_center(&app, MouseTarget::ListRow(1));
+
+    app.update(Msg::MouseClick {
+        col: c1,
+        row: r1,
+        multi: false,
+    });
+    app.update(Msg::MouseLeftUp);
+    app.update(Msg::MouseDoubleClick { col: c1, row: r1 });
+    let queued: Vec<&str> = app
+        .queue
+        .ordered_iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(queued, ["b"]);
 }

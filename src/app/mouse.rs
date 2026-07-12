@@ -108,6 +108,7 @@ impl App {
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
+        self.interaction.pending_double_click_selection = None;
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
         if self.overlays.context_menu.is_some() {
@@ -961,7 +962,10 @@ impl App {
             Some(MouseTarget::LocalRow(i)) if self.local_dedicated_mode => {
                 self.local_row_activate(i)
             }
-            Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
+            Some(MouseTarget::ListRow(i)) => {
+                self.restore_double_click_selection(i);
+                self.on_list_row_activate(i)
+            }
             _ => self.on_mouse_click(col, row, false),
         }
     }
@@ -1074,6 +1078,7 @@ impl App {
                 self.drag_anchor(DragSurface::Library, i)
             };
             if self.library_ui.anchor != anchor || self.library_ui.selected != i {
+                self.interaction.pending_double_click_selection = None;
                 self.library_ui.anchor = anchor;
                 self.library_ui.selected = i;
                 // A drag is a range gesture — discontiguous picks yield to the range.
@@ -1087,6 +1092,7 @@ impl App {
         {
             let anchor = self.drag_anchor(DragSurface::Search, i);
             if self.search.anchor != anchor || self.search.selected != i {
+                self.interaction.pending_double_click_selection = None;
                 self.search.anchor = anchor;
                 self.search.selected = i;
                 self.search.picked.clear();
@@ -1406,19 +1412,22 @@ impl App {
     pub(in crate::app) fn on_list_row_click(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
             Mode::Search if index < self.search.results.len() => {
-                let keep_selection = {
+                self.interaction.pending_double_click_selection = {
                     let selection = self.search_selection_indices();
-                    (selection.len() > 1 && selection.contains(&index)).then_some(selection)
+                    (selection.len() > 1 && selection.contains(&index)).then_some(
+                        PendingDoubleClickSelection {
+                            surface: DragSurface::Search,
+                            row: index,
+                            indices: selection,
+                        },
+                    )
                 };
                 self.search.selected = index;
-                // A click inside a multi-selection keeps it intact so a paired
-                // double-click can activate all selected rows.
                 self.search.anchor = index;
-                if let Some(selection) = keep_selection {
-                    self.search.picked = selection.into_iter().collect();
-                } else {
-                    self.search.picked.clear();
-                }
+                // A plain click always has immediate single-row semantics. If it turns out
+                // to be the first half of a double-click, the matching activation path above
+                // restores the pre-click selection from the transient snapshot.
+                self.search.picked.clear();
                 self.search.focus = SearchFocus::Results;
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Search,
@@ -1428,19 +1437,18 @@ impl App {
             }
             Mode::Library if self.local_dedicated_mode => return self.local_row_click(index),
             Mode::Library if index < self.library_len() => {
-                let keep_selection = {
+                self.interaction.pending_double_click_selection = {
                     let selection = self.library_selection_indices();
-                    (selection.len() > 1 && selection.contains(&index)).then_some(selection)
+                    (!self.playlists_root() && selection.len() > 1 && selection.contains(&index))
+                        .then_some(PendingDoubleClickSelection {
+                            surface: DragSurface::Library,
+                            row: index,
+                            indices: selection,
+                        })
                 };
                 self.library_ui.selected = index;
-                // A click inside a multi-selection keeps it intact so a paired
-                // double-click can activate all selected rows.
                 self.library_ui.anchor = index;
-                if let Some(selection) = keep_selection {
-                    self.library_ui.picked = selection.into_iter().collect();
-                } else {
-                    self.library_ui.picked.clear();
-                }
+                self.library_ui.picked.clear();
                 self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Library,
                     anchor: index,
@@ -1470,6 +1478,36 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Restore a selection hidden by the first press of this exact double-click. The snapshot
+    /// is one-shot and surface/row scoped, so a double-click on any other list row activates
+    /// only that clicked row.
+    fn restore_double_click_selection(&mut self, index: usize) {
+        let surface = match self.mode {
+            Mode::Search => Some(DragSurface::Search),
+            Mode::Library if !self.local_dedicated_mode => Some(DragSurface::Library),
+            _ => None,
+        };
+        let Some(snapshot) = self.interaction.pending_double_click_selection.take() else {
+            return;
+        };
+        if surface != Some(snapshot.surface) || snapshot.row != index {
+            return;
+        }
+        match snapshot.surface {
+            DragSurface::Search => {
+                self.search.selected = index;
+                self.search.anchor = index;
+                self.search.picked = snapshot.indices.into_iter().collect();
+            }
+            DragSurface::Library => {
+                self.library_ui.selected = index;
+                self.library_ui.anchor = index;
+                self.library_ui.picked = snapshot.indices.into_iter().collect();
+            }
+            DragSurface::Queue => {}
+        }
     }
 
     /// Double-click activate on the active screen's list: play the song now, keeping the queue

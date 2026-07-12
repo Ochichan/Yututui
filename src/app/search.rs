@@ -7,9 +7,21 @@ use crate::util::query::{
 };
 
 impl App {
-    /// The track under the search-results cursor, if any.
+    /// The effective single search result, if any. A one-row `picked` set remains
+    /// authoritative even when its last toggle left the visual cursor on another row.
     pub(in crate::app) fn selected_search_song(&self) -> Option<Song> {
-        self.search.results.get(self.search.selected).cloned()
+        self.effective_single_search_index()
+            .and_then(|index| self.search.results.get(index).cloned())
+    }
+
+    /// Resolve the single-row fallback shared by Enter, enqueue, favorite, download, and
+    /// add-to-playlist. Multi-row callers handle their selection first; when exactly one picked
+    /// row remains, it wins over the cursor.
+    fn effective_single_search_index(&self) -> Option<usize> {
+        match self.search_selection_indices().as_slice() {
+            [index] => Some(*index),
+            _ => (self.search.selected < self.search.results.len()).then_some(self.search.selected),
+        }
     }
 
     /// Row indices of the effective results selection: the Ctrl/Cmd-picked rows when any
@@ -212,7 +224,9 @@ impl App {
             SearchFocus::Results if k.code == KeyCode::Enter => {
                 match self.multi_selected_search_songs() {
                     Some(songs) => self.play_now_many(songs),
-                    None => self.activate_search_index(self.search.selected),
+                    None => self
+                        .effective_single_search_index()
+                        .map_or_else(Vec::new, |index| self.activate_search_index(index)),
                 }
             }
             SearchFocus::Results
@@ -315,7 +329,7 @@ impl App {
                 }
                 // Favorite the highlighted result (♥ appears on the row).
                 Some(Action::Favorite) => {
-                    if let Some(song) = self.search.results.get(self.search.selected).cloned() {
+                    if let Some(song) = self.selected_search_song() {
                         if song.youtube_playlist_id().is_some() {
                             return self.playlist_row_hint();
                         }
@@ -329,7 +343,7 @@ impl App {
                 // "Download N songs?" confirm popup, like the Library's range download.
                 Some(Action::Download) => match self.multi_selected_search_songs() {
                     Some(songs) => self.open_confirm_download(songs),
-                    None => match self.search.results.get(self.search.selected).cloned() {
+                    None => match self.selected_search_song() {
                         Some(song) if song.youtube_playlist_id().is_some() => {
                             self.playlist_row_hint()
                         }
@@ -344,7 +358,7 @@ impl App {
                         self.open_playlist_picker(songs);
                         return Vec::new();
                     }
-                    if let Some(song) = self.search.results.get(self.search.selected).cloned() {
+                    if let Some(song) = self.selected_search_song() {
                         if song.youtube_playlist_id().is_some() {
                             return self
                                 .fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import);

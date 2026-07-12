@@ -700,6 +700,17 @@ pub(crate) struct DragSelection {
     pub anchor: usize,
 }
 
+/// A multi-selection collapsed by the first press of a possible double-click. Plain clicks
+/// stay collapsed; only the translator's matching second press may restore these rows before
+/// activation. Keying the snapshot by surface and row prevents a later click elsewhere from
+/// reviving an unrelated selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingDoubleClickSelection {
+    pub surface: DragSurface,
+    pub row: usize,
+    pub indices: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AiTranscriptDrag {
     pub anchor: usize,
@@ -728,6 +739,9 @@ pub struct Interaction {
     /// paired `MouseDoubleClick` can be swallowed instead of leaking into a modal opened by the
     /// first press; the next ordinary single click resets it.
     pub(in crate::app) context_menu_click: Option<(u16, u16)>,
+    /// Multi-selection hidden by the latest plain Search/Library row press while the input
+    /// translator waits to learn whether that press is the first half of a double-click.
+    pub(in crate::app) pending_double_click_selection: Option<PendingDoubleClickSelection>,
     /// Active mouse drag-selection session. Cleared on left-button release so a later
     /// drag starts from its own first row, not whatever was selected before.
     pub(in crate::app) drag_selection: Option<DragSelection>,

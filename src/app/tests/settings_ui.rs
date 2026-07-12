@@ -927,7 +927,11 @@ fn personal_data_export_mouse_activation_focuses_the_row_and_starts_export() {
         MouseTarget::SettingsActivate(row),
     );
 
-    let cmds = app.update(Msg::MouseClick { col: 32, row: 4 });
+    let cmds = app.update(Msg::MouseClick {
+        col: 32,
+        row: 4,
+        multi: false,
+    });
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Data(DataCmd::PersonalDataExport(
