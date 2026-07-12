@@ -142,7 +142,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    height: 76px;
+    height: var(--transport-h);
     padding: 0 var(--space-4);
     background: var(--surface-1);
     border-top: 1px solid var(--role-border-muted);

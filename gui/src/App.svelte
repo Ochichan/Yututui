@@ -398,7 +398,7 @@
   .toasts {
     position: fixed;
     left: var(--space-4);
-    bottom: 92px;
+    bottom: calc(var(--transport-h) + var(--space-4));
     z-index: 70;
     display: flex;
     flex-direction: column;
