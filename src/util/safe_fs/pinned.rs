@@ -41,8 +41,6 @@ pub(crate) struct OwnedGeneration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GenerationResidence {
     Named,
-    #[cfg(windows)]
-    NamedDeleteOnClose,
     #[cfg(target_os = "linux")]
     Anonymous,
 }
@@ -149,9 +147,9 @@ impl PinnedDir {
 
     /// Create a crash-cleaned destination generation for copy-then-promote publication.
     ///
-    /// Linux prefers `O_TMPFILE`; Windows opens the named fallback with delete-on-close. Other
-    /// Unix filesystems use the exclusive name as a recoverable fallback. Callers must promote
-    /// or retain any named fallback under their durable transaction before dropping it.
+    /// Linux prefers `O_TMPFILE`; Windows and other Unix filesystems use an exclusive recoverable
+    /// name. Callers must promote or retain any named fallback under their durable transaction
+    /// before dropping it.
     pub(crate) fn create_ephemeral(
         &self,
         fallback_basename: &OsStr,
@@ -387,8 +385,6 @@ impl OwnedGeneration {
 
         let source_is_named = match self.residence {
             GenerationResidence::Named => true,
-            #[cfg(windows)]
-            GenerationResidence::NamedDeleteOnClose => true,
             #[cfg(target_os = "linux")]
             GenerationResidence::Anonymous => false,
         };
@@ -968,7 +964,7 @@ mod platform {
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
         FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
         FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS, FILE_LINK_INFORMATION,
         FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
@@ -1046,18 +1042,11 @@ mod platform {
         parent: &File,
         name: &OsStr,
     ) -> io::Result<(File, super::GenerationResidence)> {
-        nt_open_relative(
-            parent,
-            name,
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE
-                | FILE_OPEN_REPARSE_POINT
-                | FILE_SYNCHRONOUS_IO_NONALERT
-                | FILE_WRITE_THROUGH
-                | FILE_DELETE_ON_CLOSE,
-        )
-        .map(|file| (file, super::GenerationResidence::NamedDeleteOnClose))
+        // Clearing a delete-on-close disposition after an exact-handle rename can return
+        // ACCESS_DENIED on Windows even though the rename succeeded. This namespace is private
+        // and the durable transaction journals the exclusive fallback name, so retain it for
+        // explicit recovery instead.
+        create_new_file_at(parent, name).map(|file| (file, super::GenerationResidence::Named))
     }
 
     pub(super) fn open_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
