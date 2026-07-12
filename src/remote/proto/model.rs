@@ -210,6 +210,49 @@ pub struct WhyGemModel {
     pub confidence: Option<serde_json::Number>,
 }
 
+/// Account blocks for the `accounts` topic (docs/gui/07 §accounts). Presence/booleans
+/// only — session keys and tokens NEVER ride the wire (`has_token`, `connected`).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastfmAccountModel {
+    pub connected: bool,
+    /// Display-only account name; null when disconnected.
+    pub user: Option<String>,
+    pub scrobbling: bool,
+    pub love_sync: bool,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenBrainzAccountModel {
+    pub submit: bool,
+    /// Presence only — the token never round-trips.
+    pub has_token: bool,
+    pub custom_url: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyAccountModel {
+    pub connected: bool,
+    pub user: Option<String>,
+    pub client_id: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub redirect_port: Option<u16>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

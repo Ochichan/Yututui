@@ -258,6 +258,17 @@ pub enum PushEvent {
         thinking: bool,
         suggestions: Vec<super::model::TrackModel>,
     },
+    /// `accounts` topic: the retained presence/toggles projection — secrets never
+    /// appear here (session keys and tokens stay config-side).
+    AccountsSnapshot {
+        lastfm: super::model::LastfmAccountModel,
+        listenbrainz: super::model::ListenBrainzAccountModel,
+        spotify: super::model::SpotifyAccountModel,
+        scrobble_local: bool,
+    },
+    /// `accounts` topic, connect half: the browser-approval URL for a just-started
+    /// auth flow. One-shot event — the GUI opens it via win:openUrl; never retained.
+    AccountsAuthUrl { service: String, url: String },
     /// `ai` topic sibling: which queue rows carry recorded DJ Gem / autoplay pick
     /// provenance — the GUI shows its "why?" affordance exactly on these ids and pulls
     /// the rationale on demand with `fetch_why_gem`.

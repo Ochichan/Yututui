@@ -203,6 +203,8 @@ pub struct Publisher {
     last_ai: Option<Arc<Vec<u8>>>,
     /// Retained `why_gem_provenance` — the `ai` topic's second subscribe snapshot.
     last_whygem: Option<Arc<Vec<u8>>>,
+    /// Retained `accounts_snapshot` (presence/toggles only — never credentials).
+    last_accounts: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -229,6 +231,7 @@ impl Publisher {
             last_downloads: None,
             last_ai: None,
             last_whygem: None,
+            last_accounts: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -405,6 +408,7 @@ impl Publisher {
                         Topic::Lyrics => self.last_lyrics.clone(),
                         Topic::Playlists => self.last_playlists.clone(),
                         Topic::Downloads => self.last_downloads.clone(),
+                        Topic::Accounts => self.last_accounts.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
                         _ => None,
@@ -524,6 +528,40 @@ impl Publisher {
         self.last_whygem = Some(Arc::clone(&payload));
         if self.hub.any_subscribed(Topic::Ai) {
             self.hub.broadcast(Topic::Ai, &payload);
+        }
+    }
+
+    /// Publish the retained accounts snapshot (presence/toggles only). The auth-URL
+    /// half of the topic is one-shot (`publish_accounts_auth_url`) and never retained.
+    pub fn publish_accounts(
+        &mut self,
+        lastfm: super::proto::LastfmAccountModel,
+        listenbrainz: super::proto::ListenBrainzAccountModel,
+        spotify: super::proto::SpotifyAccountModel,
+        scrobble_local: bool,
+    ) {
+        let payload = event_payload(&PushEvent::AccountsSnapshot {
+            lastfm,
+            listenbrainz,
+            spotify,
+            scrobble_local,
+        });
+        self.last_accounts = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Accounts) {
+            self.hub.broadcast(Topic::Accounts, &payload);
+        }
+    }
+
+    /// One-shot: the browser-approval URL for a just-started auth flow. Deliberately
+    /// NOT retained — replaying a stale approval URL to a later subscriber would send
+    /// the user into a dead flow.
+    pub fn publish_accounts_auth_url(&self, service: &str, url: &str) {
+        if self.hub.any_subscribed(Topic::Accounts) {
+            let payload = event_payload(&PushEvent::AccountsAuthUrl {
+                service: service.to_owned(),
+                url: url.to_owned(),
+            });
+            self.hub.broadcast(Topic::Accounts, &payload);
         }
     }
 

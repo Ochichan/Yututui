@@ -68,6 +68,8 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         gui_search_index: GuiSearchIndex::default(),
         why_gem: Vec::new(),
         why_gem_rev: 0,
+        accounts_rev: 0,
+        spotify_user: None,
         video_overlay: None,
     }
 }

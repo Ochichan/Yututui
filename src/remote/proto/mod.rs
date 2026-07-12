@@ -35,8 +35,8 @@ pub use command::{
 };
 pub use model::{
     AiMessageModel, AiRoleModel, ArtworkRef, DownloadStateModel, DownloadStatusModel,
-    LibraryPageModel, LyricLineModel, PlaylistDetailModel, PlaylistSummaryModel, TrackModel,
-    WhyGemModel,
+    LastfmAccountModel, LibraryPageModel, ListenBrainzAccountModel, LyricLineModel,
+    PlaylistDetailModel, PlaylistSummaryModel, SpotifyAccountModel, TrackModel, WhyGemModel,
 };
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{

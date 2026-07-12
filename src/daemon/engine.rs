@@ -25,6 +25,7 @@ use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
+mod accounts;
 mod ai_context;
 mod delivery;
 mod gui_library;
@@ -172,6 +173,9 @@ pub struct DaemonEngine {
     /// v1 why-gem provenance: pick origin per video id (bounded; see ai_context.rs).
     why_gem: Vec<(String, crate::remote::proto::WhyGemModel)>,
     why_gem_rev: u64,
+    /// `accounts` topic revision + the transfer actor's live Spotify display name.
+    accounts_rev: u64,
+    spotify_user: Option<String>,
     /// The `PlayVideo` overlay child, held so the window outlives the command turn.
     /// A replacement spawn drops (closes) the previous window — one overlay at a time,
     /// like the TUI. The daemon has no IPC observer; closing the window is the user's.
@@ -345,6 +349,8 @@ impl DaemonEngine {
             gui_search_index: GuiSearchIndex::default(),
             why_gem: Vec::new(),
             why_gem_rev: 0,
+            accounts_rev: 0,
+            spotify_user: None,
             video_overlay: None,
         }
     }
@@ -659,9 +665,17 @@ impl DaemonEngine {
             | RemoteCommand::TransferStart { .. }
             | RemoteCommand::TransferCancel
             | RemoteCommand::LastfmConnect
-            | RemoteCommand::SpotifyConnect
-            | RemoteCommand::ListenBrainzConfigure { .. }
-            | RemoteCommand::AccountSet { .. } => RemoteResponse::err("not_supported"),
+            | RemoteCommand::SpotifyConnect => RemoteResponse::err("not_supported"),
+            RemoteCommand::ListenBrainzConfigure {
+                submit,
+                token,
+                custom_url,
+            } => self.gui_listen_brainz_configure(submit, token, custom_url),
+            RemoteCommand::AccountSet {
+                service,
+                field,
+                value,
+            } => self.gui_account_set(&service, &field, &value),
         };
         self.finish_remote_persistence(response, shutdown, effects)
     }

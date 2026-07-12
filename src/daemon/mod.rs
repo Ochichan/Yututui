@@ -17,6 +17,7 @@ use crate::remote::proto::{
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
 use crate::util::process::{self, ProcessProfile};
 
+mod accounts_host;
 mod ai_host;
 mod cli;
 mod downloads_host;
@@ -332,6 +333,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut published_playlists_rev = None;
     let mut published_library_invalidations = engine.library_invalidations();
     let mut published_why_gem_rev = None;
+    let mut published_accounts_rev = None;
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -419,6 +421,9 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             continue;
         }
         let Some(event) = downloads_host.intercept(event, &engine, &mut publisher) else {
+            continue;
+        };
+        let Some(event) = accounts_host::intercept(event, &scrobble) else {
             continue;
         };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
@@ -666,7 +671,11 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 ));
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
-            DaemonEvent::Scrobble(event) => log_scrobble_event(event),
+            DaemonEvent::Scrobble(event) => {
+                if accounts_host::on_scrobble_event(event, &mut engine, &mut publisher) {
+                    let _ = scrobble.reconfigure(engine.scrobble_settings());
+                }
+            }
             DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
                 lyrics_host.on_result(&mut publisher, video_id, &lines);
             }
@@ -755,6 +764,22 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         if published_why_gem_rev != Some(why_gem_rev) {
             publisher.publish_why_gem(engine.why_gem_ids());
             published_why_gem_rev = Some(why_gem_rev);
+        }
+        let accounts_rev = engine.accounts_rev();
+        if published_accounts_rev != Some(accounts_rev) {
+            let models = engine.accounts_models();
+            publisher.publish_accounts(
+                models.lastfm,
+                models.listenbrainz,
+                models.spotify,
+                models.scrobble_local,
+            );
+            // account_set / listen_brainz_configure changed scrobble-relevant config
+            // through engine dispatch; retarget the live actor from one place.
+            if published_accounts_rev.is_some() {
+                let _ = scrobble.reconfigure(engine.scrobble_settings());
+            }
+            published_accounts_rev = Some(accounts_rev);
         }
     }
     shutdown.trigger();
