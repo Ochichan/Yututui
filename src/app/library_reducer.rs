@@ -18,12 +18,28 @@ impl App {
     /// resolves to exactly one row; see [`Self::rows_from_slots`]). Called on every library
     /// nav key and wheel-scroll, so this must stay O(1) on a cache hit rather than rebuilding
     /// and throwing away a full row vector just to read its length.
-    fn library_rows_len(&self) -> usize {
+    pub(crate) fn library_rows_len(&self) -> usize {
         let tab = self.effective_library_tab();
-        // Playlist drill-down rows are built uncached (an open playlist is small); count them
-        // the same way `library_rows` builds them, so the two never disagree.
+        // Playlist drill-down rows are built uncached because the playlist store has no cheap
+        // revision key. Count directly so rendering does not first allocate a full `Vec<&Song>`.
         if matches!(tab, LibraryTab::Playlists) {
-            return self.apply_library_filter(self.open_playlist_rows()).len();
+            let Some(playlist) = self
+                .library_ui
+                .open_playlist
+                .as_ref()
+                .and_then(|key| self.playlists.find(key))
+            else {
+                return 0;
+            };
+            let needle = self.library_ui.filter_query.trim().to_lowercase();
+            if needle.is_empty() {
+                return playlist.songs.len();
+            }
+            return playlist
+                .songs
+                .iter()
+                .filter(|song| self.song_matches_filter(song, &needle))
+                .count();
         }
         let key = self.library_rows_key(tab);
         if let Some(cache) = self.library_rows_cache.borrow().as_ref()
@@ -37,6 +53,64 @@ impl App {
         let n = slots.len();
         *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
         n
+    }
+
+    /// Resolve one visible window of already-filtered library rows for rendering.
+    ///
+    /// Non-playlist tabs slice the cached `RowSlot` vector. An opened playlist scans its
+    /// source at most once through the requested window instead of restarting a filtered
+    /// `.nth(index)` search for every visible row. `Option` preserves the old behavior for a
+    /// hypothetically stale cached slot: that logical row remains blank rather than shifting
+    /// every following row and its mouse target upward.
+    pub(crate) fn library_render_window(&self, start: usize, visible: usize) -> Vec<Option<&Song>> {
+        if visible == 0 {
+            return Vec::new();
+        }
+        let tab = self.effective_library_tab();
+        if matches!(tab, LibraryTab::Playlists) {
+            let Some(playlist) = self
+                .library_ui
+                .open_playlist
+                .as_ref()
+                .and_then(|key| self.playlists.find(key))
+            else {
+                return Vec::new();
+            };
+            let needle = self.library_ui.filter_query.trim().to_lowercase();
+            if needle.is_empty() {
+                return playlist
+                    .songs
+                    .iter()
+                    .skip(start)
+                    .take(visible)
+                    .map(Some)
+                    .collect();
+            }
+            return playlist
+                .songs
+                .iter()
+                .filter(|song| self.song_matches_filter(song, &needle))
+                .skip(start)
+                .take(visible)
+                .map(Some)
+                .collect();
+        }
+
+        // Populate or refresh the slot cache on a miss. `library_rows_len` does not allocate
+        // the resolved row vector and leaves the cache ready for the window lookup below.
+        self.library_rows_len();
+        let cache = self.library_rows_cache.borrow();
+        let Some(cache) = cache.as_ref() else {
+            return Vec::new();
+        };
+        cache
+            .slots
+            .iter()
+            .skip(start)
+            .take(visible)
+            .copied()
+            .map(|slot| self.resolve_row_slot(slot))
+            .collect()
     }
 
     pub fn library_count_for(&self, tab: LibraryTab) -> usize {
@@ -137,18 +211,20 @@ impl App {
     fn rows_from_slots(&self, slots: &[RowSlot]) -> Vec<&Song> {
         slots
             .iter()
-            .filter_map(|slot| {
-                let song = match *slot {
-                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
-                    RowSlot::Hist(i) => self.library.history.get(i as usize),
-                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
-                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
-                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
-                };
-                debug_assert!(song.is_some(), "stale library row slot {slot:?}");
-                song
-            })
+            .filter_map(|slot| self.resolve_row_slot(*slot))
             .collect()
+    }
+
+    fn resolve_row_slot(&self, slot: RowSlot) -> Option<&Song> {
+        let song = match slot {
+            RowSlot::Fav(i) => self.library.favorites.get(i as usize),
+            RowSlot::Hist(i) => self.library.history.get(i as usize),
+            RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
+            RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
+            RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
+        };
+        debug_assert!(song.is_some(), "stale library row slot {slot:?}");
+        song
     }
 
     /// The uncached row computation: per-tab source selection (+ the All-tab dedup),
@@ -243,13 +319,7 @@ impl App {
         let needle = self.library_ui.filter_query.trim().to_lowercase();
         if !needle.is_empty() {
             let matches = |slot: &RowSlot| -> bool {
-                let song = match *slot {
-                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
-                    RowSlot::Hist(i) => self.library.history.get(i as usize),
-                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
-                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
-                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
-                };
+                let song = self.resolve_row_slot(*slot);
                 song.is_some_and(|s| self.song_matches_filter(s, &needle))
             };
             slots.retain(matches);

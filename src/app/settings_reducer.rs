@@ -1794,13 +1794,13 @@ impl App {
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::AudioMpvCacheForward => {
-                self.config.audio.mpv.cache_forward = settings::blank_to_none(&value)
-                    .unwrap_or_else(|| crate::config::MPV_CACHE_FORWARD_DEFAULT.to_owned());
+                let mpv = &mut self.config.audio.mpv;
+                mpv.set_cache_forward(settings::blank_to_none(&value));
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::AudioMpvCacheBack => {
-                self.config.audio.mpv.cache_back = settings::blank_to_none(&value)
-                    .unwrap_or_else(|| crate::config::MPV_CACHE_BACK_DEFAULT.to_owned());
+                let mpv = &mut self.config.audio.mpv;
+                mpv.set_cache_back(settings::blank_to_none(&value));
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::ApiKey => {

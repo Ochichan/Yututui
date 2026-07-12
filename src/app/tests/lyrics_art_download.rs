@@ -19,9 +19,10 @@ fn shift_l_toggles_lyrics_and_fetches_on_open() {
 #[test]
 fn lyrics_result_stored_only_for_current_track() {
     let mut app = app_playing(3, 0); // current id0
+    let lines = lyric_lines();
     app.update(Msg::LyricsResult {
         video_id: "id0".to_owned(),
-        lines: lyric_lines(),
+        lines: std::sync::Arc::clone(&lines),
     });
     assert!(
         app.lyrics
@@ -29,6 +30,10 @@ fn lyrics_result_stored_only_for_current_track() {
             .as_ref()
             .is_some_and(|l| l.lines.len() == 2)
     );
+    assert!(std::sync::Arc::ptr_eq(
+        &lines,
+        &app.lyrics.track.as_ref().unwrap().lines
+    ));
     // A late result for a different track is ignored.
     app.update(Msg::LyricsResult {
         video_id: "stale".to_owned(),
@@ -92,6 +97,57 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     assert!(!app.art.loading);
     assert!(app.art_active());
     assert_eq!(app.art.dims, (120, 120));
+    assert_eq!(
+        std::sync::Arc::strong_count(app.art.source.as_ref().expect("held decoded art")),
+        2,
+        "App and the resize protocol should share one decoded pixel allocation"
+    );
+}
+
+#[test]
+fn owned_and_shared_album_art_protocols_render_identically() {
+    use image::imageops::FilterType;
+    use image::{DynamicImage, Rgba, RgbaImage};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui_image::{Resize, ResizeEncodeRender};
+
+    let mut pixels = RgbaImage::new(17, 11);
+    for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+        *pixel = Rgba([
+            (x * 31 + y * 7) as u8,
+            (x * 11 + y * 37) as u8,
+            (x * 19 + y * 13) as u8,
+            if (x + y) % 3 == 0 { 96 } else { 255 },
+        ]);
+    }
+    let image = DynamicImage::ImageRgba8(pixels);
+
+    for background in [None, Some(Rgba([20, 30, 40, 255]))] {
+        let mut picker = Picker::halfblocks();
+        picker.set_background_color(background);
+        for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 9, 4)] {
+            let mut owned = picker.new_resize_protocol(image.clone());
+            let mut shared = picker.new_resize_protocol_shared(std::sync::Arc::new(image.clone()));
+            let mut owned_buffer = Buffer::empty(area);
+            let mut shared_buffer = Buffer::empty(area);
+
+            owned.resize_encode_render(
+                &Resize::Scale(Some(FilterType::Triangle)),
+                area,
+                &mut owned_buffer,
+            );
+            shared.resize_encode_render(
+                &Resize::Scale(Some(FilterType::Triangle)),
+                area,
+                &mut shared_buffer,
+            );
+
+            assert_eq!(owned_buffer, shared_buffer, "background={background:?}");
+            assert!(owned.last_encoding_result().unwrap().is_ok());
+            assert!(shared.last_encoding_result().unwrap().is_ok());
+        }
+    }
 }
 
 #[test]

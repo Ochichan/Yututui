@@ -766,6 +766,39 @@ fn time_pos_dedups_to_whole_seconds() {
 }
 
 #[test]
+fn numeric_perf_window_counts_borrowed_fallback_and_forwarded_lines() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let emit: EventSink = std::sync::Arc::new(move |event| {
+        let _ = tx.try_send(event);
+    });
+    let mut state = DispatchState {
+        numeric_perf: Some(NumericPerfWindow::new()),
+        ..DispatchState::default()
+    };
+
+    for line in [
+        r#"{"event":"property-change","name":"time-pos","data":1.1}"#,
+        r#"{"event":"property-change","name":"time-pos","data":1.8}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-time","data":100.2}"#,
+        r#"{"event":"property-change","name":"demuxer-cache-time","data":null}"#,
+        // An escaped property name cannot be borrowed by the fast-path struct, but the
+        // allocating generic parser still recognizes it and must be represented in stats.
+        r#"{"event":"property-change","name":"time-\u0070os","data":2.0}"#,
+    ] {
+        dispatch_incoming(line, &emit, &mut state);
+    }
+
+    let perf = state.numeric_perf.as_ref().expect("perf counters enabled");
+    assert_eq!(perf.raw_time_pos, 3);
+    assert_eq!(perf.raw_cache_time, 2);
+    assert_eq!(perf.borrowed_fast_path, 4);
+    assert_eq!(perf.generic_fallback, 1);
+    assert_eq!(perf.forwarded_time_pos, 2);
+    assert_eq!(perf.forwarded_cache_time, 2);
+    assert_eq!(std::iter::from_fn(|| rx.try_recv().ok()).count(), 4);
+}
+
+#[test]
 fn null_time_pos_emits_nothing() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let emit: EventSink = std::sync::Arc::new(move |event| {

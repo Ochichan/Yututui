@@ -53,7 +53,7 @@ pub struct RenderBridges {
     pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
     /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
     /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
-    pub ai_transcript_copy_lines: RefCell<Vec<String>>,
+    pub ai_transcript_copy_lines: RefCell<Arc<[Arc<str>]>>,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// The Settings field list keeps its own persistent offset too, so a mouse click on a
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
@@ -436,6 +436,12 @@ pub struct AiState {
     pub model: GeminiModel,
     /// The chat transcript (user prompts, assistant replies, errors).
     pub messages: Vec<AiMessage>,
+    /// Production mutation generation for the wrapped-transcript render cache. Every reducer
+    /// append (including history trimming) advances it exactly once.
+    pub(crate) transcript_revision: u64,
+    /// Stable owner identity prevents a thread-local cache entry from one `App` being reused by a
+    /// different instance that happens to have the same revision and presentation settings.
+    pub(crate) transcript_cache_token: Arc<()>,
     /// The DJ Gem prompt being typed.
     pub input: String,
     /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
@@ -479,7 +485,7 @@ pub struct ArtState {
     pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::Sender<ResizeRequest>>,
     /// The decoded source image kept alongside the protocol for stale-result checks and future
     /// resize/protocol rebuilds. Reducer-only (was a private App field) — `pub(in crate::app)`.
-    pub(in crate::app) source: Option<DynamicImage>,
+    pub(in crate::app) source: Option<Arc<DynamicImage>>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub dims: (u32, u32),
     /// `video_id` the held art belongs to (guards against a stale image lingering).
@@ -849,6 +855,25 @@ pub struct LocalIndexRuntime {
     pub errors: Vec<crate::local::ScanError>,
 }
 
+/// One immutable view of the Local Deck rows used by a render pass. The backing row slice and
+/// its compact derived metadata are shared with the single-entry cache, so the header, body, and
+/// details panes never rebuild (or independently clone) the same row set within a frame.
+#[derive(Clone)]
+pub(crate) struct LocalRowsSnapshot {
+    pub(in crate::app) data: std::rc::Rc<super::local::LocalRowsData>,
+    pub(in crate::app) total_len: usize,
+}
+
+impl LocalRowsSnapshot {
+    pub(crate) fn rows(&self) -> &[crate::local::LocalRowId] {
+        self.data.rows.as_ref()
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.total_len
+    }
+}
+
 /// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
 /// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
 /// pending enter/leave confirmation.
@@ -856,6 +881,15 @@ pub struct LocalIndexRuntime {
 pub struct LocalMode {
     pub ui: LocalUi,
     pub index: LocalIndexRuntime,
+    /// Explicit production mutation generation for the Local Deck derived-row cache.
+    pub(in crate::app) rows_revision: Cell<u64>,
+    /// A single entry is enough: only the active section/query/drill path is rendered, and
+    /// replacing it promptly releases potentially large row/id and derived-metadata arrays.
+    pub(in crate::app) rows_cache: RefCell<Option<super::local::LocalRowsCache>>,
+    /// Recognized import-artifact paths and metadata used to invalidate the row cache without
+    /// opening persisted JSON or rescanning unchanged directories from the render path.
+    pub(in crate::app) import_files_fingerprint_cache:
+        RefCell<super::local::LocalImportFilesFingerprintCache>,
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,

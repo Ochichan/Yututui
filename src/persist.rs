@@ -58,6 +58,8 @@ use panic_ownership::{
 };
 use panic_shadow::{PanicShadow, PanicShadowSealed};
 #[cfg(test)]
+use recovery::load_with_journal_recovery_then;
+#[cfg(test)]
 use recovery::replay_journaled_snapshot;
 pub use recovery::{
     StartupRecoveryError, StartupRecoveryFailure, ensure_startup_recovery_coherent,
@@ -67,8 +69,8 @@ pub(crate) use recovery::{
     clear_startup_recovery_error_for_test, latch_startup_recovery_error_for_test,
 };
 pub(crate) use recovery::{
-    ensure_persistence_writes_allowed, load_with_journal_recovery, load_with_journal_recovery_then,
-    preflight_journal_recovery, remove_store_file, write_store_json,
+    ensure_persistence_writes_allowed, load_with_journal_recovery, preflight_journal_recovery,
+    remove_store_file, replay_config_journaled_value_with_status, write_store_json,
 };
 pub use startup::{
     StartupStoreSet, load_startup_store_set, load_verified_startup_state,
@@ -923,10 +925,70 @@ fn clear_store_journal(path: &Path) {
     let Ok(_lock) = acquire_intent_lock(path) else {
         return;
     };
+    clear_store_journal_locked(path);
+}
+
+fn clear_store_journal_locked(path: &Path) {
     if let Some(journal_path) = intent_journal_path(path) {
         remove_file_if_exists(&journal_path, "failed to remove persistence intent");
     }
     cleanup_orphan_sidecars_locked(path, None);
+}
+
+/// Mark an installed config replay complete without discarding PR40's durable ordering frontier.
+/// Ordered candidates advance to a commit record; a legacy generation-less candidate is removed
+/// only while the same advisory lock is held.
+pub(crate) fn clear_journaled_snapshot(path: &Path) {
+    if let Err(error) = ensure_persistence_writes_allowed() {
+        tracing::warn!(%error, "could not settle installed config recovery intent");
+        return;
+    }
+    let Ok(_lock) = acquire_intent_lock(path) else {
+        tracing::warn!("could not lock installed config recovery intent");
+        return;
+    };
+    let state = match read_journal_state(StoreKind::Config, path) {
+        Ok(state) => state,
+        Err(error) => {
+            tracing::warn!(%error, "could not read installed config recovery intent");
+            return;
+        }
+    };
+    match state.candidate.and_then(|candidate| candidate.order) {
+        Some(order) => {
+            if let Err(error) = commit_journal_generation_locked(StoreKind::Config, path, order) {
+                tracing::warn!(%error, "could not commit installed config recovery intent");
+            }
+        }
+        None => clear_store_journal_locked(path),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_journaled_snapshot(
+    kind: StoreKind,
+    path: PathBuf,
+    bytes: Vec<u8>,
+) -> std::io::Result<()> {
+    let accepted = JournalOrderSource::allocate().accept();
+    if let Some(error) = accepted.error {
+        return Err(std::io::Error::other(error.to_string()));
+    }
+    write_journal_intent(&JournalIntent::Replace {
+        order: accepted.order,
+        kind,
+        path,
+        bytes,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn test_journal_exists(path: &Path) -> bool {
+    match read_journal_state(StoreKind::Config, path) {
+        Ok(state) => state.candidate.is_some(),
+        // An unreadable journal is still an unsettled recovery artifact.
+        Err(_) => intent_journal_path(path).is_some_and(|journal| journal.exists()),
+    }
 }
 
 fn intent_journal_path(path: &Path) -> Option<PathBuf> {

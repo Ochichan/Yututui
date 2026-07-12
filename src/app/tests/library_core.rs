@@ -1,5 +1,90 @@
 use super::*;
 
+fn render_window_ids(app: &App, start: usize, visible: usize) -> Vec<String> {
+    app.library_render_window(start, visible)
+        .into_iter()
+        .flatten()
+        .map(|song| song.video_id.clone())
+        .collect()
+}
+
+#[test]
+fn cached_library_render_windows_match_action_rows() {
+    let mut app = App::new(100);
+    for song in songs(8) {
+        app.library.record_play(&song);
+        if song.video_id.ends_with('2') || song.video_id.ends_with('5') {
+            app.library.toggle_favorite(&song);
+        }
+    }
+    app.mode = Mode::Library;
+
+    for tab in [LibraryTab::All, LibraryTab::Favorites, LibraryTab::History] {
+        app.library_ui.tab = tab;
+        for filter in ["", "title 2", "artist"] {
+            app.library_ui.filter_query = filter.to_owned();
+            let action_ids: Vec<_> = app
+                .library_rows()
+                .into_iter()
+                .map(|song| song.video_id.clone())
+                .collect();
+            let render_ids = render_window_ids(&app, 0, app.library_rows_len());
+            assert_eq!(render_ids, action_ids, "tab={tab:?}, filter={filter:?}");
+        }
+    }
+}
+
+#[test]
+fn playlist_render_window_handles_empty_and_small_lists() {
+    let mut app = App::new(100);
+    let empty_id = app.playlists.create("Empty").unwrap();
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Playlists;
+    app.library_ui.open_playlist = Some(empty_id.clone());
+
+    assert_eq!(app.library_rows_len(), 0);
+    assert!(app.library_render_window(0, 8).is_empty());
+
+    app.playlists
+        .add(&empty_id, fsong("first", "First", "Artist"));
+    app.playlists
+        .add(&empty_id, fsong("second", "Second", "Artist"));
+    assert_eq!(app.library_rows_len(), 2);
+    assert_eq!(
+        render_window_ids(&app, 0, 8),
+        vec!["first".to_owned(), "second".to_owned()]
+    );
+    assert!(app.library_render_window(2, 8).is_empty());
+}
+
+#[test]
+fn playlist_render_window_preserves_filtered_bottom_offsets() {
+    let mut app = App::new(100);
+    let playlist_id = app.playlists.create("Window").unwrap();
+    for i in 0..12 {
+        let title = if i % 2 == 0 {
+            format!("Keep {i}")
+        } else {
+            format!("Skip {i}")
+        };
+        app.playlists.add(
+            &playlist_id,
+            Song::remote(format!("id{i}"), title, "Artist", "0:10"),
+        );
+    }
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Playlists;
+    app.library_ui.open_playlist = Some(playlist_id);
+    app.library_ui.filter_query = "  kEeP  ".to_owned();
+
+    assert_eq!(app.library_rows_len(), 6);
+    assert_eq!(
+        render_window_ids(&app, 4, 20),
+        vec!["id8".to_owned(), "id10".to_owned()]
+    );
+    assert!(app.library_render_window(6, 20).is_empty());
+}
+
 #[test]
 fn f_toggles_favorite_of_current_track() {
     let mut app = app_playing(3, 0); // playing "id0"

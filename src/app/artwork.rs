@@ -87,7 +87,7 @@ impl App {
     /// themselves (retro ASCII art) instead of through the terminal-graphics protocol.
     pub fn art_source_image(&self) -> Option<(&str, &DynamicImage)> {
         match (self.art.video_id.as_deref(), self.art.source.as_ref()) {
-            (Some(id), Some(img)) => Some((id, img)),
+            (Some(id), Some(img)) => Some((id, img.as_ref())),
             _ => None,
         }
     }
@@ -715,11 +715,12 @@ impl App {
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art.picker.as_ref()) {
             (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {
+                let img = Arc::new(img);
                 self.art.dims = (img.width(), img.height());
                 let tx = self.art.resize_tx.as_ref().expect("checked above").clone();
                 *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
                     tx,
-                    Some(picker.new_resize_protocol(img.clone())),
+                    Some(picker.new_resize_protocol_shared(Arc::clone(&img))),
                 ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);

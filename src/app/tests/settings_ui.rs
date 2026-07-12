@@ -14,7 +14,7 @@ fn focus_current_settings_field(app: &mut App, field: Field) {
     }
 }
 
-fn update_and_admit(app: &mut App, msg: Msg) -> Vec<Cmd> {
+pub(super) fn update_and_admit(app: &mut App, msg: Msg) -> Vec<Cmd> {
     let mut cmds = app.update(msg);
     admit_player_transition(app, &mut cmds);
     cmds

@@ -1,10 +1,9 @@
 //! Protocol backends for the widgets
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write,
-    hash::{Hash, Hasher},
     num::NonZeroU16,
+    sync::Arc,
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -176,7 +175,19 @@ impl StatefulProtocol {
         background_color: Option<Rgba<u8>>,
         protocol_type: StatefulProtocolType,
     ) -> Self {
-        let source = ImageSource::new(image, font_size, background_color);
+        Self::new_shared(Arc::new(image), font_size, background_color, protocol_type)
+    }
+
+    /// Construct a protocol that shares its immutable decoded source pixels with its owner.
+    /// Resized protocol buffers remain independently owned; only the full-resolution source is
+    /// shared, avoiding a multi-megabyte deep clone for every held album cover.
+    pub fn new_shared(
+        image: Arc<DynamicImage>,
+        font_size: FontSize,
+        background_color: Option<Rgba<u8>>,
+        protocol_type: StatefulProtocolType,
+    ) -> Self {
+        let source = ImageSource::new_shared(image, font_size, background_color);
         Self {
             source,
             font_size,
@@ -280,7 +291,7 @@ impl ResizeEncodeRender for StatefulProtocol {
 ///
 struct ImageSource {
     /// The original image without resizing.
-    pub image: DynamicImage,
+    pub image: Arc<DynamicImage>,
     /// The area that the [`ImageSource::image`] covers, but not necessarily fills.
     pub desired: Size,
     /// TODO: document this; when image changes but it doesn't need a resize, force a render.
@@ -290,34 +301,129 @@ struct ImageSource {
 }
 
 impl ImageSource {
-    /// Create a new image source
-    pub fn new(
-        mut image: DynamicImage,
+    /// Create an image source from shared decoded pixels. A non-transparent background requires
+    /// a composited copy (the source pixels would otherwise be mutated); the usual transparent
+    /// album-art path keeps the exact same allocation.
+    pub fn new_shared(
+        image: Arc<DynamicImage>,
         font_size: FontSize,
         background_color: Option<Rgba<u8>>,
     ) -> ImageSource {
         let desired = Resize::round_pixel_size_to_cells(image.width(), image.height(), font_size);
 
-        let mut state = DefaultHasher::new();
-        image.as_bytes().hash(&mut state);
-        let hash = state.finish();
-
         // We only need to underlay the background color here if it's not completely transparent.
-        if let Some(background_color) = background_color
+        let image = if let Some(background_color) = background_color
             && background_color.0[3] != 0
         {
             let mut bg: DynamicImage =
                 ImageBuffer::from_pixel(image.width(), image.height(), background_color).into();
-            imageops::overlay(&mut bg, &image, 0, 0);
-            image = bg;
-        }
+            imageops::overlay(&mut bg, image.as_ref(), 0, 0);
+            Arc::new(bg)
+        } else {
+            image
+        };
 
         ImageSource {
             image,
             desired,
-            hash,
+            // The source is immutable for the lifetime of a StatefulProtocol. A nonzero marker
+            // is sufficient to force the first encode, after which `self.hash` matches it.
+            hash: 1,
             background_color,
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_source_tests {
+    use super::*;
+
+    fn patterned_image() -> DynamicImage {
+        let mut image = ImageBuffer::new(7, 5);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            *pixel = Rgba([
+                (x * 31 + y * 7) as u8,
+                (x * 11 + y * 37) as u8,
+                (x * 19 + y * 13) as u8,
+                if (x + y).is_multiple_of(3) { 96 } else { 255 },
+            ]);
+        }
+        DynamicImage::ImageRgba8(image)
+    }
+
+    fn halfblocks() -> StatefulProtocolType {
+        StatefulProtocolType::Halfblocks(Halfblocks::default())
+    }
+
+    #[test]
+    fn transparent_shared_source_reuses_the_exact_pixel_allocation() {
+        let image = Arc::new(DynamicImage::new_rgba8(64, 64));
+        let protocol = StatefulProtocol::new_shared(
+            Arc::clone(&image),
+            FontSize::new(10, 20),
+            None,
+            StatefulProtocolType::Halfblocks(Halfblocks::default()),
+        );
+
+        assert!(Arc::ptr_eq(&image, &protocol.source.image));
+        assert_eq!(Arc::strong_count(&image), 2);
+    }
+
+    #[test]
+    fn opaque_background_keeps_compositing_semantics_without_mutating_shared_input() {
+        let image = Arc::new(DynamicImage::new_rgba8(2, 2));
+        let protocol = StatefulProtocol::new_shared(
+            Arc::clone(&image),
+            FontSize::new(10, 20),
+            Some(Rgba([20, 30, 40, 255])),
+            StatefulProtocolType::Halfblocks(Halfblocks::default()),
+        );
+
+        assert!(!Arc::ptr_eq(&image, &protocol.source.image));
+        assert_eq!(image.to_rgba8().get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(
+            protocol.source.image.to_rgba8().get_pixel(0, 0).0,
+            [20, 30, 40, 255]
+        );
+    }
+
+    #[test]
+    fn owned_and_shared_constructors_encode_identical_pixels_at_multiple_sizes() {
+        let image = patterned_image();
+        for background in [None, Some(Rgba([20, 30, 40, 255]))] {
+            for area in [Rect::new(0, 0, 5, 3), Rect::new(0, 0, 9, 4)] {
+                let mut owned = StatefulProtocol::new(
+                    image.clone(),
+                    FontSize::new(10, 20),
+                    background,
+                    halfblocks(),
+                );
+                let mut shared = StatefulProtocol::new_shared(
+                    Arc::new(image.clone()),
+                    FontSize::new(10, 20),
+                    background,
+                    halfblocks(),
+                );
+                let mut owned_buffer = Buffer::empty(area);
+                let mut shared_buffer = Buffer::empty(area);
+
+                owned.resize_encode_render(&Resize::Fit(None), area, &mut owned_buffer);
+                shared.resize_encode_render(&Resize::Fit(None), area, &mut shared_buffer);
+
+                assert_eq!(owned_buffer, shared_buffer);
+                assert_eq!(owned.last_encoding_area(), shared.last_encoding_area());
+                assert!(owned.last_encoding_result().unwrap().is_ok());
+                assert!(shared.last_encoding_result().unwrap().is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn shared_source_and_protocol_remain_send_sync_for_resize_worker_handoff() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<Arc<DynamicImage>>();
+        assert_send_sync::<StatefulProtocol>();
     }
 }
 

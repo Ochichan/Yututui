@@ -180,14 +180,14 @@ for file in \
 done
 
 for file in src/media/mpris.rs src/media/smtc.rs; do
-  grep -q 'LatestMediaUpdate' "$file" || {
-    echo "error: platform media snapshots must use the shared latest-value contract ($file)" >&2
+  grep -q 'LatestMediaSender' "$file" || {
+    echo "error: platform media snapshots must use the shared bounded delivery contract ($file)" >&2
     fail=1
   }
 done
 
 if grep -q 'fn store_latest' src/media/mpris.rs src/media/smtc.rs; then
-  echo "error: platform media latest-value logic must not be duplicated" >&2
+  echo "error: platform media delivery/coalescing logic must not be duplicated" >&2
   fail=1
 fi
 

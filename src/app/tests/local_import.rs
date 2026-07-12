@@ -865,10 +865,11 @@ fn orphan_report_without_session_document_is_visible_and_deletable() {
     app.update(Msg::Key(key(KeyCode::Char('9'))));
     app.local_mode.ui.filter_query = session_id.to_owned();
     assert_eq!(
-        app.local_visible_rows(),
-        vec![crate::local::LocalRowId::ImportSession(
+        app.local_visible_rows().as_ref(),
+        [crate::local::LocalRowId::ImportSession(
             session_id.to_owned()
         )]
+        .as_slice()
     );
     assert!(
         app.local_import_record_deletable(&crate::local::LocalRowId::ImportSession(
@@ -880,6 +881,45 @@ fn orphan_report_without_session_document_is_visible_and_deletable() {
     app.apply_local_import_record_delete(session_id.to_owned());
     assert!(!report_path.exists());
     assert!(app.local_visible_rows().is_empty());
+}
+
+#[test]
+fn external_import_artifact_change_is_immediately_visible_without_changing_membership() {
+    let session_id = "sp2yt-local-cache-external-change";
+    let report_path = crate::transfer::checkpoint::report_path(session_id).expect("report path");
+    std::fs::create_dir_all(report_path.parent().expect("report parent"))
+        .expect("create transfers dir");
+    std::fs::write(&report_path, b"{}").expect("write orphan report");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let before = app.local_visible_rows();
+    assert_eq!(before.len(), 1);
+
+    #[cfg(unix)]
+    {
+        let original_modified = std::fs::metadata(&report_path)
+            .and_then(|metadata| metadata.modified())
+            .expect("read original report timestamp");
+        std::fs::write(&report_path, b"[]").expect("externally update orphan report in place");
+        std::fs::File::options()
+            .write(true)
+            .open(&report_path)
+            .and_then(|file| {
+                file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            })
+            .expect("restore original report timestamp");
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&report_path, b"[ ]")
+        .expect("externally update orphan report with a normal metadata change");
+    let after = app.local_visible_rows();
+    assert_eq!(before.as_ref(), after.as_ref());
+    assert!(!std::sync::Arc::ptr_eq(&before, &after));
+
+    crate::transfer::session::ImportSession::delete_record(session_id)
+        .expect("clean external-change fixture");
 }
 
 #[test]

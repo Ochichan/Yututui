@@ -170,7 +170,7 @@ pub enum Msg {
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,
-        lines: Vec<LyricLine>,
+        lines: std::sync::Arc<[LyricLine]>,
     },
     /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
     ArtworkResult {
@@ -892,7 +892,7 @@ pub enum Mode {
 /// Synced lyrics for one track (held while it's the current track).
 pub struct TrackLyrics {
     pub video_id: String,
-    pub lines: Vec<LyricLine>,
+    pub lines: std::sync::Arc<[LyricLine]>,
 }
 
 /// The lists in the library view.

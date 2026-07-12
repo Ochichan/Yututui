@@ -8,7 +8,7 @@
 //! sessions) and de-duplicated by `video_id`. Persistence mirrors [`crate::config`]:
 //! pretty JSON written atomically (temp file + rename).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,23 @@ const RADIOS_MAX: usize = 999;
 const DOWNLOADS_MAX: usize = 999;
 const LIBRARY_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
+const FAVORITE_LOOKUP_LINEAR_LIMIT: usize = 32;
+
+/// One-render borrowed favorite membership lookup. Large Library/Search frames build this once
+/// from the authoritative public vectors; no owned ids or stale state survive the render.
+pub(crate) struct FavoriteLookup<'a> {
+    library: &'a Library,
+    ids: Option<HashSet<&'a str>>,
+}
+
+impl FavoriteLookup<'_> {
+    pub(crate) fn is_favorite(&self, video_id: &str) -> bool {
+        self.ids.as_ref().map_or_else(
+            || self.library.is_favorite(video_id),
+            |ids| ids.contains(video_id),
+        )
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DownloadScan {
@@ -46,8 +63,8 @@ pub struct Library {
     /// Recently played live radio stations, most-recent first; capped at [`RADIOS_MAX`].
     pub radios: VecDeque<Song>,
     /// Mutation counter for downstream caches (library row cache, id-recovery memo).
-    /// Every `&mut self` method bumps it; direct field mutation (tests) is covered by the
-    /// caches also keying on collection lengths.
+    /// Every production `&mut self` method bumps it. Favorite membership never relies on this
+    /// counter: its render-local borrowed lookup is exact even for direct fixture replacement.
     #[serde(skip)]
     pub(crate) rev: u64,
 }
@@ -98,6 +115,21 @@ impl Library {
 
     pub fn is_radio_favorite(&self, video_id: &str) -> bool {
         self.radio_favorites.iter().any(|s| s.video_id == video_id)
+    }
+
+    pub(crate) fn favorite_lookup(&self) -> FavoriteLookup<'_> {
+        let total = self
+            .favorites
+            .len()
+            .saturating_add(self.radio_favorites.len());
+        let ids = (total > FAVORITE_LOOKUP_LINEAR_LIMIT).then(|| {
+            self.favorites
+                .iter()
+                .chain(&self.radio_favorites)
+                .map(|song| song.video_id.as_str())
+                .collect()
+        });
+        FavoriteLookup { library: self, ids }
     }
 
     fn touch(&mut self) {
@@ -412,6 +444,74 @@ mod tests {
         lib.toggle_favorite(&song("b"));
         assert_eq!(lib.favorites[0].video_id, "b");
         assert_eq!(lib.favorites[1].video_id, "a");
+    }
+
+    #[test]
+    fn favorite_membership_tracks_same_length_public_vector_replacement() {
+        let mut lib = Library {
+            favorites: (0..64).map(|index| song(&format!("old-{index}"))).collect(),
+            ..Library::default()
+        };
+        assert!(lib.favorite_lookup().is_favorite("old-0"));
+
+        lib.favorites = (0..64).map(|index| song(&format!("new-{index}"))).collect();
+        let lookup = lib.favorite_lookup();
+        assert!(lookup.ids.is_some());
+        assert!(!lookup.is_favorite("old-0"));
+        assert!(lookup.is_favorite("new-0"));
+    }
+
+    #[test]
+    fn favorite_membership_tracks_same_length_cross_kind_public_mutation() {
+        let mut lib = Library {
+            favorites: (0..20)
+                .map(|index| song(&format!("track-{index}")))
+                .collect(),
+            radio_favorites: (0..20)
+                .map(|index| radio(&format!("station-{index}")))
+                .collect(),
+            ..Library::default()
+        };
+        let track = lib.favorites[0].clone();
+        let station = lib.radio_favorites[0].clone();
+        assert!(!lib.is_radio_favorite(&track.video_id));
+        assert!(lib.is_radio_favorite(&station.video_id));
+
+        lib.favorites[0] = station.clone();
+        lib.radio_favorites[0] = track.clone();
+
+        let lookup = lib.favorite_lookup();
+        assert!(lookup.ids.is_some());
+        assert!(lookup.is_favorite(&track.video_id));
+        assert!(lib.is_radio_favorite(&track.video_id));
+        assert!(lookup.is_favorite(&station.video_id));
+        assert!(!lib.is_radio_favorite(&station.video_id));
+    }
+
+    #[test]
+    fn large_favorite_lookup_borrows_one_exact_id_set_for_the_render() {
+        let lib = Library {
+            favorites: (0..64)
+                .map(|index| song(&format!("track-{index}")))
+                .collect(),
+            radio_favorites: (0..64)
+                .map(|index| radio(&format!("station-{index}")))
+                .collect(),
+            ..Library::default()
+        };
+
+        let lookup = lib.favorite_lookup();
+        let ids = lookup.ids.as_ref().expect("large lookup must be indexed");
+        assert_eq!(ids.len(), 128);
+        assert!(lookup.is_favorite("track-63"));
+        assert!(lookup.is_favorite(&lib.radio_favorites[63].video_id));
+        assert!(!lookup.is_favorite("missing"));
+        assert!(ids.iter().all(|id| {
+            lib.favorites
+                .iter()
+                .chain(&lib.radio_favorites)
+                .any(|song| std::ptr::eq(id.as_ptr(), song.video_id.as_ptr()))
+        }));
     }
 
     #[test]

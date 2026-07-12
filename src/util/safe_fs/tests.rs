@@ -92,6 +92,33 @@ fn temp_root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("yututui-{name}-{}-{suffix}", std::process::id()))
 }
 
+#[test]
+fn windows_change_time_requires_a_positive_generation() {
+    assert_eq!(validate_windows_change_time(1).unwrap(), 1);
+    assert_eq!(
+        validate_windows_change_time(0).unwrap_err().kind(),
+        io::ErrorKind::Unsupported
+    );
+    assert_eq!(
+        validate_windows_change_time(-1).unwrap_err().kind(),
+        io::ErrorKind::Unsupported
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_file_change_time_uses_a_transient_handle() {
+    let dir = temp_root("file-change-time");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("artifact.json");
+    fs::write(&path, b"{}").unwrap();
+
+    assert!(windows_file_change_time(&path).unwrap() > 0);
+    // The helper's local handle has already been dropped, so the artifact is not pinned.
+    fs::remove_file(&path).unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn atomic_temp_paths(path: &Path) -> Vec<PathBuf> {
     let parent = path.parent().expect("test target has a parent");
     let file_name = path

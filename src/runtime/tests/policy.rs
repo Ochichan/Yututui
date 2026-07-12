@@ -224,7 +224,7 @@ fn runtime_event_policy_covers_leaf_event_classes() {
     assert_policy(
         RuntimeEvent::Lyrics(crate::lyrics::LyricsEvent::Result {
             video_id: "v".to_owned(),
-            lines: Vec::new(),
+            lines: Vec::new().into(),
         }),
         EventPolicy::DropIfStale {
             stale_key: EventKey::LyricsVideo,

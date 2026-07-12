@@ -1,9 +1,11 @@
 //! OS media-session integration: macOS Now Playing, Windows SMTC, Linux MPRIS.
 //!
 //! This is the platform-independent layer. The core (TUI reducer or headless daemon
-//! engine) stays the single source of truth: it builds a [`MediaSnapshot`] after every
-//! state change and hands it to [`MediaSession::publish`], which diffs against the last
-//! published snapshot and forwards only the changed facets to the platform backend.
+//! engine) stays the single source of truth: it builds a [`MediaSnapshot`] after projected
+//! state changes and hands it to [`MediaSession::publish`], which diffs against the last
+//! published snapshot and forwards only the changed facets to the platform backend. Ordinary
+//! playback progress uses [`MediaSession::rebase_position`] so platform clocks retain the exact
+//! pre-optimization correction cadence without rebuilding metadata-bearing snapshots.
 //! Inbound OS events (media keys, widget buttons, scrubber drags, AirPods gestures)
 //! arrive as [`MediaCommand`]s through the sink given at construction and flow through
 //! the normal reducer/engine paths — the backend never mutates state optimistically.
@@ -13,6 +15,9 @@
 
 pub mod artwork;
 pub mod identity;
+
+#[cfg(any(target_os = "linux", windows, test))]
+mod delivery;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -33,8 +38,6 @@ use smtc as platform_backend;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(any(target_os = "linux", windows, test))]
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::queue::Repeat;
@@ -175,6 +178,14 @@ impl MediaSnapshot {
         }
         pos.max(0.0)
     }
+
+    /// Copy the core-authored discontinuity token into a backend's retained
+    /// position clock. This never advances the epoch; App/daemon bump helpers
+    /// remain the only writers that create a new discontinuity.
+    #[cfg(any(target_os = "linux", windows, test))]
+    pub(super) fn copy_delivery_clock_from_core(&mut self, core_position_epoch: u64) {
+        self.position_epoch = core_position_epoch;
+    }
 }
 
 /// Which facets of the snapshot changed since the last publish. Backends apply only
@@ -220,44 +231,6 @@ impl MediaChanges {
         self.options |= newer.options;
         self.caps |= newer.caps;
         self.feedback |= newer.feedback;
-    }
-}
-
-/// One platform update slot shared by the asynchronous Linux and Windows backends.
-/// The newest snapshot owns all values while changed facets are unioned across every
-/// collapsed publish, so a full platform queue cannot erase an intermediate edge.
-#[derive(Default)]
-#[cfg(any(target_os = "linux", windows, test))]
-pub(crate) struct LatestMediaUpdate {
-    pending: Mutex<Option<(MediaSnapshot, MediaChanges)>>,
-}
-
-#[cfg(any(target_os = "linux", windows, test))]
-impl LatestMediaUpdate {
-    pub(crate) fn store(&self, snapshot: MediaSnapshot, changes: MediaChanges) -> bool {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let replaced_existing = pending.is_some();
-        let mut accumulated = pending
-            .as_ref()
-            .map_or(changes, |(_, accumulated)| *accumulated);
-        accumulated.merge(changes);
-        *pending = Some((snapshot, accumulated));
-        replaced_existing
-    }
-
-    pub(crate) fn take(&self) -> Option<(MediaSnapshot, MediaChanges)> {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    }
-
-    #[cfg(any(target_os = "linux", test))]
-    pub(crate) fn clear(&self) {
-        let _ = self.take();
     }
 }
 
@@ -598,6 +571,42 @@ impl MediaSession {
         self.arm_backend_retry();
     }
 
+    /// Rebase only the scalar playback clock after a `time-pos` update.
+    ///
+    /// `origin/main` handed every progress snapshot to the platform backend even though the
+    /// snapshot diff had no changed facets. Linux and Windows used those calls to correct their
+    /// interpolated clocks. Keep that observable cadence while reusing the retained metadata, so
+    /// a progress turn neither rebuilds nor clones track strings, paths, artwork, or capabilities.
+    /// Returns `true` only when the platform has not activated yet and the caller must publish one
+    /// full current snapshot. This preserves lazy first-play activation on macOS/Windows.
+    pub fn rebase_position(&mut self, position: f64, captured_at: Instant) -> bool {
+        if !self.enabled || self.failed {
+            return false;
+        }
+        if !self.activated {
+            return true;
+        }
+        let Some(snapshot) = self.last.as_mut() else {
+            return true;
+        };
+        snapshot.position = position;
+        snapshot.captured_at = captured_at;
+        if let Some(backend) = self.backend.as_mut() {
+            match backend.apply(snapshot, MediaChanges::default()) {
+                Ok(receipt) => tracing::trace!(?receipt, "media position rebase accepted"),
+                Err(crate::util::delivery::DeliveryError::Closed) => {
+                    self.callback_cancellation.cancel();
+                    self.backend = None;
+                    self.failed = true;
+                }
+                Err(error) => {
+                    tracing::trace!(%error, "media position rebase was not accepted");
+                }
+            }
+        }
+        false
+    }
+
     /// Kick the async artwork fetch when a new track appears; the result comes back
     /// through the core (as a message) and lands in a later snapshot's `art_file`.
     fn request_artwork(&mut self, snapshot: &MediaSnapshot) {
@@ -869,6 +878,13 @@ mod tests {
     }
 
     #[test]
+    fn delivery_clock_copies_core_epoch_without_bumping_again() {
+        let mut delivered = snap(Some("a"));
+        delivered.copy_delivery_clock_from_core(7);
+        assert_eq!(delivered.position_epoch, 7);
+    }
+
+    #[test]
     fn artwork_arrival_marks_artwork_only() {
         let a = snap(Some("a"));
         let mut b = a.clone();
@@ -911,57 +927,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_media_slot_keeps_newest_snapshot_and_unions_all_facets() {
-        let slot = LatestMediaUpdate::default();
-        let first = snap(Some("first"));
-        let mut newest = snap(Some("newest"));
-        newest.volume = 0.25;
-
-        assert!(!slot.store(
-            first,
-            MediaChanges {
-                track: true,
-                artwork: true,
-                status: true,
-                ..MediaChanges::default()
-            },
-        ));
-        assert!(slot.store(
-            newest,
-            MediaChanges {
-                position: true,
-                options: true,
-                caps: true,
-                feedback: true,
-                ..MediaChanges::default()
-            },
-        ));
-
-        let (stored, changes) = slot.take().expect("latest update");
-        assert_eq!(
-            stored.track.as_ref().map(|track| track.key.as_str()),
-            Some("newest")
-        );
-        assert_eq!(stored.volume, 0.25);
-        assert!(changes.track);
-        assert!(changes.artwork);
-        assert!(changes.status);
-        assert!(changes.position);
-        assert!(changes.options);
-        assert!(changes.caps);
-        assert!(changes.feedback);
-        assert!(slot.take().is_none());
-    }
-
-    #[test]
-    fn latest_media_slot_clear_discards_pending_state() {
-        let slot = LatestMediaUpdate::default();
-        assert!(!slot.store(snap(Some("pending")), MediaChanges::all()));
-        slot.clear();
-        assert!(slot.take().is_none());
-    }
-
-    #[test]
     fn like_state_marks_feedback() {
         let a = snap(Some("a"));
         let mut b = a.clone();
@@ -991,5 +956,38 @@ mod tests {
         let mut s = snap(Some("a"));
         s.position = 500.0; // past the 180s duration
         assert!((s.position_now() - 180.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn scalar_rebase_updates_retained_clock_without_rebuilding_metadata() {
+        let mut session = MediaSession::new(
+            false,
+            |_| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        session.enabled = true;
+        session.activated = true;
+        session.last = Some(snap(Some("same-track")));
+        let track_before = session.last.as_ref().unwrap().track.clone();
+        let captured_at = Instant::now();
+
+        assert!(!session.rebase_position(47.5, captured_at));
+
+        let retained = session.last.as_ref().unwrap();
+        assert_eq!(retained.position, 47.5);
+        assert_eq!(retained.captured_at, captured_at);
+        assert_eq!(retained.track, track_before);
+        assert_eq!(retained.position_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn first_progress_requests_lazy_platform_activation_snapshot() {
+        let mut session = MediaSession::new(
+            false,
+            |_| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        session.enabled = true;
+        assert!(session.rebase_position(1.0, Instant::now()));
     }
 }

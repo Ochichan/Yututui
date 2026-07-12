@@ -1197,6 +1197,7 @@ impl SettingsDraft {
             .unwrap_or_else(|| MPV_CACHE_FORWARD_DEFAULT.to_owned());
         cfg.audio.mpv.cache_back = blank_to_none(&self.audio_mpv_cache_back)
             .unwrap_or_else(|| MPV_CACHE_BACK_DEFAULT.to_owned());
+        cfg.audio.mpv.mark_cache_defaults_current();
         // Radio recording. Keep max strictly above min so the two sliders can't invert.
         cfg.recording.mode = self.recording_mode;
         cfg.recording.min_duration_secs = self.recording_min_seconds;

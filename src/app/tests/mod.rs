@@ -24,6 +24,9 @@ mod library_filter;
 mod library_queue_actions;
 mod local;
 mod local_import;
+mod local_import_rows_cache;
+#[cfg(test)]
+mod local_rows_cache;
 mod lyrics_art_download;
 mod mini_tier;
 mod mouse_player;
@@ -48,6 +51,8 @@ mod scrollbars_layout;
 mod search_keys;
 mod search_results;
 mod selection_navigation;
+#[cfg(test)]
+mod settings_cache_policy;
 mod settings_forms;
 mod settings_ui;
 mod startup_playback;

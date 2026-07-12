@@ -3,8 +3,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Serialize, de::DeserializeOwned};
 
-#[cfg(test)]
-use super::acquire_intent_lock;
 use super::{
     INTENT_SNAPSHOT_MAX_BYTES, JournalOperation, StoreKind, acquire_intent_lock_with_budget,
     read_journal_state, sha256_hex, sibling_path_from_record,
@@ -469,6 +467,61 @@ where
         .unwrap_or_default()
 }
 
+/// Replay a pending snapshot while holding the same coherent advisory lock used by PR40's
+/// startup loaders. `serde_json::Value` callers retain unknown config keys and can migrate the
+/// raw object before typed recovery; the status remains false on any lock/artifact failure.
+pub(crate) fn replay_journaled_snapshot_with_status<T>(
+    kind: StoreKind,
+    path: &Path,
+    current: T,
+    max_bytes: u64,
+) -> (T, bool)
+where
+    T: DeserializeOwned + Serialize + Default,
+{
+    if super::persistence_access().is_read_only() {
+        return (current, false);
+    }
+    if ensure_startup_recovery_coherent().is_err() {
+        return (current, false);
+    }
+    let _lock = match acquire_coherent_load_lock(kind, path) {
+        Ok(lock) => lock,
+        Err(error) => {
+            latch_startup_recovery_error(error.startup_error());
+            return (current, false);
+        }
+    };
+    match replay_locked(kind, path, max_bytes) {
+        Ok(Some(replayed)) => (replayed, true),
+        Ok(None) => (current, false),
+        Err(error) => {
+            latch_startup_recovery_error(StartupRecoveryError::artifact(kind, error));
+            (current, false)
+        }
+    }
+}
+
+/// Config-specific raw replay. Invalid scalar/array roots are left pending for a future reader and
+/// never replace a valid base object. The returned `replayed` flag may be used to settle the
+/// ordered intent with [`super::clear_journaled_snapshot`] only after an atomic migrated install
+/// succeeds.
+pub(crate) fn replay_config_journaled_value_with_status(
+    path: &Path,
+    current: serde_json::Value,
+    max_bytes: u64,
+) -> (serde_json::Value, bool) {
+    let base = current.clone();
+    let (candidate, replayed) =
+        replay_journaled_snapshot_with_status(StoreKind::Config, path, current, max_bytes);
+    if replayed && !candidate.is_object() {
+        tracing::warn!("refusing non-object pending config snapshot");
+        (base, false)
+    } else {
+        (candidate, replayed)
+    }
+}
+
 #[cfg(test)]
 pub(super) fn replay_journaled_snapshot<T>(
     kind: StoreKind,
@@ -479,13 +532,7 @@ pub(super) fn replay_journaled_snapshot<T>(
 where
     T: DeserializeOwned + Serialize + Default,
 {
-    let Ok(_lock) = acquire_intent_lock(path) else {
-        return current;
-    };
-    replay_locked(kind, path, max_bytes)
-        .ok()
-        .flatten()
-        .unwrap_or(current)
+    replay_journaled_snapshot_with_status(kind, path, current, max_bytes).0
 }
 
 fn replay_locked<T>(kind: StoreKind, path: &Path, max_bytes: u64) -> std::io::Result<Option<T>>

@@ -1,0 +1,427 @@
+{
+  "schema": "ytt.tui-perf.scenarios.v1",
+  "version": 1,
+  "statistics": {
+    "bootstrap_resamples": 50000,
+    "seed": 20260711,
+    "one_sided_confidence": 0.95,
+    "baseline_cv_max": 0.1
+  },
+  "sampling": {
+    "interval_ms": 1000,
+    "cpu_unit": "percent_of_one_logical_core",
+    "resident_memory_unit": "bytes",
+    "process_scope": "ytt_and_recursive_descendants",
+    "measurement_kind": "sampled_process_tree",
+    "limitations": [
+      "sampled process tree; sub-interval descendants may be missed"
+    ]
+  },
+  "fixture": {
+    "duration_s": 1080,
+    "sample_rate_hz": 8000,
+    "margin_s": 60
+  },
+  "required_runtime_checklist": [
+    "album art off and on with Halfblocks plus every natively available protocol",
+    "synced lyrics visible and scrolling",
+    "long selected-row marquee at narrow and wide widths",
+    "every animation family at configured FPS bounds",
+    "radio live-sync metadata updates",
+    "80x24, 30x30, 100x30, and 160x50 resize/focus passes"
+  ],
+  "cache_candidates": [
+    { "forward": "8MiB", "back": "2MiB" },
+    { "forward": "16MiB", "back": "4MiB" },
+    { "forward": "24MiB", "back": "6MiB" },
+    { "forward": "32MiB", "back": "8MiB" }
+  ],
+  "traffic_profiles": {
+    "normal": {
+      "throttle_bps": 0,
+      "outage_every_bytes": 0,
+      "outage_ms": 0,
+      "disconnect_every_bytes": 0
+    },
+    "constrained": {
+      "throttle_bps": 24000,
+      "outage_every_bytes": 0,
+      "outage_ms": 0,
+      "disconnect_every_bytes": 0
+    },
+    "outage": {
+      "throttle_bps": 24000,
+      "outage_every_bytes": 524288,
+      "outage_ms": 1500,
+      "disconnect_every_bytes": 2097152
+    }
+  },
+  "scenarios": [
+    {
+      "id": "idle_default",
+      "description": "Empty queue, album art and animations disabled",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 20,
+      "sample_s": 60,
+      "geometry": [[80, 24]],
+      "traffic_profile": "normal",
+      "requires_mpv": false,
+      "controller": false,
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "metrics": {
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 0.2
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        }
+      }
+    },
+    {
+      "id": "playback_legacy_cache",
+      "description": "Exact unmarked 32MiB/8MiB pair for diagnostic steady playback comparison; migration is not asserted while the defaults revision is dormant",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 60,
+      "sample_s": 90,
+      "geometry": [[80, 24]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": {
+          "config_present": true,
+          "cache_forward": { "present": true, "value": "32MiB" },
+          "cache_back": { "present": true, "value": "8MiB" },
+          "_cache_defaults_revision": { "present": false, "value": null }
+        }
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "pause-resume",
+      "pause_hold_ms": 500,
+      "seeks_s": [15, 90, 30, 120, 45],
+      "metrics": {
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 0.5
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 0.7
+        },
+        "operation.resume_session.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "operation.seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "playback_fresh_default",
+      "description": "Cache fields omitted; must converge to the selected migrated default",
+      "pairs": 3,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 2,
+      "warmup_s": 60,
+      "sample_s": 90,
+      "geometry": [[80, 24]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": {
+          "config_present": true,
+          "cache_forward": { "present": false, "value": null },
+          "cache_back": { "present": false, "value": null },
+          "_cache_defaults_revision": { "present": false, "value": null }
+        }
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "pause-resume",
+      "pause_hold_ms": 500,
+      "seeks_s": [20, 80, 35, 110, 50],
+      "metrics": {
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 0.5
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 0.7
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "network_resilience",
+      "description": "18-minute Range fixture under constrained bandwidth, outages, and backward seeks",
+      "pairs": 3,
+      "min_improved_pairs": 2,
+      "candidate_repeats": 1,
+      "warmup_s": 60,
+      "sample_s": 180,
+      "geometry": [[80, 24]],
+      "traffic_profile": "outage",
+      "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [240, 30, 300, 60, 360],
+      "metrics": {
+        "operation.seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "render_and_interaction",
+      "description": "20 warmups, then 20 by 200 updates plus draws, including deterministic App::update(Msg::Key) reducer input",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 0,
+      "sample_s": 0,
+      "warmup_draws": 20,
+      "batches": 20,
+      "draws_per_batch": 200,
+      "geometry": [[80, 24], [100, 30], [160, 50]],
+      "traffic_profile": "normal",
+      "requires_mpv": false,
+      "controller": false,
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "metrics": {
+        "render.player.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.search50.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.library999.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.ai_long.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.reducer_input.p95_reducer_input_to_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.retro160x50.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.normal80x24.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.local_empty60x16.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.local_scroll72x18.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.local_max120x30.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.local_filter_ko90x24.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.player.buffer_style_digest": { "comparison": "exact" },
+        "render.player.hit_map_digest": { "comparison": "exact" },
+        "render.search50.buffer_style_digest": { "comparison": "exact" },
+        "render.search50.hit_map_digest": { "comparison": "exact" },
+        "render.library999.buffer_style_digest": { "comparison": "exact" },
+        "render.library999.hit_map_digest": { "comparison": "exact" },
+        "render.ai_long.buffer_style_digest": { "comparison": "exact" },
+        "render.ai_long.hit_map_digest": { "comparison": "exact" },
+        "render.reducer_input.buffer_style_digest": { "comparison": "exact" },
+        "render.reducer_input.hit_map_digest": { "comparison": "exact" },
+        "render.reducer_input.update_path": { "comparison": "exact" },
+        "render.retro160x50.buffer_style_digest": { "comparison": "exact" },
+        "render.retro160x50.hit_map_digest": { "comparison": "exact" },
+        "render.normal80x24.buffer_style_digest": { "comparison": "exact" },
+        "render.normal80x24.hit_map_digest": { "comparison": "exact" },
+        "render.local_empty60x16.buffer_style_digest": { "comparison": "exact" },
+        "render.local_empty60x16.hit_map_digest": { "comparison": "exact" },
+        "render.local_scroll72x18.buffer_style_digest": { "comparison": "exact" },
+        "render.local_scroll72x18.hit_map_digest": { "comparison": "exact" },
+        "render.local_max120x30.buffer_style_digest": { "comparison": "exact" },
+        "render.local_max120x30.hit_map_digest": { "comparison": "exact" },
+        "render.local_filter_ko90x24.buffer_style_digest": { "comparison": "exact" },
+        "render.local_filter_ko90x24.hit_map_digest": { "comparison": "exact" }
+      }
+    },
+    {
+      "id": "memory_soak",
+      "description": "Three alternating 15-minute steady playback pairs per OS",
+      "pairs": 3,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 0,
+      "warmup_s": 90,
+      "sample_s": 900,
+      "geometry": [[80, 24]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
+      "metrics": {
+        "tree.peak_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "tree.rss_slope_bytes_per_s": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "feature_regressions",
+      "description": "Geometry-only process no-regression at 100x30 and 160x50; visual feature families remain a separate required runtime checklist",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 0,
+      "warmup_s": 20,
+      "sample_s": 60,
+      "geometry": [[100, 30], [160, 50]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
+      "metrics": {
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        }
+      }
+    }
+  ]
+}

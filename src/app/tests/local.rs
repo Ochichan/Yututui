@@ -2,11 +2,11 @@ use super::*;
 use crate::artwork::ArtSource;
 use ratatui_image::picker::Picker;
 
-fn local_song(stem: &str) -> Song {
+pub(super) fn local_song(stem: &str) -> Song {
     Song::local_file(PathBuf::from(format!("/tmp/{stem}.m4a")))
 }
 
-fn local_deck_track(
+pub(super) fn local_deck_track(
     path: &str,
     title: &str,
     artist: &[&str],
@@ -60,7 +60,7 @@ fn mode_switch_projection(app: &App) -> ModeSwitchProjection {
     }
 }
 
-fn admit_local_mode_confirm(app: &mut App, confirm: LocalModeConfirm) -> Vec<Cmd> {
+pub(super) fn admit_local_mode_confirm(app: &mut App, confirm: LocalModeConfirm) -> Vec<Cmd> {
     let before = mode_switch_projection(app);
     let mut cmds = app.apply_local_mode_confirm(confirm);
     assert_eq!(
@@ -97,7 +97,7 @@ fn assert_stop_before_load(cmds: &[Cmd]) {
     assert!(stop < load, "mode switch must Stop before restoring a Load");
 }
 
-fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
+pub(super) fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
     let mut app = App::new(100);
     app.mode = Mode::Library;
     admit_local_mode_confirm(&mut app, LocalModeConfirm::Enter);
@@ -116,6 +116,36 @@ fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
         },
     }));
     app
+}
+
+fn render_local_snapshot(
+    app: &App,
+    snapshot: &LocalRowsSnapshot,
+    width: u16,
+    height: u16,
+) -> (ratatui::buffer::Buffer, Vec<MouseButtonRegion>) {
+    app.clear_mouse_regions();
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            crate::ui::views::local::render_test_snapshot(frame, app, area, snapshot);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let hits = app.hits.regions().clone();
+    (buffer, hits)
+}
+
+pub(super) fn assert_local_cached_render_matches_legacy(app: &App, width: u16, height: u16) {
+    let legacy = app.local_uncached_rows_snapshot();
+    let cached = app.local_rows_snapshot();
+    assert_eq!(legacy.rows(), cached.rows());
+    assert_eq!(legacy.total_len(), cached.total_len());
+    let legacy_render = render_local_snapshot(app, &legacy, width, height);
+    let cached_render = render_local_snapshot(app, &cached, width, height);
+    assert_eq!(legacy_render, cached_render);
 }
 
 #[test]

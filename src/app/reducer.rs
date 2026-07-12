@@ -190,11 +190,15 @@ impl App {
                     if t > 0.0 {
                         self.consecutive_play_errors = 0;
                     }
-                    // Redraw at most once per second; mpv emits `time-pos` far more often.
+                    // Keep the whole-second anchor current in every mode, but only redraw when
+                    // the Player view that renders the scalar is visible. Navigation back to the
+                    // Player already requests a frame, which reads the latest stored position.
                     let sec = t as i64;
                     if sec != self.anim.last_shown_sec {
                         self.anim.last_shown_sec = sec;
-                        self.dirty = true;
+                        if matches!(self.mode, Mode::Player) {
+                            self.dirty = true;
+                        }
                         tracing::debug!(time_pos = t, "progress");
                     }
                 }
@@ -207,12 +211,14 @@ impl App {
                     let had = self.playback.cache_time.is_some();
                     self.playback.cache_time = t;
                     self.playback.cache_time_at = t.map(|_| Instant::now());
-                    // Redraw at most once per second (mpv reports far more often), plus on
-                    // Some↔None transitions so the live-sync glyph never shows stale state.
+                    // Track whole seconds and Some↔None transitions in every mode. Only the
+                    // Player renders the live-sync state, and returning there requests a frame.
                     let sec = t.map_or(-1, |v| v as i64);
                     if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
                         self.anim.last_shown_cache_sec = sec;
-                        self.dirty = true;
+                        if matches!(self.mode, Mode::Player) {
+                            self.dirty = true;
+                        }
                     }
                 }
                 PlayerMsg::AudioCodec(codec) => {

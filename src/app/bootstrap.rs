@@ -43,6 +43,8 @@ impl App {
                 available: false,
                 model: GeminiModel::default(),
                 messages: Vec::new(),
+                transcript_revision: 0,
+                transcript_cache_token: Arc::new(()),
                 input: String::new(),
                 select_all: false,
                 thinking: false,

@@ -21,14 +21,17 @@ use crate::util::delivery::{DeliveryResult, OwnerEvent, OwnerEventIngress};
 use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
 use crate::util::process::{self, ProcessProfile};
 
+mod cli;
 mod effects;
 mod engine;
 mod gui_search_pending;
+mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 mod personal_export;
 mod shutdown_drain;
 
+use cli::{ParseOutcome, parse};
 use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
 use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
 use shutdown_drain::drain_daemon_shutdown_ingress;
@@ -681,6 +684,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
+        let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
                 RemoteCommand::ExportPersonalData { directory } => {
@@ -915,27 +919,59 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
-        // Mirror the post-event state to the OS session (diff-based inside); the
-        // scrobbler taps the same snapshot first (it ignores media-controls enablement).
         // Reconcile the persisted live setting on every owner turn so GUI/remote changes tear
         // down or create the platform generation before this turn's snapshot is published.
-        media.set_enabled(daemon_media_enabled(&engine, media_session_allowed));
-        let snapshot = engine.media_snapshot();
+        let media_enabled = daemon_media_enabled(&engine, media_session_allowed);
+        let media_enabled_changed = media.set_enabled(media_enabled);
         if shutdown.is_triggered() {
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
-        let _ = scrobble.observe(&snapshot);
+
+        // Preserve origin/main's platform-clock correction cadence on progress turns without
+        // rebuilding the owned media projection.
+        let media_progress_publish_due = media_position_turn
+            && engine
+                .media_position_update()
+                .is_some_and(|(position, captured_at)| {
+                    media.rebase_position(position, captured_at)
+                });
         if shutdown.is_triggered() {
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
-        media.publish(snapshot);
-        if shutdown.is_triggered() {
-            engine.suppress_transport_recovery_for_shutdown();
-            break;
+
+        // Build the owned OS/scrobble projection only when a projected facet changed or the
+        // active scrobble clock needs its ~1 Hz heartbeat. Ordinary API/remote events and
+        // high-rate telemetry otherwise stay allocation-free here.
+        let media_changed = media_before.is_some_and(|before| before != engine.media_fingerprint());
+        let scrobble_due = observer_plan.drive_scrobble_heartbeat
+            && engine.media_scrobble_heartbeat_active()
+            && scrobble.heartbeat_due();
+        let media_enable_publish_due = media_enabled_changed && media_enabled;
+        if media_changed || scrobble_due || media_progress_publish_due || media_enable_publish_due {
+            let snapshot = engine.media_snapshot();
+            if shutdown.is_triggered() {
+                engine.suppress_transport_recovery_for_shutdown();
+                break;
+            }
+            if media_changed || scrobble_due || media_progress_publish_due {
+                let _ = scrobble.observe(&snapshot);
+            }
+            if shutdown.is_triggered() {
+                engine.suppress_transport_recovery_for_shutdown();
+                break;
+            }
+            if media_changed || media_progress_publish_due || media_enable_publish_due {
+                media.publish(snapshot);
+            }
+            if shutdown.is_triggered() {
+                engine.suppress_transport_recovery_for_shutdown();
+                break;
+            }
         }
-        // v8 push: fingerprint-diffed; time-tick events change nothing it watches.
+        // Preserve origin's baseline-refresh/event ordering on every dispatched daemon event.
+        // The view is borrowed and unchanged topics do not allocate or serialize models.
         publisher.observe(&engine.core_view());
     }
     shutdown.trigger();
@@ -1289,82 +1325,6 @@ async fn wait_until_ready() -> Result<(), String> {
             return Err(format!("daemon did not become ready: {last_error}"));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParseOutcome {
-    Usage,
-    Invalid(String),
-}
-
-fn parse(args: &[String]) -> Result<DaemonCommand, ParseOutcome> {
-    let Some((verb, rest)) = args.split_first() else {
-        return Err(ParseOutcome::Usage);
-    };
-    if matches!(verb.as_str(), "-h" | "--help") {
-        return Err(ParseOutcome::Usage);
-    }
-
-    match verb.as_str() {
-        "start" => {
-            let mut resume = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "--resume" => resume = true,
-                    "-h" | "--help" => return Err(ParseOutcome::Usage),
-                    other => {
-                        return Err(ParseOutcome::Invalid(format!(
-                            "start: unknown flag `{other}`"
-                        )));
-                    }
-                }
-            }
-            Ok(DaemonCommand::Start { resume })
-        }
-        "serve" => {
-            let mut from_tray = false;
-            let mut resume = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "--from-tray" => from_tray = true,
-                    "--resume" => resume = true,
-                    "-h" | "--help" => return Err(ParseOutcome::Usage),
-                    other => {
-                        return Err(ParseOutcome::Invalid(format!(
-                            "serve: unknown flag `{other}`"
-                        )));
-                    }
-                }
-            }
-            Ok(DaemonCommand::Serve { from_tray, resume })
-        }
-        "status" => {
-            let mut json = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "--json" => json = true,
-                    "-h" | "--help" => return Err(ParseOutcome::Usage),
-                    other => {
-                        return Err(ParseOutcome::Invalid(format!(
-                            "status: unknown flag `{other}`"
-                        )));
-                    }
-                }
-            }
-            Ok(DaemonCommand::Status { json })
-        }
-        "stop" => {
-            if !rest.is_empty() {
-                return Err(ParseOutcome::Invalid(
-                    "stop: unexpected arguments".to_string(),
-                ));
-            }
-            Ok(DaemonCommand::Stop)
-        }
-        other => Err(ParseOutcome::Invalid(format!(
-            "unknown command `{other}` (try `ytt daemon --help`)"
-        ))),
     }
 }
 

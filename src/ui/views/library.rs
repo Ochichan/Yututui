@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
+use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -45,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     let playlists_root = app.playlists_root();
-    let library_rows = app.library_rows();
+    let library_rows_len = app.library_rows_len();
 
     render_tabs(frame, app, rows[0]);
     // The filter prompt rides the spacer row when active, so opening it never reflows the
@@ -54,7 +55,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         let matches = if playlists_root {
             app.filtered_playlists().len()
         } else {
-            library_rows.len()
+            library_rows_len
         };
         render_filter(frame, app, rows[1], matches);
     } else if !app.status.text.is_empty() && !app.control_box_active() {
@@ -88,7 +89,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if playlists_root {
         render_playlist_list(frame, app, rows[2]);
     } else {
-        render_list(frame, app, rows[2], &library_rows);
+        let favorite_lookup = app.library.favorite_lookup();
+        render_list(frame, app, rows[2], library_rows_len, &favorite_lookup);
     }
     crate::ui::control_box::render_docked(frame, app, rows[3]);
 
@@ -191,11 +193,17 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::Song]) {
+fn render_list(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    len: usize,
+    favorite_lookup: &FavoriteLookup<'_>,
+) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
 
-    if rows.is_empty() {
+    if len == 0 {
         // A filtered-to-nothing list gets a filter-specific message, not the per-tab "empty" hint.
         let msg: String = if !app.library_ui.filter_query.is_empty() {
             if crate::i18n::is_korean() {
@@ -274,7 +282,6 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
     // inclusive anchor..=cursor range and each deletable row can carry a trailing ✗ button.
     // The All tab is an aggregate view (a track may live in several tabs at once), so it has
     // no per-row delete — manage tracks from their own Favorites/History/Downloads tab.
-    let len = rows.len();
     let cursor = app.library_ui.selected.min(len - 1);
     let sel_lo = cursor.min(app.library_ui.anchor);
     let sel_hi = cursor.max(app.library_ui.anchor);
@@ -300,17 +307,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
             .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
 
     let body_w = area.width.saturating_sub(del_w) as usize;
-    for (vis, (i, song)) in rows
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(visible)
-        .enumerate()
-    {
+    let render_rows = app.library_render_window(start, visible);
+    for (vis, song) in render_rows.into_iter().enumerate() {
+        let i = start + vis;
+        let Some(song) = song else {
+            continue;
+        };
         let y = area.y + vis as u16;
         let selected = row_selected(i);
         let marker = if i == cursor { "▶ " } else { "  " };
-        let heart = if app.library.is_favorite(&song.video_id) {
+        let heart = if favorite_lookup.is_favorite(&song.video_id) {
             "♥ "
         } else {
             "  "

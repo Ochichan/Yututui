@@ -524,9 +524,9 @@ impl App {
                 .playback
                 .stream_now_playing
                 .as_ref()
-                .map(|now| now.label()),
+                .map(|now| std::borrow::Cow::Owned(now.label())),
             owner_mode: InstanceMode::StandaloneTui,
-            eq_preset: self.audio.preset.label().to_string(),
+            eq_preset: self.audio.preset.label(),
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
             config: &self.config,
@@ -535,9 +535,9 @@ impl App {
                 self.media_art
                     .as_ref()
                     .filter(|art| art.key == song.video_id)
-                    .map(|art| ArtworkRef {
-                        key: art.key.clone(),
-                        path: Some(art.path.to_string_lossy().into_owned()),
+                    .map(|art| crate::remote::publish::CoreArtwork {
+                        key: &art.key,
+                        path: Some(art.path.as_path()),
                         mime: None,
                     })
             }),

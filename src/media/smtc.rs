@@ -5,9 +5,10 @@
 //! (`ISystemMediaTransportControlsInterop::GetForWindow`) requires one owned by the
 //! calling thread — so a dedicated "smtc-worker" thread creates an invisible
 //! top-level window (a real one, not message-only, which has known compatibility
-//! problems) and runs the message pump SMTC needs. Snapshot diffs arrive over a
-//! channel (the pump is woken with a posted thread message); WinRT event handlers
-//! only forward a [`MediaCommand`] through the sink and return (spec C-1).
+//! problems) and runs the message pump SMTC needs. Complete snapshot diffs retain
+//! publication order while pure progress coalesces to one scalar clock (the pump
+//! is woken with a posted thread message); WinRT event handlers only forward a
+//! [`MediaCommand`] through the sink and return (spec C-1).
 //!
 //! SMTC does not interpolate playback position: the worker re-pushes timeline
 //! properties every ~5s while playing (spec W-3) from the snapshot's position
@@ -15,7 +16,7 @@
 //! cleared timeline so no scrubber shows (W-4).
 
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -44,12 +45,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
+use super::delivery::{
+    DeliveryItem, LatestMediaReceiver, LatestMediaSender, SubmitOutcome,
+    latest_media_channel_bounded,
+};
 use super::{
-    CommandSink, LatestMediaUpdate, MediaChanges, MediaCommand, MediaPlaybackStatus as Status,
-    MediaSnapshot,
+    CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus as Status, MediaSnapshot,
     smtc_lifecycle::{
-        StartupOwner, WorkerStartError, WorkerStartup, WorkerWake, spawn_reaper,
-        start_process_worker, startup_pair,
+        StartupOwner, WorkerStartError, WorkerStartup, spawn_reaper, start_process_worker,
+        startup_pair,
     },
 };
 use crate::queue::Repeat;
@@ -67,8 +71,7 @@ const TIMELINE_REFRESH_MS: u32 = 5_000;
 const INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct Backend {
-    wake_posted: Arc<WorkerWake>,
-    pending: Arc<LatestMediaUpdate>,
+    updates: LatestMediaSender,
     worker_thread_id: u32,
     owner: StartupOwner,
     join: Option<std::thread::JoinHandle<()>>,
@@ -138,10 +141,7 @@ impl Drop for InitializingWorker {
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        let wake_posted = Arc::new(WorkerWake::default());
-        let worker_wake_posted = Arc::clone(&wake_posted);
-        let pending = Arc::new(LatestMediaUpdate::default());
-        let worker_pending = Arc::clone(&pending);
+        let (updates, rx) = latest_media_channel_bounded();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<u32, String>>(1);
         let (startup_owner, worker_startup) = startup_pair();
         let join = match start_process_worker(move |worker_lease| {
@@ -149,13 +149,7 @@ impl Backend {
                 .name("smtc-worker".to_owned())
                 .spawn(move || {
                     let _worker_lease = worker_lease;
-                    worker(
-                        worker_wake_posted,
-                        worker_pending,
-                        sink,
-                        ready_tx,
-                        worker_startup,
-                    );
+                    worker(rx, sink, ready_tx, worker_startup);
                 })
         }) {
             Ok(join) => join,
@@ -171,8 +165,7 @@ impl Backend {
             Ok(Ok(worker_thread_id)) => {
                 let (owner, join) = initializing.into_parts();
                 let mut backend = Self {
-                    wake_posted,
-                    pending,
+                    updates,
                     worker_thread_id,
                     owner,
                     join: Some(join),
@@ -199,37 +192,34 @@ impl Backend {
     }
 
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) -> DeliveryResult {
-        let replaced_existing = self.pending.store(snapshot.clone(), changes);
-        let should_post = self.wake_posted.claim();
-        let receipt = match (should_post, replaced_existing) {
-            (true, false) => DeliveryReceipt::Enqueued,
-            (true, true) | (false, _) => DeliveryReceipt::Coalesced {
-                replaced_existing,
+        match self.updates.submit(snapshot, changes) {
+            SubmitOutcome::Wake => {
+                // SAFETY: `worker_thread_id` was captured from the live SMTC worker after its message
+                // queue was created. If the post fails, re-arm the delivery slot: otherwise every
+                // later update would coalesce behind a wake that never reached the worker.
+                if let Err(error) = unsafe {
+                    PostThreadMessageW(self.worker_thread_id, WM_APP_UPDATE, WPARAM(0), LPARAM(0))
+                } {
+                    self.updates.wake_failed();
+                    tracing::debug!(%error, "SMTC worker wake failed");
+                    return Err(DeliveryError::Busy);
+                }
+                Ok(DeliveryReceipt::Enqueued)
+            }
+            SubmitOutcome::Coalesced => Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
                 evicted_oldest: false,
-            },
-        };
-
-        if !should_post {
-            return Ok(receipt);
+            }),
+            SubmitOutcome::Dropped => Err(DeliveryError::BestEffortDropped),
+            SubmitOutcome::Closed => Err(DeliveryError::Closed),
         }
-
-        // SAFETY: `worker_thread_id` was captured from the live SMTC worker after
-        // its message queue was created. The atomic token allows at most one queued
-        // update message while the latest snapshot continues to coalesce in place.
-        if let Err(error) = unsafe {
-            PostThreadMessageW(self.worker_thread_id, WM_APP_UPDATE, WPARAM(0), LPARAM(0))
-        } {
-            self.wake_posted.clear();
-            tracing::warn!(%error, "could not wake SMTC worker");
-            return Err(DeliveryError::Busy);
-        }
-        Ok(receipt)
     }
 }
 
 impl Drop for Backend {
     fn drop(&mut self) {
         self.owner.cancel();
+        self.updates.close();
         // SAFETY: best-effort shutdown post to the worker thread id captured at
         // startup after its message queue was created. A failure normally means
         // the worker or its queue has already exited; the join below still reaps it.
@@ -263,8 +253,7 @@ struct Session {
 }
 
 fn worker(
-    wake_posted: Arc<WorkerWake>,
-    pending: Arc<LatestMediaUpdate>,
+    rx: LatestMediaReceiver,
     sink: CommandSink,
     ready_tx: mpsc::SyncSender<std::result::Result<u32, String>>,
     startup: WorkerStartup,
@@ -298,11 +287,8 @@ fn worker(
             if msg.hwnd == HWND::default() {
                 match msg.message {
                     WM_APP_UPDATE => {
-                        // Clear before taking the slot: an update racing after this store either
-                        // lands in the take below or acquires the token and posts one successor.
-                        wake_posted.clear();
-                        if let Some((snapshot, changes)) = pending.take() {
-                            session.apply(snapshot, changes);
+                        while let Some(item) = rx.try_take() {
+                            session.apply(item);
                         }
                         continue;
                     }
@@ -496,14 +482,33 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
 }
 
 impl Session {
-    fn apply(&mut self, snapshot: MediaSnapshot, changes: MediaChanges) {
-        self.snapshot = snapshot;
-        if let Err(e) = self.apply_inner(changes) {
-            tracing::debug!(error = %e, "SMTC update failed");
+    fn apply(&mut self, item: DeliveryItem) {
+        match item {
+            DeliveryItem::Ordered(event) => {
+                self.snapshot = event.snapshot;
+                if let Err(e) = self.apply_event(event.changes) {
+                    tracing::debug!(error = %e, "SMTC update failed");
+                }
+            }
+            DeliveryItem::Progress(progress) => {
+                progress.apply_to(&mut self.snapshot);
+                self.manage_timer();
+            }
         }
     }
 
-    fn apply_inner(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
+    /// Apply one logical event completely before the next snapshot is installed.
+    /// The facet/timeline/timer order mirrors `origin/main`'s `apply_inner`.
+    fn apply_event(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
+        self.apply_facets(changes)?;
+        if changes.track || changes.position || changes.status || changes.options {
+            self.push_timeline()?;
+        }
+        self.manage_timer();
+        Ok(())
+    }
+
+    fn apply_facets(&mut self, changes: MediaChanges) -> windows::core::Result<()> {
         if changes.track || changes.artwork {
             self.update_display()?;
         }
@@ -534,10 +539,6 @@ impl Session {
             // using this rate, and RateChangeRequested never fires until it's seeded.
             self.smtc.SetPlaybackRate(self.snapshot.rate)?;
         }
-        if changes.track || changes.position || changes.status || changes.options {
-            self.push_timeline()?;
-        }
-        self.manage_timer();
         Ok(())
     }
 
@@ -587,17 +588,21 @@ impl Session {
     /// Push the current timeline (start/end/seek range/position). Live streams get
     /// a default (cleared) timeline so no scrubber is shown (spec W-4).
     fn push_timeline(&self) -> windows::core::Result<()> {
-        let props = SystemMediaTransportControlsTimelineProperties::new()?;
         let track = self.snapshot.track.as_ref();
         let duration = track
             .and_then(|t| t.duration)
             .filter(|_| !track.is_some_and(|t| t.is_live));
+        self.update_timeline(duration, self.snapshot.position_now())
+    }
+
+    fn update_timeline(&self, duration: Option<f64>, position: f64) -> windows::core::Result<()> {
+        let props = SystemMediaTransportControlsTimelineProperties::new()?;
         if let Some(duration) = duration {
             props.SetStartTime(timespan(0.0))?;
             props.SetMinSeekTime(timespan(0.0))?;
             props.SetEndTime(timespan(duration))?;
             props.SetMaxSeekTime(timespan(duration))?;
-            props.SetPosition(timespan(self.snapshot.position_now()))?;
+            props.SetPosition(timespan(position))?;
         }
         self.smtc.UpdateTimelineProperties(&props)
     }

@@ -1,13 +1,14 @@
 //! Linux MPRIS adapter (`org.mpris.MediaPlayer2.ytmtui` on the session bus), per
 //! the media-controls spec §3, built on `mpris-server` (zbus).
 //!
-//! The D-Bus server runs on its own tokio task: the facade forwards diffed
-//! snapshots over a channel; the task keeps the latest snapshot in shared state
+//! The D-Bus server runs on its own small-stack worker thread and current-thread
+//! runtime: the facade forwards diffed snapshots over a channel; the worker keeps
+//! the latest snapshot in shared state
 //! (so property *reads* — including the un-signalled, interpolated `Position` —
-//! answer instantly), batches changed properties into a single
-//! `PropertiesChanged` per logical event (L-6/S-4), and emits `Seeked` exactly on
-//! position discontinuities (L-7). Inbound calls only forward a [`MediaCommand`]
-//! and return (C-1).
+//! answer instantly), applies retained logical events in publication order, and
+//! emits `Seeked` for retained position discontinuities (L-7). At the shared
+//! bounded-delivery limit, the newest complete state is coalesced into the FIFO
+//! tail. Inbound calls only forward a [`MediaCommand`] and return (C-1).
 //!
 //! No session bus (SSH/headless/container) is non-fatal: the facade logs one
 //! warning and the app runs without media controls (spec A-2).
@@ -20,11 +21,13 @@ use mpris_server::{
     Volume,
     zbus::{self, fdo},
 };
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
-use super::{
-    CommandSink, LatestMediaUpdate, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot,
+use super::delivery::{
+    DeliveryItem, LatestMediaReceiver, LatestMediaSender, SubmitOutcome,
+    latest_media_channel_bounded,
 };
+use super::{CommandSink, MediaChanges, MediaCommand, MediaPlaybackStatus, MediaSnapshot};
 use crate::config::{SPEED_MAX, SPEED_MIN};
 use crate::queue::Repeat;
 use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
@@ -38,48 +41,68 @@ pub const EAGER: bool = true;
 const BUS_SUFFIX: &str = "ytmtui";
 
 pub struct Backend {
-    wake_tx: mpsc::Sender<()>,
-    pending: Arc<LatestMediaUpdate>,
+    updates: LatestMediaSender,
+    wake: Arc<Notify>,
+    _worker: std::thread::JoinHandle<()>,
 }
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        // One wake plus one latest snapshot bounds memory while retaining every diff
-        // facet through `MediaChanges::merge` during a slow D-Bus call.
-        let (wake_tx, wake_rx) = mpsc::channel(1);
-        let pending = Arc::new(LatestMediaUpdate::default());
-        tokio::spawn(run_server(wake_rx, Arc::clone(&pending), sink));
-        Ok(Self { wake_tx, pending })
+        let (updates, rx) = latest_media_channel_bounded();
+        let wake = Arc::new(Notify::new());
+        let worker_wake = Arc::clone(&wake);
+        // Keep zbus on a dedicated small-stack worker. Submission never waits:
+        // the shared delivery queue bounds total pending work and coalesces a
+        // saturated ordered tail to retain the newest complete external state.
+        let worker = std::thread::Builder::new()
+            .name("mpris-worker".to_owned())
+            .stack_size(1024 * 1024)
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "media controls: MPRIS runtime failed");
+                        return;
+                    }
+                };
+                runtime.block_on(run_server(rx, worker_wake, sink));
+            })?;
+        Ok(Self {
+            updates,
+            wake,
+            _worker: worker,
+        })
     }
 
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) -> DeliveryResult {
-        if self.wake_tx.is_closed() {
-            return Err(DeliveryError::Closed);
-        }
-        let replaced_existing = self.pending.store(snapshot.clone(), changes);
-        match self.wake_tx.try_send(()) {
-            Ok(()) if replaced_existing => Ok(DeliveryReceipt::Coalesced {
-                replaced_existing: true,
-                evicted_oldest: false,
-            }),
-            Ok(()) => Ok(DeliveryReceipt::Enqueued),
-            Err(mpsc::error::TrySendError::Full(())) => Ok(DeliveryReceipt::Coalesced {
-                replaced_existing: true,
-                evicted_oldest: false,
-            }),
-            Err(mpsc::error::TrySendError::Closed(())) => {
-                self.pending.clear();
-                Err(DeliveryError::Closed)
+        match self.updates.submit(snapshot, changes) {
+            SubmitOutcome::Wake => {
+                self.wake.notify_one();
+                Ok(DeliveryReceipt::Enqueued)
             }
+            SubmitOutcome::Coalesced => Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            }),
+            SubmitOutcome::Dropped => Err(DeliveryError::BestEffortDropped),
+            SubmitOutcome::Closed => Err(DeliveryError::Closed),
         }
     }
 }
 
-async fn run_server(
-    mut wake_rx: mpsc::Receiver<()>,
-    pending: Arc<LatestMediaUpdate>,
-    sink: CommandSink,
-) {
+impl Drop for Backend {
+    fn drop(&mut self) {
+        // Wake the task after closing so it releases the bus name even when no
+        // media update is pending (no ghost player in desktop widgets).
+        self.updates.close();
+        self.wake.notify_one();
+    }
+}
+
+async fn run_server(rx: LatestMediaReceiver, wake: Arc<Notify>, sink: CommandSink) {
     let state = Arc::new(Mutex::new(MediaSnapshot::idle()));
     // Bus-name collision (a second instance) retries with a PID-qualified suffix,
     // as the MPRIS spec prescribes (spec L-2).
@@ -118,52 +141,89 @@ async fn run_server(
     };
     tracing::info!(bus_name = %server.bus_name(), "media controls: MPRIS session ready");
 
-    while wake_rx.recv().await.is_some() {
-        let Some((snapshot, changes)) = pending.take() else {
-            continue;
-        };
-        *state.lock().unwrap() = snapshot.clone();
-        let mut properties = Vec::new();
-        if changes.track || changes.artwork {
-            properties.push(Property::Metadata(build_metadata(&snapshot)));
+    loop {
+        while let Some(item) = rx.try_take() {
+            apply_item(&server, &state, item).await;
         }
-        if changes.status {
-            properties.push(Property::PlaybackStatus(playback_status(&snapshot)));
+        if rx.is_closed() {
+            break;
         }
-        if changes.options {
-            properties.push(Property::Rate(snapshot.rate));
-            properties.push(Property::Volume(snapshot.volume));
-            properties.push(Property::Shuffle(snapshot.shuffle));
-            properties.push(Property::LoopStatus(loop_status(snapshot.repeat)));
-        }
-        if changes.caps {
-            properties.push(Property::CanGoNext(snapshot.caps.can_next));
-            properties.push(Property::CanGoPrevious(snapshot.caps.can_previous));
-            properties.push(Property::CanPlay(snapshot.caps.can_play));
-            properties.push(Property::CanPause(snapshot.caps.can_pause));
-            properties.push(Property::CanSeek(snapshot.caps.can_seek));
-        }
-        // One PropertiesChanged per logical event (L-6/S-4).
-        if !properties.is_empty()
-            && let Err(e) = server.properties_changed(properties).await
-        {
-            tracing::debug!(error = %e, "MPRIS properties_changed failed");
-        }
-        // Seeked fires on every discontinuity — user seek, SetPosition, and track
-        // (re)starts as Seeked(0) (L-7); never on plain progress (L-8).
-        if changes.position
-            && let Err(e) = server
-                .emit(Signal::Seeked {
-                    position: Time::from_micros((snapshot.position_now() * 1e6) as i64),
-                })
-                .await
-        {
-            tracing::debug!(error = %e, "MPRIS Seeked emit failed");
-        }
+        wake.notified().await;
     }
     // Facade dropped the sender (disable/quit): release the bus name explicitly so
     // desktop widgets drop the entry immediately (L-3).
     let _ = server.release_bus_name().await;
+}
+
+async fn apply_item(
+    server: &Server<Player>,
+    state: &Arc<Mutex<MediaSnapshot>>,
+    item: DeliveryItem,
+) {
+    match item {
+        DeliveryItem::Ordered(event) => {
+            apply_snapshot_event(server, state, event.snapshot, event.changes).await;
+        }
+        DeliveryItem::Progress(progress) => {
+            progress.apply_to(&mut state.lock().unwrap());
+        }
+    }
+}
+
+async fn apply_snapshot_event(
+    server: &Server<Player>,
+    state: &Arc<Mutex<MediaSnapshot>>,
+    snapshot: MediaSnapshot,
+    changes: MediaChanges,
+) {
+    let properties = changed_properties(&snapshot, changes);
+    let seeked = changes.position;
+
+    // Install event A before emitting any facet of A. The receiver does not
+    // expose B until this call returns, preserving logical order.
+    *state.lock().unwrap() = snapshot;
+    if !properties.is_empty()
+        && let Err(e) = server.properties_changed(properties).await
+    {
+        tracing::debug!(error = %e, "MPRIS properties_changed failed");
+    }
+    if seeked {
+        // Match origin timing: interpolate after PropertiesChanged completes
+        // while state still contains this exact event.
+        let position = state.lock().unwrap().position_now();
+        if let Err(e) = server
+            .emit(Signal::Seeked {
+                position: Time::from_micros((position * 1e6) as i64),
+            })
+            .await
+        {
+            tracing::debug!(error = %e, "MPRIS Seeked emit failed");
+        }
+    }
+}
+
+fn changed_properties(snapshot: &MediaSnapshot, changes: MediaChanges) -> Vec<Property> {
+    let mut properties = Vec::new();
+    if changes.track || changes.artwork {
+        properties.push(Property::Metadata(build_metadata(snapshot)));
+    }
+    if changes.status {
+        properties.push(Property::PlaybackStatus(playback_status(snapshot)));
+    }
+    if changes.options {
+        properties.push(Property::Rate(snapshot.rate));
+        properties.push(Property::Volume(snapshot.volume));
+        properties.push(Property::Shuffle(snapshot.shuffle));
+        properties.push(Property::LoopStatus(loop_status(snapshot.repeat)));
+    }
+    if changes.caps {
+        properties.push(Property::CanGoNext(snapshot.caps.can_next));
+        properties.push(Property::CanGoPrevious(snapshot.caps.can_previous));
+        properties.push(Property::CanPlay(snapshot.caps.can_play));
+        properties.push(Property::CanPause(snapshot.caps.can_pause));
+        properties.push(Property::CanSeek(snapshot.caps.can_seek));
+    }
+    properties
 }
 
 /// `Arc`-clone helper so each `Server::new` attempt gets its own `Player`.
@@ -470,6 +530,7 @@ impl mpris_server::PlayerInterface for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::{MediaCaps, MediaTrack};
 
     #[test]
     fn track_id_escapes_per_spec() {
@@ -511,5 +572,84 @@ mod tests {
             player.send_zbus(MediaCommand::Pause),
             Err(zbus::Error::Failure(message)) if message.contains("busy")
         ));
+    }
+
+    #[test]
+    fn coalesced_facets_map_to_all_external_mpris_properties() {
+        let mut snapshot = MediaSnapshot::idle();
+        snapshot.track = Some(MediaTrack {
+            key: "track-key".to_owned(),
+            title: "Title".to_owned(),
+            artist: "Artist".to_owned(),
+            album: Some("Album".to_owned()),
+            duration: Some(180.0),
+            is_live: false,
+            url: Some("https://music.youtube.com/watch?v=track-key".to_owned()),
+            art_remote_url: None,
+            art_file: None,
+            art_query: None,
+            liked: false,
+            disliked: false,
+        });
+        snapshot.status = MediaPlaybackStatus::Playing;
+        snapshot.rate = 1.25;
+        snapshot.volume = 0.75;
+        snapshot.shuffle = true;
+        snapshot.repeat = Repeat::All;
+        snapshot.caps = MediaCaps {
+            can_next: true,
+            can_previous: true,
+            can_seek: true,
+            can_play: true,
+            can_pause: true,
+        };
+
+        let properties = changed_properties(
+            &snapshot,
+            MediaChanges {
+                track: true,
+                status: true,
+                options: true,
+                caps: true,
+                ..MediaChanges::default()
+            },
+        );
+
+        assert_eq!(properties.len(), 11);
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::Metadata(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::PlaybackStatus(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::Rate(_))));
+        assert!(properties.iter().any(|p| matches!(p, Property::Volume(_))));
+        assert!(properties.iter().any(|p| matches!(p, Property::Shuffle(_))));
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::LoopStatus(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanGoNext(_)))
+        );
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanGoPrevious(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::CanPlay(_))));
+        assert!(
+            properties
+                .iter()
+                .any(|p| matches!(p, Property::CanPause(_)))
+        );
+        assert!(properties.iter().any(|p| matches!(p, Property::CanSeek(_))));
     }
 }

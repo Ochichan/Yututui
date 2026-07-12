@@ -253,6 +253,7 @@ impl App {
             let overflow = self.ai.messages.len() - AI_HISTORY_MAX;
             self.ai.messages.drain(0..overflow);
         }
+        self.ai.transcript_revision = self.ai.transcript_revision.wrapping_add(1);
         self.bridges.ai_transcript_scroll.scroll_to_end();
     }
 
