@@ -241,8 +241,8 @@
   "settings.hotkeys.resetToChord": "{chord}(으)로 초기화",
   "settings.hotkeys.unbound": "미지정",
   "settings.playback.audioBackend": "오디오 백엔드",
-  "settings.playback.bandTitle": "{freq} Hz · {gain} dB — 클릭하면 0으로",
-  "settings.playback.bankHint": "ISO 밴드당 ±12 dB — 밴드를 클릭하면 0이 됩니다",
+  "settings.playback.bandTitle": "{freq} Hz · {gain} dB — 드래그로 조절, 더블클릭 시 0",
+  "settings.playback.bankHint": "ISO 밴드당 ±12 dB — 드래그·휠·방향키로 조절, 더블클릭하면 0이 됩니다",
   "settings.playback.backend": "백엔드",
   "settings.playback.backendHint": "yututui는 mpv를 재생 엔진으로 제어합니다",
   "settings.playback.cacheBack": "역방향 캐시",
@@ -326,5 +326,6 @@
   "whygem.confidence": "신뢰도",
   "whygem.none": "설명이 없습니다.",
   "whygem.reading": "잼을 읽는 중…",
-  "whygem.title": "왜 이 곡을?"
+  "whygem.title": "왜 이 곡을?",
+  "settings.playback.bandAria": "EQ 밴드 {freq} Hz"
 }

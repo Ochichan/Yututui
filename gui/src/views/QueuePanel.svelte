@@ -26,7 +26,7 @@
   }
 </script>
 
-<aside class="dock" aria-label={t('queue.title')} data-kctx="Queue">
+<aside class="dock" aria-label={t('queue.title')} data-kctx="queue">
   <header>
     <h2>{t('queue.title')}</h2>
     <div class="head-actions">
@@ -91,7 +91,7 @@
   .dock {
     display: flex;
     flex-direction: column;
-    width: 300px;
+    width: 320px;
     background: var(--surface-1);
     border-left: 1px solid var(--role-border-muted);
     min-height: 0;
@@ -163,7 +163,7 @@
     background: transparent;
     color: inherit;
     font-size: 11px;
-    padding: 2px 4px;
+    padding: 4px 6px;
     border-radius: var(--radius-s);
   }
   .ra:hover {

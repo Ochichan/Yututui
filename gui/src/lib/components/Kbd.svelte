@@ -1,12 +1,15 @@
 <script lang="ts">
-  // A chord chip, colored by the help-key role like the TUI's help overlay.
+  // A chord chip, colored by the help-key role like the TUI's help overlay. Takes the
+  // canonical config chord and prettifies it for display (`ctrl+u` → `Ctrl+u`).
+  import { displayChord } from '../keyboard/chord';
+
   interface Props {
     chord: string;
   }
   const { chord }: Props = $props();
 </script>
 
-<kbd>{chord}</kbd>
+<kbd>{displayChord(chord)}</kbd>
 
 <style>
   kbd {

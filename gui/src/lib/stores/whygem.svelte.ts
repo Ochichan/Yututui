@@ -16,8 +16,8 @@ export interface WhyGem {
   slot: string;
   /** Reason codes / phrases the model attached to the pick. */
   reasons: string[];
-  /** Model confidence, `0..1`. */
-  confidence: number;
+  /** Model confidence, `0..1`; null for provenance-only picks (no model score). */
+  confidence: number | null;
 }
 
 // PROVISIONAL `ai` topic sibling event — only the demo core speaks it.

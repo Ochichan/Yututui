@@ -52,7 +52,7 @@
         placeholder={t('search.placeholder')}
         bind:value={query}
         aria-label={t('search.queryLabel')}
-        data-kctx="SearchInput"
+        data-kctx="search_input"
         data-ui-draft-key="search-query"
       />
       <button class="go" type="submit">{t('search.submit')}</button>
@@ -207,7 +207,7 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
-    margin: 0 0 var(--space-1);
+    margin: 0 0 var(--space-2);
     padding: 0 var(--space-2);
     font-size: 11px;
     font-weight: 600;

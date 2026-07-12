@@ -718,6 +718,8 @@ pub enum ScrollSurface {
     Queue,
     /// The radio "now playing" (지듣노) card's title line — marquee-only, no scrollbar.
     NowPlaying,
+    /// The player/mini/docked title row — marquee-only, no scrollbar.
+    PlayerTitle,
 }
 
 /// Who authored a line in the DJ Gem chat transcript.

@@ -640,6 +640,46 @@ impl Queue {
         }
     }
 
+    /// Move the track at order position `from` to order position `to` (queue
+    /// drag-reorder), keeping the same track current. Pure order change: membership,
+    /// the current track, and playback position are untouched — `position_epoch` never
+    /// bumps here. Returns `None` when either position is out of range; a no-op move
+    /// (`from == to`) succeeds without a revision bump. Shared by both owners
+    /// (App + daemon) so the parity harness compares one implementation.
+    pub fn move_item(&mut self, from: usize, to: usize) -> Option<()> {
+        if from >= self.order.len() || to >= self.order.len() {
+            return None;
+        }
+        if from == to {
+            return Some(());
+        }
+        let song_idx = self.order.remove(from);
+        self.order.insert(to, song_idx);
+        if self.cursor == from {
+            self.cursor = to;
+        } else if from < self.cursor && to >= self.cursor {
+            self.cursor -= 1;
+        } else if from > self.cursor && to <= self.cursor {
+            self.cursor += 1;
+        }
+        self.bump_rev();
+        Some(())
+    }
+
+    /// Drop every track after the current one (order positions `cursor+1..`), keeping
+    /// the current track playing. Returns how many tracks were removed; zero removals
+    /// do not bump the revision.
+    pub fn clear_upcoming(&mut self) -> usize {
+        let len = self.order.len();
+        if len <= self.cursor + 1 {
+            return 0;
+        }
+        let removed = len - self.cursor - 1;
+        self.remove_range_without_revision(self.cursor + 1, len - 1);
+        self.bump_rev();
+        removed
+    }
+
     /// Toggle shuffle, keeping the current track current.
     pub fn toggle_shuffle(&mut self) {
         self.set_shuffle(!self.shuffle);
@@ -1166,6 +1206,64 @@ mod tests {
         assert_eq!(q.remove_at(0), Some(false)); // removed "0", not the current track
         assert_eq!(id(&q), "2");
         assert_eq!(q.position(), (2, 4)); // now 2nd of 4
+    }
+
+    #[test]
+    fn move_item_reorders_and_keeps_the_same_track_current() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2); // current = "2"
+        let rev = q.rev();
+
+        // Move a track from after the cursor to before it: cursor shifts right.
+        assert_eq!(q.move_item(4, 0), Some(()));
+        assert_eq!(id(&q), "2");
+        assert_eq!(q.position(), (4, 5)); // order: 4,0,1,2,3 — "2" now 4th
+        assert_ne!(q.rev(), rev, "order change bumps the revision");
+
+        // Move the current track itself.
+        let rev = q.rev();
+        assert_eq!(q.move_item(3, 0), Some(()));
+        assert_eq!(id(&q), "2");
+        assert_eq!(q.position(), (1, 5));
+        assert_ne!(q.rev(), rev);
+
+        // Move from before the cursor to after it: cursor shifts left.
+        let rev = q.rev();
+        assert_eq!(q.move_item(1, 4), Some(()));
+        assert_eq!(id(&q), "2");
+        assert_eq!(
+            q.position(),
+            (1, 5),
+            "removing an earlier row and reinserting after keeps '2' current"
+        );
+        assert_ne!(q.rev(), rev);
+
+        // No-op and out-of-range moves.
+        let rev = q.rev();
+        assert_eq!(q.move_item(2, 2), Some(()));
+        assert_eq!(q.rev(), rev, "no-op move must not bump the revision");
+        assert_eq!(q.move_item(9, 0), None);
+        assert_eq!(q.move_item(0, 9), None);
+        assert_eq!(q.rev(), rev);
+    }
+
+    #[test]
+    fn clear_upcoming_drops_everything_after_the_current_track() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2); // current = "2"
+        let rev = q.rev();
+        assert_eq!(q.clear_upcoming(), 2); // "3", "4"
+        assert_eq!(id(&q), "2");
+        assert_eq!(q.position(), (3, 3));
+        assert_ne!(q.rev(), rev);
+
+        // Nothing upcoming: no removals, no revision bump.
+        let rev = q.rev();
+        assert_eq!(q.clear_upcoming(), 0);
+        assert_eq!(q.rev(), rev);
+
+        let mut empty = Queue::default();
+        assert_eq!(empty.clear_upcoming(), 0);
     }
 
     #[test]

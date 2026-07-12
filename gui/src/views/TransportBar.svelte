@@ -142,7 +142,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    height: 76px;
+    height: var(--transport-h);
     padding: 0 var(--space-4);
     background: var(--surface-1);
     border-top: 1px solid var(--role-border-muted);
@@ -151,8 +151,11 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+    /* Shrinkable: at narrow windows the track meta gives way first so the volume and
+       queue controls never clip off the right edge. */
+    flex: 0 1 220px;
     width: 220px;
-    flex: none;
+    min-width: 140px;
     border: none;
     background: transparent;
     padding: 0;
@@ -225,11 +228,13 @@
   .chips {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
-    flex: none;
+    gap: var(--space-2);
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
   .chip {
-    padding: 2px 8px;
+    padding: 3px 10px;
     border: 1px solid transparent;
     border-radius: var(--radius-pill);
     background: transparent;

@@ -19,7 +19,7 @@
       "stateLabel", "artImg", "title", "artist", "ownerLabel", "queueLabel", "onAir", "error",
       "previous", "playPause", "next", "shuffle", "repeat", "repeatText", "streaming",
       "seekBack", "seekForward", "progressBar", "progressFill", "progressKnob",
-      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct",
+      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct", "tamaVolume",
       "modeMusic", "modeRadio", "radioHint",
       "queueSummary", "queueList", "queueRefresh", "refreshTop", "hide",
       "streamingToggle", "modeFocused", "modeBalanced", "modeDiscovery", "streamingSource",
@@ -115,6 +115,8 @@
       });
       els.progressBar.setAttribute("aria-label", copy.position);
       els.volumeBar.setAttribute("aria-label", copy.volume);
+      els.tamaVolume.setAttribute("aria-label", copy.volume);
+      els.tamaVolume.title = copy.volume;
       els.shuffle.setAttribute("aria-label", copy.shuffle);
       [els.streaming, els.streamingToggle].forEach(button => button.setAttribute("aria-label", copy.autoplay));
       els.sharedSheetBack.title = copy.back;
@@ -627,16 +629,24 @@
     }
 
     // Every theme renders the same semantic volume slider from shared `vol` state.
+    // The Tamagotchi egg's dot row is a second face of the same slider: dot k lights
+    // at >= 20k+10 % (so 0% sleeps, 50% wakes three, 100% all five) and lit dots grow
+    // with the level via the --vol custom property.
     const volBars = [
       { bar: els.volumeBar, fill: els.volumeFill, knob: els.volumeKnob, pct: els.volumePct },
+      { bar: els.tamaVolume, dots: Array.from(els.tamaVolume.querySelectorAll(".td")) },
     ];
 
     function renderVolume() {
       const value = currentVolume();
       const pct = Math.min(100, Math.max(0, value));
       for (const entry of volBars) {
-        entry.fill.style.width = pct + "%";
-        entry.knob.style.left = pct + "%";
+        if (entry.fill) entry.fill.style.width = pct + "%";
+        if (entry.knob) entry.knob.style.left = pct + "%";
+        if (entry.dots) {
+          entry.bar.style.setProperty("--vol", (pct / 100).toFixed(2));
+          entry.dots.forEach((dot, i) => dot.classList.toggle("on", pct >= i * 20 + 10));
+        }
         if (entry.pct) entry.pct.textContent = currentPayload.connected ? pct + "%" : "--";
         entry.bar.classList.toggle("disabled", !vol.canVolume);
         entry.bar.setAttribute("aria-disabled", String(!vol.canVolume));

@@ -17,7 +17,7 @@ fn radio_station(id: &str) -> Song {
     song
 }
 
-pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
+pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     let mut queue = Queue::default();
     queue.set(ids.iter().map(|id| song(id)).collect(), 0);
     DaemonEngine {
@@ -36,6 +36,9 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         },
         config: Config::default(),
         library: Library::default(),
+        playlists: crate::playlists::Playlists::default(),
+        playlists_rev: 0,
+        library_invalidations: 0,
         signals: Signals::default(),
         station: StationStore::default(),
         loaded_video_id: None,
@@ -63,6 +66,11 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         session_events: VecDeque::new(),
         media_art: None,
         gui_search_index: GuiSearchIndex::default(),
+        why_gem: Vec::new(),
+        why_gem_rev: 0,
+        accounts_rev: 0,
+        spotify_user: None,
+        video_overlay: None,
     }
 }
 

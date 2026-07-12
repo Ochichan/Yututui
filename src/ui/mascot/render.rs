@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
@@ -31,21 +32,72 @@ pub fn render(
         height: asset.height,
     };
     let frame_data = &asset.frames[current_frame_index(app, asset)];
-    let style = match frame_data.style {
+    let base = resolve_style(app, frame_data.style);
+    let lines = frame_data
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(y, line)| {
+            if asset.regions.is_empty() {
+                Line::from(*line).style(base).alignment(Alignment::Center)
+            } else {
+                Line::from(region_spans(app, asset, y as u16, line, base))
+                    .alignment(Alignment::Center)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Paragraph::new(lines), rect);
+    Some(rect)
+}
+
+fn resolve_style(app: &App, style: MascotStyle) -> Style {
+    match style {
         MascotStyle::Theme(role) => app.theme.style(role),
         MascotStyle::Accent => app.theme.style(R::Accent),
         MascotStyle::Muted => app.theme.style(R::TextMuted),
         MascotStyle::Thinking => app.theme.style(R::AiThinking),
         MascotStyle::Error => app.theme.style(R::AiError),
-    };
-    let lines = frame_data
-        .lines
-        .iter()
-        .map(|line| Line::from(*line).style(style).alignment(Alignment::Center))
-        .collect::<Vec<_>>();
+    }
+}
 
-    frame.render_widget(Paragraph::new(lines), rect);
-    Some(rect)
+/// Split one art line into spans at region boundaries so each part of the mascot renders
+/// in its own color. Column == char index is guaranteed by the single-width-glyph asset
+/// test, so plain char iteration is safe here.
+fn region_spans(
+    app: &App,
+    asset: &'static MascotAsset,
+    y: u16,
+    line: &'static str,
+    base: Style,
+) -> Vec<Span<'static>> {
+    let style_at = |x: u16| -> Style {
+        asset
+            .regions
+            .iter()
+            .find(|region| region.contains(x, y))
+            .map_or(base, |region| {
+                let style = resolve_style(app, region.style);
+                if region.bold {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                }
+            })
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run_start = 0usize;
+    let mut run_style = style_at(0);
+    for (x, (idx, _)) in line.char_indices().enumerate().skip(1) {
+        let style = style_at(x as u16);
+        if style != run_style {
+            spans.push(Span::styled(&line[run_start..idx], run_style));
+            run_start = idx;
+            run_style = style;
+        }
+    }
+    spans.push(Span::styled(&line[run_start..], run_style));
+    spans
 }
 
 pub fn current_frame_index(app: &App, asset: &MascotAsset) -> usize {
@@ -120,6 +172,7 @@ mod tests {
         looped: true,
         frames: &TEST_FRAMES,
         fallback: None,
+        regions: &[],
     };
 
     static ONCE: MascotAsset = MascotAsset {
@@ -130,6 +183,7 @@ mod tests {
         looped: false,
         frames: &TEST_FRAMES,
         fallback: None,
+        regions: &[],
     };
 
     #[test]
@@ -154,6 +208,35 @@ mod tests {
     #[test]
     fn frame_index_respects_looped_false() {
         assert_eq!(frame_index_for_tick(99, 3, &ONCE), 2);
+    }
+
+    #[test]
+    fn regions_render_with_their_own_colors() {
+        use crate::ui::mascot::generated::cat_laptop::CAT_LAPTOP_IDLE;
+
+        let mut app = App::new(100);
+        let backend = TestBackend::new(30, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 30,
+            height: 20,
+        };
+        terminal
+            .draw(|frame| {
+                assert!(render(frame, &app, area, &CAT_LAPTOP_IDLE).is_some());
+            })
+            .unwrap();
+
+        // The asset centers in the 30x20 area: origin (3, 2). A cell inside the cat-head
+        // region (asset 15,4 -> buffer 18,6) must differ in style from one inside the
+        // laptop region (asset 10,9 -> buffer 13,11) — proof the span splitting works.
+        let buffer = terminal.backend().buffer();
+        let cat = buffer[(18u16, 6u16)].style();
+        let laptop = buffer[(13u16, 11u16)].style();
+        assert_ne!(cat, laptop, "region colors should differ");
+        app.dirty = false;
     }
 
     #[test]

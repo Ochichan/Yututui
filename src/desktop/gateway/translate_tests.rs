@@ -305,16 +305,257 @@ fn cmd_names_and_payloads_map_to_remote_commands() {
     );
 }
 
+/// Pin every deferred-v8 frontend name (with the exact payload its store emits — see
+/// gui/src/lib/dev/democore.ts, the reference implementation) to its enum variant, so a
+/// rename on either side fails here instead of as a runtime bad_command.
+#[test]
+fn deferred_v8_names_and_store_payloads_map_to_remote_commands() {
+    use crate::remote::proto::RateChange;
+    let cases: Vec<(&str, serde_json::Value, RemoteCommand)> = vec![
+        (
+            "rate",
+            serde_json::json!({ "video_id": "v1", "rating": "cycle" }),
+            RemoteCommand::Rate {
+                video_id: "v1".into(),
+                rating: RateChange::Cycle,
+            },
+        ),
+        (
+            "queue_move",
+            serde_json::json!({ "from": 2, "to": 5, "expected_rev": 9 }),
+            RemoteCommand::QueueMove {
+                from: 2,
+                to: 5,
+                expected_rev: Some(9),
+            },
+        ),
+        (
+            "queue_remove_many",
+            serde_json::json!({ "positions": [1, 3] }),
+            RemoteCommand::QueueRemoveMany {
+                positions: vec![1, 3],
+                expected_rev: None,
+            },
+        ),
+        // The keyboard path sends no revision (gui actions.ts); the guard is optional.
+        (
+            "queue_clear_upcoming",
+            serde_json::json!({}),
+            RemoteCommand::QueueClearUpcoming { expected_rev: None },
+        ),
+        (
+            "play_video",
+            serde_json::json!({ "video_id": "v1" }),
+            RemoteCommand::PlayVideo {
+                video_id: "v1".into(),
+            },
+        ),
+        (
+            "ask_ai",
+            serde_json::json!({ "ticket": 7, "prompt": "hi" }),
+            RemoteCommand::AskAi {
+                ticket: 7,
+                prompt: "hi".into(),
+            },
+        ),
+        (
+            "library_play",
+            serde_json::json!({ "scope": "favorites", "filter": "" }),
+            RemoteCommand::LibraryPlay {
+                scope: "favorites".into(),
+                filter: String::new(),
+            },
+        ),
+        (
+            "library_enqueue",
+            serde_json::json!({ "scope": "history", "filter": "cat" }),
+            RemoteCommand::LibraryEnqueue {
+                scope: "history".into(),
+                filter: "cat".into(),
+            },
+        ),
+        (
+            "library_remove",
+            serde_json::json!({ "scope": "favorites", "video_id": "v1" }),
+            RemoteCommand::LibraryRemove {
+                scope: "favorites".into(),
+                video_id: "v1".into(),
+            },
+        ),
+        (
+            "fetch_library_page",
+            serde_json::json!({ "scope": "all", "filter": "", "offset": 0, "limit": 100 }),
+            RemoteCommand::FetchLibraryPage {
+                scope: "all".into(),
+                filter: String::new(),
+                offset: 0,
+                limit: 100,
+            },
+        ),
+        (
+            "download",
+            serde_json::json!({ "video_id": "v1", "title": "T" }),
+            RemoteCommand::Download {
+                video_id: "v1".into(),
+                title: "T".into(),
+            },
+        ),
+        (
+            "delete_download",
+            serde_json::json!({ "video_id": "v1", "delete_file": true }),
+            RemoteCommand::DeleteDownload {
+                video_id: "v1".into(),
+                delete_file: true,
+            },
+        ),
+        (
+            "keymap_bind",
+            serde_json::json!({ "context": "Player", "action": "toggle_pause", "chord": "space" }),
+            RemoteCommand::KeymapBind {
+                context: "Player".into(),
+                action: "toggle_pause".into(),
+                chord: "space".into(),
+            },
+        ),
+        (
+            "keymap_unbind",
+            serde_json::json!({ "context": "Player", "action": "toggle_pause" }),
+            RemoteCommand::KeymapUnbind {
+                context: "Player".into(),
+                action: "toggle_pause".into(),
+            },
+        ),
+        (
+            "keymap_reset_all",
+            serde_json::json!({}),
+            RemoteCommand::KeymapResetAll,
+        ),
+        (
+            "theme_set_override",
+            serde_json::json!({ "role": "accent", "hex": "#aabbcc" }),
+            RemoteCommand::ThemeSetOverride {
+                role: "accent".into(),
+                hex: "#aabbcc".into(),
+            },
+        ),
+        (
+            "theme_clear_override",
+            serde_json::json!({ "role": "accent" }),
+            RemoteCommand::ThemeClearOverride {
+                role: "accent".into(),
+            },
+        ),
+        (
+            "clear_romanization_cache",
+            serde_json::json!({}),
+            RemoteCommand::ClearRomanizationCache,
+        ),
+        (
+            "playlist_create",
+            serde_json::json!({ "name": "Mix" }),
+            RemoteCommand::PlaylistCreate { name: "Mix".into() },
+        ),
+        (
+            "playlist_delete",
+            serde_json::json!({ "playlist_id": "p1" }),
+            RemoteCommand::PlaylistDelete {
+                playlist_id: "p1".into(),
+            },
+        ),
+        (
+            "playlist_add_tracks",
+            serde_json::json!({ "playlist_id": "p1", "video_ids": ["v1"] }),
+            RemoteCommand::PlaylistAddTracks {
+                playlist_id: "p1".into(),
+                video_ids: vec!["v1".into()],
+            },
+        ),
+        (
+            "playlist_remove_track",
+            serde_json::json!({ "playlist_id": "p1", "video_id": "v1" }),
+            RemoteCommand::PlaylistRemoveTrack {
+                playlist_id: "p1".into(),
+                video_id: "v1".into(),
+            },
+        ),
+        (
+            "playlist_play",
+            serde_json::json!({ "playlist_id": "p1" }),
+            RemoteCommand::PlaylistPlay {
+                playlist_id: "p1".into(),
+            },
+        ),
+        (
+            "fetch_playlist_detail",
+            serde_json::json!({ "playlist_id": "p1" }),
+            RemoteCommand::FetchPlaylistDetail {
+                playlist_id: "p1".into(),
+            },
+        ),
+        (
+            "fetch_why_gem",
+            serde_json::json!({ "video_id": "v1" }),
+            RemoteCommand::FetchWhyGem {
+                video_id: "v1".into(),
+            },
+        ),
+        (
+            "transfer_list_spotify",
+            serde_json::json!({}),
+            RemoteCommand::TransferListSpotify,
+        ),
+        (
+            "transfer_start",
+            serde_json::json!({ "spec": { "dry_run": true } }),
+            RemoteCommand::TransferStart {
+                spec: serde_json::json!({ "dry_run": true }),
+            },
+        ),
+        (
+            "transfer_cancel",
+            serde_json::json!({}),
+            RemoteCommand::TransferCancel,
+        ),
+        (
+            "lastfm_connect",
+            serde_json::json!({}),
+            RemoteCommand::LastfmConnect,
+        ),
+        (
+            "spotify_connect",
+            serde_json::json!({}),
+            RemoteCommand::SpotifyConnect,
+        ),
+        (
+            "listen_brainz_configure",
+            serde_json::json!({ "submit": true, "token": "tok" }),
+            RemoteCommand::ListenBrainzConfigure {
+                submit: Some(true),
+                token: Some("tok".into()),
+                custom_url: None,
+            },
+        ),
+        (
+            "account_set",
+            serde_json::json!({ "service": "lastfm", "field": "scrobbling", "value": true }),
+            RemoteCommand::AccountSet {
+                service: "lastfm".into(),
+                field: "scrobbling".into(),
+                value: serde_json::json!(true),
+            },
+        ),
+    ];
+    for (name, payload, expected) in cases {
+        assert_eq!(
+            to_remote_command(name, &payload),
+            Some(expected),
+            "frontend name {name} must translate"
+        );
+    }
+}
+
 #[test]
 fn unsupported_or_malformed_commands_are_none() {
-    // A v8 command the core doesn't model yet (queue/rating extensions).
-    assert_eq!(
-        to_remote_command(
-            "rate",
-            &serde_json::json!({ "video_id": "x", "rating": "cycle" })
-        ),
-        None
-    );
     assert_eq!(
         to_remote_command("not_a_command", &serde_json::Value::Null),
         None
@@ -438,6 +679,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
             page_id: None,
             id: 71,
             mutation: false,
+            req: true,
         })
     );
     assert_eq!(
@@ -446,6 +688,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
             page_id: None,
             id: 72,
             mutation: true,
+            req: false,
         })
     );
 
@@ -456,6 +699,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
                 page_id: None,
                 id: 72,
                 mutation: true,
+                req: false,
             },
         ),
         (
@@ -464,6 +708,7 @@ fn session_exit_rejects_every_pending_req_and_cmd_id() {
                 page_id: None,
                 id: 71,
                 mutation: false,
+                req: false,
             },
         ),
     ]);

@@ -484,6 +484,14 @@ impl MediaSession {
     /// Publish the core's current state. Diffs against the previous snapshot and
     /// forwards only the changed facets; a no-change publish costs one comparison.
     pub fn publish(&mut self, snapshot: MediaSnapshot) {
+        // The artwork cache is owner state, not platform-session state: its resolved
+        // file also rides the remote player snapshot (`CoreView::artwork` →
+        // `TrackModel.artwork`, B1), so art must resolve ahead of every platform gate
+        // below — a disabled/failed/backing-off/not-yet-activated session (headless
+        // daemon, paused-at-rest restore) still wants the current track's art. The
+        // request is per-track deduplicated, so running it first costs nothing extra
+        // on the platform path.
+        self.request_artwork(&snapshot);
         if !self.enabled || self.failed {
             return;
         }
@@ -532,7 +540,6 @@ impl MediaSession {
             }
         }
 
-        self.request_artwork(&snapshot);
         let changes = match &self.last {
             Some(last) => diff(last, &snapshot),
             None => MediaChanges::all(),
@@ -726,6 +733,82 @@ mod tests {
         assert!(retired.is_cancelled());
         assert!(media.set_enabled(true));
         assert!(!media.callback_cancellation.is_cancelled());
+    }
+
+    /// A snapshot whose art query is a (nonexistent) local file: the artwork actor
+    /// touches no network, and `art_requested` records the accepted request.
+    fn art_snapshot(key: &str) -> MediaSnapshot {
+        MediaSnapshot {
+            track: Some(MediaTrack {
+                key: key.to_owned(),
+                title: "t".to_owned(),
+                artist: "a".to_owned(),
+                album: None,
+                duration: Some(180.0),
+                is_live: false,
+                url: None,
+                art_remote_url: None,
+                art_file: None,
+                art_query: Some(artwork::ArtQuery::LocalFile(PathBuf::from(
+                    "/nonexistent/never-created.mp3",
+                ))),
+                liked: false,
+                disliked: false,
+            }),
+            status: MediaPlaybackStatus::Paused,
+            position: 0.0,
+            captured_at: Instant::now(),
+            rate: 1.0,
+            shuffle: false,
+            repeat: Repeat::Off,
+            volume: 0.5,
+            caps: MediaCaps {
+                can_next: false,
+                can_previous: false,
+                can_seek: true,
+                can_play: true,
+                can_pause: true,
+            },
+            position_epoch: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_session_still_requests_artwork() {
+        // B1 (gui/WIRING.md artwork.live): a headless daemon runs with media controls
+        // off, yet the GUI's player snapshot still needs the art cache populated.
+        let mut media = MediaSession::new_cancellable(
+            false,
+            |_command, _cancellation| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        media.publish(art_snapshot("vid-disabled"));
+        assert_eq!(
+            media.art_requested.as_deref(),
+            Some("vid-disabled"),
+            "the enabled gate must not stop artwork requests"
+        );
+        assert!(media.backend.is_none(), "no platform session when disabled");
+    }
+
+    /// macOS holds the platform session back until the first Playing snapshot; the
+    /// artwork request must fire ahead of that hold-back (paused-at-rest restore).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn not_yet_activated_session_still_requests_artwork() {
+        let mut media = MediaSession::new_cancellable(
+            true,
+            |_command, _cancellation| Ok(crate::util::delivery::DeliveryReceipt::Enqueued),
+            |_| {},
+        );
+        media.publish(art_snapshot("vid-paused"));
+        assert!(!media.activated, "a paused snapshot must not activate");
+        assert!(media.backend.is_none(), "activation hold-back preserved");
+        assert_eq!(
+            media.art_requested.as_deref(),
+            Some("vid-paused"),
+            "the activation hold-back must not stop artwork requests"
+        );
     }
 
     #[tokio::test]

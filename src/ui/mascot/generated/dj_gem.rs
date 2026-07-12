@@ -7,6 +7,7 @@ pub static DJ_GEM_IDLE: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: Some(&DJ_GEM_IDLE_RETRO),
+    regions: &[],
     frames: &[MascotFrame {
         hold: 1,
         style: MascotStyle::Accent,
@@ -21,6 +22,7 @@ pub static DJ_GEM_IDLE_RETRO: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: None,
+    regions: &[],
     frames: &[MascotFrame {
         hold: 1,
         style: MascotStyle::Accent,
@@ -35,6 +37,7 @@ pub static DJ_GEM_GROOVE: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: Some(&DJ_GEM_GROOVE_RETRO),
+    regions: &[],
     frames: &[
         MascotFrame {
             hold: 1,
@@ -66,6 +69,7 @@ pub static DJ_GEM_GROOVE_RETRO: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: None,
+    regions: &[],
     frames: &[
         MascotFrame {
             hold: 1,
@@ -97,6 +101,7 @@ pub static DJ_GEM_THINKING: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: Some(&DJ_GEM_THINKING_RETRO),
+    regions: &[],
     frames: &[
         MascotFrame {
             hold: 2,
@@ -118,6 +123,7 @@ pub static DJ_GEM_THINKING_RETRO: MascotAsset = MascotAsset {
     fps: 3,
     looped: true,
     fallback: None,
+    regions: &[],
     frames: &[
         MascotFrame {
             hold: 2,

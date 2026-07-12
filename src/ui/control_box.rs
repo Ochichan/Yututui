@@ -32,7 +32,7 @@ pub fn render_at(
     controls: Rect,
     status: Rect,
 ) {
-    render_title_row(frame, app, title, true);
+    render_title_row(frame, app, title, true, false);
     render_seekbar(frame, app, seek, true);
     render_controls(frame, app, controls, true);
     render_status_line(frame, app, status, true);
@@ -93,7 +93,7 @@ pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
         ),
         rows[0],
     );
-    render_title_row(frame, app, rows[1], animated);
+    render_title_row(frame, app, rows[1], animated, false);
     render_seekbar(frame, app, rows[2], animated);
     render_controls(frame, app, rows[3], animated);
     render_status_line(frame, app, rows[4], animated);
@@ -105,7 +105,19 @@ pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
 /// scrolling line (and a pulsing ♥), which we render in place of it. A just-changed track's
 /// intro cascade and a just-set status message's typewriter reveal each take precedence for
 /// their short one-shot window, then fall through to these steady-state forms.
-pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+///
+/// `marquee` opts the plain fallback into `selected_marquee` on overflow. Only the mini
+/// tier may pass true: it replaces the whole UI, so no other marquee surface (list cursor
+/// rows, the radio card) can render in the same frame and fight over the single-slot
+/// `marquee_key` — two same-frame callers would keep resetting each other's origin and
+/// freeze both crawls while pinning the animation clock awake.
+pub(in crate::ui) fn render_title_row(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    animated: bool,
+    marquee: bool,
+) {
     if !app.status.text.is_empty() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
             frame.render_widget(Paragraph::new(line), area);
@@ -143,7 +155,22 @@ pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, 
                 } else {
                     ""
                 };
-                format!("{heart}{title} — {artist}")
+                // Scroll an overflowing title so it stays readable in the mini player.
+                // `selected_marquee` is deliberately independent of the animation masters
+                // (like the radio card's title) and returns the text unchanged when it
+                // already fits, so the fits case stays byte-identical.
+                let text = format!("{heart}{title} — {artist}");
+                if marquee {
+                    crate::ui::anim::selected_marquee(
+                        app,
+                        crate::app::ScrollSurface::PlayerTitle,
+                        0,
+                        &text,
+                        usize::from(area.width),
+                    )
+                } else {
+                    text
+                }
             }
             None => {
                 // The search key respects rebinds (the chord bound to `OpenSearch`, not a

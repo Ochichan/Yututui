@@ -228,7 +228,8 @@ pub struct KeymapSettingsModel {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionInfoModel {
     pub context: String,
-    pub action: String,
+    pub id: String,
     pub label: String,
-    pub chord: Option<String>,
+    /// The factory chord (the per-row reset target); the live chord rides `bindings`.
+    pub default_chord: String,
 }

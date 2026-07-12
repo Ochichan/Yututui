@@ -80,7 +80,12 @@ describe('demo core downloads', () => {
 
   it('a normal track progresses running → done', () => {
     const { t, frames } = boot();
-    t.send({ v: 1, kind: 'cmd', name: 'download', payload: { video_id: 'demo-006', title: 'Tailwind' } });
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'download',
+      payload: { video_id: 'demo-006', title: 'Tailwind' },
+    });
     vi.advanceTimersByTime(20);
     expect(item(frames, 'demo-006')!.state).toBe('running');
     vi.advanceTimersByTime(1000);
@@ -90,7 +95,12 @@ describe('demo core downloads', () => {
 
   it('a live stream fails with a reason', () => {
     const { t, frames } = boot();
-    t.send({ v: 1, kind: 'cmd', name: 'download', payload: { video_id: 'demo-009', title: 'ON AIR' } });
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'download',
+      payload: { video_id: 'demo-009', title: 'ON AIR' },
+    });
     vi.advanceTimersByTime(400);
     const d = item(frames, 'demo-009')!;
     expect(d.state).toBe('failed');
@@ -99,7 +109,12 @@ describe('demo core downloads', () => {
 
   it('delete_download removes the entry', () => {
     const { t, frames } = boot();
-    t.send({ v: 1, kind: 'cmd', name: 'download', payload: { video_id: 'demo-006', title: 'Tailwind' } });
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'download',
+      payload: { video_id: 'demo-006', title: 'Tailwind' },
+    });
     vi.advanceTimersByTime(1000);
     t.send({ v: 1, kind: 'cmd', name: 'delete_download', payload: { video_id: 'demo-006' } });
     vi.advanceTimersByTime(50);

@@ -223,6 +223,57 @@ mod tests {
     }
 
     #[test]
+    fn regions_fit_within_asset_bounds() {
+        for asset in generated::all_assets() {
+            for region in asset.regions {
+                assert!(
+                    region.w > 0 && region.h > 0,
+                    "{} has an empty region",
+                    asset.name
+                );
+                assert!(
+                    region.x + region.w <= asset.width && region.y + region.h <= asset.height,
+                    "{} region ({}, {}) {}x{} escapes the {}x{} asset",
+                    asset.name,
+                    region.x,
+                    region.y,
+                    region.w,
+                    region.h,
+                    asset.width,
+                    asset.height
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cat_laptop_family_shares_one_region_map() {
+        // Retro fallbacks must carry the same overlays as their primary asset, so the
+        // multi-color treatment survives retro mode.
+        let family = [
+            &generated::cat_laptop::CAT_LAPTOP_IDLE,
+            &generated::cat_laptop::CAT_LAPTOP_IDLE_RETRO,
+            &generated::cat_laptop::CAT_LAPTOP_GROOVE,
+            &generated::cat_laptop::CAT_LAPTOP_GROOVE_RETRO,
+        ];
+        for asset in family {
+            assert!(
+                !asset.regions.is_empty(),
+                "{} should carry the shared color regions",
+                asset.name
+            );
+            assert!(
+                std::ptr::eq(
+                    asset.regions.as_ptr(),
+                    generated::cat_laptop::CAT_LAPTOP_IDLE.regions.as_ptr()
+                ),
+                "{} should share the family region map",
+                asset.name
+            );
+        }
+    }
+
+    #[test]
     fn retro_asset_is_ascii_safe() {
         let retro_assets: Vec<_> = generated::all_assets()
             .iter()

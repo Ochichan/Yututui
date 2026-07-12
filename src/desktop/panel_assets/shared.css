@@ -5,6 +5,11 @@
       display: none;
     }
 
+    /* The egg's dot-row volume slider only exists in the Tamagotchi skin. */
+    .tama-vol {
+      display: none;
+    }
+
     #sharedSheetBar {
       display: none;
       align-items: center;

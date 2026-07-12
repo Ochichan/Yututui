@@ -456,6 +456,22 @@ fn panel_html_exposes_mode_switch_and_bars() {
 }
 
 #[test]
+fn tamagotchi_dots_are_a_volume_slider() {
+    // The egg's dot row is a real slider in the semantic layer, not decoration.
+    assert_eq!(PANEL_HTML.matches(r#"id="tamaVolume""#).count(), 1);
+    assert!(PANEL_HTML.contains(r#"id="tamaVolume" role="slider""#));
+    // class="bar …" keeps the window-drag opt-out (closest("button, .bar, select")).
+    assert!(PANEL_HTML.contains(r#"class="bar tama-vol""#));
+    assert_eq!(PANEL_HTML.matches(r#"<span class="td""#).count(), 5);
+    // The old decorative glyph row is gone; its spacer stays for the shell grid.
+    assert!(!PANEL_HTML.contains("&#183; &#183; &#8226;"));
+    assert!(PANEL_HTML.contains(r#"class="tm-dots" aria-hidden="true""#));
+    // It renders from the shared vol state (fill/grow visual via --vol).
+    assert!(PANEL_HTML.contains("els.tamaVolume"));
+    assert!(PANEL_HTML.contains("--vol"));
+}
+
+#[test]
 fn panel_html_exposes_queue_and_play_modes() {
     assert!(PANEL_HTML.contains("data-tab=\"queue\""));
     assert!(PANEL_HTML.contains("data-action=\"toggle_shuffle\""));

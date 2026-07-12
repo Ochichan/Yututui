@@ -175,6 +175,8 @@ impl DaemonEngine {
             self.transport_auto_recovery_armed = true;
             self.library.record_play(&song);
             self.save_library("daemon library history");
+            // History changed: a subscribed GUI's paged library view is stale.
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
         } else {
             self.last_error = None;
         }
