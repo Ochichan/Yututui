@@ -1,6 +1,6 @@
 [package]
 name = "yututui"
-version = "1.6.30"
+version = "1.6.31"
 edition = "2024"
 description = "A fast terminal UI for YouTube Music — search, radio, synced lyrics, album art, and downloads, driven by mpv and yt-dlp."
 license = "MIT"
