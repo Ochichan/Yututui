@@ -3,7 +3,9 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::bail;
 
-use super::{ArtifactMoveKind, import_private_root, reject_symlink_or_non_directory};
+#[cfg(unix)]
+use super::import_private_root;
+use super::{ArtifactMoveKind, reject_symlink_or_non_directory};
 use crate::util::safe_fs;
 
 /// Create only real directory components beneath an already-canonical root. In particular, do
