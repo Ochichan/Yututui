@@ -56,6 +56,15 @@ fn owner_exit_requested(app: &App, shutdown: &player::lifetime::ShutdownLatch) -
     app.should_quit || shutdown.is_triggered()
 }
 
+/// The walkthrough changes persisted config on every transition, so a writer lease alone is not
+/// sufficient: platforms without a resolvable config destination must keep it dormant too.
+fn beginner_profile_persistable(
+    persistence_read_only: bool,
+    config_destination_available: bool,
+) -> bool {
+    !persistence_read_only && config_destination_available
+}
+
 type PlayerReadyResult = Result<(PlayerHandle, player::Mpv), String>;
 const PLAYER_START_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -823,7 +832,10 @@ pub async fn run(
     if !missing.is_empty() {
         app.show_tool_setup(app::ToolSetupContext::Startup, missing);
     }
-    app.prepare_search_onboarding(!persistence_read_only);
+    app.prepare_beginner_onboarding(beginner_profile_persistable(
+        persistence_read_only,
+        config::config_path().is_some(),
+    ));
     startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
@@ -973,6 +985,10 @@ pub async fn run(
         scrobble_handle,
         persist.clone(),
     );
+
+    if let Some(cmd) = app.take_beginner_startup_persist() {
+        handles.dispatch(&mut app, cmd);
+    }
 
     // An explicit Save is journaled in the stable recorder cache before its copy worker is
     // admitted. Recover those intents off the owner task and wait for the tracked job before

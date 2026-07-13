@@ -12,6 +12,7 @@ use support::*;
 mod ai;
 mod animations;
 mod art_overlay;
+mod beginner_settings;
 mod context_menu;
 mod docked_bar;
 mod downloads;

@@ -112,15 +112,9 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     pub(in crate::app) fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
-        let mut onboarding_cmds = if mode == Mode::Search {
-            self.complete_search_onboarding()
-        } else {
-            Vec::new()
-        };
         if self.mode == Mode::Settings && mode != Mode::Settings {
             self.finish_settings_text_edit();
-            onboarding_cmds.extend(self.close_settings_for_navigation(mode));
-            return onboarding_cmds;
+            return self.close_settings_for_navigation(mode);
         }
         self.overlays.help_visible = false;
         self.overlays.mouse_help_visible = false;
@@ -144,7 +138,7 @@ impl App {
         self.ai.select_all = false;
         if self.mode == mode {
             self.dirty = true;
-            return onboarding_cmds;
+            return Vec::new();
         }
         match mode {
             Mode::Player => self.mode = Mode::Player,
@@ -171,7 +165,7 @@ impl App {
             Mode::Ai => self.enter_ai(),
         }
         self.dirty = true;
-        onboarding_cmds
+        Vec::new()
     }
 
     /// Select a Settings tab by index into [`SettingsTab::ALL`] (from a tab click).

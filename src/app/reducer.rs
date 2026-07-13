@@ -16,6 +16,7 @@ impl App {
         // without a terminal resize). Apply the bridged tier before routing this event so a
         // hidden Search/DJ input cannot consume the first global key after entering Mini.
         self.sync_ui_tier();
+        let beginner_before = self.onboarding_observation();
         let admitted_seek = matches!(
             &msg,
             Msg::Player(PlayerMsg::IntentAdmitted(commit)) if commit.is_seek()
@@ -31,7 +32,8 @@ impl App {
         // an error set by one of the ~40 plain `self.status.text = …` sites can never inherit a
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
-        let cmds = self.dispatch(msg);
+        let mut cmds = self.dispatch(msg);
+        cmds.extend(self.observe_beginner_tutorial(beginner_before));
         if self.status.text.is_empty()
             && let Some(warning) = self.recorder.health_warning.as_ref()
         {
@@ -176,7 +178,7 @@ impl App {
                         self.dirty = true;
                     }
                 }
-                return self.tick_search_onboarding(Instant::now());
+                return Vec::new();
             }
             Msg::AnimTick => {
                 // Advance the logical animation phase on every configured tick, but only request

@@ -24,7 +24,8 @@ impl Field {
             | Field::SpotifyClientId
             | Field::SpotifyRedirectPort
             | Field::ThemeColor(_) => FieldKind::Text,
-            Field::Mouse
+            Field::BeginnerMode
+            | Field::Mouse
             | Field::AlbumArt
             | Field::LocalIncludeDownloadDir
             | Field::LocalMusicRootRecursive
@@ -175,6 +176,7 @@ impl Field {
 
     pub fn label(self) -> String {
         match self {
+            Field::BeginnerMode => t!("Beginner Mode", "비기너 모드").to_owned(),
             Field::Language => t!("Language", "언어").to_owned(),
             Field::SearchSource => t!("Search source", "검색 소스").to_owned(),
             Field::StreamingSource => t!("Streaming source", "추천 소스").to_owned(),

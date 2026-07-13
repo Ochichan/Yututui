@@ -4,6 +4,8 @@ use crate::search_source::SearchSource;
 /// A neutral draft the value/apply tests can tweak one field at a time.
 fn base_draft() -> SettingsDraft {
     SettingsDraft {
+        beginner_mode: false,
+        restart_beginner_tutorial: false,
         cookies_file: String::new(),
         download_dir: String::new(),
         local_include_download_dir: true,
@@ -278,6 +280,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(
         f,
         vec![
+            Field::BeginnerMode,
             Field::Language,
             Field::SearchSource,
             Field::StreamingSource,
@@ -308,6 +311,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     );
     assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
     assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
+    assert_eq!(Field::BeginnerMode.kind(), FieldKind::Toggle);
     assert_eq!(Field::SearchSource.kind(), FieldKind::Select);
     assert_eq!(Field::StreamingSource.kind(), FieldKind::Select);
     assert_eq!(Field::SearchSoundCloud.kind(), FieldKind::Toggle);
@@ -320,6 +324,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
     // Off by default, and the toggle renders as an empty checkbox.
     let draft = base_draft();
+    assert_eq!(draft.value_display(Field::BeginnerMode), "[ ]");
     assert_eq!(
         draft.value_display(Field::ResetKeybindings),
         "↵ press Enter"
@@ -335,6 +340,27 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     assert!(!draft.enqueue_next);
     assert_eq!(draft.value_display(Field::EnqueueNext), "[ ]");
+}
+
+#[test]
+fn beginner_mode_projection_restarts_only_when_requested() {
+    let mut cfg = Config {
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: crate::config::BEGINNER_TUTORIAL_VERSION,
+            next_step: "finish".to_owned(),
+        },
+        ..Config::default()
+    };
+
+    let mut draft = base_draft();
+    draft.beginner_mode = true;
+    draft.apply_to(&mut cfg);
+    assert_eq!(cfg.beginner_tutorial.next_step, "finish");
+
+    draft.restart_beginner_tutorial = true;
+    draft.apply_to(&mut cfg);
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
 }
 
 #[test]
@@ -458,6 +484,8 @@ fn apply_to_persists_every_settings_field() {
         .unwrap();
 
     let draft = SettingsDraft {
+        beginner_mode: true,
+        restart_beginner_tutorial: true,
         cookies_file: "/tmp/cookies.txt".to_owned(),
         download_dir: "/tmp/downloads".to_owned(),
         local_include_download_dir: false,
@@ -532,7 +560,10 @@ fn apply_to_persists_every_settings_field() {
     };
 
     let mut cfg = Config::default();
+    cfg.beginner_tutorial.next_step = "finish".to_owned();
     draft.apply_to(&mut cfg);
+    assert!(cfg.beginner_mode);
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
     assert_eq!(cfg.recording.mode, crate::recorder::RecordingMode::Decide);
     assert_eq!(cfg.recording.min_duration_secs, 20);
     assert_eq!(cfg.recording.max_duration_secs, 1200);

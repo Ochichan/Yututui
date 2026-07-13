@@ -36,6 +36,36 @@ pub use spotify::SpotifyImportMode;
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
 
+/// Version of the interactive Beginner Mode walkthrough shipped by this build. Bump this only
+/// when the ordered steps or their completion contracts change; copy-only edits must not make a
+/// user repeat the tour.
+pub const BEGINNER_TUTORIAL_VERSION: u16 = 1;
+
+/// Persisted Beginner Mode walkthrough cursor. The step stays a string deliberately: a newer
+/// build may write a step this build does not know, and retaining that value lets the app decline
+/// to run an incompatible future tour without destroying its progress on the next settings save.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct BeginnerTutorialProgress {
+    pub content_version: u16,
+    pub next_step: String,
+}
+
+impl BeginnerTutorialProgress {
+    pub fn welcome() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for BeginnerTutorialProgress {
+    fn default() -> Self {
+        Self {
+            content_version: BEGINNER_TUTORIAL_VERSION,
+            next_step: "welcome".to_owned(),
+        }
+    }
+}
+
 /// Upper bound on `config.json` when loading. The config holds a handful of settings and EQ
 /// bands — nothing legitimate approaches this — so a larger file (corrupt or hostile) is
 /// treated like an unreadable one and rebuilt rather than read wholesale into memory.
@@ -591,10 +621,12 @@ impl ToolsConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Whether the one-shot Search onboarding hint has been completed. Missing values belong to
-    /// pre-onboarding config files and deserialize as `true`; a genuinely fresh default is false.
-    #[serde(default = "legacy_search_onboarding_seen")]
-    pub search_onboarding_seen: bool,
+    /// Show explanatory control labels and, on a writable launch, the interactive beginner tour.
+    /// The ordinary/default value is false so pre-feature, recovered, and programmatic configs do
+    /// not unexpectedly enter onboarding. [`Self::fresh_install`] is the sole opt-in constructor.
+    pub beginner_mode: bool,
+    /// Versioned cursor for the last incomplete beginner-tour step.
+    pub beginner_tutorial: BeginnerTutorialProgress,
     /// Raw `Cookie:` header for music.youtube.com (takes precedence over the file).
     pub cookie: Option<String>,
     /// Path to a Netscape `cookies.txt` exported from the browser.
@@ -872,7 +904,8 @@ pub struct AiRuntimeConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            search_onboarding_seen: false,
+            beginner_mode: false,
+            beginner_tutorial: BeginnerTutorialProgress::default(),
             cookie: None,
             cookies_file: None,
             volume: 100,
@@ -924,11 +957,18 @@ impl Default for Config {
     }
 }
 
-fn legacy_search_onboarding_seen() -> bool {
-    true
-}
-
 impl Config {
+    /// Defaults written only for a genuinely new profile. Keep this separate from [`Default`]:
+    /// serde recovery, legacy configs, tests, and non-TUI reset paths all rely on conservative
+    /// defaults that do not opt an existing user into a walkthrough.
+    pub(crate) fn fresh_install() -> Self {
+        Self {
+            beginner_mode: true,
+            beginner_tutorial: BeginnerTutorialProgress::welcome(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn preflight_persistence_recovery()
     -> Result<(), crate::persist::StartupRecoveryError> {
         let Some(path) = config_path() else {
@@ -946,8 +986,9 @@ impl Config {
     pub fn load() -> Self {
         let Some(path) = config_path() else {
             // No config dir on this platform: migrate from the old app but don't persist.
-            let mut cfg = Config::default();
-            if let Some(old) = old_config_path() {
+            let old = old_config_path();
+            let mut cfg = config_for_missing_profile(old.as_deref());
+            if let Some(old) = old {
                 import_old_from(&old, &mut cfg);
             }
             return cfg;
@@ -1535,6 +1576,22 @@ fn old_config_path() -> Option<PathBuf> {
         return None;
     }
     directories::BaseDirs::new().map(|d| d.home_dir().join(".youtube-music-cli/config.json"))
+}
+
+/// Pick the base for a missing current config. A legacy path that cannot be inspected counts as
+/// present: surprising an existing user with onboarding is worse than conservatively leaving it
+/// off, and the import itself will still use the hardened bounded/no-symlink reader below.
+fn config_for_missing_profile(old: Option<&Path>) -> Config {
+    let legacy_present = old.is_some_and(|path| match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    });
+    if legacy_present {
+        Config::default()
+    } else {
+        Config::fresh_install()
+    }
 }
 
 /// Pull whatever we can reuse out of the old TypeScript app's config. Favorites,

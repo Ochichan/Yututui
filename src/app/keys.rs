@@ -16,6 +16,13 @@ impl App {
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
         }
+        // Beginner Mode's F6 focus bridge runs before ordinary surface routing, while every
+        // established overlay keeps precedence. Unowned keys continue through unchanged.
+        if !self.beginner_higher_overlay_open()
+            && let Some(cmds) = self.on_key_beginner(k)
+        {
+            return cmds;
+        }
 
         // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
         // rejected rebind already left the binding untouched), so it never leaks through to

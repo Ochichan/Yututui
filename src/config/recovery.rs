@@ -1,26 +1,39 @@
 use super::*;
 
 pub(super) fn load_from_path(path: &std::path::Path) -> Config {
-    let can_persist_default = match safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) {
-        Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(text) => {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                    return recover_value(path, value, false, true);
-                }
-                safe_fs::backup_aside_secret(path).is_ok()
-            }
-            Err(_) => safe_fs::backup_aside_secret(path).is_ok(),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-            safe_fs::backup_too_large_secret(path).is_ok()
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => safe_fs::backup_unreadable_secret(path).is_ok(),
-    };
+    let old = old_config_path();
+    load_from_path_with_legacy(path, old.as_deref())
+}
 
-    let mut cfg = Config::default();
-    if let Some(old) = old_config_path() {
-        import_old_from(&old, &mut cfg);
+pub(super) fn load_from_path_with_legacy(
+    path: &std::path::Path,
+    legacy_path: Option<&std::path::Path>,
+) -> Config {
+    let (can_persist_default, source_was_missing) =
+        match safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                        return recover_value(path, value, false, true);
+                    }
+                    (safe_fs::backup_aside_secret(path).is_ok(), false)
+                }
+                Err(_) => (safe_fs::backup_aside_secret(path).is_ok(), false),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                (safe_fs::backup_too_large_secret(path).is_ok(), false)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, true),
+            Err(_) => (safe_fs::backup_unreadable_secret(path).is_ok(), false),
+        };
+
+    let mut cfg = if source_was_missing {
+        config_for_missing_profile(legacy_path)
+    } else {
+        Config::default()
+    };
+    if let Some(old) = legacy_path {
+        import_old_from(old, &mut cfg);
     }
     let value = match serde_json::to_value(&cfg) {
         Ok(value) => value,

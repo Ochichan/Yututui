@@ -528,6 +528,17 @@ pub enum ImportReviewAction {
     Skip,
 }
 
+/// A button or blocker on the interactive Beginner Mode coach card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingAction {
+    Noop,
+    Primary,
+    Back,
+    Skip,
+    ConfirmSkip,
+    CancelSkip,
+}
+
 /// A clickable terminal region's semantic target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseTarget {
@@ -537,6 +548,9 @@ pub enum MouseTarget {
     ToolSetupGuide,
     ToolSetupRetry,
     ToolSetupLater,
+    /// A control on the Beginner Mode coach card. `Noop` seals the card body against
+    /// click-through; the remaining actions are rendered as explicit buttons on top.
+    Onboarding(OnboardingAction),
     Global(Action),
     Player(Action),
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).

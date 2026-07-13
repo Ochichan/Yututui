@@ -22,6 +22,9 @@ pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u32 = 1 << 14;
 pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u32 = 1 << 15;
 pub(in crate::app) const ART_OVERLAY_CONTEXT_MENU_BIT: u32 = 1 << 16;
 pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 17;
+// Bit 18 belongs to the search-source popup in `fx_popup_mask`; keep it free here so the two
+// masks can be ORed without making an onboarding transition indistinguishable from that popup.
+pub(in crate::app) const ART_OVERLAY_BEGINNER_BIT: u32 = 1 << 19;
 
 // INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
 // map before replacing, sharing, or widening any allocation.
@@ -45,6 +48,7 @@ pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u32)] = &[
     ("search_filter", ART_OVERLAY_SEARCH_FILTER_BIT),
     ("context_menu", ART_OVERLAY_CONTEXT_MENU_BIT),
     ("tool_setup", ART_OVERLAY_TOOL_SETUP_BIT),
+    ("beginner", ART_OVERLAY_BEGINNER_BIT),
 ];
 
 const fn flag(on: bool, bit: u32) -> u32 {
@@ -649,6 +653,7 @@ impl App {
                 ART_OVERLAY_CONTEXT_MENU_BIT,
             )
             | flag(self.tool_setup.is_some(), ART_OVERLAY_TOOL_SETUP_BIT)
+            | flag(self.onboarding.visible(), ART_OVERLAY_BEGINNER_BIT)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal
