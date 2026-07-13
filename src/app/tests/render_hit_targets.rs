@@ -161,6 +161,10 @@ fn rendering_settings_registers_clickable_controls() {
         "background toggle"
     );
     assert!(
+        has(&g, MouseTarget::SettingsColorSwatch(3)),
+        "color swatch opens picker"
+    );
+    assert!(
         has(&g, MouseTarget::SettingsActivate(3)),
         "color row enters hex editor"
     );

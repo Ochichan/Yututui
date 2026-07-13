@@ -135,7 +135,7 @@ interface ThemeSeed {
   selBg: string;
 }
 
-// The 13 TUI presets (ThemePreset, src/theme.rs) — compact seeds, faithful hues.
+// Built-in TUI presets (ThemePreset, src/theme.rs) — compact seeds, faithful hues.
 const THEME_SEEDS: Record<string, ThemeSeed> = {
   // prettier-ignore
   Default: { bg: '#12141a', surface: '#2a2e3a', text: '#e6e8ee', textMuted: '#a0a6b4', textSubtle: '#6b7180', textInverse: '#0b0d12', borderPrimary: '#3a3f4d', borderFocused: '#5b8cff', accent: '#5b8cff', accentAlt: '#8f6bff', success: '#4ec98a', warning: '#e0b341', error: '#e5556b', selFg: '#ffffff', selBg: '#2f3646' },
@@ -165,11 +165,15 @@ const THEME_SEEDS: Record<string, ThemeSeed> = {
   'Rosé Pine': { bg: '#191724', surface: '#26233a', text: '#e0def4', textMuted: '#908caa', textSubtle: '#6e6a86', textInverse: '#191724', borderPrimary: '#302d41', borderFocused: '#ebbcba', accent: '#ebbcba', accentAlt: '#c4a7e7', success: '#9ccfd8', warning: '#f6c177', error: '#eb6f92', selFg: '#191724', selBg: '#403d52' },
 };
 
-const PRESET_NAMES = Object.keys(THEME_SEEDS);
+const CUSTOM_PRESET = 'Custom';
+const PRESET_NAMES = [...Object.keys(THEME_SEEDS), CUSTOM_PRESET];
 
 /** Derive the full 34-role palette from a preset seed (mirrors roles.ts ids exactly). */
 function presetPalette(name: string): Record<string, string> {
-  const s = THEME_SEEDS[name] ?? THEME_SEEDS.Default;
+  // Custom has no intrinsic palette: like the Rust core, it starts from Default and layers
+  // its separately persisted overrides on top.
+  const s =
+    name === CUSTOM_PRESET ? THEME_SEEDS.Default : (THEME_SEEDS[name] ?? THEME_SEEDS.Default);
   return {
     background: s.bg,
     'text-primary': s.text,
@@ -365,6 +369,8 @@ export class DemoCoreTransport implements Transport {
   #radioMode = false;
   // The `settings` topic read model (docs/gui/07 §6–§10), mutated by `apply`.
   #settings: SettingsModelV8 = defaultSettings();
+  // Custom owns a second override map that stays alive while a built-in theme is active.
+  #customThemeOverrides: Record<string, string> = {};
   // Fake romanization cache size, drained by clear_romanization_cache.
   #romanizationCache = 12;
   // Local playlists (the `playlists` topic) — summaries + their track lists by id.
@@ -670,6 +676,7 @@ export class DemoCoreTransport implements Transport {
         return;
       case 'reset_all_settings':
         this.#settings = defaultSettings();
+        this.#customThemeOverrides = {};
         this.#settings.rev++;
         this.#pushSettings();
         return;
@@ -1072,6 +1079,8 @@ export class DemoCoreTransport implements Transport {
   #applySetting(group: SettingGroup, field: string, value: unknown, push = true): boolean {
     const block = (this.#settings as unknown as Record<string, Record<string, unknown>>)[group];
     if (!block || typeof block !== 'object' || !field) return false;
+    const previousThemePreset =
+      group === 'theme' && field === 'preset' ? this.#settings.theme.preset : null;
     block[field] = value;
     // EQ preset and manual band edits keep each other honest, like the real af chain.
     if (group === 'eq' && field === 'preset') {
@@ -1079,10 +1088,17 @@ export class DemoCoreTransport implements Transport {
     } else if (group === 'eq' && field === 'bands') {
       this.#settings.eq.preset = 'custom';
     } else if (group === 'theme' && field === 'preset') {
-      // Re-resolve the 34 roles for the new preset, keeping the user's overrides on top —
-      // the demo stand-in for ThemeConfig::effective_hex(preset, overrides).
+      const requested = String(value);
+      const next = PRESET_NAMES.includes(requested) ? requested : 'Default';
+      block[field] = next;
+      if (next !== previousThemePreset) {
+        // A built-in edit is only restart-persistent. A real transition discards it, while
+        // Custom restores its own durable map after any number of round trips.
+        this.#settings.theme.overrides =
+          next === CUSTOM_PRESET ? { ...this.#customThemeOverrides } : {};
+      }
       this.#settings.theme.roles = {
-        ...presetPalette(String(value)),
+        ...presetPalette(next),
         ...this.#settings.theme.overrides,
       };
     }
@@ -1095,6 +1111,9 @@ export class DemoCoreTransport implements Transport {
   #themeSetOverride(role: string, hex: string): void {
     if (!role) return;
     this.#settings.theme.overrides[role] = hex;
+    if (this.#settings.theme.preset === CUSTOM_PRESET) {
+      this.#customThemeOverrides[role] = hex;
+    }
     this.#settings.theme.roles[role] = hex;
     this.#settings.rev++;
     this.#pushSettings();
@@ -1104,6 +1123,9 @@ export class DemoCoreTransport implements Transport {
   #themeClearOverride(role: string): void {
     if (!(role in this.#settings.theme.overrides)) return;
     delete this.#settings.theme.overrides[role];
+    if (this.#settings.theme.preset === CUSTOM_PRESET) {
+      delete this.#customThemeOverrides[role];
+    }
     this.#settings.theme.roles[role] = presetPalette(this.#settings.theme.preset)[role];
     this.#settings.rev++;
     this.#pushSettings();

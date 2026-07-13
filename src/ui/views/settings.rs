@@ -751,9 +751,10 @@ fn register_field_controls(
         let focused = i == focused_field;
 
         if let Field::ThemeColor(_) = field {
-            // The swatch + hex value opens the inline hex editor.
+            // The swatch opens the palette; the hex value retains the inline editor.
             let vx = area.x + gutter + color_lw + 1; // gutter + label + leading space
-            put(vx, 2 + 2 + 9, y, MouseTarget::SettingsActivate(i)); // swatch + gap + hex
+            put(vx, 2, y, MouseTarget::SettingsColorSwatch(i));
+            put(vx + 4, 9, y, MouseTarget::SettingsActivate(i));
             continue;
         }
 

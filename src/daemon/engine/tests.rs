@@ -378,6 +378,55 @@ fn gui_apply_routes_settings_to_live_daemon_state() {
 }
 
 #[test]
+fn gui_theme_preset_switching_discards_built_in_overrides_but_retains_custom() {
+    use crate::theme::{ThemePreset, ThemeRole};
+
+    let mut engine = engine_with_queue(&["seed"]);
+
+    apply_gui_ok(&mut engine, "theme", "accent", json!("#123456"));
+    apply_gui_ok(&mut engine, "theme", "preset", json!("default"));
+    assert_eq!(
+        engine.config.theme.effective_hex(ThemeRole::Accent),
+        "#123456",
+        "reselecting the active preset must preserve its restart-persistent edit"
+    );
+
+    apply_gui_ok(&mut engine, "theme", "preset", json!("midnight"));
+    assert!(engine.config.theme.active_overrides().is_empty());
+    assert_eq!(
+        engine.config.theme.effective_hex(ThemeRole::Accent),
+        ThemeRole::Accent.default_hex(ThemePreset::Midnight)
+    );
+    apply_gui_ok(&mut engine, "theme", "preset", json!("default"));
+    assert_eq!(
+        engine.config.theme.effective_hex(ThemeRole::Accent),
+        ThemeRole::Accent.default_hex(ThemePreset::Default),
+        "returning to a built-in preset must restore its original palette"
+    );
+
+    apply_gui_ok(&mut engine, "theme", "preset", json!("custom"));
+    assert_eq!(
+        engine.config.theme.effective_hex(ThemeRole::Accent),
+        ThemeRole::Accent.default_hex(ThemePreset::Default),
+        "Custom starts from Default"
+    );
+    apply_gui_ok(&mut engine, "theme", "accent", json!("#abcdef"));
+    apply_gui_ok(&mut engine, "theme", "preset", json!("nord"));
+    assert!(engine.config.theme.active_overrides().is_empty());
+    apply_gui_ok(&mut engine, "theme", "preset", json!("custom"));
+    assert_eq!(
+        engine.config.theme.effective_hex(ThemeRole::Accent),
+        "#ABCDEF",
+        "Custom edits must survive a preset round trip"
+    );
+
+    // This lane historically accepted unknown strings by normalizing them to Default.
+    apply_gui_ok(&mut engine, "theme", "preset", json!("not-a-theme"));
+    assert_eq!(engine.config.theme.preset_enum(), ThemePreset::Default);
+    assert_eq!(engine.config.theme.preset, "default");
+}
+
+#[test]
 fn gui_apply_rejects_bad_values_and_unknown_fields() {
     let mut engine = engine_with_queue(&["seed"]);
 

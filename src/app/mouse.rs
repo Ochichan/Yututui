@@ -116,6 +116,7 @@ impl App {
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
+        self.interaction.color_picker_click = None;
         self.interaction.pending_double_click_selection = None;
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
@@ -440,6 +441,9 @@ impl App {
             if let MouseTarget::Scrollbar(surface) = region.target {
                 return self.on_scrollbar_press(surface, region.rect, row);
             }
+            if matches!(region.target, MouseTarget::SettingsColorSwatch(_)) {
+                self.interaction.color_picker_click = Some((col, row));
+            }
             // Ctrl/Cmd+click on a list row toggles it in/out of the multi-selection.
             if multi && let MouseTarget::ListRow(i) = region.target {
                 match self.mode {
@@ -690,6 +694,10 @@ impl App {
                 self.settings_activate()
             }
             MouseTarget::SettingsActivate(_) => Vec::new(),
+            MouseTarget::SettingsColorSwatch(row) => self.settings_color_swatch_click(row),
+            MouseTarget::SettingsColorPickerSurface
+            | MouseTarget::SettingsColorPickerCurrent
+            | MouseTarget::SettingsColorPickerChoice(_) => Vec::new(),
             MouseTarget::SettingsSpotifyImportModeMenu if self.mode == Mode::Settings => {
                 if self
                     .settings

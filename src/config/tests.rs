@@ -362,6 +362,35 @@ fn json_round_trips() {
 }
 
 #[test]
+fn custom_theme_palettes_round_trip_independently() {
+    let mut config = Config::default();
+    config.theme.set_preset(crate::theme::ThemePreset::Custom);
+    config
+        .theme
+        .set_override(crate::theme::ThemeRole::Accent, "#123456")
+        .unwrap();
+
+    let mut radio_theme = ThemeConfig::radio();
+    radio_theme.set_preset(crate::theme::ThemePreset::Custom);
+    radio_theme
+        .set_override(crate::theme::ThemeRole::Accent, "#654321")
+        .unwrap();
+    config.radio_theme = Some(radio_theme);
+
+    let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        back.theme.effective_hex(crate::theme::ThemeRole::Accent),
+        "#123456"
+    );
+    assert_eq!(
+        back.effective_radio_theme()
+            .unwrap()
+            .effective_hex(crate::theme::ThemeRole::Accent),
+        "#654321"
+    );
+}
+
+#[test]
 fn search_onboarding_is_fresh_only_for_new_profiles() {
     assert!(!Config::default().search_onboarding_seen);
     let legacy: Config = serde_json::from_str("{\"volume\": 42}").unwrap();

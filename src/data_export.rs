@@ -543,10 +543,12 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "theme": {
                 "preset": theme.preset,
                 "overrides": theme.overrides,
+                "custom_overrides": theme.custom_overrides,
             },
             "radio_theme": radio_theme.map(|theme| json!({
                 "preset": theme.preset,
                 "overrides": theme.overrides,
+                "custom_overrides": theme.custom_overrides,
             })),
         }),
         bindings: json!({

@@ -588,6 +588,14 @@ pub enum MouseTarget {
     /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
     /// or fires the action (button); the mouse equivalent of Enter on that row.
     SettingsActivate(usize),
+    /// The two-cell color swatch on a Settings theme row — opens the full color picker.
+    SettingsColorSwatch(usize),
+    /// Modal picker backdrop/chrome. It captures clicks inside the popup that are not choices.
+    SettingsColorPickerSurface,
+    /// The lossless current-value row in the modal color picker.
+    SettingsColorPickerCurrent,
+    /// A picker-grid choice: transparent at zero, then the 240 xterm colors.
+    SettingsColorPickerChoice(usize),
     /// Open/close the Settings Spotify import-mode dropdown.
     SettingsSpotifyImportModeMenu,
     /// Pick a Settings Spotify import-mode dropdown option.

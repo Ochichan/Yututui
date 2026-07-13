@@ -89,6 +89,33 @@ impl App {
         {
             return Vec::new();
         }
+        // A picker-opening/applying press owns its paired double-click. Check this before the
+        // open-modal route: the second press of a swatch double-click arrives after the first has
+        // opened the picker and must not be reinterpreted against the newly rendered popup.
+        if let Msg::MouseDoubleClick { col, row } = &msg
+            && self.interaction.color_picker_click.take() == Some((*col, *row))
+        {
+            self.dirty = true;
+            return Vec::new();
+        }
+        // The Settings-owned picker captures every pointer event at the dispatcher boundary so
+        // none of the many screen-specific mouse routes can see through the modal.
+        if self.settings_color_picker_is_open() {
+            match &msg {
+                Msg::MouseClick { col, row, .. } | Msg::MouseDoubleClick { col, row } => {
+                    return self.settings_color_picker_mouse_click(*col, *row);
+                }
+                Msg::MouseScroll { up, .. } => {
+                    self.settings_color_picker_scroll(*up, MOUSE_SCROLL_LINES);
+                    return Vec::new();
+                }
+                Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseLeftUp => return Vec::new(),
+                _ => {}
+            }
+        }
         match msg {
             Msg::Noop => return Vec::new(),
             Msg::Key(k) => return self.on_key(k),

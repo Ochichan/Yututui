@@ -64,6 +64,46 @@ fn settings_revs(lines: &[SessionLine]) -> Vec<u64> {
 }
 
 #[test]
+fn settings_theme_projects_active_overrides_and_lists_custom() {
+    use crate::theme::{ThemePreset, ThemeRole};
+
+    let queue = Queue::default();
+    let mut config = crate::config::Config::default();
+    config.theme.set_preset(ThemePreset::Custom);
+    config
+        .theme
+        .set_override(ThemeRole::Accent, "#123456")
+        .unwrap();
+
+    config.theme.set_preset(ThemePreset::Nord);
+    let mut core = test_view(&queue);
+    core.config = &config;
+    let built_in = settings_model(&core, 1);
+    assert!(built_in.theme.overrides.is_empty());
+    assert!(
+        built_in
+            .theme
+            .presets
+            .iter()
+            .any(|preset| preset.name == "custom" && preset.label == "Custom")
+    );
+
+    config.theme.set_preset(ThemePreset::Custom);
+    let mut core = test_view(&queue);
+    core.config = &config;
+    let custom = settings_model(&core, 2);
+    assert_eq!(custom.theme.preset, "custom");
+    assert_eq!(
+        custom.theme.overrides.get("accent").map(String::as_str),
+        Some("#123456")
+    );
+    assert_eq!(
+        custom.theme.roles.get("accent").map(String::as_str),
+        Some("#123456")
+    );
+}
+
+#[test]
 fn subscribe_emits_snapshots_before_reply_and_only_for_new_topics() {
     let (hub, session, mut rx) = test_register(SessionTuning::default());
     let mut publisher = Publisher::new(hub);
