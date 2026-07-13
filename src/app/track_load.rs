@@ -81,8 +81,8 @@ impl App {
         if !song.is_radio_station() {
             self.note_session_activity();
         }
+        self.associate_lyrics_with_track(&song.video_id);
         self.prefetch.loaded_video_id = Some(song.video_id.clone());
-        self.lyrics.track = None;
         self.clear_artwork();
 
         effects.push(Cmd::Persist(PersistCmd::Library));

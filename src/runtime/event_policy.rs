@@ -67,7 +67,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::TrackResolved { .. } => EventPolicy::DropIfStale {
             stale_key: Key::ResolverVideo,
         },
-        Msg::Noop | Msg::StatusTick | Msg::AnimTick | Msg::RecordingTick => {
+        Msg::Noop | Msg::StatusTick | Msg::LyricsTick | Msg::AnimTick | Msg::RecordingTick => {
             EventPolicy::BestEffort {
                 reason: "loop-owned ticks and inert messages are redraw/status hints",
             }
@@ -81,6 +81,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::MouseLeftUp
         | Msg::MouseScroll { .. }
         | Msg::Resize
+        | Msg::TerminalResize { .. }
         | Msg::Focus(_)
         | Msg::Autoplay
         | Msg::ApiModeResolved { .. }

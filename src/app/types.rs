@@ -106,6 +106,12 @@ pub enum Msg {
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
+    /// A real terminal resize with its zoom-adjusted logical grid. Unlike the test/internal
+    /// redraw hint above, this lets the reducer leave Mini synchronously before the next frame.
+    TerminalResize {
+        width: u16,
+        height: u16,
+    },
     /// Terminal focus changed (DECSET ?1004). `false` while the window is unfocused
     /// (minimized / behind another window); the main loop then parks the ~30 fps animation
     /// tick (see [`App::animation_active`]). Unsupported terminals never send this, so the
@@ -121,9 +127,12 @@ pub enum Msg {
         mode: crate::api::ApiMode,
         had_cookie: bool,
     },
-    /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
-    /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
+    /// Periodic wake-up while transient status or lyric-sync OSD state is showing. Lets the
+    /// reducer expire the status after [`STATUS_TTL`] and collapse the OSD after three seconds.
     StatusTick,
+    /// 100 ms synced-lyrics clock. The runtime arms it only while the full Player lyric panel is
+    /// visible and actively playing; the reducer redraws only when the stored active row changes.
+    LyricsTick,
     /// Animation frame tick (~30 fps), driven by the main loop **only** while
     /// [`App::animation_active`] holds — i.e. on the player view, master on, a track playing,
     /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
@@ -540,6 +549,27 @@ pub enum MouseTarget {
     ToolSetupLater,
     Global(Action),
     Player(Action),
+    /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
+    /// targets fail closed instead of seeking a newly loaded track.
+    LyricsLine {
+        video_id: String,
+        line_index: usize,
+    },
+    /// The collapsed `[±]` handle. Carries its rendered track ID for the same stale-frame guard.
+    LyricsDelayHandle {
+        video_id: String,
+    },
+    /// Expanded lyric-delay buttons. Keeping the rendered track ID prevents an old frame's OSD
+    /// from adjusting a newly loaded song before the next frame replaces the hit map.
+    LyricsDelayEarlier {
+        video_id: String,
+    },
+    LyricsDelayLater {
+        video_id: String,
+    },
+    /// Inert coverage for the expanded lyric-delay OSD's value and spacing. Action buttons are
+    /// registered after it and win hit-testing; everything else is deliberately consumed.
+    LyricsDelayBlock,
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
     EqMenu,
     /// Pick an EQ preset from the open dropdown.

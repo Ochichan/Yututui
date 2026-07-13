@@ -137,6 +137,13 @@ async fn animation_interval_uses_the_legacy_period_and_skip_policy() {
 }
 
 #[tokio::test]
+async fn lyrics_interval_uses_100ms_and_drops_missed_boundaries() {
+    let interval = lyrics_interval();
+    assert_eq!(interval.period(), Duration::from_millis(100));
+    assert_eq!(interval.missed_tick_behavior(), MissedTickBehavior::Skip);
+}
+
+#[tokio::test]
 async fn delayed_200ms_first_poll_advances_exactly_one_frame() {
     let first_due = tokio::time::Instant::now() - Duration::from_millis(200);
     let mut interval = anim_interval_at(first_due, 30);
@@ -364,6 +371,10 @@ fn progress_turns_skip_media_and_remote_projection_but_keep_scrobble_heartbeat()
 
     assert_eq!(
         ObserverPlan::for_messages(&Msg::StatusTick, None),
+        ObserverPlan::INERT
+    );
+    assert_eq!(
+        ObserverPlan::for_messages(&Msg::LyricsTick, None),
         ObserverPlan::INERT
     );
     assert_eq!(

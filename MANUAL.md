@@ -82,9 +82,12 @@ the window grows again. Nothing to configure; it just follows the window.
 | `↑` / `↓` | Volume |
 | `f` | ♥ Favorite the current song |
 | `c` | Show the queue (what plays next) |
-| `Shift+L` | Lyrics, synced to the music |
+| `Shift+L` | Lyrics, synced to the music; click a visible line to seek there |
+| `z` / `Z` | Show lyrics 0.1s earlier / later |
 | `v` | Music video in a floating window |
 | `Ctrl+Q` | Quit |
+
+When synced lyrics load, **`[ − 0.0s + ]`** appears at the lower right for three seconds. After it folds to **`[±]`**, click the handle to reopen it for three seconds; **`−/+`** fine-tunes the lyrics earlier / later in 0.1-second steps. Clicking any visible lyric line seeks to its synced position.
 
 ### Your Library
 

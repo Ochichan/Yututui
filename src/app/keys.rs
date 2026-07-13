@@ -4,6 +4,15 @@ use super::*;
 
 impl App {
     pub(in crate::app) fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // Character repeat is opt-in. The translator forwards only lyric-delay mappings, but
+        // tests and alternate event sources can call the reducer directly; reject those repeats
+        // before they dirty the frame or dismiss a modal that currently owns keyboard input.
+        if k.kind == crossterm::event::KeyEventKind::Repeat
+            && !crate::event::is_autorepeat_nav_key(k.code)
+            && !self.lyrics_repeat_has_keyboard(k)
+        {
+            return Vec::new();
+        }
         // Some terminals render IME preedit text even in raw alternate-screen apps. Always
         // redraw after a key press so committed Korean jamo used as shortcuts are covered.
         self.dirty = true;
@@ -486,6 +495,22 @@ impl App {
             Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
             _ => false,
         }
+    }
+
+    fn lyrics_repeat_has_keyboard(&self, key: KeyEvent) -> bool {
+        self.mode == Mode::Player
+            && self.bridges.ui_tier.get() != crate::ui::layout::UiTier::Mini
+            && self.art_overlay_mask() == 0
+            && self.local_mode.pending_confirm.is_none()
+            && self.overlays.spotify_picker.is_none()
+            && self.overlays.now_playing_overlay.is_none()
+            && self.overlays.recording_settings.is_none()
+            && self.overlays.recordings_browser.is_none()
+            && matches!(
+                self.keymap
+                    .context_action(KeyContext::Player, Chord::from(key)),
+                Some(Action::LyricsDelayEarlier | Action::LyricsDelayLater)
+            )
     }
 
     /// Scroll the open help / mouse cheat-sheet with the shared navigation chords. Returns

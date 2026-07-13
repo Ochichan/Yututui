@@ -511,6 +511,11 @@ impl App {
 
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
+            target @ (MouseTarget::LyricsLine { .. }
+            | MouseTarget::LyricsDelayHandle { .. }
+            | MouseTarget::LyricsDelayEarlier { .. }
+            | MouseTarget::LyricsDelayLater { .. }
+            | MouseTarget::LyricsDelayBlock) => self.on_lyrics_mouse_target(target),
             MouseTarget::ContextMenuItem(_) => Vec::new(),
             target @ (MouseTarget::ToolSetupCopy
             | MouseTarget::ToolSetupGuide
