@@ -75,6 +75,12 @@ pub struct RenderBridges {
     pub marquee_origin: Cell<u64>,
     pub marquee_ran: Cell<bool>,
     pub marquee_cache: RefCell<crate::ui::marquee::MarqueeCache>,
+    /// Whether the last render actually placed at least one canvas effect. Unlike raw config,
+    /// this excludes effects hidden by the responsive layout or focal safe-area constraints.
+    pub canvas_active: Cell<bool>,
+    /// Whether any actually placed canvas effect uses the heavy redraw cadence. This keeps the
+    /// 20 fps cap and synchronized terminal updates active even when lyrics are in the foreground.
+    pub canvas_heavy_active: Cell<bool>,
 }
 
 impl RenderBridges {

@@ -7,11 +7,11 @@
 //! and each effect degrades in retro mode either at the source (forked glyph sets) or through
 //! the CP437 scrubber. Nothing here allocates per frame beyond tiny fixed buffers.
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{hash32, lerp_color, put_char, wave};
+use super::canvas::CanvasWriter;
+use super::{hash32, lerp_color, wave};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
@@ -19,7 +19,7 @@ use crate::theme::ThemeRole as R;
 
 /// Occasional shooting stars: up to two diagonal streaks with fading tails, each on its own
 /// hashed launch cycle so the sky stays mostly calm with a rare bright crossing.
-pub(super) fn comets(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn comets(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = i64::from(zone.width);
     let h = i64::from(zone.height);
     if w < 10 || h < 4 {
@@ -33,7 +33,6 @@ pub(super) fn comets(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     } else {
         ('✦', ['✧', '·', '·'])
     };
-    let buf = frame.buffer_mut();
     for slot in 0..2u64 {
         // Each slot fires once per cycle; most of the cycle is empty sky.
         let period = 140 + u64::from(hash32(slot * 13 + 5) % 160);
@@ -70,8 +69,7 @@ pub(super) fn comets(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
                     lerp_color(tail_base, dim, fade),
                 )
             };
-            put_char(
-                buf,
+            canvas.put(
                 (i64::from(zone.left()) + x) as u16,
                 (i64::from(zone.top()) + y) as u16,
                 glyph,
@@ -88,7 +86,7 @@ const SNOW_GLYPHS_RETRO: [char; 4] = ['*', '*', '.', '.'];
 
 /// Sparse snowfall: flakes drift down at hashed speeds with a gentle sinusoidal wobble,
 /// heavier flakes reading brighter and faster than the fine ones behind them.
-pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn snow(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = u32::from(zone.width);
     let h = u64::from(zone.height);
     if w < 4 || h < 2 {
@@ -102,7 +100,6 @@ pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     };
     let bright = Color::Rgb(235, 240, 250);
     let dim = app.theme.color(R::TextSubtle);
-    let buf = frame.buffer_mut();
     for i in 0..u64::from(count) {
         // Size class picks glyph, speed and brightness together (big flakes fall faster).
         let class = (hash32(i * 3 + 7) % 4) as usize;
@@ -119,8 +116,7 @@ pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             continue;
         }
         let color = lerp_color(dim, bright, class as f64 / 3.0);
-        put_char(
-            buf,
+        canvas.put(
             zone.left() + x as u16,
             zone.top() + yv as u16,
             glyphs[3 - class],
@@ -133,7 +129,7 @@ pub(super) fn snow(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 
 /// Fireflies wandering on smooth per-fly Lissajous paths, each breathing between the subtle
 /// text colour and a warm glow on its own phase — the calm counterpart to the starfield.
-pub(super) fn fireflies(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn fireflies(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = f64::from(zone.width);
     let h = f64::from(zone.height);
     if zone.width < 8 || zone.height < 3 {
@@ -147,7 +143,6 @@ pub(super) fn fireflies(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     } else {
         ('●', '·')
     };
-    let buf = frame.buffer_mut();
     for i in 0..u64::from(count) {
         // Two incommensurate angular speeds per axis make the path wander without looping
         // visibly; amplitudes keep every fly comfortably inside the zone.
@@ -166,8 +161,7 @@ pub(super) fn fireflies(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             continue;
         }
         let glyph = if b > 0.62 { bright_glyph } else { dim_glyph };
-        put_char(
-            buf,
+        canvas.put(
             zone.left() + xi,
             zone.top() + yi,
             glyph,
@@ -209,7 +203,7 @@ const CUBE_EDGES: [(usize, usize); 12] = [
 /// A rotating 3-D wireframe cube, perspective-projected into the middle of the zone — the
 /// donut's angular little sibling at a fraction of its cost (12 edge rasters instead of a
 /// full solid-of-revolution sweep). Edge brightness follows depth so the near face pops.
-pub(super) fn cube(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn cube(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = f64::from(zone.width);
     let h = f64::from(zone.height);
     if zone.width < 12 || zone.height < 6 {
@@ -238,7 +232,6 @@ pub(super) fn cube(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
         proj[i] = (px, py, zc);
     }
 
-    let buf = frame.buffer_mut();
     let mut plot = |x: f64, y: f64, depth: f64, glyph: char, bold: bool| {
         if x < 0.0 || y < 0.0 || x >= w || y >= h {
             return;
@@ -249,13 +242,7 @@ pub(super) fn cube(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
         if bold {
             style = style.add_modifier(Modifier::BOLD);
         }
-        put_char(
-            buf,
-            zone.left() + x as u16,
-            zone.top() + y as u16,
-            glyph,
-            style,
-        );
+        canvas.put(zone.left() + x as u16, zone.top() + y as u16, glyph, style);
     };
 
     for &(a, b) in &CUBE_EDGES {
@@ -290,14 +277,13 @@ const BUBBLE_GLYPHS_RETRO: [char; 3] = ['o', 'o', '.'];
 
 /// A little ASCII aquarium: fish cruise across on their own lanes (both directions, hashed
 /// species/speed/colour), while bubbles wobble up from the depths.
-pub(super) fn aquarium(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = i64::from(zone.width);
     let h = u64::from(zone.height);
     if w < 14 || h < 3 {
         return;
     }
     let retro = app.retro_mode();
-    let buf = frame.buffer_mut();
 
     // Fish: one per ~3 rows, capped so a huge zone doesn't become a trawler's net.
     let fish_count = (h / 3).clamp(2, 5);
@@ -330,8 +316,7 @@ pub(super) fn aquarium(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             if x < 0 || x >= w {
                 continue;
             }
-            put_char(
-                buf,
+            canvas.put(
                 zone.left() + x as u16,
                 zone.top() + lane + bob,
                 ch,
@@ -364,8 +349,7 @@ pub(super) fn aquarium(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
         }
         // Bubbles grow as they rise: dot → ring near the surface.
         let stage = ((yv * 3) / h.max(1)).min(2) as usize;
-        put_char(
-            buf,
+        canvas.put(
             zone.left() + x as u16,
             zone.top() + y,
             glyphs[2 - stage],
@@ -378,7 +362,7 @@ pub(super) fn aquarium(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 
 /// Layered ocean swell along the bottom of the zone: two-to-four out-of-phase sine crests,
 /// deeper layers darker and slower, with sparse foam flecks on the top crest.
-pub(super) fn waves(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn waves(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = zone.width;
     if w < 8 || zone.height < 3 {
         return;
@@ -394,7 +378,6 @@ pub(super) fn waves(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     };
     let bottom = zone.bottom() - 1;
     let top = zone.top();
-    let buf = frame.buffer_mut();
     for layer in 0..layers {
         // Front layers ride higher amplitude and faster phase; each gets its own base row.
         let li = f64::from(layer);
@@ -410,14 +393,13 @@ pub(super) fn waves(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             if y < i32::from(top) || y > i32::from(bottom) {
                 continue;
             }
-            put_char(buf, zone.left() + x, y as u16, crest_glyph, style);
+            canvas.put(zone.left() + x, y as u16, crest_glyph, style);
             // Foam: rare bright flecks dancing on the front crest only.
             if layer == 0
                 && hash32(u64::from(x) * 37 + f / 8).is_multiple_of(23)
                 && y > i32::from(top)
             {
-                put_char(
-                    buf,
+                canvas.put(
                     zone.left() + x,
                     (y - 1) as u16,
                     foam_glyph,

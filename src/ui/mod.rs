@@ -40,6 +40,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The selected-row marquee flag is a per-frame output too: a list view sets it while it
     // renders a scrolling cursor row; `animation_active` reads the latest frame's verdict.
     app.bridges.marquee_ran.set(false);
+    // Canvas activity is geometry-dependent (art/lyrics masks and focal safe regions can hide
+    // configured effects), so stale Player state must never keep Mini or another view awake.
+    app.bridges.canvas_active.set(false);
+    app.bridges.canvas_heavy_active.set(false);
     // The responsive tier is decided from the real cell grid each frame and bridged back
     // to the reducer (text zoom rescales the grid without a resize event, so only the
     // render pass knows it). Below the mini thresholds the whole UI is the miniplayer;

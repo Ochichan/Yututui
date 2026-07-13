@@ -1,12 +1,11 @@
-//! First-wave filler-canvas effects — matrix rain, the starfield, the faux visualizer, the
-//! spinning donut and the bouncing logo — plus [`render_canvas`], the single dispatcher every
-//! blank filler zone is painted through (back-to-front across this module, `canvas_ext` and
-//! `canvas_sim`). Split out of the parent module verbatim when the second wave landed.
+//! Canvas composition and first-wave effects. [`render_canvas_composite`] paints each enabled
+//! effect once in its assigned coordinate space and hard-masks album art for every write.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -14,62 +13,457 @@ use super::{bar_blocks, canvas_ext, canvas_sim, hash32, lerp_color, put_char, wa
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
-/// Draw all enabled canvas effects into a blank `zone`, back to front: full-field washes
-/// first (plasma, Life, pipes), then weather and sky (waves, rain, snow, starfield,
-/// fireflies, comets), then the scene pieces (aquarium, visualizer, fireworks, cube, donut)
-/// and finally the bouncing logo on top. Called only for the blank filler region, so it never
-/// overdraws album art or lyrics.
-pub fn render_canvas(frame: &mut Frame, app: &App, zone: Rect) {
-    let a = app.animations();
-    if !a.master || zone.width < 4 || zone.height < 2 {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CanvasActivity {
+    pub active: bool,
+    pub heavy: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct CellSpan {
+    pub start: u16,
+    pub end: u16,
+}
+
+/// Direct writer for canvas effects. Album art is a hard exclusion even though the image widget
+/// renders later: Kitty album art intentionally sits below terminal text, so merely relying on
+/// widget order would still let an animation glyph shine through the image.
+pub(super) struct CanvasWriter<'a> {
+    buffer: &'a mut Buffer,
+    art_mask: Option<Rect>,
+}
+
+impl<'a> CanvasWriter<'a> {
+    pub(super) fn new(buffer: &'a mut Buffer, art_mask: Option<Rect>) -> Self {
+        Self { buffer, art_mask }
+    }
+
+    pub(super) fn put(&mut self, x: u16, y: u16, ch: char, style: Style) {
+        if self.masked(x, y) {
+            return;
+        }
+        put_char(self.buffer, x, y, ch, style);
+    }
+
+    /// Write a cell already proven visible by [`Self::visible_spans`]. Callers must keep the
+    /// coordinates inside both the returned span and the source zone. This skips the duplicate
+    /// album-art and coordinate tests on the hottest full-field loops. These effects only patch
+    /// foreground colour, so assigning it directly also avoids rebuilding a one-field `Style`.
+    pub(super) fn put_visible_fg(&mut self, x: u16, y: u16, ch: char, fg: Color) {
+        let area = self.buffer.area;
+        let index = usize::from(y - area.y) * usize::from(area.width) + usize::from(x - area.x);
+        let cell = &mut self.buffer.content[index];
+        cell.set_char(ch);
+        cell.fg = fg;
+    }
+
+    fn masked(&self, x: u16, y: u16) -> bool {
+        self.art_mask.is_some_and(|mask| {
+            x >= mask.left() && x < mask.right() && y >= mask.top() && y < mask.bottom()
+        })
+    }
+
+    /// Horizontal spans in `zone` that remain visible after subtracting album art. The fixed
+    /// two-span result lets full-field effects skip masked cells without allocating a temporary
+    /// buffer or paying a mask branch for every cell.
+    pub(super) fn visible_spans(&self, zone: Rect, y: u16) -> ([CellSpan; 2], usize) {
+        let full = CellSpan {
+            start: zone.left(),
+            end: zone.right(),
+        };
+        let Some(mask) = self.art_mask else {
+            return (
+                [full, CellSpan::default()],
+                usize::from(full.start < full.end),
+            );
+        };
+        if y < mask.top() || y >= mask.bottom() {
+            return (
+                [full, CellSpan::default()],
+                usize::from(full.start < full.end),
+            );
+        }
+        let cut_left = mask.left().clamp(zone.left(), zone.right());
+        let cut_right = mask.right().clamp(zone.left(), zone.right());
+        if cut_left >= cut_right {
+            return (
+                [full, CellSpan::default()],
+                usize::from(full.start < full.end),
+            );
+        }
+        let spans = [
+            CellSpan {
+                start: zone.left(),
+                end: cut_left,
+            },
+            CellSpan {
+                start: cut_right,
+                end: zone.right(),
+            },
+        ];
+        match (spans[0].start < spans[0].end, spans[1].start < spans[1].end) {
+            (true, true) => (spans, 2),
+            (true, false) => ([spans[0], CellSpan::default()], 1),
+            (false, true) => ([spans[1], CellSpan::default()], 1),
+            (false, false) => ([CellSpan::default(); 2], 0),
+        }
+    }
+}
+
+const MAX_FREE_RECTS: usize = 16;
+const MAX_FOCAL_OPTIONS: usize = 64;
+
+#[derive(Clone, Copy)]
+struct RectList<const N: usize> {
+    rects: [Rect; N],
+    len: usize,
+}
+
+impl<const N: usize> RectList<N> {
+    fn new() -> Self {
+        Self {
+            rects: [Rect::ZERO; N],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, rect: Rect) {
+        if !rect.is_empty() && self.len < N {
+            self.rects[self.len] = rect;
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[Rect] {
+        &self.rects[..self.len]
+    }
+}
+
+fn subtract_rect(source: Rect, exclusion: Rect, out: &mut RectList<MAX_FREE_RECTS>) {
+    let cut = source.intersection(exclusion);
+    if cut.is_empty() {
+        out.push(source);
         return;
     }
+    out.push(Rect::new(
+        source.left(),
+        source.top(),
+        source.width,
+        cut.top().saturating_sub(source.top()),
+    ));
+    out.push(Rect::new(
+        source.left(),
+        cut.bottom(),
+        source.width,
+        source.bottom().saturating_sub(cut.bottom()),
+    ));
+    out.push(Rect::new(
+        source.left(),
+        cut.top(),
+        cut.left().saturating_sub(source.left()),
+        cut.height,
+    ));
+    out.push(Rect::new(
+        cut.right(),
+        cut.top(),
+        source.right().saturating_sub(cut.right()),
+        cut.height,
+    ));
+}
+
+fn subtract_all(
+    free: RectList<MAX_FREE_RECTS>,
+    exclusion: Option<Rect>,
+) -> RectList<MAX_FREE_RECTS> {
+    let Some(exclusion) = exclusion.filter(|rect| !rect.is_empty()) else {
+        return free;
+    };
+    let mut next = RectList::new();
+    for rect in free.as_slice() {
+        subtract_rect(*rect, exclusion, &mut next);
+    }
+    next
+}
+
+fn art_halo(art: Rect, bounds: Rect) -> Rect {
+    let left = art.left().saturating_sub(1).max(bounds.left());
+    let top = art.top().saturating_sub(1).max(bounds.top());
+    let right = art.right().saturating_add(1).min(bounds.right());
+    let bottom = art.bottom().saturating_add(1).min(bounds.bottom());
+    Rect::new(
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
+}
+
+fn fit_two_to_one(area: Rect, min_width: u16, min_height: u16) -> Option<Rect> {
+    let height = area.height.min(area.width / 2);
+    let width = height.saturating_mul(2);
+    if width < min_width || height < min_height {
+        return None;
+    }
+    Some(Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    ))
+}
+
+fn focal_options(
+    free: &RectList<MAX_FREE_RECTS>,
+    min_width: u16,
+    min_height: u16,
+) -> RectList<MAX_FOCAL_OPTIONS> {
+    let mut options = RectList::new();
+    for area in free.as_slice() {
+        if let Some(rect) = fit_two_to_one(*area, min_width, min_height) {
+            options.push(rect);
+        }
+
+        let left_width = area.width / 2;
+        let right_width = area.width.saturating_sub(left_width);
+        let top_height = area.height / 2;
+        let bottom_height = area.height.saturating_sub(top_height);
+        for part in [
+            Rect::new(area.x, area.y, left_width, area.height),
+            Rect::new(
+                area.x.saturating_add(left_width),
+                area.y,
+                right_width,
+                area.height,
+            ),
+            Rect::new(area.x, area.y, area.width, top_height),
+            Rect::new(
+                area.x,
+                area.y.saturating_add(top_height),
+                area.width,
+                bottom_height,
+            ),
+        ] {
+            if let Some(rect) = fit_two_to_one(part, min_width, min_height) {
+                options.push(rect);
+            }
+        }
+
+        // Equal halves alone miss valid asymmetric pairings (for example, a 12x6 cube beside a
+        // 10x5 donut in a 22x6 strip). Edge-anchored minimum slices make every minimum-sized
+        // horizontal or vertical pairing available to the fixed-array pair search.
+        if area.width >= min_width {
+            for part in [
+                Rect::new(area.x, area.y, min_width, area.height),
+                Rect::new(
+                    area.right().saturating_sub(min_width),
+                    area.y,
+                    min_width,
+                    area.height,
+                ),
+            ] {
+                if let Some(rect) = fit_two_to_one(part, min_width, min_height) {
+                    options.push(rect);
+                }
+            }
+        }
+        if area.height >= min_height {
+            for part in [
+                Rect::new(area.x, area.y, area.width, min_height),
+                Rect::new(
+                    area.x,
+                    area.bottom().saturating_sub(min_height),
+                    area.width,
+                    min_height,
+                ),
+            ] {
+                if let Some(rect) = fit_two_to_one(part, min_width, min_height) {
+                    options.push(rect);
+                }
+            }
+        }
+    }
+    options
+}
+
+fn rect_score(rect: Rect) -> u32 {
+    u32::from(rect.width) * u32::from(rect.height)
+}
+
+fn best_single(options: &RectList<MAX_FOCAL_OPTIONS>) -> Option<Rect> {
+    options
+        .as_slice()
+        .iter()
+        .copied()
+        .max_by_key(|rect| rect_score(*rect))
+}
+
+fn focal_placements(
+    player_rect: Rect,
+    art_mask: Option<Rect>,
+    lyrics_rect: Option<Rect>,
+    cube_on: bool,
+    donut_on: bool,
+) -> (Option<Rect>, Option<Rect>) {
+    if !cube_on && !donut_on {
+        return (None, None);
+    }
+
+    let mut free = RectList::new();
+    free.push(player_rect);
+    free = subtract_all(free, art_mask.map(|art| art_halo(art, player_rect)));
+    free = subtract_all(
+        free,
+        lyrics_rect.map(|lyrics| lyrics.intersection(player_rect)),
+    );
+
+    if cube_on && donut_on {
+        let cube = focal_options(&free, 12, 6);
+        let donut = focal_options(&free, 10, 5);
+        let mut pair = None;
+        let mut pair_score = 0u32;
+        for cube_rect in cube.as_slice() {
+            for donut_rect in donut.as_slice() {
+                if !cube_rect.intersection(*donut_rect).is_empty() {
+                    continue;
+                }
+                let score = rect_score(*cube_rect).saturating_add(rect_score(*donut_rect));
+                if pair.is_none() || score > pair_score {
+                    pair = Some((*cube_rect, *donut_rect));
+                    pair_score = score;
+                }
+            }
+        }
+        if let Some((cube, donut)) = pair {
+            return (Some(cube), Some(donut));
+        }
+        let cube = best_single(&cube);
+        let donut = best_single(&donut);
+        return match (cube, donut) {
+            (Some(cube), Some(donut)) if rect_score(donut) > rect_score(cube) => {
+                (None, Some(donut))
+            }
+            (cube, _) if cube.is_some() => (cube, None),
+            (_, donut) => (None, donut),
+        };
+    }
+    if cube_on {
+        let cube = focal_options(&free, 12, 6);
+        return (best_single(&cube), None);
+    }
+    let donut = focal_options(&free, 10, 5);
+    (None, best_single(&donut))
+}
+
+fn supports(zone: Rect, min_width: u16, min_height: u16) -> bool {
+    zone.width >= min_width && zone.height >= min_height
+}
+
+/// Composite every enabled canvas effect exactly once in a stable coordinate system. Field
+/// effects use the full Player interior; scene effects use the filler stage; focal effects are
+/// assigned to allocation-free 2:1 safe regions outside album art (plus a one-cell halo) and
+/// lyrics. Album art remains a hard write mask for every family.
+pub fn render_canvas_composite(
+    frame: &mut Frame,
+    app: &App,
+    player_rect: Rect,
+    stage_rect: Rect,
+    art_mask: Option<Rect>,
+    lyrics_rect: Option<Rect>,
+    suppress_donut: bool,
+) -> CanvasActivity {
+    let a = app.animations();
+    let mut activity = CanvasActivity::default();
+    if !a.master {
+        app.bridges.canvas_active.set(false);
+        app.bridges.canvas_heavy_active.set(false);
+        return activity;
+    }
     let f = app.anim_frame();
-    if a.plasma {
-        canvas_sim::plasma(frame, app, zone, f);
+    let (cube_rect, donut_rect) = focal_placements(
+        stage_rect,
+        art_mask,
+        lyrics_rect,
+        a.cube,
+        a.donut && !suppress_donut,
+    );
+    let mut canvas = CanvasWriter::new(frame.buffer_mut(), art_mask);
+    if a.plasma && supports(player_rect, 4, 2) {
+        canvas_sim::plasma(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.life {
-        canvas_sim::life(frame, app, zone, f);
+    if a.life && supports(player_rect, 8, 6) {
+        canvas_sim::life(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.pipes {
-        canvas_sim::pipes(frame, app, zone, f);
+    if a.pipes && supports(player_rect, 10, 5) {
+        canvas_sim::pipes(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.waves {
-        canvas_ext::waves(frame, app, zone, f);
+    if a.rain && supports(player_rect, 4, 2) {
+        rain(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.rain {
-        rain(frame, app, zone, f);
+    if a.snow && supports(player_rect, 4, 2) {
+        canvas_ext::snow(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.snow {
-        canvas_ext::snow(frame, app, zone, f);
+    if a.starfield && supports(player_rect, 4, 2) {
+        starfield(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.starfield {
-        starfield(frame, app, zone, f);
+    if a.fireflies && supports(player_rect, 8, 3) {
+        canvas_ext::fireflies(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.fireflies {
-        canvas_ext::fireflies(frame, app, zone, f);
+    if a.comets && supports(player_rect, 10, 4) {
+        canvas_ext::comets(&mut canvas, app, player_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.comets {
-        canvas_ext::comets(frame, app, zone, f);
+    if a.waves && supports(stage_rect, 8, 3) {
+        canvas_ext::waves(&mut canvas, app, stage_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.aquarium {
-        canvas_ext::aquarium(frame, app, zone, f);
+    if a.visualizer && supports(stage_rect, 4, 2) {
+        visualizer(&mut canvas, app, stage_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.visualizer {
-        visualizer(frame, app, zone, f);
+    if a.fireworks && supports(stage_rect, 16, 6) {
+        canvas_sim::fireworks(&mut canvas, app, stage_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.fireworks {
-        canvas_sim::fireworks(frame, app, zone, f);
+    if a.aquarium && supports(stage_rect, 14, 3) {
+        canvas_ext::aquarium(&mut canvas, app, stage_rect, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.cube {
-        canvas_ext::cube(frame, app, zone, f);
+    if a.bounce && supports(stage_rect, 10, 2) {
+        bounce(&mut canvas, app, stage_rect, f);
+        activity.active = true;
     }
-    if a.donut {
-        donut(frame, app, zone, f);
+    if let Some(zone) = cube_rect {
+        canvas_ext::cube(&mut canvas, app, zone, f);
+        activity.active = true;
+        activity.heavy = true;
     }
-    if a.bounce {
-        bounce(frame, app, zone, f);
+    if let Some(zone) = donut_rect {
+        donut(&mut canvas, app, zone, f);
+        activity.active = true;
+        activity.heavy = true;
     }
+    app.bridges.canvas_active.set(activity.active);
+    app.bridges.canvas_heavy_active.set(activity.heavy);
+    activity
 }
 
 const RAIN_GLYPHS: [char; 22] = [
@@ -100,7 +494,7 @@ thread_local! {
 /// Classic matrix digital rain: each column is an independently-falling head with a fading green
 /// trail. Speed / length / phase are hashed from the column index so columns desync but stay
 /// stable frame to frame.
-fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
+fn rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
     let h = u64::from(zone.height);
     RAIN_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
@@ -125,7 +519,6 @@ fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
             }
         }
 
-        let buf = frame.buffer_mut();
         for (i, column) in scratch.columns.iter().enumerate() {
             let x = zone.left() + i as u16;
             let head = (f / column.speed + column.offset) % column.period;
@@ -152,7 +545,7 @@ fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
                     let b = 1.0 - k as f64 / column.len as f64;
                     Color::Rgb((30.0 * b) as u8, (60.0 + 180.0 * b) as u8, (40.0 * b) as u8)
                 };
-                put_char(buf, x, y, g, Style::default().fg(color));
+                canvas.put(x, y, g, Style::default().fg(color));
             }
         }
     });
@@ -181,7 +574,7 @@ thread_local! {
 
 /// Drifting stars / musical sparkles rising slowly up the zone, each twinkling between a subtle and
 /// an accent colour. Density scales with the zone area.
-fn starfield(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+fn starfield(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = u32::from(zone.width);
     let h = u64::from(zone.height);
     let count = ((w * u32::from(zone.height)) / 40).clamp(6, 60);
@@ -204,7 +597,6 @@ fn starfield(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             }
         }
 
-        let buf = frame.buffer_mut();
         for (i, star) in scratch.stars.iter().enumerate() {
             let i = i as u64;
             let yv = (f / star.speed + star.seed) % (h + 4);
@@ -214,14 +606,14 @@ fn starfield(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             let y = zone.top() + (h - 1 - yv) as u16;
             let g = STAR_GLYPHS[(hash32(i * 7 + f / 20) as usize) % STAR_GLYPHS.len()];
             let color = lerp_color(dim, bright, wave24[((f + i * 5) % 24) as usize]);
-            put_char(buf, zone.left() + star.x, y, g, Style::default().fg(color));
+            canvas.put(zone.left() + star.x, y, g, Style::default().fg(color));
         }
     });
 }
 
 /// A decorative (non-audio-reactive) spectrum: bars rising from the bottom strip of the zone, each
 /// mixing two waves, coloured from the gauge colour up to the accent.
-fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+fn visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let blocks = bar_blocks(app);
     let strip = (zone.height / 3).clamp(2, 8);
     let baseline = i32::from(zone.bottom());
@@ -242,7 +634,6 @@ fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             Style::default()
         }
     });
-    let buf = frame.buffer_mut();
     for bx in 0..zone.width {
         let x = zone.left() + bx;
         let phase = u64::from(bx) * 3;
@@ -259,10 +650,10 @@ fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             let y = yy as u16;
             let style = row_styles[row as usize];
             if row < full {
-                put_char(buf, x, y, '█', style);
+                canvas.put(x, y, '█', style);
             } else if row == full && frac > 0.05 {
                 let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
-                put_char(buf, x, y, blocks[idx.min(blocks.len() - 1)], style);
+                canvas.put(x, y, blocks[idx.min(blocks.len() - 1)], style);
             }
         }
     }
@@ -296,7 +687,7 @@ fn donut_trig_steps() -> &'static [(f64, f64)] {
 /// The classic spinning ASCII torus (Andy Sloane's donut), z-buffered into the centre of the zone.
 /// Two rotation angles advance with the frame counter. Luminance picks a glyph and a colour ramp
 /// from accent to alt-accent.
-fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+fn donut(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = i32::from(zone.width);
     let h = i32::from(zone.height);
     if w < 8 || h < 5 {
@@ -348,7 +739,6 @@ fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             }
         }
 
-        let buf = frame.buffer_mut();
         for yy in 0..h {
             for xx in 0..w {
                 let v = scratch.out[(xx + yy * w) as usize];
@@ -356,8 +746,7 @@ fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
                     continue;
                 }
                 let ci = (v as usize - 1).min(DONUT_LUM.len() - 1);
-                put_char(
-                    buf,
+                canvas.put(
                     zone.left() + xx as u16,
                     zone.top() + yy as u16,
                     DONUT_LUM[ci] as char,
@@ -370,7 +759,7 @@ fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 
 /// DVD-style bouncing logo: an ASCII tag ricochets around the zone on a triangle-wave path, its
 /// colour cycling each time it crosses a wall.
-fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+fn bounce(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     const LABEL: &str = "<yututui>";
     let tw = LABEL.chars().count() as i64;
     let w = i64::from(zone.width);
@@ -393,14 +782,12 @@ fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     const PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R::Error];
     let color = app.theme.color(PALETTE[cyc % PALETTE.len()]);
     let right = i64::from(zone.right());
-    let buf = frame.buffer_mut();
     for (i, ch) in LABEL.chars().enumerate() {
         let cx = x + i as i64;
         if cx < i64::from(zone.left()) || cx >= right {
             continue;
         }
-        put_char(
-            buf,
+        canvas.put(
             cx as u16,
             y as u16,
             ch,
@@ -425,16 +812,35 @@ mod tests {
         app
     }
 
-    fn render_zone(app: &App, zone: Rect) -> Buffer {
+    fn render_zone_with_mask(app: &App, zone: Rect, art_mask: Option<Rect>) -> Buffer {
         let backend = TestBackend::new(50, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_canvas(f, app, zone)).unwrap();
+        terminal
+            .draw(|f| {
+                render_canvas_composite(f, app, zone, zone, art_mask, None, false);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_zone(app: &App, zone: Rect) -> Buffer {
+        render_zone_with_mask(app, zone, None)
+    }
+
+    fn render_regions(app: &App, player: Rect, stage: Rect) -> Buffer {
+        let backend = TestBackend::new(50, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_canvas_composite(frame, app, player, stage, None, None, false);
+            })
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 
     /// Every canvas effect must (a) never write a cell outside the zone it was given, and
     /// (b) actually paint something inside it within a few hundred frames. One sweep covers
-    /// all 15 flags, so a new effect added to `render_canvas` is tested by construction.
+    /// all 15 flags, so a new effect added to the compositor is tested by construction.
     #[test]
     fn every_canvas_effect_paints_inside_the_zone_only() {
         let _guard = crate::i18n::lock_for_test();
@@ -513,5 +919,153 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_canvas_family_obeys_the_art_hard_mask() {
+        let _guard = crate::i18n::lock_for_test();
+        let zone = Rect::new(2, 1, 46, 18);
+        let mask = Rect::new(15, 5, 18, 9);
+        let mut app = app_with(|a| {
+            a.rain = true;
+            a.donut = true;
+            a.visualizer = true;
+            a.starfield = true;
+            a.bounce = true;
+            a.comets = true;
+            a.snow = true;
+            a.fireflies = true;
+            a.cube = true;
+            a.aquarium = true;
+            a.waves = true;
+            a.fireworks = true;
+            a.life = true;
+            a.pipes = true;
+            a.plasma = true;
+        });
+        for _ in 0..80 {
+            app.update(Msg::AnimTick);
+            let buffer = render_zone_with_mask(&app, zone, Some(mask));
+            for y in mask.top()..mask.bottom() {
+                for x in mask.left()..mask.right() {
+                    assert_eq!(buffer[(x, y)].symbol(), " ", "masked write at ({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_stage_effect_stays_inside_the_filler_stage() {
+        let _guard = crate::i18n::lock_for_test();
+        type SetFlag = fn(&mut crate::config::AnimationsConfig);
+        let flags: [(&str, SetFlag); 5] = [
+            ("waves", |a| a.waves = true),
+            ("visualizer", |a| a.visualizer = true),
+            ("fireworks", |a| a.fireworks = true),
+            ("aquarium", |a| a.aquarium = true),
+            ("bounce", |a| a.bounce = true),
+        ];
+        let player = Rect::new(2, 1, 46, 18);
+        let stage = Rect::new(10, 9, 30, 9);
+        for (name, set) in flags {
+            let mut app = app_with(set);
+            let mut painted = false;
+            for _ in 0..200 {
+                app.update(Msg::AnimTick);
+                let buffer = render_regions(&app, player, stage);
+                for y in 0..buffer.area.height {
+                    for x in 0..buffer.area.width {
+                        if buffer[(x, y)].symbol() == " " {
+                            continue;
+                        }
+                        assert!(
+                            x >= stage.left()
+                                && x < stage.right()
+                                && y >= stage.top()
+                                && y < stage.bottom(),
+                            "{name} wrote outside the filler stage at ({x},{y})"
+                        );
+                        painted = true;
+                    }
+                }
+            }
+            assert!(painted, "{name} never painted inside the filler stage");
+        }
+    }
+
+    #[test]
+    fn focal_effects_share_safe_space_and_exclude_art_halo_and_lyrics() {
+        let player = Rect::new(0, 0, 100, 30);
+        let art = Rect::new(4, 6, 30, 12);
+        let lyrics = Rect::new(58, 5, 36, 18);
+        let (cube, donut) = focal_placements(player, Some(art), Some(lyrics), true, true);
+        let cube = cube.expect("cube should receive a safe region");
+        let donut = donut.expect("donut should receive a separate safe region");
+        let halo = art_halo(art, player);
+        assert!(cube.intersection(donut).is_empty());
+        for focal in [cube, donut] {
+            assert!(focal.intersection(halo).is_empty());
+            assert!(focal.intersection(lyrics).is_empty());
+            assert_eq!(focal.width, focal.height * 2);
+        }
+    }
+
+    #[test]
+    fn focal_effects_keep_both_minimum_regions_in_an_asymmetric_strip() {
+        let strip = Rect::new(3, 4, 22, 6);
+        let (cube, donut) = focal_placements(strip, None, None, true, true);
+        let cube = cube.expect("12x6 cube should fit");
+        let donut = donut.expect("10x5 donut should fit beside the cube");
+        assert!(cube.intersection(donut).is_empty());
+        assert_eq!(cube.as_size(), ratatui::layout::Size::new(12, 6));
+        assert_eq!(donut.as_size(), ratatui::layout::Size::new(10, 5));
+    }
+
+    #[test]
+    fn focal_only_activity_stays_off_when_lyrics_consume_the_stage() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = app_with(|a| {
+            a.cube = true;
+            a.donut = true;
+        });
+        let player = Rect::new(1, 1, 30, 12);
+        let stage = Rect::new(1, 2, 30, 5);
+        let backend = TestBackend::new(32, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let activity =
+                    render_canvas_composite(frame, &app, player, stage, None, Some(stage), false);
+                assert_eq!(activity, CanvasActivity::default());
+            })
+            .unwrap();
+        assert!(!app.bridges.canvas_active.get());
+        assert!(!app.bridges.canvas_heavy_active.get());
+    }
+
+    #[test]
+    fn suppressed_or_unplaceable_donut_preserves_raw_config_but_stays_inactive() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = app_with(|a| a.donut = true);
+        let zone = Rect::new(0, 0, 40, 12);
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let activity = render_canvas_composite(
+                    frame,
+                    &app,
+                    zone,
+                    zone,
+                    Some(Rect::new(4, 2, 30, 8)),
+                    None,
+                    true,
+                );
+                assert_eq!(activity, CanvasActivity::default());
+            })
+            .unwrap();
+        assert!(app.config.animations.donut);
+        assert!(!app.bridges.canvas_active.get());
+        assert!(!app.bridges.canvas_heavy_active.get());
     }
 }

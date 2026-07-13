@@ -9,43 +9,13 @@
 
 use std::cell::RefCell;
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
-use super::{ease_out_cubic, hash32, lerp_color, put_char};
+use super::canvas::CanvasWriter;
+use super::{ease_out_cubic, hash32, lerp_color};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
-
-/// Player album art can split the filler canvas into an upper and lower zone. Keep one
-/// simulation per full rectangle so those zones evolve independently without allowing an
-/// unbounded cache if the terminal is repeatedly resized.
-const STATEFUL_ZONE_CAPACITY: usize = 2;
-
-struct ZoneSlots<T> {
-    slots: Vec<(Rect, T)>,
-}
-
-impl<T> Default for ZoneSlots<T> {
-    fn default() -> Self {
-        Self { slots: Vec::new() }
-    }
-}
-
-impl<T: Default> ZoneSlots<T> {
-    fn get_mut(&mut self, zone: Rect) -> &mut T {
-        if let Some(index) = self.slots.iter().position(|(key, _)| *key == zone) {
-            let entry = self.slots.remove(index);
-            self.slots.push(entry);
-        } else {
-            if self.slots.len() == STATEFUL_ZONE_CAPACITY {
-                self.slots.remove(0);
-            }
-            self.slots.push((zone, T::default()));
-        }
-        &mut self.slots.last_mut().expect("zone slot was inserted").1
-    }
-}
 
 // ── fireworks ───────────────────────────────────────────────────────────────
 
@@ -54,14 +24,13 @@ const FIREWORK_PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warnin
 /// One launcher's state within its cycle, all derived from `f`: a rocket climbs from the
 /// bottom, then a radial burst blooms at the apex, droops under gravity and fades out.
 /// Two launchers run half a cycle out of phase so the sky is never empty for long.
-pub(super) fn fireworks(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn fireworks(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = i64::from(zone.width);
     let h = i64::from(zone.height);
     if w < 16 || h < 6 {
         return;
     }
     let retro = app.retro_mode();
-    let buf = frame.buffer_mut();
     let period = 130u64;
     for launcher in 0..2u64 {
         let lf = f + launcher * (period / 2); // half-cycle offset between the two
@@ -95,8 +64,7 @@ pub(super) fn fireworks(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
                     1 => ('|', color),
                     _ => ('.', app.theme.color(R::TextSubtle)),
                 };
-                put_char(
-                    buf,
+                canvas.put(
                     (i64::from(zone.left()) + x) as u16,
                     (i64::from(zone.top()) + yy) as u16,
                     g,
@@ -138,8 +106,7 @@ pub(super) fn fireworks(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
                 color,
                 bright * (1.0 - bt * 0.5),
             );
-            put_char(
-                buf,
+            canvas.put(
                 (i64::from(zone.left()) + x as i64) as u16,
                 (i64::from(zone.top()) + y as i64) as u16,
                 glyph,
@@ -165,7 +132,7 @@ struct LifeScratch {
 }
 
 thread_local! {
-    static LIFE_SCRATCH: RefCell<ZoneSlots<LifeScratch>> = RefCell::new(ZoneSlots::default());
+    static LIFE_SCRATCH: RefCell<LifeScratch> = RefCell::new(LifeScratch::default());
 }
 
 /// Frames between generations (~7 steps/sec at the default 30 fps — fast enough to read as
@@ -175,7 +142,7 @@ const LIFE_STEP_FRAMES: u64 = 4;
 /// Conway's Game of Life on the filler zone: a hashed soup seeds the board, generations tick
 /// every few frames, and cells colour by age (newborn accent → elder ember). When the colony
 /// dies down or stabilises into stasis it quietly reseeds.
-pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn life(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = usize::from(zone.width);
     let h = usize::from(zone.height);
     if w < 8 || h < 6 {
@@ -183,6 +150,7 @@ pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     }
     let young = app.theme.color(R::Accent);
     let old = app.theme.color(R::GaugeFilled);
+    let age_colors = [young, lerp_color(young, old, 0.5), old];
     let glyphs: [char; 3] = if app.retro_mode() {
         ['#', 'x', '.']
     } else {
@@ -190,15 +158,17 @@ pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     };
 
     LIFE_SCRATCH.with(|scratch| {
-        let mut slots = scratch.borrow_mut();
-        let s = slots.get_mut(zone);
+        let mut scratch = scratch.borrow_mut();
+        let s = &mut *scratch;
         let cells = w * h;
         if s.width != zone.width || s.height != zone.height || f < s.last_step {
             // Resize — or a frame-counter context change (f went backwards) — restarts the show.
             s.width = zone.width;
             s.height = zone.height;
-            s.age = vec![0; cells];
-            s.next = vec![0; cells];
+            s.age.resize(cells, 0);
+            s.age.fill(0);
+            s.next.resize(cells, 0);
+            s.next.fill(0);
             s.epoch = s.epoch.wrapping_add(1);
             s.last_step = f;
             let epoch = s.epoch;
@@ -216,20 +186,23 @@ pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             let LifeScratch { age, next, .. } = &mut *s;
             let mut alive = 0usize;
             for y in 0..h {
+                let prev_y = if y == 0 { h - 1 } else { y - 1 } * w;
+                let row_y = y * w;
+                let next_y = if y + 1 == h { 0 } else { y + 1 } * w;
                 for x in 0..w {
-                    let mut n = 0u8;
-                    for dy in [h - 1, 0, 1] {
-                        for dx in [w - 1, 0, 1] {
-                            if dx == 0 && dy == 0 {
-                                continue;
-                            }
-                            // Toroidal wrap keeps gliders flying forever.
-                            let nx = (x + dx) % w;
-                            let ny = (y + dy) % h;
-                            n += u8::from(age[ny * w + nx] > 0);
-                        }
-                    }
-                    let idx = y * w + x;
+                    // Toroidal wrap keeps gliders flying forever. Resolve the four edge cases
+                    // once instead of executing eight modulo operations for every cell.
+                    let prev_x = if x == 0 { w - 1 } else { x - 1 };
+                    let next_x = if x + 1 == w { 0 } else { x + 1 };
+                    let n = u8::from(age[prev_y + prev_x] > 0)
+                        + u8::from(age[prev_y + x] > 0)
+                        + u8::from(age[prev_y + next_x] > 0)
+                        + u8::from(age[row_y + prev_x] > 0)
+                        + u8::from(age[row_y + next_x] > 0)
+                        + u8::from(age[next_y + prev_x] > 0)
+                        + u8::from(age[next_y + x] > 0)
+                        + u8::from(age[next_y + next_x] > 0);
+                    let idx = row_y + x;
                     let was = age[idx] > 0;
                     let lives = matches!((was, n), (true, 2) | (true, 3) | (false, 3));
                     next[idx] = if lives {
@@ -250,26 +223,24 @@ pub(super) fn life(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             }
         }
 
-        let buf = frame.buffer_mut();
         for y in 0..h {
-            for x in 0..w {
-                let a = s.age[y * w + x];
-                if a == 0 {
-                    continue;
+            let abs_y = zone.top() + y as u16;
+            let (spans, span_count) = canvas.visible_spans(zone, abs_y);
+            for span in &spans[..span_count] {
+                for abs_x in span.start..span.end {
+                    let x = usize::from(abs_x - zone.left());
+                    let a = s.age[y * w + x];
+                    if a == 0 {
+                        continue;
+                    }
+                    // Age buckets: newborn / settled / ancient.
+                    let (g, color) = match a {
+                        1..=2 => (glyphs[0], age_colors[0]),
+                        3..=8 => (glyphs[1], age_colors[1]),
+                        _ => (glyphs[2], age_colors[2]),
+                    };
+                    canvas.put_visible_fg(abs_x, abs_y, g, color);
                 }
-                // Age buckets: newborn / settled / ancient.
-                let (g, t) = match a {
-                    1..=2 => (glyphs[0], 0.0),
-                    3..=8 => (glyphs[1], 0.5),
-                    _ => (glyphs[2], 1.0),
-                };
-                put_char(
-                    buf,
-                    zone.left() + x as u16,
-                    zone.top() + y as u16,
-                    g,
-                    Style::default().fg(lerp_color(young, old, t)),
-                );
             }
         }
     });
@@ -311,7 +282,7 @@ struct PipesScratch {
 }
 
 thread_local! {
-    static PIPES_SCRATCH: RefCell<ZoneSlots<PipesScratch>> = RefCell::new(ZoneSlots::default());
+    static PIPES_SCRATCH: RefCell<PipesScratch> = RefCell::new(PipesScratch::default());
 }
 
 /// glyph_index → glyph, [straight-vertical, straight-horizontal, and the four elbows].
@@ -323,7 +294,7 @@ const PIPE_PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R
 /// frame, elbowing at hashed corners; when the board is ~clogged everything clears and a new
 /// epoch starts. The laid pipe is repainted from scratch each frame (the back buffer holds
 /// nothing between frames), which is what earns pipes its "showpiece" price tag.
-pub(super) fn pipes(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn pipes(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = usize::from(zone.width);
     let h = usize::from(zone.height);
     if w < 10 || h < 5 {
@@ -335,30 +306,32 @@ pub(super) fn pipes(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     } else {
         &PIPE_GLYPHS
     };
+    let colors = PIPE_PALETTE.map(|role| app.theme.color(role));
 
     PIPES_SCRATCH.with(|scratch| {
-        let mut slots = scratch.borrow_mut();
-        let s = slots.get_mut(zone);
+        let mut scratch = scratch.borrow_mut();
+        let s = &mut *scratch;
         let cells = w * h;
         let clogged = s.filled * 10 >= cells * 6;
         if s.width != zone.width || s.height != zone.height || f < s.last_f || clogged {
             s.width = zone.width;
             s.height = zone.height;
-            s.cells = vec![0; cells];
+            s.cells.resize(cells, 0);
+            s.cells.fill(0);
             s.filled = 0;
             s.epoch = s.epoch.wrapping_add(1);
             let epoch = s.epoch;
             let pipe_count = (w / 24 + 2).min(5);
-            s.heads = (0..pipe_count)
-                .map(|i| {
-                    let seed = hash32(epoch.wrapping_mul(31) + i as u64);
-                    (
-                        (seed as usize % w) as u16,
-                        (hash32(u64::from(seed) + 7) as usize % h) as u16,
-                        (seed % 4) as u8,
-                    )
-                })
-                .collect();
+            s.heads.clear();
+            s.heads.reserve(pipe_count);
+            for i in 0..pipe_count {
+                let seed = hash32(epoch.wrapping_mul(31) + i as u64);
+                s.heads.push((
+                    (seed as usize % w) as u16,
+                    (hash32(u64::from(seed) + 7) as usize % h) as u16,
+                    (seed % 4) as u8,
+                ));
+            }
         }
 
         // One cell of progress per pipe per frame (bounded even after a long park).
@@ -417,24 +390,20 @@ pub(super) fn pipes(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             }
         }
 
-        let buf = frame.buffer_mut();
         for y in 0..h {
-            for x in 0..w {
-                let v = s.cells[y * w + x];
-                if v == 0 {
-                    continue;
+            let abs_y = zone.top() + y as u16;
+            let (spans, span_count) = canvas.visible_spans(zone, abs_y);
+            for span in &spans[..span_count] {
+                for abs_x in span.start..span.end {
+                    let x = usize::from(abs_x - zone.left());
+                    let v = s.cells[y * w + x];
+                    if v == 0 {
+                        continue;
+                    }
+                    let color = colors[usize::from(v >> 4) % colors.len()];
+                    let g = glyphs[usize::from((v & 0x0F) - 1).min(glyphs.len() - 1)];
+                    canvas.put_visible_fg(abs_x, abs_y, g, color);
                 }
-                let color = app
-                    .theme
-                    .color(PIPE_PALETTE[usize::from(v >> 4) % PIPE_PALETTE.len()]);
-                let g = glyphs[usize::from((v & 0x0F) - 1).min(glyphs.len() - 1)];
-                put_char(
-                    buf,
-                    zone.left() + x as u16,
-                    zone.top() + y as u16,
-                    g,
-                    Style::default().fg(color),
-                );
             }
         }
     });
@@ -444,63 +413,81 @@ pub(super) fn pipes(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 
 const PLASMA_GLYPHS: [char; 4] = [' ', '░', '▒', '▓'];
 
+#[derive(Default)]
+struct PlasmaScratch {
+    col_wave: Vec<f64>,
+    row_wave: Vec<f64>,
+    diag_wave: Vec<f64>,
+}
+
+thread_local! {
+    static PLASMA_SCRATCH: RefCell<PlasmaScratch> = RefCell::new(PlasmaScratch::default());
+}
+
 /// A demoscene plasma field washing over the whole zone: three phase-shifted sine bands
 /// (one per axis plus a diagonal) sum into a scalar that picks both a density glyph and a
 /// colour along a Background→Accent→AccentAlt ramp. Every cell is touched every frame —
 /// deliberately the most expensive effect in the app, and last in the resource ordering.
 /// The three bands are 1-D, so each frame precomputes `w + h + (w+h)` sines instead of
 /// `3·w·h` (the per-cell work is two adds and two table lookups).
-pub(super) fn plasma(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
+pub(super) fn plasma(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let w = usize::from(zone.width);
     let h = usize::from(zone.height);
     if w < 4 || h < 2 {
         return;
     }
-    let t = f as f64;
-    let col_wave: Vec<f64> = (0..w)
-        .map(|x| (x as f64 * 0.30 + t * 0.055).sin())
-        .collect();
-    let row_wave: Vec<f64> = (0..h)
-        .map(|y| (y as f64 * 0.55 - t * 0.038).sin())
-        .collect();
-    let diag_wave: Vec<f64> = (0..w + h)
-        .map(|d| (d as f64 * 0.21 + t * 0.024).sin())
-        .collect();
-
     let bg = app.theme.color(R::Background);
     let mid = app.theme.color(R::Accent);
     let hot = app.theme.color(R::AccentAlt);
     // Quantized style ramp (16 steps) so cells share Style values instead of allocating a
     // fresh blend per cell.
-    let ramp: [Style; 16] = std::array::from_fn(|i| {
+    let ramp: [Color; 16] = std::array::from_fn(|i| {
         let v = i as f64 / 15.0;
-        let c = if v < 0.5 {
+        if v < 0.5 {
             lerp_color(bg, mid, v * 2.0)
         } else {
             lerp_color(mid, hot, (v - 0.5) * 2.0)
-        };
-        Style::default().fg(c)
+        }
     });
 
-    let buf = frame.buffer_mut();
-    for y in 0..h {
-        for x in 0..w {
-            // v ∈ [-3, 3] → normalized [0, 1].
-            let v = (col_wave[x] + row_wave[y] + diag_wave[x + y] + 3.0) / 6.0;
-            let bucket = (v * 3.999) as usize; // 0..=3 density glyph
-            if bucket == 0 {
-                continue; // the trough stays blank — cheaper, and lets the theme breathe
-            }
-            let ci = (v * 15.999) as usize;
-            put_char(
-                buf,
-                zone.left() + x as u16,
-                zone.top() + y as u16,
-                PLASMA_GLYPHS[bucket],
-                ramp[ci.min(15)],
-            );
+    PLASMA_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.col_wave.resize(w, 0.0);
+        scratch.row_wave.resize(h, 0.0);
+        scratch.diag_wave.resize(w + h, 0.0);
+        let t = f as f64;
+        for (x, value) in scratch.col_wave.iter_mut().enumerate() {
+            *value = (x as f64 * 0.30 + t * 0.055).sin();
         }
-    }
+        for (y, value) in scratch.row_wave.iter_mut().enumerate() {
+            *value = (y as f64 * 0.55 - t * 0.038).sin();
+        }
+        for (d, value) in scratch.diag_wave.iter_mut().enumerate() {
+            *value = (d as f64 * 0.21 + t * 0.024).sin();
+        }
+
+        for y in 0..h {
+            let abs_y = zone.top() + y as u16;
+            let (spans, span_count) = canvas.visible_spans(zone, abs_y);
+            for span in &spans[..span_count] {
+                for abs_x in span.start..span.end {
+                    let x = usize::from(abs_x - zone.left());
+                    // v ∈ [-3, 3] → normalized [0, 1].
+                    let v = (scratch.col_wave[x]
+                        + scratch.row_wave[y]
+                        + scratch.diag_wave[x + y]
+                        + 3.0)
+                        / 6.0;
+                    let bucket = (v * 3.999) as usize; // 0..=3 density glyph
+                    if bucket == 0 {
+                        continue; // the trough stays blank — cheaper, and lets the theme breathe
+                    }
+                    let ci = (v * 15.999) as usize;
+                    canvas.put_visible_fg(abs_x, abs_y, PLASMA_GLYPHS[bucket], ramp[ci.min(15)]);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -510,23 +497,19 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
 
-    fn dual_zones() -> [Rect; 2] {
-        [Rect::new(4, 1, 40, 6), Rect::new(4, 10, 40, 7)]
-    }
-
-    fn render_dual(
+    fn render_effect(
         app: &App,
-        zones: [Rect; 2],
+        zone: Rect,
+        art_mask: Option<Rect>,
         f: u64,
-        effect: fn(&mut Frame, &App, Rect, u64),
+        effect: impl Fn(&mut CanvasWriter<'_>, &App, Rect, u64),
     ) -> Buffer {
         let backend = TestBackend::new(50, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                for zone in zones {
-                    effect(frame, app, zone, f);
-                }
+                let mut canvas = CanvasWriter::new(frame.buffer_mut(), art_mask);
+                effect(&mut canvas, app, zone, f);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -543,102 +526,90 @@ mod tests {
     }
 
     #[test]
-    fn zone_slots_use_full_rect_keys_and_evict_lru_at_capacity() {
-        let first = Rect::new(0, 0, 20, 6);
-        let second = Rect::new(0, 8, 20, 6);
-        let third = Rect::new(22, 0, 20, 6);
-        let mut slots = ZoneSlots::<u8>::default();
-
-        *slots.get_mut(first) = 1;
-        *slots.get_mut(second) = 2;
-        assert_eq!(slots.slots.len(), STATEFUL_ZONE_CAPACITY);
-        assert_eq!(*slots.get_mut(first), 1);
-
-        *slots.get_mut(third) = 3;
-        assert_eq!(slots.slots.len(), STATEFUL_ZONE_CAPACITY);
-        assert!(slots.slots.iter().all(|(zone, _)| *zone != second));
-        assert_eq!(slots.slots.iter().map(|(_, value)| *value).sum::<u8>(), 4);
-    }
-
-    #[test]
-    fn life_keeps_both_player_zones_evolving_independently() {
-        LIFE_SCRATCH.with(|scratch| scratch.borrow_mut().slots.clear());
+    fn life_mask_changes_do_not_reset_the_scene() {
+        LIFE_SCRATCH.with(|scratch| *scratch.borrow_mut() = LifeScratch::default());
         let app = App::new(100);
-        let zones = dual_zones();
+        let zone = Rect::new(4, 2, 40, 14);
+        let first_mask = Rect::new(10, 5, 10, 5);
+        let second_mask = Rect::new(24, 7, 8, 4);
 
-        render_dual(&app, zones, 0, life);
+        render_effect(&app, zone, Some(first_mask), 0, life);
         let before = LIFE_SCRATCH.with(|scratch| {
             let scratch = scratch.borrow();
-            zones.map(|zone| {
-                let state = &scratch
-                    .slots
-                    .iter()
-                    .find(|(key, _)| *key == zone)
-                    .expect("life state for both zones")
-                    .1;
-                (state.epoch, state.age.clone())
-            })
+            (scratch.epoch, scratch.age.clone())
         });
 
-        let buffer = render_dual(&app, zones, LIFE_STEP_FRAMES, life);
+        render_effect(&app, zone, Some(second_mask), 0, life);
         LIFE_SCRATCH.with(|scratch| {
             let scratch = scratch.borrow();
-            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
-            for (index, zone) in zones.into_iter().enumerate() {
-                let state = &scratch
-                    .slots
-                    .iter()
-                    .find(|(key, _)| *key == zone)
-                    .expect("life state for both zones")
-                    .1;
-                assert_eq!(state.epoch, before[index].0, "zone {index} was reseeded");
-                assert_eq!(state.last_step, LIFE_STEP_FRAMES);
-                assert_ne!(state.age, before[index].1, "zone {index} did not evolve");
-                assert!(painted_cells(&buffer, zone) > 0);
-            }
+            assert_eq!(scratch.epoch, before.0);
+            assert_eq!(scratch.age, before.1);
         });
+
+        let buffer = render_effect(&app, zone, Some(second_mask), LIFE_STEP_FRAMES, life);
+        LIFE_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.last_step, LIFE_STEP_FRAMES);
+            assert_ne!(scratch.age, before.1);
+        });
+        assert!(painted_cells(&buffer, zone) > 0);
+        assert_eq!(painted_cells(&buffer, second_mask), 0);
     }
 
     #[test]
-    fn pipes_paint_and_advance_in_both_player_zones() {
-        PIPES_SCRATCH.with(|scratch| scratch.borrow_mut().slots.clear());
+    fn pipes_mask_changes_do_not_reset_the_scene() {
+        PIPES_SCRATCH.with(|scratch| *scratch.borrow_mut() = PipesScratch::default());
         let app = App::new(100);
-        let zones = dual_zones();
+        let zone = Rect::new(4, 2, 40, 14);
+        let first_mask = Rect::new(10, 5, 10, 5);
+        let second_mask = Rect::new(24, 7, 8, 4);
 
-        let first = render_dual(&app, zones, 1, pipes);
-        for zone in zones {
-            assert!(painted_cells(&first, zone) > 0);
-        }
+        let first = render_effect(&app, zone, Some(first_mask), 1, pipes);
+        assert!(painted_cells(&first, zone) > 0);
         let before = PIPES_SCRATCH.with(|scratch| {
             let scratch = scratch.borrow();
-            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
-            zones.map(|zone| {
-                let state = &scratch
-                    .slots
-                    .iter()
-                    .find(|(key, _)| *key == zone)
-                    .expect("pipes state for both zones")
-                    .1;
-                (state.epoch, state.cells.clone())
-            })
+            (scratch.epoch, scratch.cells.clone())
         });
 
-        let second = render_dual(&app, zones, 2, pipes);
+        let second = render_effect(&app, zone, Some(second_mask), 2, pipes);
         PIPES_SCRATCH.with(|scratch| {
             let scratch = scratch.borrow();
-            assert_eq!(scratch.slots.len(), STATEFUL_ZONE_CAPACITY);
-            for (index, zone) in zones.into_iter().enumerate() {
-                let state = &scratch
-                    .slots
-                    .iter()
-                    .find(|(key, _)| *key == zone)
-                    .expect("pipes state for both zones")
-                    .1;
-                assert_eq!(state.epoch, before[index].0, "zone {index} was reset");
-                assert_eq!(state.last_f, 2);
-                assert_ne!(state.cells, before[index].1, "zone {index} did not advance");
-                assert!(painted_cells(&second, zone) > 0);
-            }
+            assert_eq!(scratch.epoch, before.0);
+            assert_eq!(scratch.last_f, 2);
+            assert_ne!(scratch.cells, before.1);
         });
+        assert!(painted_cells(&second, zone) > 0);
+        assert_eq!(painted_cells(&second, second_mask), 0);
+    }
+
+    #[test]
+    fn plasma_reuses_scratch_capacity_and_skips_the_art_mask() {
+        PLASMA_SCRATCH.with(|scratch| *scratch.borrow_mut() = PlasmaScratch::default());
+        let app = App::new(100);
+        let zone = Rect::new(4, 2, 40, 14);
+        let mask = Rect::new(14, 6, 16, 7);
+
+        render_effect(&app, zone, Some(mask), 1, plasma);
+        let capacities = PLASMA_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            (
+                scratch.col_wave.capacity(),
+                scratch.row_wave.capacity(),
+                scratch.diag_wave.capacity(),
+            )
+        });
+        let buffer = render_effect(&app, zone, Some(mask), 2, plasma);
+        PLASMA_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(
+                (
+                    scratch.col_wave.capacity(),
+                    scratch.row_wave.capacity(),
+                    scratch.diag_wave.capacity(),
+                ),
+                capacities
+            );
+        });
+        assert_eq!(painted_cells(&buffer, mask), 0);
     }
 }

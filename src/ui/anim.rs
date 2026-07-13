@@ -15,10 +15,9 @@
 //!   popup fade-in). Each reads its start frame from [`App::fx`](crate::app::FxState) and its
 //!   window from [`fx_window`]; the window is defined in wall-clock ms and converted through
 //!   [`App::anim_ms_frames`], so a one-shot feels the same length at 5 fps and at 60 fps.
-//! * **Canvas** — drawn straight into the back buffer in the blank filler zone only (never over
-//!   album art or lyrics), dispatched by [`render_canvas`] across the `canvas` (matrix rain,
-//!   donut, visualizer, starfield, bounce), `canvas_ext` (comets, snow, fireflies, cube,
-//!   aquarium, waves) and `canvas_sim` (fireworks, Life, pipes, plasma) submodules.
+//! * **Canvas** — drawn straight into the back buffer through [`render_canvas_composite`]. Field
+//!   effects share the Player interior, scenes use the filler stage, focal effects receive safe
+//!   regions, and every write hard-masks album art.
 //! * **Overlay** — the About card's sparkles and brand gradient.
 //!
 //! All phase comes from [`App::anim_frame`] (a frame counter frozen while paused, except while a
@@ -44,7 +43,7 @@ mod canvas_ext;
 mod canvas_sim;
 mod element_ext;
 
-pub use canvas::render_canvas;
+pub use canvas::render_canvas_composite;
 pub use element_ext::{
     border_chase_overlay, pause_flash_overlay, progress_sparkle_overlay, time_glow_gauge_style,
     time_glow_label,
@@ -1231,7 +1230,7 @@ mod tests {
         );
 
         let canvas = render_with(&app, 48, 16, |f, app, area| {
-            render_canvas(f, app, area);
+            render_canvas_composite(f, app, area, area, None, None, false);
         });
         assert!(
             (0..canvas.area.height)
