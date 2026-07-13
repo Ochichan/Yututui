@@ -77,6 +77,7 @@ fn state_on(tab: SettingsTab, radio_mode: bool, retro: bool) -> SettingsState {
         row: 0,
         draft,
         editing_text: false,
+        color_picker: None,
         secret_restore: None,
         keymap: KeyMap::default(),
         mousemap: MouseMap::default(),

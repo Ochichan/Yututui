@@ -24,8 +24,13 @@ use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
 mod actions;
+mod color_picker;
 mod field_meta;
 pub use actions::{FieldKind, PersonalDataExportStatus};
+pub use color_picker::{
+    COLOR_PICKER_CHOICE_COUNT, ColorPickerChoice, ColorPickerSelection, ColorPickerState,
+    color_picker_choice,
+};
 
 #[cfg(test)]
 mod spotify_tests;
@@ -940,7 +945,11 @@ impl SettingsDraft {
             Field::ListenBrainzToken => Some(&self.listenbrainz_token),
             Field::SpotifyClientId => Some(&self.spotify_client_id),
             Field::SpotifyRedirectPort => Some(&self.spotify_redirect_port),
-            Field::ThemeColor(role) => self.theme.overrides.get(role.id()).map(String::as_str),
+            Field::ThemeColor(role) => self
+                .theme
+                .active_overrides()
+                .get(role.id())
+                .map(String::as_str),
             _ => None,
         }
     }
@@ -1060,6 +1069,9 @@ pub struct SettingsState {
     pub draft: SettingsDraft,
     /// Whether the focused text field is in character-entry mode.
     pub editing_text: bool,
+    /// Open color picker for the focused theme role. Owned here (rather than the global overlay
+    /// mask) so closing Settings always drops it and does not consume an album-art mask bit.
+    pub color_picker: Option<ColorPickerState>,
     /// The masked secret's value captured when its editor opened. The buffer is cleared
     /// on edit-start (blind-paste of a whole new key), so this lets a commit that typed
     /// nothing restore the prior key instead of wiping it. `None` outside a secret edit.

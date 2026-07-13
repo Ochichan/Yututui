@@ -777,6 +777,10 @@ pub struct Interaction {
     /// paired `MouseDoubleClick` can be swallowed instead of leaking into a modal opened by the
     /// first press; the next ordinary single click resets it.
     pub(in crate::app) context_menu_click: Option<(u16, u16)>,
+    /// Coordinates of a picker-opening or picker-owned press, retained until a paired
+    /// double-click arrives so the second press cannot be reinterpreted by a newly opened popup
+    /// or click through after the first press closes it.
+    pub(in crate::app) color_picker_click: Option<(u16, u16)>,
     /// Multi-selection hidden by the latest plain Search/Library row press while the input
     /// translator waits to learn whether that press is the first half of a double-click.
     pub(in crate::app) pending_double_click_selection: Option<PendingDoubleClickSelection>,

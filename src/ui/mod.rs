@@ -121,6 +121,15 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(confirm) = app.overlays.pending_settings_confirm {
         views::settings::render_confirm(frame, app, area, confirm);
     }
+    // The Settings-owned color picker is rendered at the top level so it stays visible and
+    // operable when the responsive layout has replaced Settings with the miniplayer.
+    if app
+        .settings
+        .as_ref()
+        .is_some_and(|state| state.color_picker.is_some())
+    {
+        views::color_picker::render(frame, app, area);
+    }
     // The Spotify playlist picker (Import from Spotify…) is modal over Settings.
     if app.overlays.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);

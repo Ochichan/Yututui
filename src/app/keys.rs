@@ -17,6 +17,12 @@ impl App {
             return self.on_key_tool_setup(k);
         }
 
+        // The Settings color picker is a mode-owned modal (also rendered in Mini). Capture every
+        // key before global shortcuts or the hidden Settings form can act on it.
+        if self.settings_color_picker_is_open() {
+            return self.settings_color_picker_key(k);
+        }
+
         // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
         // rejected rebind already left the binding untouched), so it never leaks through to
         // the screen underneath.
@@ -473,10 +479,9 @@ impl App {
         match self.mode {
             Mode::Settings => {
                 self.overlays.spotify_picker.is_some()
-                    || self
-                        .settings
-                        .as_ref()
-                        .is_some_and(|s| s.spotify_import_mode_dropdown.is_some())
+                    || self.settings.as_ref().is_some_and(|s| {
+                        s.spotify_import_mode_dropdown.is_some() || s.color_picker.is_some()
+                    })
             }
             Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
             _ => false,

@@ -110,6 +110,7 @@ mod romanize;
 mod scrobble_reducer;
 mod search;
 mod settings_audio;
+mod settings_color_picker;
 mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;

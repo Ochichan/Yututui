@@ -54,6 +54,7 @@ mod search_results;
 mod selection_navigation;
 #[cfg(test)]
 mod settings_cache_policy;
+mod settings_color_picker;
 mod settings_forms;
 mod settings_ui;
 mod startup_playback;

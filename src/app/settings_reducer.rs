@@ -209,6 +209,7 @@ impl App {
             row: 0,
             draft,
             editing_text: false,
+            color_picker: None,
             secret_restore: None,
             keymap: self.keymap.clone(),
             mousemap: self.mousemap.clone(),
@@ -262,6 +263,10 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| matches!(s.current_field(), Some(Field::ThemeColor(_))));
+        if on_color_field && k.code == KeyCode::Char(' ') && k.modifiers == KeyModifiers::NONE {
+            self.settings_open_color_picker();
+            return Vec::new();
+        }
         // The editor must stay operable no matter how keys are remapped, so the literal
         // arrows / Enter / Esc / Backspace are always honored here, on top of the configured
         // ones. Tab switching deliberately comes only from the keymap's FocusNext/FocusPrev

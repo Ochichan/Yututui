@@ -1030,11 +1030,12 @@ impl DaemonEngine {
             },
             ("theme", "preset") => match as_str() {
                 Some(name) => {
-                    // Clone-then-normalize: a fresh ThemeConfig cache (Clone resets it)
-                    // so the direct preset write can't leave a stale resolved palette.
-                    let mut theme = self.config.theme.clone();
-                    theme.preset = name;
-                    self.config.theme = theme.normalized();
+                    // Preserve the existing wire behavior for unknown names (fall back to
+                    // Default), but route recognized presets through the shared transition
+                    // path so built-in overrides are discarded and Custom stays durable.
+                    let preset = crate::theme::ThemePreset::from_id(&name)
+                        .unwrap_or(crate::theme::ThemePreset::Default);
+                    self.config.theme.set_preset(preset);
                     self.save_config("daemon theme preset");
                     ok(self)
                 }

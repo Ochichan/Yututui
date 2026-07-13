@@ -845,7 +845,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
                 .into_iter()
                 .map(|role| (role.id().to_string(), c.theme.effective_hex(role)))
                 .collect(),
-            overrides: c.theme.overrides.clone(),
+            overrides: c.theme.active_overrides().clone(),
             background_none: c.theme.is_role_transparent(ThemeRole::Background),
             retro: c.retro_mode,
             presets: ThemePreset::ALL
