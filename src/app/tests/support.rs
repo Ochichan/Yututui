@@ -57,6 +57,25 @@ pub(super) fn load_url(cmds: &[Cmd]) -> Option<&str> {
         })
 }
 
+pub(super) fn load_source_context(cmds: &[Cmd]) -> Option<crate::player::MediaSourceContext> {
+    cmds.iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|command| match command {
+            PlayerCmd::Load(load) => Some(load.source_context()),
+            PlayerCmd::LoadWithResume(request) => Some(request.source_context),
+            _ => None,
+        })
+}
+
+pub(super) fn resume_load(cmds: &[Cmd]) -> Option<&crate::player::recovery::LoadWithResume> {
+    cmds.iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|command| match command {
+            PlayerCmd::LoadWithResume(request) => Some(request),
+            _ => None,
+        })
+}
+
 pub(super) fn load_watch_video_id(cmds: &[Cmd]) -> Option<String> {
     let url = reqwest::Url::parse(load_url(cmds)?).ok()?;
     let is_youtube_watch = matches!(
@@ -125,6 +144,15 @@ pub(super) fn runtime_admit_player_transition(
     let player = crate::player::PlayerHandle::test_handle(tx);
     let follow_ups = crate::runtime::player_delivery::admit_player_intent(&player, app, intent);
     (follow_ups, rx)
+}
+
+pub(super) fn assert_rejected_before_send(app: &mut App, cmds: Vec<Cmd>) {
+    let (follow_ups, mut rx) = runtime_admit_player_transition(app, cmds);
+    assert!(follow_ups.is_empty());
+    assert!(
+        rx.try_recv().is_err(),
+        "stale intent sent a command before its reducer preflight"
+    );
 }
 
 pub(super) fn has_stop(cmds: &[Cmd]) -> bool {

@@ -250,6 +250,7 @@ fn golden_v7_status_response_is_byte_stable() {
             gapless: true,
             ai_enabled: false,
             radio_mode: false,
+            long_form_seek: None,
         },
         queue: vec![QueueItemSnapshot {
             title: "Song".to_string(),

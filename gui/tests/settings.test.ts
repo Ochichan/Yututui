@@ -5,7 +5,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '../src/lib/ipc/client';
-import { SettingsStore, type SettingsModelV8 } from '../src/lib/stores/settings.svelte';
+import {
+  LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY,
+  SettingsStore,
+  type SettingsModelV8,
+} from '../src/lib/stores/settings.svelte';
 import { defaultAnimations } from '../src/lib/stores/anim.svelte';
 import { defaultKeymap } from '../src/lib/stores/keymap.svelte';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
@@ -85,6 +89,18 @@ function baseModel(): SettingsModelV8 {
 
 function push(t: MockTransport, model: SettingsModelV8): void {
   t.emit({ v: 1, kind: 'event', topic: 'settings', payload: { kind: 'settings_snapshot', model } });
+}
+
+function connect(t: MockTransport, capabilities: string[] = []): void {
+  t.emit({ v: 1, kind: 'conn', payload: { state: 'online', capabilities } });
+}
+
+function longFormModel(): SettingsModelV8 {
+  const model = baseModel();
+  model.audio.long_form_seek_optimization = 'off';
+  model.audio.long_form_seek_effective = 'ram_only';
+  model.audio.long_form_seek_reason = 'requested_off';
+  return model;
 }
 
 async function flushPromises(): Promise<void> {
@@ -338,7 +354,87 @@ describe('SettingsStore', () => {
     });
     expect(store.audio?.mpv_output).toBe('pipewire');
     expect(store.model?.audio.mpv_output).toBeNull();
+    expect(store.audio?.mpv_cache_forward).toBe('32MiB');
+    expect(store.audio?.mpv_cache_back).toBe('8MiB');
     expect(store.dirty).toBe(true);
+  });
+
+  it('shows the long-form row as unsupported and sends nothing to an older v8 owner', () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    connect(t);
+    push(t, baseModel());
+
+    expect(store.longFormSeek).toEqual({ kind: 'unsupported' });
+    store.apply('audio', 'long_form_seek_optimization', 'auto');
+
+    expect(t.sent).toEqual([]);
+    expect(store.dirty).toBe(false);
+  });
+
+  it('optimistically applies long-form mode only after a complete capability snapshot', async () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    connect(t, [LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY]);
+    const initial = longFormModel();
+    push(t, initial);
+
+    expect(store.longFormSeek).toEqual({
+      kind: 'ready',
+      requested: 'off',
+      effective: 'ram_only',
+      reason: 'requested_off',
+    });
+    store.apply('audio', 'long_form_seek_optimization', 'auto');
+    const request = t.sent.at(-1);
+    expect(request).toMatchObject({
+      kind: 'cmd',
+      name: 'apply',
+      payload: {
+        change: { group: 'audio', field: 'long_form_seek_optimization', value: 'auto' },
+      },
+    });
+    expect(store.longFormSeek).toMatchObject({ kind: 'ready', requested: 'auto' });
+    expect(store.model?.audio.long_form_seek_optimization).toBe('off');
+    expect(store.dirty).toBe(true);
+
+    if (request?.kind !== 'cmd') throw new Error('long-form apply did not send a mutation');
+    t.emit({ v: 1, id: request.id, kind: 'res', payload: { ok: true } });
+    await flushPromises();
+    expect(store.dirty).toBe(true);
+
+    const confirmed = structuredClone(initial);
+    confirmed.audio.long_form_seek_optimization = 'auto';
+    confirmed.audio.long_form_seek_reason = 'awaiting_media_facts';
+    push(t, confirmed);
+    expect(store.dirty).toBe(false);
+    expect(store.longFormSeek).toMatchObject({ kind: 'ready', requested: 'auto' });
+  });
+
+  it('fails closed when the capability snapshot omits any long-form field', () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    connect(t, [LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY]);
+    const incomplete = longFormModel();
+    delete incomplete.audio.long_form_seek_reason;
+    push(t, incomplete);
+
+    expect(store.longFormSeek).toEqual({ kind: 'mismatch' });
+    store.apply('audio', 'long_form_seek_optimization', 'on');
+    expect(t.sent).toEqual([]);
+  });
+
+  it('fails closed on an unknown long-form wire enum or mutation value', () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    connect(t, [LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY]);
+    const malformed = longFormModel();
+    malformed.audio.long_form_seek_effective = 'future_state' as never;
+    push(t, malformed);
+
+    expect(store.longFormSeek).toEqual({ kind: 'mismatch' });
+    store.apply('audio', 'long_form_seek_optimization', 'future_mode');
+    expect(t.sent).toEqual([]);
   });
 
   it('setGeminiKey is write-only; resetAll drops the overlay', () => {
@@ -384,6 +480,18 @@ describe('demo core settings', () => {
   it('subscribing yields an initial settings snapshot', () => {
     const { frames } = boot();
     expect(lastSettings(frames).playback.gapless).toBe(true);
+    expect(lastSettings(frames).audio.long_form_seek_optimization).toBe('off');
+    expect(lastSettings(frames).audio.long_form_seek_effective).toBe('ram_only');
+    expect(lastSettings(frames).audio.long_form_seek_reason).toBe('requested_off');
+    expect(
+      frames.some(
+        (frame) =>
+          frame.kind === 'conn' &&
+          (frame.payload as { capabilities?: string[] }).capabilities?.includes(
+            LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY,
+          ),
+      ),
+    ).toBe(true);
   });
 
   it('apply mutates the model and re-pushes', () => {
@@ -466,6 +574,34 @@ describe('demo core settings', () => {
     expect(lastSettings(frames).audio.mpv_device).toBe('alsa/default');
   });
 
+  it('strictly applies the demo long-form mode and updates its runtime projection', () => {
+    const { t, frames } = boot();
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'apply',
+      payload: {
+        change: { group: 'audio', field: 'long_form_seek_optimization', value: 'auto' },
+      },
+    });
+    vi.advanceTimersByTime(20);
+    expect(lastSettings(frames).audio.long_form_seek_optimization).toBe('auto');
+    expect(lastSettings(frames).audio.long_form_seek_effective).toBe('ram_only');
+    expect(lastSettings(frames).audio.long_form_seek_reason).toBe('awaiting_media_facts');
+
+    const before = lastSettings(frames);
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'apply',
+      payload: {
+        change: { group: 'audio', field: 'long_form_seek_optimization', value: 'future' },
+      },
+    });
+    vi.advanceTimersByTime(20);
+    expect(lastSettings(frames)).toBe(before);
+  });
+
   it('reset_all_settings restores the defaults', () => {
     const { t, frames } = boot();
     t.send({
@@ -480,5 +616,6 @@ describe('demo core settings', () => {
     t.send({ v: 1, kind: 'cmd', name: 'reset_all_settings' });
     vi.advanceTimersByTime(20);
     expect(lastSettings(frames).ui.album_art).toBe(true);
+    expect(lastSettings(frames).audio.long_form_seek_optimization).toBe('off');
   });
 });

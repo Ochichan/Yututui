@@ -16,6 +16,10 @@ import type { Repeat } from '../../generated/protocol/Repeat';
 import type { LyricLine } from '../stores/lyrics.svelte';
 import type { DownloadStatus } from '../stores/downloads.svelte';
 import type { SettingGroup, SettingsModelV8 } from '../stores/settings.svelte';
+import {
+  isLongFormSeekOptimization,
+  LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY,
+} from '../stores/settings.svelte';
 import type { ThemeModel } from '../stores/theme.svelte';
 import type { PlaylistDetail, PlaylistSummary } from '../stores/playlists.svelte';
 import type { SpotifyPlaylist, TransferSpec, TransferState } from '../stores/transfer.svelte';
@@ -282,6 +286,9 @@ function defaultSettings(): SettingsModelV8 {
       mpv_device: null,
       mpv_cache_forward: '32MiB',
       mpv_cache_back: '8MiB',
+      long_form_seek_optimization: 'off',
+      long_form_seek_effective: 'ram_only',
+      long_form_seek_reason: 'requested_off',
     },
     // Core defaults: every effect off, pause-unfocused on, 30 fps (the generic setter mutates
     // this block on `apply { group: 'animations' }`, like every other group).
@@ -407,7 +414,7 @@ export class DemoCoreTransport implements Transport {
           state: 'online',
           coreVersion: 'demo-core',
           protocolVersion: 8,
-          capabilities: ['events-v8', 'v8-commands'],
+          capabilities: ['events-v8', 'v8-commands', LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY],
           ownerMode: 'daemon',
         },
       });
@@ -1072,7 +1079,15 @@ export class DemoCoreTransport implements Transport {
   #applySetting(group: SettingGroup, field: string, value: unknown, push = true): boolean {
     const block = (this.#settings as unknown as Record<string, Record<string, unknown>>)[group];
     if (!block || typeof block !== 'object' || !field) return false;
-    block[field] = value;
+    if (group === 'audio' && field === 'long_form_seek_optimization') {
+      if (!isLongFormSeekOptimization(value)) return false;
+      block[field] = value;
+      this.#settings.audio.long_form_seek_effective = 'ram_only';
+      this.#settings.audio.long_form_seek_reason =
+        value === 'off' ? 'requested_off' : 'awaiting_media_facts';
+    } else {
+      block[field] = value;
+    }
     // EQ preset and manual band edits keep each other honest, like the real af chain.
     if (group === 'eq' && field === 'preset') {
       this.#settings.eq.bands = EQ_PRESETS[String(value)] ?? this.#settings.eq.bands;

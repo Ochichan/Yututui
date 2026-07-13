@@ -26,9 +26,10 @@ mod audio;
 mod recovery;
 mod spotify;
 pub use audio::{
-    AudioBackend, AudioConfig, AudioRuntimeConfig, MPV_CACHE_BACK_DEFAULT,
-    MPV_CACHE_BACK_LEGACY_DEFAULT, MPV_CACHE_DEFAULTS_REVISION, MPV_CACHE_FORWARD_DEFAULT,
-    MPV_CACHE_FORWARD_LEGACY_DEFAULT, MpvAudioConfig, MpvAudioRuntimeConfig,
+    AudioBackend, AudioConfig, AudioRuntimeConfig, LongFormSeekOptimization,
+    MPV_CACHE_BACK_DEFAULT, MPV_CACHE_BACK_LEGACY_DEFAULT, MPV_CACHE_DEFAULTS_REVISION,
+    MPV_CACHE_FORWARD_DEFAULT, MPV_CACHE_FORWARD_LEGACY_DEFAULT, MpvAudioConfig,
+    MpvAudioRuntimeConfig,
 };
 pub use spotify::SpotifyImportMode;
 

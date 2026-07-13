@@ -1343,6 +1343,7 @@ mod remote_owner {
                 gapless: false,
                 ai_enabled: true,
                 radio_mode: false,
+                long_form_seek: None,
             },
         ));
         let queue_json_expected = serde_json::to_value(&queue_response).unwrap();

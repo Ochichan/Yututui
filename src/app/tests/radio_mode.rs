@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn track_load_carries_owner_known_live_context_without_duration_inference() {
+    let mut app = App::new(50);
+    app.queue.set(vec![radio_station("finite-dvr")], 0);
+    let radio = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        load_source_context(&radio),
+        Some(crate::player::MediaSourceContext::Live)
+    );
+
+    app.queue.set(songs(1), 0);
+    let on_demand = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        load_source_context(&on_demand),
+        Some(crate::player::MediaSourceContext::OnDemand)
+    );
+}
+
 fn apply_radio_mode_and_admit(app: &mut App, confirm: RadioModeConfirm) -> Vec<Cmd> {
     let mut cmds = app.apply_radio_mode_confirm(confirm);
     admit_player_transition(app, &mut cmds);

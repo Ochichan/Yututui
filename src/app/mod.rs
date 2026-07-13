@@ -59,6 +59,7 @@ mod navigation;
 mod onboarding;
 pub use onboarding::OnboardingState;
 mod reducer;
+mod scrub;
 mod session_restore;
 
 mod state;
@@ -131,6 +132,7 @@ pub(in crate::app) enum PositionEpochReason {
     RestoreSession,
     Seek,
     TrackRestart,
+    SourceRecovery,
     TransportRecovery,
     PlaybackCleared,
     Stop,
@@ -361,7 +363,6 @@ pub struct App {
     /// yt-dlp self-heal bookkeeping: the in-flight healed track, per-track one-shot
     /// guard, and the update-check cooldown clock (see [`YtdlpHeal`]).
     heal: YtdlpHeal,
-
     /// Render→reducer bridges: the active list viewport height and the per-list wheel-scroll
     /// offsets — all written by render (`&App`) for the reducer to read on the next event
     /// (see [`RenderBridges`]).

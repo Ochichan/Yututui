@@ -182,9 +182,13 @@ impl RuntimeEvent {
                 },
                 crate::player::PlayerEvent::Eof
                 | crate::player::PlayerEvent::Error(_)
-                | crate::player::PlayerEvent::TransportClosed(_) => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
+                | crate::player::PlayerEvent::TransportClosed(_)
+                | crate::player::PlayerEvent::CacheEmergency { .. }
+                | crate::player::PlayerEvent::CacheReplacementEmergency { .. } => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::Control,
+                    }
+                }
                 crate::player::PlayerEvent::FileScoped { .. } => {
                     unreachable!("audio file event was unscoped before policy lookup")
                 }
@@ -462,6 +466,19 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::Error(error) => Msg::Player(PlayerMsg::Error(error)),
                 crate::player::PlayerEvent::TransportClosed(reason) => {
                     Msg::Player(PlayerMsg::TransportClosed(reason))
+                }
+                crate::player::PlayerEvent::CacheEmergency {
+                    file_generation: _,
+                    position_secs,
+                    paused,
+                    reason,
+                } => Msg::Player(PlayerMsg::CacheEmergency {
+                    position_secs,
+                    paused,
+                    reason,
+                }),
+                crate::player::PlayerEvent::CacheReplacementEmergency { reason } => {
+                    Msg::Player(PlayerMsg::CacheReplacementEmergency { reason })
                 }
                 crate::player::PlayerEvent::FileScoped { .. } => {
                     unreachable!("audio file event was unscoped before conversion")

@@ -89,7 +89,6 @@ describe('App against the demo core', () => {
     expect(ctx.playback.track?.video_id).toBe('demo-001');
   });
 
-
   it('the library playlists tab lists demo playlists (wired, not the pending card)', async () => {
     const ctx = assemble();
     const { container } = render(App, { props: { ctx } });
@@ -103,6 +102,29 @@ describe('App against the demo core', () => {
     // The demo core seeds two playlists on the `playlists` topic.
     expect(q.getByText('Late-night coding')).toBeTruthy();
     expect(q.queryByText('Wire pending — lands in M2')).toBeNull();
+  });
+
+  it('renders one accessible long-form selector and hides the legacy cache rows', async () => {
+    const ctx = assemble();
+    const { container } = render(App, { props: { ctx } });
+    const q = within(container);
+    await settle();
+
+    ctx.ui.view = 'settings';
+    ctx.ui.settingsTab = 'playback';
+    await settle();
+
+    const select = q.getByLabelText('Long-form seek') as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    expect(select.value).toBe('off');
+    expect(within(select).getByRole('option', { name: 'Auto (experimental)' })).toBeTruthy();
+    expect(within(select).getByRole('option', { name: 'Off' })).toBeTruthy();
+    expect(within(select).getByRole('option', { name: 'On' })).toBeTruthy();
+    expect(q.getByText('Backend')).toBeTruthy();
+    expect(q.getByText('mpv output')).toBeTruthy();
+    expect(q.getByText('mpv device')).toBeTruthy();
+    expect(q.queryByText('Cache forward')).toBeNull();
+    expect(q.queryByText('Cache back')).toBeNull();
   });
 
   it('the keymap dispatcher routes a real keypress to its action', async () => {

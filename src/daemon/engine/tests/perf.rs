@@ -13,6 +13,18 @@ fn configured_cache_values_flow_to_remote_projection_and_player_argv() {
     assert_eq!(settings.audio.mpv_device.as_deref(), Some("alsa/custom"));
     assert_eq!(settings.audio.mpv_cache_forward, "64MiB");
     assert_eq!(settings.audio.mpv_cache_back, "12MiB");
+    assert_eq!(
+        settings.audio.long_form_seek_optimization,
+        Some(crate::config::LongFormSeekOptimization::Off)
+    );
+    assert_eq!(
+        settings.audio.long_form_seek_effective,
+        Some(crate::remote::proto::LongFormSeekEffective::NoMedia)
+    );
+    assert_eq!(
+        settings.audio.long_form_seek_reason,
+        Some(crate::remote::proto::LongFormSeekReason::NoMedia)
+    );
 
     let runtime = engine.config.player_runtime(None);
     assert_eq!(
@@ -63,6 +75,10 @@ async fn daemon_reset_all_keeps_its_origin_main_full_config_semantics() {
     assert!(!shutdown);
     assert!(effects.is_empty());
     assert_eq!(engine.config.audio.mpv, Config::default().audio.mpv);
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::Off
+    );
     assert_eq!(
         engine.config.audio.mpv.cache_defaults_revision,
         crate::config::MPV_CACHE_DEFAULTS_REVISION

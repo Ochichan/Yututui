@@ -707,6 +707,13 @@ fn validate_setting_value(
     field: &str,
     value: &Value,
 ) -> Result<(), RemoteCommandValidationError> {
+    if (group, field) == ("audio", "long_form_seek_optimization") {
+        return value
+            .as_str()
+            .and_then(crate::config::LongFormSeekOptimization::from_id)
+            .map(|_| ())
+            .ok_or_else(|| validation_error("bad_setting_value"));
+    }
     match value {
         Value::Null if nullable_setting(group, field) => Ok(()),
         Value::Null => Err(validation_error("bad_setting_value")),
@@ -987,6 +994,33 @@ mod tests {
             bad_array.validate().unwrap_err().reason(),
             "bad_setting_value"
         );
+
+        for value in [serde_json::json!("future"), serde_json::json!(true)] {
+            let bad_mode = RemoteCommand::Apply {
+                change: GuiSettingChange {
+                    group: "audio".to_string(),
+                    field: "long_form_seek_optimization".to_string(),
+                    value,
+                },
+            };
+            assert_eq!(
+                bad_mode.validate().unwrap_err().reason(),
+                "bad_setting_value"
+            );
+        }
+        for value in ["auto", "off", "on"] {
+            assert!(
+                RemoteCommand::Apply {
+                    change: GuiSettingChange {
+                        group: "audio".to_string(),
+                        field: "long_form_seek_optimization".to_string(),
+                        value: serde_json::json!(value),
+                    },
+                }
+                .validate()
+                .is_ok()
+            );
+        }
     }
 
     #[test]

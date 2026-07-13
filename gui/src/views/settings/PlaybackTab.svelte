@@ -21,6 +21,25 @@
   const pb = $derived(settings.playback);
   const eq = $derived(settings.eq);
   const audio = $derived(settings.audio);
+  const longFormSeek = $derived(settings.longFormSeek);
+  const longFormSeekHint = $derived.by(() => {
+    if (longFormSeek.kind === 'unsupported') {
+      return t('settings.playback.longFormSeekUnsupported');
+    }
+    if (longFormSeek.kind === 'mismatch') {
+      return t('settings.playback.longFormSeekMismatch');
+    }
+    const modeHint =
+      longFormSeek.requested === 'auto'
+        ? t('settings.playback.longFormSeekAutoHint')
+        : longFormSeek.requested === 'on'
+          ? t('settings.playback.longFormSeekOnHint')
+          : t('settings.playback.longFormSeekOffHint');
+    return `${modeHint} ${t('settings.playback.longFormSeekStatus', {
+      effective: longFormSeek.effective,
+      reason: longFormSeek.reason,
+    })}`;
+  });
   const speed = $derived((pb?.speed_tenths ?? 10) / 10);
   const SEEKS = [5, 10, 30];
 
@@ -28,7 +47,7 @@
   // pointer speed and send one `apply` per gesture on release (docs/gui/07 §7 —
   // the server accepts the full 10-band array via the settings apply path).
   let dragBands: number[] | null = $state(null);
-  const cols: HTMLElement[] = [];
+  let cols: HTMLElement[] = $state([]);
 
   const bandGain = (i: number): number => (dragBands ? dragBands[i] : (eq?.bands[i] ?? 0));
   const fmtGain = (gain: number): string => `${gain > 0 ? '+' : ''}${gain}`;
@@ -170,21 +189,28 @@
       onchange={(e) => settings.apply('audio', 'mpv_device', e.currentTarget.value || null)}
     />
   </SettingRow>
-  <SettingRow label={t('settings.playback.cacheForward')} hint={t('settings.playback.cacheHint')}>
-    <input
-      class="short-text"
-      type="text"
-      value={audio?.mpv_cache_forward ?? '32MiB'}
-      onchange={(e) => settings.apply('audio', 'mpv_cache_forward', e.currentTarget.value)}
-    />
-  </SettingRow>
-  <SettingRow label={t('settings.playback.cacheBack')} hint={t('settings.playback.cacheHint')}>
-    <input
-      class="short-text"
-      type="text"
-      value={audio?.mpv_cache_back ?? '8MiB'}
-      onchange={(e) => settings.apply('audio', 'mpv_cache_back', e.currentTarget.value)}
-    />
+  <SettingRow label={t('settings.playback.longFormSeek')} hint={longFormSeekHint}>
+    <select
+      class="sel"
+      aria-label={t('settings.playback.longFormSeek')}
+      disabled={longFormSeek.kind !== 'ready'}
+      onchange={(e) =>
+        settings.apply('audio', 'long_form_seek_optimization', e.currentTarget.value)}
+    >
+      <option
+        value="auto"
+        selected={longFormSeek.kind === 'ready' && longFormSeek.requested === 'auto'}
+        >{t('settings.playback.longFormSeekAuto')}</option
+      >
+      <option
+        value="off"
+        selected={longFormSeek.kind !== 'ready' || longFormSeek.requested === 'off'}
+        >{t('settings.playback.longFormSeekOff')}</option
+      >
+      <option value="on" selected={longFormSeek.kind === 'ready' && longFormSeek.requested === 'on'}
+        >{t('settings.playback.longFormSeekOn')}</option
+      >
+    </select>
   </SettingRow>
 </SettingSection>
 
@@ -248,11 +274,7 @@
   .text {
     width: 180px;
   }
-  .short-text {
-    width: 84px;
-  }
-  .text,
-  .short-text {
+  .text {
     min-height: 30px;
     border: 1px solid var(--role-border-muted);
     border-radius: var(--radius-s);

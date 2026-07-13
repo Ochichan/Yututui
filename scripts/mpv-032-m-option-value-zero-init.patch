@@ -1,0 +1,156 @@
+diff --git a/options/m_config.c b/options/m_config.c
+--- a/options/m_config.c
++++ b/options/m_config.c
+@@ -45,7 +45,5 @@
+ 
+ extern const char mp_help_text[];
+ 
+-static const union m_option_value default_value;
+-
+ // Profiles allow to predefine some sets of options that can then
+ // be applied later on with the internal -profile option.
+@@ -1160,7 +1158,7 @@
+                    BSTR_P(name), BSTR_P(param), flags);
+     }
+ 
+-    union m_option_value val = {0};
++    union m_option_value val = m_option_value_default;
+ 
+     // Some option types are "impure" and work on the existing data.
+     // (Prime examples: --vf-add, --sub-file)
+@@ -1194,7 +1192,7 @@
+ 
+     // Do this on an "empty" type to make setting the option strictly overwrite
+     // the old value, as opposed to e.g. appending to lists.
+-    union m_option_value val = {0};
++    union m_option_value val = m_option_value_default;
+ 
+     if (data->format == MPV_FORMAT_STRING) {
+         bstr param = bstr0(data->u.string);
+@@ -1282,7 +1280,7 @@
+         char *def = NULL;
+         const void *defptr = m_config_get_co_default(config, co);
+         if (!defptr)
+-            defptr = &default_value;
++            defptr = &m_option_value_default;
+         if (defptr)
+             def = m_option_pretty_print(opt, defptr);
+         if (def) {
+diff --git a/options/m_option.h b/options/m_option.h
+--- a/options/m_option.h
++++ b/options/m_option.h
+@@ -250,8 +250,13 @@
+     struct m_geometry geometry;
+     struct m_geometry size_box;
+     struct m_channels channels;
+ };
+ 
++// Keep fully zeroed instance of m_option_value to use as a default value, before
++// any specific union member is used. C standard says that `= {0}` activates and
++// initializes only the first member of the union, leaving padding bits undefined.
++static const union m_option_value m_option_value_default;
++
+ ////////////////////////////////////////////////////////////////////////////
+ 
+ struct m_option_action {
+diff --git a/options/m_property.c b/options/m_property.c
+--- a/options/m_property.c
++++ b/options/m_property.c
+@@ -40,7 +40,7 @@
+                                const struct m_property *prop_list,
+                                const char *property, double f, void *ctx)
+ {
+-    union m_option_value val = {0};
++    union m_option_value val = m_option_value_default;
+     struct m_option opt = {0};
+     int r;
+ 
+@@ -100,7 +100,7 @@
+ int m_property_do(struct mp_log *log, const struct m_property *prop_list,
+                   const char *name, int action, void *arg, void *ctx)
+ {
+-    union m_option_value val = {0};
++    union m_option_value val = m_option_value_default;
+     int r;
+ 
+     struct m_option opt = {0};
+@@ -547,7 +547,7 @@
+                 r = get_item(n, M_PROPERTY_GET_TYPE, &opt, ctx);
+                 if (r != M_PROPERTY_OK)
+                     goto err;
+-                union m_option_value val = {0};
++                union m_option_value val = m_option_value_default;
+                 r = get_item(n, M_PROPERTY_GET, &val, ctx);
+                 if (r != M_PROPERTY_OK)
+                     goto err;
+diff --git a/player/client.c b/player/client.c
+--- a/player/client.c
++++ b/player/client.c
+@@ -1343,7 +1343,7 @@
+     struct getproperty_request *req = arg;
+     const struct m_option *type = get_mp_type_get(req->format);
+ 
+-    union m_option_value xdata = {0};
++    union m_option_value xdata = m_option_value_default;
+     void *data = req->data ? req->data : &xdata;
+ 
+     int err = -1;
+@@ -1499,8 +1499,10 @@
+         .reply_id = userdata,
+         .format = format,
+         .type = type,
+         .change_ts = 1, // force initial event
+         .refcount = 1,
++        .value = m_option_value_default,
++        .value_ret = m_option_value_default,
+     };
+     ctx->properties_change_ts += 1;
+     MP_TARRAY_APPEND(ctx, ctx->properties, ctx->num_properties, prop);
+@@ -1598,7 +1600,7 @@
+         bool changed = false;
+         if (prop->format) {
+             const struct m_option *type = prop->type;
+-            union m_option_value val = {0};
++            union m_option_value val = m_option_value_default;
+             struct getproperty_request req = {
+                 .mpctx = ctx->mpctx,
+                 .name = prop->name,
+diff --git a/player/command.c b/player/command.c
+--- a/player/command.c
++++ b/player/command.c
+@@ -3121,7 +3121,7 @@
+             return M_PROPERTY_UNKNOWN;
+         const struct m_option *opt = co->opt;
+ 
+-        union m_option_value def = {0};
++        union m_option_value def = m_option_value_default;
+         const void *def_ptr = m_config_get_co_default(mpctx->mconfig, co);
+         if (def_ptr && opt->type->size > 0)
+             memcpy(&def, def_ptr, opt->type->size);
+@@ -4207,7 +4207,7 @@
+         return;
+     }
+ 
+-    union m_option_value curval = {0};
++    union m_option_value curval = m_option_value_default;
+     r = mp_property_do(name, M_PROPERTY_GET, &curval, mpctx);
+     if (r <= 0) {
+         show_property_status(cmd, name, r);
+@@ -4216,7 +4216,7 @@
+ 
+     int current = -1;
+     for (int n = first; n < cmd->num_args; n++) {
+-        union m_option_value val = {0};
++        union m_option_value val = m_option_value_default;
+         if (m_option_parse(mpctx->log, &prop, bstr0(name),
+                            bstr0(cmd->args[n].v.s), &val) < 0)
+             continue;
+@@ -4594,7 +4594,7 @@
+         return;
+     }
+ 
+-    union m_option_value val = {0};
++    union m_option_value val = m_option_value_default;
+     if (mp_property_do(name, M_PROPERTY_GET, &val, mpctx) <= 0) {
+         set_osd_msg(mpctx, osdl, osd_duration, "Could not read: '%s'", name);
+         cmd->success = false;

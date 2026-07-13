@@ -1308,7 +1308,6 @@ pub async fn run(
 
         let msg = match input {
             OwnerTurnInput::Local(msg) => msg,
-            OwnerTurnInput::BufferedWorker(event) => event.into(),
             // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
             // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
             // latch check preserves the correlated request if shutdown wins this turn.
@@ -1333,7 +1332,12 @@ pub async fn run(
                 }
                 continue;
             }
-            OwnerTurnInput::Worker(event) => event.into(),
+            OwnerTurnInput::BufferedWorker(mut event) | OwnerTurnInput::Worker(mut event) => {
+                if let RuntimeEvent::Player(player_event) = &mut event {
+                    handles.reconcile_cache_safety_event(player_event);
+                }
+                event.into()
+            }
         };
 
         let paired_progress =

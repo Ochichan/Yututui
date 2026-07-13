@@ -4,6 +4,7 @@
 //! read-only mpv IPC connection observes `playback-restart`, `paused-for-cache`, and
 //! `time-pos` so latency and buffering are measured without injecting terminal keys.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -12,18 +13,93 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
-use tokio::time::{sleep, timeout};
-use yututui::remote::proto::{RemoteCommand, StatusSnapshot};
+use tokio::time::{sleep, sleep_until, timeout};
+use yututui::remote::proto::{
+    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, RemoteCommand,
+    ServerFrame, StatusSnapshot, Topic,
+};
 
 const SCHEMA: &str = "ytt.tui-perf.control.v1";
 const IPC_LINE_CAP: usize = 1024 * 1024;
 const MIN_RESUME_PROGRESS_S: f64 = 0.01;
+const MPV_EVENT_CHANNEL_CAPACITY: usize = 512;
+const CACHE_QUERY_INTERVAL: Duration = Duration::from_secs(1);
+const MPV_SUBSCRIPTIONS: &[(u64, &str, bool)] = &[
+    (9_001, "paused-for-cache", true),
+    (9_002, "time-pos", true),
+    (9_003, "cache-on-disk", false),
+    (9_007, "demuxer-via-network", false),
+    (9_008, "seeking", false),
+    (9_009, "duration", false),
+    (9_010, "seekable", false),
+    (9_011, "partially-seekable", false),
+    (9_013, "seekable-ranges", false),
+];
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ControllerAction {
+    ColdSeek {
+        file_generation: String,
+        target_s: f64,
+    },
+    WarmSeek {
+        file_generation: String,
+        target_s: f64,
+    },
+    SeekBurst {
+        file_generation: String,
+        targets_s: Vec<f64>,
+        window_ms: u64,
+    },
+    Recovery {
+        file_generation: String,
+    },
+}
+
+impl ControllerAction {
+    fn validate(&self) -> Result<(), String> {
+        let (generation, targets): (&str, &[f64]) = match self {
+            Self::ColdSeek {
+                file_generation,
+                target_s,
+            }
+            | Self::WarmSeek {
+                file_generation,
+                target_s,
+            } => (file_generation, std::slice::from_ref(target_s)),
+            Self::SeekBurst {
+                file_generation,
+                targets_s,
+                window_ms,
+            } => {
+                if !(2..=100).contains(&targets_s.len()) || *window_ms == 0 {
+                    return Err(
+                        "seek_burst requires 2..=100 targets and a positive window_ms".to_string(),
+                    );
+                }
+                (file_generation, targets_s)
+            }
+            Self::Recovery { file_generation } => (file_generation, &[]),
+        };
+        if generation.is_empty() {
+            return Err("controller action file_generation must not be empty".to_string());
+        }
+        if targets
+            .iter()
+            .any(|target| !target.is_finite() || *target < 0.0)
+        {
+            return Err("controller action targets must be finite and non-negative".to_string());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 enum LoadAction {
@@ -41,6 +117,7 @@ struct Args {
     close_grace: Duration,
     load: LoadAction,
     seeks: Vec<f64>,
+    actions: Vec<ControllerAction>,
     pause_hold: Option<Duration>,
 }
 
@@ -53,6 +130,7 @@ impl Args {
         let mut close_grace_secs = 0.0;
         let mut load = LoadAction::None;
         let mut seeks = Vec::new();
+        let mut actions: Vec<ControllerAction> = Vec::new();
         let mut pause_hold = None;
         let mut raw = std::env::args().skip(1);
         while let Some(arg) = raw.next() {
@@ -102,6 +180,10 @@ impl Args {
                 "--seeks" => {
                     seeks = parse_seeks(&next("--seeks", &mut raw)?)?;
                 }
+                "--actions-json" => {
+                    actions = serde_json::from_str(&next("--actions-json", &mut raw)?)
+                        .map_err(|error| format!("invalid --actions-json: {error}"))?;
+                }
                 "--pause-hold-ms" => {
                     let millis = next("--pause-hold-ms", &mut raw)?
                         .parse::<u64>()
@@ -113,6 +195,12 @@ impl Args {
                 other => return Err(format!("unknown argument `{other}`\n\n{}", usage())),
             }
         }
+        if !seeks.is_empty() && !actions.is_empty() {
+            return Err("--seeks and --actions-json are mutually exclusive".to_string());
+        }
+        for action in &actions {
+            action.validate()?;
+        }
         Ok(Self {
             output: output.ok_or_else(|| "--output is required".to_string())?,
             ready_file: ready_file.ok_or_else(|| "--ready-file is required".to_string())?,
@@ -121,6 +209,7 @@ impl Args {
             close_grace: Duration::from_secs_f64(close_grace_secs),
             load,
             seeks,
+            actions,
             pause_hold,
         })
     }
@@ -136,6 +225,7 @@ fn usage() -> &'static str {
        --load none|resume-session    Optional deterministic session load\n\
        --play-query QUERY            Ask the owner to search and play QUERY\n\
        --seeks S1,S2,...             Absolute seek targets in seconds\n\
+       --actions-json JSON           Typed cold/warm/burst action array; excludes --seeks\n\
        --pause-hold-ms N             Explicit pause duration before resume\n\
        --no-pause                    Explicitly keep playback steady (default)"
 }
@@ -163,8 +253,16 @@ fn scheduled_offset(window: Duration, ordinal: usize, total_actions: usize) -> D
     window.mul_f64(ordinal as f64 / (total_actions + 1) as f64)
 }
 
-fn scheduled_action_count(seeks: usize, pause_hold: Option<Duration>) -> usize {
-    seeks + usize::from(pause_hold.is_some())
+fn scheduled_action_count(actions: usize, pause_hold: Option<Duration>) -> usize {
+    actions + usize::from(pause_hold.is_some())
+}
+
+fn burst_target_offset(window: Duration, index: usize, target_count: usize) -> Duration {
+    if target_count <= 1 {
+        return Duration::ZERO;
+    }
+    let offset_ns = window.as_nanos().saturating_mul(index as u128) / (target_count - 1) as u128;
+    Duration::from_nanos(u64::try_from(offset_ns).unwrap_or(u64::MAX))
 }
 
 #[derive(Debug)]
@@ -218,6 +316,9 @@ struct Telemetry {
     cutoff_last_time_pos: Option<(Instant, f64)>,
     first_event_ns: Option<u128>,
     last_event_ns: Option<u128>,
+    latest_properties: BTreeMap<String, Value>,
+    lifecycle_events: BTreeMap<String, u64>,
+    peak_file_cache_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +349,9 @@ impl Telemetry {
             cutoff_last_time_pos: None,
             first_event_ns: None,
             last_event_ns: None,
+            latest_properties: BTreeMap::new(),
+            lifecycle_events: BTreeMap::new(),
+            peak_file_cache_bytes: 0,
         }
     }
 
@@ -262,6 +366,28 @@ impl Telemetry {
             self.record_time_pos(event.observed_at, position);
         }
         self.record_buffering(event.observed_at, &event.value);
+        if let Some(event_type) = event.value.get("event").and_then(Value::as_str) {
+            if matches!(
+                event_type,
+                "start-file" | "file-loaded" | "playback-restart" | "end-file" | "idle"
+            ) {
+                *self
+                    .lifecycle_events
+                    .entry(event_type.to_string())
+                    .or_default() += 1;
+            }
+            if event_type == "property-change"
+                && let Some(name) = event.value.get("name").and_then(Value::as_str)
+            {
+                let data = event.value.get("data").cloned().unwrap_or(Value::Null);
+                if name == "demuxer-cache-state"
+                    && let Some(bytes) = demuxer_cache_file_bytes(&data)
+                {
+                    self.peak_file_cache_bytes = self.peak_file_cache_bytes.max(bytes);
+                }
+                self.latest_properties.insert(name.to_string(), data);
+            }
+        }
         write_ndjson(
             out,
             &json!({
@@ -310,6 +436,10 @@ impl Telemetry {
     }
 }
 
+fn demuxer_cache_file_bytes(value: &Value) -> Option<u64> {
+    value.get("file-cache-bytes").and_then(Value::as_u64)
+}
+
 fn time_pos_seconds(value: &Value) -> Option<f64> {
     (value.get("event").and_then(Value::as_str) == Some("property-change")
         && value.get("name").and_then(Value::as_str) == Some("time-pos"))
@@ -323,7 +453,7 @@ fn proves_resume_progress(value: &Value, paused_time_pos_s: f64) -> bool {
 }
 
 fn drain_pending_mpv(
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
 ) -> Result<(), String> {
@@ -369,6 +499,7 @@ async fn run(args: Args) -> Result<(), String> {
     let (owner, mpv) = discover_mpv(instance.app_pid, args.wait).await?;
     let stream = connect_mpv(&mpv.endpoint, args.wait).await?;
     let reader = subscribe_and_confirm(stream, args.wait).await?;
+    let cache_query_stream = connect_mpv(&mpv.endpoint, args.wait).await?;
     let observation_started_unix_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| format!("system clock before Unix epoch: {e}"))?
@@ -381,8 +512,9 @@ async fn run(args: Args) -> Result<(), String> {
         &run_id,
         observation_started_unix_ns,
     )?;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tokio::spawn(read_mpv(reader, tx));
+    let (tx, mut rx) = mpsc::channel(MPV_EVENT_CHANNEL_CAPACITY);
+    tokio::spawn(read_mpv(reader, tx.clone()));
+    tokio::spawn(poll_cache_telemetry(cache_query_stream, tx));
     let mut telemetry = Telemetry::new(origin, origin + args.observe);
 
     write_ndjson(
@@ -421,6 +553,7 @@ async fn run(args: Args) -> Result<(), String> {
                 &mut rx,
                 &mut telemetry,
                 &mut out,
+                json!({}),
             )
             .await?;
         }
@@ -434,50 +567,109 @@ async fn run(args: Args) -> Result<(), String> {
                 &mut rx,
                 &mut telemetry,
                 &mut out,
+                json!({}),
             )
             .await?;
         }
     }
 
     // Seek through the app's public control lane so position_epoch and all owner invariants run.
-    let scheduled_actions = scheduled_action_count(args.seeks.len(), args.pause_hold);
-    for (index, target_s) in args.seeks.iter().copied().enumerate() {
+    let seek_action_count = if args.actions.is_empty() {
+        args.seeks.len()
+    } else {
+        args.actions.len()
+    };
+    let scheduled_actions = scheduled_action_count(seek_action_count, args.pause_hold);
+    for index in 0..seek_action_count {
         if scheduled_actions > 0 && !args.observe.is_zero() {
             let offset = scheduled_offset(args.observe, index + 1, scheduled_actions);
             drain_to_action(origin + offset, &mut rx, &mut telemetry, &mut out).await?;
         }
-        drain_pending_mpv(&mut rx, &mut telemetry, &mut out)?;
-        let started = Instant::now();
-        send_remote(RemoteCommand::SeekTo {
-            ms: (target_s * 1_000.0).round() as u64,
-        })
-        .await?;
-        let (restart, completed, observed_target_s) = wait_for_seek(
-            args.wait,
-            &mut rx,
-            &mut telemetry,
-            &mut out,
-            started,
-            target_s,
-        )
-        .await?;
-        operation(
-            &mut out,
-            origin,
-            "seek",
-            started..completed.observed_at,
-            "mpv_event",
-            Some(&completed),
-            json!({
-                "target_s": target_s,
-                "observed_target_s": observed_target_s,
-                "playback_restart_elapsed_ns": restart
-                    .observed_at
-                    .saturating_duration_since(origin)
-                    .as_nanos(),
-                "target_tolerance_s": 2.0,
-            }),
-        )?;
+        if args.actions.is_empty() {
+            perform_seek_action(
+                &mpv.endpoint,
+                "seek",
+                "legacy-media-00",
+                args.seeks[index],
+                args.wait,
+                &mut rx,
+                &mut telemetry,
+                &mut out,
+            )
+            .await?;
+        } else {
+            match args.actions[index].clone() {
+                ControllerAction::ColdSeek {
+                    file_generation,
+                    target_s,
+                } => {
+                    perform_seek_action(
+                        &mpv.endpoint,
+                        "cold_seek",
+                        &file_generation,
+                        target_s,
+                        args.wait,
+                        &mut rx,
+                        &mut telemetry,
+                        &mut out,
+                    )
+                    .await?;
+                }
+                ControllerAction::WarmSeek {
+                    file_generation,
+                    target_s,
+                } => {
+                    perform_seek_action(
+                        &mpv.endpoint,
+                        "warm_seek",
+                        &file_generation,
+                        target_s,
+                        args.wait,
+                        &mut rx,
+                        &mut telemetry,
+                        &mut out,
+                    )
+                    .await?;
+                }
+                ControllerAction::SeekBurst {
+                    file_generation,
+                    targets_s,
+                    window_ms,
+                } => {
+                    perform_seek_burst(
+                        SeekBurstArgs {
+                            instance: &instance,
+                            mpv_endpoint: &mpv.endpoint,
+                            file_generation: &file_generation,
+                            targets_s: &targets_s,
+                            window_ms,
+                            wait: args.wait,
+                        },
+                        SeekBurstContext {
+                            rx: &mut rx,
+                            telemetry: &mut telemetry,
+                            out: &mut out,
+                        },
+                    )
+                    .await?;
+                }
+                ControllerAction::Recovery { file_generation } => {
+                    perform_load(
+                        RemoteCommand::ResumeSession,
+                        "recovery",
+                        args.wait,
+                        &mut rx,
+                        &mut telemetry,
+                        &mut out,
+                        json!({
+                            "action_kind": "recovery",
+                            "file_generation": file_generation,
+                        }),
+                    )
+                    .await?;
+                }
+            }
+        }
     }
 
     if let Some(hold) = args.pause_hold {
@@ -535,6 +727,20 @@ async fn run(args: Args) -> Result<(), String> {
         )?;
     }
 
+    // mpv cache properties prove when disk caching changed. The daemon's settings projection
+    // independently proves why its managed controller made that decision. Capture it while the
+    // owner is still alive; the sampler intentionally closes the owner after the observation.
+    let long_form_seek_status = capture_long_form_seek_status(&instance, args.wait).await?;
+    write_ndjson(
+        &mut out,
+        &json!({
+            "schema": SCHEMA,
+            "kind": "remote_settings_snapshot",
+            "elapsed_ns": Instant::now().saturating_duration_since(origin).as_nanos(),
+            "long_form_seek_status": &long_form_seek_status,
+        }),
+    )?;
+
     // Operations deliberately occupy only deterministic points in the observation window.
     // Continue draining until the full warmup+sample duration has elapsed so a late cache stall
     // cannot disappear from the no-added-rebuffer gate merely because the last seek finished.
@@ -560,24 +766,181 @@ async fn run(args: Args) -> Result<(), String> {
         &mut out,
         &summary_record(
             &telemetry,
-            &args,
-            origin,
-            summary_at,
-            observation_end,
-            &run_id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("system clock before Unix epoch: {e}"))?
-                .as_nanos(),
+            SummaryArgs {
+                args: &args,
+                origin,
+                summary_at,
+                observation_end,
+                run_id: &run_id,
+                long_form_seek_status: &long_form_seek_status,
+                observation_finished_unix_ns: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| format!("system clock before Unix epoch: {e}"))?
+                    .as_nanos(),
+            },
         ),
     )?;
     out.flush().map_err(|e| format!("flush output: {e}"))
 }
 
+async fn write_session_line<T: Serialize>(stream: &mut Stream, value: &T) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("encode remote settings session frame: {error}"))?;
+    bytes.push(b'\n');
+    stream
+        .write_all(&bytes)
+        .await
+        .map_err(|error| format!("write remote settings session frame: {error}"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|error| format!("flush remote settings session frame: {error}"))
+}
+
+async fn read_session_line(
+    reader: &mut BufReader<Stream>,
+    deadline: Instant,
+) -> Result<Vec<u8>, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err("timed out reading the remote settings projection".to_string());
+    }
+    let mut line = Vec::new();
+    let outcome = timeout(
+        remaining,
+        yututui::util::io::read_bounded_line(
+            reader,
+            &mut line,
+            yututui::remote::proto::MAX_ONESHOT_REPLY_BYTES,
+        ),
+    )
+    .await
+    .map_err(|_| "timed out reading the remote settings projection".to_string())?
+    .map_err(|error| format!("read remote settings projection: {error}"))?;
+    match outcome {
+        yututui::util::io::BoundedLine::Line => Ok(line),
+        yututui::util::io::BoundedLine::Eof => {
+            Err("remote owner closed before publishing its settings projection".to_string())
+        }
+        yututui::util::io::BoundedLine::TooLarge => {
+            Err("remote owner published an oversized settings projection".to_string())
+        }
+    }
+}
+
+async fn capture_long_form_seek_status(
+    instance: &yututui::remote::proto::InstanceFile,
+    wait: Duration,
+) -> Result<Value, String> {
+    let capability_advertised = instance
+        .capabilities
+        .iter()
+        .any(|capability| capability == yututui::remote::LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY);
+    if !capability_advertised {
+        return Ok(json!({
+            "available": false,
+            "capability_advertised": false,
+            "requested": null,
+            "effective": null,
+            "reason": null,
+        }));
+    }
+    if instance.protocol_version < yututui::remote::proto::PROTOCOL_VERSION {
+        return Err("long-form seek capability was advertised without protocol v8".to_string());
+    }
+
+    let name = instance
+        .endpoint
+        .as_str()
+        .to_fs_name::<GenericFilePath>()
+        .map_err(|error| format!("invalid remote settings endpoint: {error}"))?;
+    let stream = timeout(wait, Stream::connect(name))
+        .await
+        .map_err(|_| "timed out connecting for the remote settings projection".to_string())?
+        .map_err(|error| format!("connect for remote settings projection: {error}"))?;
+    let mut reader = BufReader::new(stream);
+    let hello = HelloRequest {
+        version: yututui::remote::proto::PROTOCOL_VERSION,
+        token: instance.token.clone(),
+        hello: HelloBody {
+            client: "tui-perf-control".to_string(),
+            min_version: yututui::remote::proto::PROTOCOL_VERSION,
+        },
+    };
+    write_session_line(reader.get_mut(), &hello).await?;
+    let deadline = Instant::now() + wait;
+    let hello_bytes = read_session_line(&mut reader, deadline).await?;
+    let ack: HelloAck = serde_json::from_slice(&hello_bytes)
+        .map_err(|error| format!("parse remote settings handshake: {error}"))?;
+    if !ack.ok || ack.version != yututui::remote::proto::PROTOCOL_VERSION {
+        return Err(format!(
+            "remote settings handshake rejected: {}",
+            ack.reason.as_deref().unwrap_or("bad_version")
+        ));
+    }
+
+    let subscribe = ClientFrame {
+        id: 1,
+        request_id: None,
+        page_id: None,
+        op: ClientOp::Subscribe {
+            topics: vec![Topic::Settings],
+        },
+    };
+    write_session_line(reader.get_mut(), &subscribe).await?;
+    let mut status = None;
+    let mut subscribed = false;
+    while status.is_none() || !subscribed {
+        let frame_bytes = read_session_line(&mut reader, deadline).await?;
+        let frame: ServerFrame = serde_json::from_slice(&frame_bytes)
+            .map_err(|error| format!("parse remote settings frame: {error}"))?;
+        match frame {
+            ServerFrame::Event {
+                topic: Topic::Settings,
+                event: PushEvent::SettingsSnapshot { model },
+                ..
+            } => {
+                let requested = model.audio.long_form_seek_optimization.ok_or_else(|| {
+                    "long-form seek capability omitted requested mode".to_string()
+                })?;
+                let effective = model.audio.long_form_seek_effective.ok_or_else(|| {
+                    "long-form seek capability omitted effective state".to_string()
+                })?;
+                let reason = model.audio.long_form_seek_reason.ok_or_else(|| {
+                    "long-form seek capability omitted decision reason".to_string()
+                })?;
+                status = Some(json!({
+                    "available": true,
+                    "capability_advertised": true,
+                    "requested": requested,
+                    "effective": effective,
+                    "reason": reason,
+                }));
+            }
+            ServerFrame::Reply { id: 1, resp } if resp.ok => subscribed = true,
+            ServerFrame::Reply { id: 1, resp } => {
+                return Err(format!(
+                    "remote settings subscription rejected: {}",
+                    resp.reason.as_deref().unwrap_or("rejected")
+                ));
+            }
+            ServerFrame::Goodbye { reason } => {
+                return Err(format!(
+                    "remote settings session ended before its snapshot: {reason}"
+                ));
+            }
+            _ => {
+                return Err("remote settings session published an unexpected frame".to_string());
+            }
+        }
+    }
+    status.ok_or_else(|| "remote settings projection was not published".to_string())
+}
+
 async fn drain_until(
     deadline: Instant,
     minimum_clean_eof: Instant,
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
 ) -> Result<DrainEnd, String> {
@@ -607,7 +970,7 @@ async fn drain_until(
 
 async fn drain_to_action(
     deadline: Instant,
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
 ) -> Result<(), String> {
@@ -806,7 +1169,7 @@ async fn subscribe_and_confirm(
     mut stream: Stream,
     wait: Duration,
 ) -> Result<BufReader<Stream>, String> {
-    for (id, property) in [(9_001u64, "paused-for-cache"), (9_002, "time-pos")] {
+    for (id, property, _required) in MPV_SUBSCRIPTIONS {
         let mut payload = serde_json::to_vec(&json!({
             "command": ["observe_property", id, property],
             "request_id": id,
@@ -826,7 +1189,7 @@ async fn subscribe_and_confirm(
     let deadline = Instant::now() + wait;
     let mut confirmed = std::collections::HashSet::new();
     let mut line = Vec::new();
-    while confirmed.len() < 2 {
+    while confirmed.len() < MPV_SUBSCRIPTIONS.len() {
         line.clear();
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -846,12 +1209,16 @@ async fn subscribe_and_confirm(
                 let Some(request_id) = value.get("request_id").and_then(Value::as_u64) else {
                     continue;
                 };
-                if !matches!(request_id, 9_001 | 9_002) {
+                let Some((_id, property, required)) = MPV_SUBSCRIPTIONS
+                    .iter()
+                    .find(|(id, _property, _required)| *id == request_id)
+                else {
                     continue;
-                }
-                if value.get("error").and_then(Value::as_str) != Some("success") {
+                };
+                let error = value.get("error").and_then(Value::as_str);
+                if *required && error != Some("success") {
                     return Err(format!(
-                        "mpv subscription {request_id} failed: {}",
+                        "required mpv subscription {request_id} ({property}) failed: {}",
                         value.get("error").unwrap_or(&Value::Null)
                     ));
                 }
@@ -868,7 +1235,249 @@ async fn subscribe_and_confirm(
     Ok(reader)
 }
 
-async fn read_mpv<R>(mut reader: BufReader<R>, tx: mpsc::UnboundedSender<IpcMessage>)
+async fn query_mpv_property(
+    reader: &mut BufReader<Stream>,
+    request_id: u64,
+    property: &str,
+    required: bool,
+    wait: Duration,
+) -> Result<Option<Value>, String> {
+    let mut payload = serde_json::to_vec(&json!({
+        "command": ["get_property", property],
+        "request_id": request_id,
+    }))
+    .map_err(|error| format!("encode mpv {property} query: {error}"))?;
+    payload.push(b'\n');
+    reader
+        .get_mut()
+        .write_all(&payload)
+        .await
+        .map_err(|error| format!("write mpv {property} query: {error}"))?;
+    reader
+        .get_mut()
+        .flush()
+        .await
+        .map_err(|error| format!("flush mpv {property} query: {error}"))?;
+    let deadline = Instant::now() + wait;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(format!("timed out waiting for mpv {property} query"));
+    }
+    let mut line = Vec::new();
+    let outcome = timeout(
+        remaining,
+        yututui::util::io::read_bounded_line(reader, &mut line, IPC_LINE_CAP),
+    )
+    .await
+    .map_err(|_| format!("timed out waiting for mpv {property} query"))?
+    .map_err(|error| format!("read mpv {property} query: {error}"))?;
+    match outcome {
+        yututui::util::io::BoundedLine::Eof => {
+            return Err(format!(
+                "mpv cache query connection closed while reading {property}"
+            ));
+        }
+        yututui::util::io::BoundedLine::TooLarge => {
+            return Err(format!("mpv {property} query returned an oversized frame"));
+        }
+        yututui::util::io::BoundedLine::Line => {}
+    }
+    let response: Value = serde_json::from_slice(&line)
+        .map_err(|error| format!("parse mpv {property} query: {error}"))?;
+    if response.get("request_id").and_then(Value::as_u64) != Some(request_id) {
+        return Err(format!(
+            "mpv {property} query returned an uncorrelated response"
+        ));
+    }
+    if response.get("error").and_then(Value::as_str) == Some("success") {
+        return Ok(Some(response.get("data").cloned().unwrap_or(Value::Null)));
+    }
+    if required {
+        return Err(format!(
+            "required mpv {property} query failed: {}",
+            response.get("error").unwrap_or(&Value::Null)
+        ));
+    }
+    Ok(None)
+}
+
+fn narrow_demuxer_cache_state(state: Value) -> Result<Value, String> {
+    let Value::Object(state) = state else {
+        return Err("mpv demuxer-cache-state query did not return an object".to_string());
+    };
+    let file_cache_bytes = state
+        .get("file-cache-bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "mpv demuxer-cache-state omitted file-cache-bytes".to_string())?;
+    let mut narrow = serde_json::Map::from_iter([(
+        "file-cache-bytes".to_string(),
+        Value::from(file_cache_bytes),
+    )]);
+    if let Some(raw_input_rate) = state.get("raw-input-rate").and_then(Value::as_u64) {
+        narrow.insert("raw-input-rate".to_string(), Value::from(raw_input_rate));
+    }
+    Ok(Value::Object(narrow))
+}
+
+fn queried_property_event(
+    property: &str,
+    data: Value,
+    query_kind: &str,
+    sequence: u64,
+) -> IpcEvent {
+    IpcEvent {
+        observed_at: Instant::now(),
+        value: json!({
+            "event": "property-change",
+            "name": property,
+            "data": data,
+            "harness_query": {
+                "kind": query_kind,
+                "sequence": sequence,
+                "full_state_recorded": false,
+            },
+        }),
+    }
+}
+
+async fn poll_cache_telemetry(stream: Stream, tx: mpsc::Sender<IpcMessage>) {
+    let mut reader = BufReader::new(stream);
+    let mut sequence = 0u64;
+    let mut next_query = Instant::now();
+    loop {
+        if Instant::now() < next_query {
+            sleep_until(tokio::time::Instant::from_std(next_query)).await;
+        }
+        sequence = sequence.saturating_add(1);
+        let cache_speed = query_mpv_property(
+            &mut reader,
+            91_000,
+            "cache-speed",
+            false,
+            CACHE_QUERY_INTERVAL,
+        )
+        .await;
+        let cache_on_disk = query_mpv_property(
+            &mut reader,
+            91_001,
+            "cache-on-disk",
+            true,
+            CACHE_QUERY_INTERVAL,
+        )
+        .await;
+        let result: Result<Vec<IpcEvent>, String> = async {
+            let mut events = Vec::new();
+            if let Some(value) = cache_speed? {
+                events.push(queried_property_event(
+                    "cache-speed",
+                    value,
+                    "periodic_rate_poll",
+                    sequence,
+                ));
+            }
+            if cache_on_disk?.and_then(|value| value.as_bool()) == Some(true) {
+                let state = query_mpv_property(
+                    &mut reader,
+                    91_002,
+                    "demuxer-cache-state",
+                    true,
+                    CACHE_QUERY_INTERVAL,
+                )
+                .await?
+                .ok_or_else(|| "required demuxer-cache-state query returned no data".to_string())?;
+                events.push(queried_property_event(
+                    "demuxer-cache-state",
+                    narrow_demuxer_cache_state(state)?,
+                    "active_cache_poll",
+                    sequence,
+                ));
+            }
+            Ok(events)
+        }
+        .await;
+        match result {
+            Ok(events) => {
+                for event in events {
+                    if tx.send(IpcMessage::Event(event)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            // The subscribed observer connection owns the run's clean-EOF boundary. This
+            // auxiliary query connection must never end coverage early during owner shutdown.
+            Err(message) if cache_query_transport_closed(&message) => return,
+            Err(message) => {
+                let _ = tx
+                    .send(IpcMessage::IoError {
+                        observed_at: Instant::now(),
+                        message,
+                    })
+                    .await;
+                return;
+            }
+        }
+        next_query += CACHE_QUERY_INTERVAL;
+        if next_query < Instant::now() {
+            next_query = Instant::now() + CACHE_QUERY_INTERVAL;
+        }
+    }
+}
+
+fn cache_query_transport_closed(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "connection closed",
+        "broken pipe",
+        "connection reset",
+        "not connected",
+        "forcibly closed",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+async fn capture_pre_seek_cache_snapshot(
+    endpoint: &str,
+    wait: Duration,
+    rx: &mut mpsc::Receiver<IpcMessage>,
+    telemetry: &mut Telemetry,
+    out: &mut BufWriter<File>,
+) -> Result<(), String> {
+    drain_pending_mpv(rx, telemetry, out)?;
+    let stream = connect_mpv(endpoint, wait).await?;
+    let mut reader = BufReader::new(stream);
+    let state = query_mpv_property(&mut reader, 92_000, "demuxer-cache-state", true, wait)
+        .await?
+        .ok_or_else(|| "pre-seek demuxer-cache-state query returned no data".to_string())?;
+    let cache_speed = query_mpv_property(&mut reader, 92_001, "cache-speed", false, wait).await?;
+    let mut events = vec![queried_property_event(
+        "demuxer-cache-state",
+        narrow_demuxer_cache_state(state)?,
+        "pre_seek_snapshot",
+        1,
+    )];
+    if let Some(value) = cache_speed {
+        events.push(queried_property_event(
+            "cache-speed",
+            value,
+            "pre_seek_snapshot",
+            1,
+        ));
+    }
+    while let Ok(message) = rx.try_recv() {
+        match message {
+            IpcMessage::Event(event) => events.push(event),
+            terminal => return Err(ipc_terminal_error(terminal)),
+        }
+    }
+    events.sort_by_key(|event| event.observed_at);
+    for event in events {
+        telemetry.record(&event, out)?;
+    }
+    Ok(())
+}
+
+async fn read_mpv<R>(mut reader: BufReader<R>, tx: mpsc::Sender<IpcMessage>)
 where
     R: AsyncRead + Unpin,
 {
@@ -884,16 +1493,19 @@ where
                                 observed_at: Instant::now(),
                                 value,
                             }))
+                            .await
                             .is_err()
                         {
                             return;
                         }
                     }
                     Err(error) => {
-                        let _ = tx.send(IpcMessage::ParseError {
-                            observed_at: Instant::now(),
-                            message: error.to_string(),
-                        });
+                        let _ = tx
+                            .send(IpcMessage::ParseError {
+                                observed_at: Instant::now(),
+                                message: error.to_string(),
+                            })
+                            .await;
                         return;
                     }
                 }
@@ -901,29 +1513,35 @@ where
             Ok(yututui::util::io::BoundedLine::Eof) => {
                 let observed_at = Instant::now();
                 if line.is_empty() {
-                    let _ = tx.send(IpcMessage::CleanEof { observed_at });
+                    let _ = tx.send(IpcMessage::CleanEof { observed_at }).await;
                 } else {
-                    let _ = tx.send(IpcMessage::ParseError {
-                        observed_at,
-                        message: format!(
-                            "mpv IPC closed with a truncated JSON frame ({} bytes)",
-                            line.len()
-                        ),
-                    });
+                    let _ = tx
+                        .send(IpcMessage::ParseError {
+                            observed_at,
+                            message: format!(
+                                "mpv IPC closed with a truncated JSON frame ({} bytes)",
+                                line.len()
+                            ),
+                        })
+                        .await;
                 }
                 return;
             }
             Ok(yututui::util::io::BoundedLine::TooLarge) => {
-                let _ = tx.send(IpcMessage::TooLarge {
-                    observed_at: Instant::now(),
-                });
+                let _ = tx
+                    .send(IpcMessage::TooLarge {
+                        observed_at: Instant::now(),
+                    })
+                    .await;
                 return;
             }
             Err(error) => {
-                let _ = tx.send(IpcMessage::IoError {
-                    observed_at: Instant::now(),
-                    message: error.to_string(),
-                });
+                let _ = tx
+                    .send(IpcMessage::IoError {
+                        observed_at: Instant::now(),
+                        message: error.to_string(),
+                    })
+                    .await;
                 return;
             }
         }
@@ -934,9 +1552,10 @@ async fn perform_load(
     command: RemoteCommand,
     name: &str,
     wait: Duration,
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
+    detail: Value,
 ) -> Result<(), String> {
     drain_pending_mpv(rx, telemetry, out)?;
     let started = Instant::now();
@@ -952,13 +1571,257 @@ async fn perform_load(
         started..completed.observed_at,
         "mpv_event",
         Some(&completed),
-        json!({}),
+        detail,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn perform_seek_action(
+    mpv_endpoint: &str,
+    operation_name: &str,
+    file_generation: &str,
+    target_s: f64,
+    wait: Duration,
+    rx: &mut mpsc::Receiver<IpcMessage>,
+    telemetry: &mut Telemetry,
+    out: &mut BufWriter<File>,
+) -> Result<(), String> {
+    capture_pre_seek_cache_snapshot(mpv_endpoint, wait, rx, telemetry, out).await?;
+    let started = Instant::now();
+    send_remote(RemoteCommand::SeekTo {
+        ms: (target_s * 1_000.0).round() as u64,
+    })
+    .await?;
+    let (restart, completed, observed_target_s) =
+        wait_for_seek(wait, rx, telemetry, out, started, target_s).await?;
+    operation(
+        out,
+        telemetry.origin,
+        operation_name,
+        started..completed.observed_at,
+        "mpv_event",
+        Some(&completed),
+        json!({
+            "action_kind": operation_name,
+            "file_generation": file_generation,
+            "target_s": target_s,
+            "observed_target_s": observed_target_s,
+            "playback_restart_elapsed_ns": restart
+                .observed_at
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "target_tolerance_s": 2.0,
+        }),
+    )
+}
+
+struct SeekBurstArgs<'a> {
+    instance: &'a yututui::remote::proto::InstanceFile,
+    mpv_endpoint: &'a str,
+    file_generation: &'a str,
+    targets_s: &'a [f64],
+    window_ms: u64,
+    wait: Duration,
+}
+
+struct SeekBurstContext<'a> {
+    rx: &'a mut mpsc::Receiver<IpcMessage>,
+    telemetry: &'a mut Telemetry,
+    out: &'a mut BufWriter<File>,
+}
+
+async fn perform_seek_burst(
+    args: SeekBurstArgs<'_>,
+    context: SeekBurstContext<'_>,
+) -> Result<(), String> {
+    let SeekBurstArgs {
+        instance,
+        mpv_endpoint,
+        file_generation,
+        targets_s,
+        window_ms,
+        wait,
+    } = args;
+    let SeekBurstContext { rx, telemetry, out } = context;
+    let final_target = *targets_s
+        .last()
+        .ok_or_else(|| "seek burst has no final target".to_string())?;
+    capture_pre_seek_cache_snapshot(mpv_endpoint, wait, rx, telemetry, out).await?;
+
+    if instance.protocol_version < yututui::remote::proto::PROTOCOL_VERSION {
+        return Err("ordered seek bursts require the remote session protocol".to_string());
+    }
+    let name = instance
+        .endpoint
+        .as_str()
+        .to_fs_name::<GenericFilePath>()
+        .map_err(|error| format!("invalid remote burst endpoint: {error}"))?;
+    let stream = timeout(wait, Stream::connect(name))
+        .await
+        .map_err(|_| "timed out connecting the ordered remote burst session".to_string())?
+        .map_err(|error| format!("connect ordered remote burst session: {error}"))?;
+    let mut reader = BufReader::new(stream);
+    write_session_line(
+        reader.get_mut(),
+        &HelloRequest {
+            version: yututui::remote::proto::PROTOCOL_VERSION,
+            token: instance.token.clone(),
+            hello: HelloBody {
+                client: "tui-perf-burst".to_string(),
+                min_version: yututui::remote::proto::PROTOCOL_VERSION,
+            },
+        },
+    )
+    .await?;
+    let handshake_deadline = Instant::now() + wait;
+    let hello_bytes = read_session_line(&mut reader, handshake_deadline).await?;
+    let ack: HelloAck = serde_json::from_slice(&hello_bytes)
+        .map_err(|error| format!("parse ordered remote burst handshake: {error}"))?;
+    if !ack.ok || ack.version != yututui::remote::proto::PROTOCOL_VERSION {
+        return Err(format!(
+            "ordered remote burst handshake rejected: {}",
+            ack.reason.as_deref().unwrap_or("bad_version")
+        ));
+    }
+
+    let burst_started = Instant::now();
+    let window = Duration::from_millis(window_ms);
+    let mut final_dispatched = None;
+    let mut final_write_completed = None;
+    let mut max_schedule_lateness = Duration::ZERO;
+    for (index, target_s) in targets_s.iter().copied().enumerate() {
+        let scheduled_at = burst_started + burst_target_offset(window, index, targets_s.len());
+        if Instant::now() < scheduled_at {
+            sleep_until(tokio::time::Instant::from_std(scheduled_at)).await;
+        }
+        let dispatched_at = Instant::now();
+        max_schedule_lateness =
+            max_schedule_lateness.max(dispatched_at.saturating_duration_since(scheduled_at));
+        if index + 1 == targets_s.len() {
+            final_dispatched = Some(dispatched_at);
+        }
+        let id = u64::try_from(index + 1)
+            .map_err(|_| "seek burst contains too many targets".to_string())?;
+        write_session_line(
+            reader.get_mut(),
+            &ClientFrame {
+                id,
+                request_id: None,
+                page_id: None,
+                op: ClientOp::Command(RemoteCommand::SeekTo {
+                    ms: (target_s * 1_000.0).round() as u64,
+                }),
+            },
+        )
+        .await?;
+        if index + 1 == targets_s.len() {
+            final_write_completed = Some(Instant::now());
+        }
+    }
+
+    let reply_deadline = Instant::now() + wait;
+    let mut first_owner_reply = None;
+    let mut final_admitted = None;
+    for expected_index in 0..targets_s.len() {
+        let frame_bytes = read_session_line(&mut reader, reply_deadline).await?;
+        let frame: ServerFrame = serde_json::from_slice(&frame_bytes)
+            .map_err(|error| format!("parse ordered remote burst reply: {error}"))?;
+        let expected_id = u64::try_from(expected_index + 1)
+            .map_err(|_| "seek burst contains too many targets".to_string())?;
+        match frame {
+            ServerFrame::Reply { id, resp } if id == expected_id && resp.ok => {
+                let observed_at = Instant::now();
+                first_owner_reply.get_or_insert(observed_at);
+                if expected_index + 1 == targets_s.len() {
+                    final_admitted = Some(observed_at);
+                }
+            }
+            ServerFrame::Reply { id, resp } if id == expected_id => {
+                return Err(format!(
+                    "ordered seek burst target {expected_id} rejected: {}",
+                    resp.reason.as_deref().unwrap_or("rejected")
+                ));
+            }
+            ServerFrame::Reply { id, .. } => {
+                return Err(format!(
+                    "ordered seek burst reply {id} arrived before expected reply {expected_id}"
+                ));
+            }
+            ServerFrame::Goodbye { reason } => {
+                return Err(format!("ordered remote burst session ended: {reason}"));
+            }
+            _ => {
+                return Err(
+                    "ordered remote burst session published an unexpected frame".to_string()
+                );
+            }
+        }
+    }
+    let final_dispatched = final_dispatched.expect("non-empty burst checked above");
+    let final_write_completed = final_write_completed.expect("non-empty burst checked above");
+    let first_owner_reply = first_owner_reply
+        .ok_or_else(|| "seek burst did not receive an owner command response".to_string())?;
+    let final_admitted = final_admitted.ok_or_else(|| {
+        "seek burst final target did not receive an admission response".to_string()
+    })?;
+    let (restart, completed, observed_target_s) =
+        wait_for_seek(wait, rx, telemetry, out, final_dispatched, final_target).await?;
+    operation(
+        out,
+        telemetry.origin,
+        "seek_burst",
+        final_dispatched..completed.observed_at,
+        "mpv_event",
+        Some(&completed),
+        json!({
+            "action_kind": "seek_burst",
+            "file_generation": file_generation,
+            "targets_s": targets_s,
+            "target_s": final_target,
+            "window_ms": window_ms,
+            "submitted_without_intermediate_wait": true,
+            "transport_kind": "ordered_remote_session_v8",
+            "dispatch_scope": "client_session_write",
+            "reply_order_proven": true,
+            "owner_reply_semantics": "owner_command_response_not_wire_dispatch",
+            "owner_reply_window_ship_evidence": false,
+            "schedule_kind": "absolute_monotonic_deadlines_v1",
+            "burst_started_elapsed_ns": burst_started
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "actual_dispatch_window_ns": final_dispatched
+                .saturating_duration_since(burst_started)
+                .as_nanos(),
+            "max_schedule_lateness_ns": max_schedule_lateness.as_nanos(),
+            "final_target_dispatched_elapsed_ns": final_dispatched
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "final_target_write_completed_elapsed_ns": final_write_completed
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "final_target_admitted_elapsed_ns": final_admitted
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "first_owner_reply_elapsed_ns": first_owner_reply
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "owner_reply_window_ns": final_admitted
+                .saturating_duration_since(first_owner_reply)
+                .as_nanos(),
+            "latency_anchor": "final_target_dispatch",
+            "observed_target_s": observed_target_s,
+            "playback_restart_elapsed_ns": restart
+                .observed_at
+                .saturating_duration_since(telemetry.origin)
+                .as_nanos(),
+            "target_tolerance_s": 2.0,
+        }),
     )
 }
 
 async fn wait_for_mpv(
     wait: Duration,
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
     operation_started: Instant,
@@ -985,7 +1848,7 @@ async fn wait_for_mpv(
 
 async fn wait_for_seek(
     wait: Duration,
-    rx: &mut mpsc::UnboundedReceiver<IpcMessage>,
+    rx: &mut mpsc::Receiver<IpcMessage>,
     telemetry: &mut Telemetry,
     out: &mut BufWriter<File>,
     operation_started: Instant,
@@ -1134,6 +1997,14 @@ fn producer_binary_sha256() -> Result<String, String> {
     sha256_file(&executable)
 }
 
+fn source_rate_bound_bps() -> Option<u64> {
+    std::env::var("YTM_PERF_SOURCE_RATE_BOUND_BPS")
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
 fn header_record(
     args: &Args,
     owner: &ProcessIdentity,
@@ -1165,23 +2036,53 @@ fn header_record(
         "buffering_cutoff_ns": args.observe.as_nanos(),
         "close_grace_ns": args.close_grace.as_nanos(),
         "subscriptions_confirmed": true,
+        "subscription_contract": MPV_SUBSCRIPTIONS.iter().map(|(id, property, required)| {
+            json!({"id": id, "property": property, "required": required})
+        }).collect::<Vec<_>>(),
+        "cache_query_contract": {
+            "policy": "pre_seek_plus_active_low_rate_v1",
+            "interval_ms": CACHE_QUERY_INTERVAL.as_millis(),
+            "cache_speed_periodic": true,
+            "demuxer_cache_state_only_pre_seek_or_disk_active": true,
+            "full_demuxer_cache_state_recorded": false,
+            "recorded_state_members": ["file-cache-bytes", "raw-input-rate"],
+            "event_channel_capacity": MPV_EVENT_CHANNEL_CAPACITY,
+        },
+        "source_rate_bound_bps": source_rate_bound_bps(),
         "scenario_sha256": std::env::var("TUI_PERF_SCENARIO_SHA256").ok(),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "pause_policy": if args.pause_hold.is_some() { "pause-resume" } else { "none" },
         "pause_hold_ms": args.pause_hold.map(|hold| hold.as_millis()),
+        "typed_actions": !args.actions.is_empty(),
+        "seek_action_count": if args.actions.is_empty() {
+            args.seeks.len()
+        } else {
+            args.actions.len()
+        },
     })
 }
 
-fn summary_record(
-    telemetry: &Telemetry,
-    args: &Args,
+struct SummaryArgs<'a> {
+    args: &'a Args,
     origin: Instant,
     summary_at: Instant,
     observation_end: DrainEnd,
-    run_id: &str,
+    run_id: &'a str,
+    long_form_seek_status: &'a Value,
     observation_finished_unix_ns: u128,
-) -> Value {
+}
+
+fn summary_record(telemetry: &Telemetry, args: SummaryArgs<'_>) -> Value {
+    let SummaryArgs {
+        args,
+        origin,
+        summary_at,
+        observation_end,
+        run_id,
+        long_form_seek_status,
+        observation_finished_unix_ns,
+    } = args;
     let elapsed_ns = summary_at.saturating_duration_since(origin).as_nanos();
     let terminal_observed_ns = match observation_end {
         DrainEnd::Deadline => None,
@@ -1230,6 +2131,10 @@ fn summary_record(
         "cutoff_last_time_pos_ns": cutoff_last_time_pos_ns,
         "cutoff_last_time_pos_s": cutoff_last_time_pos_s,
         "observation_end": observation_end.as_str(),
+        "latest_properties": telemetry.latest_properties,
+        "lifecycle_events": telemetry.lifecycle_events,
+        "peak_file_cache_bytes": telemetry.peak_file_cache_bytes,
+        "long_form_seek_status": long_form_seek_status,
     })
 }
 
@@ -1260,7 +2165,17 @@ fn publish_ready(
         "mpv_start_time_unix_s": mpv.process.start_time_unix_s,
         "mpv_endpoint": mpv.endpoint,
         "subscriptions_confirmed": true,
+        "cache_query_contract": {
+            "policy": "pre_seek_plus_active_low_rate_v1",
+            "interval_ms": CACHE_QUERY_INTERVAL.as_millis(),
+            "cache_speed_periodic": true,
+            "demuxer_cache_state_only_pre_seek_or_disk_active": true,
+            "full_demuxer_cache_state_recorded": false,
+            "recorded_state_members": ["file-cache-bytes", "raw-input-rate"],
+            "event_channel_capacity": MPV_EVENT_CHANNEL_CAPACITY,
+        },
         "observation_started_unix_ns": observation_started_unix_ns,
+        "source_rate_bound_bps": source_rate_bound_bps(),
         "scenario_sha256": std::env::var("TUI_PERF_SCENARIO_SHA256").ok(),
     }))
     .map_err(|e| format!("encode controller ready file: {e}"))?;
@@ -1280,6 +2195,28 @@ fn write_ndjson(out: &mut BufWriter<File>, value: &impl Serialize) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ship_action_bounds_accept_recovery_and_reject_oversized_bursts() {
+        ControllerAction::Recovery {
+            file_generation: "media-02".to_string(),
+        }
+        .validate()
+        .expect("a non-empty recovery generation is valid");
+        ControllerAction::SeekBurst {
+            file_generation: "media-05".to_string(),
+            targets_s: vec![1.0; 20],
+            window_ms: 500,
+        }
+        .validate()
+        .expect("the minimum ship burst is valid");
+        let oversized = ControllerAction::SeekBurst {
+            file_generation: "media-05".to_string(),
+            targets_s: vec![1.0; 101],
+            window_ms: 500,
+        };
+        assert!(oversized.validate().is_err());
+    }
 
     #[test]
     fn mpv_discovery_ignores_endpointless_candidates_and_fails_closed_on_ambiguity() {
@@ -1313,6 +2250,7 @@ mod tests {
             close_grace: Duration::ZERO,
             load: LoadAction::None,
             seeks: Vec::new(),
+            actions: Vec::new(),
             pause_hold: None,
         };
         let identity = ProcessIdentity {
@@ -1363,16 +2301,26 @@ mod tests {
             close_grace: Duration::from_millis(5),
             load: LoadAction::None,
             seeks: Vec::new(),
+            actions: Vec::new(),
             pause_hold: None,
         };
         let summary = summary_record(
             &telemetry,
-            &args,
-            origin,
-            summary_at,
-            DrainEnd::CleanEof(summary_at),
-            "self-test-run",
-            456,
+            SummaryArgs {
+                args: &args,
+                origin,
+                summary_at,
+                observation_end: DrainEnd::CleanEof(summary_at),
+                run_id: "self-test-run",
+                long_form_seek_status: &json!({
+                    "available": true,
+                    "capability_advertised": true,
+                    "requested": "auto",
+                    "effective": "disk_active",
+                    "reason": "auto_uncached_seek",
+                }),
+                observation_finished_unix_ns: 456,
+            },
         );
 
         assert_eq!(summary["elapsed_ns"], 7_000_000u64);
@@ -1382,6 +2330,26 @@ mod tests {
         assert_eq!(summary["observation_end"], "mpv_ipc_closed");
         assert_eq!(summary["run_id"], "self-test-run");
         assert_eq!(summary["observation_finished_unix_ns"], 456);
+        assert_eq!(
+            summary["long_form_seek_status"]["reason"],
+            "auto_uncached_seek"
+        );
+    }
+
+    #[test]
+    fn file_cache_peak_is_extracted_from_demuxer_cache_state() {
+        assert_eq!(
+            demuxer_cache_file_bytes(&json!({
+                "raw-input-rate": 4_096,
+                "file-cache-bytes": 12_345,
+            })),
+            Some(12_345)
+        );
+        assert_eq!(demuxer_cache_file_bytes(&json!(12_345)), None);
+        assert_eq!(
+            demuxer_cache_file_bytes(&json!({"file-cache-bytes": -1})),
+            None
+        );
     }
 
     #[test]
@@ -1390,6 +2358,19 @@ mod tests {
         assert_eq!(scheduled_offset(window, 1, 6), Duration::from_secs(10));
         assert_eq!(scheduled_offset(window, 3, 6), Duration::from_secs(30));
         assert_eq!(scheduled_offset(window, 6, 6), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn burst_targets_use_absolute_deadlines_and_end_at_the_declared_window() {
+        let window = Duration::from_millis(500);
+        let offsets = (0..20)
+            .map(|index| burst_target_offset(window, index, 20))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets[0], Duration::ZERO);
+        assert_eq!(offsets[19], window);
+        assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]));
+        let simulated_rpc_completion = offsets[0] + Duration::from_millis(200);
+        assert!(offsets[1] < simulated_rpc_completion);
     }
 
     #[test]
@@ -1490,8 +2471,8 @@ mod tests {
         let mut out = BufWriter::new(File::create(&path).expect("create test output"));
         let origin = Instant::now();
         let mut telemetry = Telemetry::new(origin, origin + Duration::from_millis(40));
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(IpcMessage::Event(IpcEvent {
+        let (tx, mut rx) = mpsc::channel(8);
+        tx.try_send(IpcMessage::Event(IpcEvent {
             observed_at: origin + Duration::from_millis(2),
             value: json!({
                 "event": "property-change",
@@ -1500,7 +2481,7 @@ mod tests {
             }),
         }))
         .expect("send buffering start");
-        tx.send(IpcMessage::Event(IpcEvent {
+        tx.try_send(IpcMessage::Event(IpcEvent {
             observed_at: origin + Duration::from_millis(7),
             value: json!({
                 "event": "property-change",
@@ -1543,9 +2524,9 @@ mod tests {
         let mut out = BufWriter::new(File::create(&path).expect("create test output"));
         let origin = Instant::now();
         let mut telemetry = Telemetry::new(origin, origin + Duration::from_millis(10));
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(8);
         for (elapsed_ms, paused) in [(2, true), (9, false)] {
-            tx.send(IpcMessage::Event(IpcEvent {
+            tx.try_send(IpcMessage::Event(IpcEvent {
                 observed_at: origin + Duration::from_millis(elapsed_ms),
                 value: json!({
                     "event": "property-change",
@@ -1556,7 +2537,7 @@ mod tests {
             .expect("queue telemetry before close");
         }
         let clean_eof_at = origin + Duration::from_millis(10);
-        tx.send(IpcMessage::CleanEof {
+        tx.try_send(IpcMessage::CleanEof {
             observed_at: clean_eof_at,
         })
         .expect("queue clean EOF");
@@ -1590,7 +2571,7 @@ mod tests {
             .shutdown()
             .await
             .expect("close truncated stream");
-        let (truncated_tx, mut truncated_rx) = mpsc::unbounded_channel();
+        let (truncated_tx, mut truncated_rx) = mpsc::channel(8);
         read_mpv(BufReader::new(truncated_reader), truncated_tx).await;
 
         assert!(matches!(
@@ -1611,7 +2592,7 @@ mod tests {
             .await
             .expect("write complete frame");
         clean_writer.shutdown().await.expect("close clean stream");
-        let (clean_tx, mut clean_rx) = mpsc::unbounded_channel();
+        let (clean_tx, mut clean_rx) = mpsc::channel(8);
         read_mpv(BufReader::new(clean_reader), clean_tx).await;
 
         assert!(matches!(clean_rx.recv().await, Some(IpcMessage::Event(_))));

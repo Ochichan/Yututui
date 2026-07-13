@@ -212,15 +212,17 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
             app.radio_live_synced(),
         )
     } else {
-        let raw = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
-        let ratio = if animated {
+        let preview = app.seekbar_preview_target();
+        let shown_position = preview.or(app.playback.time_pos);
+        let raw = format::seekbar_ratio(shown_position, app.playback.duration);
+        let ratio = if animated && preview.is_none() {
             crate::ui::anim::smooth_seek_ratio(app, raw)
         } else {
             raw
         };
         (
             ratio,
-            format::seekbar_label(app.playback.time_pos, app.playback.duration),
+            format::seekbar_label(shown_position, app.playback.duration),
         )
     };
     // With the time-glow animation on, the gauge and its label pulse toward the accent for

@@ -55,6 +55,7 @@ mod selection_navigation;
 mod settings_cache_policy;
 mod settings_forms;
 mod settings_ui;
+mod source_recovery;
 mod startup_playback;
 mod streaming_extend;
 mod track_transitions;

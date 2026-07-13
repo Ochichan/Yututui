@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::api::Song;
-use crate::app::{App, Cmd, Msg, PlayerControl};
+use crate::app::{App, Cmd, Msg, PlayerControl, PlayerMsg};
 use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
@@ -286,6 +286,110 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
 
         assert_parity(&step, &app, &engine);
     }
+}
+
+#[tokio::test]
+async fn accepted_seek_uses_fast_precision_and_one_epoch_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 10.0, 180.0);
+    let app_epoch = app.playback.position_epoch;
+    let mut engine_player = engine.install_seek_parity_player("b", 10.0, 180.0);
+    let (_, engine_epoch) = engine.seek_parity_projection();
+
+    let (reply_tx, mut reply_rx) = oneshot::channel();
+    let app_commands = app.update(Msg::Remote(
+        RemoteCommand::SeekTo { ms: 90_000 },
+        reply_tx.into(),
+    ));
+    let app_seek = app_commands
+        .iter()
+        .find_map(Cmd::player_command)
+        .expect("App seek command");
+    assert!(matches!(
+        app_seek,
+        crate::player::PlayerCmd::SeekAbsolute {
+            seconds: 90.0,
+            precision: crate::player::SeekPrecision::InteractiveFast,
+        }
+    ));
+    admit_app_player_intents(&mut app, app_commands);
+    assert!(reply_rx.try_recv().expect("App seek reply").ok);
+
+    let (engine_reply, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::SeekTo { ms: 90_000 })
+        .await;
+    assert!(engine_reply.ok);
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert!(matches!(
+        engine_player.try_recv(),
+        Ok(crate::player::PlayerCmd::SeekAbsolute {
+            seconds: 90.0,
+            precision: crate::player::SeekPrecision::InteractiveFast,
+        })
+    ));
+
+    assert_eq!(app.playback.time_pos, Some(90.0));
+    let (engine_position, engine_position_epoch) = engine.seek_parity_projection();
+    assert_eq!(engine_position, Some(90.0));
+    assert_eq!(app.playback.position_epoch, app_epoch + 1);
+    assert_eq!(engine_position_epoch, engine_epoch + 1);
+    assert_parity("accepted fast seek", &app, &engine);
+}
+
+#[tokio::test]
+async fn midtrack_source_recovery_trace_and_epoch_match_in_both_owners() {
+    const ERROR: &str = "connection reset while reading source";
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 90.5, 225.0);
+    app.playback.paused = true;
+    let app_epoch = app.playback.position_epoch;
+    let mut engine_player = engine.install_seek_parity_player("b", 90.5, 225.0);
+    assert!(
+        engine
+            .handle_player_event(crate::player::PlayerEvent::Paused(true))
+            .await
+            .is_empty()
+    );
+    let (_, engine_epoch) = engine.seek_parity_projection();
+
+    let app_commands = app.update(PlayerMsg::Error(ERROR.to_owned()));
+    let app_request = app_commands
+        .iter()
+        .find_map(Cmd::player_command)
+        .and_then(|command| match command {
+            crate::player::PlayerCmd::LoadWithResume(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("App source-recovery command");
+    admit_app_player_intents(&mut app, app_commands);
+
+    let effects = engine
+        .handle_player_event(crate::player::PlayerEvent::Error(ERROR.to_owned()))
+        .await;
+    assert!(effects.is_empty());
+    let engine_request = match engine_player.try_recv() {
+        Ok(crate::player::PlayerCmd::LoadWithResume(request)) => request,
+        _ => panic!("daemon source-recovery command"),
+    };
+
+    assert_eq!(app_request.position_secs, engine_request.position_secs);
+    assert_eq!(app_request.paused, engine_request.paused);
+    assert_eq!(
+        app_request.episode_id.get(),
+        engine_request.episode_id.get()
+    );
+    assert_eq!(
+        app_request.transport_epoch.get(),
+        engine_request.transport_epoch.get()
+    );
+    assert_eq!(app.playback.time_pos, Some(90.5));
+    let (engine_position, engine_position_epoch) = engine.seek_parity_projection();
+    assert_eq!(engine_position, Some(90.5));
+    assert!(app.playback.paused);
+    assert!(engine_request.paused);
+    assert_eq!(app.playback.position_epoch, app_epoch + 1);
+    assert_eq!(engine_position_epoch, engine_epoch + 1);
 }
 
 fn assert_reply_before_player_event(

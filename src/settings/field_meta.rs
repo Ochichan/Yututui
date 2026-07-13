@@ -103,6 +103,7 @@ impl Field {
             | Field::CuratingMode
             | Field::DjGemLanguage
             | Field::AudioBackend
+            | Field::LongFormSeekOptimization
             | Field::VideoLayout
             | Field::PlayerBarPosition
             | Field::SpotifyImportMode
@@ -228,6 +229,7 @@ impl Field {
             Field::AudioMpvDevice => {
                 t!("mpv device (next launch)", "mpv 장치 (재시작 후 적용)").to_owned()
             }
+            Field::LongFormSeekOptimization => t!("Long-form seek", "긴 미디어 탐색").to_owned(),
             Field::AudioMpvCacheForward => {
                 t!("Cache forward (next launch)", "앞쪽 캐시 (재시작 후 적용)").to_owned()
             }

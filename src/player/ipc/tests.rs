@@ -1,39 +1,50 @@
 use super::*;
 
-#[tokio::test]
-async fn stop_cancels_a_hung_load_validation_without_reordering_prior_commands() {
-    let task = tokio::spawn(async {
-        std::future::pending::<()>().await;
-        LoadValidationOutcome::Validated("never".to_owned())
-    });
-    let mut validation = Some(PendingLoadValidation {
-        request_id: 11,
-        file_generation: 1,
-        task,
-    });
-    let mut backlog = VecDeque::new();
+mod cache_facts;
+mod cache_safety;
+mod seek_dispatch;
 
-    queue_during_load_validation(PlayerCmd::SetVolume(42), &mut validation, &mut backlog);
-    assert!(validation.is_some());
-    queue_during_load_validation(PlayerCmd::Stop, &mut validation, &mut backlog);
-
-    assert!(validation.is_none());
-    assert!(matches!(
-        backlog.pop_front(),
-        Some(PlayerCmd::SetVolume(42))
-    ));
-    assert!(matches!(backlog.pop_front(), Some(PlayerCmd::Stop)));
+fn recovery_request(position_secs: f64, paused: bool) -> super::super::recovery::LoadWithResume {
+    let mut planner = super::super::recovery::RecoveryPlanner::default();
+    let (episode_id, transport_epoch) = planner
+        .begin_episode("HTTP error 403 Forbidden", 11, 7)
+        .expect("fixture error is conservatively recoverable");
+    super::super::recovery::LoadWithResume {
+        url: "https://example.invalid/fresh-source".to_owned(),
+        position_secs,
+        paused,
+        source_context: super::super::MediaSourceContext::OnDemand,
+        episode_id,
+        transport_epoch,
+        force_ram_only: false,
+    }
 }
 
-#[tokio::test]
-async fn admitted_new_generation_cancels_validation_before_channel_receive() {
-    let (_generation_tx, generation_rx) = watch::channel(2);
-    let result =
-        validate_load_until_superseded("https://example.com/old".to_owned(), 1, generation_rx)
-            .await;
-
-    assert!(matches!(result, LoadValidationOutcome::Superseded));
+fn emergency_request(position_secs: f64, paused: bool) -> super::super::recovery::LoadWithResume {
+    super::super::recovery::LoadWithResume::emergency(
+        "https://example.invalid/emergency-source".to_owned(),
+        position_secs,
+        paused,
+        super::super::MediaSourceContext::OnDemand,
+    )
 }
+
+fn cache_runtime_for_test(requested: crate::config::LongFormSeekOptimization) -> CacheRuntime {
+    CacheRuntime::new(
+        crate::player::cache_support::CacheSpawnSupport {
+            capability: crate::player::long_form_seek::ControllerCapability::Available(
+                crate::player::long_form_seek::CacheOptionFamily::Modern,
+            ),
+            option_family: Some(crate::player::long_form_seek::CacheOptionFamily::Modern),
+            override_source: None,
+            cache_dir: None,
+            spawn_args: Vec::new(),
+        },
+        requested,
+    )
+}
+
+mod recovery_flow;
 
 fn recv_file_event(rx: &mut tokio::sync::mpsc::Receiver<PlayerEvent>) -> (u64, PlayerEvent) {
     match rx.try_recv().expect("file-scoped player event") {
@@ -85,6 +96,28 @@ fn every_transport_failure_emits_exactly_one_sanitized_terminal_event() {
             _ => panic!("expected transport terminal event"),
         }
     }
+}
+
+#[test]
+fn cache_emergency_emits_one_process_scoped_resume_contract_without_generic_transport_loss() {
+    let events = terminal_events(ActorExit::CacheEmergency {
+        file_generation: 7,
+        position_secs: 3_600.25,
+        paused: true,
+        reason: super::super::long_form_seek::CacheReason::DisableFailed,
+    });
+
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        PlayerEvent::CacheEmergency {
+            file_generation: 7,
+            position_secs,
+            paused: true,
+            reason: super::super::long_form_seek::CacheReason::DisableFailed,
+        } if (*position_secs - 3_600.25).abs() < f64::EPSILON => {}
+        _ => panic!("expected one process-scoped cache emergency"),
+    }
+    assert_eq!(events[0].file_generation(), None);
 }
 
 #[test]
@@ -424,6 +457,36 @@ fn explicit_modern_eof_latches_before_a_late_property_notification() {
 }
 
 #[test]
+fn current_mpv_loading_failed_event_emits_url_free_generic_source_failure() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let emit: EventSink = std::sync::Arc::new(move |event| {
+        let _ = tx.try_send(event);
+    });
+    let mut state = DispatchState {
+        issued_file_generation: 7,
+        active_file_generation: Some(7),
+        active_playlist_entry_id: Some(70),
+        playlist_identity_mode: PlaylistIdentityMode::EntryIds,
+        ..DispatchState::default()
+    };
+    state.entry_generations.insert(70, 7);
+
+    dispatch_incoming(
+        r#"{"event":"end-file","reason":"error","file_error":"loading failed","playlist_entry_id":70}"#,
+        &emit,
+        &mut state,
+    );
+
+    let (generation, event) = recv_file_event(&mut rx);
+    assert_eq!(generation, 7);
+    assert!(matches!(
+        event,
+        PlayerEvent::Error(error)
+            if error == super::super::recovery::GENERIC_LOADING_FAILURE
+    ));
+}
+
+#[test]
 fn mpv_032_reasonless_end_becomes_error_only_after_idle() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let emit: EventSink = std::sync::Arc::new(move |event| {
@@ -445,7 +508,11 @@ fn mpv_032_reasonless_end_becomes_error_only_after_idle() {
 
     let (generation, event) = recv_file_event(&mut rx);
     assert_eq!(generation, 5);
-    assert!(matches!(event, PlayerEvent::Error(_)));
+    assert!(matches!(
+        event,
+        PlayerEvent::Error(error)
+            if error == super::super::recovery::GENERIC_LOADING_FAILURE
+    ));
     assert!(rx.try_recv().is_err());
 }
 
@@ -703,6 +770,90 @@ fn tracked_reply_is_non_evictable_and_resolves_exact_success_or_failure() {
             .unwrap_err()
             .contains("invalid parameter")
     );
+}
+
+#[test]
+fn internal_terminal_contract_resolves_success_and_recycles_on_rejection() {
+    let emit: EventSink = std::sync::Arc::new(|_| {});
+    let mut state = DispatchState {
+        issued_file_generation: 9,
+        ..DispatchState::default()
+    };
+    remember_pending_terminal(
+        &mut state,
+        1,
+        9,
+        "set_property pause".to_owned(),
+        "recovery pause restore",
+    )
+    .unwrap();
+
+    dispatch_incoming(r#"{"error":"success","request_id":1}"#, &emit, &mut state);
+
+    assert!(state.pending.is_empty());
+    assert!(state.terminal_failure.is_none());
+
+    remember_pending_terminal(&mut state, 2, 9, "stop".to_owned(), "rejected-load stop").unwrap();
+    dispatch_incoming(
+        r#"{"error":"invalid parameter","request_id":2}"#,
+        &emit,
+        &mut state,
+    );
+
+    assert!(matches!(
+        state.terminal_failure.take(),
+        Some(ActorExit::InternalCommandFailed {
+            operation: "rejected-load stop",
+            rejected: true,
+        })
+    ));
+}
+
+#[test]
+fn ordinary_command_rejection_has_no_internal_terminal_contract() {
+    let emit: EventSink = std::sync::Arc::new(|_| {});
+    let mut state = DispatchState::default();
+    remember_pending_command(&mut state, 1, "set volume");
+
+    dispatch_incoming(
+        r#"{"error":"invalid parameter","request_id":1}"#,
+        &emit,
+        &mut state,
+    );
+
+    assert!(state.terminal_failure.is_none());
+}
+
+#[test]
+fn expired_internal_terminal_contract_recycles_with_timeout_reason() {
+    let mut state = DispatchState::default();
+    state.pending.insert(
+        1,
+        PendingCommand {
+            label: "set_property pause".to_owned(),
+            file_generation: Some(9),
+            acknowledgement: None,
+            terminal_contract: Some(PendingTerminalContract {
+                operation: "recovery pause restore",
+                deadline: Instant::now() - Duration::from_millis(1),
+            }),
+        },
+    );
+
+    let failure = expired_terminal_failure(&state, Instant::now())
+        .expect("expired internal reply must be terminal");
+    assert!(matches!(
+        &failure,
+        ActorExit::InternalCommandFailed {
+            operation: "recovery pause restore",
+            rejected: false,
+        }
+    ));
+    assert!(matches!(
+        terminal_events(failure).as_slice(),
+        [PlayerEvent::TransportClosed(reason)]
+            if reason.contains("recovery pause restore") && reason.contains("timed out")
+    ));
 }
 
 #[test]
@@ -999,7 +1150,7 @@ fn end_file_stop_resets_dedup_state_without_events() {
 }
 
 #[test]
-fn failed_loadfile_reply_emits_error() {
+fn failed_loadfile_reply_emits_url_free_generic_source_failure() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let emit: EventSink = std::sync::Arc::new(move |event| {
         let _ = tx.try_send(event);
@@ -1015,7 +1166,11 @@ fn failed_loadfile_reply_emits_error() {
 
     let (generation, event) = recv_file_event(&mut rx);
     assert_eq!(generation, 1);
-    assert!(matches!(event, PlayerEvent::Error(error) if error.contains("loadfile")));
+    assert!(matches!(
+        event,
+        PlayerEvent::Error(error)
+            if error == crate::player::recovery::GENERIC_LOADING_FAILURE
+    ));
     assert!(!state.pending.contains_key(&11));
 }
 

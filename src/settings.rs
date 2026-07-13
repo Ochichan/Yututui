@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT,
-    SpotifyImportMode, default_cookies_file, default_download_dir,
+    AnimationsConfig, Config, LocalRootConfig, LongFormSeekOptimization, MPV_CACHE_BACK_DEFAULT,
+    MPV_CACHE_FORWARD_DEFAULT, SpotifyImportMode, default_cookies_file, default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -143,8 +143,7 @@ impl SettingsTab {
                     Field::AudioBackend,
                     Field::AudioMpvOutput,
                     Field::AudioMpvDevice,
-                    Field::AudioMpvCacheForward,
-                    Field::AudioMpvCacheBack,
+                    Field::LongFormSeekOptimization,
                     Field::EqPreset,
                 ];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -243,7 +242,7 @@ impl SettingsTab {
                 // in radio mode, `SettingsState::sections` decrements this back to 7 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
                 (t!("Now Playing", "현재 재생"), 8),
-                (t!("Audio backend", "오디오 백엔드"), 5),
+                (t!("Audio backend", "오디오 백엔드"), 4),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             // Animation sections and the fields within each are ordered by average resource
@@ -337,6 +336,9 @@ pub enum Field {
     AudioBackend,
     AudioMpvOutput,
     AudioMpvDevice,
+    /// Managed long-form seek policy. Auto remains explicitly experimental.
+    LongFormSeekOptimization,
+    /// Hidden legacy advanced fields retained for config and old remote compatibility.
     AudioMpvCacheForward,
     AudioMpvCacheBack,
     // EQ
@@ -606,6 +608,7 @@ pub struct SettingsDraft {
     pub audio_backend: crate::config::AudioBackend,
     pub audio_mpv_output: String,
     pub audio_mpv_device: String,
+    pub long_form_seek_optimization: LongFormSeekOptimization,
     pub audio_mpv_cache_forward: String,
     pub audio_mpv_cache_back: String,
     pub autoplay_streaming: bool,
@@ -756,6 +759,13 @@ impl SettingsDraft {
             Field::AudioBackend => self.audio_backend.id().to_owned(),
             Field::AudioMpvOutput => audio_optional_display(&self.audio_mpv_output),
             Field::AudioMpvDevice => audio_optional_display(&self.audio_mpv_device),
+            Field::LongFormSeekOptimization => match self.long_form_seek_optimization {
+                LongFormSeekOptimization::Auto => {
+                    t!("Auto (experimental)", "자동 (실험적)").to_owned()
+                }
+                LongFormSeekOptimization::Off => t!("Off", "끔").to_owned(),
+                LongFormSeekOptimization::On => t!("On", "켬").to_owned(),
+            },
             Field::AudioMpvCacheForward => {
                 cache_display(&self.audio_mpv_cache_forward, MPV_CACHE_FORWARD_DEFAULT)
             }
@@ -974,6 +984,7 @@ impl SettingsDraft {
         cfg.audio.backend = self.audio_backend;
         cfg.audio.mpv.output = blank_to_none(&self.audio_mpv_output);
         cfg.audio.mpv.device = blank_to_none(&self.audio_mpv_device);
+        cfg.audio.mpv.long_form_seek_optimization = self.long_form_seek_optimization;
         cfg.audio.mpv.cache_forward = blank_to_none(&self.audio_mpv_cache_forward)
             .unwrap_or_else(|| MPV_CACHE_FORWARD_DEFAULT.to_owned());
         cfg.audio.mpv.cache_back = blank_to_none(&self.audio_mpv_cache_back)

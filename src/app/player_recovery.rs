@@ -9,6 +9,20 @@
 use super::*;
 
 #[derive(Clone)]
+pub struct SourceRecoveryPlan {
+    expected_queue_rev: u64,
+    expected_cursor: usize,
+    expected_video_id: String,
+    expected_loaded_video_id: Option<String>,
+    logical_generation: u64,
+    origin_file_generation: u64,
+    episode_id: crate::player::recovery::RecoveryEpisodeId,
+    transport_epoch: crate::player::recovery::TransportIntentEpoch,
+    position_secs: f64,
+    paused: bool,
+}
+
+#[derive(Clone)]
 pub struct PrefetchWatchRetryPlan {
     expected_queue_rev: u64,
     expected_cursor: usize,
@@ -28,6 +42,159 @@ pub struct RadioLiveSeekPlan {
 }
 
 impl App {
+    /// Advance the logical-item identity after an ordinary admitted load. A source-recovery
+    /// replacement deliberately does not call this: its new file generation belongs to the
+    /// same one-shot episode.
+    pub(in crate::app) fn begin_source_logical_item(&mut self) {
+        self.prefetch.source_logical_generation =
+            self.prefetch.source_logical_generation.wrapping_add(1);
+        self.prefetch.source_file_generation = self.prefetch.source_file_generation.wrapping_add(1);
+        self.prefetch
+            .source_recovery
+            .begin_logical_item(self.prefetch.source_logical_generation);
+    }
+
+    /// Invalidate owner-side recovery correlation after a newer admitted user transport intent.
+    pub(in crate::app) fn supersede_source_recovery(&mut self) {
+        self.prefetch.source_recovery.supersede_transport();
+    }
+
+    /// Prepare one same-item, position-preserving reload for a conservatively classified
+    /// mid-track source failure. Initial-load failures have no confirmed playhead and retain the
+    /// existing retry/heal/skip behavior.
+    pub(in crate::app) fn source_recovery_intent(&mut self, error: &str) -> Option<Vec<Cmd>> {
+        let failure = crate::player::recovery::classify_source_failure(error)?;
+        let position_secs = self
+            .playback
+            .time_pos
+            .filter(|position| position.is_finite() && *position > 0.0)?;
+        let song = self.queue.current()?;
+        if song.is_radio_station()
+            || self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str())
+        {
+            return None;
+        }
+        let watch_url = song.prefetch_target()?;
+        let expected_video_id = song.video_id.clone();
+        let logical_generation = self.prefetch.source_logical_generation;
+        let origin_file_generation = self.prefetch.source_file_generation;
+        let (episode_id, transport_epoch) = self.prefetch.source_recovery.begin_episode(
+            error,
+            logical_generation,
+            origin_file_generation,
+        )?;
+        crate::player::diagnostics::source_recovery_attempt(failure.id());
+        let plan = SourceRecoveryPlan {
+            expected_queue_rev: self.queue.rev(),
+            expected_cursor: self.queue.cursor_pos(),
+            expected_video_id,
+            expected_loaded_video_id: self.prefetch.loaded_video_id.clone(),
+            logical_generation,
+            origin_file_generation,
+            episode_id,
+            transport_epoch,
+            position_secs,
+            paused: self.playback.paused,
+        };
+        let request = crate::player::recovery::LoadWithResume {
+            url: watch_url,
+            position_secs,
+            paused: plan.paused,
+            source_context: crate::player::MediaSourceContext::OnDemand,
+            episode_id,
+            transport_epoch,
+            force_ram_only: false,
+        };
+        Some(self.player_intent(
+            "source_recovery",
+            PlayerCmd::LoadWithResume(request),
+            PlayerCommit::SourceRecovery(Box::new(plan)),
+        ))
+    }
+
+    pub(in crate::app) fn source_recovery_is_current(&self, plan: &SourceRecoveryPlan) -> bool {
+        self.queue.planned_transition_matches(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        ) && self.prefetch.loaded_video_id == plan.expected_loaded_video_id
+            && self.prefetch.source_logical_generation == plan.logical_generation
+            && self.prefetch.source_file_generation == plan.origin_file_generation
+            && self.prefetch.source_recovery.accepts_resolved_source(
+                plan.episode_id,
+                plan.logical_generation,
+                plan.origin_file_generation,
+                plan.transport_epoch,
+            )
+    }
+
+    pub(in crate::app) fn commit_source_recovery(&mut self, plan: SourceRecoveryPlan) -> Vec<Cmd> {
+        self.queue.validate_planned_transition(
+            plan.expected_queue_rev,
+            plan.expected_cursor,
+            Some(&plan.expected_video_id),
+            Some(plan.expected_cursor),
+        );
+        assert_eq!(
+            self.prefetch.loaded_video_id, plan.expected_loaded_video_id,
+            "loaded track changed before source-recovery commit"
+        );
+        assert!(
+            self.prefetch.source_recovery.accepts_resolved_source(
+                plan.episode_id,
+                plan.logical_generation,
+                plan.origin_file_generation,
+                plan.transport_epoch,
+            ),
+            "source-recovery correlation changed before commit"
+        );
+        assert!(
+            self.prefetch
+                .source_recovery
+                .finish_episode(plan.episode_id)
+        );
+        crate::player::diagnostics::source_recovery_outcome(
+            crate::player::diagnostics::SourceRecoveryOutcome::AdmissionAccepted,
+        );
+        self.prefetch.source_file_generation = self.prefetch.source_file_generation.wrapping_add(1);
+
+        // The retry is the same logical play: keep queue/history/duration intact and publish the
+        // saved position directly, with one central epoch bump and no transient zero projection.
+        self.playback.time_pos = Some(plan.position_secs);
+        self.playback.time_pos_at = Some(Instant::now());
+        self.playback.paused = plan.paused;
+        self.bump_position_epoch(PositionEpochReason::SourceRecovery);
+        self.playback.cache_time = None;
+        self.playback.cache_time_at = None;
+
+        if self.prefetch.last_load_prefetched {
+            self.prefetch.record_direct_url_failure();
+        }
+        self.prefetch.resolved.remove(&plan.expected_video_id);
+        self.prefetch
+            .watch_retry_attempted
+            .insert(plan.expected_video_id.clone());
+        self.prefetch.last_load_prefetched = false;
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Stream changed; resuming from the last position",
+            "스트림이 변경되어 마지막 위치에서 다시 재생합니다"
+        )
+        .to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(crate) fn reject_source_recovery(&mut self, plan: &SourceRecoveryPlan) {
+        self.prefetch
+            .source_recovery
+            .cancel_unadmitted_episode(plan.episode_id);
+        crate::player::diagnostics::source_recovery_outcome(
+            crate::player::diagnostics::SourceRecoveryOutcome::AdmissionRejected,
+        );
+    }
+
     /// Retry the current track through its watch URL without consuming the one-shot fallback
     /// until the replacement `Load` has entered the player lane.
     pub(in crate::app) fn prefetch_watch_retry_intent(
@@ -43,7 +210,12 @@ impl App {
         };
         self.player_intent(
             "prefetch_watch_retry",
-            PlayerCmd::Load(watch_url),
+            PlayerCmd::load(
+                watch_url,
+                crate::player::MediaSourceContext::from_live(
+                    self.queue.current().is_some_and(Song::is_radio_station),
+                ),
+            ),
             PlayerCommit::PrefetchWatchRetry(Box::new(plan)),
         )
     }
@@ -73,6 +245,7 @@ impl App {
             .watch_retry_attempted
             .insert(plan.expected_video_id.clone());
         self.prefetch.last_load_prefetched = false;
+        self.begin_source_logical_item();
         // `Load` restarts the current file at position zero even though queue membership and
         // catalog bookkeeping stay unchanged. Project that discontinuity through the central
         // reset path only after admission.
@@ -137,7 +310,7 @@ impl App {
                         name: "pause".to_owned(),
                         value: serde_json::Value::Bool(false),
                     },
-                    PlayerCmd::SeekAbsolute(target),
+                    PlayerCmd::exact_seek(target),
                 ],
                 PlayerCommit::RadioLiveSeek(Box::new(plan)),
             ),

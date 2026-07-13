@@ -153,6 +153,9 @@ pub(crate) fn settle_player_intent(
             follow_ups
         }
         Err(error) => {
+            if let crate::app::PlayerCommit::SourceRecovery(plan) = &commit {
+                app.reject_source_recovery(plan);
+            }
             report_player_delivery(app, label, Err(error));
             if let Some(reply) = remote_reply {
                 let code = match error {
@@ -279,6 +282,17 @@ impl PlayerRestartGate {
 }
 
 impl super::RuntimeHandles {
+    /// Cache safety terminals are process-scoped. Project them against the latest synchronous
+    /// admission immediately before reduction: same generation resumes the captured media,
+    /// while a newer Load/Stop must recover solely from the owner's committed destination.
+    pub fn reconcile_cache_safety_event(&self, event: &mut crate::player::PlayerEvent) {
+        let current_generation = self
+            .player_handle
+            .as_ref()
+            .map(crate::player::PlayerHandle::current_file_generation);
+        reconcile_cache_safety_event(event, current_generation);
+    }
+
     pub fn player_event_is_current(&self, event: &crate::player::PlayerEvent) -> bool {
         let Some(event_generation) = event.file_generation() else {
             return true;
@@ -413,7 +427,7 @@ impl super::RuntimeHandles {
                         self.player_handle
                             .as_ref()
                             .expect("player handle was installed above")
-                            .load(url),
+                            .load(url, crate::player::MediaSourceContext::OnDemand),
                     );
                 }
                 let restore = self.pending_player_cmds.drain();
@@ -534,5 +548,22 @@ impl super::RuntimeHandles {
     /// which drops any obsolete startup result before launching the sole replacement actor.
     pub fn take_player_restart_request(&mut self) -> bool {
         self.player_restart.take_request()
+    }
+}
+
+pub(super) fn reconcile_cache_safety_event(
+    event: &mut crate::player::PlayerEvent,
+    current_generation: Option<u64>,
+) {
+    let crate::player::PlayerEvent::CacheEmergency {
+        file_generation,
+        reason,
+        ..
+    } = event
+    else {
+        return;
+    };
+    if current_generation != Some(*file_generation) {
+        *event = crate::player::PlayerEvent::CacheReplacementEmergency { reason: *reason };
     }
 }

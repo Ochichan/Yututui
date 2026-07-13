@@ -99,6 +99,7 @@ pub enum PlayerCommit {
     },
     SettingsAudioPreview(Box<super::settings_audio::SettingsAudioPreviewPlan>),
     SettingsSave(Box<super::settings_audio::SettingsSavePlan>),
+    SourceRecovery(Box<super::player_recovery::SourceRecoveryPlan>),
     PrefetchWatchRetry(Box<super::player_recovery::PrefetchWatchRetryPlan>),
     RadioLiveSeek(Box<super::player_recovery::RadioLiveSeekPlan>),
     Recorder(Box<crate::recorder::RecorderTransitionPlan>),
@@ -120,6 +121,7 @@ impl PlayerCommit {
         match self {
             Self::SettingsAudioPreview(plan) => app.settings_audio_preview_is_current(plan),
             Self::SettingsSave(plan) => app.settings_save_is_current(plan),
+            Self::SourceRecovery(plan) => app.source_recovery_is_current(plan),
             Self::PrefetchWatchRetry(plan) => app.prefetch_watch_retry_is_current(plan),
             Self::RadioLiveSeek(plan) => app.radio_live_seek_is_current(plan),
             Self::Recorder(plan) => app.recorder_transition_is_current(plan),
@@ -221,6 +223,7 @@ impl App {
                 paused,
                 clear_video_pause,
             } => {
+                self.supersede_source_recovery();
                 self.playback.paused = paused;
                 if clear_video_pause {
                     self.video.paused_audio = false;
@@ -236,6 +239,7 @@ impl App {
             PlayerCommit::Seek {
                 optimistic_position,
             } => {
+                self.supersede_source_recovery();
                 if let Some(position) = optimistic_position {
                     self.playback.time_pos = Some(position);
                     self.playback.time_pos_at = Some(Instant::now());
@@ -299,15 +303,33 @@ impl App {
                 return self.commit_settings_audio_preview(*plan);
             }
             PlayerCommit::SettingsSave(plan) => return self.commit_settings_save_plan(*plan),
+            PlayerCommit::SourceRecovery(plan) => {
+                return self.commit_source_recovery(*plan);
+            }
             PlayerCommit::PrefetchWatchRetry(plan) => {
                 return self.commit_prefetch_watch_retry(*plan);
             }
-            PlayerCommit::RadioLiveSeek(plan) => return self.commit_radio_live_seek(*plan),
+            PlayerCommit::RadioLiveSeek(plan) => {
+                self.supersede_source_recovery();
+                return self.commit_radio_live_seek(*plan);
+            }
             PlayerCommit::Recorder(plan) => return self.commit_recorder_transition(*plan),
-            PlayerCommit::Stop(plan) => return self.commit_media_stop(*plan),
-            PlayerCommit::Track(plan) => return self.commit_track_transition(*plan),
-            PlayerCommit::VideoOpen(plan) => return self.commit_video_open(*plan),
-            PlayerCommit::VideoFinish(plan) => return self.commit_video_finish(*plan),
+            PlayerCommit::Stop(plan) => {
+                self.supersede_source_recovery();
+                return self.commit_media_stop(*plan);
+            }
+            PlayerCommit::Track(plan) => {
+                self.supersede_source_recovery();
+                return self.commit_track_transition(*plan);
+            }
+            PlayerCommit::VideoOpen(plan) => {
+                self.supersede_source_recovery();
+                return self.commit_video_open(*plan);
+            }
+            PlayerCommit::VideoFinish(plan) => {
+                self.supersede_source_recovery();
+                return self.commit_video_finish(*plan);
+            }
         }
         self.dirty = true;
         Vec::new()

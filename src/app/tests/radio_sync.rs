@@ -178,7 +178,7 @@ fn radio_repeat_key_resyncs_with_a_seek_to_the_live_edge() {
         .iter()
         .flat_map(Cmd::player_commands)
         .find_map(|command| match command {
-            PlayerCmd::SeekAbsolute(seconds) => Some(*seconds),
+            PlayerCmd::SeekAbsolute { seconds, .. } => Some(*seconds),
             _ => None,
         });
     assert_eq!(target, Some(198.0));
@@ -258,7 +258,13 @@ fn rejected_radio_live_seek_keeps_state_and_does_not_escalate_retry() {
             retry
                 .iter()
                 .flat_map(Cmd::player_commands)
-                .any(|command| matches!(command, PlayerCmd::SeekAbsolute(198.0)))
+                .any(|command| matches!(
+                    command,
+                    PlayerCmd::SeekAbsolute {
+                        seconds: 198.0,
+                        precision: crate::player::SeekPrecision::Exact,
+                    }
+                ))
         );
     }
 }
