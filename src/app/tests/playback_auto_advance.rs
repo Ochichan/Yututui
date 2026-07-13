@@ -14,8 +14,14 @@ fn eof_at_end_with_repeat_off_stops() {
     let mut app = app_playing(2, 1); // already on the last track
     let mut cmds = app.update(PlayerMsg::Eof);
     admit_player_transition(&mut app, &mut cmds);
-    // Playback stops (no load/advance), though the finished track is still recorded.
+    // Playback closes (no load/advance), though the finished track is still recorded and its
+    // queue metadata remains selected for the idle projection.
     assert_no_load(&cmds);
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::PlayerControl(PlayerControl::Intent(intent))
+            if intent.commands.iter().any(|command| matches!(command, PlayerCmd::Stop))
+    )));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
@@ -165,7 +171,7 @@ fn rejected_prefetched_watch_retry_does_not_consume_retry_or_cooldown() {
         let cmds = app.update(PlayerMsg::Error(
             "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
         ));
-        assert_loads_video(&cmds, "id0");
+        assert!(resume_load(&cmds).is_some());
         assert!(reject_player_transition(&mut app, cmds, error).is_empty());
 
         assert!(app.prefetch.resolved.contains_fresh("id0"));
@@ -180,11 +186,11 @@ fn rejected_prefetched_watch_retry_does_not_consume_retry_or_cooldown() {
         let mut retry = app.update(PlayerMsg::Error(
             "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
         ));
-        assert_loads_video(&retry, "id0");
+        assert!(resume_load(&retry).is_some());
         admit_player_transition(&mut app, &mut retry);
         assert!(app.prefetch.watch_retry_attempted.contains("id0"));
         assert!(!app.prefetch.last_load_prefetched);
-        assert_eq!(app.playback.time_pos, None);
+        assert_eq!(app.playback.time_pos, Some(42.0));
         assert_eq!(app.playback.position_epoch, epoch.wrapping_add(1));
     }
 }

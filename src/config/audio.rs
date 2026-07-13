@@ -58,6 +58,58 @@ impl<'de> Deserialize<'de> for AudioBackend {
     }
 }
 
+/// User-requested policy for managed long-form seek optimization.
+///
+/// `Off` remains the release default. `Auto` is intentionally available only as an explicit,
+/// experimental opt-in until the cross-platform rollout gate is complete.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LongFormSeekOptimization {
+    Auto,
+    #[default]
+    Off,
+    On,
+}
+
+impl LongFormSeekOptimization {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Off, Self::On];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+
+    /// Strict parser for public mutation boundaries. Persisted config recovery deliberately uses
+    /// the repository's lenient leaf recovery instead, so an unknown future value becomes `Off`
+    /// without discarding sibling mpv settings.
+    pub fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "off" => Some(Self::Off),
+            "on" => Some(Self::On),
+            _ => None,
+        }
+    }
+
+    pub fn cycled(self, forward: bool) -> Self {
+        let index = Self::ALL.iter().position(|mode| *mode == self).unwrap_or(1);
+        let next = if forward {
+            (index + 1) % Self::ALL.len()
+        } else {
+            (index + Self::ALL.len() - 1) % Self::ALL.len()
+        };
+        Self::ALL[next]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AudioConfig {
@@ -110,6 +162,8 @@ pub struct MpvAudioConfig {
     pub cache_forward: String,
     /// Backward demuxer cache size (`--demuxer-max-back-bytes`). Takes effect on the next player launch.
     pub cache_back: String,
+    /// Requested long-form seek policy. Runtime effective state is reported separately.
+    pub long_form_seek_optimization: LongFormSeekOptimization,
     /// Config-file escape hatch appended after structured audio args.
     /// Edit `audio.mpv.extra_args` in the config file; there is no settings UI for this yet.
     /// Takes effect on the next player launch (same as output/device/cache).
@@ -125,6 +179,7 @@ impl Default for MpvAudioConfig {
             device_detected: false,
             cache_forward: MPV_CACHE_FORWARD_DEFAULT.to_owned(),
             cache_back: MPV_CACHE_BACK_DEFAULT.to_owned(),
+            long_form_seek_optimization: LongFormSeekOptimization::Off,
             extra_args: Vec::new(),
         }
     }
@@ -218,6 +273,7 @@ impl MpvAudioConfig {
             device: normalize_optional(&self.device),
             cache_forward: normalize_cache(&self.cache_forward, MPV_CACHE_FORWARD_DEFAULT),
             cache_back: normalize_cache(&self.cache_back, MPV_CACHE_BACK_DEFAULT),
+            long_form_seek_optimization: self.long_form_seek_optimization,
             extra_args: self
                 .extra_args
                 .iter()
@@ -323,6 +379,7 @@ pub struct MpvAudioRuntimeConfig {
     pub device: Option<String>,
     pub cache_forward: String,
     pub cache_back: String,
+    pub long_form_seek_optimization: LongFormSeekOptimization,
     pub extra_args: Vec<String>,
 }
 
@@ -384,6 +441,10 @@ mod tests {
         assert!(!cfg.mpv.device_is_detected());
         assert_eq!(runtime.mpv.cache_forward, MPV_CACHE_FORWARD_DEFAULT);
         assert_eq!(runtime.mpv.cache_back, MPV_CACHE_BACK_DEFAULT);
+        assert_eq!(
+            runtime.mpv.long_form_seek_optimization,
+            LongFormSeekOptimization::Off
+        );
     }
 
     #[test]
@@ -395,6 +456,7 @@ mod tests {
             device_detected: false,
             cache_forward: "bad".to_owned(),
             cache_back: "64MiB".to_owned(),
+            long_form_seek_optimization: LongFormSeekOptimization::Auto,
             extra_args: vec!["".to_owned(), " --volume=0 ".to_owned()],
         };
 
@@ -404,7 +466,36 @@ mod tests {
         assert_eq!(runtime.device.as_deref(), Some("pipewire/thing"));
         assert_eq!(runtime.cache_forward, MPV_CACHE_FORWARD_DEFAULT);
         assert_eq!(runtime.cache_back, "64MiB");
+        assert_eq!(
+            runtime.long_form_seek_optimization,
+            LongFormSeekOptimization::Auto
+        );
         assert_eq!(runtime.extra_args, ["--volume=0"]);
+    }
+
+    #[test]
+    fn long_form_seek_mode_has_stable_ids_order_and_off_default() {
+        assert_eq!(
+            LongFormSeekOptimization::default(),
+            LongFormSeekOptimization::Off
+        );
+        assert_eq!(
+            serde_json::to_string(&LongFormSeekOptimization::Auto).unwrap(),
+            r#""auto""#
+        );
+        assert_eq!(
+            serde_json::from_str::<LongFormSeekOptimization>(r#""on""#).unwrap(),
+            LongFormSeekOptimization::On
+        );
+        assert_eq!(
+            LongFormSeekOptimization::Auto.cycled(true),
+            LongFormSeekOptimization::Off
+        );
+        assert_eq!(
+            LongFormSeekOptimization::Auto.cycled(false),
+            LongFormSeekOptimization::On
+        );
+        assert!(LongFormSeekOptimization::from_id("future").is_none());
     }
 
     #[test]

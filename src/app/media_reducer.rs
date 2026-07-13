@@ -170,7 +170,7 @@ impl App {
                 }
                 self.player_intent(
                     "seek_absolute",
-                    PlayerCmd::SeekAbsolute(pos),
+                    PlayerCmd::interactive_seek(pos),
                     PlayerCommit::Seek {
                         optimistic_position: Some(pos),
                     },
@@ -255,6 +255,18 @@ impl App {
                 .queue
                 .current()
                 .is_some_and(|song| !song.is_radio_station())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_seek_parity_state(
+        &mut self,
+        video_id: &str,
+        position: f64,
+        duration: f64,
+    ) {
+        self.prefetch.loaded_video_id = Some(video_id.to_owned());
+        self.playback.time_pos = Some(position);
+        self.playback.duration = Some(duration);
     }
 
     /// MPRIS `Stop`: halt playback but keep the queue and current track, so a later
@@ -683,7 +695,10 @@ mod tests {
         let cmds = app.update(Msg::Media(MediaCommand::SeekTo(42.0)));
         assert!(cmds.iter().any(|cmd| matches!(
             cmd.player_command(),
-            Some(PlayerCmd::SeekAbsolute(pos)) if (*pos - 42.0).abs() < 1e-9
+            Some(PlayerCmd::SeekAbsolute {
+                seconds: pos,
+                precision: crate::player::SeekPrecision::InteractiveFast,
+            }) if (*pos - 42.0).abs() < 1e-9
         )));
         assert_eq!(app.playback.time_pos, Some(10.0));
         assert_eq!(

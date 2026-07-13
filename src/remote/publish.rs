@@ -52,6 +52,10 @@ pub struct CoreView<'a> {
     pub eq_normalize: bool,
     /// The live config, projected into the `settings` topic model.
     pub config: &'a crate::config::Config,
+    /// Daemon-only live controller state. The requested setting is projected from `config` so an
+    /// admitted Apply can be confirmed immediately; effective state and reason come from this
+    /// actor-owned snapshot. Standalone owners do not advertise the capability and pass `None`.
+    pub long_form_seek_status: Option<crate::player::long_form_seek::CacheStatus>,
     /// The media-art cache's resolved file for the CURRENT track (already gated by the
     /// host — stale art from a previous track never appears here). Rides the player
     /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
@@ -720,9 +724,10 @@ pub(crate) fn queue_model(view: &CoreView<'_>) -> QueueModel {
 /// Option defaults mirror the documented config semantics (`gapless: None → on`, …).
 pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::SettingsModelV8 {
     use super::proto::{
-        AnimationsModel, AudioSettingsModel, KeymapSettingsModel, PlaybackSettingsModel,
-        SearchSettingsModel, SettingsModelV8, StorageSettingsModel, StreamingSettingsModel,
-        ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
+        AnimationsModel, AudioSettingsModel, KeymapSettingsModel, LongFormSeekEffective,
+        LongFormSeekReason, PlaybackSettingsModel, SearchSettingsModel, SettingsModelV8,
+        StorageSettingsModel, StreamingSettingsModel, ThemePresetModel, ThemeSettingsModel,
+        UiSettingsModel,
     };
     use crate::theme::{ThemePreset, ThemeRole};
 
@@ -733,6 +738,19 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
         || c.gemini_api_key
             .as_deref()
             .is_some_and(|key| !key.trim().is_empty());
+    let long_form_seek = (view.owner_mode == InstanceMode::Daemon).then(|| {
+        let requested = c.audio.mpv.long_form_seek_optimization;
+        let (effective, reason) = view.long_form_seek_status.map_or(
+            (LongFormSeekEffective::NoMedia, LongFormSeekReason::NoMedia),
+            |status| {
+                (
+                    long_form_seek_effective(status.effective),
+                    long_form_seek_reason(status.reason),
+                )
+            },
+        );
+        (requested, effective, reason)
+    });
 
     SettingsModelV8 {
         rev,
@@ -793,6 +811,9 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
             mpv_device: audio.mpv.device,
             mpv_cache_forward: audio.mpv.cache_forward,
             mpv_cache_back: audio.mpv.cache_back,
+            long_form_seek_optimization: long_form_seek.map(|status| status.0),
+            long_form_seek_effective: long_form_seek.map(|status| status.1),
+            long_form_seek_reason: long_form_seek.map(|status| status.2),
         },
         animations: AnimationsModel {
             master: anim.master,
@@ -881,6 +902,66 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
     }
 }
 
+pub(crate) fn long_form_seek_effective(
+    state: crate::player::long_form_seek::CacheEffectiveState,
+) -> super::proto::LongFormSeekEffective {
+    use super::proto::LongFormSeekEffective as Wire;
+    use crate::player::long_form_seek::CacheEffectiveState as Player;
+
+    match state {
+        Player::NoMedia => Wire::NoMedia,
+        Player::RamOnly => Wire::RamOnly,
+        Player::Probing => Wire::Probing,
+        Player::EnablePending => Wire::EnablePending,
+        Player::DiskActive => Wire::DiskActive,
+        Player::DisablePending => Wire::DisablePending,
+        Player::LatchedUntilClose => Wire::LatchedUntilClose,
+        Player::EmergencyClosePending => Wire::EmergencyClosePending,
+        Player::Overridden => Wire::Overridden,
+        Player::Unavailable => Wire::Unavailable,
+    }
+}
+
+pub(crate) fn long_form_seek_reason(
+    reason: crate::player::long_form_seek::CacheReason,
+) -> super::proto::LongFormSeekReason {
+    use super::proto::LongFormSeekReason as Wire;
+    use crate::player::long_form_seek::CacheReason as Player;
+
+    match reason {
+        Player::RequestedOff => Wire::RequestedOff,
+        Player::NoMedia => Wire::NoMedia,
+        Player::AwaitingMediaFacts => Wire::AwaitingMediaFacts,
+        Player::ShortMedia => Wire::ShortMedia,
+        Player::SequentialPlayback => Wire::SequentialPlayback,
+        Player::SeekBelowThreshold => Wire::SeekBelowThreshold,
+        Player::SeekWithinCachedRange => Wire::SeekWithinCachedRange,
+        Player::LocalSource => Wire::LocalSource,
+        Player::LiveSource => Wire::LiveSource,
+        Player::UnseekableSource => Wire::UnseekableSource,
+        Player::PartiallySeekableUnproven => Wire::PartiallySeekableUnproven,
+        Player::ReadOnlyInstance => Wire::ReadOnlyInstance,
+        Player::UnsupportedMpv => Wire::UnsupportedMpv,
+        Player::CustomMpvOverride => Wire::CustomMpvOverride,
+        Player::CacheRootUnavailable => Wire::CacheRootUnavailable,
+        Player::InsufficientFreeSpace => Wire::InsufficientFreeSpace,
+        Player::UnsafeRateBound => Wire::UnsafeRateBound,
+        Player::InvalidRangeState => Wire::InvalidRangeState,
+        Player::ProbeFailed => Wire::ProbeFailed,
+        Player::AutoUncachedSeek => Wire::AutoUncachedSeek,
+        Player::OnEligibleMedia => Wire::OnEligibleMedia,
+        Player::UserRequestedOff => Wire::UserRequestedOff,
+        Player::SoftCapReached => Wire::SoftCapReached,
+        Player::FreeSpaceFloor => Wire::FreeSpaceFloor,
+        Player::WriteBudgetExhausted => Wire::WriteBudgetExhausted,
+        Player::PropertyRejected => Wire::PropertyRejected,
+        Player::PropertyTimeout => Wire::PropertyTimeout,
+        Player::PropertyVerificationFailed => Wire::PropertyVerificationFailed,
+        Player::DisableFailed => Wire::DisableFailed,
+        Player::MediaClosed => Wire::MediaClosed,
+    }
+}
+
 /// Project a [`Song`] to the wire track shape, with the rating halves resolved from the
 /// owner's library/signals stores (docs/gui/02 §11.2); display/romanization enrichment
 /// still lands with its milestone (B3).
@@ -964,6 +1045,7 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         eq_bands: [0.0; 10],
         eq_normalize: false,
         config: Box::leak(Box::new(crate::config::Config::default())),
+        long_form_seek_status: None,
         artwork: None,
         library: Box::leak(Box::new(crate::library::Library::default())),
         signals: Box::leak(Box::new(crate::signals::Signals::default())),

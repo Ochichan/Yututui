@@ -77,6 +77,30 @@ impl std::fmt::Display for PlayableUrlError {
 
 impl std::error::Error for PlayableUrlError {}
 
+impl PlayableUrlError {
+    /// Media-agnostic reason for logs/events at the player handoff boundary. Detailed variants
+    /// may contain a host or parser text and must never expose a signed source URL.
+    pub(crate) const fn handoff_reason(&self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::TooLong { .. } => "too_long",
+            Self::ControlCharacter => "control_character",
+            Self::Invalid(_) => "invalid_url",
+            Self::UnsupportedScheme(_) => "unsupported_scheme",
+            Self::MissingHost => "missing_host",
+            Self::Credentials => "embedded_credentials",
+            Self::Localhost | Self::BlockedIp(_) | Self::DestinationBlockedIp { .. } => {
+                "blocked_destination"
+            }
+            Self::DnsResolution { .. } => "dns_resolution_failed",
+            Self::RedirectLimit { .. }
+            | Self::RedirectMissingLocation
+            | Self::RedirectInvalid(_) => "redirect_failed",
+            Self::ProbeFailed(_) => "probe_failed",
+        }
+    }
+}
+
 pub fn validate_playable_url(_source: SearchSource, raw: &str) -> Result<String, PlayableUrlError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -162,7 +186,9 @@ async fn follow_redirects(mut url: Url) -> Result<Url, PlayableUrlError> {
         .redirect(reqwest::redirect::Policy::none())
         .timeout(PROBE_TIMEOUT)
         .build()
-        .map_err(|e| PlayableUrlError::ProbeFailed(e.to_string()))?;
+        .map_err(|_| {
+            PlayableUrlError::ProbeFailed("HTTP client initialization failed".to_owned())
+        })?;
 
     for _ in 0..MAX_REDIRECTS {
         validate_url_destination(&url).await?;
@@ -210,7 +236,9 @@ async fn range_probe(
         .header(RANGE, "bytes=0-0")
         .send()
         .await
-        .map_err(|e| PlayableUrlError::ProbeFailed(e.to_string()))
+        // reqwest's Display text can contain the full request URL, including signed query
+        // parameters. Keep handoff failures useful but media-agnostic at this actor boundary.
+        .map_err(|_| PlayableUrlError::ProbeFailed("HTTP request failed".to_owned()))
 }
 
 fn redirect_target(base: &Url, location: &str) -> Result<Url, PlayableUrlError> {

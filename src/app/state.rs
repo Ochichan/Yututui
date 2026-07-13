@@ -324,6 +324,12 @@ pub struct Prefetch {
     /// When set to a future instant, ordinary skip-ahead prefetch is paused. Self-heal resolves
     /// still run because they are not latency prefetches.
     pub disabled_until: Option<Instant>,
+    /// One-shot, same-item stale-source recovery. The logical generation advances only for an
+    /// ordinary admitted load; its replacement advances the file generation without rearming
+    /// the per-item attempt latch.
+    pub source_recovery: crate::player::recovery::RecoveryPlanner,
+    pub source_logical_generation: u64,
+    pub source_file_generation: u64,
 }
 
 /// Playback self-heal driven by extraction-shaped errors (the stale-yt-dlp signature):
@@ -810,30 +816,27 @@ pub struct Interaction {
     /// not message indexes, so wrapping and copy behavior line up exactly. `pub(crate)` (not
     /// `pub`) to match [`AiTranscriptDrag`]'s visibility — still reachable from the `ui` render.
     pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
-    /// Active seekbar (progress-bar) scrub: the last requested column, used for intra-cell
-    /// dedupe only after its player intent was admitted. `None` = not scrubbing. Set on a
-    /// seekbar press, cleared on the next press or on mouse-up (so a dropped terminal `Up`
-    /// can't strand it).
-    pub(in crate::app) seekbar_drag: Option<u16>,
-    /// Admission state for the active scrub request. A rejected request transitions to `Retry`,
-    /// allowing the same cell to be emitted again instead of being mistaken for a duplicate.
-    pub(in crate::app) seekbar_admission: SeekbarAdmission,
+    /// Preview-only seekbar scrub. Authoritative playback state changes only after its single
+    /// release command is admitted by the player lane.
+    pub(in crate::app) seekbar_scrub: Option<SeekbarScrub>,
     /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
     /// the track rect captured at press, so pointer-x maps to a value even after the pointer
-    /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
+    /// leaves the track. `None` = not dragging; cleared on the next press like the seekbar scrub.
     pub(in crate::app) recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
 }
 
-/// Admission lifecycle for the most recent seekbar request. Keeping this inside
-/// [`Interaction`] prevents unrelated keyboard or remote seeks from arming a mouse retry.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::app) enum SeekbarAdmission {
-    #[default]
-    Settled,
-    Pending,
-    Retry,
+#[derive(Clone)]
+pub(in crate::app) struct SeekbarScrub {
+    pub(in crate::app) queue_revision: u64,
+    pub(in crate::app) track_id: Option<String>,
+    pub(in crate::app) position_epoch: u64,
+    pub(in crate::app) duration: f64,
+    pub(in crate::app) area: Rect,
+    pub(in crate::app) column: u16,
+    pub(in crate::app) target: f64,
+    pub(in crate::app) awaiting_admission: bool,
 }
 
 /// Dedicated-Radio-mode stash: the normal- and radio-mode themes and queues that swap in and

@@ -41,7 +41,10 @@ fn seek_position(cmds: &[Cmd]) -> Option<f64> {
     cmds.iter()
         .flat_map(Cmd::player_commands)
         .find_map(|command| match command {
-            PlayerCmd::SeekAbsolute(position) => Some(*position),
+            PlayerCmd::SeekAbsolute {
+                seconds,
+                precision: crate::player::SeekPrecision::Exact,
+            } => Some(*seconds),
             _ => None,
         })
 }

@@ -582,6 +582,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "mpv": {
                 "cache_forward": audio.mpv.cache_forward,
                 "cache_back": audio.mpv.cache_back,
+                "long_form_seek_optimization": audio.mpv.long_form_seek_optimization,
             },
         }),
         recording: json!({

@@ -246,6 +246,7 @@ pub(super) fn evict_oldest_unprotected_pending(state: &mut DispatchState) -> boo
         .filter(|(_, pending)| {
             pending.file_generation.is_none()
                 && pending.acknowledgement.is_none()
+                && pending.terminal_contract.is_none()
                 && !is_protected(pending)
         })
         .map(|(request_id, _)| *request_id)
@@ -269,6 +270,7 @@ pub(super) fn remember_refresh(state: &mut DispatchState, request_id: u64) -> bo
             file_generation: None,
             acknowledgement: None,
             audio_output: Some(Pending::Refresh),
+            terminal_contract: None,
         },
     );
     true
@@ -295,6 +297,7 @@ pub(super) fn remember_selection(
             file_generation: None,
             acknowledgement: None,
             audio_output: Some(Pending::Selection(selection)),
+            terminal_contract: None,
         },
     );
     Ok(())

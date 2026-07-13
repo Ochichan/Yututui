@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use super::PlayerCmd;
+use super::{PlayerCmd, SeekPrecision};
 use crate::util::delivery::{DeliveryError, DeliveryReceipt};
 
 pub(crate) const PLAYER_PENDING_MAX: usize = 256;
@@ -33,23 +33,33 @@ pub(crate) fn push_pending_command(
                 capacity_error,
             ),
         },
-        PlayerCmd::SeekAbsolute(secs) => match cmds.back_mut() {
-            Some(PlayerCmd::SeekAbsolute(existing)) => {
-                *existing = secs;
+        PlayerCmd::SeekAbsolute {
+            seconds,
+            precision: SeekPrecision::InteractiveFast,
+        } => match cmds.back_mut() {
+            Some(PlayerCmd::SeekAbsolute {
+                seconds: existing,
+                precision: SeekPrecision::InteractiveFast,
+            }) => {
+                *existing = seconds;
                 Ok(true)
             }
             Some(PlayerCmd::SeekRelative(_)) => {
                 cmds.pop_back();
-                cmds.push_back(PlayerCmd::SeekAbsolute(secs));
+                cmds.push_back(PlayerCmd::interactive_seek(seconds));
                 Ok(true)
             }
             _ => push_new(
                 cmds,
-                PlayerCmd::SeekAbsolute(secs),
+                PlayerCmd::interactive_seek(seconds),
                 capacity,
                 capacity_error,
             ),
         },
+        cmd @ PlayerCmd::SeekAbsolute {
+            precision: SeekPrecision::Exact,
+            ..
+        } => push_new(cmds, cmd, capacity, capacity_error),
         PlayerCmd::SetVolume(vol) => {
             for existing in cmds.iter_mut().rev() {
                 if existing.is_coalescing_barrier() {

@@ -549,7 +549,10 @@ impl App {
         plan.recorder = Some(recorder);
         match &plan.kind {
             TrackTransitionKind::Load { load, .. } => {
-                commands.push(PlayerCmd::Load(load.url.clone()));
+                commands.push(PlayerCmd::load(
+                    load.url.clone(),
+                    crate::player::MediaSourceContext::from_live(load.song.is_radio_station()),
+                ));
                 if let Some(af) = self.track_audio_filter() {
                     commands.push(PlayerCmd::SetAudioFilter(af));
                 }

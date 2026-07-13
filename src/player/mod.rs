@@ -7,11 +7,17 @@
 
 mod audio;
 pub mod backend;
+pub(crate) mod cache_budget;
+pub(crate) mod cache_runtime;
+pub mod cache_support;
+pub(crate) mod diagnostics;
 pub mod ipc;
 pub mod lifetime;
+pub mod long_form_seek;
 pub mod mpv;
 pub(crate) mod pending;
 pub mod proto;
+pub mod recovery;
 pub mod video;
 
 use std::collections::VecDeque;
@@ -32,19 +38,103 @@ use crate::util::process_guard::ChildTreeGuard;
 
 pub use audio::AudioDevice;
 
+/// Accuracy/latency contract for an absolute seek.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SeekPrecision {
+    /// User-facing scrub/jump intent; the wire stays exact until fast-seek evidence passes.
+    InteractiveFast,
+    /// Restoration/recovery: preserve the requested position exactly.
+    Exact,
+}
+
+/// Owner-known source semantics which mpv cannot reliably infer from duration/seekability.
+///
+/// This value travels with exactly one admitted load. In particular, a finite seekable radio or
+/// DVR stream is still `Live` and must never become eligible for the managed disk cache.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaSourceContext {
+    OnDemand,
+    Live,
+}
+
+impl MediaSourceContext {
+    pub const fn from_live(live: bool) -> Self {
+        if live { Self::Live } else { Self::OnDemand }
+    }
+
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
+/// One playback destination and its non-inferable source semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaybackLoad {
+    url: String,
+    source_context: MediaSourceContext,
+}
+
+impl PlaybackLoad {
+    pub fn new(url: impl Into<String>, source_context: MediaSourceContext) -> Self {
+        Self {
+            url: url.into(),
+            source_context,
+        }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.url()
+    }
+
+    pub const fn source_context(&self) -> MediaSourceContext {
+        self.source_context
+    }
+}
+
+impl std::ops::Deref for PlaybackLoad {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.url()
+    }
+}
+
+impl PartialEq<str> for PlaybackLoad {
+    fn eq(&self, other: &str) -> bool {
+        self.url == other
+    }
+}
+
+impl PartialEq<&str> for PlaybackLoad {
+    fn eq(&self, other: &&str) -> bool {
+        self.url == *other
+    }
+}
+
 /// Commands the reducer sends to the player actor.
 #[derive(Clone)]
 pub enum PlayerCmd {
     /// Resolve nothing — load this (already-playable) URL and start it.
-    Load(String),
+    Load(PlaybackLoad),
+    /// Replace the current source and restore position/pause only after its `file-loaded` event.
+    LoadWithResume(recovery::LoadWithResume),
     /// Stop the current mpv file without advancing mpv's own playlist.
     Stop,
     /// Toggle pause/resume.
     CyclePause,
     /// Seek by a relative number of seconds (negative = backward).
     SeekRelative(f64),
-    /// Seek to an absolute position in seconds (click-to-seek).
-    SeekAbsolute(f64),
+    /// Seek to an absolute position in seconds with an explicit latency/accuracy contract.
+    SeekAbsolute {
+        seconds: f64,
+        precision: SeekPrecision,
+    },
+    /// Update the live managed current-media cache policy.
+    SetLongFormSeekOptimization(crate::config::LongFormSeekOptimization),
     /// Set absolute volume, 0-100.
     SetVolume(i64),
     /// Replace the whole `af` filter chain (the EQ + normalization graph). An empty
@@ -79,12 +169,45 @@ pub struct TrackedProperty {
 }
 
 impl PlayerCmd {
+    pub fn load(url: impl Into<String>, source_context: MediaSourceContext) -> Self {
+        Self::Load(PlaybackLoad::new(url, source_context))
+    }
+
+    pub fn interactive_seek(seconds: f64) -> Self {
+        Self::SeekAbsolute {
+            seconds,
+            precision: SeekPrecision::InteractiveFast,
+        }
+    }
+
+    pub fn exact_seek(seconds: f64) -> Self {
+        Self::SeekAbsolute {
+            seconds,
+            precision: SeekPrecision::Exact,
+        }
+    }
+
+    pub(crate) fn is_interactive_seek(&self) -> bool {
+        matches!(
+            self,
+            Self::SeekAbsolute {
+                precision: SeekPrecision::InteractiveFast,
+                ..
+            }
+        )
+    }
+
     fn is_coalescing_barrier(&self) -> bool {
         matches!(
             self,
-            Self::Load(_)
+            Self::SeekAbsolute {
+                precision: SeekPrecision::Exact,
+                ..
+            } | Self::Load(_)
+                | Self::LoadWithResume(_)
                 | Self::Stop
                 | Self::CyclePause
+                | Self::SetLongFormSeekOptimization(_)
                 | Self::SetAudioFilter(_)
                 | Self::SetProperty { .. }
                 | Self::RefreshAudioDevices
@@ -94,7 +217,15 @@ impl PlayerCmd {
     }
 
     fn invalidates_file_generation(&self) -> bool {
-        matches!(self, Self::Load(_) | Self::Stop)
+        matches!(self, Self::Load(_) | Self::LoadWithResume(_) | Self::Stop)
+    }
+
+    fn admitted_media_expected(&self) -> Option<bool> {
+        match self {
+            Self::Load(_) | Self::LoadWithResume(_) => Some(true),
+            Self::Stop => Some(false),
+            _ => None,
+        }
     }
 
     pub(crate) fn tracked_property(
@@ -158,6 +289,22 @@ pub enum PlayerEvent {
     /// The mpv IPC transport ended unexpectedly. The detail is sanitized at the actor
     /// boundary and this terminal event is emitted at most once per actor lifetime.
     TransportClosed(String),
+    /// Managed packet-cache disable could not be proven. The owner must retire this mpv and
+    /// resume the same media once, at the captured position/pause state, forced to RAM-only.
+    CacheEmergency {
+        /// Origin generation only; unlike `FileScoped`, cache safety terminals are process-wide
+        /// and must reach the owner even after a newer Load/Stop admission.
+        file_generation: u64,
+        position_secs: f64,
+        paused: bool,
+        reason: long_form_seek::CacheReason,
+    },
+    /// Process-global cache reset failed while replacing media. This terminal is deliberately
+    /// unscoped: the owner must replay its already-admitted destination RAM-only, never attach
+    /// the previous file's captured position to the new item.
+    CacheReplacementEmergency {
+        reason: long_form_seek::CacheReason,
+    },
     /// Per-file mpv state tagged at the ordered `start-file` boundary. Owners compare this
     /// generation with the latest admitted Load/Stop before reducing the enclosed event.
     FileScoped {
@@ -203,6 +350,109 @@ impl PlayerEvent {
 
 pub(crate) type EventSink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LongFormSeekRuntimeStatus {
+    pub status: long_form_seek::CacheStatus,
+    pub last_failure: Option<long_form_seek::CacheReason>,
+    pub last_cleanup_ms: Option<u64>,
+}
+
+pub(crate) struct SharedLongFormSeekStatus {
+    runtime: LongFormSeekRuntimeStatus,
+    history: Arc<Mutex<LongFormSeekHistory>>,
+}
+
+#[derive(Default)]
+struct LongFormSeekHistory {
+    last_failure: Option<long_form_seek::CacheReason>,
+    last_cleanup_ms: Option<u64>,
+    cleanup_started: Option<(u64, std::time::Instant)>,
+}
+
+impl SharedLongFormSeekStatus {
+    #[cfg(test)]
+    fn new(status: long_form_seek::CacheStatus) -> Self {
+        Self::with_history(status, Arc::new(Mutex::new(LongFormSeekHistory::default())))
+    }
+
+    fn for_owner_process(status: long_form_seek::CacheStatus) -> Self {
+        static HISTORY: std::sync::OnceLock<Arc<Mutex<LongFormSeekHistory>>> =
+            std::sync::OnceLock::new();
+        Self::with_history(
+            status,
+            Arc::clone(
+                HISTORY.get_or_init(|| Arc::new(Mutex::new(LongFormSeekHistory::default()))),
+            ),
+        )
+    }
+
+    fn with_history(
+        status: long_form_seek::CacheStatus,
+        history: Arc<Mutex<LongFormSeekHistory>>,
+    ) -> Self {
+        let (last_failure, last_cleanup_ms) = {
+            let history = history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (history.last_failure, history.last_cleanup_ms)
+        };
+        Self {
+            runtime: LongFormSeekRuntimeStatus {
+                status,
+                last_failure,
+                last_cleanup_ms,
+            },
+            history,
+        }
+    }
+
+    fn update(&mut self, status: long_form_seek::CacheStatus) {
+        let mut history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if runtime_cache_failure(status.reason) {
+            history.last_failure = Some(status.reason);
+        }
+        if status.effective == long_form_seek::CacheEffectiveState::DisablePending
+            && status.reason == long_form_seek::CacheReason::MediaClosed
+            && let Some(generation) = status.file_generation
+        {
+            history
+                .cleanup_started
+                .get_or_insert((generation, std::time::Instant::now()));
+        }
+        if let Some((generation, started)) = history.cleanup_started
+            && status.file_generation != Some(generation)
+        {
+            history.last_cleanup_ms =
+                Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            history.cleanup_started = None;
+        }
+        self.runtime = LongFormSeekRuntimeStatus {
+            status,
+            last_failure: history.last_failure,
+            last_cleanup_ms: history.last_cleanup_ms,
+        };
+    }
+}
+
+fn runtime_cache_failure(reason: long_form_seek::CacheReason) -> bool {
+    matches!(
+        reason,
+        long_form_seek::CacheReason::CacheRootUnavailable
+            | long_form_seek::CacheReason::InsufficientFreeSpace
+            | long_form_seek::CacheReason::UnsafeRateBound
+            | long_form_seek::CacheReason::InvalidRangeState
+            | long_form_seek::CacheReason::ProbeFailed
+            | long_form_seek::CacheReason::WriteBudgetExhausted
+            | long_form_seek::CacheReason::PropertyRejected
+            | long_form_seek::CacheReason::PropertyTimeout
+            | long_form_seek::CacheReason::PropertyVerificationFailed
+            | long_form_seek::CacheReason::DisableFailed
+    )
+}
+
 /// A handle for sending [`PlayerCmd`]s to the player actor. Commands enter one ordered
 /// bounded lane; when that lane is full, a single drainer owns a bounded semantic backlog.
 pub struct PlayerHandle {
@@ -210,11 +460,22 @@ pub struct PlayerHandle {
     pending: Arc<Mutex<PlayerPending>>,
     intentional_close: Arc<AtomicBool>,
     admitted_file_generation: Arc<AtomicU64>,
+    /// Generation of the latest admitted Load, or zero when the latest boundary is Stop/no-media.
+    expected_media_generation: Arc<AtomicU64>,
     file_generation_tx: tokio::sync::watch::Sender<u64>,
+    long_form_seek_status: Arc<Mutex<SharedLongFormSeekStatus>>,
+}
+
+#[derive(Clone, Copy)]
+struct FileAdmission {
+    previous_generation: u64,
+    previous_expected_media_generation: u64,
+    generation: u64,
 }
 
 impl PlayerHandle {
     pub fn send(&self, cmd: PlayerCmd) -> DeliveryResult {
+        let interactive = cmd.is_interactive_seek();
         let mut pending = self
             .pending
             .lock()
@@ -223,21 +484,20 @@ impl PlayerHandle {
             pending.mark_closed();
             return Err(DeliveryError::Closed);
         }
-        let invalidates_file = cmd.invalidates_file_generation();
-        if invalidates_file {
-            // Publish the new owner expectation before the command becomes visible to the actor.
-            // The owner loop cannot reduce an event until this synchronous admission returns.
-            self.admitted_file_generation.fetch_add(1, Ordering::AcqRel);
-        }
+        let admission =
+            self.begin_file_admission(cmd.admitted_media_expected().map(|value| (1, value)));
         if pending.drainer_running || !pending.cmds.is_empty() {
             return match pending.push(cmd) {
                 Ok(coalesced) => {
                     drop(pending);
-                    self.publish_file_generation(invalidates_file);
+                    self.publish_file_generation(admission);
+                    if interactive {
+                        diagnostics::interactive_admitted(1, u64::from(coalesced));
+                    }
                     Ok(receipt_for_pending(coalesced))
                 }
                 Err(error) => {
-                    self.rollback_file_generation(invalidates_file);
+                    self.rollback_file_generation(admission);
                     Err(error)
                 }
             };
@@ -246,21 +506,24 @@ impl PlayerHandle {
         match self.tx.try_send(cmd) {
             Ok(()) => {
                 drop(pending);
-                self.publish_file_generation(invalidates_file);
+                self.publish_file_generation(admission);
+                if interactive {
+                    diagnostics::interactive_admitted(1, 0);
+                }
                 Ok(DeliveryReceipt::Enqueued)
             }
             Err(mpsc::error::TrySendError::Full(cmd)) => {
                 let handle = match tokio::runtime::Handle::try_current() {
                     Ok(handle) => handle,
                     Err(_) => {
-                        self.rollback_file_generation(invalidates_file);
+                        self.rollback_file_generation(admission);
                         return Err(DeliveryError::Busy);
                     }
                 };
                 let coalesced = match pending.push(cmd) {
                     Ok(coalesced) => coalesced,
                     Err(error) => {
-                        self.rollback_file_generation(invalidates_file);
+                        self.rollback_file_generation(admission);
                         return Err(error);
                     }
                 };
@@ -270,11 +533,14 @@ impl PlayerHandle {
                     self.tx.clone(),
                     Arc::clone(&self.pending),
                 ));
-                self.publish_file_generation(invalidates_file);
+                self.publish_file_generation(admission);
+                if interactive {
+                    diagnostics::interactive_admitted(1, u64::from(coalesced));
+                }
                 Ok(receipt_for_pending(coalesced))
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.rollback_file_generation(invalidates_file);
+                self.rollback_file_generation(admission);
                 pending.mark_closed();
                 Err(DeliveryError::Closed)
             }
@@ -296,6 +562,8 @@ impl PlayerHandle {
             _ => {}
         }
 
+        let interactive_count = cmds.iter().filter(|cmd| cmd.is_interactive_seek()).count() as u64;
+
         let mut pending = self
             .pending
             .lock()
@@ -305,10 +573,13 @@ impl PlayerHandle {
             return Err(DeliveryError::Closed);
         }
 
-        let file_invalidations = cmds
-            .iter()
-            .filter(|cmd| cmd.invalidates_file_generation())
-            .count() as u64;
+        let admission_shape = cmds.iter().fold(None, |shape, cmd| {
+            cmd.admitted_media_expected()
+                .map_or(shape, |expects_media| {
+                    let count = shape.map_or(1, |(count, _)| count + 1);
+                    Some((count, expects_media))
+                })
+        });
         let staged = pending.stage_batch(cmds)?;
         let needs_drainer = !pending.drainer_running && !staged.cmds.is_empty();
         let runtime = if needs_drainer {
@@ -317,13 +588,8 @@ impl PlayerHandle {
             None
         };
 
-        if file_invalidations > 0 {
-            let generation = self
-                .admitted_file_generation
-                .fetch_add(file_invalidations, Ordering::AcqRel)
-                .wrapping_add(file_invalidations);
-            self.file_generation_tx.send_replace(generation);
-        }
+        let admission = self.begin_file_admission(admission_shape);
+        self.publish_file_generation(admission);
         pending.cmds = staged.cmds;
         if needs_drainer {
             pending.drainer_running = true;
@@ -336,15 +602,60 @@ impl PlayerHandle {
                 Arc::clone(&self.pending),
             ));
         }
+        diagnostics::interactive_admitted(
+            interactive_count,
+            u64::from(matches!(staged.receipt, DeliveryReceipt::Coalesced { .. })),
+        );
         Ok(staged.receipt)
     }
 
-    pub fn load(&self, url: impl Into<String>) -> DeliveryResult {
-        self.send(PlayerCmd::Load(url.into()))
+    pub fn load(
+        &self,
+        url: impl Into<String>,
+        source_context: MediaSourceContext,
+    ) -> DeliveryResult {
+        self.send(PlayerCmd::load(url, source_context))
     }
 
     pub fn current_file_generation(&self) -> u64 {
         self.admitted_file_generation.load(Ordering::Acquire)
+    }
+
+    /// Cache-policy view for the latest admitted media. While the actor still owns an older
+    /// physical generation, project a fact-free probing state without mutating the raw runtime
+    /// diagnostics or associating the old media's disk activity with the new owner generation.
+    pub fn long_form_seek_status(&self) -> long_form_seek::CacheStatus {
+        let mut status = self
+            .long_form_seek_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .runtime
+            .status;
+        let admitted = self.current_file_generation();
+        let expects_media =
+            self.expected_media_generation.load(Ordering::Acquire) == admitted && admitted != 0;
+        if expects_media && status.file_generation != Some(admitted) {
+            status.effective = long_form_seek::CacheEffectiveState::Probing;
+            status.reason = long_form_seek::CacheReason::AwaitingMediaFacts;
+            status.file_generation = Some(admitted);
+            status.file_cache_bytes = 0;
+            status.peak_file_cache_bytes = 0;
+        } else if !expects_media && status.file_generation.is_some() {
+            status.effective = long_form_seek::CacheEffectiveState::NoMedia;
+            status.reason = long_form_seek::CacheReason::NoMedia;
+            status.file_generation = None;
+            status.file_cache_bytes = 0;
+            status.peak_file_cache_bytes = 0;
+        }
+        status
+    }
+
+    /// Raw physical-player cache diagnostics, including cleanup work for an older generation.
+    pub(crate) fn long_form_seek_runtime_status(&self) -> LongFormSeekRuntimeStatus {
+        self.long_form_seek_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .runtime
     }
 
     pub fn event_is_current(&self, event: &PlayerEvent) -> bool {
@@ -353,16 +664,39 @@ impl PlayerHandle {
             .is_none_or(|generation| generation == self.current_file_generation())
     }
 
-    fn rollback_file_generation(&self, invalidates_file: bool) {
-        if invalidates_file {
-            self.admitted_file_generation.fetch_sub(1, Ordering::AcqRel);
+    fn begin_file_admission(&self, shape: Option<(u64, bool)>) -> Option<FileAdmission> {
+        let (count, expects_media) = shape?;
+        let previous_generation = self.admitted_file_generation.load(Ordering::Acquire);
+        let previous_expected_media_generation =
+            self.expected_media_generation.load(Ordering::Acquire);
+        let generation = previous_generation.wrapping_add(count);
+        self.expected_media_generation.store(
+            if expects_media { generation } else { 0 },
+            Ordering::Release,
+        );
+        self.admitted_file_generation
+            .store(generation, Ordering::Release);
+        Some(FileAdmission {
+            previous_generation,
+            previous_expected_media_generation,
+            generation,
+        })
+    }
+
+    fn rollback_file_generation(&self, admission: Option<FileAdmission>) {
+        if let Some(admission) = admission {
+            self.admitted_file_generation
+                .store(admission.previous_generation, Ordering::Release);
+            self.expected_media_generation.store(
+                admission.previous_expected_media_generation,
+                Ordering::Release,
+            );
         }
     }
 
-    fn publish_file_generation(&self, invalidates_file: bool) {
-        if invalidates_file {
-            self.file_generation_tx
-                .send_replace(self.current_file_generation());
+    fn publish_file_generation(&self, admission: Option<FileAdmission>) {
+        if let Some(admission) = admission {
+            self.file_generation_tx.send_replace(admission.generation);
         }
     }
 
@@ -374,8 +708,38 @@ impl PlayerHandle {
             pending: Arc::new(Mutex::new(PlayerPending::default())),
             intentional_close: Arc::new(AtomicBool::new(false)),
             admitted_file_generation: Arc::new(AtomicU64::new(0)),
+            expected_media_generation: Arc::new(AtomicU64::new(0)),
             file_generation_tx,
+            long_form_seek_status: Arc::new(Mutex::new(SharedLongFormSeekStatus::new(
+                long_form_seek::CacheStatus {
+                    requested: crate::config::LongFormSeekOptimization::Off,
+                    effective: long_form_seek::CacheEffectiveState::NoMedia,
+                    reason: long_form_seek::CacheReason::NoMedia,
+                    file_generation: None,
+                    policy_revision: 0,
+                    file_cache_bytes: 0,
+                    peak_file_cache_bytes: 0,
+                },
+            ))),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_long_form_seek_runtime(
+        &self,
+        status: long_form_seek::CacheStatus,
+        last_failure: Option<long_form_seek::CacheReason>,
+        last_cleanup_ms: Option<u64>,
+    ) {
+        let mut shared = self
+            .long_form_seek_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.runtime = LongFormSeekRuntimeStatus {
+            status,
+            last_failure,
+            last_cleanup_ms,
+        };
     }
 }
 
@@ -530,7 +894,30 @@ where
     F: Fn(PlayerEvent) + Send + Sync + 'static,
 {
     let ipc_path = mpv::ipc_path()?;
-    let child = mpv::spawn(&ipc_path, cookies_file.as_deref(), gapless, &audio.mpv)?;
+    // `data_dir` is supplied only to mutation-owning player processes. Derive cache ownership
+    // from that same lease so a secondary/read-only instance cannot create packet-cache state.
+    let writable_cache_root = data_dir.as_ref().and_then(|_| crate::paths::cache_dir());
+    let environment_args = std::env::var("YTM_MPV_EXTRA").ok();
+    let cache_support = cache_support::prepare_cache_support(
+        &audio.mpv,
+        writable_cache_root.as_deref(),
+        environment_args.as_deref(),
+        mpv::flag_supported,
+    );
+    let child = mpv::spawn(
+        &ipc_path,
+        cookies_file.as_deref(),
+        gapless,
+        &audio.mpv,
+        &cache_support.spawn_args,
+    )?;
+    let cache_runtime = cache_runtime::CacheRuntime::for_owner_process(
+        cache_support,
+        audio.mpv.long_form_seek_optimization,
+    );
+    let long_form_seek_status = Arc::new(Mutex::new(SharedLongFormSeekStatus::for_owner_process(
+        cache_runtime.status(),
+    )));
     // Arm tree ownership immediately after spawn, before registry work or any cancellable await.
     let child_tree = ChildTreeGuard::for_tokio(&child, ProcessProfile::Media);
     let mpv_pid = child.id().context("mpv exited before reporting a pid")?;
@@ -559,6 +946,7 @@ where
         crate::util::backpressure::bounded_channel(crate::util::backpressure::PLAYER_CMD_QUEUE);
     let intentional_close = Arc::new(AtomicBool::new(false));
     let admitted_file_generation = Arc::new(AtomicU64::new(0));
+    let expected_media_generation = Arc::new(AtomicU64::new(0));
     let (file_generation_tx, file_generation_rx) = tokio::sync::watch::channel(0);
     tokio::spawn(ipc::run_actor(
         conn,
@@ -566,6 +954,8 @@ where
         Arc::new(emit),
         Arc::clone(&intentional_close),
         file_generation_rx,
+        cache_runtime,
+        Arc::clone(&long_form_seek_status),
     ));
 
     Ok((
@@ -574,499 +964,13 @@ where
             pending: Arc::new(Mutex::new(PlayerPending::default())),
             intentional_close,
             admitted_file_generation,
+            expected_media_generation,
             file_generation_tx,
+            long_form_seek_status,
         },
         mpv,
     ))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_generation_advances_only_for_admitted_load_and_stop_barriers() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let handle = PlayerHandle::test_handle(tx);
-        assert_eq!(handle.current_file_generation(), 0);
-
-        assert!(
-            handle
-                .send(PlayerCmd::Load("https://example.invalid/a".to_owned()))
-                .is_ok()
-        );
-        assert_eq!(handle.current_file_generation(), 1);
-        assert!(handle.event_is_current(&PlayerEvent::file_scoped(
-            1,
-            PlayerEvent::Duration(Some(10.0)),
-        )));
-        assert!(!handle.event_is_current(&PlayerEvent::file_scoped(0, PlayerEvent::Eof)));
-
-        assert!(handle.send(PlayerCmd::SetVolume(20)).is_ok());
-        assert_eq!(handle.current_file_generation(), 1);
-        assert!(handle.send(PlayerCmd::Stop).is_ok());
-        assert_eq!(handle.current_file_generation(), 2);
-
-        assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Load(_))));
-        assert!(matches!(rx.try_recv(), Ok(PlayerCmd::SetVolume(20))));
-        assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Stop)));
-    }
-
-    #[test]
-    fn rejected_load_rolls_back_the_expected_file_generation() {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::SetVolume(1)).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send(PlayerCmd::Load("https://example.invalid/a".to_owned())),
-            Err(DeliveryError::Busy)
-        );
-        assert_eq!(handle.current_file_generation(), 0);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn terminate_and_reap_waits_for_the_child_exit() {
-        let mut child = tokio::process::Command::new("sh")
-            .args(["-c", "exec sleep 30"])
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn inert child");
-
-        terminate_and_reap(&mut child);
-
-        assert!(matches!(child.try_wait(), Ok(Some(_))));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn mpv_drop_terminates_media_process_group_descendants() {
-        use std::process::Stdio;
-
-        let _pid_guard = lifetime::lock_mpv_pid_for_test().await;
-        let root = std::env::temp_dir().join(format!(
-            "ytt-mpv-tree-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create mpv tree fixture");
-        let pid_file = root.join("helper.pid");
-        let script = format!("sleep 10 & echo $! > '{}'; wait", pid_file.display());
-        let mut command = crate::util::process::tokio_command("sh", ProcessProfile::Media);
-        command
-            .args(["-c", &script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = command.spawn().expect("spawn fake long-lived mpv tree");
-        let child_tree = ChildTreeGuard::for_tokio(&child, ProcessProfile::Media);
-        let mpv = Mpv {
-            child_tree,
-            child,
-            ipc_path: root.join("mpv.sock").to_string_lossy().into_owned(),
-        };
-
-        let helper_pid = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Ok(contents) = std::fs::read_to_string(&pid_file)
-                    && let Ok(pid) = contents.trim().parse::<libc::pid_t>()
-                {
-                    break pid;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("helper pid should be published");
-        assert!(crate::util::process::process_exists_for_test(helper_pid));
-
-        drop(mpv);
-
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while crate::util::process::process_exists_for_test(helper_pid) {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("mpv helper survived Mpv::drop");
-        std::fs::remove_dir_all(root).expect("remove mpv tree fixture");
-    }
-
-    #[test]
-    fn pending_seek_coalescing_preserves_arrival_semantics() {
-        let mut pending = PlayerPending::default();
-        assert!(!pending.push(PlayerCmd::SeekRelative(2.0)).unwrap());
-        assert!(pending.push(PlayerCmd::SeekRelative(3.5)).unwrap());
-        assert!(pending.push(PlayerCmd::SeekAbsolute(12.0)).unwrap());
-        assert!(!pending.push(PlayerCmd::SeekRelative(4.0)).unwrap());
-
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SeekAbsolute(secs)) if (secs - 12.0).abs() < f64::EPSILON
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SeekRelative(secs)) if (secs - 4.0).abs() < f64::EPSILON
-        ));
-        assert!(pending.cmds.is_empty());
-    }
-
-    #[test]
-    fn pending_keeps_latest_volume_and_filter_value() {
-        let mut pending = PlayerPending::default();
-        assert!(!pending.push(PlayerCmd::SetVolume(20)).unwrap());
-        assert!(pending.push(PlayerCmd::SetVolume(30)).unwrap());
-        assert!(
-            !pending
-                .push(PlayerCmd::AfCommand {
-                    label: "eq".to_owned(),
-                    param: "gain".to_owned(),
-                    value: "1".to_owned(),
-                })
-                .unwrap()
-        );
-        assert!(
-            pending
-                .push(PlayerCmd::AfCommand {
-                    label: "eq".to_owned(),
-                    param: "gain".to_owned(),
-                    value: "2".to_owned(),
-                })
-                .unwrap()
-        );
-
-        match pending.cmds.pop_front() {
-            Some(PlayerCmd::SetVolume(vol)) => assert_eq!(vol, 30),
-            _ => panic!("expected latest volume"),
-        }
-        match pending.cmds.pop_front() {
-            Some(PlayerCmd::AfCommand {
-                label,
-                param,
-                value,
-            }) => {
-                assert_eq!(label, "eq");
-                assert_eq!(param, "gain");
-                assert_eq!(value, "2");
-            }
-            _ => panic!("expected latest af command"),
-        }
-        assert!(pending.cmds.is_empty());
-    }
-
-    #[test]
-    fn critical_barriers_bound_coalescing_and_toggle_pairs_cancel() {
-        let mut pending = PlayerPending::default();
-        assert!(!pending.push(PlayerCmd::SetVolume(20)).unwrap());
-        assert!(!pending.push(PlayerCmd::Load("old".to_owned())).unwrap());
-        assert!(!pending.push(PlayerCmd::Load("new".to_owned())).unwrap());
-        assert!(!pending.push(PlayerCmd::SetVolume(30)).unwrap());
-        assert!(!pending.push(PlayerCmd::CyclePause).unwrap());
-        assert!(pending.push(PlayerCmd::CyclePause).unwrap());
-
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SetVolume(20))
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::Load(url)) if url == "old"
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::Load(url)) if url == "new"
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SetVolume(30))
-        ));
-        assert!(pending.cmds.is_empty());
-    }
-
-    #[tokio::test]
-    async fn full_player_lane_defers_control_with_one_ordered_drainer() {
-        let (tx, mut rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::SetVolume(1)).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(handle.send(PlayerCmd::Stop), Ok(DeliveryReceipt::Deferred));
-
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::SetVolume(1))));
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::Stop)));
-    }
-
-    #[tokio::test]
-    async fn full_player_lane_coalesces_latest_value_without_reordering_control() {
-        let (tx, mut rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::Stop).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send(PlayerCmd::SetVolume(40)),
-            Ok(DeliveryReceipt::Deferred)
-        );
-        assert!(matches!(
-            handle.send(PlayerCmd::SetVolume(80)),
-            Ok(DeliveryReceipt::Coalesced {
-                replaced_existing: true,
-                ..
-            })
-        ));
-
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::Stop)));
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::SetVolume(80))));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn command_batch_enters_backlog_atomically_and_preserves_order() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send_batch(vec![
-                PlayerCmd::Stop,
-                PlayerCmd::SetVolume(42),
-                PlayerCmd::SeekAbsolute(19.0),
-            ]),
-            Ok(DeliveryReceipt::Deferred)
-        );
-
-        // A multi-command batch never exposes a direct-channel prefix. The spawned drainer
-        // cannot run on this current-thread runtime until this task yields.
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        {
-            let pending = handle
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(pending.cmds.len(), 3);
-            assert!(pending.drainer_running);
-        }
-
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::Stop)));
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::SetVolume(42))));
-        assert!(matches!(
-            rx.recv().await,
-            Some(PlayerCmd::SeekAbsolute(secs)) if (secs - 19.0).abs() < f64::EPSILON
-        ));
-    }
-
-    #[test]
-    fn saturated_batch_does_not_commit_a_coalesced_prefix() {
-        let (tx, _rx) = mpsc::channel(1);
-        let handle = PlayerHandle::test_handle(tx);
-        {
-            let mut pending = handle
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for _ in 0..PLAYER_PENDING_MAX - 1 {
-                assert!(!pending.push(PlayerCmd::Stop).unwrap());
-            }
-            assert!(!pending.push(PlayerCmd::Load("old".to_owned())).unwrap());
-            // Keep admission on the backlog-only path without needing a Tokio runtime.
-            pending.drainer_running = true;
-        }
-
-        // Neither command fits. Atomic staging must preserve the old Load instead of
-        // publishing a partial recovery transaction.
-        assert_eq!(
-            handle.send_batch(vec![PlayerCmd::Load("new".to_owned()), PlayerCmd::Stop]),
-            Err(DeliveryError::Busy)
-        );
-
-        let pending = handle
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(pending.cmds.len(), PLAYER_PENDING_MAX);
-        assert!(matches!(
-            pending.cmds.back(),
-            Some(PlayerCmd::Load(url)) if url == "old"
-        ));
-    }
-
-    #[test]
-    fn batch_coalescing_respects_barriers_and_never_revokes_accepted_loads() {
-        let mut pending = PlayerPending::default();
-        let staged = pending
-            .stage_batch(vec![
-                PlayerCmd::SetVolume(10),
-                PlayerCmd::Load("track".to_owned()),
-                PlayerCmd::SetVolume(20),
-                PlayerCmd::SetVolume(30),
-            ])
-            .unwrap();
-        pending.cmds = staged.cmds;
-
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SetVolume(10))
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::Load(url)) if url == "track"
-        ));
-        assert!(matches!(
-            pending.cmds.pop_front(),
-            Some(PlayerCmd::SetVolume(30))
-        ));
-        assert!(pending.cmds.is_empty());
-
-        for _ in 0..PLAYER_PENDING_MAX - 1 {
-            assert!(!pending.push(PlayerCmd::Stop).unwrap());
-        }
-        assert!(!pending.push(PlayerCmd::Load("old".to_owned())).unwrap());
-        assert!(matches!(
-            pending.stage_batch(vec![
-                PlayerCmd::Load("new".to_owned()),
-                PlayerCmd::Load("newest".to_owned()),
-            ]),
-            Err(DeliveryError::Busy)
-        ));
-        assert_eq!(pending.cmds.len(), PLAYER_PENDING_MAX);
-        assert!(matches!(
-            pending.cmds.back(),
-            Some(PlayerCmd::Load(url)) if url == "old"
-        ));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn separate_track_loads_stay_distinct_behind_a_full_player_lane() {
-        let (tx, mut rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::Stop).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send(PlayerCmd::Load("track-b".to_owned())),
-            Ok(DeliveryReceipt::Deferred)
-        );
-        assert_eq!(
-            handle.send(PlayerCmd::Load("track-c".to_owned())),
-            Ok(DeliveryReceipt::Deferred)
-        );
-        {
-            let pending = handle
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(pending.cmds.len(), 2);
-            assert!(matches!(
-                pending.cmds.front(),
-                Some(PlayerCmd::Load(url)) if url == "track-b"
-            ));
-            assert!(matches!(
-                pending.cmds.back(),
-                Some(PlayerCmd::Load(url)) if url == "track-c"
-            ));
-        }
-
-        assert!(matches!(rx.recv().await, Some(PlayerCmd::Stop)));
-        assert!(matches!(
-            rx.recv().await,
-            Some(PlayerCmd::Load(url)) if url == "track-b"
-        ));
-        assert!(matches!(
-            rx.recv().await,
-            Some(PlayerCmd::Load(url)) if url == "track-c"
-        ));
-    }
-
-    #[test]
-    fn closed_player_lane_rejects_the_whole_batch() {
-        let (tx, rx) = mpsc::channel(2);
-        drop(rx);
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send_batch(vec![PlayerCmd::Stop, PlayerCmd::SetVolume(20)]),
-            Err(DeliveryError::Closed)
-        );
-        let pending = handle
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(pending.closed);
-        assert!(pending.cmds.is_empty());
-    }
-
-    #[test]
-    fn empty_player_batch_is_never_admitted() {
-        let (open_tx, _open_rx) = mpsc::channel(1);
-        let open_handle = PlayerHandle::test_handle(open_tx);
-        assert_eq!(open_handle.send_batch(Vec::new()), Err(DeliveryError::Busy));
-
-        let (closed_tx, closed_rx) = mpsc::channel(1);
-        drop(closed_rx);
-        let closed_handle = PlayerHandle::test_handle(closed_tx);
-        assert_eq!(
-            closed_handle.send_batch(Vec::new()),
-            Err(DeliveryError::Busy)
-        );
-    }
-
-    #[test]
-    fn closed_player_lane_reports_closed() {
-        let (tx, rx) = mpsc::channel(1);
-        drop(rx);
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(handle.send(PlayerCmd::Stop), Err(DeliveryError::Closed));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn active_player_drainer_does_not_admit_after_lane_closes() {
-        let (tx, rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::Stop).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(
-            handle.send(PlayerCmd::SetVolume(40)),
-            Ok(DeliveryReceipt::Deferred)
-        );
-        // Keep the drainer unpolled until after the receiver closes, then make
-        // admission synchronously observe the sender's closed state.
-        drop(rx);
-        assert_eq!(
-            handle.send(PlayerCmd::SetVolume(80)),
-            Err(DeliveryError::Closed)
-        );
-        assert_eq!(handle.send(PlayerCmd::Stop), Err(DeliveryError::Closed));
-
-        let pending = handle
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(pending.closed);
-        assert!(!pending.drainer_running);
-        assert!(pending.cmds.is_empty());
-    }
-
-    #[test]
-    fn full_player_lane_outside_runtime_reports_busy() {
-        let (tx, _rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::Stop).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        assert_eq!(handle.send(PlayerCmd::CyclePause), Err(DeliveryError::Busy));
-    }
-
-    #[tokio::test]
-    async fn player_pending_backlog_is_bounded() {
-        let (tx, _rx) = mpsc::channel(1);
-        assert!(tx.try_send(PlayerCmd::Stop).is_ok());
-        let handle = PlayerHandle::test_handle(tx);
-
-        for _ in 0..PLAYER_PENDING_MAX {
-            assert!(handle.send(PlayerCmd::Stop).is_ok());
-        }
-        assert_eq!(handle.send(PlayerCmd::Stop), Err(DeliveryError::Busy));
-    }
-}
+mod tests;

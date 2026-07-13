@@ -14,7 +14,7 @@ impl App {
                 };
                 self.player_intent(
                     "seek_absolute",
-                    PlayerCmd::SeekAbsolute(position),
+                    PlayerCmd::exact_seek(position),
                     PlayerCommit::Seek {
                         optimistic_position: Some(position),
                     },

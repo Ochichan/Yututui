@@ -9,6 +9,7 @@ validation, paired fixed-seed bootstrap statistics, and merged JSON/Markdown rep
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import hashlib
 import http.client
@@ -40,6 +41,9 @@ from urllib.parse import urlsplit
 
 
 SCHEMA = "ytt.tui-perf.report.v1"
+SCENARIO_SCHEMA = "ytt.tui-perf.scenarios.v2"
+RESOURCE_TELEMETRY_SCHEMA = "ytt.tui-perf.resources.v2"
+FIXTURE_SCHEMA = "ytt.tui-perf.fixture.v2"
 DEFAULT_SCENARIOS = Path(__file__).with_name("tui-perf-scenarios.json")
 RATIO_INFINITY = 1e300
 CPU_ACCOUNTING_METHOD = "time_weighted_counter_deltas_clamped_to_measure_window"
@@ -50,6 +54,26 @@ REQUIRED_PLAYBACK_MPV_CACHE_ARGS = {
 BUILD_RECEIPT_SCHEMA = "ytt.tui-perf.build.v1"
 SEED_CONTRACT_SCHEMA = "ytt.tui-perf.seed-contract.v1"
 RUN_CONTRACT_SCHEMA = "ytt.tui-perf.run-contract.v1"
+MPV_SELECTION_SCHEMA = "ytt.tui-perf.mpv-selection.v1"
+SETTING_OVERRIDES_SCHEMA = "ytt.tui-perf.setting-overrides.v1"
+LONG_FORM_SETTING_LEAF = "audio.mpv.long_form_seek_optimization"
+MPV_032_PINNED_COMMIT = "70b991749df389bcc0a4e145b5687233a03b4ed7"
+MPV_032_COMPAT_UPSTREAM_COMMIT = "1805681aaba22aa19a27ecfdb639c983d91f83e6"
+MPV_032_COMPAT_PATCHED_FILES = [
+    "options/m_config.c",
+    "options/m_option.h",
+    "options/m_property.c",
+    "player/client.c",
+    "player/command.c",
+]
+MPV_032_FFMPEG_PACKAGES = {
+    "libavcodec": "58.134.100",
+    "libavfilter": "7.110.100",
+    "libavformat": "58.76.100",
+    "libavutil": "56.70.100",
+    "libswresample": "3.9.100",
+    "libswscale": "5.9.100",
+}
 HOST_IDENTITY_FIELDS = (
     "system",
     "release",
@@ -90,15 +114,45 @@ CONTROLLED_BUILD_ENV_ALLOWLIST = (
 )
 HTTP_THROTTLE_CHUNK_BYTES = 4 * 1024
 HTTP_PACING_EARLY_TOLERANCE_NS = 10_000_000
+HTTP_RESPONSE_DELAY_EARLY_TOLERANCE_NS = 10_000_000
 HTTP_MEANINGFUL_GET_BYTES = 64 * 1024
 HTTP_SHUTDOWN_SCHEMA = "ytt.tui-perf.http-shutdown.v1"
 HTTP_SHUTDOWN_PATH = "/__ytt_tui_perf_shutdown__"
 HTTP_SHUTDOWN_METHOD = "authenticated_loopback_http_v1"
+HTTP_SHUTDOWN_TOKEN_REDACTION = "<redacted>"
+FIXTURE_ADDRESS_FAMILY = "ipv4_loopback"
+FIXTURE_LOOPBACK_HOST = "127.0.0.1"
+FIXTURE_URL_REDACTION = "<redacted-loopback-fixture-url>"
 MAX_BOOTSTRAP_RESAMPLES = 1_000_000
 MAX_STATISTICS_SEED = (1 << 64) - 1
 CONTROL_ACTION_SCHEDULE_LATE_TOLERANCE_NS = 100_000_000
 CONTROL_PAUSE_HOLD_LATE_TOLERANCE_NS = 100_000_000
 CONTROL_MIN_RESUME_PROGRESS_S = 0.01
+RATE_SAFETY_FACTOR = 2
+RATE_SAMPLE_CAPACITY = 16
+RATE_PROOF_MIN_SAMPLES = 3
+RATE_PROOF_MIN_SPAN_NS = 1_000_000_000
+HTTP_RATE_WINDOW_NS = 1_000_000_000
+MPV_SUBSCRIPTION_CONTRACT = [
+    {"id": 9_001, "property": "paused-for-cache", "required": True},
+    {"id": 9_002, "property": "time-pos", "required": True},
+    {"id": 9_003, "property": "cache-on-disk", "required": False},
+    {"id": 9_007, "property": "demuxer-via-network", "required": False},
+    {"id": 9_008, "property": "seeking", "required": False},
+    {"id": 9_009, "property": "duration", "required": False},
+    {"id": 9_010, "property": "seekable", "required": False},
+    {"id": 9_011, "property": "partially-seekable", "required": False},
+    {"id": 9_013, "property": "seekable-ranges", "required": False},
+]
+MPV_CACHE_QUERY_CONTRACT = {
+    "policy": "pre_seek_plus_active_low_rate_v1",
+    "interval_ms": 1_000,
+    "cache_speed_periodic": True,
+    "demuxer_cache_state_only_pre_seek_or_disk_active": True,
+    "full_demuxer_cache_state_recorded": False,
+    "recorded_state_members": ["file-cache-bytes", "raw-input-rate"],
+    "event_channel_capacity": 512,
+}
 TREE_DIGEST_DOMAIN = b"ytt.tui-perf.tree-digest.v2\0"
 TREE_REGULAR_FILE_ENTRY_TAG = b"\x01regular-file\0"
 EFFECTIVE_WORKTREE_DIGEST_DOMAIN = b"ytt.tui-perf.effective-worktree-digest.v2\0"
@@ -152,12 +206,16 @@ CHILD_ENVIRONMENT_POLICY = {
         "TEMP",
         "TMP",
         "TERM",
+        "YTM_MPV",
         "YTM_MPV_EXTRA",
+        "YTM_PERF_SOURCE_RATE_BOUND_BPS",
         "TUI_PERF_SCENARIO_SHA256",
         "TUI_PERF_RUN_ID",
     ],
     "ambient_behavior_keys_blocked": ["GEMINI_API_KEY", "YTM_PLAY_URL", "YTM_PERF"],
 }
+SOURCE_RATE_BOUND_ENV = "YTM_PERF_SOURCE_RATE_BOUND_BPS"
+SOURCE_RATE_BOUND_ENFORCEMENT = "loopback_http_global_monotonic_pacing_v1"
 
 
 class DuplicateJsonKeyError(ValueError):
@@ -168,6 +226,117 @@ def measurement_limitations(render: bool) -> list[str]:
     if render:
         return [RENDER_MEASUREMENT_LIMITATION]
     return [SAMPLED_TREE_LIMITATION, CLEANUP_SCOPE_LIMITATION]
+
+
+def source_rate_bound_contract(
+    document: dict[str, Any], scenario: dict[str, Any]
+) -> dict[str, Any]:
+    profile_name = str(scenario["traffic_profile"])
+    profile = document["traffic_profiles"][profile_name]
+    bound = int(profile["maximum_source_rate_bps"])
+    throttle = int(profile["throttle_bps"])
+    return {
+        "traffic_profile": profile_name,
+        "maximum_source_rate_bps": bound,
+        "http_throttle_bps": throttle,
+        "enforced": bound > 0,
+        "enforcement": SOURCE_RATE_BOUND_ENFORCEMENT if bound > 0 else "unbounded",
+        "binary_compile_gate": {
+            "feature": "perf-harness",
+            "required": bound > 0,
+            "default_build_behavior": "ignore_harness_rate_environment",
+        },
+        "child_environment": {
+            "key": SOURCE_RATE_BOUND_ENV,
+            "value": str(bound) if bound > 0 else None,
+        },
+    }
+
+
+def validate_long_form_ship_action_matrix(
+    scenario_name: str, scenario: dict[str, Any]
+) -> int:
+    actions = scenario.get("actions")
+    if not isinstance(actions, list) or not actions:
+        raise ValueError(f"{scenario_name} ship evidence requires typed actions")
+    generations: list[str] = []
+    current_generation: str | None = None
+    expected_seek_kind = "cold_seek"
+    pairs_by_generation: dict[str, int] = {}
+    recovery_count = 0
+    burst_count = 0
+    burst_targets = 0
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise ValueError(f"{scenario_name}.actions[{index}] must be an object")
+        kind = action.get("kind")
+        generation = action.get("file_generation")
+        if not isinstance(generation, str) or not generation:
+            raise ValueError(
+                f"{scenario_name}.actions[{index}].file_generation must be non-empty"
+            )
+        if kind == "recovery":
+            if current_generation is None or expected_seek_kind != "cold_seek":
+                raise ValueError(
+                    f"{scenario_name}.actions[{index}] recovery splits a cold/warm pair"
+                )
+            if generation in generations:
+                raise ValueError(
+                    f"{scenario_name}.actions[{index}] recovery must introduce a new generation"
+                )
+            generations.append(generation)
+            current_generation = generation
+            recovery_count += 1
+            continue
+        if kind in {"cold_seek", "warm_seek", "seek_burst"}:
+            if current_generation is None:
+                current_generation = generation
+                generations.append(generation)
+            elif generation != current_generation:
+                raise ValueError(
+                    f"{scenario_name}.actions[{index}] changes generation without recovery"
+                )
+        if kind in {"cold_seek", "warm_seek"}:
+            if kind != expected_seek_kind:
+                raise ValueError(
+                    f"{scenario_name}.actions[{index}] must preserve cold/warm pairing"
+                )
+            if kind == "cold_seek":
+                expected_seek_kind = "warm_seek"
+            else:
+                pairs_by_generation[generation] = pairs_by_generation.get(generation, 0) + 1
+                expected_seek_kind = "cold_seek"
+        elif kind == "seek_burst":
+            if expected_seek_kind != "cold_seek":
+                raise ValueError(
+                    f"{scenario_name}.actions[{index}] burst splits a cold/warm pair"
+                )
+            targets = action.get("targets_s")
+            if not isinstance(targets, list):
+                raise ValueError(f"{scenario_name}.actions[{index}].targets_s must be an array")
+            burst_count += 1
+            burst_targets = len(targets)
+        elif kind != "recovery":
+            raise ValueError(
+                f"{scenario_name}.actions[{index}] is outside the ship evidence matrix"
+            )
+    if expected_seek_kind != "cold_seek":
+        raise ValueError(f"{scenario_name} ends with an unmatched cold seek")
+    if len(generations) < 5 or recovery_count != len(generations) - 1:
+        raise ValueError(
+            f"{scenario_name} requires at least five actual recovery-delimited generations"
+        )
+    if any(pairs_by_generation.get(generation, 0) < 4 for generation in generations):
+        raise ValueError(
+            f"{scenario_name} requires at least four cold/warm pairs per generation"
+        )
+    if sum(pairs_by_generation.values()) < 20:
+        raise ValueError(f"{scenario_name} requires at least twenty cold/warm pairs")
+    if burst_count != 1 or not 20 <= burst_targets <= 100:
+        raise ValueError(
+            f"{scenario_name} requires exactly one 20..100-target no-wait seek burst"
+        )
+    return len(generations)
 
 
 def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1313,17 +1482,22 @@ def build_specs(render: bool) -> list[tuple[str, list[str], dict[str, str]]]:
         (
             "candidate",
             [
+                "--features",
+                "perf-harness",
                 "--bin",
                 "ytt",
                 "--example",
                 "tui_perf_sampler",
                 "--example",
                 "tui_perf_control",
+                "--example",
+                "tui_perf_conpty",
             ],
             {
                 "ytt": "candidate_ytt",
                 "tui_perf_sampler": "sampler",
                 "tui_perf_control": "controller",
+                "tui_perf_conpty": "conpty",
             },
         ),
     ]
@@ -1403,7 +1577,15 @@ def run_fixed_cargo_build(
 def harness_source_identities(
     baseline_root: Path, candidate_root: Path, render: bool
 ) -> dict[str, Any]:
-    names = ["tui_render_perf.rs"] if render else ["tui_perf_sampler.rs", "tui_perf_control.rs"]
+    names = (
+        ["tui_render_perf.rs"]
+        if render
+        else [
+            "tui_perf_sampler.rs",
+            "tui_perf_control.rs",
+            "tui_perf_conpty.rs",
+        ]
+    )
     identities: dict[str, Any] = {}
     for name in names:
         candidate = candidate_root / "examples" / name
@@ -1747,10 +1929,10 @@ def scenario_finite_number(value: Any) -> bool:
 
 
 def validate_scenarios(document: dict[str, Any]) -> None:
-    if document.get("schema") != "ytt.tui-perf.scenarios.v1":
-        raise ValueError("scenario schema must be ytt.tui-perf.scenarios.v1")
-    if document.get("version") != 1:
-        raise ValueError("scenario version must be 1")
+    if document.get("schema") != SCENARIO_SCHEMA:
+        raise ValueError(f"scenario schema must be {SCENARIO_SCHEMA}")
+    if document.get("version") != 2:
+        raise ValueError("scenario version must be 2")
     stats = document.get("statistics")
     if not isinstance(stats, dict):
         raise ValueError("statistics must be an object")
@@ -1786,11 +1968,31 @@ def validate_scenarios(document: dict[str, Any]) -> None:
         or float(baseline_cv_max) < 0
     ):
         raise ValueError("statistics.baseline_cv_max must be finite and non-negative")
+    expected_statistical_contract = {
+        "cluster_boundary": "paired_run_and_media_generation",
+        "core_pairs": 7,
+        "core_min_improved_pairs": 6,
+        "fault_pairs": 3,
+        "fault_candidate_repeats": 1,
+        "soak_pairs": 3,
+        "minimum_os_mpv_cells": 6,
+        "pool_operating_systems": False,
+        "selectively_discard_noisy_pairs": False,
+    }
+    if document.get("statistical_contract") != expected_statistical_contract:
+        raise ValueError(
+            "statistical_contract must preserve run/media-generation clustering, "
+            "7-pair core, 3-pair fault/soak, and six independent OS x mpv cells"
+        )
     sampling = document.get("sampling")
     if not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
     if sampling.get("measurement_kind") != "sampled_process_tree":
         raise ValueError("sampling.measurement_kind must be sampled_process_tree")
+    if sampling.get("resource_telemetry_schema") != RESOURCE_TELEMETRY_SCHEMA:
+        raise ValueError(
+            f"sampling.resource_telemetry_schema must be {RESOURCE_TELEMETRY_SCHEMA}"
+        )
     interval_ms = sampling.get("interval_ms")
     if not isinstance(interval_ms, int) or isinstance(interval_ms, bool) or interval_ms <= 0:
         raise ValueError("sampling.interval_ms must be a positive integer")
@@ -1805,13 +2007,30 @@ def validate_scenarios(document: dict[str, Any]) -> None:
             raise ValueError("traffic profile names and values must be objects")
         for field in (
             "throttle_bps",
+            "maximum_source_rate_bps",
             "outage_every_bytes",
             "outage_ms",
             "disconnect_every_bytes",
+            "header_delay_ms",
+            "range_response_delay_ms",
         ):
             value = profile.get(field)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"traffic_profiles.{profile_name}.{field} must be non-negative")
+        if profile["maximum_source_rate_bps"] != profile["throttle_bps"]:
+            raise ValueError(
+                f"traffic_profiles.{profile_name}.maximum_source_rate_bps must equal "
+                "the fixture server throttle_bps so the declared upper bound is enforced"
+            )
+        if profile.get("range_behavior") not in {
+            "normal",
+            "ignore",
+            "force_416",
+            "unknown_length",
+        }:
+            raise ValueError(
+                f"traffic_profiles.{profile_name}.range_behavior is invalid"
+            )
     fixture = document.get("fixture")
     if not isinstance(fixture, dict):
         raise ValueError("fixture must be an object")
@@ -1819,10 +2038,111 @@ def validate_scenarios(document: dict[str, Any]) -> None:
         value = fixture.get(field)
         if not scenario_finite_number(value) or float(value) <= 0:
             raise ValueError(f"fixture.{field} must be finite and positive")
+    fixture_profiles = document.get("fixture_profiles")
+    if not isinstance(fixture_profiles, dict) or not fixture_profiles:
+        raise ValueError("fixture_profiles must be a non-empty object")
+    for profile_name, profile in fixture_profiles.items():
+        if not isinstance(profile_name, str) or not isinstance(profile, dict):
+            raise ValueError("fixture profile names and values must be objects")
+        for field in ("duration_s", "sample_rate_hz", "channels", "bitrate_bps"):
+            value = profile.get(field)
+            if not scenario_finite_number(value) or float(value) <= 0:
+                raise ValueError(
+                    f"fixture_profiles.{profile_name}.{field} must be finite and positive"
+                )
+        for field in ("container", "codec", "generation"):
+            if not isinstance(profile.get(field), str) or not profile[field]:
+                raise ValueError(
+                    f"fixture_profiles.{profile_name}.{field} must be non-empty"
+                )
+        sample_width = profile.get("sample_width_bytes")
+        if profile.get("container") == "wav" and (
+            not isinstance(sample_width, int)
+            or isinstance(sample_width, bool)
+            or sample_width <= 0
+        ):
+            raise ValueError(
+                f"fixture_profiles.{profile_name}.sample_width_bytes must be positive for WAV"
+            )
+    long_form = document.get("long_form_contract")
+    if not isinstance(long_form, dict):
+        raise ValueError("long_form_contract must be an object")
+    required_actions = {"cold_seek", "warm_seek", "seek_burst", "close", "recovery"}
+    action_kinds = long_form.get("action_kinds")
+    if not isinstance(action_kinds, list) or set(action_kinds) != required_actions:
+        raise ValueError("long_form_contract.action_kinds is incomplete")
+    requested_modes = set(long_form.get("requested_cache_modes", []))
+    effective_modes = set(long_form.get("effective_cache_modes", []))
+    fault_profiles = set(long_form.get("fault_profiles", []))
+    if requested_modes != {"auto", "off", "on"}:
+        raise ValueError("long_form_contract.requested_cache_modes is incomplete")
+    if not {"ram_only", "probing", "disk_active", "latched_until_close", "unavailable"} <= effective_modes:
+        raise ValueError("long_form_contract.effective_cache_modes is incomplete")
+    if "none" not in fault_profiles:
+        raise ValueError("long_form_contract.fault_profiles must include none")
+    performance_matrix = document.get("performance_matrix")
+    if not isinstance(performance_matrix, dict) or performance_matrix.get("schema") != (
+        "ytt.tui-perf.long-form-matrix.v1"
+    ):
+        raise ValueError("performance_matrix schema is missing or invalid")
+    matrix_families = performance_matrix.get("families")
+    required_families = set("ABCDEFGHI")
+    if not isinstance(matrix_families, dict) or set(matrix_families) != required_families:
+        raise ValueError("performance_matrix must declare exactly scenario families A through I")
+    for family_name, family in matrix_families.items():
+        if not isinstance(family, dict):
+            raise ValueError(f"performance_matrix.{family_name} must be an object")
+        if not isinstance(family.get("title"), str) or not family["title"]:
+            raise ValueError(f"performance_matrix.{family_name}.title must be non-empty")
+        status = family.get("status")
+        if status not in {
+            "runnable_ship_evidence",
+            "diagnostic_only_fail_closed",
+            "unsupported_fail_closed",
+        }:
+            raise ValueError(f"performance_matrix.{family_name}.status is invalid")
+        diagnostics = family.get("diagnostic_scenarios")
+        if not isinstance(diagnostics, list) or not all(
+            isinstance(value, str) and value for value in diagnostics
+        ):
+            raise ValueError(
+                f"performance_matrix.{family_name}.diagnostic_scenarios is invalid"
+            )
+        for field in ("required_capabilities", "missing_capabilities"):
+            values = family.get(field)
+            if not isinstance(values, list) or not values or not all(
+                isinstance(value, str) and value for value in values
+            ):
+                raise ValueError(f"performance_matrix.{family_name}.{field} is invalid")
+        eligible = family.get("ship_evidence_eligible")
+        if not isinstance(eligible, bool):
+            raise ValueError(
+                f"performance_matrix.{family_name}.ship_evidence_eligible must be boolean"
+            )
+        if eligible != (status == "runnable_ship_evidence"):
+            raise ValueError(
+                f"performance_matrix.{family_name} status and ship eligibility disagree"
+            )
+        if status == "unsupported_fail_closed" and diagnostics:
+            raise ValueError(
+                f"performance_matrix.{family_name} unsupported family cannot name diagnostics"
+            )
+        if status == "diagnostic_only_fail_closed" and not diagnostics:
+            raise ValueError(
+                f"performance_matrix.{family_name} diagnostic family needs a runnable scenario"
+            )
+        if not eligible and (
+            not isinstance(family.get("fail_closed_reason"), str)
+            or not family["fail_closed_reason"]
+        ):
+            raise ValueError(
+                f"performance_matrix.{family_name} needs an explicit fail-closed reason"
+            )
     scenarios = document.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         raise ValueError("scenarios must be a non-empty list")
     seen: set[str] = set()
+    exercised_cache_modes: set[str] = set()
     for scenario in scenarios:
         if not isinstance(scenario, dict):
             raise ValueError("each scenario must be an object")
@@ -1876,6 +2196,11 @@ def validate_scenarios(document: dict[str, Any]) -> None:
         profile = scenario.get("traffic_profile")
         if profile not in traffic_profiles:
             raise ValueError(f"{name}.traffic_profile references unknown profile {profile!r}")
+        fixture_profile_name = scenario.get("fixture_profile")
+        if fixture_profile_name not in fixture_profiles:
+            raise ValueError(
+                f"{name}.fixture_profile references unknown profile {fixture_profile_name!r}"
+            )
         requires_mpv = scenario.get("requires_mpv")
         if not isinstance(requires_mpv, bool):
             raise ValueError(f"{name}.requires_mpv must be boolean")
@@ -1910,6 +2235,52 @@ def validate_scenarios(document: dict[str, Any]) -> None:
                 )
             ):
                 raise ValueError(f"{name}.seeks_s must contain finite non-negative numbers")
+            actions = scenario.get("actions")
+            if actions is not None:
+                if not isinstance(actions, list) or not actions:
+                    raise ValueError(f"{name}.actions must be a non-empty array")
+                flattened_targets: list[float] = []
+                for action_index, action in enumerate(actions):
+                    label = f"{name}.actions[{action_index}]"
+                    if not isinstance(action, dict):
+                        raise ValueError(f"{label} must be an object")
+                    kind = action.get("kind")
+                    if kind not in required_actions:
+                        raise ValueError(f"{label}.kind is invalid")
+                    generation = action.get("file_generation")
+                    if not isinstance(generation, str) or not generation:
+                        raise ValueError(f"{label}.file_generation must be non-empty")
+                    if kind in {"cold_seek", "warm_seek"}:
+                        target = action.get("target_s")
+                        if not scenario_finite_number(target) or float(target) < 0:
+                            raise ValueError(f"{label}.target_s must be finite and non-negative")
+                        flattened_targets.append(float(target))
+                    elif kind == "seek_burst":
+                        targets = action.get("targets_s")
+                        window_ms = action.get("window_ms")
+                        if not (
+                            isinstance(targets, list)
+                            and len(targets) >= 2
+                            and all(
+                                scenario_finite_number(target) and float(target) >= 0
+                                for target in targets
+                            )
+                        ):
+                            raise ValueError(
+                                f"{label}.targets_s must contain at least two finite targets"
+                            )
+                        if (
+                            not isinstance(window_ms, int)
+                            or isinstance(window_ms, bool)
+                            or window_ms <= 0
+                        ):
+                            raise ValueError(f"{label}.window_ms must be positive")
+                        flattened_targets.extend(float(target) for target in targets)
+                declared_targets = [float(target) for target in seeks]
+                if flattened_targets and declared_targets != flattened_targets:
+                    raise ValueError(
+                        f"{name}.seeks_s must flatten actions in execution order"
+                    )
         steady_playback = (
             controller
             and requires_mpv
@@ -1961,14 +2332,132 @@ def validate_scenarios(document: dict[str, Any]) -> None:
             observation_end = float(scenario["warmup_s"]) + float(scenario["sample_s"])
             furthest_seek = max((float(value) for value in scenario.get("seeks_s", [])), default=0.0)
             required_duration = max(observation_end, furthest_seek) + margin
-            if float(fixture["duration_s"]) < required_duration:
+            selected_fixture = fixture_profiles[fixture_profile_name]
+            if float(selected_fixture["duration_s"]) < required_duration:
                 raise ValueError(
-                    f"fixture.duration_s must be at least {required_duration:g} for {name}"
+                    f"fixture profile {fixture_profile_name} duration_s must be at least "
+                    f"{required_duration:g} for {name}"
                 )
         elif "expected_effective_mpv_cache_args" in scenario:
             raise ValueError(
                 f"{name}.expected_effective_mpv_cache_args requires requires_mpv=true"
             )
+        requested_cache_mode = scenario.get("requested_cache_mode")
+        if requested_cache_mode is not None:
+            if requested_cache_mode not in requested_modes:
+                raise ValueError(f"{name}.requested_cache_mode is invalid")
+            exercised_cache_modes.add(requested_cache_mode)
+            if not requires_mpv or not controller:
+                raise ValueError(
+                    f"{name}.requested_cache_mode requires an mpv controller scenario"
+                )
+            source_rate_bound = traffic_profiles[profile]["maximum_source_rate_bps"]
+            if source_rate_bound <= 0:
+                raise ValueError(
+                    f"{name}.requested_cache_mode requires an explicitly enforced positive "
+                    "traffic profile maximum_source_rate_bps"
+                )
+            if scenario.get("expected_cache_effective") not in effective_modes:
+                raise ValueError(f"{name}.expected_cache_effective is invalid")
+            activation_count = scenario.get("expected_activation_count")
+            if (
+                not isinstance(activation_count, int)
+                or isinstance(activation_count, bool)
+                or activation_count < 0
+            ):
+                raise ValueError(f"{name}.expected_activation_count must be non-negative")
+            if not isinstance(scenario.get("expected_activation_reason"), str):
+                raise ValueError(f"{name}.expected_activation_reason must be a string")
+            expected_reason = {
+                "off": "requested_off",
+                "auto": "auto_uncached_seek",
+                "on": "on_eligible_media",
+            }[requested_cache_mode]
+            if scenario.get("expected_activation_reason") != expected_reason:
+                raise ValueError(
+                    f"{name}.expected_activation_reason must be {expected_reason!r}"
+                )
+            if scenario.get("fault_profile") not in fault_profiles:
+                raise ValueError(f"{name}.fault_profile is invalid")
+            limits = scenario.get("cache_limits")
+            if not isinstance(limits, dict) or not limits:
+                raise ValueError(f"{name}.cache_limits must be an object")
+            for field, value in limits.items():
+                if (
+                    not isinstance(field, str)
+                    or not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value <= 0
+                ):
+                    raise ValueError(f"{name}.cache_limits entries must be positive integers")
+            overrides = scenario.get("setting_leaf_overrides")
+            if not isinstance(overrides, dict) or set(overrides) != {"baseline", "candidate"}:
+                raise ValueError(
+                    f"{name}.setting_leaf_overrides must bind baseline and candidate"
+                )
+            cache_mode_roles = scenario.get("cache_mode_roles")
+            if (
+                not isinstance(cache_mode_roles, dict)
+                or set(cache_mode_roles) != {"baseline", "candidate"}
+                or cache_mode_roles.get("baseline") != "off"
+                or cache_mode_roles.get("candidate") != requested_cache_mode
+            ):
+                raise ValueError(
+                    f"{name}.cache_mode_roles must bind baseline=off and candidate to "
+                    "requested_cache_mode"
+                )
+            for role in ("baseline", "candidate"):
+                role_overrides = overrides.get(role)
+                expected_override = {
+                    LONG_FORM_SETTING_LEAF: cache_mode_roles[role]
+                }
+                if role_overrides != expected_override:
+                    raise ValueError(
+                        f"{name}.setting_leaf_overrides.{role} must be exactly "
+                        f"{expected_override!r}"
+                    )
+            expected_effective = (
+                "ram_only" if requested_cache_mode == "off" else "disk_active"
+            )
+            if scenario.get("expected_cache_effective") != expected_effective:
+                raise ValueError(
+                    f"{name}.expected_cache_effective must be {expected_effective!r}"
+                )
+            if requested_cache_mode == "off" and activation_count != 0:
+                raise ValueError(f"{name}.off mode must declare zero activations")
+            generation_count = validate_long_form_ship_action_matrix(name, scenario)
+            if requested_cache_mode != "off":
+                if activation_count != generation_count:
+                    raise ValueError(
+                        f"{name}.{requested_cache_mode} must prove one activation per "
+                        f"file generation ({generation_count})"
+                    )
+                if pairs != 7 or min_improved_pairs != 6:
+                    raise ValueError(
+                        f"{name}.{requested_cache_mode} ship gate requires 6/7 improved pairs"
+                    )
+                ship_metric_limits = {
+                    "operation.warm_seek.p95_ms": 0.70,
+                    "operation.seek_burst.p95_ms": 0.75,
+                }
+                declared_metrics = scenario.get("metrics")
+                if not isinstance(declared_metrics, dict):
+                    raise ValueError(f"{name}.metrics must be an object")
+                for metric_name, ratio_limit in ship_metric_limits.items():
+                    policy = declared_metrics.get(metric_name)
+                    if not isinstance(policy, dict):
+                        raise ValueError(f"{name} is missing ship metric {metric_name}")
+                    ratio = policy.get("max_ratio")
+                    improved_pairs = policy.get("min_improved_pairs")
+                    if (
+                        not scenario_finite_number(ratio)
+                        or float(ratio) > ratio_limit
+                        or improved_pairs != 6
+                    ):
+                        raise ValueError(
+                            f"{name}.{metric_name} must enforce max_ratio<={ratio_limit:g} "
+                            "and min_improved_pairs=6"
+                        )
         metrics = scenario.get("metrics")
         if not isinstance(metrics, dict) or not metrics:
             raise ValueError(f"{name}.metrics must be a non-empty object")
@@ -2003,6 +2492,17 @@ def validate_scenarios(document: dict[str, Any]) -> None:
                 raise ValueError(
                     f"{name}.{metric}: min_improved_pairs must be an integer in [0,{pairs}]"
                 )
+    if exercised_cache_modes != requested_modes:
+        raise ValueError(
+            "scenario matrix must execute requested cache modes "
+            f"{sorted(requested_modes)}; observed {sorted(exercised_cache_modes)}"
+        )
+    for family_name, family in matrix_families.items():
+        unknown = sorted(set(family["diagnostic_scenarios"]) - seen)
+        if unknown:
+            raise ValueError(
+                f"performance_matrix.{family_name} references unknown diagnostics {unknown}"
+            )
 
 
 def scenario_validation_self_test() -> None:
@@ -2162,6 +2662,68 @@ def scenario_validation_self_test() -> None:
             "boolean geometry component",
             lambda value: value["scenarios"][0]["geometry"][0].__setitem__(0, True),
         ),
+        (
+            "statistical clustering weakened",
+            lambda value: value["statistical_contract"].__setitem__(
+                "cluster_boundary", "individual_seek"
+            ),
+        ),
+        (
+            "missing A-I family",
+            lambda value: value["performance_matrix"]["families"].pop("I"),
+        ),
+        (
+            "unsupported family marked eligible",
+            lambda value: value["performance_matrix"]["families"]["D"].__setitem__(
+                "ship_evidence_eligible", True
+            ),
+        ),
+        (
+            "unknown diagnostic scenario",
+            lambda value: value["performance_matrix"]["families"]["A"][
+                "diagnostic_scenarios"
+            ].append("not-a-scenario"),
+        ),
+        (
+            "warm ship gate weakened",
+            lambda value: find_scenario(
+                value, "long_form_cold_warm_burst_auto"
+            )["metrics"]["operation.warm_seek.p95_ms"].__setitem__("max_ratio", 0.71),
+        ),
+        (
+            "burst ship gate improved-pair count weakened",
+            lambda value: find_scenario(
+                value, "long_form_cold_warm_burst_on"
+            )["metrics"]["operation.seek_burst.p95_ms"].__setitem__(
+                "min_improved_pairs", 5
+            ),
+        ),
+        (
+            "per-generation activation evidence weakened",
+            lambda value: find_scenario(
+                value, "long_form_cold_warm_burst_auto"
+            ).__setitem__("expected_activation_count", 4),
+        ),
+        (
+            "recovery reuses a generation",
+            lambda value: next(
+                action
+                for action in find_scenario(
+                    value, "long_form_cold_warm_burst_auto"
+                )["actions"]
+                if action["kind"] == "recovery"
+            ).__setitem__("file_generation", "media-01"),
+        ),
+        (
+            "burst below twenty targets",
+            lambda value: next(
+                action
+                for action in find_scenario(
+                    value, "long_form_cold_warm_burst_auto"
+                )["actions"]
+                if action["kind"] == "seek_burst"
+            )["targets_s"].pop(),
+        ),
     ]
     for label, mutate in mutations:
         invalid = json.loads(json.dumps(document))
@@ -2198,6 +2760,25 @@ def command_validate(args: argparse.Namespace) -> int:
     document, digest = load_scenarios(args.scenarios)
     print(json.dumps({"ok": True, "sha256": digest, "scenario_count": len(document["scenarios"])}))
     return 0
+
+
+def command_matrix_status(args: argparse.Namespace) -> int:
+    document, digest = load_scenarios(args.scenarios)
+    families = document["performance_matrix"]["families"]
+    selected = families if args.family is None else {args.family: families[args.family]}
+    ship_ready = all(family["ship_evidence_eligible"] for family in selected.values())
+    print(
+        json.dumps(
+            {
+                "schema": document["performance_matrix"]["schema"],
+                "scenario_sha256": digest,
+                "ship_evidence_eligible": ship_ready,
+                "families": selected,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if ship_ready or not args.require_ship_evidence else 3
 
 
 def command_scenario(args: argparse.Namespace) -> int:
@@ -2739,6 +3320,22 @@ def materialize_command_self_test() -> None:
             manifest.get("changed"),
             ["fixture/tui-perf-stream.m3u", "stores/cache/session.json"],
         )
+        if re.search(
+            rb"https?://", manifest_path.read_bytes(), flags=re.IGNORECASE
+        ):
+            raise AssertionError("materialize manifest retained a URL")
+        evidence_playlist = input_snapshot / "fixture" / "tui-perf-stream.m3u"
+        require_artifact_value(
+            evidence_playlist,
+            "redacted evidence playlist",
+            evidence_playlist.read_text(encoding="utf-8"),
+            "#EXTM3U\n#EXTINF:-1,ytt deterministic performance fixture\n"
+            f"{FIXTURE_URL_REDACTION}\n",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            command_privacy_check(argparse.Namespace(root=evidence))
+            command_sanitize_runtime_evidence(argparse.Namespace(root=home))
+            command_privacy_check(argparse.Namespace(root=home))
         for materialized_session in (
             session,
             input_snapshot / "stores" / "cache" / "session.json",
@@ -3239,6 +3836,516 @@ def cpu_model() -> str:
     return platform.processor() or platform.machine()
 
 
+def validate_mpv_selection_document(
+    document: dict[str, Any], path: Path
+) -> dict[str, Any]:
+    require_artifact_value(path, "schema", document.get("schema"), MPV_SELECTION_SCHEMA)
+    line = document.get("line")
+    if line not in {"current", "0.32"}:
+        raise ValueError(f"{path}: mpv line must be current or 0.32")
+    require_artifact_value(path, "target-local selection", document.get("target_local"), True)
+    target_root = Path(str(document.get("target_root", ""))).resolve()
+    if not target_root.is_dir():
+        raise ValueError(f"{path}: target-local mpv root does not exist: {target_root}")
+    binary_identity = document.get("binary")
+    if not isinstance(binary_identity, dict):
+        raise ValueError(f"{path}: selected mpv binary identity is malformed")
+    binary = Path(str(binary_identity.get("path", ""))).resolve()
+    try:
+        binary.relative_to(target_root / "install" / "bin")
+    except ValueError as error:
+        raise ValueError(f"{path}: selected mpv binary is not target-local") from error
+    require_artifact_value(
+        path, "selected mpv binary identity", binary_identity, identity_for_file(binary)
+    )
+    version_output = document.get("version_output")
+    if not isinstance(version_output, str) or not version_output.startswith("mpv"):
+        raise ValueError(f"{path}: selected mpv version output is missing")
+    compatibility = document.get("compatibility")
+    if not isinstance(compatibility, dict) or compatibility.get("compatible") is not True:
+        raise ValueError(f"{path}: selected mpv compatibility proof did not pass")
+    provenance = document.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError(f"{path}: selected mpv provenance is missing")
+    if line == "0.32":
+        require_artifact_value(
+            path,
+            "mpv 0.32 pinned commit",
+            provenance.get("pinned_commit"),
+            MPV_032_PINNED_COMMIT,
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 patched-source provenance",
+            provenance.get("kind"),
+            "official_pinned_source_build_with_backport_v1",
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 patched-source marker",
+            provenance.get("patched_source"),
+            True,
+        )
+        compat_patch = provenance.get("compatibility_patch")
+        if not isinstance(compat_patch, dict):
+            raise ValueError(f"{path}: mpv 0.32 compatibility-patch provenance is missing")
+        require_artifact_value(
+            path,
+            "mpv 0.32 compatibility-patch upstream commit",
+            compat_patch.get("upstream_commit"),
+            MPV_032_COMPAT_UPSTREAM_COMMIT,
+        )
+        warning_evidence = provenance.get("warnings")
+        if not isinstance(warning_evidence, dict) or not isinstance(
+            warning_evidence.get("entries"), list
+        ):
+            raise ValueError(f"{path}: mpv 0.32 warning evidence is missing")
+        warning_count = warning_evidence.get("count")
+        if warning_count != len(warning_evidence["entries"]):
+            raise ValueError(f"{path}: mpv 0.32 warning count is inconsistent")
+        expected_eligible = warning_count == 0
+        require_artifact_value(
+            path,
+            "mpv 0.32 warning eligibility",
+            warning_evidence.get("ship_evidence_eligible"),
+            expected_eligible,
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 provenance eligibility",
+            provenance.get("ship_evidence_eligible"),
+            expected_eligible,
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 ship eligibility",
+            document.get("ship_evidence_eligible"),
+            expected_eligible,
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 diagnostic marker",
+            document.get("diagnostic_only"),
+            not expected_eligible,
+        )
+        require_artifact_value(
+            path,
+            "mpv 0.32 wrapper outcome",
+            document.get("wrapper_outcome"),
+            {
+                "kind": (
+                    "ship_eligible" if expected_eligible else "warning_bound_diagnostic"
+                ),
+                "expected_exit_code": 0 if expected_eligible else 3,
+            },
+        )
+    return document
+
+
+def private_mpv_probe_environment(root: Path) -> dict[str, str]:
+    home = root / "probe-home"
+    runtime = root / "probe-runtime"
+    temporary = root / "probe-tmp"
+    for directory in (home, runtime, temporary):
+        directory.mkdir(parents=True, exist_ok=True)
+    environment = {
+        key: os.environ[key]
+        for key in (
+            "PATH",
+            "SystemRoot",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+        )
+        if key in os.environ and os.environ[key]
+    }
+    environment.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "APPDATA": str(home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_STATE_HOME": str(home / ".local" / "state"),
+            "XDG_RUNTIME_DIR": str(runtime),
+            "TMPDIR": str(temporary),
+            "TMP": str(temporary),
+            "TEMP": str(temporary),
+            "LANG": "C",
+            "LC_ALL": "C",
+        }
+    )
+    return environment
+
+
+def command_stage_mpv_current(args: argparse.Namespace) -> int:
+    source = args.source_binary.resolve()
+    if not source.is_file():
+        raise ValueError(f"current mpv source binary does not exist: {source}")
+    target_root = args.output_root.resolve()
+    if path_entry_exists(args.output_root) or path_entry_exists(target_root):
+        raise ValueError("--output-root must name a new target-local path")
+    if not target_root.parent.is_dir():
+        raise ValueError("--output-root parent must be an existing directory")
+    binary_name = "mpv.exe" if source.suffix.lower() == ".exe" else "mpv"
+    binary = target_root / "install" / "bin" / binary_name
+    binary.parent.mkdir(parents=True)
+    shutil.copy2(source, binary)
+    if os.name != "nt":
+        binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    cache_root = target_root / "probe-cache"
+    cache_root.mkdir()
+    environment = private_mpv_probe_environment(target_root)
+    command = [
+        str(binary),
+        "--no-config",
+        f"--demuxer-cache-dir={cache_root}",
+        "--demuxer-cache-unlink-files=immediate",
+        "--cache-on-disk=no",
+        "--version",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"cannot probe target-local current mpv: {error}") from error
+    version_output = completed.stdout.strip()
+    if completed.returncode != 0 or not version_output.startswith("mpv"):
+        detail = completed.stderr.strip() or version_output or f"exit {completed.returncode}"
+        raise ValueError(f"target-local current mpv option probe failed: {detail}")
+    output = args.output.resolve()
+    if output.parent != target_root or output.name != "selection-manifest.json":
+        raise ValueError(
+            "current mpv selection manifest must be OUTPUT_ROOT/selection-manifest.json"
+        )
+    document = {
+        "schema": MPV_SELECTION_SCHEMA,
+        "line": "current",
+        "target_root": str(target_root),
+        "target_local": True,
+        "binary": identity_for_file(binary),
+        "version_output": version_output,
+        "compatibility": {
+            "kind": "modern_cache_argv_parse_v1",
+            "compatible": True,
+            "command": command,
+            "exit_code": completed.returncode,
+            "stderr": completed.stderr.strip(),
+        },
+        "provenance": {
+            "kind": "installed_current_binary_copy_v1",
+            "source_binary": identity_for_file(source),
+            "global_install_performed": False,
+        },
+    }
+    atomic_json(output, document)
+    validate_mpv_selection_document(document, output)
+    print(json.dumps({"ok": True, "output": str(output), "binary": str(binary)}))
+    return 0
+
+
+def command_create_mpv_selection(args: argparse.Namespace) -> int:
+    target_root = args.target_root.resolve()
+    binary = args.binary.resolve()
+    build_manifest = load_json_object(args.build_manifest.resolve())
+    probe_manifest = load_json_object(args.probe_manifest.resolve())
+    require_artifact_value(
+        args.build_manifest, "schema", build_manifest.get("schema"), "ytt.mpv-032-build.v1"
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "pinned commit",
+        build_manifest.get("pinned_commit"),
+        MPV_032_PINNED_COMMIT,
+    )
+    require_artifact_value(
+        args.build_manifest, "binary", build_manifest.get("binary"), identity_for_file(binary)
+    )
+    source = build_manifest.get("source")
+    if not isinstance(source, dict):
+        raise ValueError(f"{args.build_manifest}: patched source provenance is missing")
+    require_artifact_value(
+        args.build_manifest, "patched source", source.get("patched_source"), True
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "patched source worktree state",
+        source.get("tracked_worktree_clean"),
+        False,
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "patched source file set",
+        source.get("patched_files"),
+        MPV_032_COMPAT_PATCHED_FILES,
+    )
+    compatibility_patch = build_manifest.get("compatibility_patch")
+    if not isinstance(compatibility_patch, dict):
+        raise ValueError(f"{args.build_manifest}: compatibility-patch evidence is missing")
+    require_artifact_value(
+        args.build_manifest,
+        "compatibility-patch upstream commit",
+        compatibility_patch.get("upstream_commit"),
+        MPV_032_COMPAT_UPSTREAM_COMMIT,
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "compatibility-patch identity",
+        compatibility_patch.get("patch"),
+        identity_for_file(Path(__file__).with_name("mpv-032-m-option-value-zero-init.patch")),
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "compatibility-patch file set",
+        compatibility_patch.get("patched_files"),
+        MPV_032_COMPAT_PATCHED_FILES,
+    )
+    build_flags = build_manifest.get("build_flags")
+    if not isinstance(build_flags, dict):
+        raise ValueError(f"{args.build_manifest}: explicit build flags are missing")
+    require_artifact_value(
+        args.build_manifest,
+        "build flag provenance",
+        build_flags.get("provenance"),
+        "build-mpv-032-wrapper-explicit-v1",
+    )
+    if build_flags.get("ndebug_required") is not True or "-DNDEBUG" not in (
+        str(build_flags.get("cflags", "")).split()
+        + str(build_flags.get("cppflags", "")).split()
+    ):
+        raise ValueError(f"{args.build_manifest}: pinned mpv build did not prove NDEBUG")
+    runtime_dependencies = build_manifest.get("runtime_dependencies")
+    if not isinstance(runtime_dependencies, dict):
+        raise ValueError(f"{args.build_manifest}: runtime dependency evidence is missing")
+    require_artifact_value(
+        args.build_manifest,
+        "runtime dependency policy",
+        runtime_dependencies.get("policy"),
+        "explicit_verified_target_local_ucrt_v1",
+    )
+    staged_dependencies = runtime_dependencies.get("dependencies")
+    if not isinstance(staged_dependencies, list):
+        raise ValueError(f"{args.build_manifest}: staged runtime dependency list is malformed")
+    if os.name == "nt" and {
+        str(item.get("name", "")).casefold()
+        for item in staged_dependencies
+        if isinstance(item, dict)
+    } != {"libwinpthread-1.dll", "zlib1.dll"}:
+        raise ValueError(f"{args.build_manifest}: explicit UCRT dependency set is incomplete")
+    ffmpeg_dependency = build_manifest.get("ffmpeg_dependency")
+    if not isinstance(ffmpeg_dependency, dict):
+        raise ValueError(f"{args.build_manifest}: FFmpeg dependency evidence is missing")
+    require_artifact_value(
+        args.build_manifest,
+        "FFmpeg dependency policy",
+        ffmpeg_dependency.get("policy"),
+        "explicit_prepared_ffmpeg_4_4_8_prefix_v1",
+    )
+    require_artifact_value(
+        args.build_manifest, "FFmpeg version", ffmpeg_dependency.get("version"), "4.4.8"
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "FFmpeg package versions",
+        ffmpeg_dependency.get("packages"),
+        MPV_032_FFMPEG_PACKAGES,
+    )
+    ffmpeg_prefix = ffmpeg_dependency.get("prefix")
+    if not isinstance(ffmpeg_prefix, dict):
+        raise ValueError(f"{args.build_manifest}: normalized FFmpeg prefix is missing")
+    require_artifact_value(
+        args.build_manifest, "normalized FFmpeg prefix", ffmpeg_prefix.get("path"), "$FFMPEG_PREFIX"
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "private FFmpeg prefix",
+        ffmpeg_prefix.get("path_recorded"),
+        False,
+    )
+
+    def validate_private_identity(label: str, identity: Any) -> None:
+        if not isinstance(identity, dict):
+            raise ValueError(f"{args.build_manifest}: {label} identity is missing")
+        if identity.get("path_recorded") is not False:
+            raise ValueError(f"{args.build_manifest}: {label} leaked its source path")
+        if not isinstance(identity.get("name"), str) or not identity["name"]:
+            raise ValueError(f"{args.build_manifest}: {label} name is missing")
+        if not isinstance(identity.get("bytes"), int) or identity["bytes"] <= 0:
+            raise ValueError(f"{args.build_manifest}: {label} size is invalid")
+        if re.fullmatch(r"[0-9a-f]{64}", str(identity.get("sha256", ""))) is None:
+            raise ValueError(f"{args.build_manifest}: {label} SHA-256 is invalid")
+
+    validate_private_identity("FFmpeg source archive", ffmpeg_dependency.get("source_archive"))
+    require_artifact_value(
+        args.build_manifest,
+        "FFmpeg source archive name",
+        ffmpeg_dependency["source_archive"].get("name"),
+        "ffmpeg-4.4.8.tar.xz",
+    )
+    ffmpeg_receipt = ffmpeg_dependency.get("build_receipt")
+    if not isinstance(ffmpeg_receipt, dict) or set(ffmpeg_receipt) != {
+        "configure",
+        "build",
+        "install",
+    }:
+        raise ValueError(f"{args.build_manifest}: FFmpeg build receipt is malformed")
+    for label, identity in ffmpeg_receipt.items():
+        validate_private_identity(f"FFmpeg {label} log", identity)
+    warnings = build_manifest.get("warnings")
+    if not isinstance(warnings, dict):
+        raise ValueError(f"{args.build_manifest}: warning evidence is missing")
+    warning_entries = warnings.get("entries")
+    warning_count = warnings.get("count")
+    if not isinstance(warning_entries, list) or warning_count != len(warning_entries):
+        raise ValueError(f"{args.build_manifest}: warning count is inconsistent")
+    ship_evidence_eligible = warning_count == 0
+    require_artifact_value(
+        args.build_manifest,
+        "warning ship eligibility",
+        warnings.get("ship_evidence_eligible"),
+        ship_evidence_eligible,
+    )
+    require_artifact_value(
+        args.build_manifest,
+        "build ship eligibility",
+        build_manifest.get("ship_evidence_eligible"),
+        ship_evidence_eligible,
+    )
+    python_roles = build_manifest.get("python_roles")
+    if not isinstance(python_roles, dict):
+        raise ValueError(f"{args.build_manifest}: Python role evidence is missing")
+    manifest_probe_python = python_roles.get("manifest_and_ipc_probe")
+    waf_python = python_roles.get("waf_only")
+    if not isinstance(manifest_probe_python, dict) or not isinstance(waf_python, dict):
+        raise ValueError(f"{args.build_manifest}: Python role evidence is malformed")
+    if os.name == "nt":
+        require_artifact_value(
+            args.build_manifest,
+            "native manifest/probe Python role",
+            manifest_probe_python.get("os_name"),
+            "nt",
+        )
+        require_artifact_value(
+            args.build_manifest,
+            "MSYS waf Python role",
+            waf_python.get("os_name"),
+            "posix",
+        )
+    require_artifact_value(
+        args.probe_manifest, "schema", probe_manifest.get("schema"), "ytt.mpv-032-probe.v1"
+    )
+    require_artifact_value(
+        args.probe_manifest, "binary", probe_manifest.get("binary"), identity_for_file(binary)
+    )
+    require_artifact_value(
+        args.probe_manifest, "compatible", probe_manifest.get("compatible"), True
+    )
+    output = args.output.resolve()
+    if output.parent != target_root or output.name != "selection-manifest.json":
+        raise ValueError(
+            "mpv 0.32 selection manifest must be TARGET_ROOT/selection-manifest.json"
+        )
+    document = {
+        "schema": MPV_SELECTION_SCHEMA,
+        "line": "0.32",
+        "target_root": str(target_root),
+        "target_local": True,
+        "binary": identity_for_file(binary),
+        "version_output": build_manifest.get("version_output"),
+        "compatibility": {
+            "kind": "mpv_032_ipc_probe_v1",
+            "compatible": True,
+            "probe_manifest": identity_for_file(args.probe_manifest.resolve()),
+            "required_missing": probe_manifest.get("required_missing"),
+        },
+        "provenance": {
+            "kind": "official_pinned_source_build_with_backport_v1",
+            "pinned_commit": MPV_032_PINNED_COMMIT,
+            "patched_source": True,
+            "compatibility_patch": compatibility_patch,
+            "repository_identity": build_manifest.get("repository_identity"),
+            "source_tree": build_manifest.get("source", {}).get("tree"),
+            "build_manifest": identity_for_file(args.build_manifest.resolve()),
+            "global_install_performed": build_manifest.get("global_install_performed"),
+            "build_flags": build_flags,
+            "runtime_dependencies": runtime_dependencies,
+            "ffmpeg_dependency": ffmpeg_dependency,
+            "python_roles": python_roles,
+            "warnings": warnings,
+            "ship_evidence_eligible": ship_evidence_eligible,
+        },
+        "ship_evidence_eligible": ship_evidence_eligible,
+        "diagnostic_only": not ship_evidence_eligible,
+        "wrapper_outcome": {
+            "kind": (
+                "ship_eligible"
+                if ship_evidence_eligible
+                else "warning_bound_diagnostic"
+            ),
+            "expected_exit_code": 0 if ship_evidence_eligible else 3,
+        },
+    }
+    atomic_json(output, document)
+    validate_mpv_selection_document(document, output)
+    print(json.dumps({"ok": True, "output": str(output), "binary": str(binary)}))
+    return 0
+
+
+def command_mpv_selection(args: argparse.Namespace) -> int:
+    document = load_json_object(args.manifest.resolve())
+    validate_mpv_selection_document(document, args.manifest)
+    value = dotted(document, args.field) if args.field else document
+    if isinstance(value, (dict, list)):
+        print(json.dumps(value, separators=(",", ":")))
+    elif isinstance(value, bool):
+        print("true" if value else "false")
+    else:
+        print(value)
+    return 0
+
+
+def mpv_selection_self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="ytt-perf-mpv-selection-self-test-") as raw:
+        target_root = Path(raw) / "target-mpv"
+        binary = target_root / "install" / "bin" / (
+            "mpv.exe" if os.name == "nt" else "mpv"
+        )
+        binary.parent.mkdir(parents=True)
+        shutil.copy2(sys.executable, binary)
+        document = {
+            "schema": MPV_SELECTION_SCHEMA,
+            "line": "current",
+            "target_root": str(target_root),
+            "target_local": True,
+            "binary": identity_for_file(binary),
+            "version_output": "mpv self-test",
+            "compatibility": {"compatible": True},
+            "provenance": {"kind": "self-test"},
+        }
+        path = target_root / "selection-manifest.json"
+        validate_mpv_selection_document(document, path)
+        tampered = json.loads(json.dumps(document))
+        tampered["binary"]["sha256"] = "00" * 32
+        try:
+            validate_mpv_selection_document(tampered, path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("mpv selection binary identity tampering was accepted")
+
+
 def command_manifest(args: argparse.Namespace) -> int:
     document, scenario_hash = load_scenarios(args.scenarios)
     scenario = find_scenario(document, args.scenario)
@@ -3266,6 +4373,32 @@ def command_manifest(args: argparse.Namespace) -> int:
     atomic_bytes(scenario_snapshot, args.scenarios.read_bytes())
     if sha256_file(scenario_snapshot) != scenario_hash:
         raise ValueError("scenario snapshot changed while being copied")
+    mpv_selection = None
+    if scenario["requires_mpv"]:
+        if args.mpv_selection_manifest is None:
+            raise ValueError("playback host manifest requires --mpv-selection-manifest")
+        selection_source = args.mpv_selection_manifest.resolve()
+        selection_document = load_json_object(selection_source)
+        validate_mpv_selection_document(selection_document, selection_source)
+        selection_snapshot = evidence_root / "mpv-selection.json"
+        atomic_bytes(selection_snapshot, selection_source.read_bytes())
+        copied_selection = load_json_object(selection_snapshot)
+        validate_mpv_selection_document(copied_selection, selection_snapshot)
+        require_artifact_value(
+            selection_snapshot,
+            "copied mpv selection",
+            copied_selection,
+            selection_document,
+        )
+        mpv_selection = {
+            "manifest": {
+                **identity_for_file(selection_snapshot),
+                "path": selection_snapshot.relative_to(evidence_root).as_posix(),
+            },
+            "document": copied_selection,
+        }
+    elif args.mpv_selection_manifest is not None:
+        raise ValueError("non-playback host manifest rejects --mpv-selection-manifest")
     tool_commands = {
         "python": [sys.executable, "--version"],
         "mpv_on_path": ["mpv", "--version"],
@@ -3308,8 +4441,16 @@ def command_manifest(args: argparse.Namespace) -> int:
         },
         "orchestrator": receipt["orchestrator"],
         "measurement_scope": document["sampling"],
+        "statistical_contract": document["statistical_contract"],
+        "performance_matrix": document["performance_matrix"],
+        "ship_matrix_ready": all(
+            family["ship_evidence_eligible"]
+            for family in document["performance_matrix"]["families"].values()
+        ),
+        "source_rate_bound": source_rate_bound_contract(document, scenario),
+        "mpv_selection": mpv_selection,
         "limitations": measurement_limitations(render),
-        "note": "actual mpv argv and executable are recorded in each sampler artifact",
+        "note": "selected target-local mpv and actual argv/executable are bound to evidence",
     }
     atomic_json(args.output, manifest)
     print(json.dumps({"ok": True, "output": str(args.output), "scenario_sha256": scenario_hash}))
@@ -3364,8 +4505,17 @@ def command_materialize(args: argparse.Namespace) -> int:
         fixture_ip = ipaddress.ip_address(parsed_url.hostname or "")
     except ValueError as error:
         raise ValueError("--fixture-url host must be a loopback IP literal") from error
-    if parsed_url.scheme != "http" or not fixture_ip.is_loopback:
-        raise ValueError("--fixture-url must be an HTTP loopback URL")
+    if (
+        parsed_url.scheme != "http"
+        or str(fixture_ip) != FIXTURE_LOOPBACK_HOST
+        or parsed_url.path != "/fixture.wav"
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.query
+        or parsed_url.fragment
+        or parsed_url.port is None
+    ):
+        raise ValueError("--fixture-url must be the controlled IPv4 loopback fixture URL")
 
     replacements = {
         "{{TUI_PERF_FIXTURE_URL}}": args.fixture_url,
@@ -3429,21 +4579,33 @@ def command_materialize(args: argparse.Namespace) -> int:
         source = root / relative
         destination = input_snapshot / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-    materialized_tree_sha256 = sha256_tree(root)
+        sanitized = source.read_bytes().replace(
+            args.fixture_url.encode("utf-8"), FIXTURE_URL_REDACTION.encode("utf-8")
+        )
+        atomic_bytes(destination, sanitized)
+    runtime_materialized_tree_sha256 = sha256_tree(root)
+    materialized_tree_sha256, materialized_files = overlay_tree_identity(
+        root, input_snapshot, changed
+    )
     playlist_relative = playlist.relative_to(root).as_posix()
     expected_playlist = (
         f"#EXTM3U\n#EXTINF:-1,ytt deterministic performance fixture\n{args.fixture_url}\n"
     )
     if playlist.read_text(encoding="utf-8") != expected_playlist:
         raise ValueError("materialized playlist does not contain the exact fixture URL")
+    redacted_playlist = expected_playlist.replace(args.fixture_url, FIXTURE_URL_REDACTION)
+    snapshot_playlist = input_snapshot / playlist_relative
+    if snapshot_playlist.read_text(encoding="utf-8") != redacted_playlist:
+        raise ValueError("materialized evidence playlist did not redact its fixture URL")
     manifest = {
         "schema": "ytt.tui-perf.materialize.v1",
         "changed": changed,
-        "fixture_url": args.fixture_url,
-        "fixture_host": str(fixture_ip),
+        "fixture_port": parsed_url.port,
+        "loopback_fixture": True,
+        "url_recorded": False,
         "playlist": playlist_relative,
-        "playlist_sha256": sha256_file(playlist),
+        "playlist_sha256": sha256_file(snapshot_playlist),
+        "runtime_playlist_sha256": sha256_file(playlist),
         "playback_target_mode": "local_m3u_indirection",
         "external_dns_required": False,
         "playlist_references": playlist_references,
@@ -3453,13 +4615,166 @@ def command_materialize(args: argparse.Namespace) -> int:
         "seed_tree_sha256": seed_tree_sha256,
         "seed_cache_policy": cache_policy,
         "materialized_tree_sha256": materialized_tree_sha256,
-        "materialized_files": tree_file_inventory(root),
+        "materialized_files": materialized_files,
+        "runtime_materialized_tree_sha256": runtime_materialized_tree_sha256,
         "input_snapshot": input_snapshot.name,
         "input_snapshot_files": tree_file_inventory(input_snapshot),
         "materializer_sha256": sha256_file(Path(__file__)),
     }
+    serialized_manifest = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    if re.search(r"https?://", serialized_manifest, flags=re.IGNORECASE):
+        raise ValueError("materialization manifest retained a URL")
+    for snapshot_file in input_snapshot.rglob("*"):
+        if snapshot_file.is_file() and re.search(
+            rb"https?://", snapshot_file.read_bytes(), flags=re.IGNORECASE
+        ):
+            raise ValueError(f"materialized evidence retained a URL: {snapshot_file}")
     atomic_json(manifest_path, manifest)
-    print(json.dumps(manifest, sort_keys=True))
+    print(serialized_manifest)
+    return 0
+
+
+URL_BYTES_PATTERN = re.compile(rb"https?://[^\x00-\x20\"'<>]+", re.IGNORECASE)
+
+
+def command_sanitize_runtime_evidence(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"runtime evidence root is not a directory: {root}")
+    changed = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"runtime evidence contains a symlink: {path}")
+        if not path.is_file():
+            continue
+        original = path.read_bytes()
+        sanitized, replacements = URL_BYTES_PATTERN.subn(
+            FIXTURE_URL_REDACTION.encode("utf-8"), original
+        )
+        if replacements:
+            atomic_bytes(path, sanitized)
+            changed += 1
+    print(json.dumps({"ok": True, "sanitized_files": changed}, sort_keys=True))
+    return 0
+
+
+def command_privacy_check(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"privacy-check root is not a directory: {root}")
+    checked = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        payload = path.read_bytes()
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        checked += 1
+        if re.search(r"https?://", text, flags=re.IGNORECASE):
+            raise ValueError(f"URL leaked into textual evidence: {path}")
+        public_command = text.replace(
+            f"--shutdown-token={HTTP_SHUTDOWN_TOKEN_REDACTION}", ""
+        )
+        if "--shutdown-token=" in public_command or HTTP_SHUTDOWN_PATH in text:
+            raise ValueError(f"shutdown secret/endpoint leaked into evidence: {path}")
+    print(json.dumps({"ok": True, "text_files_checked": checked}, sort_keys=True))
+    return 0
+
+
+def json_leaf_state(document: dict[str, Any], dotted_path: str) -> dict[str, Any]:
+    current: Any = document
+    fields = dotted_path.split(".")
+    for field in fields[:-1]:
+        if not isinstance(current, dict) or field not in current:
+            return {"present": False, "value": None}
+        current = current[field]
+    leaf = fields[-1]
+    if not isinstance(current, dict) or leaf not in current:
+        return {"present": False, "value": None}
+    return {"present": True, "value": current[leaf]}
+
+
+def set_json_leaf(document: dict[str, Any], dotted_path: str, value: Any) -> None:
+    current: dict[str, Any] = document
+    fields = dotted_path.split(".")
+    for field in fields[:-1]:
+        child = current.setdefault(field, {})
+        if not isinstance(child, dict):
+            raise ValueError(
+                f"cannot apply {dotted_path!r}: {field!r} is not an object"
+            )
+        current = child
+    current[fields[-1]] = value
+
+
+def command_apply_setting_overrides(args: argparse.Namespace) -> int:
+    scenario_document, scenario_hash = load_scenarios(args.scenarios)
+    scenario = find_scenario(scenario_document, args.scenario)
+    overrides_by_role = scenario.get("setting_leaf_overrides")
+    if not isinstance(overrides_by_role, dict):
+        raise ValueError(f"scenario {args.scenario!r} has no setting leaf overrides")
+    overrides = overrides_by_role.get(args.role)
+    if not isinstance(overrides, dict) or not overrides:
+        raise ValueError(f"scenario {args.scenario!r} has no {args.role} overrides")
+
+    root = args.root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"setting override root does not exist: {root}")
+    output = args.output.resolve()
+    snapshot = output.parent / "setting-overrides-inputs"
+    if resolved_paths_overlap(output, root) or resolved_paths_overlap(snapshot, root):
+        raise ValueError("setting override evidence must stay outside the mutable home")
+    if path_entry_exists(args.output) or path_entry_exists(output) or path_entry_exists(snapshot):
+        raise ValueError("setting override evidence paths must be new")
+    if not output.parent.is_dir():
+        raise ValueError("setting override output parent must be an existing directory")
+
+    config = root / "stores" / "config" / "config.json"
+    if not config.is_file():
+        raise ValueError(f"setting override config does not exist: {config}")
+    document = load_json_object(config)
+    before_identity = identity_for_file(config)
+    before_values = {
+        leaf: json_leaf_state(document, leaf) for leaf in sorted(overrides)
+    }
+    for leaf, value in sorted(overrides.items()):
+        if leaf != LONG_FORM_SETTING_LEAF or value not in {"auto", "off", "on"}:
+            raise ValueError(f"unsupported setting override {leaf!r}={value!r}")
+        set_json_leaf(document, leaf, value)
+    atomic_json(config, document)
+    after_identity = identity_for_file(config)
+    after_values = {
+        leaf: json_leaf_state(document, leaf) for leaf in sorted(overrides)
+    }
+    expected_after = {
+        leaf: {"present": True, "value": value}
+        for leaf, value in sorted(overrides.items())
+    }
+    require_artifact_value(config, "setting override values", after_values, expected_after)
+
+    snapshot.mkdir()
+    snapshot_config = snapshot / "config.json"
+    shutil.copy2(config, snapshot_config)
+    manifest = {
+        "schema": SETTING_OVERRIDES_SCHEMA,
+        "scenario": scenario["id"],
+        "scenario_sha256": scenario_hash,
+        "role": args.role,
+        "root": str(root),
+        "config": "stores/config/config.json",
+        "config_before": before_identity,
+        "config_after": after_identity,
+        "before_values": before_values,
+        "after_values": after_values,
+        "overrides": overrides,
+        "snapshot": snapshot.name,
+        "snapshot_config": snapshot_config.name,
+        "snapshot_files": tree_file_inventory(snapshot),
+    }
+    atomic_json(output, manifest)
+    print(json.dumps({"ok": True, "output": str(output), "role": args.role}))
     return 0
 
 
@@ -3850,6 +5165,13 @@ def native_process_start_token(pid: int) -> str | None:
     """Return an OS-native token that changes when a numeric PID is reused."""
     if pid <= 0:
         return None
+    if os.name == "nt":
+        observation = windows_process_observation(pid, hash_executable=False)
+        return (
+            None
+            if observation is None
+            else str(observation["native_start_token"])
+        )
     if sys.platform.startswith("linux"):
         try:
             raw_stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
@@ -3933,10 +5255,103 @@ def native_process_start_token(pid: int) -> str | None:
                 f"cannot read native macOS start token for PID {pid}: {error}"
             ) from error
         return f"darwin-proc-start:{info.pbi_start_tvsec}:{info.pbi_start_tvusec}"
-    raise ValueError("native process start tokens are supported only on Linux and macOS")
+    raise ValueError(
+        "native process start tokens are supported only on Windows, Linux, and macOS"
+    )
+
+
+def windows_process_observation(
+    pid: int, *, hash_executable: bool
+) -> dict[str, Any] | None:
+    """Read a PID-reuse-safe Windows identity without optional third-party packages."""
+    if os.name != "nt":
+        raise ValueError("Windows process observation is available only on Windows")
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error in {5, 87}:  # Access denied or PID no longer exists/invalid.
+                return None
+            raise OSError(error, "OpenProcess")
+        try:
+            creation = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel_time = wintypes.FILETIME()
+            user_time = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                raise OSError(ctypes.get_last_error(), "GetProcessTimes")
+            capacity = wintypes.DWORD(32_768)
+            buffer = ctypes.create_unicode_buffer(capacity.value)
+            if not kernel32.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(capacity)
+            ):
+                raise OSError(ctypes.get_last_error(), "QueryFullProcessImageNameW")
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"cannot inspect Windows PID {pid}: {error}") from error
+
+    creation_ticks = (int(creation.dwHighDateTime) << 32) | int(
+        creation.dwLowDateTime
+    )
+    unix_epoch_ticks = 116_444_736_000_000_000
+    if creation_ticks <= unix_epoch_ticks:
+        raise ValueError(f"Windows PID {pid} has an invalid creation timestamp")
+    executable = Path(buffer.value).resolve()
+    try:
+        executable_bytes = executable.stat().st_size
+    except FileNotFoundError:
+        return None
+    return {
+        "pid": pid,
+        "start_time_unix_s": (creation_ticks - unix_epoch_ticks) // 10_000_000,
+        "native_start_token": f"windows-filetime:{creation_ticks}",
+        "executable": str(executable),
+        "executable_bytes": executable_bytes,
+        "executable_sha256": sha256_file(executable) if hash_executable else None,
+    }
 
 
 def fixture_server_process_observation(pid: int) -> dict[str, Any] | None:
+    if os.name == "nt":
+        observation = windows_process_observation(pid, hash_executable=True)
+        if observation is None:
+            return None
+        observation["command"] = (
+            [sys.executable, *sys.argv] if pid == os.getpid() else []
+        )
+        return observation
     token_before = native_process_start_token(pid)
     if token_before is None:
         return None
@@ -3962,22 +5377,62 @@ def fixture_server_process_observation(pid: int) -> dict[str, Any] | None:
     } | {"native_start_token": token_before}
 
 
+def redact_fixture_server_command(command: list[str]) -> list[str]:
+    redacted: list[str] = []
+    index = 0
+    while index < len(command):
+        argument = command[index]
+        if argument == "--shutdown-token":
+            if index + 1 >= len(command):
+                raise ValueError("exact command has a terminal --shutdown-token")
+            redacted.extend((argument, HTTP_SHUTDOWN_TOKEN_REDACTION))
+            index += 2
+            continue
+        prefix = "--shutdown-token="
+        if argument.startswith(prefix):
+            redacted.append(f"{prefix}{HTTP_SHUTDOWN_TOKEN_REDACTION}")
+        else:
+            redacted.append(argument)
+        index += 1
+    return redacted
+
+
+def redact_fixture_server_process_observation(
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    command = observation.get("command")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(item, str) for item in command
+    ):
+        raise ValueError("fixture server process observation has no exact argv identity")
+    return {**observation, "command": redact_fixture_server_command(command)}
+
+
 def fixture_server_identity_matches(
     identity: dict[str, Any], observation: dict[str, Any] | None
 ) -> bool:
     if observation is None:
         return False
-    return all(
+    fields = (
+        "pid",
+        "start_time_unix_s",
+        "native_start_token",
+        "executable",
+        "executable_bytes",
+        "executable_sha256",
+    )
+    if not all(
         observation.get(field) == identity.get(field)
-        for field in (
-            "pid",
-            "start_time_unix_s",
-            "native_start_token",
-            "executable",
-            "executable_bytes",
-            "executable_sha256",
-            "command",
-        )
+        for field in fields
+    ):
+        return False
+    if os.name == "nt":
+        return True
+    command = observation.get("command")
+    return (
+        isinstance(command, list)
+        and all(isinstance(item, str) for item in command)
+        and redact_fixture_server_command(command) == identity.get("command")
     )
 
 
@@ -4716,6 +6171,134 @@ def validate_launch_policy(path: Path, run_root: Path) -> tuple[dict[str, Any], 
     return manifest, [path, snapshot_policy]
 
 
+def validate_setting_overrides(
+    path: Path,
+    run_root: Path,
+    scenario: dict[str, Any],
+    scenario_hash: str,
+    role: str,
+    launch_policy: dict[str, Any],
+) -> list[Path]:
+    manifest = load_json_object(path)
+    require_artifact_value(path, "schema", manifest.get("schema"), SETTING_OVERRIDES_SCHEMA)
+    require_artifact_value(path, "scenario", manifest.get("scenario"), scenario["id"])
+    require_artifact_value(
+        path, "scenario SHA-256", manifest.get("scenario_sha256"), scenario_hash
+    )
+    require_artifact_value(path, "role", manifest.get("role"), role)
+    home = (run_root / "home").resolve()
+    require_artifact_value(path, "root", Path(str(manifest.get("root", ""))).resolve(), home)
+    require_artifact_value(
+        path, "config path", manifest.get("config"), "stores/config/config.json"
+    )
+    expected = scenario["setting_leaf_overrides"][role]
+    require_artifact_value(path, "setting overrides", manifest.get("overrides"), expected)
+    expected_values = {
+        leaf: {"present": True, "value": value}
+        for leaf, value in sorted(expected.items())
+    }
+    require_artifact_value(
+        path, "applied setting values", manifest.get("after_values"), expected_values
+    )
+
+    snapshot = run_root / "setting-overrides-inputs"
+    require_artifact_value(path, "snapshot", manifest.get("snapshot"), snapshot.name)
+    require_artifact_value(
+        path, "snapshot config", manifest.get("snapshot_config"), "config.json"
+    )
+    snapshot_config = snapshot / "config.json"
+    if not snapshot_config.is_file():
+        raise ValueError(f"{path}: setting override config snapshot is missing")
+    snapshot_document = load_json_object(snapshot_config)
+    for leaf, value in sorted(expected.items()):
+        require_artifact_value(
+            snapshot_config,
+            f"setting leaf {leaf}",
+            json_leaf_state(snapshot_document, leaf),
+            {"present": True, "value": value},
+        )
+    config_after = manifest.get("config_after")
+    if not isinstance(config_after, dict):
+        raise ValueError(f"{path}: config_after identity is malformed")
+    snapshot_identity = identity_for_file(snapshot_config)
+    for field in ("bytes", "sha256"):
+        require_artifact_value(
+            path,
+            f"snapshot config {field}",
+            snapshot_identity[field],
+            config_after.get(field),
+        )
+    require_artifact_value(
+        path, "launch-policy input identity", launch_policy.get("config_before"), config_after
+    )
+    require_artifact_value(
+        path,
+        "launch-policy preserved setting projection",
+        launch_policy.get("preserved_config_projection_sha256"),
+        json_value_sha256(launch_policy_projection(snapshot_document)),
+    )
+    require_artifact_value(
+        path, "snapshot inventory", manifest.get("snapshot_files"), tree_file_inventory(snapshot)
+    )
+    return [path, snapshot_config]
+
+
+def setting_overrides_self_test() -> None:
+    scenario_document, scenario_hash = load_scenarios(DEFAULT_SCENARIOS)
+    scenario = find_scenario(scenario_document, "long_form_cold_warm_burst_auto")
+    with tempfile.TemporaryDirectory(prefix="ytt-perf-setting-overrides-self-test-") as raw:
+        run_root = Path(raw) / "run"
+        home = run_root / "home"
+        config = home / "stores" / "config" / "config.json"
+        config.parent.mkdir(parents=True)
+        atomic_json(config, {"unrelated": {"preserved": True}})
+        setting_path = run_root / "setting-overrides.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            command_apply_setting_overrides(
+                argparse.Namespace(
+                    scenarios=DEFAULT_SCENARIOS,
+                    scenario=scenario["id"],
+                    role="candidate",
+                    root=home,
+                    output=setting_path,
+                )
+            )
+            command_launch_policy(
+                argparse.Namespace(
+                    root=home,
+                    output=run_root / "launch-policy.json",
+                )
+            )
+        launch_policy, _artifacts = validate_launch_policy(
+            run_root / "launch-policy.json", run_root
+        )
+        validate_setting_overrides(
+            setting_path,
+            run_root,
+            scenario,
+            scenario_hash,
+            "candidate",
+            launch_policy,
+        )
+        snapshot_config = run_root / "setting-overrides-inputs" / "config.json"
+        tampered = load_json_object(snapshot_config)
+        set_json_leaf(tampered, LONG_FORM_SETTING_LEAF, "off")
+        atomic_json(snapshot_config, tampered)
+        try:
+            validate_setting_overrides(
+                setting_path,
+                run_root,
+                scenario,
+                scenario_hash,
+                "candidate",
+                launch_policy,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("setting override snapshot tampering was accepted")
+
+
 def launch_policy_self_test() -> None:
     def expect_path_rejected(
         base: Path,
@@ -4934,6 +6517,15 @@ def child_environment_policy_self_test() -> None:
     for forbidden in ('"GEMINI_API_KEY=', '"YTM_PLAY_URL=', '"YTM_PERF='):
         if forbidden in isolated_block:
             raise AssertionError(f"isolated child environment inherited {forbidden}")
+    if 'isolated_env+=("YTM_MPV=$selected_mpv")' not in shell:
+        raise AssertionError("playback child environment does not bind selected target-local mpv")
+    if (
+        'isolated_env+=("YTM_PERF_SOURCE_RATE_BOUND_BPS=$enforced_source_rate_bound_bps")'
+        not in shell
+    ):
+        raise AssertionError(
+            "playback child environment does not bind the fixture-enforced source-rate ceiling"
+        )
     for required_command in (
         'env -i "${isolated_env[@]}" "$sampler"',
         'env -i "${isolated_env[@]}" "$controller"',
@@ -4946,6 +6538,7 @@ def child_environment_policy_self_test() -> None:
         "GEMINI_API_KEY": "hostile-ambient-value",
         "YTM_PLAY_URL": "https://remote.example.invalid/must-not-survive",
         "YTM_PERF": "1",
+        "YTM_PERF_SOURCE_RATE_BOUND_BPS": "999999999",
     }
     preserved_path = os.environ.get("PATH", "")
     probe = subprocess.run(
@@ -4959,7 +6552,8 @@ def child_environment_policy_self_test() -> None:
             (
                 "import json,os; "
                 "print(json.dumps({k:os.environ.get(k) for k in "
-                "['PATH','LANG','GEMINI_API_KEY','YTM_PLAY_URL','YTM_PERF']}))"
+                "['PATH','LANG','GEMINI_API_KEY','YTM_PLAY_URL','YTM_PERF',"
+                "'YTM_PERF_SOURCE_RATE_BOUND_BPS']}))"
             ),
         ],
         env=ambient,
@@ -4973,34 +6567,242 @@ def child_environment_policy_self_test() -> None:
     observed = json.loads(probe.stdout)
     require_artifact_value(shell_path, "child PATH passthrough", observed["PATH"], preserved_path)
     require_artifact_value(shell_path, "child LANG passthrough", observed["LANG"], "C")
-    for key in ("GEMINI_API_KEY", "YTM_PLAY_URL", "YTM_PERF"):
+    for key in (
+        "GEMINI_API_KEY",
+        "YTM_PLAY_URL",
+        "YTM_PERF",
+        "YTM_PERF_SOURCE_RATE_BOUND_BPS",
+    ):
         if observed[key] is not None:
             raise AssertionError(f"env -i policy retained hostile ambient key {key}")
 
 
+def fixture_temporary_path(output: Path, container: str) -> Path:
+    expected_suffix = f".{container.lower()}"
+    if output.suffix.lower() != expected_suffix:
+        raise ValueError(
+            f"fixture output for {container!r} must use the {expected_suffix} extension"
+        )
+    return output.with_name(f"{output.stem}.tmp{output.suffix}")
+
+
+def fixture_output_contract_self_test() -> None:
+    assert fixture_temporary_path(Path("fixture.m4a"), "m4a") == Path(
+        "fixture.tmp.m4a"
+    )
+    assert fixture_temporary_path(Path("fixture.webm"), "webm") == Path(
+        "fixture.tmp.webm"
+    )
+    try:
+        fixture_temporary_path(Path("fixture.wav"), "m4a")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("compressed fixture accepted a mismatched output extension")
+
+    unix_wrapper = Path(__file__).with_name("tui-perf.sh").read_text(encoding="utf-8")
+    windows_wrapper = Path(__file__).with_name("tui-perf.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "fixture_container=" in unix_wrapper
+    assert "s.${fixture_container}" in unix_wrapper
+    assert "fixture_profiles.$fixtureProfile.container" in windows_wrapper
+    assert '"fixture\\{0}.{1}" -f $fixtureProfile, $fixtureContainer' in windows_wrapper
+
+
+def windows_build_wrapper_self_test() -> None:
+    wrapper = Path(__file__).with_name("build-mpv-032.ps1").read_text(
+        encoding="utf-8"
+    )
+    expected = """jobs=$3
+native_python=$(cygpath -u -- \"$4\")
+waf_python=$(cygpath -u -- \"$5\")
+shift 5
+arguments=(
+    --output-root \"$output_root\"
+    --jobs \"$jobs\"
+    --python \"$native_python\"
+    --waf-python \"$waf_python\"
+    --cc \"$cc\"
+    --cxx \"$cxx\"
+)
+waf_argument=$1
+shift
+if [[ \"$waf_argument\" != \"-\" ]]; then"""
+    assert expected in wrapper
+    assert 'cygpath -u -- "$waf_argument"' in wrapper
+    assert 'if [[ "$4"' not in wrapper
+    assert "shift 4" not in wrapper
+    assert "YTT_MPV_032_BASH_COMMAND_B64" in wrapper
+    assert "/usr/bin/base64 --decode | /usr/bin/bash -s" in wrapper
+    assert "set -o pipefail; printf" in wrapper
+    assert "-lc $bashLoader mpv-032-loader" in wrapper
+    assert "-lc $bashCommand" not in wrapper
+    assert '[string] $CFlags = "-DNDEBUG"' in wrapper
+    assert '[string] $Python = ""' in wrapper
+    assert '[string] $WafPython = ""' in wrapper
+    assert "from distutils.version import StrictVersion" in wrapper
+    assert '"$toolchain_root/bin/libwinpthread-1.dll"' in wrapper
+    assert '"$toolchain_root/bin/zlib1.dll"' in wrapper
+    assert 'cc="$toolchain_root/bin/gcc.exe"' in wrapper
+    assert 'cxx="$toolchain_root/bin/g++.exe"' in wrapper
+    assert 'arguments+=(--runtime-dll "$runtime_dll")' in wrapper
+    build_script = Path(__file__).with_name("build-mpv-032.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'cflags="-DNDEBUG"' in build_script
+    assert 'export CFLAGS="$cflags"' in build_script
+    assert 'export CC="$cc_executable"' in build_script
+    assert 'export CXX="$cxx_executable"' in build_script
+    assert '--runtime-dll "$runtime_dll"' in build_script
+    assert 'apply --check --whitespace=error-all "$COMPAT_PATCH"' in build_script
+    assert '--compat-upstream-commit "$COMPAT_UPSTREAM_COMMIT"' in build_script
+    probe = Path(__file__).with_name("probe-mpv-032.py").read_text(
+        encoding="utf-8"
+    )
+    assert "explicit_verified_target_local_ucrt_v1" in probe
+    assert "sanitized_runtime_environment(binary)" in probe
+
+
 def command_fixture(args: argparse.Namespace) -> int:
-    if args.seconds <= 0 or args.sample_rate <= 0:
+    profile_name = args.profile
+    profile: dict[str, Any] | None = None
+    if profile_name:
+        document, _digest = load_scenarios(args.scenarios)
+        profile = document["fixture_profiles"].get(profile_name)
+        if not isinstance(profile, dict):
+            raise ValueError(f"unknown fixture profile {profile_name!r}")
+        seconds = float(profile["duration_s"])
+        sample_rate = int(profile["sample_rate_hz"])
+        channels = int(profile["channels"])
+        container = str(profile["container"])
+        codec = str(profile["codec"])
+        bitrate_bps = int(profile["bitrate_bps"])
+        generation = str(profile["generation"])
+    else:
+        seconds = args.seconds
+        sample_rate = args.sample_rate
+        channels = 1
+        container = "wav"
+        codec = "pcm_s16le"
+        bitrate_bps = sample_rate * channels * 16
+        generation = "deterministic-zero-pcm-v2"
+    if seconds <= 0 or sample_rate <= 0:
         raise ValueError("fixture duration and sample rate must be positive")
+    temporary = fixture_temporary_path(args.output, container)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    frames = int(round(args.seconds * args.sample_rate))
-    chunk_frames = min(args.sample_rate, 65_536)
-    silence = b"\0\0" * chunk_frames
-    with wave.open(str(args.output), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(args.sample_rate)
-        remaining = frames
-        while remaining:
-            count = min(remaining, chunk_frames)
-            wav.writeframesraw(silence[: count * 2])
-            remaining -= count
+    frames = int(round(seconds * sample_rate))
+    generation_tool: dict[str, Any]
+    command: list[str] | None = None
+    if container == "wav" and codec == "pcm_s16le":
+        sample_width = int((profile or {}).get("sample_width_bytes", 2))
+        if sample_width != 2:
+            raise ValueError("deterministic WAV generation currently requires 16-bit PCM")
+        chunk_frames = min(sample_rate, 65_536)
+        silence = b"\0\0" * chunk_frames * channels
+        with wave.open(str(args.output), "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(sample_width)
+            wav.setframerate(sample_rate)
+            remaining = frames
+            while remaining:
+                count = min(remaining, chunk_frames)
+                wav.writeframesraw(silence[: count * sample_width * channels])
+                remaining -= count
+        generation_tool = {
+            "name": "python-wave",
+            "version": platform.python_version(),
+            "executable": identity_for_file(Path(sys.executable)),
+        }
+    else:
+        ffmpeg = shutil.which(args.ffmpeg)
+        if ffmpeg is None:
+            raise ValueError(
+                f"fixture profile {profile_name} requires controlled ffmpeg executable "
+                f"{args.ffmpeg!r}"
+            )
+        codec_args = {
+            "aac": ["-c:a", "aac", "-b:a", str(bitrate_bps)],
+            "opus": ["-c:a", "libopus", "-b:a", str(bitrate_bps), "-vbr", "off"],
+        }.get(codec)
+        if codec_args is None:
+            raise ValueError(f"unsupported compressed fixture codec {codec!r}")
+        channel_layout = "mono" if channels == 1 else "stereo"
+        command = [
+            str(Path(ffmpeg).resolve()),
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=r={sample_rate}:cl={channel_layout}",
+            "-t",
+            format(seconds, ".9g"),
+            "-map_metadata",
+            "-1",
+            "-fflags",
+            "+bitexact",
+            "-flags:a",
+            "+bitexact",
+            *codec_args,
+            "-y",
+            str(temporary),
+        ]
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise ValueError(
+                f"controlled ffmpeg fixture generation failed: {completed.stderr.strip()}"
+            )
+        os.replace(temporary, args.output)
+        generation_tool = {
+            "name": "ffmpeg",
+            **identity_for_file(Path(ffmpeg)),
+            "version": exact_tool_output(
+                Path(ffmpeg).resolve(),
+                ["-version"],
+                cwd=Path.cwd(),
+                environment=controlled_build_environment(),
+                label="ffmpeg version",
+            ).splitlines()[0],
+        }
+    generation_input = {
+        "profile": profile_name,
+        "seconds": seconds,
+        "sample_rate_hz": sample_rate,
+        "channels": channels,
+        "container": container,
+        "codec": codec,
+        "bitrate_bps": bitrate_bps,
+        "generation": generation,
+    }
     manifest = {
-        "schema": "ytt.tui-perf.fixture.v1",
+        "schema": FIXTURE_SCHEMA,
         "path": str(args.output.resolve()),
-        "seconds": args.seconds,
-        "sample_rate_hz": args.sample_rate,
-        "channels": 1,
-        "sample_width_bytes": 2,
+        "profile": profile_name,
+        "seconds": seconds,
+        "duration_s": seconds,
+        "sample_rate_hz": sample_rate,
+        "channels": channels,
+        "sample_width_bytes": (
+            (profile or {}).get("sample_width_bytes", 2)
+            if container == "wav"
+            else None
+        ),
+        "container": container,
+        "codec": codec,
+        "bitrate_bps": bitrate_bps,
+        "generation": generation,
+        "generation_input_sha256": json_value_sha256(generation_input),
+        "generation_tool": generation_tool,
+        "command": command,
         "frames": frames,
         "bytes": args.output.stat().st_size,
         "sha256": sha256_file(args.output),
@@ -5085,6 +6887,7 @@ def command_check(args: argparse.Namespace) -> int:
         )
         validate_control_buffering(args.control, control, control_summaries[0])
         validate_control_time_pos_summary(args.control, control, control_summaries[0])
+        validate_control_extended_telemetry(args.control, control, control_summaries[0])
     print(json.dumps({"ok": True, "measured_samples": len(measured)}))
     return 0
 
@@ -5095,7 +6898,9 @@ class FixtureServer(http.server.ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], handler: type[http.server.BaseHTTPRequestHandler],
                  file: Path, throttle_bps: int, outage_every_bytes: int, outage_ms: int,
                  disconnect_every_bytes: int, request_log: Path, run_id: str,
-                 shutdown_token: str | None = None):
+                 shutdown_token: str | None = None, *, header_delay_ms: int = 0,
+                 range_response_delay_ms: int = 0, range_behavior: str = "normal",
+                 fault_profile: str = "none"):
         super().__init__(address, handler)
         self.fixture_file = file
         self.fixture_sha256 = sha256_file(file)
@@ -5110,6 +6915,10 @@ class FixtureServer(http.server.ThreadingHTTPServer):
         self.outage_every_bytes = outage_every_bytes
         self.outage_ms = outage_ms
         self.disconnect_every_bytes = disconnect_every_bytes
+        self.header_delay_ms = header_delay_ms
+        self.range_response_delay_ms = range_response_delay_ms
+        self.range_behavior = range_behavior
+        self.fault_profile = fault_profile
         self.transfer_lock = threading.Lock()
         self.log_lock = threading.Lock()
         self.request_counter = 0
@@ -5258,12 +7067,20 @@ class RangeFixtureHandler(http.server.BaseHTTPRequestHandler):
             return
         length = end - start + 1
         status = 206 if partial else 200
+        response_delay_ms = server.header_delay_ms + (
+            server.range_response_delay_ms if partial else 0
+        )
+        if response_delay_ms:
+            time.sleep(response_delay_ms / 1_000.0)
+        headers_sent_ns = time.monotonic_ns()
         server.log_request({
             "kind": "request_started", "request_id": request_id, "method": method,
             "path": path, "range_header": self.headers.get("Range"), "status": status,
             "planned_start": start, "planned_end": end, "bytes_planned": length,
             "server_socket_bytes_accepted": 0,
             "started_monotonic_ns": started_ns,
+            "response_delay_ms": response_delay_ms,
+            "headers_sent_monotonic_ns": headers_sent_ns,
             "finished_monotonic_ns": None, "terminal_reason": None,
             "outage_or_disconnect_action": None,
         })
@@ -5418,6 +7235,11 @@ def exact_cli_argument_values(command: list[str], flag: str) -> list[str]:
 def validate_fixture_server_manifest(
     path: Path, document: dict[str, Any], expected_run_id: str | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    serialized = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    if re.search(r"https?://", serialized, flags=re.IGNORECASE):
+        raise ValueError(f"{path}: URL must not be recorded in HTTP evidence")
+    if HTTP_SHUTDOWN_PATH in serialized:
+        raise ValueError(f"{path}: HTTP shutdown URL/path must not be recorded in evidence")
     require_artifact_value(path, "HTTP schema", document.get("schema"), "ytt.tui-perf.http.v1")
     run_id = document.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -5427,43 +7249,62 @@ def validate_fixture_server_manifest(
     pid = non_negative_integer(document.get("pid"), "HTTP server PID", path)
     if pid == 0:
         raise ValueError(f"{path}: HTTP server PID must be positive")
-    host = document.get("host")
-    if not isinstance(host, str):
-        raise ValueError(f"{path}: HTTP server host is malformed")
-    try:
-        host_address = ipaddress.ip_address(host)
-    except ValueError as error:
-        raise ValueError(f"{path}: HTTP server host is malformed") from error
-    if not host_address.is_loopback:
-        raise ValueError(f"{path}: HTTP shutdown endpoint is not loopback")
+    if any(field in document for field in ("host", "url")):
+        raise ValueError(f"{path}: HTTP origin/URL leaked into evidence")
+    require_artifact_value(
+        path,
+        "HTTP address family",
+        document.get("address_family"),
+        FIXTURE_ADDRESS_FAMILY,
+    )
+    require_artifact_value(
+        path, "HTTP URL recording policy", document.get("url_recorded"), False
+    )
     port = non_negative_integer(document.get("port"), "HTTP server port", path)
     if port <= 0 or port > 65535:
         raise ValueError(f"{path}: HTTP server port is outside 1..65535")
-    require_artifact_value(
-        path,
-        "HTTP fixture URL",
-        document.get("url"),
-        f"http://{host}:{port}/fixture.wav",
-    )
-
     shutdown = document.get("shutdown")
     if not isinstance(shutdown, dict):
         raise ValueError(f"{path}: authenticated HTTP shutdown identity is missing")
+    expected_shutdown_fields = {
+        "schema",
+        "method",
+        "run_id",
+        "token_sha256",
+        "secret_material_recorded",
+    }
+    if set(shutdown) != expected_shutdown_fields:
+        raise ValueError(f"{path}: authenticated HTTP shutdown evidence fields are malformed")
     require_artifact_value(path, "HTTP shutdown schema", shutdown.get("schema"), HTTP_SHUTDOWN_SCHEMA)
     require_artifact_value(path, "HTTP shutdown method", shutdown.get("method"), HTTP_SHUTDOWN_METHOD)
-    require_artifact_value(path, "HTTP shutdown path", shutdown.get("path"), HTTP_SHUTDOWN_PATH)
-    token = shutdown.get("token")
-    if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{43,128}", token) is None:
-        raise ValueError(f"{path}: HTTP shutdown token is malformed")
-    token_sha256 = hashlib.sha256(token.encode("ascii")).hexdigest()
+    if any(field in shutdown for field in ("token", "path", "url")):
+        raise ValueError(f"{path}: HTTP shutdown secret or endpoint leaked into evidence")
     require_artifact_value(
-        path, "HTTP shutdown token SHA-256", shutdown.get("token_sha256"), token_sha256
+        path,
+        "HTTP shutdown secret-material policy",
+        shutdown.get("secret_material_recorded"),
+        False,
     )
+    token_sha256 = shutdown.get("token_sha256")
+    if not isinstance(token_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", token_sha256) is None:
+        raise ValueError(f"{path}: HTTP shutdown token SHA-256 is malformed")
     require_artifact_value(path, "HTTP shutdown run_id binding", shutdown.get("run_id"), run_id)
 
     identity = document.get("server_process")
     if not isinstance(identity, dict):
         raise ValueError(f"{path}: exact HTTP server process identity is missing")
+    expected_identity_fields = {
+        "schema",
+        "pid",
+        "start_time_unix_s",
+        "native_start_token",
+        "executable",
+        "executable_bytes",
+        "executable_sha256",
+        "command",
+    }
+    if set(identity) != expected_identity_fields:
+        raise ValueError(f"{path}: exact HTTP server process evidence fields are malformed")
     require_artifact_value(
         path,
         "HTTP server process identity schema",
@@ -5492,23 +7333,36 @@ def validate_fixture_server_manifest(
         raise ValueError(f"{path}: exact HTTP server executable/argv identity is malformed")
     if exact_cli_argument_values(command, "--run-id") != [run_id]:
         raise ValueError(f"{path}: exact HTTP server argv does not bind its run_id")
-    if exact_cli_argument_values(command, "--shutdown-token") != [token]:
-        raise ValueError(f"{path}: exact HTTP server argv does not bind its shutdown token")
+    if exact_cli_argument_values(command, "--shutdown-token") != [
+        HTTP_SHUTDOWN_TOKEN_REDACTION
+    ]:
+        raise ValueError(f"{path}: HTTP server argv does not redact its shutdown token")
     if command.count("serve") != 1:
         raise ValueError(f"{path}: exact HTTP server argv does not bind the serve subcommand")
     return identity, shutdown
 
 
 def stop_fixture_server(
-    identity_path: Path, expected_run_id: str | None, timeout_secs: float
+    identity_path: Path,
+    expected_run_id: str | None,
+    shutdown_token: str,
+    timeout_secs: float,
 ) -> dict[str, Any]:
-    if os.name == "nt":
-        raise ValueError("exact fixture server shutdown CLI is Unix-only")
     if not math.isfinite(timeout_secs) or timeout_secs <= 0:
         raise ValueError("--timeout-secs must be finite and positive")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43,128}", shutdown_token) is None:
+        raise ValueError("--shutdown-token must be a 43..128 character URL-safe secret")
     document = load_json_object(identity_path)
+    if shutdown_token in json.dumps(document, sort_keys=True, separators=(",", ":")):
+        raise ValueError(f"{identity_path}: HTTP shutdown token leaked into evidence")
     identity, shutdown = validate_fixture_server_manifest(
         identity_path, document, expected_run_id
+    )
+    require_artifact_value(
+        identity_path,
+        "HTTP shutdown token SHA-256",
+        shutdown["token_sha256"],
+        hashlib.sha256(shutdown_token.encode("ascii")).hexdigest(),
     )
     observation = fixture_server_process_observation(int(identity["pid"]))
     if not fixture_server_identity_matches(identity, observation):
@@ -5522,15 +7376,17 @@ def stop_fixture_server(
     deadline = time.monotonic() + timeout_secs
     remaining = max(0.05, deadline - time.monotonic())
     connection = http.client.HTTPConnection(
-        str(document["host"]), int(document["port"]), timeout=min(2.0, remaining)
+        FIXTURE_LOOPBACK_HOST,
+        int(document["port"]),
+        timeout=min(2.0, remaining),
     )
     try:
         connection.request(
             "POST",
-            str(shutdown["path"]),
+            HTTP_SHUTDOWN_PATH,
             body=b"",
             headers={
-                "Authorization": f"Bearer {shutdown['token']}",
+                "Authorization": f"Bearer {shutdown_token}",
                 "Content-Length": "0",
                 "X-Ytt-Tui-Perf-Run-Id": str(document["run_id"]),
             },
@@ -5596,7 +7452,9 @@ def stop_fixture_server(
 
 
 def command_stop_server(args: argparse.Namespace) -> int:
-    result = stop_fixture_server(args.identity, args.expected_run_id, args.timeout_secs)
+    result = stop_fixture_server(
+        args.identity, args.expected_run_id, args.shutdown_token, args.timeout_secs
+    )
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -5608,9 +7466,24 @@ def command_serve(args: argparse.Namespace) -> int:
         raise ValueError("--run-id must not be empty")
     if re.fullmatch(r"[A-Za-z0-9_-]{43,128}", args.shutdown_token) is None:
         raise ValueError("--shutdown-token must be a 43..128 character URL-safe secret")
-    for name in ("throttle_bps", "outage_every_bytes", "outage_ms", "disconnect_every_bytes"):
+    if args.host != FIXTURE_LOOPBACK_HOST:
+        raise ValueError("--host must use the controlled IPv4 loopback address")
+    for name in (
+        "throttle_bps",
+        "maximum_source_rate_bps",
+        "outage_every_bytes",
+        "outage_ms",
+        "disconnect_every_bytes",
+        "header_delay_ms",
+        "range_response_delay_ms",
+    ):
         if getattr(args, name) < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
+    if args.maximum_source_rate_bps != args.throttle_bps:
+        raise ValueError(
+            "--maximum-source-rate-bps must exactly equal --throttle-bps; "
+            "an unenforced or mismatched source-rate bound is invalid"
+        )
     started_unix_ns = time.time_ns()
     started_monotonic_ns = time.monotonic_ns()
     server = FixtureServer(
@@ -5624,39 +7497,65 @@ def command_serve(args: argparse.Namespace) -> int:
         args.request_log,
         args.run_id,
         args.shutdown_token,
+        header_delay_ms=args.header_delay_ms,
+        range_response_delay_ms=args.range_response_delay_ms,
+        range_behavior=args.range_behavior,
+        fault_profile=args.fault_profile,
     )
     server.verbose = args.verbose  # type: ignore[attr-defined]
     host, port = server.server_address[:2]
+    if host != FIXTURE_LOOPBACK_HOST:
+        raise ValueError("fixture server did not bind the controlled IPv4 loopback address")
     server_process = fixture_server_process_observation(os.getpid())
     if server_process is None:
         raise ValueError("cannot capture the exact fixture server process identity")
+    server_command = server_process.get("command")
+    if not isinstance(server_command, list) or not all(
+        isinstance(item, str) for item in server_command
+    ):
+        raise ValueError("cannot capture the exact fixture server argv identity")
+    if exact_cli_argument_values(server_command, "--run-id") != [args.run_id]:
+        raise ValueError("exact fixture server argv does not bind its run_id")
+    if exact_cli_argument_values(server_command, "--shutdown-token") != [
+        args.shutdown_token
+    ]:
+        raise ValueError("exact fixture server argv does not bind its shutdown token")
+    if server_command.count("serve") != 1:
+        raise ValueError("exact fixture server argv does not bind the serve subcommand")
+    public_server_process = redact_fixture_server_process_observation(server_process)
     manifest = {
         "schema": "ytt.tui-perf.http.v1",
         "pid": os.getpid(),
-        "host": host,
         "port": port,
-        "url": f"http://{host}:{port}/fixture.wav",
+        "address_family": FIXTURE_ADDRESS_FAMILY,
+        "url_recorded": False,
         "fixture_sha256": sha256_file(args.file),
         "fixture_bytes": args.file.stat().st_size,
         "run_id": args.run_id,
         "server_process": {
             "schema": "ytt.tui-perf.http-process.v1",
-            **server_process,
+            **public_server_process,
         },
         "shutdown": {
             "schema": HTTP_SHUTDOWN_SCHEMA,
             "method": HTTP_SHUTDOWN_METHOD,
-            "path": HTTP_SHUTDOWN_PATH,
             "run_id": args.run_id,
-            "token": args.shutdown_token,
             "token_sha256": hashlib.sha256(
                 args.shutdown_token.encode("ascii")
             ).hexdigest(),
+            "secret_material_recorded": False,
         },
         "started_unix_ns": started_unix_ns,
         "started_monotonic_ns": started_monotonic_ns,
         "request_log": str(args.request_log.resolve()),
         "throttle_bps": args.throttle_bps,
+        "maximum_source_rate_bps": args.maximum_source_rate_bps,
+        "source_rate_bound_enforced": args.maximum_source_rate_bps > 0,
+        "source_rate_bound_enforcement": (
+            SOURCE_RATE_BOUND_ENFORCEMENT
+            if args.maximum_source_rate_bps > 0
+            else "unbounded"
+        ),
         "pacing_policy": "global_monotonic_next_byte_deadline_v1",
         "pacing_origin_monotonic_ns": server.pacing_origin_monotonic_ns,
         "pacing_initial_credit_bytes": 0,
@@ -5668,13 +7567,24 @@ def command_serve(args: argparse.Namespace) -> int:
         "outage_every_bytes": args.outage_every_bytes,
         "outage_ms": args.outage_ms,
         "disconnect_every_bytes": args.disconnect_every_bytes,
+        "header_delay_ms": args.header_delay_ms,
+        "range_response_delay_ms": args.range_response_delay_ms,
+        "range_behavior": args.range_behavior,
+        "fault_profile": args.fault_profile,
         "bind_is_loopback": ipaddress.ip_address(host).is_loopback,
         "playback_target_mode": "local_m3u_indirection",
         "external_dns_required": False,
     }
+    serialized_manifest = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    if (
+        args.shutdown_token in serialized_manifest
+        or HTTP_SHUTDOWN_PATH in serialized_manifest
+        or re.search(r"https?://", serialized_manifest, flags=re.IGNORECASE)
+    ):
+        raise ValueError("URL or HTTP shutdown material leaked into public evidence")
     if args.ready_file:
         atomic_json(args.ready_file, manifest)
-    print(json.dumps(manifest, sort_keys=True), flush=True)
+    print(serialized_manifest, flush=True)
     try:
         server.serve_forever(poll_interval=0.1)
     except KeyboardInterrupt:
@@ -5694,6 +7604,9 @@ def validate_http_request_log(
     if not records:
         raise ValueError(f"{path}: HTTP request log is empty")
     throttle_bps = non_negative_integer(profile.get("throttle_bps"), "throttle_bps", path)
+    maximum_source_rate_bps = non_negative_integer(
+        profile.get("maximum_source_rate_bps"), "maximum_source_rate_bps", path
+    )
     outage_every_bytes = non_negative_integer(
         profile.get("outage_every_bytes"), "outage_every_bytes", path
     )
@@ -5701,7 +7614,35 @@ def validate_http_request_log(
     disconnect_every_bytes = non_negative_integer(
         profile.get("disconnect_every_bytes"), "disconnect_every_bytes", path
     )
+    header_delay_ms = non_negative_integer(
+        profile.get("header_delay_ms", 0), "header_delay_ms", path
+    )
+    range_response_delay_ms = non_negative_integer(
+        profile.get("range_response_delay_ms", 0),
+        "range_response_delay_ms",
+        path,
+    )
+    range_behavior = profile.get("range_behavior", "normal")
+    fault_profile = profile.get("fault_profile", "none")
     require_artifact_value(path, "HTTP throttle", http.get("throttle_bps"), throttle_bps)
+    require_artifact_value(
+        path,
+        "HTTP maximum source rate",
+        http.get("maximum_source_rate_bps"),
+        maximum_source_rate_bps,
+    )
+    require_artifact_value(
+        path,
+        "HTTP source rate bound enforcement state",
+        http.get("source_rate_bound_enforced"),
+        maximum_source_rate_bps > 0,
+    )
+    require_artifact_value(
+        path,
+        "HTTP source rate bound enforcement",
+        http.get("source_rate_bound_enforcement"),
+        SOURCE_RATE_BOUND_ENFORCEMENT if maximum_source_rate_bps > 0 else "unbounded",
+    )
     require_artifact_value(
         path, "HTTP outage threshold", http.get("outage_every_bytes"), outage_every_bytes
     )
@@ -5711,6 +7652,24 @@ def validate_http_request_log(
         "HTTP disconnect threshold",
         http.get("disconnect_every_bytes"),
         disconnect_every_bytes,
+    )
+    require_artifact_value(
+        path,
+        "HTTP header delay",
+        http.get("header_delay_ms", 0),
+        header_delay_ms,
+    )
+    require_artifact_value(
+        path,
+        "HTTP Range response delay",
+        http.get("range_response_delay_ms", 0),
+        range_response_delay_ms,
+    )
+    require_artifact_value(
+        path, "HTTP Range behavior", http.get("range_behavior", "normal"), range_behavior
+    )
+    require_artifact_value(
+        path, "HTTP fault profile", http.get("fault_profile", "none"), fault_profile
     )
     require_artifact_value(
         path,
@@ -5820,6 +7779,31 @@ def validate_http_request_log(
                 record.get("server_socket_bytes_accepted"),
                 0,
             )
+            expected_response_delay_ms = header_delay_ms + (
+                range_response_delay_ms if status == 206 else 0
+            )
+            if expected_response_delay_ms or "response_delay_ms" in record:
+                require_artifact_value(
+                    path,
+                    f"request {request_id} response delay",
+                    record.get("response_delay_ms"),
+                    expected_response_delay_ms,
+                )
+                headers_sent_ns = non_negative_integer(
+                    record.get("headers_sent_monotonic_ns"),
+                    "HTTP headers sent time",
+                    path,
+                )
+                earliest_headers_ns = (
+                    started_ns + expected_response_delay_ms * 1_000_000
+                )
+                if (
+                    headers_sent_ns + HTTP_RESPONSE_DELAY_EARLY_TOLERANCE_NS
+                    < earliest_headers_ns
+                ):
+                    raise ValueError(
+                        f"{path}: request {request_id} headers precede its configured delay"
+                    )
             starts[request_id] = record
             request_delivered[request_id] = 0
             get_count += int(method == "GET")
@@ -6084,6 +8068,7 @@ def http_pacing_self_test() -> None:
     origin_ns = 10_000_000_000
     profile = {
         "throttle_bps": throttle_bps,
+        "maximum_source_rate_bps": throttle_bps,
         "outage_every_bytes": 0,
         "outage_ms": 0,
         "disconnect_every_bytes": 0,
@@ -6096,6 +8081,9 @@ def http_pacing_self_test() -> None:
         "fixture_bytes": fixture_bytes,
         "started_monotonic_ns": origin_ns - 1,
         "throttle_bps": throttle_bps,
+        "maximum_source_rate_bps": throttle_bps,
+        "source_rate_bound_enforced": True,
+        "source_rate_bound_enforcement": SOURCE_RATE_BOUND_ENFORCEMENT,
         "pacing_policy": "global_monotonic_next_byte_deadline_v1",
         "pacing_origin_monotonic_ns": origin_ns,
         "pacing_initial_credit_bytes": 0,
@@ -6321,6 +8309,7 @@ def http_pacing_self_test() -> None:
             return {
                 **http,
                 "throttle_bps": traffic_profile["throttle_bps"],
+                "maximum_source_rate_bps": traffic_profile["maximum_source_rate_bps"],
                 "outage_every_bytes": traffic_profile["outage_every_bytes"],
                 "outage_ms": traffic_profile["outage_ms"],
                 "disconnect_every_bytes": traffic_profile["disconnect_every_bytes"],
@@ -6356,8 +8345,15 @@ def http_pacing_self_test() -> None:
         tampered_credit = {**http, "pacing_initial_credit_bytes": fixture_bytes}
         expect_rejected("initial-credit", valid, tampered_credit)
 
+        tampered_source_bound = {
+            **http,
+            "maximum_source_rate_bps": throttle_bps + 1,
+        }
+        expect_rejected("source-rate-bound-mismatch", valid, tampered_source_bound)
+
         unexercised_fault_profile = {
             "throttle_bps": throttle_bps,
+            "maximum_source_rate_bps": throttle_bps,
             "outage_every_bytes": fixture_bytes * 2,
             "outage_ms": 1_500,
             "disconnect_every_bytes": fixture_bytes * 4,
@@ -6371,6 +8367,7 @@ def http_pacing_self_test() -> None:
 
         exercised_fault_profile = {
             "throttle_bps": throttle_bps,
+            "maximum_source_rate_bps": throttle_bps,
             "outage_every_bytes": fixture_bytes // 2,
             "outage_ms": 1_500,
             "disconnect_every_bytes": fixture_bytes,
@@ -6490,8 +8487,6 @@ def http_pacing_self_test() -> None:
 
 
 def http_server_shutdown_self_test() -> None:
-    if os.name == "nt":
-        return
     with tempfile.TemporaryDirectory(
         prefix="ytt-perf-http-shutdown-self-test-"
     ) as temporary:
@@ -6538,7 +8533,33 @@ def http_server_shutdown_self_test() -> None:
                 raise AssertionError("fixture shutdown self-test server did not become ready")
             manifest = load_json_object(ready)
             require_artifact_value(ready, "self-test server PID", manifest.get("pid"), process.pid)
-            stopped = stop_fixture_server(ready, run_id, 5.0)
+            serialized_ready = ready.read_text(encoding="utf-8")
+            if (
+                shutdown_token in serialized_ready
+                or HTTP_SHUTDOWN_PATH in serialized_ready
+                or re.search(r"https?://", serialized_ready, flags=re.IGNORECASE)
+            ):
+                raise AssertionError("fixture ready evidence leaked URL or shutdown material")
+            shutdown_evidence = manifest.get("shutdown")
+            if not isinstance(shutdown_evidence, dict) or any(
+                field in shutdown_evidence for field in ("token", "path", "url")
+            ):
+                raise AssertionError("fixture ready evidence retained shutdown material")
+            command = manifest.get("server_process", {}).get("command")
+            if not isinstance(command, list) or exact_cli_argument_values(
+                command, "--shutdown-token"
+            ) != [HTTP_SHUTDOWN_TOKEN_REDACTION]:
+                raise AssertionError("fixture ready evidence did not redact server argv")
+            wrong_token = "B" * 43
+            try:
+                stop_fixture_server(ready, run_id, wrong_token, 0.5)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("fixture shutdown accepted an out-of-band wrong token")
+            if process.poll() is not None:
+                raise AssertionError("wrong shutdown token stopped the fixture server")
+            stopped = stop_fixture_server(ready, run_id, shutdown_token, 5.0)
             if stopped["already_stopped"]:
                 raise AssertionError("live fixture server was reported as already stopped")
             process.wait(timeout=2)
@@ -6547,6 +8568,13 @@ def http_server_shutdown_self_test() -> None:
                     "fixture server failed during authenticated shutdown: "
                     f"{process.stderr.read()}"
                 )
+            server_stdout = process.stdout.read()
+            if (
+                shutdown_token in server_stdout
+                or HTTP_SHUTDOWN_PATH in server_stdout
+                or re.search(r"https?://", server_stdout, flags=re.IGNORECASE)
+            ):
+                raise AssertionError("fixture server stdout leaked URL or shutdown material")
 
             sentinel = subprocess.Popen(
                 [
@@ -6576,13 +8604,22 @@ def http_server_shutdown_self_test() -> None:
             sentinel_identity["native_start_token"] = stale_token
             stale_manifest = json.loads(json.dumps(manifest))
             stale_manifest["pid"] = sentinel.pid
+            if os.name == "nt":
+                sentinel_identity["command"] = manifest["server_process"]["command"]
+                public_sentinel_identity = sentinel_identity
+            else:
+                public_sentinel_identity = redact_fixture_server_process_observation(
+                    sentinel_identity
+                )
             stale_manifest["server_process"] = {
                 "schema": "ytt.tui-perf.http-process.v1",
-                **sentinel_identity,
+                **public_sentinel_identity,
             }
             stale_path = root / "stale-ready.json"
             atomic_json(stale_path, stale_manifest)
-            stale_result = stop_fixture_server(stale_path, run_id, 0.5)
+            stale_result = stop_fixture_server(
+                stale_path, run_id, shutdown_token, 0.5
+            )
             if not stale_result["already_stopped"]:
                 raise AssertionError("stale fixture server identity was treated as live")
             if sentinel.poll() is not None:
@@ -6768,6 +8805,21 @@ def metrics_from_file(path: Path) -> dict[str, Any]:
                     if isinstance(values, dict):
                         for name, value in values.items():
                             metrics[f"{role}.{name}"] = value
+            if record.get("kind") == "summary" and isinstance(
+                record.get("resource_telemetry"), dict
+            ):
+                resource_roles = record["resource_telemetry"].get("roles")
+                if isinstance(resource_roles, dict):
+                    for role, values in resource_roles.items():
+                        if isinstance(values, dict):
+                            for name, value in values.items():
+                                key = f"{role}.{name}"
+                                if key in metrics and metrics[key] != value:
+                                    raise ValueError(
+                                        f"{path}: resource metric {key!r} conflicts with "
+                                        "CPU/RSS summary"
+                                    )
+                                metrics[key] = value
             if record.get("kind") == "summary" and "buffering_events" in record:
                 metrics["buffering_events"] = record["buffering_events"]
                 metrics["buffering_ms"] = record["buffering_ms"]
@@ -6791,6 +8843,7 @@ def metrics_from_file(path: Path) -> dict[str, Any]:
             if len(points) >= 2:
                 metrics[f"{role}.rss_slope_bytes_per_s"] = linear_slope(points)
         operations: dict[str, list[float]] = {}
+        operation_generations: dict[str, dict[str, list[float]]] = {}
         for record in records:
             if record.get("kind") == "operation":
                 started_ns = record.get("operation_started_ns")
@@ -6803,11 +8856,31 @@ def metrics_from_file(path: Path) -> dict[str, Any]:
                     or completed_ns < started_ns
                 ):
                     raise ValueError(f"{path}: operation has invalid raw timestamps")
-                operations.setdefault(str(record.get("operation")), []).append(
-                    (completed_ns - started_ns) / 1_000_000.0
-                )
+                name = str(record.get("operation"))
+                latency_ms = (completed_ns - started_ns) / 1_000_000.0
+                operations.setdefault(name, []).append(latency_ms)
+                detail = record.get("detail")
+                generation = detail.get("file_generation") if isinstance(detail, dict) else None
+                if isinstance(generation, str) and generation:
+                    operation_generations.setdefault(name, {}).setdefault(
+                        generation, []
+                    ).append(latency_ms)
         for name, values in operations.items():
-            metrics[f"operation.{name}.p95_ms"] = quantile(values, 0.95)
+            generation_values = operation_generations.get(name)
+            if generation_values:
+                generation_p95 = {
+                    generation: quantile(latencies, 0.95)
+                    for generation, latencies in generation_values.items()
+                }
+                metrics[f"operation.{name}.p95_ms"] = quantile(
+                    list(generation_p95.values()), 0.95
+                )
+                metrics[f"operation.{name}.generation_count"] = len(generation_p95)
+                metrics[f"operation.{name}.observation_count"] = len(values)
+                for generation, value in generation_p95.items():
+                    metrics[f"operation.{name}.generation.{generation}.p95_ms"] = value
+            else:
+                metrics[f"operation.{name}.p95_ms"] = quantile(values, 0.95)
             metrics[f"operation.{name}.mean_ms"] = statistics.fmean(values)
         return metrics
 
@@ -6907,6 +8980,34 @@ def validate_host_manifest(
         manifest.get("limitations"),
         measurement_limitations(render),
     )
+    require_artifact_value(
+        path,
+        "source rate bound contract",
+        manifest.get("source_rate_bound"),
+        source_rate_bound_contract(scenario_document, scenario),
+    )
+    require_artifact_value(
+        path,
+        "statistical contract",
+        manifest.get("statistical_contract"),
+        scenario_document["statistical_contract"],
+    )
+    require_artifact_value(
+        path,
+        "A-I performance matrix",
+        manifest.get("performance_matrix"),
+        scenario_document["performance_matrix"],
+    )
+    expected_ship_matrix_ready = all(
+        family["ship_evidence_eligible"]
+        for family in scenario_document["performance_matrix"]["families"].values()
+    )
+    require_artifact_value(
+        path,
+        "ship matrix readiness",
+        manifest.get("ship_matrix_ready"),
+        expected_ship_matrix_ready,
+    )
     evidence_root = path.resolve().parent
     scenario_identity = manifest.get("scenario_file")
     if not isinstance(scenario_identity, dict):
@@ -6930,7 +9031,7 @@ def validate_host_manifest(
     expected_binaries = (
         {"baseline_render", "candidate_render"}
         if render
-        else {"baseline_ytt", "candidate_ytt", "sampler", "controller"}
+        else {"baseline_ytt", "candidate_ytt", "sampler", "controller", "conpty"}
     )
     binaries = manifest.get("binaries")
     binary_labels = set(binaries) if isinstance(binaries, dict) else set()
@@ -6949,6 +9050,37 @@ def validate_host_manifest(
         require_artifact_value(
             path, f"{label} SHA-256", sha256_file(binary), identity.get("sha256")
         )
+
+    mpv_selection = manifest.get("mpv_selection")
+    if scenario["requires_mpv"]:
+        if not isinstance(mpv_selection, dict):
+            raise ValueError(f"{path}: playback manifest has no mpv selection")
+        selection_identity = mpv_selection.get("manifest")
+        selection_document = mpv_selection.get("document")
+        if not isinstance(selection_identity, dict) or not isinstance(selection_document, dict):
+            raise ValueError(f"{path}: mpv selection evidence is malformed")
+        selection_path = (
+            evidence_root / str(selection_identity.get("path", ""))
+        ).resolve()
+        try:
+            selection_path.relative_to(evidence_root)
+        except ValueError as error:
+            raise ValueError(f"{path}: mpv selection snapshot escapes evidence root") from error
+        current_selection_identity = identity_for_file(selection_path)
+        for field in ("bytes", "sha256"):
+            require_artifact_value(
+                path,
+                f"mpv selection snapshot {field}",
+                selection_identity.get(field),
+                current_selection_identity[field],
+            )
+        copied_selection = load_json_object(selection_path)
+        require_artifact_value(
+            path, "embedded mpv selection", selection_document, copied_selection
+        )
+        validate_mpv_selection_document(copied_selection, selection_path)
+    else:
+        require_artifact_value(path, "non-playback mpv selection", mpv_selection, None)
 
     receipt_identity = manifest.get("build_receipt")
     if not isinstance(receipt_identity, dict):
@@ -7198,6 +9330,673 @@ def validate_control_time_pos_summary(
     return first[0], first[1], last[0], last[1]
 
 
+def validate_control_extended_telemetry(
+    path: Path,
+    records: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> None:
+    """Recompute additive mpv lifecycle/cache telemetry from the raw event stream."""
+    latest_properties: dict[str, Any] = {}
+    lifecycle_events: dict[str, int] = {}
+    peak_file_cache_bytes = 0
+    lifecycle_names = {
+        "start-file",
+        "file-loaded",
+        "playback-restart",
+        "end-file",
+        "idle",
+    }
+    for index, record in enumerate(records):
+        if record.get("kind") != "mpv_event":
+            continue
+        event = record.get("event")
+        if not isinstance(event, dict):
+            raise ValueError(f"{path}: mpv event {index} payload must be an object")
+        event_type = event.get("event")
+        if event_type in lifecycle_names:
+            lifecycle_events[event_type] = lifecycle_events.get(event_type, 0) + 1
+        if event_type != "property-change":
+            continue
+        name = event.get("name")
+        if not isinstance(name, str):
+            continue
+        value = event.get("data")
+        if name in {"cache-speed", "demuxer-cache-state"}:
+            query = event.get("harness_query")
+            if not isinstance(query, dict):
+                raise ValueError(
+                    f"{path}: {name} telemetry was continuously observed instead of queried"
+                )
+            if query.get("full_state_recorded") is not False:
+                raise ValueError(f"{path}: cache query recorded a full state payload")
+            sequence = non_negative_integer(
+                query.get("sequence"), "cache query sequence", path
+            )
+            if sequence == 0:
+                raise ValueError(f"{path}: cache query sequence must be positive")
+            query_kind = query.get("kind")
+            allowed_query_kinds = (
+                {"pre_seek_snapshot", "periodic_rate_poll"}
+                if name == "cache-speed"
+                else {"pre_seek_snapshot", "active_cache_poll"}
+            )
+            if query_kind not in allowed_query_kinds:
+                raise ValueError(
+                    f"{path}: {name} telemetry has invalid query kind {query_kind!r}"
+                )
+        latest_properties[name] = value
+        if name == "demuxer-cache-state" and isinstance(value, dict):
+            if set(value) not in (
+                {"file-cache-bytes"},
+                {"file-cache-bytes", "raw-input-rate"},
+            ):
+                raise ValueError(
+                    f"{path}: demuxer-cache-state evidence is not a narrow member projection"
+                )
+            file_cache_bytes = value.get("file-cache-bytes")
+            if (
+                isinstance(file_cache_bytes, int)
+                and not isinstance(file_cache_bytes, bool)
+                and 0 <= file_cache_bytes < 1 << 64
+            ):
+                peak_file_cache_bytes = max(
+                    peak_file_cache_bytes, file_cache_bytes
+                )
+
+    require_artifact_value(
+        path,
+        "recomputed latest properties",
+        summary.get("latest_properties"),
+        latest_properties,
+    )
+    require_artifact_value(
+        path,
+        "recomputed lifecycle events",
+        summary.get("lifecycle_events"),
+        lifecycle_events,
+    )
+    require_artifact_value(
+        path,
+        "recomputed peak file-cache bytes",
+        summary.get("peak_file_cache_bytes"),
+        peak_file_cache_bytes,
+    )
+
+
+def control_extended_telemetry_self_test() -> None:
+    path = Path("<control-extended-telemetry-self-test>")
+    records = [
+        {
+            "kind": "mpv_event",
+            "event": {
+                "event": "property-change",
+                "name": "demuxer-cache-state",
+                "data": {"raw-input-rate": 4_096, "file-cache-bytes": 12_345},
+                "harness_query": {
+                    "kind": "active_cache_poll",
+                    "sequence": 1,
+                    "full_state_recorded": False,
+                },
+            },
+        },
+        {
+            "kind": "mpv_event",
+            "event": {
+                "event": "property-change",
+                "name": "file-cache-bytes",
+                "data": 99_999,
+            },
+        },
+    ]
+    summary = {
+        "latest_properties": {
+            "demuxer-cache-state": {
+                "raw-input-rate": 4_096,
+                "file-cache-bytes": 12_345,
+            },
+            "file-cache-bytes": 99_999,
+        },
+        "lifecycle_events": {},
+        "peak_file_cache_bytes": 12_345,
+    }
+    validate_control_extended_telemetry(path, records, summary)
+    tampered = dict(summary)
+    tampered["peak_file_cache_bytes"] = 99_999
+    try:
+        validate_control_extended_telemetry(path, records, tampered)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("standalone file-cache-bytes telemetry was accepted")
+
+
+def production_rate_value(value: Any) -> int | None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+        or float(value) > (1 << 64) - 1
+    ):
+        return None
+    return int(math.floor(float(value) + 0.5))
+
+
+def proven_rate_at(samples: list[tuple[int, int]], cutoff_ns: int) -> int | None:
+    eligible = [sample for sample in samples if sample[0] <= cutoff_ns][
+        -RATE_SAMPLE_CAPACITY:
+    ]
+    if (
+        len(eligible) < RATE_PROOF_MIN_SAMPLES
+        or eligible[-1][0] - eligible[0][0] < RATE_PROOF_MIN_SPAN_NS
+    ):
+        return None
+    return max(value for _elapsed_ns, value in eligible)
+
+
+def peak_http_delivery_rate(records: list[dict[str, Any]], path: Path) -> int | None:
+    deliveries: list[tuple[int, int]] = []
+    for record in records:
+        if record.get("kind") != "delivery":
+            continue
+        finished_ns = non_negative_integer(
+            record.get("write_finished_monotonic_ns"),
+            "HTTP delivery write finish",
+            path,
+        )
+        delivered = non_negative_integer(
+            record.get("server_socket_bytes_accepted"),
+            "HTTP delivered bytes",
+            path,
+        )
+        if delivered:
+            deliveries.append((finished_ns, delivered))
+    if len(deliveries) < 2:
+        return None
+    deliveries.sort()
+    if any(
+        right[0] < left[0] for left, right in zip(deliveries, deliveries[1:])
+    ):
+        raise ValueError(f"{path}: HTTP delivery timestamps are not monotonic")
+    first_ns = deliveries[0][0]
+    window: collections.deque[tuple[int, int]] = collections.deque()
+    window_bytes = 0
+    peak = 0
+    for finished_ns, delivered in deliveries:
+        window.append((finished_ns, delivered))
+        window_bytes += delivered
+        cutoff = finished_ns - HTTP_RATE_WINDOW_NS
+        while window and window[0][0] <= cutoff:
+            _expired_at, expired_bytes = window.popleft()
+            window_bytes -= expired_bytes
+        if finished_ns - first_ns >= HTTP_RATE_WINDOW_NS:
+            peak = max(peak, window_bytes)
+    return peak or None
+
+
+def rate_factor_evidence(
+    control_records: list[dict[str, Any]],
+    http_records: list[dict[str, Any]],
+    http_manifest: dict[str, Any],
+    fixture_profile: dict[str, Any],
+    path: Path,
+) -> dict[str, Any]:
+    cache_speed: list[tuple[int, int]] = []
+    raw_input_rate: list[tuple[int, int]] = []
+    file_delta_rate: list[tuple[int, int]] = []
+    last_file_sample: tuple[int, int] | None = None
+    last_relevant_elapsed_ns: int | None = None
+    for record in control_records:
+        if record.get("kind") != "mpv_event":
+            continue
+        event = record.get("event")
+        if (
+            not isinstance(event, dict)
+            or event.get("event") != "property-change"
+        ):
+            continue
+        name = event.get("name")
+        if name not in {"cache-speed", "demuxer-cache-state"}:
+            continue
+        elapsed_ns = non_negative_integer(
+            record.get("elapsed_ns"), "rate telemetry elapsed_ns", path
+        )
+        if (
+            last_relevant_elapsed_ns is not None
+            and elapsed_ns < last_relevant_elapsed_ns
+        ):
+            raise ValueError(f"{path}: rate telemetry timestamps are not monotonic")
+        last_relevant_elapsed_ns = elapsed_ns
+        data = event.get("data")
+        if name == "cache-speed":
+            rate = production_rate_value(data)
+            if rate is not None:
+                cache_speed.append((elapsed_ns, rate))
+            continue
+        if not isinstance(data, dict):
+            continue
+        raw_rate = production_rate_value(data.get("raw-input-rate"))
+        if raw_rate is not None:
+            raw_input_rate.append((elapsed_ns, raw_rate))
+        file_bytes = data.get("file-cache-bytes")
+        if (
+            not isinstance(file_bytes, int)
+            or isinstance(file_bytes, bool)
+            or not 0 <= file_bytes < 1 << 64
+        ):
+            continue
+        if last_file_sample is not None:
+            previous_ns, previous_bytes = last_file_sample
+            if elapsed_ns == previous_ns and file_bytes > previous_bytes:
+                raise ValueError(f"{path}: positive file-cache delta has zero duration")
+            if elapsed_ns > previous_ns and file_bytes > previous_bytes:
+                delta_rate = math.ceil(
+                    (file_bytes - previous_bytes)
+                    * 1_000_000_000
+                    / (elapsed_ns - previous_ns)
+                )
+                file_delta_rate.append((elapsed_ns, delta_rate))
+        last_file_sample = (elapsed_ns, file_bytes)
+
+    cache_admission_ns = next(
+        (
+            elapsed_ns
+            for elapsed_ns, _value in cache_speed
+            if proven_rate_at(cache_speed, elapsed_ns) is not None
+        ),
+        None,
+    )
+    final_ns = max(
+        (
+            elapsed_ns
+            for samples in (cache_speed, raw_input_rate, file_delta_rate)
+            for elapsed_ns, _value in samples
+        ),
+        default=0,
+    )
+    cache_proven = proven_rate_at(cache_speed, final_ns)
+    file_proven = proven_rate_at(file_delta_rate, final_ns)
+    raw_proven = proven_rate_at(raw_input_rate, final_ns)
+    factor_bound = (
+        cache_proven * RATE_SAFETY_FACTOR if cache_proven is not None else None
+    )
+    later_references: list[dict[str, Any]] = []
+    if cache_admission_ns is not None:
+        for source, samples in (
+            ("positive_file_cache_delta", file_delta_rate),
+            ("nested_raw_input_rate", raw_input_rate),
+        ):
+            for elapsed_ns, value in samples:
+                if elapsed_ns < cache_admission_ns:
+                    continue
+                local_cache_rate = proven_rate_at(cache_speed, elapsed_ns)
+                local_bound = (
+                    local_cache_rate * RATE_SAFETY_FACTOR
+                    if local_cache_rate is not None
+                    else None
+                )
+                later_references.append(
+                    {
+                        "source": source,
+                        "elapsed_ns": elapsed_ns,
+                        "observed_bytes_per_sec": value,
+                        "cache_speed_factor_bound_bytes_per_sec": local_bound,
+                        "covered": local_bound is not None and local_bound >= value,
+                    }
+                )
+
+    http_peak = peak_http_delivery_rate(http_records, path)
+    if http_peak is not None:
+        later_references.append(
+            {
+                "source": "loopback_server_one_second_delivery_window",
+                "elapsed_ns": None,
+                "observed_bytes_per_sec": http_peak,
+                "cache_speed_factor_bound_bytes_per_sec": factor_bound,
+                "covered": factor_bound is not None and factor_bound >= http_peak,
+            }
+        )
+    observed_reference_max = max(
+        (item["observed_bytes_per_sec"] for item in later_references), default=None
+    )
+    fixture_bound = non_negative_integer(
+        http_manifest.get("maximum_source_rate_bps"),
+        "fixture maximum source rate",
+        path,
+    )
+    shadow_candidates = [
+        value
+        for value in (
+            file_proven,
+            factor_bound,
+            raw_proven * RATE_SAFETY_FACTOR if raw_proven is not None else None,
+        )
+        if value is not None
+    ]
+    shadow_bound = max(shadow_candidates, default=None)
+    conservative_bound = max(
+        [fixture_bound, *shadow_candidates]
+        if fixture_bound > 0
+        else shadow_candidates,
+        default=None,
+    )
+    reasons: list[str] = []
+    if cache_admission_ns is None:
+        reasons.append("cache-speed lacks three positive samples spanning one second")
+    if not later_references:
+        reasons.append("no post-admission file/raw or one-second HTTP rate reference")
+    uncovered = [item["source"] for item in later_references if not item["covered"]]
+    if uncovered:
+        reasons.append(f"2x cache-speed did not cover: {sorted(set(uncovered))}")
+    supported = cache_admission_ns is not None and bool(later_references)
+    passed = supported and not uncovered
+    compressed = str(fixture_profile.get("container")) in {"m4a", "webm"}
+    ship_reasons = []
+    if not compressed:
+        ship_reasons.append("compressed fixture profile was not executed")
+    ship_reasons.append(
+        "controller elapsed time and HTTP monotonic time lack an exact cross-process correlation"
+    )
+    return {
+        "schema": "ytt.tui-perf.rate-factor.v1",
+        "algorithm": "production_rate_evidence_shadow_v1",
+        "factor": RATE_SAFETY_FACTOR,
+        "factor_provenance": (
+            "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
+        ),
+        "sample_contract": {
+            "capacity": RATE_SAMPLE_CAPACITY,
+            "minimum_positive_samples": RATE_PROOF_MIN_SAMPLES,
+            "minimum_span_ns": RATE_PROOF_MIN_SPAN_NS,
+        },
+        "cache_speed_samples": len(cache_speed),
+        "cache_speed_admission_elapsed_ns": cache_admission_ns,
+        "cache_speed_proven_bytes_per_sec": cache_proven,
+        "cache_speed_factor_bound_bytes_per_sec": factor_bound,
+        "file_delta_proven_bytes_per_sec": file_proven,
+        "raw_input_rate_proven_bytes_per_sec": raw_proven,
+        "http_delivery_peak_bytes_per_sec": http_peak,
+        "fixture_enforced_max_bytes_per_sec": fixture_bound or None,
+        "fixture_bound_is_separate_from_factor_proof": True,
+        "shadow_bound_without_fixture_bytes_per_sec": shadow_bound,
+        "production_conservative_bound_bytes_per_sec": conservative_bound,
+        "observed_reference_max_bytes_per_sec": observed_reference_max,
+        "post_admission_references": later_references,
+        "supported": supported,
+        "pass": passed,
+        "reasons": reasons,
+        "ship_evidence_eligible": False,
+        "ship_evidence_reasons": ship_reasons,
+    }
+
+
+def rate_factor_evidence_self_test() -> None:
+    path = Path("<rate-factor-self-test>")
+
+    def property_record(elapsed_ns: int, name: str, data: Any) -> dict[str, Any]:
+        return {
+            "kind": "mpv_event",
+            "elapsed_ns": elapsed_ns,
+            "event": {"event": "property-change", "name": name, "data": data},
+        }
+
+    control: list[dict[str, Any]] = []
+    for elapsed_ns, cache_rate, file_bytes in (
+        (0, 20_000, 0),
+        (500_000_000, 21_000, 10_000),
+        (1_000_000_000, 19_000, 21_000),
+        (1_500_000_000, 20_000, 33_000),
+    ):
+        control.append(property_record(elapsed_ns, "cache-speed", cache_rate))
+        control.append(
+            property_record(
+                elapsed_ns,
+                "demuxer-cache-state",
+                {"file-cache-bytes": file_bytes, "raw-input-rate": 24_000},
+            )
+        )
+    http_records = [
+        {
+            "kind": "delivery",
+            "write_finished_monotonic_ns": index * 100_000_000,
+            "server_socket_bytes_accepted": 2_000,
+        }
+        for index in range(12)
+    ]
+    manifest = {"maximum_source_rate_bps": 24_000}
+    fixture_profile = {"container": "wav"}
+    evidence = rate_factor_evidence(
+        control, http_records, manifest, fixture_profile, path
+    )
+    assert evidence["factor"] == 2
+    assert evidence["cache_speed_admission_elapsed_ns"] == 1_000_000_000
+    assert evidence["cache_speed_factor_bound_bytes_per_sec"] == 42_000
+    assert evidence["pass"] is True
+    assert evidence["ship_evidence_eligible"] is False
+    weak = json.loads(json.dumps(control))
+    for record in weak:
+        if record["event"]["name"] == "cache-speed":
+            record["event"]["data"] = 5_000
+    assert rate_factor_evidence(
+        weak, http_records, manifest, fixture_profile, path
+    )["pass"] is False
+    production = (
+        Path(__file__).resolve().parent.parent / "src" / "player" / "long_form_seek.rs"
+    ).read_text(encoding="utf-8")
+    assert "const CACHE_SPEED_SAFETY_FACTOR: u64 = 2;" in production
+
+
+def validate_cache_mode_evidence(
+    path: Path,
+    records: list[dict[str, Any]],
+    summary: dict[str, Any],
+    scenario: dict[str, Any],
+    role: str,
+) -> None:
+    roles = scenario.get("cache_mode_roles")
+    if not isinstance(roles, dict):
+        return
+    requested = roles[role]
+    cache_events: list[tuple[int, bool]] = []
+    for record in records:
+        if record.get("kind") != "mpv_event":
+            continue
+        event = record.get("event")
+        if not isinstance(event, dict):
+            continue
+        if (
+            event.get("event") == "property-change"
+            and event.get("name") == "cache-on-disk"
+            and isinstance(event.get("data"), bool)
+        ):
+            cache_events.append(
+                (
+                    non_negative_integer(
+                        record.get("elapsed_ns"), "cache-on-disk event elapsed_ns", path
+                    ),
+                    event["data"],
+                )
+            )
+    if not cache_events:
+        raise ValueError(
+            f"{path}: {role} {requested} mode has no boolean cache-on-disk evidence"
+        )
+    activation_times = [
+        elapsed_ns
+        for index, (elapsed_ns, value) in enumerate(cache_events)
+        if value and (index == 0 or not cache_events[index - 1][1])
+    ]
+    activations = len(activation_times)
+    latest_cache_on_disk = cache_events[-1][1]
+    peak_file_cache_bytes = non_negative_integer(
+        summary.get("peak_file_cache_bytes"), "peak_file_cache_bytes", path
+    )
+    effective = (
+        "disk_active"
+        if activation_times and latest_cache_on_disk and peak_file_cache_bytes > 0
+        else "ram_only"
+    )
+    expected_effective = (
+        scenario["expected_cache_effective"] if role == "candidate" else "ram_only"
+    )
+    expected_activations = (
+        scenario["expected_activation_count"] if role == "candidate" else 0
+    )
+    require_artifact_value(
+        path, f"{role} effective cache mode", effective, expected_effective
+    )
+    require_artifact_value(
+        path, f"{role} cache activation count", activations, expected_activations
+    )
+
+    operations = [
+        record for record in records if record.get("kind") == "operation"
+    ]
+    cold_indexes = [
+        index
+        for index, operation in enumerate(operations)
+        if operation.get("operation") == "cold_seek"
+    ]
+    if not cold_indexes:
+        raise ValueError(f"{path}: cache mode evidence requires at least one cold_seek")
+    first_cold_by_generation: list[tuple[str, int, int]] = []
+    seen_generations: set[str] = set()
+    recovery_start_by_generation: dict[str, int] = {}
+    summary_elapsed_ns = non_negative_integer(
+        summary.get("elapsed_ns"), "summary elapsed_ns", path
+    )
+    for operation_index, operation in enumerate(operations):
+        detail = operation.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        generation = detail.get("file_generation")
+        if not isinstance(generation, str) or not generation:
+            continue
+        if operation.get("operation") == "recovery":
+            recovery_start_by_generation[generation] = non_negative_integer(
+                operation.get("operation_started_ns"),
+                "recovery operation start",
+                path,
+            )
+        if operation.get("operation") != "cold_seek" or generation in seen_generations:
+            continue
+        seen_generations.add(generation)
+        started_ns = non_negative_integer(
+            operation.get("operation_started_ns"),
+            "cold seek operation start",
+            path,
+        )
+        next_started_ns = (
+            non_negative_integer(
+                operations[operation_index + 1].get("operation_started_ns"),
+                "post-cold operation start",
+                path,
+            )
+            if operation_index + 1 < len(operations)
+            else summary_elapsed_ns
+        )
+        first_cold_by_generation.append((generation, started_ns, next_started_ns))
+    if requested == "off":
+        derived_reason = "requested_off"
+    elif requested == "on":
+        if len(activation_times) != len(first_cold_by_generation):
+            raise ValueError(f"{path}: On activation is not proven for every generation")
+        for index, (activation_ns, (generation, cold_started_ns, _next_ns)) in enumerate(
+            zip(activation_times, first_cold_by_generation)
+        ):
+            lower_ns = (
+                0
+                if index == 0
+                else recovery_start_by_generation.get(generation, cold_started_ns)
+            )
+            if not lower_ns <= activation_ns < cold_started_ns:
+                raise ValueError(
+                    f"{path}: On activation for {generation} was not proven after load "
+                    "and before its first cold seek"
+                )
+        derived_reason = "on_eligible_media"
+    else:
+        if len(activation_times) != len(first_cold_by_generation):
+            raise ValueError(f"{path}: Auto activation is not proven for every generation")
+        for activation_ns, (generation, cold_started_ns, next_started_ns) in zip(
+            activation_times, first_cold_by_generation
+        ):
+            if not cold_started_ns <= activation_ns < next_started_ns:
+                raise ValueError(
+                    f"{path}: Auto activation for {generation} was not causally bounded "
+                    "to its first cold seek"
+                )
+        derived_reason = "auto_uncached_seek"
+    expected_reason = (
+        scenario["expected_activation_reason"]
+        if role == "candidate"
+        else "requested_off"
+    )
+    require_artifact_value(
+        path, f"{role} activation reason", derived_reason, expected_reason
+    )
+    if role == "candidate":
+        runtime_status = summary.get("long_form_seek_status")
+        if not isinstance(runtime_status, dict):
+            raise ValueError(
+                f"{path}: candidate summary has no long-form seek runtime status"
+            )
+        raw_status_records = [
+            record
+            for record in records
+            if record.get("kind") == "remote_settings_snapshot"
+        ]
+        if len(raw_status_records) != 1:
+            raise ValueError(
+                f"{path}: candidate must contain exactly one raw settings snapshot"
+            )
+        require_artifact_value(
+            path,
+            "candidate raw long-form seek status",
+            raw_status_records[0].get("long_form_seek_status"),
+            runtime_status,
+        )
+        require_artifact_value(
+            path,
+            "candidate long-form seek capability",
+            runtime_status.get("capability_advertised"),
+            True,
+        )
+        require_artifact_value(
+            path,
+            "candidate long-form seek runtime availability",
+            runtime_status.get("available"),
+            True,
+        )
+        require_artifact_value(
+            path,
+            "candidate requested long-form seek mode",
+            runtime_status.get("requested"),
+            requested,
+        )
+        require_artifact_value(
+            path,
+            "candidate effective long-form seek mode",
+            runtime_status.get("effective"),
+            expected_effective,
+        )
+        require_artifact_value(
+            path,
+            "candidate actual activation reason",
+            runtime_status.get("reason"),
+            expected_reason,
+        )
+    latest = summary.get("latest_properties")
+    if not isinstance(latest, dict):
+        raise ValueError(f"{path}: latest_properties must be an object")
+    require_artifact_value(
+        path,
+        "latest cache-on-disk property",
+        latest.get("cache-on-disk"),
+        latest_cache_on_disk,
+    )
+
+
 def validate_steady_playback_progress(
     path: Path,
     records: list[dict[str, Any]],
@@ -7373,7 +10172,44 @@ def validate_control_operations(
                 record.get("completion_event_type"),
                 "playback-restart",
             )
-        elif operation_name == "seek":
+        elif operation_name == "recovery":
+            require_artifact_value(
+                path,
+                f"operation {index} recovery completion",
+                record.get("completion_event_type"),
+                "playback-restart",
+            )
+            require_artifact_value(
+                path,
+                f"operation {index} recovery action kind",
+                detail.get("action_kind"),
+                "recovery",
+            )
+            generation = detail.get("file_generation")
+            if not isinstance(generation, str) or not generation:
+                raise ValueError(f"{path}: recovery has no new file-generation tag")
+            lifecycle = [
+                event_record["event"].get("event")
+                for event_record in records[:stream_index]
+                if event_record.get("kind") == "mpv_event"
+                and isinstance(event_record.get("event"), dict)
+                and started_ns
+                <= non_negative_integer(
+                    event_record.get("elapsed_ns"),
+                    "recovery lifecycle elapsed_ns",
+                    path,
+                )
+                <= completed_ns
+                and event_record["event"].get("event")
+                in {"start-file", "file-loaded"}
+            ]
+            require_artifact_value(
+                path,
+                f"operation {index} recovery lifecycle",
+                lifecycle,
+                ["start-file", "file-loaded"],
+            )
+        elif operation_name in {"seek", "cold_seek", "warm_seek", "seek_burst"}:
             require_artifact_value(
                 path,
                 f"operation {index} seek property",
@@ -7383,9 +10219,168 @@ def validate_control_operations(
             target = finite_non_negative_number(
                 detail.get("target_s"), "seek target", path
             )
-            actual_seek_targets_ms.append(
-                normalized_seek_target_ms(target, "seek target", path)
-            )
+            if operation_name == "seek_burst":
+                targets = detail.get("targets_s")
+                if not isinstance(targets, list) or len(targets) < 2:
+                    raise ValueError(f"{path}: seek burst has no submitted target list")
+                actual_seek_targets_ms.extend(
+                    normalized_seek_target_ms(value, "seek burst target", path)
+                    for value in targets
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst final target",
+                    normalized_seek_target_ms(target, "seek target", path),
+                    normalized_seek_target_ms(targets[-1], "seek burst final target", path),
+                )
+                if detail.get("submitted_without_intermediate_wait") is not True:
+                    raise ValueError(f"{path}: seek burst did not prove no-wait submission")
+                window_ms = non_negative_integer(
+                    detail.get("window_ms"), "seek burst window", path
+                )
+                if window_ms <= 0:
+                    raise ValueError(f"{path}: seek burst window must be positive")
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst transport",
+                    detail.get("transport_kind"),
+                    "ordered_remote_session_v8",
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst dispatch scope",
+                    detail.get("dispatch_scope"),
+                    "client_session_write",
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst reply order",
+                    detail.get("reply_order_proven"),
+                    True,
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} owner reply semantics",
+                    detail.get("owner_reply_semantics"),
+                    "owner_command_response_not_wire_dispatch",
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} owner reply ship evidence",
+                    detail.get("owner_reply_window_ship_evidence"),
+                    False,
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst schedule",
+                    detail.get("schedule_kind"),
+                    "absolute_monotonic_deadlines_v1",
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst latency anchor",
+                    detail.get("latency_anchor"),
+                    "final_target_dispatch",
+                )
+                burst_started_ns = non_negative_integer(
+                    detail.get("burst_started_elapsed_ns"),
+                    "seek burst start",
+                    path,
+                )
+                dispatch_window_ns = non_negative_integer(
+                    detail.get("actual_dispatch_window_ns"),
+                    "seek burst actual dispatch window",
+                    path,
+                )
+                max_lateness_ns = non_negative_integer(
+                    detail.get("max_schedule_lateness_ns"),
+                    "seek burst maximum schedule lateness",
+                    path,
+                )
+                final_dispatched_ns = non_negative_integer(
+                    detail.get("final_target_dispatched_elapsed_ns"),
+                    "seek burst final dispatch",
+                    path,
+                )
+                final_write_completed_ns = non_negative_integer(
+                    detail.get("final_target_write_completed_elapsed_ns"),
+                    "seek burst final write completion",
+                    path,
+                )
+                final_admitted_ns = non_negative_integer(
+                    detail.get("final_target_admitted_elapsed_ns"),
+                    "seek burst final admission",
+                    path,
+                )
+                first_owner_reply_ns = non_negative_integer(
+                    detail.get("first_owner_reply_elapsed_ns"),
+                    "seek burst first owner reply",
+                    path,
+                )
+                owner_reply_window_ns = non_negative_integer(
+                    detail.get("owner_reply_window_ns"),
+                    "seek burst owner reply window",
+                    path,
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst operation anchor",
+                    final_dispatched_ns,
+                    started_ns,
+                )
+                require_artifact_value(
+                    path,
+                    f"operation {index} burst dispatch window",
+                    final_dispatched_ns - burst_started_ns,
+                    dispatch_window_ns,
+                )
+                if not (
+                    burst_started_ns
+                    <= final_dispatched_ns
+                    <= final_write_completed_ns
+                    <= first_owner_reply_ns
+                    <= final_admitted_ns
+                ):
+                    raise ValueError(
+                        f"{path}: seek burst dispatch/write/admission order is invalid"
+                    )
+                require_artifact_value(
+                    path,
+                    f"operation {index} owner reply window",
+                    final_admitted_ns - first_owner_reply_ns,
+                    owner_reply_window_ns,
+                )
+                declared_window_ns = window_ms * 1_000_000
+                if not (
+                    declared_window_ns
+                    <= dispatch_window_ns
+                    <= declared_window_ns
+                    + CONTROL_ACTION_SCHEDULE_LATE_TOLERANCE_NS
+                ):
+                    raise ValueError(
+                        f"{path}: seek burst dispatch window {dispatch_window_ns}ns is "
+                        f"outside {declared_window_ns}.."
+                        f"{declared_window_ns + CONTROL_ACTION_SCHEDULE_LATE_TOLERANCE_NS}ns"
+                    )
+                if max_lateness_ns > CONTROL_ACTION_SCHEDULE_LATE_TOLERANCE_NS:
+                    raise ValueError(
+                        f"{path}: seek burst maximum schedule lateness "
+                        f"{max_lateness_ns}ns exceeds the controller tolerance"
+                    )
+            else:
+                actual_seek_targets_ms.append(
+                    normalized_seek_target_ms(target, "seek target", path)
+                )
+            if operation_name != "seek":
+                generation = detail.get("file_generation")
+                if not isinstance(generation, str) or not generation:
+                    raise ValueError(f"{path}: typed seek has no file-generation tag")
+                require_artifact_value(
+                    path,
+                    f"operation {index} action kind",
+                    detail.get("action_kind"),
+                    operation_name,
+                )
             observed = finite_non_negative_number(
                 detail.get("observed_target_s"), "seek observed target", path
             )
@@ -7511,7 +10506,11 @@ def validate_control_operations(
     if expected_load_operation is None:
         raise ValueError(f"{path}: controller load policy is invalid")
     expected_operations = [expected_load_operation]
-    expected_operations.extend("seek" for _ in scenario.get("seeks_s", []))
+    typed_actions = scenario.get("actions")
+    if isinstance(typed_actions, list) and typed_actions:
+        expected_operations.extend(str(action["kind"]) for action in typed_actions)
+    else:
+        expected_operations.extend("seek" for _ in scenario.get("seeks_s", []))
     if scenario["pause_policy"] == "pause-resume":
         expected_operations.extend(("pause", "resume"))
     operations = [name for _started, _completed, name, _detail in operation_windows]
@@ -7519,10 +10518,27 @@ def validate_control_operations(
         path, "exact controller operation order", operations, expected_operations
     )
 
-    expected_seek_targets_ms = [
-        normalized_seek_target_ms(value, "scenario seek target", path)
-        for value in scenario.get("seeks_s", [])
-    ]
+    expected_seek_targets_ms: list[int] = []
+    if isinstance(typed_actions, list) and typed_actions:
+        for action in typed_actions:
+            if action["kind"] in {"cold_seek", "warm_seek"}:
+                expected_seek_targets_ms.append(
+                    normalized_seek_target_ms(
+                        action["target_s"], "scenario typed seek target", path
+                    )
+                )
+            elif action["kind"] == "seek_burst":
+                expected_seek_targets_ms.extend(
+                    normalized_seek_target_ms(
+                        target, "scenario seek burst target", path
+                    )
+                    for target in action["targets_s"]
+                )
+    else:
+        expected_seek_targets_ms.extend(
+            normalized_seek_target_ms(value, "scenario seek target", path)
+            for value in scenario.get("seeks_s", [])
+        )
     require_artifact_value(
         path,
         "normalized controller seek targets",
@@ -7536,7 +10552,8 @@ def validate_control_operations(
         scenario.get("sample_s"), "scenario sample_s", path
     )
     observation_ns = int(observation_s * 1_000_000_000)
-    scheduled_action_count = len(expected_seek_targets_ms) + int(
+    seek_operation_count = len(typed_actions) if isinstance(typed_actions, list) else len(expected_seek_targets_ms)
+    scheduled_action_count = seek_operation_count + int(
         scenario["pause_policy"] == "pause-resume"
     )
     scheduled_starts: list[tuple[int, int, str]] = [
@@ -7548,14 +10565,14 @@ def validate_control_operations(
             controller_scheduled_offset_ns(
                 observation_ns, seek_index + 1, scheduled_action_count
             ),
-            "seek",
+            expected_operations[seek_index + 1],
         )
-        for seek_index in range(len(expected_seek_targets_ms))
+        for seek_index in range(seek_operation_count)
     )
     if scenario["pause_policy"] == "pause-resume":
         scheduled_starts.append(
             (
-                len(expected_seek_targets_ms) + 1,
+                seek_operation_count + 1,
                 controller_scheduled_offset_ns(
                     observation_ns, scheduled_action_count, scheduled_action_count
                 ),
@@ -7564,6 +10581,14 @@ def validate_control_operations(
         )
     for operation_index, expected_start_ns, operation_name in scheduled_starts:
         actual_start_ns = operation_windows[operation_index][0]
+        if operation_name == "seek_burst":
+            actual_start_ns = non_negative_integer(
+                operation_windows[operation_index][3].get(
+                    "burst_started_elapsed_ns"
+                ),
+                "scheduled seek burst start",
+                path,
+            )
         latest_start_ns = (
             expected_start_ns + CONTROL_ACTION_SCHEDULE_LATE_TOLERANCE_NS
         )
@@ -7720,6 +10745,132 @@ def control_operations_self_test() -> None:
     }
     path = Path("<control-operation-self-test>")
     validate_control_operations(path, records, 700_000_000, scenario)
+
+    recovery_records = [
+        event(20_000_000, "playback-restart"),
+        operation(
+            "resume_session",
+            10_000_000,
+            20_000_000,
+            "mpv_event",
+            "playback-restart",
+            None,
+            {},
+        ),
+        event(510_000_000, "start-file"),
+        event(520_000_000, "file-loaded"),
+        event(530_000_000, "playback-restart"),
+        operation(
+            "recovery",
+            500_000_000,
+            530_000_000,
+            "mpv_event",
+            "playback-restart",
+            None,
+            {"action_kind": "recovery", "file_generation": "media-02"},
+        ),
+    ]
+    recovery_scenario = {
+        "controller_load": "resume-session",
+        "seeks_s": [],
+        "actions": [{"kind": "recovery", "file_generation": "media-02"}],
+        "pause_policy": "none",
+        "pause_hold_ms": 0,
+        "warmup_s": 0,
+        "sample_s": 1,
+    }
+    validate_control_operations(
+        path, recovery_records, 1_000_000_000, recovery_scenario
+    )
+    missing_file_loaded = json.loads(json.dumps(recovery_records))
+    missing_file_loaded.pop(3)
+    try:
+        validate_control_operations(
+            path, missing_file_loaded, 1_000_000_000, recovery_scenario
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("recovery without a file-loaded boundary was accepted")
+
+    burst_records = [
+        event(20_000_000, "playback-restart"),
+        operation(
+            "resume_session",
+            10_000_000,
+            20_000_000,
+            "mpv_event",
+            "playback-restart",
+            None,
+            {},
+        ),
+        event(1_270_000_000, "playback-restart"),
+        event(1_280_000_000, "property-change", "time-pos", 3_060.0),
+        operation(
+            "seek_burst",
+            1_250_000_000,
+            1_280_000_000,
+            "mpv_event",
+            "property-change",
+            "time-pos",
+            {
+                "action_kind": "seek_burst",
+                "file_generation": "media-05",
+                "targets_s": [300.0, 3_000.0, 600.0, 3_060.0],
+                "target_s": 3_060.0,
+                "window_ms": 500,
+                "submitted_without_intermediate_wait": True,
+                "transport_kind": "ordered_remote_session_v8",
+                "dispatch_scope": "client_session_write",
+                "reply_order_proven": True,
+                "owner_reply_semantics": "owner_command_response_not_wire_dispatch",
+                "owner_reply_window_ship_evidence": False,
+                "schedule_kind": "absolute_monotonic_deadlines_v1",
+                "burst_started_elapsed_ns": 750_000_000,
+                "actual_dispatch_window_ns": 500_000_000,
+                "max_schedule_lateness_ns": 2_000_000,
+                "final_target_dispatched_elapsed_ns": 1_250_000_000,
+                "final_target_write_completed_elapsed_ns": 1_251_000_000,
+                "final_target_admitted_elapsed_ns": 1_260_000_000,
+                "first_owner_reply_elapsed_ns": 1_255_000_000,
+                "owner_reply_window_ns": 5_000_000,
+                "latency_anchor": "final_target_dispatch",
+                "observed_target_s": 3_060.0,
+                "playback_restart_elapsed_ns": 1_270_000_000,
+                "target_tolerance_s": 2.0,
+            },
+        ),
+    ]
+    burst_scenario = {
+        "controller_load": "resume-session",
+        "seeks_s": [],
+        "actions": [
+            {
+                "kind": "seek_burst",
+                "file_generation": "media-05",
+                "targets_s": [300, 3_000, 600, 3_060],
+                "window_ms": 500,
+            }
+        ],
+        "pause_policy": "none",
+        "pause_hold_ms": 0,
+        "warmup_s": 0,
+        "sample_s": 1.5,
+    }
+    validate_control_operations(
+        path, burst_records, 1_500_000_000, burst_scenario
+    )
+    late_burst = json.loads(json.dumps(burst_records))
+    late_burst[-1]["detail"]["actual_dispatch_window_ns"] = 600_000_001
+    late_burst[-1]["detail"]["burst_started_elapsed_ns"] = 649_999_999
+    try:
+        validate_control_operations(
+            path, late_burst, 1_500_000_000, burst_scenario
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("late absolute-deadline seek burst was accepted")
 
     def expect_rejected(
         label: str,
@@ -8024,6 +11175,233 @@ def mpv_ipc_identity(command: list[str]) -> tuple[list[str] | None, str | None]:
             index += 1
         index += 1
     return (identity, endpoint) if identity and endpoint else (None, None)
+
+
+def validate_resource_telemetry(
+    path: Path,
+    header: dict[str, Any],
+    summary: dict[str, Any],
+    all_samples: list[dict[str, Any]],
+) -> None:
+    contract = header.get("resource_telemetry")
+    if contract is None:
+        # Synthetic v1 fixtures retained by the harness self-tests intentionally do not
+        # advertise the additive resource contract.
+        return
+    if not isinstance(contract, dict):
+        raise ValueError(f"{path}: resource telemetry header must be an object")
+    require_artifact_value(
+        path, "resource telemetry schema", contract.get("schema"), RESOURCE_TELEMETRY_SCHEMA
+    )
+    cache_root_provided = contract.get("cache_root_provided")
+    if not isinstance(cache_root_provided, bool):
+        raise ValueError(f"{path}: resource telemetry cache-root proof must be boolean")
+    require_artifact_value(
+        path,
+        "visible inventory accounting limitation",
+        contract.get("visible_inventory_is_disk_accounting"),
+        False,
+    )
+    measured_roles: dict[str, dict[str, float | int]] = {}
+    measured_volumes: list[dict[str, int]] = []
+    final_inventory: dict[str, int] | None = None
+    previous_elapsed_ns: int | None = None
+    previous_totals: dict[tuple[int, int], tuple[int, int]] = {}
+    for index, record in enumerate(all_samples):
+        telemetry = record.get("resource_telemetry")
+        if not isinstance(telemetry, dict):
+            raise ValueError(f"{path}: sample {index} has no resource telemetry")
+        require_artifact_value(
+            path,
+            f"sample {index} resource schema",
+            telemetry.get("schema"),
+            RESOURCE_TELEMETRY_SCHEMA,
+        )
+        require_artifact_value(
+            path,
+            f"sample {index} visible inventory limitation",
+            telemetry.get("visible_inventory_is_disk_accounting"),
+            False,
+        )
+        processes = record.get("processes")
+        process_by_identity = {
+            (process["pid"], process["start_time_unix_s"]): process
+            for process in processes
+            if isinstance(process, dict)
+        }
+        raw_io = telemetry.get("process_io")
+        if not isinstance(raw_io, list) or len(raw_io) != len(process_by_identity):
+            raise ValueError(f"{path}: sample {index} process I/O inventory is incomplete")
+        computed_roles: dict[str, dict[str, int]] = {}
+        for item in raw_io:
+            expected_fields = {
+                "pid",
+                "start_time_unix_s",
+                "role",
+                "read_bytes",
+                "written_bytes",
+                "total_read_bytes",
+                "total_written_bytes",
+            }
+            if not isinstance(item, dict) or set(item) != expected_fields:
+                raise ValueError(f"{path}: sample {index} process I/O schema is invalid")
+            identity = (
+                non_negative_integer(item["pid"], "resource PID", path),
+                non_negative_integer(item["start_time_unix_s"], "resource start time", path),
+            )
+            process = process_by_identity.get(identity)
+            if process is None:
+                raise ValueError(f"{path}: sample {index} resource PID escapes process tree")
+            require_artifact_value(path, "resource process role", item["role"], process["role"])
+            values = {
+                field: non_negative_integer(item[field], f"resource {field}", path)
+                for field in (
+                    "read_bytes",
+                    "written_bytes",
+                    "total_read_bytes",
+                    "total_written_bytes",
+                )
+            }
+            previous = previous_totals.get(identity)
+            if previous is not None and (
+                values["total_read_bytes"] < previous[0]
+                or values["total_written_bytes"] < previous[1]
+            ):
+                raise ValueError(f"{path}: process I/O totals decreased for PID {identity[0]}")
+            previous_totals[identity] = (
+                values["total_read_bytes"],
+                values["total_written_bytes"],
+            )
+            role = str(item["role"])
+            aggregate = computed_roles.setdefault(
+                role,
+                {
+                    "processes": 0,
+                    "read_bytes": 0,
+                    "written_bytes": 0,
+                    "total_read_bytes": 0,
+                    "total_written_bytes": 0,
+                },
+            )
+            aggregate["processes"] += 1
+            for field in values:
+                aggregate[field] += values[field]
+        tree = {
+            field: sum(role[field] for role in computed_roles.values())
+            for field in (
+                "processes",
+                "read_bytes",
+                "written_bytes",
+                "total_read_bytes",
+                "total_written_bytes",
+            )
+        }
+        expected_roles = {**computed_roles, "tree": tree}
+        require_artifact_value(
+            path, f"sample {index} resource roles", telemetry.get("roles"), expected_roles
+        )
+        memory = telemetry.get("system_memory")
+        if not isinstance(memory, dict) or set(memory) != {
+            "available_memory_bytes",
+            "free_memory_bytes",
+            "total_swap_bytes",
+            "free_swap_bytes",
+            "used_swap_bytes",
+        }:
+            raise ValueError(f"{path}: sample {index} system-memory schema is invalid")
+        for field, value in memory.items():
+            non_negative_integer(value, f"system memory {field}", path)
+        volume = telemetry.get("cache_volume")
+        inventory = telemetry.get("visible_cache_inventory")
+        if cache_root_provided:
+            if not isinstance(volume, dict) or set(volume) != {"available_bytes", "total_bytes"}:
+                raise ValueError(f"{path}: sample {index} cache volume is missing")
+            for field in volume:
+                non_negative_integer(volume[field], f"cache volume {field}", path)
+            if not isinstance(inventory, dict) or set(inventory) != {
+                "regular_files",
+                "regular_file_bytes",
+                "directories",
+                "non_regular_entries",
+            }:
+                raise ValueError(f"{path}: sample {index} visible cache inventory is missing")
+            for field in inventory:
+                non_negative_integer(inventory[field], f"visible cache {field}", path)
+        elif volume is not None or inventory is not None:
+            raise ValueError(f"{path}: resource sample exposes cache data without a cache root")
+        observed_ns = int(record["observed_elapsed_ns"])
+        interval_ns = (
+            observed_ns - previous_elapsed_ns if previous_elapsed_ns is not None else 0
+        )
+        previous_elapsed_ns = observed_ns
+        if record.get("phase") == "measure":
+            if isinstance(volume, dict):
+                measured_volumes.append(volume)
+            if isinstance(inventory, dict):
+                final_inventory = inventory
+            for role, values in expected_roles.items():
+                aggregate = measured_roles.setdefault(
+                    role,
+                    {
+                        "samples": 0,
+                        "total_read_bytes": 0,
+                        "total_written_bytes": 0,
+                        "peak_read_bytes_per_s": 0.0,
+                        "peak_write_bytes_per_s": 0.0,
+                    },
+                )
+                aggregate["samples"] = int(aggregate["samples"]) + 1
+                aggregate["total_read_bytes"] = int(aggregate["total_read_bytes"]) + values["read_bytes"]
+                aggregate["total_written_bytes"] = int(aggregate["total_written_bytes"]) + values["written_bytes"]
+                if interval_ns > 0:
+                    aggregate["peak_read_bytes_per_s"] = max(
+                        float(aggregate["peak_read_bytes_per_s"]),
+                        values["read_bytes"] * 1_000_000_000.0 / interval_ns,
+                    )
+                    aggregate["peak_write_bytes_per_s"] = max(
+                        float(aggregate["peak_write_bytes_per_s"]),
+                        values["written_bytes"] * 1_000_000_000.0 / interval_ns,
+                    )
+    resource_summary = summary.get("resource_telemetry")
+    if not isinstance(resource_summary, dict):
+        raise ValueError(f"{path}: resource telemetry summary is missing")
+    require_artifact_value(
+        path, "resource summary schema", resource_summary.get("schema"), RESOURCE_TELEMETRY_SCHEMA
+    )
+    summary_roles = resource_summary.get("roles")
+    if not isinstance(summary_roles, dict) or set(summary_roles) != set(measured_roles):
+        raise ValueError(f"{path}: resource summary roles do not match raw samples")
+    for role, expected in measured_roles.items():
+        actual = summary_roles[role]
+        if not isinstance(actual, dict) or set(actual) != set(expected):
+            raise ValueError(f"{path}: resource summary role {role} is malformed")
+        for field, value in expected.items():
+            if isinstance(value, float):
+                actual_value = finite_non_negative_number(actual.get(field), field, path)
+                if not math.isclose(actual_value, value, rel_tol=1e-12, abs_tol=1e-9):
+                    raise ValueError(f"{path}: resource summary {role}.{field} disagrees")
+            else:
+                require_artifact_value(path, f"resource {role}.{field}", actual.get(field), value)
+    expected_volume = {
+        "start_available_bytes": measured_volumes[0]["available_bytes"],
+        "minimum_available_bytes": min(item["available_bytes"] for item in measured_volumes),
+        "end_available_bytes": measured_volumes[-1]["available_bytes"],
+        "total_bytes": measured_volumes[-1]["total_bytes"],
+    } if measured_volumes else {
+        "start_available_bytes": None,
+        "minimum_available_bytes": None,
+        "end_available_bytes": None,
+        "total_bytes": None,
+    }
+    require_artifact_value(
+        path, "resource cache-volume summary", resource_summary.get("cache_volume"), expected_volume
+    )
+    require_artifact_value(
+        path,
+        "resource final visible inventory",
+        resource_summary.get("final_visible_cache_inventory"),
+        final_inventory,
+    )
 
 
 def validate_measured_samples(
@@ -8384,6 +11762,7 @@ def validate_measured_samples(
     require_artifact_value(path, "summary last mpv identity", summary.get("last_observed_mpv"), last_mpv_identities)
     if require_mpv and (not proven or not cleanup_proven):
         raise ValueError(f"{path}: raw measured samples do not prove silent, cleanup-identified mpv")
+    validate_resource_telemetry(path, header, summary, all_samples)
     return {
         "root_pid": root_pid,
         "samples": recomputed_samples,
@@ -8570,6 +11949,251 @@ def sample_tree_topology_self_test() -> None:
     expect_parent_rejected("escaped parent", 999)
 
 
+def normalized_windows_evidence_path(value: Any) -> str:
+    raw = str(value)
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    return os.path.normcase(os.path.normpath(str(Path(raw).resolve())))
+
+
+def validate_windows_conpty_run(
+    path: Path,
+    scenario: dict[str, Any],
+    scenario_document: dict[str, Any],
+    scenario_hash: str,
+    manifest: dict[str, Any],
+    run_contract: dict[str, Any],
+    live_producer: dict[str, Any],
+) -> list[Path]:
+    proof_path = path / "conpty.json"
+    environment_path = path / "child-environment.json"
+    if not proof_path.is_file() or not environment_path.is_file():
+        raise ValueError(f"{path}: Windows process run is missing ConPTY/environment proof")
+    proof = load_json_object(proof_path)
+    require_artifact_value(
+        proof_path, "schema", proof.get("schema"), "ytt.tui-perf.conpty.v1"
+    )
+    for field in (
+        "private_conpty",
+        "controlled_empty_input",
+        "job_kill_on_close",
+    ):
+        require_artifact_value(proof_path, field, proof.get(field), True)
+    require_artifact_value(
+        proof_path,
+        "parent console inheritance",
+        proof.get("inherited_parent_console"),
+        False,
+    )
+    require_artifact_value(
+        proof_path,
+        "environment policy",
+        proof.get("environment_policy"),
+        "explicit_unicode_environment_block_v1",
+    )
+    require_artifact_value(
+        proof_path, "child PID", proof.get("child_pid"), live_producer.get("pid")
+    )
+    geometry = run_contract["terminal_geometry"]
+    require_artifact_value(
+        proof_path,
+        "terminal geometry",
+        proof.get("geometry"),
+        {"width": geometry[0], "height": geometry[1]},
+    )
+    require_artifact_value(proof_path, "timeout state", proof.get("timed_out"), False)
+    require_artifact_value(proof_path, "child exit code", proof.get("exit_code"), 0)
+    if non_negative_integer(proof.get("timeout_ms"), "ConPTY timeout_ms", proof_path) == 0:
+        raise ValueError(f"{proof_path}: ConPTY timeout must be positive")
+    non_negative_integer(proof.get("output_bytes"), "ConPTY output_bytes", proof_path)
+    started_ns = non_negative_integer(
+        proof.get("started_unix_ns"), "ConPTY started_unix_ns", proof_path
+    )
+    finished_ns = non_negative_integer(
+        proof.get("finished_unix_ns"), "ConPTY finished_unix_ns", proof_path
+    )
+    if not (
+        run_contract["started_unix_ns"]
+        <= started_ns
+        < finished_ns
+        <= run_contract["finished_unix_ns"]
+    ):
+        raise ValueError(f"{proof_path}: ConPTY interval escapes its run contract")
+    require_artifact_value(
+        proof_path,
+        "working directory",
+        normalized_windows_evidence_path(proof.get("working_directory", "")),
+        normalized_windows_evidence_path(path),
+    )
+    require_artifact_value(
+        proof_path,
+        "canonical working directory",
+        normalized_windows_evidence_path(proof.get("canonical_working_directory", "")),
+        normalized_windows_evidence_path(path),
+    )
+    require_artifact_value(
+        proof_path,
+        "environment path",
+        Path(str(proof.get("environment_json", ""))).resolve(),
+        environment_path.resolve(),
+    )
+    require_artifact_value(
+        proof_path,
+        "environment SHA-256",
+        proof.get("environment_sha256"),
+        sha256_file(environment_path),
+    )
+
+    environment = load_json_object(environment_path)
+    required_environment = {
+        "TUI_PERF_RUN_ID": run_contract["run_id"],
+        "TUI_PERF_SCENARIO_SHA256": scenario_hash,
+        "TERM": "xterm-256color",
+        "YTM_MPV_EXTRA": "--ao=null --volume=0 --audio-display=no",
+    }
+    for key, expected in required_environment.items():
+        require_artifact_value(environment_path, key, environment.get(key), expected)
+    expected_source_rate_environment = source_rate_bound_contract(
+        scenario_document, scenario
+    )["child_environment"]["value"]
+    if expected_source_rate_environment is not None:
+        require_artifact_value(
+            environment_path,
+            SOURCE_RATE_BOUND_ENV,
+            environment.get(SOURCE_RATE_BOUND_ENV),
+            expected_source_rate_environment,
+        )
+    elif SOURCE_RATE_BOUND_ENV in environment:
+        raise ValueError(
+            f"{environment_path}: unbounded profile received {SOURCE_RATE_BOUND_ENV}"
+        )
+    if scenario["requires_mpv"]:
+        selected = manifest.get("mpv_selection", {}).get("document", {}).get("binary", {})
+        require_artifact_value(
+            environment_path,
+            "YTM_MPV",
+            normalized_windows_evidence_path(environment.get("YTM_MPV", "")),
+            normalized_windows_evidence_path(selected.get("path", "")),
+        )
+    elif "YTM_MPV" in environment:
+        raise ValueError(f"{environment_path}: non-playback child received YTM_MPV")
+    for forbidden in ("GEMINI_API_KEY", "YTM_PLAY_URL", "YTM_PERF"):
+        if forbidden in environment:
+            raise ValueError(
+                f"{environment_path}: forbidden ambient key {forbidden} reached the child"
+            )
+    home = path / "home"
+    expected_paths = {
+        "HOME": home,
+        "USERPROFILE": home,
+        "APPDATA": home / "AppData" / "Roaming",
+        "LOCALAPPDATA": home / "AppData" / "Local",
+        "XDG_CONFIG_HOME": home / ".config",
+        "XDG_DATA_HOME": home / ".local" / "share",
+        "XDG_CACHE_HOME": home / ".cache",
+        "XDG_STATE_HOME": home / ".local" / "state",
+        "XDG_RUNTIME_DIR": path / "runtime",
+        "YTM_CONFIG_DIR": home / "stores" / "config",
+        "YTM_DATA_DIR": home / "stores" / "data",
+        "YTM_CACHE_DIR": home / "stores" / "cache",
+        "TEMP": path / "tmp",
+        "TMP": path / "tmp",
+    }
+    for key, expected in expected_paths.items():
+        require_artifact_value(
+            environment_path,
+            key,
+            Path(str(environment.get(key, ""))).resolve(),
+            expected.resolve(),
+        )
+    required_passthrough = {"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"}
+    missing_passthrough = sorted(required_passthrough - set(environment))
+    if missing_passthrough or any(
+        not isinstance(environment[key], str) or not environment[key]
+        for key in required_passthrough - set(missing_passthrough)
+    ):
+        raise ValueError(
+            f"{environment_path}: missing controlled Windows passthrough {missing_passthrough}"
+        )
+    require_artifact_value(
+        proof_path,
+        "environment key inventory",
+        proof.get("environment_keys"),
+        sorted(environment),
+    )
+
+    command = proof.get("command")
+    if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
+        raise ValueError(f"{proof_path}: ConPTY command must be a string array")
+    if not command:
+        raise ValueError(f"{proof_path}: ConPTY command is empty")
+    require_artifact_value(
+        proof_path,
+        "sampler executable",
+        Path(command[0]).resolve(),
+        Path(manifest["binaries"]["sampler"]["path"]).resolve(),
+    )
+    expected_values = {
+        "--output": path / "samples.ndjson",
+        "--pid-file": path / "ytt.pid",
+        "--identity-file": path / "process-identity.json",
+        "--cache-root": home / "stores" / "cache",
+        "--binary": Path(manifest["binaries"][f"{run_contract['role']}_ytt"]["path"]),
+    }
+    for flag, expected in expected_values.items():
+        values = exact_cli_argument_values(command, flag)
+        if len(values) != 1:
+            raise ValueError(f"{proof_path}: ConPTY sampler command has invalid {flag}")
+        require_artifact_value(
+            proof_path, flag, Path(values[0]).resolve(), expected.resolve()
+        )
+    scalar_values = {
+        "--warmup-secs": str(scenario["warmup_s"]),
+        "--duration-secs": str(scenario["sample_s"]),
+        "--interval-ms": str(scenario_document["sampling"]["interval_ms"]),
+    }
+    for flag, expected in scalar_values.items():
+        require_artifact_value(
+            proof_path,
+            flag,
+            exact_cli_argument_values(command, flag),
+            [expected],
+        )
+    require_artifact_value(
+        proof_path,
+        "silent mpv argument",
+        "--require-silent-mpv" in command,
+        bool(scenario["requires_mpv"]),
+    )
+    controller_ready = exact_cli_argument_values(command, "--controller-ready-file")
+    if scenario["controller"]:
+        require_artifact_value(
+            proof_path,
+            "controller barrier",
+            [Path(value).resolve() for value in controller_ready],
+            [(path / "controller-ready.json").resolve()],
+        )
+    elif controller_ready:
+        raise ValueError(f"{proof_path}: non-controller run has a controller barrier")
+    separator_indexes = [index for index, value in enumerate(command) if value == "--"]
+    if scenario["controller"]:
+        require_artifact_value(
+            proof_path, "controller sampler child separator", separator_indexes, []
+        )
+    else:
+        if len(separator_indexes) != 1:
+            raise ValueError(f"{proof_path}: non-controller sampler needs one child separator")
+        require_artifact_value(
+            proof_path,
+            "non-controller ytt child arguments",
+            command[separator_indexes[0] + 1 :],
+            ["--new-instance"],
+        )
+    return [proof_path, environment_path]
+
+
 def validate_process_directory(
     path: Path,
     role: str,
@@ -8695,6 +12319,18 @@ def validate_process_directory(
         header.get("child_ytm_perf_enabled"),
         False,
     )
+    source_bound_contract = source_rate_bound_contract(scenario_document, scenario)
+    expected_source_rate_bound = (
+        source_bound_contract["maximum_source_rate_bps"]
+        if source_bound_contract["enforced"]
+        else None
+    )
+    require_artifact_value(
+        samples_path,
+        "child source rate bound",
+        header.get("source_rate_bound_bps"),
+        expected_source_rate_bound,
+    )
     if any(record.get("kind") == "error" for record in samples):
         raise ValueError(f"{samples_path}: sampler recorded an error")
     sample_validation = validate_measured_samples(
@@ -8747,6 +12383,28 @@ def validate_process_directory(
         live_mpv,
         sample_validation["last_mpv_identities"],
     )
+    if scenario["requires_mpv"]:
+        selection = manifest.get("mpv_selection", {}).get("document", {})
+        selected_binary = selection.get("binary", {})
+        for mpv_identity in sample_validation["last_mpv_identities"]:
+            require_artifact_value(
+                identity_path,
+                "selected mpv executable path",
+                Path(str(mpv_identity.get("executable", ""))).resolve(),
+                Path(str(selected_binary.get("path", ""))).resolve(),
+            )
+            require_artifact_value(
+                identity_path,
+                "selected mpv executable bytes",
+                mpv_identity.get("executable_bytes"),
+                selected_binary.get("bytes"),
+            )
+            require_artifact_value(
+                identity_path,
+                "selected mpv executable SHA-256",
+                mpv_identity.get("executable_sha256"),
+                selected_binary.get("sha256"),
+            )
     last_processes = sample_validation["samples"][-1]["record"]["processes"]
     expected_descendants = [
         {
@@ -8765,11 +12423,38 @@ def validate_process_directory(
         identity_path, "recursive descendant identity", live_descendants, expected_descendants
     )
 
+    platform_artifacts: list[Path] = []
+    if host_os == "windows":
+        platform_artifacts = validate_windows_conpty_run(
+            path,
+            scenario,
+            scenario_document,
+            scenario_hash,
+            manifest,
+            run_contract,
+            live_producer,
+        )
+
     launch_policy_path = path / "launch-policy.json"
     if not launch_policy_path.is_file():
         raise ValueError(f"{path}: missing launch-policy.json")
-    _launch_policy, launch_artifacts = validate_launch_policy(launch_policy_path, path)
-    artifacts = [samples_path, identity_path, *launch_artifacts, *additional_metric_files]
+    launch_policy, launch_artifacts = validate_launch_policy(launch_policy_path, path)
+    setting_artifacts: list[Path] = []
+    if "setting_leaf_overrides" in scenario:
+        setting_path = path / "setting-overrides.json"
+        if not setting_path.is_file():
+            raise ValueError(f"{path}: missing setting-overrides.json")
+        setting_artifacts = validate_setting_overrides(
+            setting_path, path, scenario, scenario_hash, role, launch_policy
+        )
+    artifacts = [
+        samples_path,
+        identity_path,
+        *platform_artifacts,
+        *launch_artifacts,
+        *setting_artifacts,
+        *additional_metric_files,
+    ]
     if scenario["controller"]:
         control_path = path / "control.ndjson"
         if not control_path.is_file():
@@ -8780,7 +12465,14 @@ def validate_process_directory(
                 str(record.get("kind"))
                 for record in control
                 if record.get("kind")
-                not in {"header", "mpv_event", "operation", "summary", "error"}
+                not in {
+                    "header",
+                    "mpv_event",
+                    "operation",
+                    "remote_settings_snapshot",
+                    "summary",
+                    "error",
+                }
             }
         )
         if unexpected_control_kinds:
@@ -8797,6 +12489,12 @@ def validate_process_directory(
         control_header = control_headers[0]
         require_artifact_value(control_path, "schema", control_header.get("schema"), "ytt.tui-perf.control.v1")
         require_artifact_value(control_path, "scenario SHA-256", control_header.get("scenario_sha256"), scenario_hash)
+        require_artifact_value(
+            control_path,
+            "controller source rate bound",
+            control_header.get("source_rate_bound_bps"),
+            expected_source_rate_bound,
+        )
         require_artifact_value(control_path, "run ID", control_header.get("run_id"), run_contract["run_id"])
         require_artifact_value(control_path, "OS", normalized_os(control_header.get("os")), host_os)
         require_artifact_value(
@@ -8810,6 +12508,34 @@ def validate_process_directory(
             * 1_000_000_000
         )
         require_artifact_value(control_path, "confirmed subscriptions", control_header.get("subscriptions_confirmed"), True)
+        require_artifact_value(
+            control_path,
+            "subscription contract",
+            control_header.get("subscription_contract"),
+            MPV_SUBSCRIPTION_CONTRACT,
+        )
+        require_artifact_value(
+            control_path,
+            "cache query contract",
+            control_header.get("cache_query_contract"),
+            MPV_CACHE_QUERY_CONTRACT,
+        )
+        typed_actions = scenario.get("actions")
+        has_typed_actions = isinstance(typed_actions, list) and bool(typed_actions)
+        require_artifact_value(
+            control_path,
+            "typed action mode",
+            control_header.get("typed_actions"),
+            has_typed_actions,
+        )
+        require_artifact_value(
+            control_path,
+            "seek action count",
+            control_header.get("seek_action_count"),
+            len(typed_actions)
+            if has_typed_actions
+            else len(scenario.get("seeks_s", [])),
+        )
         require_artifact_value(control_path, "observation duration", control_header.get("observe_ns"), expected_observe_ns)
         require_artifact_value(
             control_path,
@@ -8879,12 +12605,24 @@ def validate_process_directory(
         require_artifact_value(ready_path, "schema", ready.get("schema"), "ytt.tui-perf.controller-ready.v1")
         require_artifact_value(ready_path, "run ID", ready.get("run_id"), run_contract["run_id"])
         require_artifact_value(ready_path, "scenario SHA-256", ready.get("scenario_sha256"), scenario_hash)
+        require_artifact_value(
+            ready_path,
+            "controller ready source rate bound",
+            ready.get("source_rate_bound_bps"),
+            expected_source_rate_bound,
+        )
         require_artifact_value(ready_path, "owner PID", ready.get("owner_pid"), owner_pid)
         require_artifact_value(ready_path, "owner start", ready.get("owner_start_time_unix_s"), owner_start)
         require_artifact_value(ready_path, "mpv PID", ready.get("mpv_pid"), mpv_pid)
         require_artifact_value(ready_path, "mpv start", ready.get("mpv_start_time_unix_s"), mpv_start)
         require_artifact_value(ready_path, "mpv endpoint", ready.get("mpv_endpoint"), mpv_endpoint)
         require_artifact_value(ready_path, "confirmed subscriptions", ready.get("subscriptions_confirmed"), True)
+        require_artifact_value(
+            ready_path,
+            "cache query contract",
+            ready.get("cache_query_contract"),
+            MPV_CACHE_QUERY_CONTRACT,
+        )
         require_artifact_value(ready_path, "observation start", ready.get("observation_started_unix_ns"), controller_started_ns)
 
         control_summary = control_summaries[0]
@@ -8900,6 +12638,7 @@ def validate_process_directory(
             raise ValueError(f"{control_path}: controller producer interval escapes its run contract")
         validate_control_buffering(control_path, control, control_summary)
         validate_control_time_pos_summary(control_path, control, control_summary)
+        validate_control_extended_telemetry(control_path, control, control_summary)
         validate_steady_playback_progress(
             control_path, control, control_summary, scenario
         )
@@ -8942,6 +12681,9 @@ def validate_process_directory(
         validate_control_operations(
             control_path, control, summary_elapsed_ns, scenario
         )
+        validate_cache_mode_evidence(
+            control_path, control, control_summary, scenario, role
+        )
         artifacts.extend((control_path, ready_path))
 
     if scenario["requires_mpv"]:
@@ -8983,6 +12725,7 @@ def validate_process_directory(
             manifest["orchestrator"]["sha256"],
         )
         http = load_json_object(http_path)
+        validate_fixture_server_manifest(http_path, http, run_contract["run_id"])
         require_artifact_value(http_path, "schema", http.get("schema"), "ytt.tui-perf.http.v1")
         require_artifact_value(http_path, "loopback binding", http.get("bind_is_loopback"), True)
         require_artifact_value(http_path, "playback target", http.get("playback_target_mode"), "local_m3u_indirection")
@@ -9001,23 +12744,48 @@ def validate_process_directory(
             <= run_contract["finished_monotonic_ns"]
         ):
             raise ValueError(f"{http_path}: HTTP server start escapes its run contract")
-        parsed_http = urlsplit(str(http.get("url", "")))
-        try:
-            http_ip = ipaddress.ip_address(parsed_http.hostname or "")
-        except ValueError as error:
-            raise ValueError(f"{http_path}: URL host is not an IP literal") from error
-        if parsed_http.scheme != "http" or not http_ip.is_loopback:
-            raise ValueError(f"{http_path}: URL must use an HTTP loopback endpoint")
-        require_artifact_value(http_path, "URL host", str(http_ip), str(http.get("host")))
         require_artifact_value(
-            materialize_path, "fixture URL", materialize.get("fixture_url"), http.get("url")
+            http_path, "HTTP address family", http.get("address_family"), FIXTURE_ADDRESS_FAMILY
         )
         require_artifact_value(
-            materialize_path, "fixture host", materialize.get("fixture_host"), str(http.get("host"))
+            http_path, "HTTP URL recording policy", http.get("url_recorded"), False
+        )
+        require_artifact_value(
+            materialize_path, "fixture port", materialize.get("fixture_port"), http.get("port")
+        )
+        require_artifact_value(
+            materialize_path, "loopback fixture", materialize.get("loopback_fixture"), True
+        )
+        require_artifact_value(
+            materialize_path, "URL recording policy", materialize.get("url_recorded"), False
         )
         profile = scenario_document["traffic_profiles"][scenario["traffic_profile"]]
-        for field in ("throttle_bps", "outage_every_bytes", "outage_ms", "disconnect_every_bytes"):
+        for field in (
+            "throttle_bps",
+            "maximum_source_rate_bps",
+            "outage_every_bytes",
+            "outage_ms",
+            "disconnect_every_bytes",
+            "header_delay_ms",
+            "range_response_delay_ms",
+            "range_behavior",
+            "fault_profile",
+        ):
             require_artifact_value(http_path, field, http.get(field), profile[field])
+        require_artifact_value(
+            http_path,
+            "source rate bound enforcement state",
+            http.get("source_rate_bound_enforced"),
+            expected_source_rate_bound is not None,
+        )
+        require_artifact_value(
+            http_path,
+            "source rate bound enforcement mechanism",
+            http.get("source_rate_bound_enforcement"),
+            SOURCE_RATE_BOUND_ENFORCEMENT
+            if expected_source_rate_bound is not None
+            else "unbounded",
+        )
         require_artifact_value(
             http_path,
             "request log path",
@@ -9056,6 +12824,11 @@ def validate_process_directory(
             materialize.get("input_snapshot_files"),
             tree_file_inventory(input_snapshot),
         )
+        runtime_tree_sha256 = materialize.get("runtime_materialized_tree_sha256")
+        if not isinstance(runtime_tree_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", runtime_tree_sha256
+        ) is None:
+            raise ValueError(f"{materialize_path}: runtime materialized tree digest is malformed")
         playlist_relative = materialize.get("playlist")
         if not isinstance(playlist_relative, str) or playlist_relative not in changed:
             raise ValueError(f"{materialize_path}: playlist is not a changed relative input")
@@ -9064,18 +12837,34 @@ def validate_process_directory(
             playlist.relative_to(input_snapshot.resolve())
         except ValueError as error:
             raise ValueError(f"{materialize_path}: playlist escapes input snapshot") from error
-        expected_playlist = (
+        expected_evidence_playlist = (
             "#EXTM3U\n#EXTINF:-1,ytt deterministic performance fixture\n"
-            f"{http.get('url')}\n"
+            f"{FIXTURE_URL_REDACTION}\n"
         )
         require_artifact_value(
-            playlist, "playlist content", playlist.read_text(encoding="utf-8"), expected_playlist
+            playlist,
+            "redacted playlist content",
+            playlist.read_text(encoding="utf-8"),
+            expected_evidence_playlist,
         )
         require_artifact_value(
             materialize_path,
             "playlist SHA-256",
             materialize.get("playlist_sha256"),
             sha256_file(playlist),
+        )
+        runtime_fixture_url = (
+            f"http://{FIXTURE_LOOPBACK_HOST}:{int(http['port'])}/fixture.wav"
+        )
+        expected_runtime_playlist = (
+            "#EXTM3U\n#EXTINF:-1,ytt deterministic performance fixture\n"
+            f"{runtime_fixture_url}\n"
+        ).encode("utf-8")
+        require_artifact_value(
+            materialize_path,
+            "runtime playlist SHA-256",
+            materialize.get("runtime_playlist_sha256"),
+            hashlib.sha256(expected_runtime_playlist).hexdigest(),
         )
         require_artifact_value(
             materialize_path,
@@ -10400,6 +14189,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     tree_digest_self_test()
     effective_worktree_digest_self_test()
     mpv_cache_argv_contract_self_test()
+    mpv_selection_self_test()
     toolchain_identity_self_test()
     cleanup_integration_self_test()
     startup_cleanup_integration_self_test()
@@ -10407,6 +14197,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     run_contract_integration_self_test()
     multi_geometry_run_contract_integration_self_test()
     launch_policy_self_test()
+    setting_overrides_self_test()
     child_environment_policy_self_test()
     materialized_session_self_test()
     materialize_command_self_test()
@@ -10414,6 +14205,10 @@ def command_self_test(_args: argparse.Namespace) -> int:
     http_pacing_self_test()
     http_server_shutdown_self_test()
     control_operations_self_test()
+    control_extended_telemetry_self_test()
+    rate_factor_evidence_self_test()
+    fixture_output_contract_self_test()
+    windows_build_wrapper_self_test()
     sample_tree_topology_self_test()
     point, upper, ratios = paired_bootstrap_ratios([0.0, 0.0], [0.0, 0.0], 100, 7, 0.95)
     assert point == 1.0 and upper == 1.0 and ratios == [1.0, 1.0]
@@ -11142,6 +14937,159 @@ def command_self_test(_args: argparse.Namespace) -> int:
         == REQUIRED_PLAYBACK_MPV_CACHE_ARGS
         for scenario in playback_scenarios
     )
+    auto_scenario = find_scenario(
+        scenario_document, "long_form_cold_warm_burst_auto"
+    )
+    auto_source_bound = source_rate_bound_contract(scenario_document, auto_scenario)
+    assert auto_source_bound == {
+        "traffic_profile": "long_form_bounded",
+        "maximum_source_rate_bps": 24_000,
+        "http_throttle_bps": 24_000,
+        "enforced": True,
+        "enforcement": SOURCE_RATE_BOUND_ENFORCEMENT,
+        "binary_compile_gate": {
+            "feature": "perf-harness",
+            "required": True,
+            "default_build_behavior": "ignore_harness_rate_environment",
+        },
+        "child_environment": {
+            "key": SOURCE_RATE_BOUND_ENV,
+            "value": "24000",
+        },
+    }
+    unbounded_activation = json.loads(json.dumps(scenario_document))
+    find_scenario(
+        unbounded_activation, "long_form_cold_warm_burst_auto"
+    )["traffic_profile"] = "normal"
+    try:
+        validate_scenarios(unbounded_activation)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unbounded cache activation profile was accepted")
+    mismatched_source_bound = json.loads(json.dumps(scenario_document))
+    mismatched_source_bound["traffic_profiles"]["long_form_bounded"][
+        "maximum_source_rate_bps"
+    ] += 1
+    try:
+        validate_scenarios(mismatched_source_bound)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unenforced source-rate declaration was accepted")
+    cache_events = [
+        {
+            "kind": "mpv_event",
+            "elapsed_ns": elapsed_ns,
+            "event": {
+                "event": "property-change",
+                "name": "cache-on-disk",
+                "data": value,
+            },
+        }
+        for elapsed_ns, value in ((1, False), (20, True))
+    ]
+    cache_operations = [
+        {
+            "kind": "operation",
+            "operation": "cold_seek",
+            "operation_started_ns": 10,
+            "operation_completed_ns": 30,
+            "detail": {"file_generation": "media-self-test"},
+        },
+        {
+            "kind": "operation",
+            "operation": "warm_seek",
+            "operation_started_ns": 40,
+            "operation_completed_ns": 50,
+            "detail": {"file_generation": "media-self-test"},
+        },
+    ]
+    cache_records = [
+        *cache_events,
+        {
+            "kind": "remote_settings_snapshot",
+            "long_form_seek_status": {
+                "available": True,
+                "capability_advertised": True,
+                "requested": "auto",
+                "effective": "disk_active",
+                "reason": "auto_uncached_seek",
+            },
+        },
+        *cache_operations,
+    ]
+    single_generation_auto_scenario = json.loads(json.dumps(auto_scenario))
+    single_generation_auto_scenario["expected_activation_count"] = 1
+    validate_cache_mode_evidence(
+        Path("<cache-mode-self-test>"),
+        cache_records,
+        {
+            "latest_properties": {"cache-on-disk": True},
+            "peak_file_cache_bytes": 1,
+            "elapsed_ns": 100,
+            "long_form_seek_status": {
+                "available": True,
+                "capability_advertised": True,
+                "requested": "auto",
+                "effective": "disk_active",
+                "reason": "auto_uncached_seek",
+            },
+        },
+        single_generation_auto_scenario,
+        "candidate",
+    )
+    try:
+        validate_cache_mode_evidence(
+            Path("<cache-mode-self-test>"),
+            cache_records,
+            {
+                "latest_properties": {"cache-on-disk": True},
+                "peak_file_cache_bytes": 1,
+                "elapsed_ns": 100,
+                "long_form_seek_status": {
+                    "available": True,
+                    "capability_advertised": True,
+                    "requested": "auto",
+                    "effective": "disk_active",
+                    "reason": "requested_off",
+                },
+            },
+            single_generation_auto_scenario,
+            "candidate",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("mismatched product activation reason was accepted")
+    off_cache_records = [cache_events[0], *cache_operations]
+    validate_cache_mode_evidence(
+        Path("<cache-mode-self-test>"),
+        off_cache_records,
+        {
+            "latest_properties": {"cache-on-disk": False},
+            "peak_file_cache_bytes": 0,
+            "elapsed_ns": 100,
+        },
+        single_generation_auto_scenario,
+        "baseline",
+    )
+    try:
+        validate_cache_mode_evidence(
+            Path("<cache-mode-self-test>"),
+            off_cache_records,
+            {
+                "latest_properties": {"cache-on-disk": False},
+                "peak_file_cache_bytes": 0,
+                "elapsed_ns": 100,
+            },
+            single_generation_auto_scenario,
+            "candidate",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Auto mode without disk activation was accepted")
     missing_cache_contract = json.loads(json.dumps(scenario_document))
     next(
         scenario
@@ -11156,6 +15104,12 @@ def command_self_test(_args: argparse.Namespace) -> int:
         raise AssertionError("missing playback mpv cache argv contract must be rejected")
     soak = find_scenario(scenario_document, "memory_soak")
     assert soak["pause_policy"] == "none" and soak["pause_hold_ms"] == 0
+    process_builds = {
+        role: selectors for role, selectors, _mapping in build_specs(False)
+    }
+    assert "perf-harness" not in process_builds["baseline"]
+    candidate_features = process_builds["candidate"].index("--features")
+    assert process_builds["candidate"][candidate_features + 1] == "perf-harness"
     unix_wrapper = Path(__file__).with_name("tui-perf.sh").read_text(encoding="utf-8")
     windows_wrapper = Path(__file__).with_name("tui-perf.ps1").read_text(encoding="utf-8")
     for wrapper in (unix_wrapper, windows_wrapper):
@@ -11201,6 +15155,11 @@ def command_self_test(_args: argparse.Namespace) -> int:
         " cleanup ",
         "stop-server",
         "--shutdown-token",
+        "--mpv-selection-manifest",
+        "apply-setting-overrides",
+        "YTM_MPV",
+        "YTM_PERF_SOURCE_RATE_BOUND_BPS",
+        "maximum_source_rate_bps",
     ):
         assert token in unix_wrapper
     assert unix_wrapper.index("path-preflight") < unix_wrapper.index('mkdir -p "$output"')
@@ -11209,31 +15168,51 @@ def command_self_test(_args: argparse.Namespace) -> int:
     )
     assert '"--shutdown-token=$shutdown_token"' in unix_wrapper
     assert '--shutdown-token "$shutdown_token"' not in unix_wrapper
+    assert '"--shutdown-token=$active_server_token"' in unix_wrapper
     assert 'kill "$active_server_pid"' not in unix_wrapper
     for token in (
         "off-screen ConPTY",
         "controlled empty input",
-        "No process measurement was started and no output was created",
-        "if (-not $isRender) { Assert-WindowsProcessIsolation }",
+        "kill-on-close Job Object",
+        "Start-ExactProcess",
+        "Run-ProcessScenario",
+        "child-environment.json",
+        "conpty.json",
+        "--environment-json",
+        "--working-directory",
+        "--cache-root",
+        "--identity-file",
+        "--require-silent-mpv",
+        "--ao=null --volume=0 --audio-display=no",
+        "baseline_ytt",
+        "candidate_ytt",
+        "seed-contract",
+        "materialize",
+        "launch-policy",
+        "stop-server",
         "path-preflight",
-        "--output-root $Output",
-        "--protected-root $BaselineSourceRoot",
-        "--protected-root $CandidateSourceRoot",
+        '"--output-root", $Output',
+        '"--protected-root", $BaselineSourceRoot',
+        '"--protected-root", $CandidateSourceRoot',
+        "MpvSelectionManifest",
+        "apply-setting-overrides",
+        '"YTM_MPV"',
+        '"YTM_PERF_SOURCE_RATE_BOUND_BPS"',
+        "maximum_source_rate_bps",
     ):
         assert token in windows_wrapper
-    assert windows_wrapper.index("if (-not $isRender)") < windows_wrapper.index("$script:OutputRoot")
-    windows_preflight = windows_wrapper.index("$resolvedOutput = & python $PythonTool path-preflight")
+    assert '("--shutdown-token=" + $script:ActiveServerToken)' in windows_wrapper
+    windows_preflight = windows_wrapper.index("$resolvedOutput = Invoke-PythonChecked $preflightArgs")
     windows_output_create = windows_wrapper.index(
         "New-Item -ItemType Directory -Path $script:OutputRoot"
     )
     assert windows_preflight < windows_output_create
-    assert windows_preflight < windows_wrapper.index("$buildArgs = @(")
+    assert windows_preflight < windows_wrapper.index("$controlledReceipt = Join-Path")
     for forbidden in (
-        "Run-Process",
-        "Stop-RecordedYtt",
+        "Assert-WindowsProcessIsolation",
+        "No process measurement was started",
+        "Stop-Process",
         "RawUI",
-        "baseline_ytt",
-        "candidate_ytt",
         'SetEnvironmentVariable("YTM_PERF", "1"',
         '$env:YTM_PERF = "1"',
     ):
@@ -11246,6 +15225,11 @@ def command_self_test(_args: argparse.Namespace) -> int:
     ).choices
     assert "create-checksums" in subcommands
     assert "verify-checksums" in subcommands
+    assert "stage-mpv-current" in subcommands
+    assert "create-mpv-selection" in subcommands
+    assert "mpv-selection" in subcommands
+    assert "apply-setting-overrides" in subcommands
+    assert "matrix-status" in subcommands
     assert "checksums" not in subcommands
     print(
         json.dumps(
@@ -11278,6 +15262,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "http_server_stale_pid_no_signal_cases": 1,
                 "sample_tree_topology_tamper_cases": 4,
                 "source_contract_tamper_cases": 3,
+                "source_rate_bound_tamper_cases": 3,
                 "toolchain_identity_tamper_cases": 3,
                 "cleanup_scope_tamper_cases": 1,
                 "raw_role_binding_cases": 1,
@@ -11397,6 +15382,11 @@ def command_compare(args: argparse.Namespace) -> int:
     )
     seed_context: tuple[dict[str, Any], Path] | None = None
     if scenario["requires_mpv"]:
+        selection_path = (
+            evidence_root
+            / host_manifest["mpv_selection"]["manifest"]["path"]
+        ).resolve()
+        inventory_paths.append((selection_path, "shared"))
         seed_manifest_path = evidence_root / "seed-contract.json"
         seed_context = validate_seed_contract_manifest(
             seed_manifest_path, evidence_root, scenario, scenario_hash
@@ -11415,6 +15405,7 @@ def command_compare(args: argparse.Namespace) -> int:
     if len(all_run_paths) != len(set(all_run_paths)):
         raise ValueError("run directories must be unique across baseline, candidate, and repeats")
     mpv_run_provenance: list[dict[str, Any]] = []
+    rate_factor_runs: list[dict[str, Any]] = []
     for role, paths in (
         ("baseline", args.baseline_run),
         ("candidate", args.candidate_run),
@@ -11451,6 +15442,32 @@ def command_compare(args: argparse.Namespace) -> int:
                         **measured_mpv_executable_provenance(resolved, scenario),
                     }
                 )
+                if scenario.get("controller"):
+                    fixture_profile_name = str(scenario["fixture_profile"])
+                    fixture_profile = document["fixture_profiles"][
+                        fixture_profile_name
+                    ]
+                    for process_path in process_run_directories(resolved, scenario):
+                        control_path = process_path / "control.ndjson"
+                        http_path = process_path / "http-ready.json"
+                        http_requests_path = process_path / "http-requests.ndjson"
+                        rate_evidence = rate_factor_evidence(
+                            read_ndjson(control_path),
+                            read_ndjson(http_requests_path),
+                            load_json_object(http_path),
+                            fixture_profile,
+                            process_path,
+                        )
+                        rate_factor_runs.append(
+                            {
+                                "role": role,
+                                "run_id": run_contracts[process_path.resolve()]["run_id"],
+                                "run": process_path.relative_to(evidence_root).as_posix(),
+                                "traffic_profile": scenario["traffic_profile"],
+                                "fixture_profile": fixture_profile_name,
+                                **rate_evidence,
+                            }
+                        )
 
     if mpv_run_provenance:
         executable_identities = {
@@ -11471,7 +15488,7 @@ def command_compare(args: argparse.Namespace) -> int:
             fixture_manifest_path,
             "schema",
             fixture_manifest.get("schema"),
-            "ytt.tui-perf.fixture.v1",
+            FIXTURE_SCHEMA,
         )
         fixture_path = Path(str(fixture_manifest.get("path", "")))
         if not fixture_path.is_file():
@@ -11521,6 +15538,37 @@ def command_compare(args: argparse.Namespace) -> int:
                 repeat[name] = run[name]
     if not results:
         raise ValueError(f"scenario {args.scenario} produced no metric comparisons")
+
+    if scenario["requires_mpv"]:
+        rate_factor_gate = {
+            "schema": "ytt.tui-perf.rate-factor-gate.v1",
+            "factor": RATE_SAFETY_FACTOR,
+            "factor_provenance": (
+                "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
+            ),
+            "runs": rate_factor_runs,
+            "supported": bool(rate_factor_runs)
+            and all(run["supported"] for run in rate_factor_runs),
+            "pass": bool(rate_factor_runs)
+            and all(run["pass"] for run in rate_factor_runs),
+            "ship_evidence_eligible": bool(rate_factor_runs)
+            and all(run["ship_evidence_eligible"] for run in rate_factor_runs),
+            "unsupported_is_ship_evidence": False,
+        }
+    else:
+        rate_factor_gate = {
+            "schema": "ytt.tui-perf.rate-factor-gate.v1",
+            "factor": RATE_SAFETY_FACTOR,
+            "factor_provenance": (
+                "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
+            ),
+            "runs": [],
+            "supported": False,
+            "pass": True,
+            "ship_evidence_eligible": True,
+            "unsupported_is_ship_evidence": False,
+            "not_applicable": True,
+        }
 
     seen_artifacts: dict[Path, str] = {}
     raw_artifacts = []
@@ -11577,6 +15625,10 @@ def command_compare(args: argparse.Namespace) -> int:
         ],
         "candidate_repeat_metrics": repeat_metrics,
         "measurement_scope": document["sampling"],
+        "statistical_contract": document["statistical_contract"],
+        "performance_matrix": document["performance_matrix"],
+        "ship_evidence_eligible": host_manifest["ship_matrix_ready"]
+        and rate_factor_gate["ship_evidence_eligible"],
         "limitations": measurement_limitations(render),
         "evidence": {
             "host_manifest": relative_artifact(
@@ -11587,6 +15639,12 @@ def command_compare(args: argparse.Namespace) -> int:
             "raw_artifacts": raw_artifacts,
             "raw_set_sha256": raw_inventory_digest(raw_artifacts),
             "mpv_executable_provenance": mpv_run_provenance,
+            "mpv_selection": host_manifest.get("mpv_selection"),
+            "source_rate_bound": host_manifest.get("source_rate_bound"),
+            "rate_factor_gate": rate_factor_gate,
+            "operation_cluster_boundary": document["statistical_contract"][
+                "cluster_boundary"
+            ],
             "mpv_null_audio_zero_volume_proven": (
                 True if scenario["requires_mpv"] else None
             ),
@@ -11594,21 +15652,39 @@ def command_compare(args: argparse.Namespace) -> int:
         "required_runtime_checklist": document.get("required_runtime_checklist", []),
         "runtime_checklist_status": "not_run_by_performance_harness",
         "metrics": results,
-        "pass": all(result["pass"] for result in results),
+        "pass": all(result["pass"] for result in results)
+        and rate_factor_gate["pass"],
     }
     atomic_json(args.output_json, report)
     args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
     args.output_markdown.write_text(markdown_report(report), encoding="utf-8")
-    print(json.dumps({"pass": report["pass"], "json": str(args.output_json),
+    print(json.dumps({"pass": report["pass"],
+                      "ship_evidence_eligible": report["ship_evidence_eligible"],
+                      "json": str(args.output_json),
                       "markdown": str(args.output_markdown), "scenario_sha256": scenario_hash}))
     return 0 if report["pass"] else 1
 
 
 def markdown_report(report: dict[str, Any]) -> str:
+    incomplete_families = [
+        name
+        for name, family in report["performance_matrix"]["families"].items()
+        if not family["ship_evidence_eligible"]
+    ]
     lines = [
         f"# TUI performance: `{report['scenario']}`",
         "",
         f"Overall: **{'PASS' if report['pass'] else 'FAIL'}**",
+        "",
+        "Ship evidence: **ELIGIBLE**"
+        if report["ship_evidence_eligible"]
+        else "Ship evidence: **NOT ELIGIBLE (fail-closed)**",
+        "",
+        "Rate-factor gate: **PASS**"
+        if report["evidence"]["rate_factor_gate"]["pass"]
+        else "Rate-factor gate: **FAIL / UNSUPPORTED**",
+        "",
+        f"Incomplete A-I families: `{','.join(incomplete_families)}`",
         "",
         f"Scenario SHA-256: `{report['scenario_sha256']}`",
         "",
@@ -11667,6 +15743,15 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     validate.set_defaults(handler=command_validate)
 
+    matrix_status = sub.add_parser(
+        "matrix-status",
+        help="report A-I execution support and fail closed when ship evidence is required",
+    )
+    matrix_status.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
+    matrix_status.add_argument("--family", choices=tuple("ABCDEFGHI"))
+    matrix_status.add_argument("--require-ship-evidence", action="store_true")
+    matrix_status.set_defaults(handler=command_matrix_status)
+
     scenario = sub.add_parser("scenario", help="print one scenario or a dotted scalar field")
     scenario.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     scenario.add_argument("--id", required=True)
@@ -11722,11 +15807,39 @@ def build_parser() -> argparse.ArgumentParser:
     seed_contract.add_argument("--output", type=Path, required=True)
     seed_contract.set_defaults(handler=command_seed_contract)
 
+    stage_mpv = sub.add_parser(
+        "stage-mpv-current",
+        help="copy and probe the installed current mpv into a new target-local root",
+    )
+    stage_mpv.add_argument("--source-binary", type=Path, required=True)
+    stage_mpv.add_argument("--output-root", type=Path, required=True)
+    stage_mpv.add_argument("--output", type=Path, required=True)
+    stage_mpv.set_defaults(handler=command_stage_mpv_current)
+
+    create_mpv = sub.add_parser(
+        "create-mpv-selection",
+        help="bind a pinned mpv build and compatibility probe to one selection manifest",
+    )
+    create_mpv.add_argument("--target-root", type=Path, required=True)
+    create_mpv.add_argument("--binary", type=Path, required=True)
+    create_mpv.add_argument("--build-manifest", type=Path, required=True)
+    create_mpv.add_argument("--probe-manifest", type=Path, required=True)
+    create_mpv.add_argument("--output", type=Path, required=True)
+    create_mpv.set_defaults(handler=command_create_mpv_selection)
+
+    mpv_selection = sub.add_parser(
+        "mpv-selection", help="validate and inspect a target-local mpv selection manifest"
+    )
+    mpv_selection.add_argument("--manifest", type=Path, required=True)
+    mpv_selection.add_argument("--field")
+    mpv_selection.set_defaults(handler=command_mpv_selection)
+
     manifest = sub.add_parser("manifest", help="write OS, CPU, RAM, tool, and binary identity")
     manifest.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
     manifest.add_argument("--scenario", required=True)
     manifest.add_argument("--output", type=Path, required=True)
     manifest.add_argument("--build-receipt", type=Path, required=True)
+    manifest.add_argument("--mpv-selection-manifest", type=Path)
     manifest.set_defaults(handler=command_manifest)
 
     materialize = sub.add_parser(
@@ -11742,6 +15855,30 @@ def build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--input-snapshot", type=Path, required=True)
     materialize.add_argument("--seed-label", default="unspecified")
     materialize.set_defaults(handler=command_materialize)
+
+    sanitize_runtime = sub.add_parser(
+        "sanitize-runtime-evidence",
+        help="redact runtime-only URLs after the isolated playback process exits",
+    )
+    sanitize_runtime.add_argument("--root", type=Path, required=True)
+    sanitize_runtime.set_defaults(handler=command_sanitize_runtime_evidence)
+
+    privacy_check = sub.add_parser(
+        "privacy-check", help="reject URL or shutdown-secret material in textual evidence"
+    )
+    privacy_check.add_argument("--root", type=Path, required=True)
+    privacy_check.set_defaults(handler=command_privacy_check)
+
+    apply_overrides = sub.add_parser(
+        "apply-setting-overrides",
+        help="apply one scenario role's measured config leaves and snapshot the result",
+    )
+    apply_overrides.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
+    apply_overrides.add_argument("--scenario", required=True)
+    apply_overrides.add_argument("--role", choices=("baseline", "candidate"), required=True)
+    apply_overrides.add_argument("--root", type=Path, required=True)
+    apply_overrides.add_argument("--output", type=Path, required=True)
+    apply_overrides.set_defaults(handler=command_apply_setting_overrides)
 
     launch_policy = sub.add_parser(
         "launch-policy", help="freeze background network/update work for a gating run"
@@ -11783,6 +15920,9 @@ def build_parser() -> argparse.ArgumentParser:
     fixture.add_argument("--manifest", type=Path)
     fixture.add_argument("--seconds", type=float, default=900.0)
     fixture.add_argument("--sample-rate", type=int, default=8_000)
+    fixture.add_argument("--profile")
+    fixture.add_argument("--scenarios", type=Path, default=DEFAULT_SCENARIOS)
+    fixture.add_argument("--ffmpeg", default="ffmpeg")
     fixture.set_defaults(handler=command_fixture)
 
     check = sub.add_parser("check", help="validate one sampler/control artifact set")
@@ -11802,9 +15942,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--run-id", required=True)
     serve.add_argument("--shutdown-token", required=True)
     serve.add_argument("--throttle-bps", type=int, default=0)
+    serve.add_argument("--maximum-source-rate-bps", type=int, default=0)
     serve.add_argument("--outage-every-bytes", type=int, default=0)
     serve.add_argument("--outage-ms", type=int, default=0)
     serve.add_argument("--disconnect-every-bytes", type=int, default=0)
+    serve.add_argument("--header-delay-ms", type=int, default=0)
+    serve.add_argument("--range-response-delay-ms", type=int, default=0)
+    serve.add_argument("--range-behavior", choices=("normal",), default="normal")
+    serve.add_argument("--fault-profile", default="none")
     serve.add_argument("--verbose", action="store_true")
     serve.set_defaults(handler=command_serve)
 
@@ -11814,6 +15959,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stop_server.add_argument("--identity", type=Path, required=True)
     stop_server.add_argument("--expected-run-id", required=True)
+    stop_server.add_argument("--shutdown-token", required=True)
     stop_server.add_argument("--timeout-secs", type=float, default=10.0)
     stop_server.set_defaults(handler=command_stop_server)
 

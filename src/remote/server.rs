@@ -501,6 +501,15 @@ fn standalone_capabilities_advertise_personal_export() {
     assert!(default_capabilities().contains(&super::PERSONAL_EXPORT_CAPABILITY.to_string()));
 }
 
+#[cfg(test)]
+#[test]
+fn standalone_capabilities_do_not_advertise_long_form_seek_gui_mutation() {
+    assert!(
+        !default_capabilities()
+            .contains(&super::LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string())
+    );
+}
+
 fn now_unix() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

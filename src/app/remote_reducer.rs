@@ -597,6 +597,7 @@ impl App {
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
             config: &self.config,
+            long_form_seek_status: None,
             library: &self.library,
             signals: &self.signals,
             // Same current-track gate as status_snapshot above.
@@ -1184,7 +1185,10 @@ mod tests {
         let (_pre_admission_resp, cmds) = app.apply_remote(RemoteCommand::SeekTo { ms: 90_000 });
         assert!(cmds.iter().any(|cmd| matches!(
             cmd.player_command(),
-            Some(PlayerCmd::SeekAbsolute(pos)) if (*pos - 90.0).abs() < 1e-9
+            Some(PlayerCmd::SeekAbsolute {
+                seconds: pos,
+                precision: crate::player::SeekPrecision::InteractiveFast,
+            }) if (*pos - 90.0).abs() < 1e-9
         )));
         assert_eq!(app.playback.time_pos, Some(1.0));
         assert_eq!(app.playback.position_epoch, epoch);
@@ -1201,7 +1205,10 @@ mod tests {
         let (_pre_admission_resp, cmds) = app.apply_remote(RemoteCommand::SeekTo { ms: 999_000 });
         assert!(cmds.iter().any(|cmd| matches!(
             cmd.player_command(),
-            Some(PlayerCmd::SeekAbsolute(pos)) if (*pos - 180.0).abs() < 1e-9
+            Some(PlayerCmd::SeekAbsolute {
+                seconds: pos,
+                precision: crate::player::SeekPrecision::InteractiveFast,
+            }) if (*pos - 180.0).abs() < 1e-9
         )));
         assert_eq!(app.playback.time_pos, Some(90.0));
         assert_eq!(app.playback.position_epoch, epoch + 1);

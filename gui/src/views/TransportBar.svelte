@@ -59,6 +59,7 @@
 
   <div class="seek">
     <SeekBar
+      mediaKey={track ? `${track.video_id}:${model?.position_epoch ?? 0}` : null}
       positionMs={playback.positionMs}
       durationMs={playback.durationMs}
       live={playback.live}

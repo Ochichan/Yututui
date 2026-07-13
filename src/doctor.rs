@@ -21,6 +21,8 @@ const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_800;
 
 #[path = "doctor/directory_probe.rs"]
 mod directory_probe;
+#[path = "doctor/long_form_seek.rs"]
+mod long_form_seek;
 #[cfg(test)]
 use directory_probe::dir_is_writable;
 use directory_probe::report_dir;
@@ -356,6 +358,7 @@ fn run_audio(verbose: bool) -> i32 {
         "  cache: {} forward, {} back",
         status.cache_forward, status.cache_back
     );
+    long_form_seek::print(&cfg.audio.mpv, verbose);
     println!("  gapless: {}", enabled_label(status.gapless));
     println!(
         "  media controls: {}",

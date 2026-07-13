@@ -1,11 +1,22 @@
 {
-  "schema": "ytt.tui-perf.scenarios.v1",
-  "version": 1,
+  "schema": "ytt.tui-perf.scenarios.v2",
+  "version": 2,
   "statistics": {
     "bootstrap_resamples": 50000,
     "seed": 20260711,
     "one_sided_confidence": 0.95,
     "baseline_cv_max": 0.1
+  },
+  "statistical_contract": {
+    "cluster_boundary": "paired_run_and_media_generation",
+    "core_pairs": 7,
+    "core_min_improved_pairs": 6,
+    "fault_pairs": 3,
+    "fault_candidate_repeats": 1,
+    "soak_pairs": 3,
+    "minimum_os_mpv_cells": 6,
+    "pool_operating_systems": false,
+    "selectively_discard_noisy_pairs": false
   },
   "sampling": {
     "interval_ms": 1000,
@@ -13,6 +24,10 @@
     "resident_memory_unit": "bytes",
     "process_scope": "ytt_and_recursive_descendants",
     "measurement_kind": "sampled_process_tree",
+    "resource_telemetry_schema": "ytt.tui-perf.resources.v2",
+    "process_io_unit": "bytes",
+    "volume_free_space_unit": "bytes",
+    "cache_inventory_scope": "visible_regular_files_only_not_disk_accounting",
     "limitations": [
       "sampled process tree; sub-interval descendants may be missed"
     ]
@@ -20,7 +35,153 @@
   "fixture": {
     "duration_s": 1080,
     "sample_rate_hz": 8000,
-    "margin_s": 60
+    "margin_s": 60,
+    "container": "wav",
+    "codec": "pcm_s16le",
+    "channels": 1,
+    "bitrate_bps": 128000
+  },
+  "fixture_profiles": {
+    "wav-18m": {
+      "duration_s": 1080,
+      "sample_rate_hz": 8000,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "container": "wav",
+      "codec": "pcm_s16le",
+      "bitrate_bps": 128000,
+      "generation": "deterministic-zero-pcm-v2"
+    },
+    "wav-1h": {
+      "duration_s": 3600,
+      "sample_rate_hz": 8000,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "container": "wav",
+      "codec": "pcm_s16le",
+      "bitrate_bps": 128000,
+      "generation": "deterministic-zero-pcm-v2"
+    },
+    "wav-2h": {
+      "duration_s": 7200,
+      "sample_rate_hz": 8000,
+      "channels": 1,
+      "sample_width_bytes": 2,
+      "container": "wav",
+      "codec": "pcm_s16le",
+      "bitrate_bps": 128000,
+      "generation": "deterministic-zero-pcm-v2"
+    },
+    "aac-1h": {
+      "duration_s": 3600,
+      "sample_rate_hz": 48000,
+      "channels": 2,
+      "container": "m4a",
+      "codec": "aac",
+      "bitrate_bps": 128000,
+      "generation": "controlled-ffmpeg-lavfi-silence-v2"
+    },
+    "opus-1h": {
+      "duration_s": 3600,
+      "sample_rate_hz": 48000,
+      "channels": 2,
+      "container": "webm",
+      "codec": "opus",
+      "bitrate_bps": 160000,
+      "generation": "controlled-ffmpeg-lavfi-silence-v2"
+    }
+  },
+  "long_form_contract": {
+    "action_kinds": ["cold_seek", "warm_seek", "seek_burst", "close", "recovery"],
+    "requested_cache_modes": ["auto", "off", "on"],
+    "effective_cache_modes": ["ram_only", "probing", "disk_active", "latched_until_close", "unavailable"],
+    "fault_profiles": ["none", "periodic_outage", "disconnect", "range_ignored", "range_416", "etag_change", "unknown_length", "close_during_response"]
+  },
+  "performance_matrix": {
+    "schema": "ytt.tui-perf.long-form-matrix.v1",
+    "families": {
+      "A": {
+        "title": "Auto cold and warm reseek",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["long_form_cold_warm_burst_off", "long_form_cold_warm_burst_auto", "long_form_cold_warm_burst_on"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["compressed_fixture", "normal_range_delay_constrained_profiles", "generation_cluster_metrics", "network_byte_efficiency"],
+        "missing_capabilities": ["compressed fixture profiles are defined but not executed by this matrix", "150/350/750 ms profile sweep and constrained absolute gates are not implemented", "network-byte efficiency and generation-cluster report gates are incomplete"],
+        "fail_closed_reason": "The runnable WAV core proves the 20-pair/5-generation latency contract but cannot stand in for the complete A matrix."
+      },
+      "B": {
+        "title": "Seek burst",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["long_form_cold_warm_burst_off", "long_form_cold_warm_burst_auto", "long_form_cold_warm_burst_on"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["20_to_100_target_burst", "wire_dispatch_correlation", "obsolete_restart_accounting", "second_pass_network_bytes"],
+        "missing_capabilities": ["wire first-plus-latest and obsolete-restart correlation are not exported", "bounded backlog and second-pass network-byte gates are not implemented"],
+        "fail_closed_reason": "The runnable 20-target final-latency gate is diagnostic until wire and network invariants are evidenced."
+      },
+      "C": {
+        "title": "Auto no-trigger",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["long_form_cold_warm_burst_off"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["short_sequential_small_seek_cached_range_source_semantics", "unsupported_mpv", "exact_zero_packet_cache_writes"],
+        "missing_capabilities": ["local/live/radio/unseekable and unsupported-mpv fixtures are not controllable through the harness", "the complete exact-zero no-trigger matrix is absent"],
+        "fail_closed_reason": "Off is covered only as a control; the complete Auto no-trigger source matrix is unsupported."
+      },
+      "D": {
+        "title": "Track churn and cleanup",
+        "status": "unsupported_fail_closed",
+        "diagnostic_scenarios": [],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["ten_item_queue_churn", "stop_eof_failure_respawn_crash", "app_daemon_lifecycle", "space_settle"],
+        "missing_capabilities": ["the controller cannot inject ten-item replacement, Stop, crash, respawn, or daemon lifecycles safely"],
+        "fail_closed_reason": "Lifecycle fault orchestration is unavailable, so D must not run or pass by omission."
+      },
+      "E": {
+        "title": "Cap and free space",
+        "status": "unsupported_fail_closed",
+        "diagnostic_scenarios": [],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["soft_cap_crossing", "free_space_boundary", "enospc_eacces_stat_injection", "emergency_recycle"],
+        "missing_capabilities": ["safe filesystem fault and exact free-space boundary injection are not implemented"],
+        "fail_closed_reason": "Without deterministic storage fault injection the cap/floor safety contract cannot produce ship evidence."
+      },
+      "F": {
+        "title": "Network resilience",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["network_resilience"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["slow_outage_disconnect_delay", "range_ignored", "range_416", "post_close_transfer"],
+        "missing_capabilities": ["ignored Range, 416, cancellation, and post-close transfer bounds are not runnable end to end"],
+        "fail_closed_reason": "The outage profile is diagnostic only and cannot represent the full F fault matrix."
+      },
+      "G": {
+        "title": "Memory and I/O soak",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["memory_soak"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["fifteen_minute_repeated_seek", "robust_rss_slope_upper", "os_pressure_dirty_writeback", "post_close_settle"],
+        "missing_capabilities": ["the current soak lacks repeated seeks, OS pressure/dirty/writeback evidence, robust slope bootstrap, and post-close settle proof"],
+        "fail_closed_reason": "The 15-minute sampler duration is runnable but its evidence is insufficient for the complete G gates."
+      },
+      "H": {
+        "title": "On worst case",
+        "status": "diagnostic_only_fail_closed",
+        "diagnostic_scenarios": ["long_form_cold_warm_burst_on"],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["sequential_one_two_hour", "skip_10_30_seconds", "normal_completion", "fast_constrained"],
+        "missing_capabilities": ["sequential completion, early skip, and fast/constrained cross-product scenarios are absent"],
+        "fail_closed_reason": "The On core is diagnostic and cannot substitute for the H worst-case cross-product."
+      },
+      "I": {
+        "title": "Managed cache-knob matrix",
+        "status": "unsupported_fail_closed",
+        "diagnostic_scenarios": [],
+        "ship_evidence_eligible": false,
+        "required_capabilities": ["role_specific_mpv_knobs", "hysteresis_capability_probe", "sequential_cold_warm_outage_close", "cross_version_unknown_option_guard"],
+        "missing_capabilities": ["role-specific mpv knob injection and capability-gated hysteresis candidate execution are not implemented"],
+        "fail_closed_reason": "No managed knob candidate may be adopted until I is runnable across supported mpv lines."
+      }
+    }
   },
   "required_runtime_checklist": [
     "album art off and on with Halfblocks plus every natively available protocol",
@@ -39,21 +200,47 @@
   "traffic_profiles": {
     "normal": {
       "throttle_bps": 0,
+      "maximum_source_rate_bps": 0,
       "outage_every_bytes": 0,
       "outage_ms": 0,
-      "disconnect_every_bytes": 0
+      "disconnect_every_bytes": 0,
+      "header_delay_ms": 0,
+      "range_response_delay_ms": 0,
+      "range_behavior": "normal",
+      "fault_profile": "none"
     },
     "constrained": {
       "throttle_bps": 24000,
+      "maximum_source_rate_bps": 24000,
       "outage_every_bytes": 0,
       "outage_ms": 0,
-      "disconnect_every_bytes": 0
+      "disconnect_every_bytes": 0,
+      "header_delay_ms": 0,
+      "range_response_delay_ms": 350,
+      "range_behavior": "normal",
+      "fault_profile": "none"
     },
     "outage": {
       "throttle_bps": 24000,
+      "maximum_source_rate_bps": 24000,
       "outage_every_bytes": 524288,
       "outage_ms": 1500,
-      "disconnect_every_bytes": 2097152
+      "disconnect_every_bytes": 2097152,
+      "header_delay_ms": 0,
+      "range_response_delay_ms": 350,
+      "range_behavior": "normal",
+      "fault_profile": "periodic_outage"
+    },
+    "long_form_bounded": {
+      "throttle_bps": 24000,
+      "maximum_source_rate_bps": 24000,
+      "outage_every_bytes": 0,
+      "outage_ms": 0,
+      "disconnect_every_bytes": 0,
+      "header_delay_ms": 0,
+      "range_response_delay_ms": 0,
+      "range_behavior": "normal",
+      "fault_profile": "none"
     }
   },
   "scenarios": [
@@ -68,6 +255,7 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": false,
+      "fixture_profile": "wav-18m",
       "controller": false,
       "pause_policy": "none",
       "pause_hold_ms": 0,
@@ -94,6 +282,7 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "fixture_profile": "wav-18m",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -155,6 +344,7 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "fixture_profile": "wav-18m",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -204,6 +394,7 @@
       "geometry": [[80, 24]],
       "traffic_profile": "outage",
       "requires_mpv": true,
+      "fixture_profile": "wav-18m",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -249,6 +440,7 @@
       "geometry": [[80, 24], [100, 30], [160, 50]],
       "traffic_profile": "normal",
       "requires_mpv": false,
+      "fixture_profile": "wav-18m",
       "controller": false,
       "pause_policy": "none",
       "pause_hold_ms": 0,
@@ -355,6 +547,7 @@
       "geometry": [[80, 24]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "fixture_profile": "wav-2h",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -394,6 +587,7 @@
       "geometry": [[100, 30], [160, 50]],
       "traffic_profile": "normal",
       "requires_mpv": true,
+      "fixture_profile": "wav-18m",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -420,6 +614,375 @@
           "comparison": "ratio",
           "max_ratio": 1.05,
           "min_improved_pairs": 0
+        }
+      }
+    },
+    {
+      "id": "long_form_cold_warm_burst_off",
+      "description": "Off-role control on a one-hour deterministic Range fixture with cold, warm revisit, and no-wait burst operations",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 60,
+      "sample_s": 180,
+      "geometry": [[80, 24]],
+      "traffic_profile": "long_form_bounded",
+      "fixture_profile": "wav-1h",
+      "requires_mpv": true,
+      "requested_cache_mode": "off",
+      "cache_mode_roles": {"baseline": "off", "candidate": "off"},
+      "expected_cache_effective": "ram_only",
+      "expected_activation_count": 0,
+      "expected_activation_reason": "requested_off",
+      "fault_profile": "none",
+      "cache_limits": {
+        "soft_cap_bytes": 268435456,
+        "reserve_floor_bytes": 1073741824,
+        "session_write_budget_bytes": 1073741824,
+        "rolling_24h_write_budget_bytes": 2147483648
+      },
+      "setting_leaf_overrides": {
+        "baseline": {"audio.mpv.long_form_seek_optimization": "off"},
+        "candidate": {"audio.mpv.long_form_seek_optimization": "off"}
+      },
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [3000, 60, 2400, 3000, 3300, 2400, 2700, 3300, 2940, 120, 2340, 2940, 3240, 2340, 2640, 3240, 2880, 180, 2280, 2880, 3180, 2280, 2580, 3180, 2820, 240, 2220, 2820, 3120, 2220, 2520, 3120, 2760, 300, 2160, 2760, 3060, 2160, 2460, 3060, 300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060],
+      "actions": [
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 60},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2700},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "recovery", "file_generation": "media-02"},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 120},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2640},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "recovery", "file_generation": "media-03"},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 180},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2580},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "recovery", "file_generation": "media-04"},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 240},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2520},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "recovery", "file_generation": "media-05"},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 300},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2460},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "seek_burst", "file_generation": "media-05", "targets_s": [300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060], "window_ms": 500}
+      ],
+      "metrics": {
+        "operation.cold_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "operation.warm_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.0,
+          "max_delta": 0.0,
+          "min_improved_pairs": 0
+        },
+        "operation.seek_burst.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.0,
+          "max_delta": 0.0,
+          "min_improved_pairs": 0
+        },
+        "tree.total_written_bytes": {
+          "comparison": "no_increase",
+          "max_delta": 0,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "long_form_cold_warm_burst_auto",
+      "description": "Auto candidate against an Off baseline on a one-hour deterministic Range fixture with cold, warm revisit, and no-wait burst operations",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 60,
+      "sample_s": 180,
+      "geometry": [[80, 24]],
+      "traffic_profile": "long_form_bounded",
+      "fixture_profile": "wav-1h",
+      "requires_mpv": true,
+      "requested_cache_mode": "auto",
+      "cache_mode_roles": {"baseline": "off", "candidate": "auto"},
+      "expected_cache_effective": "disk_active",
+      "expected_activation_count": 5,
+      "expected_activation_reason": "auto_uncached_seek",
+      "fault_profile": "none",
+      "cache_limits": {
+        "soft_cap_bytes": 268435456,
+        "reserve_floor_bytes": 1073741824,
+        "session_write_budget_bytes": 1073741824,
+        "rolling_24h_write_budget_bytes": 2147483648
+      },
+      "setting_leaf_overrides": {
+        "baseline": {"audio.mpv.long_form_seek_optimization": "off"},
+        "candidate": {"audio.mpv.long_form_seek_optimization": "auto"}
+      },
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [3000, 60, 2400, 3000, 3300, 2400, 2700, 3300, 2940, 120, 2340, 2940, 3240, 2340, 2640, 3240, 2880, 180, 2280, 2880, 3180, 2280, 2580, 3180, 2820, 240, 2220, 2820, 3120, 2220, 2520, 3120, 2760, 300, 2160, 2760, 3060, 2160, 2460, 3060, 300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060],
+      "actions": [
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 60},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2700},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "recovery", "file_generation": "media-02"},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 120},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2640},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "recovery", "file_generation": "media-03"},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 180},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2580},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "recovery", "file_generation": "media-04"},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 240},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2520},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "recovery", "file_generation": "media-05"},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 300},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2460},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "seek_burst", "file_generation": "media-05", "targets_s": [300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060], "window_ms": 500}
+      ],
+      "metrics": {
+        "operation.cold_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "operation.warm_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 0.7,
+          "max_delta": 0.0,
+          "min_improved_pairs": 6
+        },
+        "operation.seek_burst.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 0.75,
+          "max_delta": 0.0,
+          "min_improved_pairs": 6
+        },
+        "tree.total_written_bytes": {
+          "comparison": "no_increase",
+          "max_delta": 1073741824,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        }
+      }
+    },
+    {
+      "id": "long_form_cold_warm_burst_on",
+      "description": "On candidate against an Off baseline on a one-hour deterministic Range fixture with cold, warm revisit, and no-wait burst operations",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 60,
+      "sample_s": 180,
+      "geometry": [[80, 24]],
+      "traffic_profile": "long_form_bounded",
+      "fixture_profile": "wav-1h",
+      "requires_mpv": true,
+      "requested_cache_mode": "on",
+      "cache_mode_roles": {"baseline": "off", "candidate": "on"},
+      "expected_cache_effective": "disk_active",
+      "expected_activation_count": 5,
+      "expected_activation_reason": "on_eligible_media",
+      "fault_profile": "none",
+      "cache_limits": {
+        "soft_cap_bytes": 268435456,
+        "reserve_floor_bytes": 1073741824,
+        "session_write_budget_bytes": 1073741824,
+        "rolling_24h_write_budget_bytes": 2147483648
+      },
+      "setting_leaf_overrides": {
+        "baseline": {"audio.mpv.long_form_seek_optimization": "off"},
+        "candidate": {"audio.mpv.long_form_seek_optimization": "on"}
+      },
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [3000, 60, 2400, 3000, 3300, 2400, 2700, 3300, 2940, 120, 2340, 2940, 3240, 2340, 2640, 3240, 2880, 180, 2280, 2880, 3180, 2280, 2580, 3180, 2820, 240, 2220, 2820, 3120, 2220, 2520, 3120, 2760, 300, 2160, 2760, 3060, 2160, 2460, 3060, 300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060],
+      "actions": [
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 60},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3000},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 2400},
+        {"kind": "cold_seek", "file_generation": "media-01", "target_s": 2700},
+        {"kind": "warm_seek", "file_generation": "media-01", "target_s": 3300},
+        {"kind": "recovery", "file_generation": "media-02"},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 120},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2940},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 2340},
+        {"kind": "cold_seek", "file_generation": "media-02", "target_s": 2640},
+        {"kind": "warm_seek", "file_generation": "media-02", "target_s": 3240},
+        {"kind": "recovery", "file_generation": "media-03"},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 180},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2880},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 2280},
+        {"kind": "cold_seek", "file_generation": "media-03", "target_s": 2580},
+        {"kind": "warm_seek", "file_generation": "media-03", "target_s": 3180},
+        {"kind": "recovery", "file_generation": "media-04"},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 240},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2820},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 2220},
+        {"kind": "cold_seek", "file_generation": "media-04", "target_s": 2520},
+        {"kind": "warm_seek", "file_generation": "media-04", "target_s": 3120},
+        {"kind": "recovery", "file_generation": "media-05"},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 300},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2760},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 2160},
+        {"kind": "cold_seek", "file_generation": "media-05", "target_s": 2460},
+        {"kind": "warm_seek", "file_generation": "media-05", "target_s": 3060},
+        {"kind": "seek_burst", "file_generation": "media-05", "targets_s": [300, 3000, 600, 2700, 900, 3300, 1200, 2400, 1500, 3150, 1800, 2550, 2100, 3450, 450, 2850, 750, 2250, 1050, 3060], "window_ms": 500}
+      ],
+      "metrics": {
+        "operation.cold_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 1.05,
+          "max_delta": 100.0,
+          "min_improved_pairs": 0
+        },
+        "operation.warm_seek.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 0.7,
+          "max_delta": 0.0,
+          "min_improved_pairs": 6
+        },
+        "operation.seek_burst.p95_ms": {
+          "comparison": "latency",
+          "max_ratio": 0.75,
+          "max_delta": 0.0,
+          "min_improved_pairs": 6
+        },
+        "tree.total_written_bytes": {
+          "comparison": "no_increase",
+          "max_delta": 1073741824,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": {
+          "comparison": "no_increase",
+          "max_delta": 0
+        },
+        "buffering_ms": {
+          "comparison": "no_increase",
+          "max_delta": 0
         }
       }
     }

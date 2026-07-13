@@ -65,6 +65,7 @@ fn secret_config() -> Config {
     config.audio.mpv.output = Some(SECRET.to_owned());
     config.audio.mpv.device = Some(PRIVATE_PATH.to_owned());
     config.audio.mpv.extra_args = vec![format!("--cookies={PRIVATE_PATH}")];
+    config.audio.mpv.long_form_seek_optimization = crate::config::LongFormSeekOptimization::Auto;
     config.recording.track_directory = Some(PathBuf::from(PRIVATE_PATH));
     config
 }
@@ -176,6 +177,26 @@ fn projection_is_fail_closed_for_secrets_paths_urls_and_transfer_fields() {
     assert_eq!(snapshot.summary.omitted_signal_tracks, 1);
     assert_eq!(snapshot.summary.omitted_signal_events, 1);
     assert_eq!(snapshot.settings.playback["album_art_quality"], "high");
+}
+
+#[test]
+fn export_includes_requested_long_form_mode_but_no_runtime_cache_state() {
+    let value = serde_json::to_value(fixture_snapshot()).unwrap();
+    let mpv = &value["settings"]["audio"]["mpv"];
+
+    assert_eq!(mpv["cache_forward"], "32MiB");
+    assert_eq!(mpv["cache_back"], "8MiB");
+    assert_eq!(mpv["long_form_seek_optimization"], "auto");
+    let text = serde_json::to_string(&value).unwrap();
+    for forbidden in [
+        "long_form_seek_effective",
+        "long_form_seek_reason",
+        "cache_root",
+        "cache_path",
+        "packet_payload",
+    ] {
+        assert!(!text.contains(forbidden), "export leaked {forbidden}");
+    }
 }
 
 #[test]

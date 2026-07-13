@@ -660,6 +660,9 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     assert!(app.onboarding.visible());
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_BEGINNER_BIT);
     app.onboarding = OnboardingState::default();
+    let _ = app.open_audio_output_picker();
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_AUDIO_OUTPUT_BIT);
+    app.close_audio_output_picker();
     app.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,

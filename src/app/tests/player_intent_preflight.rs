@@ -1,14 +1,5 @@
 use super::*;
 
-fn assert_rejected_before_send(app: &mut App, cmds: Vec<Cmd>) {
-    let (follow_ups, mut rx) = runtime_admit_player_transition(app, cmds);
-    assert!(follow_ups.is_empty());
-    assert!(
-        rx.try_recv().is_err(),
-        "stale intent sent a command before its reducer preflight"
-    );
-}
-
 #[test]
 fn stale_prefetch_retry_is_rejected_before_load_reaches_player() {
     let mut app = app_playing(2, 0);

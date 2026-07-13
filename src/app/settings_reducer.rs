@@ -112,6 +112,7 @@ impl App {
             audio_backend: self.config.audio.backend,
             audio_mpv_output: self.config.audio.mpv.output.clone().unwrap_or_default(),
             audio_mpv_device: self.config.audio.mpv.device.clone().unwrap_or_default(),
+            long_form_seek_optimization: self.config.audio.mpv.long_form_seek_optimization,
             audio_mpv_cache_forward: self.config.audio.mpv.cache_forward.clone(),
             audio_mpv_cache_back: self.config.audio.mpv.cache_back.clone(),
             autoplay_streaming: self.autoplay_streaming,
@@ -708,6 +709,12 @@ impl App {
                 self.status.text = t!("Audio backend: mpv", "오디오 백엔드: mpv").to_owned();
                 Vec::new()
             }
+            Field::LongFormSeekOptimization => {
+                let s = self.settings_mut();
+                s.draft.long_form_seek_optimization =
+                    s.draft.long_form_seek_optimization.cycled(dir >= 0);
+                Vec::new()
+            }
             Field::Language => {
                 let s = self.settings_mut();
                 if s.draft.retro_mode {
@@ -970,6 +977,9 @@ impl App {
             FieldKind::Select if field == Field::SpotifyImportMode => {
                 self.settings_open_spotify_import_mode_dropdown();
                 Vec::new()
+            }
+            FieldKind::Select if field == Field::LongFormSeekOptimization => {
+                self.settings_change(1)
             }
             FieldKind::Button => match field {
                 Field::AudioOutput => self.open_audio_output_picker(),

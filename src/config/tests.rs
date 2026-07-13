@@ -175,6 +175,67 @@ fn drifted_enums_recover_instead_of_wiping_the_whole_config() {
 }
 
 #[test]
+fn unknown_long_form_seek_leaf_recovers_off_without_rewriting_audio_siblings() {
+    let dir = std::env::temp_dir().join(format!(
+        "ytm-long-form-seek-config-recovery-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    let original = serde_json::to_vec_pretty(&serde_json::json!({
+        "volume": 42,
+        "audio": {
+            "backend": "mpv",
+            "future_audio_sibling": {"keep": true},
+            "mpv": {
+                "output": "pipewire",
+                "device": "alsa/custom",
+                "cache_forward": "64MiB",
+                "cache_back": "12MiB",
+                "long_form_seek_optimization": "future-adaptive",
+                "extra_args": ["--audio-exclusive=no"],
+                "future_mpv_sibling": [1, 2, 3]
+            }
+        }
+    }))
+    .unwrap();
+    std::fs::write(&path, &original).unwrap();
+
+    let recovered = Config::load_from(&path);
+
+    assert_eq!(
+        recovered.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::Off
+    );
+    assert_eq!(recovered.audio.mpv.output.as_deref(), Some("pipewire"));
+    assert_eq!(recovered.audio.mpv.device.as_deref(), Some("alsa/custom"));
+    assert_eq!(recovered.audio.mpv.cache_forward, "64MiB");
+    assert_eq!(recovered.audio.mpv.cache_back, "12MiB");
+    assert_eq!(recovered.audio.mpv.extra_args, ["--audio-exclusive=no"]);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "loading an unknown leaf must not rewrite or discard raw sibling fields"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn missing_long_form_seek_leaf_defaults_off() {
+    let config: Config = serde_json::from_value(serde_json::json!({
+        "audio": {"mpv": {"cache_forward": "32MiB", "cache_back": "8MiB"}}
+    }))
+    .unwrap();
+
+    assert_eq!(
+        config.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::Off
+    );
+}
+
+#[test]
 fn json_round_trips() {
     let mut theme = ThemeConfig::default();
     theme.set_preset(crate::theme::ThemePreset::Midnight);
@@ -281,6 +342,7 @@ fn json_round_trips() {
                 device_detected: false,
                 cache_forward: "64MiB".to_owned(),
                 cache_back: "16MiB".to_owned(),
+                long_form_seek_optimization: LongFormSeekOptimization::On,
                 extra_args: vec!["--audio-exclusive=no".to_owned()],
             },
         },
@@ -368,6 +430,10 @@ fn json_round_trips() {
     assert_eq!(back.audio.mpv.device.as_deref(), Some("alsa/default"));
     assert_eq!(back.audio.mpv.cache_forward, "64MiB");
     assert_eq!(back.audio.mpv.cache_back, "16MiB");
+    assert_eq!(
+        back.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::On
+    );
     assert_eq!(back.audio.mpv.extra_args, ["--audio-exclusive=no"]);
     assert_eq!(back.theme.preset, "midnight");
     assert_eq!(

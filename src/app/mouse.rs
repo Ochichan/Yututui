@@ -116,11 +116,8 @@ impl App {
         {
             return self.activate_onboarding(action);
         }
-        // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
-        // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
-        // below if this click grabs a track.
-        self.interaction.seekbar_drag = None;
-        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        // Every fresh press cancels a prior scrub whose button-up was lost.
+        self.cancel_seekbar_scrub();
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
@@ -489,24 +486,13 @@ impl App {
         }
         if let Some(area) = self.hits.seekbar_rect()
             && let Some(dur) = self.playback.duration
+            && dur.is_finite()
             && dur > 0.0
             && area.width > 0
             && rect_contains(area, col, row)
         {
-            let frac = f64::from(col - area.x) / f64::from(area.width);
-            let target = (frac * dur).clamp(0.0, dur);
-            tracing::info!(secs = target, "click seek");
-            // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
-            self.interaction.seekbar_drag = Some(col);
-            self.interaction.seekbar_admission = SeekbarAdmission::Pending;
-            self.dirty = true;
-            return self.player_intent(
-                "seek_absolute",
-                PlayerCmd::SeekAbsolute(target),
-                PlayerCommit::Seek {
-                    optimistic_position: Some(target),
-                },
-            );
+            self.begin_seekbar_scrub(col, area, dur);
+            return Vec::new();
         }
         Vec::new()
     }
@@ -514,7 +500,7 @@ impl App {
     /// Whether the player transport/status controls are on screen and may take input:
     /// always on the Player screen, and on every screen showing the docked control box.
     /// A control that isn't rendered must never take clicks — and vice versa.
-    fn player_controls_live(&self) -> bool {
+    pub(in crate::app) fn player_controls_live(&self) -> bool {
         self.mode == Mode::Player
             || self.control_box_active()
             || self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
@@ -1064,43 +1050,9 @@ impl App {
             self.interaction.recording_drag = None;
             return Vec::new();
         }
-        // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
-        // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
-        if self.interaction.seekbar_drag.is_some()
-            && self.player_controls_live()
-            && !self.queue_popup.open
-        {
-            if let Some(area) = self.hits.seekbar_rect()
-                && let Some(dur) = self.playback.duration
-                && dur > 0.0
-                && area.width > 0
-            {
-                // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
-                // can't underflow u16).
-                let c = col.clamp(area.x, area.right().saturating_sub(1));
-                if self.interaction.seekbar_drag != Some(c)
-                    || self.interaction.seekbar_admission == SeekbarAdmission::Retry
-                {
-                    // Intra-cell dedupe is valid only after admission. A rejected request keeps
-                    // the scrub active but must allow the same cell to be retried.
-                    self.interaction.seekbar_drag = Some(c);
-                    self.interaction.seekbar_admission = SeekbarAdmission::Pending;
-                    let frac = f64::from(c - area.x) / f64::from(area.width);
-                    let target = (frac * dur).clamp(0.0, dur);
-                    self.dirty = true;
-                    return self.player_intent(
-                        "seek_absolute",
-                        PlayerCmd::SeekAbsolute(target),
-                        PlayerCommit::Seek {
-                            optimistic_position: Some(target),
-                        },
-                    );
-                }
-                return Vec::new();
-            }
-            // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
-            self.interaction.seekbar_drag = None;
-            self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        // Seekbar movement is preview-only; mouse-up commits the final target once.
+        if self.interaction.seekbar_scrub.is_some() {
+            self.update_seekbar_scrub(col);
             return Vec::new();
         }
         if self.queue_popup.open {
@@ -1195,8 +1147,7 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
-        self.interaction.seekbar_drag = None;
-        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        let seek_cmds = self.commit_seekbar_scrub();
 
         if let Some(drag) = self.interaction.ai_transcript_drag.take() {
             if drag.moved {
@@ -1229,22 +1180,7 @@ impl App {
             }
         }
 
-        Vec::new()
-    }
-
-    /// Settle only a seek issued by the active mouse scrub. Runtime calls this for every seek
-    /// admission result, but unrelated keyboard/remote seeks find no `Pending` mouse request and
-    /// therefore cannot leave a stale retry bypass behind.
-    pub(crate) fn settle_mouse_seek_admission(&mut self, accepted: bool) {
-        if self.interaction.seekbar_admission != SeekbarAdmission::Pending {
-            return;
-        }
-        self.interaction.seekbar_admission = if accepted || self.interaction.seekbar_drag.is_none()
-        {
-            SeekbarAdmission::Settled
-        } else {
-            SeekbarAdmission::Retry
-        };
+        seek_cmds
     }
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {

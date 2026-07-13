@@ -77,6 +77,7 @@ impl App {
         if animations_were_on && !self.animations().master {
             self.fx.cancel();
         }
+        self.cancel_stale_seekbar_scrub();
         self.sync_art_overlay_state();
         self.sync_art_geometry();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
@@ -363,6 +364,16 @@ impl App {
                 PlayerMsg::TransportClosed(reason) => {
                     self.audio_output_transport_closed(&reason);
                     return self.recover_player_transport(reason);
+                }
+                PlayerMsg::CacheEmergency {
+                    position_secs,
+                    paused,
+                    reason,
+                } => {
+                    return self.recover_cache_emergency(position_secs, paused, reason);
+                }
+                PlayerMsg::CacheReplacementEmergency { reason } => {
+                    return self.recover_cache_replacement_emergency(reason);
                 }
                 PlayerMsg::IntentAdmitted(commit) => {
                     return self.commit_player_intent(commit);

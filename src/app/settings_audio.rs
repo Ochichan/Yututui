@@ -10,6 +10,7 @@ use super::*;
 struct SettingsAudioSnapshot {
     speed: f64,
     seek_seconds: f64,
+    long_form_seek_optimization: crate::config::LongFormSeekOptimization,
     preset: EqPreset,
     bands: [f64; eq::BANDS],
     normalize: bool,
@@ -20,6 +21,7 @@ impl SettingsAudioSnapshot {
         Self {
             speed: draft.speed,
             seek_seconds: draft.seek_seconds,
+            long_form_seek_optimization: draft.long_form_seek_optimization,
             preset: draft.eq_preset,
             bands: draft.eq_bands,
             normalize: draft.normalize,
@@ -30,6 +32,7 @@ impl SettingsAudioSnapshot {
         Self {
             speed: app.playback.speed,
             seek_seconds: app.audio.seek_seconds,
+            long_form_seek_optimization: app.config.audio.mpv.long_form_seek_optimization,
             preset: app.audio.preset,
             bands: app.audio.bands,
             normalize: app.audio.normalize,
@@ -39,6 +42,7 @@ impl SettingsAudioSnapshot {
     fn apply_to(self, draft: &mut SettingsDraft) {
         draft.speed = self.speed;
         draft.seek_seconds = self.seek_seconds;
+        draft.long_form_seek_optimization = self.long_form_seek_optimization;
         draft.eq_preset = self.preset;
         draft.eq_bands = self.bands;
         draft.normalize = self.normalize;
@@ -241,6 +245,7 @@ impl App {
                     name: "speed".to_owned(),
                     value: serde_json::Value::from(next_audio.speed),
                 },
+                PlayerCmd::SetLongFormSeekOptimization(next_audio.long_form_seek_optimization),
                 PlayerCmd::SetAudioFilter(next_audio.filter()),
             ],
             expected,
@@ -294,6 +299,7 @@ impl App {
                         name: "speed".to_owned(),
                         value: serde_json::Value::from(draft.speed),
                     },
+                    PlayerCmd::SetLongFormSeekOptimization(draft.long_form_seek_optimization),
                     PlayerCmd::SetAudioFilter(draft.filter()),
                 ],
                 PlayerCommit::SettingsSave(Box::new(plan)),
@@ -456,6 +462,7 @@ fn reset_settings_state(state: &mut SettingsState) {
     draft.speed = defaults.effective_speed();
     draft.seek_seconds = defaults.effective_seek_seconds();
     draft.gapless = defaults.effective_gapless();
+    draft.long_form_seek_optimization = defaults.audio.mpv.long_form_seek_optimization;
     draft.autoplay_streaming = defaults.effective_autoplay_streaming();
     draft.curating_mode = crate::streaming::CuratingMode::from_ai(defaults.streaming.ai.enabled);
     draft.streaming_mode = defaults.streaming.mode;
@@ -491,6 +498,7 @@ fn reset_settings_state(state: &mut SettingsState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LongFormSeekOptimization;
     use crate::util::delivery::{DeliveryError, DeliveryReceipt};
 
     fn app_with_settings() -> App {
@@ -650,7 +658,7 @@ mod tests {
                 draft.gemini_api_key = "keep-me".to_owned();
             }
             let cmds = app.settings_reset_all();
-            assert_eq!(cmds[0].player_commands().count(), 2);
+            assert_eq!(cmds[0].player_commands().count(), 3);
 
             assert!(reject(&mut app, cmds, error).is_empty());
             let draft = &app.settings.as_deref().unwrap().draft;
@@ -671,6 +679,9 @@ mod tests {
             commands.as_slice(),
             [
                 PlayerCmd::SetProperty { name, value },
+                PlayerCmd::SetLongFormSeekOptimization(
+                    LongFormSeekOptimization::Off
+                ),
                 PlayerCmd::SetAudioFilter(_)
             ] if name == "speed" && value.as_f64() == Some(1.0)
         ));
@@ -726,6 +737,9 @@ mod tests {
             commands.as_slice(),
             [
                 PlayerCmd::SetProperty { name, value },
+                PlayerCmd::SetLongFormSeekOptimization(
+                    LongFormSeekOptimization::Off
+                ),
                 PlayerCmd::SetAudioFilter(filter)
             ] if name == "speed"
                 && value.as_f64() == Some(1.4)

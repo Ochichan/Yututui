@@ -31,6 +31,7 @@ fn base_draft() -> SettingsDraft {
         audio_backend: crate::config::AudioBackend::Mpv,
         audio_mpv_output: String::new(),
         audio_mpv_device: String::new(),
+        long_form_seek_optimization: LongFormSeekOptimization::Off,
         audio_mpv_cache_forward: MPV_CACHE_FORWARD_DEFAULT.to_owned(),
         audio_mpv_cache_back: MPV_CACHE_BACK_DEFAULT.to_owned(),
         autoplay_streaming: false,
@@ -252,7 +253,7 @@ fn playback_tab_groups_now_playing_and_eq() {
     let f = SettingsTab::Playback.fields();
     // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
     // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio controls and EQ.
-    assert_eq!(f.len(), 9 + 4 + 1 + eq::BANDS + 1);
+    assert_eq!(f.len(), 9 + 3 + eq::BANDS + 2);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
     assert_eq!(f[2], Field::MouseWheelVolume);
@@ -264,9 +265,13 @@ fn playback_tab_groups_now_playing_and_eq() {
     assert_eq!(f[8], Field::RadioRecording);
     assert_eq!(f[9], Field::AudioBackend);
     assert_eq!(f[10], Field::AudioOutput);
-    assert_eq!(f[12], Field::AudioMpvCacheBack);
-    assert_eq!(f[13], Field::EqPreset);
-    assert_eq!(f[13 + eq::BANDS + 1], Field::Normalize);
+    assert_eq!(f[11], Field::LongFormSeekOptimization);
+    assert!(!f.contains(&Field::AudioMpvOutput));
+    assert!(!f.contains(&Field::AudioMpvDevice));
+    assert!(!f.contains(&Field::AudioMpvCacheForward));
+    assert!(!f.contains(&Field::AudioMpvCacheBack));
+    assert_eq!(f[12], Field::EqPreset);
+    assert_eq!(f[12 + eq::BANDS + 1], Field::Normalize);
     assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
     assert_eq!(Field::AlbumArtQuality.kind(), FieldKind::Select);
     assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
@@ -275,11 +280,15 @@ fn playback_tab_groups_now_playing_and_eq() {
         "High · up to 768 px"
     );
     assert_eq!(base_draft().value_display(Field::AudioBackend), "mpv");
-    let total: usize = SettingsTab::Playback
-        .sections()
-        .iter()
-        .map(|(_, n)| n)
-        .sum();
+    assert_eq!(
+        base_draft().value_display(Field::LongFormSeekOptimization),
+        "Off"
+    );
+    assert_eq!(Field::LongFormSeekOptimization.kind(), FieldKind::Select);
+    let sections = SettingsTab::Playback.sections();
+    assert_eq!(sections[0].1, 9);
+    assert_eq!(sections[1].1, 3);
+    let total: usize = sections.iter().map(|(_, n)| n).sum();
     assert_eq!(total, f.len());
 }
 
@@ -538,6 +547,7 @@ fn apply_to_persists_every_settings_field() {
         audio_backend: crate::config::AudioBackend::Mpv,
         audio_mpv_output: "pipewire".to_owned(),
         audio_mpv_device: "alsa/default".to_owned(),
+        long_form_seek_optimization: LongFormSeekOptimization::On,
         audio_mpv_cache_forward: "64MiB".to_owned(),
         audio_mpv_cache_back: "16MiB".to_owned(),
         autoplay_streaming: true,
@@ -644,6 +654,10 @@ fn apply_to_persists_every_settings_field() {
     assert_eq!(cfg.audio.mpv.device.as_deref(), Some("alsa/default"));
     assert_eq!(cfg.audio.mpv.cache_forward, "64MiB");
     assert_eq!(cfg.audio.mpv.cache_back, "16MiB");
+    assert_eq!(
+        cfg.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::On
+    );
     assert_eq!(cfg.autoplay_streaming, Some(true));
     assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
     // Curating mode = YT Native → the AI rerank flag persists as false.

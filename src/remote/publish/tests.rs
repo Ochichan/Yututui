@@ -12,6 +12,58 @@ fn view(queue: &Queue) -> CoreView<'_> {
     test_view(queue)
 }
 
+#[test]
+fn standalone_settings_snapshot_omits_daemon_only_long_form_seek_fields() {
+    let queue = Queue::default();
+    let settings = settings_model(&view(&queue), 1);
+
+    assert!(settings.audio.long_form_seek_optimization.is_none());
+    assert!(settings.audio.long_form_seek_effective.is_none());
+    assert!(settings.audio.long_form_seek_reason.is_none());
+    let json = serde_json::to_value(settings).unwrap();
+    assert!(json["audio"].get("long_form_seek_optimization").is_none());
+    assert!(json["audio"].get("long_form_seek_effective").is_none());
+    assert!(json["audio"].get("long_form_seek_reason").is_none());
+}
+
+#[test]
+fn daemon_settings_snapshot_maps_live_player_long_form_seek_status() {
+    use crate::config::LongFormSeekOptimization;
+    use crate::player::long_form_seek::{CacheEffectiveState, CacheReason, CacheStatus};
+
+    let queue = Queue::default();
+    let mut config = crate::config::Config::default();
+    config.audio.mpv.long_form_seek_optimization = LongFormSeekOptimization::On;
+    let mut daemon = view(&queue);
+    daemon.owner_mode = InstanceMode::Daemon;
+    daemon.config = Box::leak(Box::new(config));
+    daemon.long_form_seek_status = Some(CacheStatus {
+        // The actor may still report the previous request during the immediate confirmation
+        // snapshot. Persisted config remains the authoritative requested value.
+        requested: LongFormSeekOptimization::Auto,
+        effective: CacheEffectiveState::DiskActive,
+        reason: CacheReason::AutoUncachedSeek,
+        file_generation: Some(7),
+        policy_revision: 11,
+        file_cache_bytes: 42,
+        peak_file_cache_bytes: 84,
+    });
+
+    let settings = settings_model(&daemon, 2);
+    assert_eq!(
+        settings.audio.long_form_seek_optimization,
+        Some(LongFormSeekOptimization::On)
+    );
+    assert_eq!(
+        settings.audio.long_form_seek_effective,
+        Some(super::super::proto::LongFormSeekEffective::DiskActive)
+    );
+    assert_eq!(
+        settings.audio.long_form_seek_reason,
+        Some(super::super::proto::LongFormSeekReason::AutoUncachedSeek)
+    );
+}
+
 fn song(id: &str) -> Song {
     Song::remote(id, format!("t-{id}"), "a", "3:45")
 }

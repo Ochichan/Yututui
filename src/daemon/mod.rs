@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use crate::remote::PERSONAL_EXPORT_CAPABILITY;
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{
     InstanceMode, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, StatusSnapshot,
 };
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
+use crate::remote::{LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY};
 use crate::util::process::{self, ProcessProfile};
 
 mod accounts_host;
@@ -1044,6 +1044,7 @@ fn daemon_capabilities() -> Vec<String> {
         // v8 sessions with live push (docs/gui/02 §10).
         "events-v8".to_string(),
         PERSONAL_EXPORT_CAPABILITY.to_string(),
+        LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
         // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
         // rating, video, library, playlists, downloads, AI, accounts, transfer,
         // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.

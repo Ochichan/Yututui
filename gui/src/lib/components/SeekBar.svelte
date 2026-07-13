@@ -4,6 +4,8 @@
   import { fmtTime } from '../format';
 
   interface Props {
+    /** Stable identity for the media this seek scale belongs to. */
+    mediaKey: string | null;
     positionMs: number | null;
     durationMs: number | null;
     /** Live stream ⇒ no scrubbing, pulsing full bar. */
@@ -13,6 +15,7 @@
     onseek: (ms: number) => void;
   }
   const {
+    mediaKey,
     positionMs,
     durationMs,
     live = false,
@@ -23,6 +26,13 @@
 
   let track = $state<HTMLElement | null>(null);
   let dragRatio = $state<number | null>(null);
+  let activePointer = $state<number | null>(null);
+  let dragMediaKey = $state<string | null>(null);
+  let dragDurationMs = $state<number | null>(null);
+
+  const seekScaleKey = $derived(
+    `${mediaKey ?? ''}\u0000${durationMs ?? ''}\u0000${live}\u0000${disabled}`,
+  );
 
   const ratio = $derived.by(() => {
     if (dragRatio != null) return dragRatio;
@@ -32,8 +42,24 @@
   });
 
   const shownMs = $derived(
-    dragRatio != null && durationMs != null ? dragRatio * durationMs : positionMs,
+    dragRatio != null && dragDurationMs != null ? dragRatio * dragDurationMs : positionMs,
   );
+
+  function cancelDrag() {
+    const pointer = activePointer;
+    dragRatio = null;
+    activePointer = null;
+    dragMediaKey = null;
+    dragDurationMs = null;
+    if (pointer != null && track?.hasPointerCapture(pointer)) {
+      track.releasePointerCapture(pointer);
+    }
+  }
+
+  $effect(() => {
+    const currentKey = seekScaleKey;
+    if (activePointer != null && dragMediaKey !== currentKey) cancelDrag();
+  });
 
   function ratioAt(e: PointerEvent): number {
     const r = track!.getBoundingClientRect();
@@ -43,16 +69,21 @@
   function onpointerdown(e: PointerEvent) {
     if (disabled || live || durationMs == null || !track) return;
     track.setPointerCapture(e.pointerId);
+    activePointer = e.pointerId;
+    dragMediaKey = seekScaleKey;
+    dragDurationMs = durationMs;
     dragRatio = ratioAt(e);
   }
   function onpointermove(e: PointerEvent) {
-    if (dragRatio == null) return;
+    if (dragRatio == null || e.pointerId !== activePointer) return;
     dragRatio = ratioAt(e);
   }
-  function onpointerup() {
-    if (dragRatio == null || durationMs == null) return;
-    onseek(dragRatio * durationMs);
-    dragRatio = null;
+  function endPointer(e: PointerEvent, commit: boolean) {
+    if (e.pointerId !== activePointer) return;
+    if (commit && dragRatio != null && dragDurationMs != null && dragMediaKey === seekScaleKey) {
+      onseek(dragRatio * dragDurationMs);
+    }
+    cancelDrag();
   }
 </script>
 
@@ -66,7 +97,9 @@
     bind:this={track}
     {onpointerdown}
     {onpointermove}
-    {onpointerup}
+    onpointerup={(e) => endPointer(e, true)}
+    onpointercancel={(e) => endPointer(e, false)}
+    onlostpointercapture={(e) => endPointer(e, false)}
     role="slider"
     aria-label="Seek"
     aria-valuemin={0}

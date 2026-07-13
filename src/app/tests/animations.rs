@@ -540,6 +540,27 @@ fn opening_a_popup_arms_the_fade_in_once() {
 }
 
 #[test]
+fn switching_search_source_to_audio_output_rearms_popup_fade() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.popup_fade = true;
+    app.update(Msg::Resize);
+
+    app.dropdowns.search_source_open = true;
+    app.update(Msg::Resize);
+    assert!(app.fx.popup.is_some());
+
+    app.fx.popup = None;
+    app.dropdowns.search_source_open = false;
+    let _ = app.open_audio_output_picker();
+    app.update(Msg::Resize);
+    assert!(
+        app.fx.popup.is_some(),
+        "search-source and audio-output overlays need distinct popup bits"
+    );
+}
+
+#[test]
 fn caret_and_ambient_effects_wake_the_clock_off_the_player() {
     let mut app = App::new(100);
     app.config.animations.master = true;

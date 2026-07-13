@@ -9,7 +9,7 @@ fn song(id: &str) -> Song {
     Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
 }
 
-fn radio_station(id: &str) -> Song {
+pub(in crate::daemon) fn radio_station(id: &str) -> Song {
     let mut song = Song::remote(id, format!("station-{id}"), "", "");
     song.playable = Some(crate::api::PlayableRef::RadioStream {
         url: format!("https://radio.example/{id}.mp3"),
@@ -45,6 +45,9 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         transport_recovery: None,
         transport_recovery_generation: 0,
         transport_auto_recovery_armed: true,
+        source_recovery: crate::player::recovery::RecoveryPlanner::default(),
+        source_logical_generation: 0,
+        source_file_generation: 0,
         test_player_starts: VecDeque::new(),
         streaming: false,
         streaming_pending: false,
@@ -239,6 +242,24 @@ fn gui_apply_routes_settings_to_live_daemon_state() {
     assert!(engine.queue.shuffle);
 
     engine.config.audio.mpv.cache_defaults_revision = 0;
+    apply_gui_ok(
+        &mut engine,
+        "audio",
+        "long_form_seek_optimization",
+        json!("auto"),
+    );
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::Auto
+    );
+    for value in [json!("future"), json!(false)] {
+        let before = engine.config.audio.mpv.long_form_seek_optimization;
+        let (response, effects) =
+            engine.apply_gui_setting(gui_change("audio", "long_form_seek_optimization", value));
+        assert_eq!(response.reason.as_deref(), Some("bad_setting_value"));
+        assert!(effects.is_empty());
+        assert_eq!(engine.config.audio.mpv.long_form_seek_optimization, before);
+    }
     apply_gui_ok(&mut engine, "audio", "mpv_cache_forward", json!("64MiB"));
     apply_gui_ok(&mut engine, "audio", "mpv_cache_back", json!("16MiB"));
     assert_eq!(engine.config.audio.mpv.cache_forward, "64MiB");
@@ -427,6 +448,136 @@ fn gui_theme_preset_switching_discards_built_in_overrides_but_retains_custom() {
 }
 
 #[test]
+fn gui_long_form_seek_apply_updates_the_live_player_after_admission() {
+    let mut engine = engine_with_queue(&["seed"]);
+    let mut player_rx = install_accepting_player(&mut engine);
+
+    let (response, effects) = engine.apply_gui_setting(gui_change(
+        "audio",
+        "long_form_seek_optimization",
+        json!("on"),
+    ));
+
+    assert!(response.ok);
+    assert!(effects.is_empty());
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::On
+    );
+    assert!(matches!(
+        player_rx.try_recv(),
+        Ok(PlayerCmd::SetLongFormSeekOptimization(
+            crate::config::LongFormSeekOptimization::On
+        ))
+    ));
+}
+
+#[test]
+fn one_shot_status_exposes_only_privacy_safe_daemon_cache_runtime_diagnostics() {
+    let mut engine = engine_with_queue(&["seed"]);
+    let _player_rx = install_accepting_player(&mut engine);
+    engine
+        .player
+        .as_ref()
+        .expect("test player")
+        .handle
+        .test_set_long_form_seek_runtime(
+            crate::player::long_form_seek::CacheStatus {
+                requested: crate::config::LongFormSeekOptimization::Auto,
+                effective: crate::player::long_form_seek::CacheEffectiveState::DiskActive,
+                reason: crate::player::long_form_seek::CacheReason::AutoUncachedSeek,
+                file_generation: Some(9),
+                policy_revision: 2,
+                file_cache_bytes: 4_096,
+                peak_file_cache_bytes: 8_192,
+            },
+            Some(crate::player::long_form_seek::CacheReason::ProbeFailed),
+            Some(275),
+        );
+
+    let runtime = engine
+        .status()
+        .settings
+        .long_form_seek
+        .expect("daemon runtime diagnostics");
+    assert_eq!(
+        runtime.effective,
+        crate::remote::proto::LongFormSeekEffective::DiskActive
+    );
+    assert_eq!(
+        runtime.reason,
+        crate::remote::proto::LongFormSeekReason::AutoUncachedSeek
+    );
+    assert_eq!(
+        runtime.last_failure,
+        Some(crate::remote::proto::LongFormSeekReason::ProbeFailed)
+    );
+    assert_eq!(runtime.last_cleanup_ms, Some(275));
+}
+
+#[test]
+fn rejected_live_long_form_seek_apply_does_not_commit_config() {
+    let mut engine = engine_with_queue(&["seed"]);
+    let player_rx = install_accepting_player(&mut engine);
+    drop(player_rx);
+    let before = engine.config.audio.mpv.long_form_seek_optimization;
+
+    let (response, effects) = engine.apply_gui_setting(gui_change(
+        "audio",
+        "long_form_seek_optimization",
+        json!("auto"),
+    ));
+
+    assert!(!response.ok);
+    assert_eq!(response.reason.as_deref(), Some("mpv_unavailable"));
+    assert!(effects.is_empty());
+    assert_eq!(engine.config.audio.mpv.long_form_seek_optimization, before);
+}
+
+#[tokio::test]
+async fn reset_all_applies_default_long_form_policy_before_committing_config() {
+    let mut engine = engine_with_queue(&["seed"]);
+    engine.config.audio.mpv.long_form_seek_optimization =
+        crate::config::LongFormSeekOptimization::On;
+    let mut player_rx = install_accepting_player(&mut engine);
+
+    let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::ResetAllSettings).await;
+
+    assert!(response.ok);
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert!(matches!(
+        player_rx.try_recv(),
+        Ok(PlayerCmd::SetLongFormSeekOptimization(
+            crate::config::LongFormSeekOptimization::Off
+        ))
+    ));
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::Off
+    );
+}
+
+#[tokio::test]
+async fn rejected_reset_all_policy_delivery_leaves_daemon_config_untouched() {
+    let mut engine = engine_with_queue(&["seed"]);
+    engine.config.audio.mpv.long_form_seek_optimization =
+        crate::config::LongFormSeekOptimization::On;
+    let player_rx = install_accepting_player(&mut engine);
+    drop(player_rx);
+
+    let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::ResetAllSettings).await;
+
+    assert!(!response.ok);
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::On
+    );
+}
+
+#[test]
 fn gui_apply_rejects_bad_values_and_unknown_fields() {
     let mut engine = engine_with_queue(&["seed"]);
 
@@ -542,6 +693,30 @@ async fn player_events_normalize_transport_state_without_player_runtime() {
     engine
         .handle_player_event(PlayerEvent::FileFormat(Some("mp4".to_owned())))
         .await;
+}
+
+#[tokio::test]
+async fn terminal_eof_stops_the_player_without_discarding_selected_metadata() {
+    let mut engine = engine_with_queue(&["seed"]);
+    let mut player_rx = install_accepting_player(&mut engine);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = false;
+    engine.playback.time_pos = Some(180.0);
+    engine.playback.duration = Some(180.0);
+
+    let effects = engine.handle_player_event(PlayerEvent::Eof).await;
+
+    assert!(effects.is_empty());
+    assert!(matches!(player_rx.try_recv(), Ok(PlayerCmd::Stop)));
+    assert!(engine.player.is_none());
+    assert!(engine.loaded_video_id.is_none());
+    assert_eq!(
+        engine.queue.current().map(|song| song.video_id.as_str()),
+        Some("seed")
+    );
+    assert_eq!(engine.status().title.as_deref(), Some("title-seed"));
+    assert!(engine.playback.paused);
+    assert_eq!(engine.playback.time_pos, None);
 }
 
 #[tokio::test]
@@ -820,6 +995,8 @@ async fn remote_commands_cover_no_load_branches_and_gui_search_dispatch() {
     engine.transport_recovery = Some(TransportRecovery {
         video_id: "queued-before-quit".to_owned(),
         paused: false,
+        position_secs: None,
+        force_ram_only: false,
         generation: 9,
         attempts: 0,
     });
@@ -914,6 +1091,8 @@ async fn media_commands_ignore_invalid_or_disabled_operations() {
     engine.transport_recovery = Some(TransportRecovery {
         video_id: "queued-before-media-quit".to_owned(),
         paused: false,
+        position_secs: None,
+        force_ram_only: false,
         generation: 11,
         attempts: 0,
     });

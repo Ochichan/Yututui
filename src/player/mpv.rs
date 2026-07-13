@@ -31,19 +31,20 @@ use crate::util::runtime;
 /// before `--version` short-circuits, so the reversed order reports success for
 /// any flag. Probed once per (process, flag) — the daemon respawns mpv on every
 /// stop→play cycle, and the answer can't change mid-run.
-pub fn flag_supported(flag: &'static str) -> bool {
-    static CACHE: Mutex<Option<HashMap<&'static str, bool>>> = Mutex::new(None);
+pub fn flag_supported(flag: &str) -> bool {
+    static CACHE: Mutex<Option<HashMap<(String, String), bool>>> = Mutex::new(None);
     // Recover the guard on poison instead of panicking: a probe is a pure, cached bool, so a
     // prior panic while holding the lock can't leave it in a bad state worth propagating.
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some(&supported) = cache.get(flag) {
+    let program = crate::tools::mpv_program();
+    let key = (program.clone(), flag.to_owned());
+    if let Some(&supported) = cache.get(&key) {
         return supported;
     }
     // Route through the timeout-bounded runner so a wedged/hung mpv binary can't block this
     // synchronous startup probe forever; a timeout (or any error) is treated as "unsupported".
-    let mut cmd =
-        process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
+    let mut cmd = process::std_command(&program, process::ProcessProfile::Media);
     cmd.args(["--no-config", flag, "--version"])
         .stdin(Stdio::null());
     let supported = process::std_output_limited(
@@ -54,7 +55,7 @@ pub fn flag_supported(flag: &'static str) -> bool {
     )
     .map(|out| out.status.success())
     .unwrap_or(false);
-    cache.insert(flag, supported);
+    cache.insert(key, supported);
     supported
 }
 
@@ -134,6 +135,7 @@ pub fn spawn(
     cookies_file: Option<&Path>,
     gapless: bool,
     audio: &MpvAudioRuntimeConfig,
+    managed_cache_args: &[String],
 ) -> Result<Child> {
     let mut cmd =
         process::tokio_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
@@ -158,6 +160,12 @@ pub fn spawn(
         .arg("--cache=yes")
         .arg(format!("--input-ipc-server={ipc_path}"));
     for arg in structured_audio_args(audio) {
+        cmd.arg(arg);
+    }
+
+    // Capability-selected current-media cache lifecycle options. They precede both raw user
+    // layers so the existing last-option-wins escape hatch remains authoritative.
+    for arg in managed_cache_args {
         cmd.arg(arg);
     }
 
@@ -298,6 +306,7 @@ mod tests {
             device: Some("pipewire/42".to_owned()),
             cache_forward: "64MiB".to_owned(),
             cache_back: "16MiB".to_owned(),
+            long_form_seek_optimization: crate::config::LongFormSeekOptimization::Off,
             extra_args: vec!["--ao=null".to_owned()],
         };
 
@@ -319,6 +328,7 @@ mod tests {
             device: None,
             cache_forward: "32MiB".to_owned(),
             cache_back: "8MiB".to_owned(),
+            long_form_seek_optimization: crate::config::LongFormSeekOptimization::Off,
             extra_args: Vec::new(),
         };
 

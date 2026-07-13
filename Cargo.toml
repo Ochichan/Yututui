@@ -45,6 +45,10 @@ desktop-tray = ["desktop"]
 # them to gui/src/generated/protocol/. Never enabled in a release binary — `desktop` does
 # NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`yututray`.
 ts-export = ["dep:ts-rs"]
+# Build-only escape used by the controlled performance harness. It allows the candidate binary
+# to trust the harness's authenticated loopback source-rate ceiling; ordinary/default builds
+# compile that environment-variable path out and remain fail-closed.
+perf-harness = []
 
 [dependencies]
 anyhow = "1.0.103"
