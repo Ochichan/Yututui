@@ -350,6 +350,10 @@ pub struct Downloads {
     /// Downloads handed to the actor but not yet done/failed. Gates `pump_downloads` under the
     /// channel bound; decremented as each `DownloadDone`/`DownloadError` arrives.
     pub(in crate::app) dispatched: usize,
+    /// Import rows admitted during the current runtime batch, grouped by session. The terminal
+    /// reducer consumes a group only after that session has no queued or running work, then uses
+    /// it to keep automatic organization from sweeping up unrelated, pre-existing inbox files.
+    pub(in crate::app) auto_organize_rows: HashMap<String, HashSet<u32>>,
 }
 
 /// The Spotify playlist picker overlay (Settings › Accounts › Import from Spotify…):
@@ -857,6 +861,9 @@ pub struct LocalIndexRuntime {
     pub loaded: bool,
     pub loading: bool,
     pub scanning: bool,
+    /// A scan requested while another scan owns the worker. `Some(true)` upgrades the queued
+    /// follow-up to a full rebuild; otherwise one incremental pass runs after settlement.
+    pub(in crate::app) pending_rescan: Option<bool>,
     pub progress: Option<crate::local::LocalScanProgress>,
     pub last_summary: Option<crate::local::LocalScanSummary>,
     pub load_errors: Vec<crate::local::ScanError>,
@@ -905,7 +912,6 @@ pub struct LocalMode {
     pub pending_accept_all_confirm: Option<LocalImportAcceptAllConfirm>,
     /// Import-history artifact selected for confirmed deletion. Imported songs are retained.
     pub pending_import_record_delete: Option<String>,
-    pub(in crate::app) pending_accept_write_summaries: HashMap<String, u32>,
     pub(in crate::app) pending_import_reviews: HashMap<String, u64>,
     pub(in crate::app) next_import_review_op_id: u64,
 }

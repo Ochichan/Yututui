@@ -386,15 +386,11 @@ impl App {
                 if failed > 0 {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
                 }
-                if load_import_session_recovering(&session_id)
+                if crate::transfer::review_action::plan_ready_candidates(&session_id)
                     .ok()
-                    .is_some_and(|session| {
-                        import_session_accept_all_candidate_count(&session)
-                            + import_session_unwritten_ready_count(&session)
-                            > 0
-                    })
+                    .is_some_and(|plan| plan.total_count > 0)
                 {
-                    actions.push(t!("A accept & write", "A 수락 및 작성"));
+                    actions.push(t!("A mark all ready", "A 전체 준비"));
                 }
                 actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
                 actions.push(t!("m commit inbox", "m 인박스 커밋"));
@@ -417,15 +413,11 @@ impl App {
                         t!("x skip", "x 건너뜀"),
                     ]);
                 }
-                if load_import_session_recovering(&session_id)
+                if crate::transfer::review_action::plan_ready_candidates(&session_id)
                     .ok()
-                    .is_some_and(|session| {
-                        import_session_accept_all_candidate_count(&session)
-                            + import_session_unwritten_ready_count(&session)
-                            > 0
-                    })
+                    .is_some_and(|plan| plan.total_count > 0)
                 {
-                    actions.push(t!("A accept & write", "A 수락 및 작성"));
+                    actions.push(t!("A mark all ready", "A 전체 준비"));
                 }
                 if !row.errors.is_empty() {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
@@ -851,29 +843,43 @@ impl App {
             self.dirty = true;
             return Some(Vec::new());
         };
-        let candidate_count = import_session_accept_all_candidate_count(&session);
-        let ready_count = import_session_unwritten_ready_count(&session) + candidate_count;
-        if candidate_count == 0 && ready_count == 0 {
+        let Ok(plan) = crate::transfer::review_action::plan_ready_candidates(&session_id) else {
+            self.status.kind = StatusKind::Error;
+            self.status.text = format!(
+                "{}: {session_id}",
+                t!(
+                    "Import checkpoint not found",
+                    "임포트 체크포인트를 찾을 수 없음"
+                )
+            );
+            self.dirty = true;
+            return Some(Vec::new());
+        };
+        let local_count = session
+            .rows
+            .iter()
+            .filter(|row| row.local_path.is_some())
+            .count() as u32;
+        if plan.candidate_count == 0 {
             self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "No import candidates or ready rows to write",
-                "수락할 후보나 작성할 준비 행이 없음"
-            )
-            .to_owned();
+            self.status.text =
+                local_ready_status_text(plan.ready_count, plan.total_count, local_count);
             self.dirty = true;
             return Some(Vec::new());
         }
         self.local_mode.pending_accept_all_confirm = Some(LocalImportAcceptAllConfirm {
             session_id,
-            candidate_count,
-            ready_count,
-            review_left: session.counts.ambiguous.saturating_sub(candidate_count),
-            missing_left: session.counts.not_found,
+            candidate_count: plan.candidate_count,
+            ready_count: plan.resulting_ready_count,
+            total_count: plan.total_count,
+            local_count,
+            review_left: plan.review_left,
+            missing_left: plan.missing_left,
         });
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
-            "Confirm accepting and writing the import",
-            "임포트 수락 및 작성을 확인하세요"
+            "Confirm marking all safe candidates Ready",
+            "안전한 후보 전체 준비 완료를 확인하세요"
         )
         .to_owned();
         self.dirty = true;
@@ -904,29 +910,12 @@ impl App {
             .pending_import_reviews
             .insert(confirm.session_id.clone(), op_id);
         self.status.kind = StatusKind::Info;
-        if confirm.candidate_count == 0 {
-            self.local_mode
-                .pending_import_reviews
-                .remove(&confirm.session_id);
-            self.local_mode
-                .pending_accept_write_summaries
-                .insert(confirm.session_id.clone(), 0);
-            self.transfer_running = true;
-            self.status.text = t!(
-                "Writing accepted import rows to Library playlist...",
-                "수락된 임포트 행을 Library 플레이리스트에 쓰는 중..."
-            )
-            .to_owned();
-            self.dirty = true;
-            return vec![Cmd::Transfer(
-                crate::transfer::actor::TransferCmd::WriteReviewedLocal {
-                    job_id: confirm.session_id,
-                },
-            )];
-        }
         self.status.text = format!(
             "{} {}...",
-            t!("Accepting import candidates", "임포트 후보 수락 중"),
+            t!(
+                "Marking safe candidates Ready",
+                "안전한 후보 준비 완료 표시 중"
+            ),
             confirm.candidate_count
         );
         self.dirty = true;
@@ -990,27 +979,18 @@ impl App {
         match result {
             Ok(summary) => {
                 self.status.kind = StatusKind::Info;
-                self.local_mode
-                    .pending_accept_write_summaries
-                    .insert(session_id.clone(), summary.accepted_count);
-                self.transfer_running = true;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!(
-                        "임포트 후보 {}개 수락 · Library 플레이리스트 작성 중...",
-                        summary.accepted_count
-                    )
-                } else {
-                    format!(
-                        "Accepted {} import candidate{} · writing Library playlist...",
-                        summary.accepted_count,
-                        if summary.accepted_count == 1 { "" } else { "s" }
-                    )
-                };
-                self.clamp_local_after_import_change();
-                self.dirty = true;
-                return vec![Cmd::Transfer(
-                    crate::transfer::actor::TransferCmd::WriteReviewedLocal { job_id: session_id },
-                )];
+                let local_count = load_import_session_recovering(&session_id)
+                    .ok()
+                    .map(|session| {
+                        session
+                            .rows
+                            .iter()
+                            .filter(|row| row.local_path.is_some())
+                            .count() as u32
+                    })
+                    .unwrap_or_default();
+                self.status.text =
+                    local_ready_status_text(summary.ready_count, summary.total_count, local_count);
             }
             Err(error) => {
                 self.status.kind = StatusKind::Error;
@@ -1228,7 +1208,7 @@ impl App {
         }
     }
 
-    fn import_organize_options(&self) -> ImportOrganizeOptions {
+    pub(in crate::app) fn import_organize_options(&self) -> ImportOrganizeOptions {
         ImportOrganizeOptions {
             root: self.import_organize_root(),
             template: self.config.local.import_path_template().to_owned(),
@@ -1457,6 +1437,14 @@ fn import_review_action_progress_label(action: ImportReviewAction) -> &'static s
         }
         ImportReviewAction::Reject => t!("Rejecting import row", "임포트 행 거부 중"),
         ImportReviewAction::Skip => t!("Skipping import row", "임포트 행 건너뛰는 중"),
+    }
+}
+
+fn local_ready_status_text(ready_count: u32, total_count: u32, local_count: u32) -> String {
+    if crate::i18n::is_korean() {
+        format!("준비 {ready_count}/{total_count} · 로컬 {local_count}/{total_count}")
+    } else {
+        format!("Ready {ready_count}/{total_count} · Local {local_count}/{total_count}")
     }
 }
 

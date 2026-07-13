@@ -30,7 +30,7 @@ where
     }
     let session_instance_id = session.session_instance_id.clone();
     let row = row_by_source_order_mut(&mut session, source_order)?;
-    if row.written || row.artifact_receipt.is_some() {
+    if row_has_artifact_ownership(row) {
         bail!("import row {source_order} is already written");
     }
     if !matches!(row.status, ImportSessionRowStatus::Matched)
@@ -67,6 +67,10 @@ where
         claim_id: new_durable_id(),
         expected_key: expected_key.to_owned(),
     };
+    // Legacy LocalPlaylist jobs may have set checkpoint/session `written` after adding the
+    // remote selection to the Library playlist. That is not a local audio artifact: admission
+    // establishes the session row's artifact lifecycle without changing checkpoint idempotency.
+    row.written = false;
     row.download_claim = Some(claim.clone());
     match save(session) {
         Ok(()) => Ok(claim),
@@ -147,6 +151,34 @@ pub(crate) fn ensure_review_row_mutable_unlocked(
         bail!("row {source_order} has an active download; review cannot change it");
     }
     Ok(())
+}
+
+/// Bulk Ready changes are checkpoint-owned and independent of playlist-write/download state.
+/// They still must not retarget a row while an admitted download owns that selection.
+pub(crate) fn ensure_ready_row_mutable_unlocked(
+    session_id: &str,
+    source_order: u32,
+) -> anyhow::Result<()> {
+    if !session_path(session_id).is_some_and(|path| path.exists()) {
+        return Ok(());
+    }
+    let session = ImportSession::load(session_id)?;
+    let row = session
+        .rows
+        .iter()
+        .find(|row| row.source_order == source_order)
+        .ok_or_else(|| anyhow::anyhow!("import row {source_order} is missing"))?;
+    if row.download_claim.is_some() {
+        bail!("row {source_order} has an active download; Ready selection cannot change it");
+    }
+    if row_has_artifact_ownership(row) {
+        bail!("row {source_order} already owns a local artifact; Ready selection cannot change it");
+    }
+    Ok(())
+}
+
+pub(crate) fn row_has_artifact_ownership(row: &ImportSessionRow) -> bool {
+    row.local_path.is_some() || row.artifact_receipt.is_some()
 }
 
 pub(super) fn new_durable_id() -> String {

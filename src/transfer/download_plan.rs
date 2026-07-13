@@ -126,7 +126,10 @@ fn plan_row(
     existing: &ImportDownloadDedupeIndex,
     seen: &mut HashMap<String, u32>,
 ) -> ImportDownloadDecision {
-    if row.written || row.local_path.is_some() {
+    // `written` can come from a legacy LocalPlaylist write with no downloaded artifact. Local
+    // readiness is represented by `local_path`/the durable receipt, so those playlist-only rows
+    // must remain downloadable after bulk Ready selection.
+    if super::session::row_has_artifact_ownership(row) {
         return ImportDownloadDecision::AlreadyWritten {
             path: row.local_path.clone(),
         };

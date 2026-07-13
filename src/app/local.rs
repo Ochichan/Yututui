@@ -393,6 +393,7 @@ impl App {
                 Vec::new()
             }
             LocalMsg::ScanFinished { index_path, result } => {
+                let pending_rescan = self.local_mode.index.pending_rescan.take();
                 self.local_mode.index.index_path = index_path;
                 self.local_mode.index.index = result.index;
                 self.local_mode.index.loaded = true;
@@ -415,7 +416,7 @@ impl App {
                     t!("tracks", "곡")
                 );
                 self.dirty = true;
-                Vec::new()
+                pending_rescan.map_or_else(Vec::new, |full| self.request_local_scan(full))
             }
             LocalMsg::ScanProgress(progress) => {
                 if self.local_mode.index.scanning {
@@ -427,6 +428,7 @@ impl App {
                 Vec::new()
             }
             LocalMsg::ScanFailed { error } => {
+                let pending_rescan = self.local_mode.index.pending_rescan.take();
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
                 self.local_mode.index.progress = None;
@@ -434,7 +436,7 @@ impl App {
                 self.status.text =
                     format!("{}: {error}", t!("Local scan failed", "로컬 스캔 실패"));
                 self.dirty = true;
-                Vec::new()
+                pending_rescan.map_or_else(Vec::new, |full| self.request_local_scan(full))
             }
             LocalMsg::ImportReviewFinished {
                 op_id,
@@ -481,6 +483,8 @@ impl App {
 
     pub(in crate::app) fn request_local_scan(&mut self, full: bool) -> Vec<Cmd> {
         if self.local_mode.index.scanning {
+            self.local_mode.index.pending_rescan =
+                Some(self.local_mode.index.pending_rescan.unwrap_or_default() || full);
             return Vec::new();
         }
         let roots = self.local_scan_roots();

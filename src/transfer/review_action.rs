@@ -4,7 +4,10 @@ use anyhow::{Context as _, anyhow, bail};
 
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
-use super::session::{ImportRecordGuard, ImportSession, ensure_review_row_mutable_unlocked};
+use super::session::{
+    ImportRecordGuard, ImportSession, ensure_ready_row_mutable_unlocked,
+    ensure_review_row_mutable_unlocked,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewActionSummary {
@@ -19,7 +22,22 @@ pub struct ReviewActionSummary {
 pub struct ReviewBatchSummary {
     pub session_id: String,
     pub accepted_count: u32,
+    pub ready_count: u32,
+    pub total_count: u32,
+    pub review_left: u32,
+    pub missing_left: u32,
     pub rows: Vec<ReviewActionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewReadyPlan {
+    pub session_id: String,
+    pub candidate_count: u32,
+    pub ready_count: u32,
+    pub resulting_ready_count: u32,
+    pub total_count: u32,
+    pub review_left: u32,
+    pub missing_left: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -84,19 +102,20 @@ pub fn skip_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionS
 pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary> {
     let _guard = ImportRecordGuard::try_acquire(job_id)?;
     let mut cp = Checkpoint::load(job_id)?;
+    let selections: Vec<_> = cp
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !review_decision_is_terminal(entry.review_decision.as_ref()))
+        .filter_map(|(index, entry)| {
+            best_safe_ambiguous_candidate(&cp.spec, &entry.outcome)
+                .map(|candidate| (index, candidate))
+        })
+        .collect();
     let mut rows = Vec::new();
-    for index in 0..cp.tracks.len() {
-        if cp.tracks[index].written {
-            continue;
-        }
+    for (index, selected) in selections {
         let source_order = u32::try_from(index + 1).unwrap_or(u32::MAX);
-        let Some(selected) = first_ambiguous_candidate(&cp.tracks[index].outcome) else {
-            continue;
-        };
-        ensure_review_row_mutable_unlocked(job_id, source_order)?;
-        if ensure_review_candidate_allowed(&cp.spec, selected.score_breakdown.as_ref()).is_err() {
-            continue;
-        }
+        ensure_ready_row_mutable_unlocked(job_id, source_order)?;
         apply_accepted_candidate(&mut cp, index, selected.clone());
         rows.push(ReviewActionSummary {
             source_order,
@@ -109,11 +128,57 @@ pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary>
     if !rows.is_empty() {
         save_checkpoint_and_session(&mut cp)?;
     }
+    let plan = ready_plan(&cp);
     Ok(ReviewBatchSummary {
         session_id: job_id.to_owned(),
         accepted_count: rows.len() as u32,
+        ready_count: plan.ready_count,
+        total_count: plan.total_count,
+        review_left: plan.review_left,
+        missing_left: plan.missing_left,
         rows,
     })
+}
+
+pub fn plan_ready_candidates(job_id: &str) -> anyhow::Result<ReviewReadyPlan> {
+    let cp = Checkpoint::load(job_id)?;
+    Ok(ready_plan(&cp))
+}
+
+fn ready_plan(cp: &Checkpoint) -> ReviewReadyPlan {
+    let mut ready_count = 0_u32;
+    let mut candidate_count = 0_u32;
+    let mut ambiguous_count = 0_u32;
+    let mut missing_left = 0_u32;
+    for entry in &cp.tracks {
+        if review_decision_is_terminal(entry.review_decision.as_ref()) {
+            continue;
+        }
+        match &entry.outcome {
+            Some(MatchOutcome::Matched { .. }) => {
+                ready_count = ready_count.saturating_add(1);
+            }
+            Some(MatchOutcome::Ambiguous { .. }) => {
+                ambiguous_count = ambiguous_count.saturating_add(1);
+                if best_safe_ambiguous_candidate(&cp.spec, &entry.outcome).is_some() {
+                    candidate_count = candidate_count.saturating_add(1);
+                }
+            }
+            Some(MatchOutcome::NotFound) => {
+                missing_left = missing_left.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    ReviewReadyPlan {
+        session_id: cp.job_id.clone(),
+        candidate_count,
+        ready_count,
+        resulting_ready_count: ready_count.saturating_add(candidate_count),
+        total_count: cp.tracks.len() as u32,
+        review_left: ambiguous_count.saturating_sub(candidate_count),
+        missing_left,
+    }
 }
 
 fn accept_candidate(
@@ -248,24 +313,45 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
     }
 }
 
-fn first_ambiguous_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedCandidate> {
+fn best_safe_ambiguous_candidate(
+    spec: &super::JobSpec,
+    outcome: &Option<MatchOutcome>,
+) -> Option<SelectedCandidate> {
     let Some(MatchOutcome::Ambiguous { candidates }) = outcome else {
         return None;
     };
-    candidates
-        .first()
-        .filter(|candidate| {
-            candidate
+    let mut best = None::<SelectedCandidate>;
+    for candidate in candidates {
+        if !candidate.score.is_finite()
+            || candidate
                 .score_breakdown
                 .as_ref()
-                .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
-        })
-        .map(|candidate| SelectedCandidate {
+                .is_some_and(|score| score.accept_blocked || score.reject_reason.is_some())
+            || ensure_review_candidate_allowed(spec, candidate.score_breakdown.as_ref()).is_err()
+        {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_some_and(|selected| candidate.score <= selected.score)
+        {
+            continue;
+        }
+        best = Some(SelectedCandidate {
             key: candidate.key.clone(),
             score: candidate.score,
             display: candidate.display.clone(),
             score_breakdown: candidate.score_breakdown.clone(),
-        })
+        });
+    }
+    best
+}
+
+fn review_decision_is_terminal(decision: Option<&ReviewDecision>) -> bool {
+    matches!(
+        decision,
+        Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
+    )
 }
 
 fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {
@@ -351,6 +437,234 @@ mod tests {
             source_key: format!("spotify:track:{title}"),
             known_video_id: None,
         }
+    }
+
+    fn ambiguous_candidate(key: &str, score: f32, accept_blocked: bool) -> AmbiguousCandidate {
+        AmbiguousCandidate {
+            key: key.to_owned(),
+            score,
+            display: key.to_owned(),
+            score_breakdown: Some(MatchScoreBreakdown {
+                total: score,
+                accept_blocked,
+                ..MatchScoreBreakdown::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn bulk_ready_uses_checkpoint_state_and_picks_highest_safe_candidate() {
+        let job_id = "sp2yt-review-action-ready-all";
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(ImportMediaKind::Track),
+            vec![
+                TrackEntry {
+                    input: input("Already Ready"),
+                    outcome: Some(MatchOutcome::Matched {
+                        key: "ready".to_owned(),
+                        score: 0.95,
+                        display: "Ready".to_owned(),
+                        title: None,
+                        artist: None,
+                        album: None,
+                        duration_secs: None,
+                        score_breakdown: None,
+                    }),
+                    review_decision: None,
+                    written: true,
+                },
+                TrackEntry {
+                    input: input("Choose Safe"),
+                    outcome: Some(MatchOutcome::Ambiguous {
+                        candidates: vec![
+                            ambiguous_candidate("blocked-first", 0.99, true),
+                            ambiguous_candidate("safe-low", 0.75, false),
+                            ambiguous_candidate("safe-high", 0.88, false),
+                        ],
+                    }),
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Missing"),
+                    outcome: Some(MatchOutcome::NotFound),
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Pending"),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Rejected"),
+                    outcome: Some(MatchOutcome::Ambiguous {
+                        candidates: vec![ambiguous_candidate("rejected-safe", 0.91, false)],
+                    }),
+                    review_decision: Some(ReviewDecision::Rejected),
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Capacity"),
+                    outcome: Some(MatchOutcome::SkippedCapacity),
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: input("Unsafe"),
+                    outcome: Some(MatchOutcome::Ambiguous {
+                        candidates: vec![ambiguous_candidate("unsafe-only", 0.97, true)],
+                    }),
+                    review_decision: None,
+                    written: false,
+                },
+            ],
+        );
+        cp.save().unwrap();
+        ImportSession::from_checkpoint(&cp).save().unwrap();
+
+        assert_eq!(
+            plan_ready_candidates(job_id).unwrap(),
+            ReviewReadyPlan {
+                session_id: job_id.to_owned(),
+                candidate_count: 1,
+                ready_count: 1,
+                resulting_ready_count: 2,
+                total_count: 7,
+                review_left: 1,
+                missing_left: 1,
+            }
+        );
+
+        let summary = accept_all_candidates(job_id).unwrap();
+        assert_eq!(summary.accepted_count, 1);
+        assert_eq!(summary.ready_count, 2);
+        assert_eq!(summary.total_count, 7);
+        assert_eq!(summary.review_left, 1);
+        assert_eq!(summary.missing_left, 1);
+        let saved = Checkpoint::load(job_id).unwrap();
+        assert!(matches!(
+            saved.tracks[1].review_decision,
+            Some(ReviewDecision::Accepted { ref key, .. }) if key == "safe-high"
+        ));
+        assert_eq!(
+            saved.tracks[4].review_decision,
+            Some(ReviewDecision::Rejected)
+        );
+        assert!(matches!(
+            saved.tracks[6].outcome,
+            Some(MatchOutcome::Ambiguous { .. })
+        ));
+        ImportSession::delete_record(job_id).unwrap();
+    }
+
+    #[test]
+    fn bulk_ready_applies_music_video_eligibility_to_every_candidate() {
+        let outcome = Some(MatchOutcome::Ambiguous {
+            candidates: vec![
+                AmbiguousCandidate {
+                    key: "no-evidence".to_owned(),
+                    score: 0.99,
+                    display: "No evidence".to_owned(),
+                    score_breakdown: None,
+                },
+                ambiguous_candidate("eligible", 0.80, false),
+            ],
+        });
+
+        let selected = best_safe_ambiguous_candidate(&spec(ImportMediaKind::MusicVideo), &outcome)
+            .expect("eligible candidate");
+        assert_eq!(selected.key, "eligible");
+    }
+
+    #[test]
+    fn bulk_ready_projects_legacy_playlist_write_and_keeps_it_downloadable() {
+        let job_id = "sp2yt-review-action-ready-legacy-written";
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(ImportMediaKind::Track),
+            vec![TrackEntry {
+                input: input("Legacy playlist row"),
+                outcome: Some(MatchOutcome::Ambiguous {
+                    candidates: vec![ambiguous_candidate("safe-download", 0.91, false)],
+                }),
+                review_decision: None,
+                written: true,
+            }],
+        );
+        cp.save().unwrap();
+        ImportSession::from_checkpoint(&cp).save().unwrap();
+
+        let summary = accept_all_candidates(job_id).unwrap();
+        assert_eq!(summary.ready_count, 1);
+        let saved_cp = Checkpoint::load(job_id).unwrap();
+        assert!(
+            saved_cp.tracks[0].written,
+            "playlist idempotency is retained"
+        );
+        assert!(matches!(
+            saved_cp.tracks[0].outcome,
+            Some(MatchOutcome::Matched { ref key, .. }) if key == "safe-download"
+        ));
+
+        let session = ImportSession::load(job_id).unwrap();
+        assert!(matches!(
+            session.rows[0].status,
+            super::super::session::ImportSessionRowStatus::Matched
+        ));
+        assert_eq!(session.rows[0].revision, 2);
+        assert_eq!(
+            session.rows[0].selected_key.as_deref(),
+            Some("safe-download")
+        );
+        let plan = super::super::download_plan::build_import_download_plan(
+            &session,
+            &super::super::download_plan::ImportDownloadDedupeIndex::default(),
+        );
+        assert!(matches!(
+            plan.rows[0].decision,
+            super::super::download_plan::ImportDownloadDecision::Enqueue
+        ));
+
+        let claim = super::super::session::claim_import_download(job_id, 1, "safe-download")
+            .expect("playlist-only write can enter the artifact lifecycle");
+        assert!(!ImportSession::load(job_id).unwrap().rows[0].written);
+        assert!(
+            super::super::session::record_import_download_error(&claim, "test cleanup").unwrap()
+        );
+        ImportSession::delete_record(job_id).unwrap();
+    }
+
+    #[test]
+    fn bulk_ready_refuses_to_retarget_an_owned_local_artifact() {
+        let job_id = "sp2yt-review-action-ready-owned-artifact";
+        let mut cp = Checkpoint::new(
+            job_id.to_owned(),
+            spec(ImportMediaKind::Track),
+            vec![TrackEntry {
+                input: input("Owned artifact"),
+                outcome: Some(MatchOutcome::Ambiguous {
+                    candidates: vec![ambiguous_candidate("replacement", 0.93, false)],
+                }),
+                review_decision: None,
+                written: false,
+            }],
+        );
+        cp.save().unwrap();
+        let mut session = ImportSession::from_checkpoint(&cp);
+        session.rows[0].written = true;
+        session.rows[0].local_path = Some(std::path::PathBuf::from("/tmp/owned-artifact.m4a"));
+        session.save().unwrap();
+
+        let error = accept_all_candidates(job_id).unwrap_err();
+        assert!(format!("{error:#}").contains("already owns a local artifact"));
+        assert!(matches!(
+            Checkpoint::load(job_id).unwrap().tracks[0].outcome,
+            Some(MatchOutcome::Ambiguous { .. })
+        ));
+        ImportSession::delete_record(job_id).unwrap();
     }
 
     #[test]

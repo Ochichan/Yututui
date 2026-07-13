@@ -44,30 +44,6 @@ fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) ->
     }
 }
 
-fn local_accept_write_done_status(
-    report: &crate::transfer::checkpoint::TransferReport,
-    accepted_count: u32,
-) -> String {
-    let review_left = report.ambiguous.len() as u32;
-    let missing_left = report.not_found.len() as u32;
-    if crate::i18n::is_korean() {
-        format!(
-            "임포트 세션 작성 완료: 후보 {}개 수락 · 준비 행 {}개 작성 · 검토 {}개 남음 · 누락 {}개 남음 · Library > Playlists",
-            accepted_count, report.written, review_left, missing_left
-        )
-    } else {
-        format!(
-            "Import session written: {} candidate{} accepted · {} ready row{} written · {} review left · {} missing left · Library > Playlists",
-            accepted_count,
-            if accepted_count == 1 { "" } else { "s" },
-            report.written,
-            if report.written == 1 { "" } else { "s" },
-            review_left,
-            missing_left
-        )
-    }
-}
-
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -1523,24 +1499,12 @@ impl App {
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
-                if let Some(accepted_count) = self
-                    .local_mode
-                    .pending_accept_write_summaries
-                    .remove(&report.job_id)
-                {
-                    self.status.text = local_accept_write_done_status(&report, accepted_count);
-                } else {
-                    self.status.text = transfer_done_status(&report);
-                }
+                self.status.text = transfer_done_status(&report);
                 self.status.kind = StatusKind::Info;
             }
-            TransferEvent::JobRejected { job_id, error } => {
-                // The actor still owns a different active job. Clear only bookkeeping for the
-                // rejected attempt; its terminal will never arrive, while the active job's guard
-                // must remain set until that job emits JobDone/JobFailed.
-                self.local_mode
-                    .pending_accept_write_summaries
-                    .remove(&job_id);
+            TransferEvent::JobRejected { error, .. } => {
+                // The actor still owns a different active job, so its running guard remains set
+                // until that job emits JobDone/JobFailed.
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = format!(
                     "{}: {error}",
@@ -1554,9 +1518,6 @@ impl App {
                 resumable,
             } => {
                 self.transfer_running = false;
-                self.local_mode
-                    .pending_accept_write_summaries
-                    .remove(&job_id);
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = if resumable && !job_id.is_empty() {
                     format!(

@@ -849,7 +849,7 @@ mod tests {
             .into_iter()
             .find_map(|(title, rows)| (title == "Local Deck").then_some(rows))
             .expect("local deck group");
-        assert!(local_deck.contains(&("A".to_owned(), "Accept all import candidates".to_owned())));
+        assert!(local_deck.contains(&("A".to_owned(), "Mark all import tracks Ready".to_owned())));
     }
 
     #[test]

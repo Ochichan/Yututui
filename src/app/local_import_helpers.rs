@@ -2,7 +2,7 @@
 
 use crate::t;
 use crate::transfer::checkpoint::{ReportCandidate, ReviewDecision};
-use crate::transfer::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
+use crate::transfer::session::{ImportSessionRow, ImportSessionRowStatus};
 
 pub(in crate::app) fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
     if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
@@ -33,12 +33,12 @@ pub(in crate::app) fn import_session_row_status_detail(
             "매칭 중이거나 이 행 처리 전에 가져오기가 중단됐어요"
         )),
         ImportSessionRowStatus::Matched if !row.written => Some(t!(
-            "ready to write to the Library playlist",
-            "Library 플레이리스트에 쓸 준비가 됐어요"
+            "Ready; downloading is a separate step",
+            "준비 완료; 다운로드는 별도 단계예요"
         )),
         ImportSessionRowStatus::Ambiguous => Some(t!(
-            "review candidate scores; A accept & write, a accept, s search",
-            "후보 점수를 확인하세요; A 수락 및 작성, a 수락, s 검색"
+            "review candidate scores; A mark all ready, a accept, s search",
+            "후보 점수를 확인하세요; A 전체 준비, a 수락, s 검색"
         )),
         ImportSessionRowStatus::NotFound => Some(t!(
             "no usable YouTube Music candidate was found",
@@ -198,40 +198,6 @@ pub(in crate::app) fn import_session_row_accepts_manual_review_action(
                 | ImportSessionRowStatus::SkippedLocal
                 | ImportSessionRowStatus::SkippedCapacity
         )
-}
-
-pub(in crate::app) fn import_session_accept_all_candidate_count(session: &ImportSession) -> u32 {
-    session
-        .rows
-        .iter()
-        .filter(|row| import_session_row_has_acceptable_first_candidate(row))
-        .count() as u32
-}
-
-fn import_session_row_has_acceptable_first_candidate(row: &ImportSessionRow) -> bool {
-    import_session_row_accepts_manual_review_action(row)
-        && row.candidates.first().is_some_and(|candidate| {
-            candidate
-                .score_breakdown
-                .as_ref()
-                .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
-        })
-}
-
-pub(in crate::app) fn import_session_unwritten_ready_count(session: &ImportSession) -> u32 {
-    session
-        .rows
-        .iter()
-        .filter(|row| {
-            !row.written
-                && row.local_path.is_none()
-                && matches!(row.status, ImportSessionRowStatus::Matched)
-                && !matches!(
-                    row.review_decision,
-                    Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
-                )
-        })
-        .count() as u32
 }
 
 pub(in crate::app) fn import_session_row_selected_key(row: &ImportSessionRow) -> Option<&str> {

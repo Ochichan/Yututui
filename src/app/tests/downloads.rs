@@ -1,4 +1,7 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_AUTO_ORGANIZE_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
 #[test]
 fn missing_download_tools_keep_the_queue_pending_and_open_setup() {
@@ -31,6 +34,107 @@ fn test_import_context(
             source_order,
             video_id,
         ),
+    }
+}
+
+struct AutoOrganizeFixture {
+    root: PathBuf,
+    session_id: String,
+    session: crate::transfer::session::ImportSession,
+}
+
+impl AutoOrganizeFixture {
+    fn new(label: &str, row_count: u32) -> Self {
+        let sequence = NEXT_AUTO_ORGANIZE_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let session_id = format!("sp2yt-auto-{label}-{}-{sequence}", std::process::id());
+        let root = std::env::temp_dir().join(format!(
+            "yututui-auto-organize-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create organize fixture root");
+        let private_root = root.join(".yututui-inbox");
+        let session_root = private_root.join(&session_id);
+        let complete = session_root.join("complete");
+        for directory in [&private_root, &session_root, &complete] {
+            crate::util::safe_fs::ensure_private_dir(directory)
+                .expect("create private organize fixture directory");
+        }
+
+        let rows = (1..=row_count)
+            .map(|source_order| {
+                let video_id = format!("auto{source_order:07}");
+                let path = complete.join(format!("Track {source_order} [{video_id}].m4a"));
+                std::fs::write(&path, format!("audio-{source_order}").as_bytes())
+                    .expect("write organize fixture audio");
+                crate::transfer::session::ImportSessionRow {
+                    row_id: format!("row-{source_order:05}"),
+                    source_order,
+                    status: crate::transfer::session::ImportSessionRowStatus::Matched,
+                    title: format!("Track {source_order}"),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    album_artists: vec!["Album Artist".to_owned()],
+                    selected_key: Some(video_id),
+                    written: true,
+                    local_path: Some(path),
+                    disc_number: Some(1),
+                    track_number: Some(source_order),
+                    ..crate::transfer::session::ImportSessionRow::default()
+                }
+            })
+            .collect();
+        let session = crate::transfer::session::ImportSession {
+            session_id: session_id.clone(),
+            job_id: session_id.clone(),
+            rows,
+            ..crate::transfer::session::ImportSession::default()
+        };
+        session.save().expect("save organize fixture session");
+        Self {
+            root,
+            session_id,
+            session,
+        }
+    }
+
+    fn song(&self, source_order: u32) -> Song {
+        let row = self
+            .session
+            .rows
+            .iter()
+            .find(|row| row.source_order == source_order)
+            .expect("fixture row");
+        Song::remote(
+            row.selected_key.clone().expect("fixture video id"),
+            row.title.clone(),
+            row.artists.join(", "),
+            "3:00",
+        )
+        .with_import_session(Some(self.session_id.clone()), Some(source_order))
+    }
+
+    fn source_path(&self, source_order: u32) -> PathBuf {
+        self.session
+            .rows
+            .iter()
+            .find(|row| row.source_order == source_order)
+            .and_then(|row| row.local_path.clone())
+            .expect("fixture source path")
+    }
+
+    fn configure(&self, app: &mut App) {
+        app.config.local.roots = vec![crate::config::LocalRootConfig {
+            path: self.root.clone(),
+            enabled: Some(true),
+            recursive: Some(true),
+        }];
+        app.config.local.import_path_template =
+            Some("{album_artist}/{album}/{disc_track} - {title} [{youtube_id}]".to_owned());
+    }
+
+    fn cleanup(&self) {
+        let _ = crate::transfer::session::ImportSession::delete_record(&self.session_id);
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -565,6 +669,217 @@ fn app_import_error_does_not_rewrite_worker_owned_session_row() {
     assert!(session.rows[0].errors.is_empty());
     assert_eq!(session.counts.written, 0);
     let _ = crate::transfer::session::ImportSession::delete_record(session_id);
+}
+
+#[test]
+fn import_batch_auto_organizes_only_after_the_session_settles() {
+    let _guard = crate::i18n::lock_for_test();
+    let fixture = AutoOrganizeFixture::new("settled", 2);
+    let mut app = App::new(100);
+    fixture.configure(&mut app);
+    app.library_ui.confirm_download = Some(vec![fixture.song(1), fixture.song(2)]);
+    app.confirm_download_apply();
+
+    let first = app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00001", 1, "auto0000001"),
+        path: fixture.source_path(1).to_string_lossy().into_owned(),
+    }));
+    assert!(
+        !first
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. }))),
+        "the first terminal must wait for the other running row"
+    );
+    let waiting = crate::transfer::session::ImportSession::load(&fixture.session_id)
+        .expect("load waiting session");
+    assert_eq!(waiting.rows[0].local_path, Some(fixture.source_path(1)));
+    assert_eq!(waiting.rows[1].local_path, Some(fixture.source_path(2)));
+
+    let last = app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00002", 2, "auto0000002"),
+        path: fixture.source_path(2).to_string_lossy().into_owned(),
+    }));
+    assert!(
+        last.iter()
+            .any(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. }))),
+        "the last terminal refreshes Local Deck after publishing"
+    );
+    let organized = crate::transfer::session::ImportSession::load(&fixture.session_id)
+        .expect("load organized session");
+    for row in &organized.rows {
+        let path = row.local_path.as_ref().expect("organized local path");
+        assert!(path.starts_with(&fixture.root));
+        assert!(!path.to_string_lossy().contains(".yututui-inbox"));
+        assert!(path.is_file());
+        let runtime = app
+            .library_ui
+            .downloaded
+            .iter()
+            .find(|song| song.import_source_order == Some(row.source_order))
+            .expect("organized runtime download row");
+        assert_eq!(runtime.local_path.as_ref(), Some(path));
+        let manifest = app
+            .download_store
+            .tracks()
+            .iter()
+            .find(|song| song.import_source_order == Some(row.source_order))
+            .expect("organized manifest row");
+        assert_eq!(manifest.local_path.as_ref(), Some(path));
+    }
+    assert!(app.status.text.contains("Organized import session"));
+    assert!(app.downloads.auto_organize_rows.is_empty());
+    fixture.cleanup();
+}
+
+#[test]
+fn import_batch_auto_organize_moves_successes_and_leaves_failures_retryable() {
+    let _guard = crate::i18n::lock_for_test();
+    let fixture = AutoOrganizeFixture::new("partial-failure", 2);
+    let mut persisted = fixture.session.clone();
+    persisted.rows[1].written = false;
+    persisted.rows[1].local_path = None;
+    persisted.rows[1].errors = vec!["private video".to_owned()];
+    persisted.save().expect("save partial failure session");
+
+    let mut app = App::new(100);
+    fixture.configure(&mut app);
+    app.library_ui.confirm_download = Some(vec![fixture.song(1), fixture.song(2)]);
+    app.confirm_download_apply();
+    app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00001", 1, "auto0000001"),
+        path: fixture.source_path(1).to_string_lossy().into_owned(),
+    }));
+    let final_commands = app.update(Msg::Download(DownloadMsg::ImportError {
+        context: test_import_context(&fixture.session_id, "row-00002", 2, "auto0000002"),
+        error: "private video".to_owned(),
+    }));
+
+    let organized = crate::transfer::session::ImportSession::load(&fixture.session_id)
+        .expect("load partial organize session");
+    let success = organized.rows[0]
+        .local_path
+        .as_ref()
+        .expect("successful row published");
+    assert!(!success.to_string_lossy().contains(".yututui-inbox"));
+    assert!(organized.rows[0].written);
+    assert!(!organized.rows[1].written);
+    assert!(organized.rows[1].local_path.is_none());
+    assert_eq!(organized.rows[1].errors, vec!["private video"]);
+    let manifest = app
+        .download_store
+        .tracks()
+        .iter()
+        .find(|song| song.import_source_order == Some(1))
+        .expect("successful manifest row");
+    assert_eq!(manifest.local_path.as_ref(), Some(success));
+    assert!(
+        final_commands
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Downloads)))
+    );
+    assert!(app.status.text.contains("retry from Local Deck"));
+    fixture.cleanup();
+}
+
+#[test]
+fn import_batch_auto_organize_does_not_sweep_preexisting_inbox_rows() {
+    let _guard = crate::i18n::lock_for_test();
+    let fixture = AutoOrganizeFixture::new("cohort", 2);
+    let old_path = fixture.source_path(1);
+    let mut app = App::new(100);
+    fixture.configure(&mut app);
+
+    app.start_download(fixture.song(2));
+    app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00002", 2, "auto0000002"),
+        path: fixture.source_path(2).to_string_lossy().into_owned(),
+    }));
+
+    let organized = crate::transfer::session::ImportSession::load(&fixture.session_id)
+        .expect("load cohort organize session");
+    assert_eq!(
+        organized.rows[0].local_path.as_deref(),
+        Some(old_path.as_path())
+    );
+    assert!(old_path.is_file());
+    let current = organized.rows[1]
+        .local_path
+        .as_ref()
+        .expect("current batch row published");
+    assert!(!current.to_string_lossy().contains(".yututui-inbox"));
+    fixture.cleanup();
+}
+
+#[test]
+fn import_batch_auto_organize_failure_keeps_inbox_and_points_to_manual_retry() {
+    let _guard = crate::i18n::lock_for_test();
+    let fixture = AutoOrganizeFixture::new("organize-error", 1);
+    let bad_root = fixture.root.with_extension("not-a-directory");
+    std::fs::write(&bad_root, b"not a directory").expect("write invalid organize root");
+    let source = fixture.source_path(1);
+    let mut app = App::new(100);
+    app.config.local.roots = vec![crate::config::LocalRootConfig {
+        path: bad_root.clone(),
+        enabled: Some(true),
+        recursive: Some(true),
+    }];
+
+    app.start_download(fixture.song(1));
+    app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00001", 1, "auto0000001"),
+        path: source.to_string_lossy().into_owned(),
+    }));
+
+    assert!(source.is_file(), "the inbox artifact remains available");
+    let saved = crate::transfer::session::ImportSession::load(&fixture.session_id)
+        .expect("load failed organize session");
+    assert_eq!(saved.rows[0].local_path.as_deref(), Some(source.as_path()));
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("artifacts remain recoverable"));
+    assert!(app.status.text.contains("press m to retry"));
+    assert!(app.downloads.auto_organize_rows.is_empty());
+    let _ = std::fs::remove_file(bad_root);
+    fixture.cleanup();
+}
+
+#[test]
+fn import_batch_auto_organize_latches_refresh_behind_an_active_scan() {
+    let _guard = crate::i18n::lock_for_test();
+    let fixture = AutoOrganizeFixture::new("scan-latch", 1);
+    let mut app = App::new(100);
+    fixture.configure(&mut app);
+    app.local_mode.index.loaded = true;
+    app.local_mode.index.scanning = true;
+
+    app.start_download(fixture.song(1));
+    let terminal = app.update(Msg::Download(DownloadMsg::ImportDone {
+        context: test_import_context(&fixture.session_id, "row-00001", 1, "auto0000001"),
+        path: fixture.source_path(1).to_string_lossy().into_owned(),
+    }));
+
+    assert!(
+        !terminal
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    );
+    assert_eq!(app.local_mode.index.pending_rescan, Some(false));
+
+    let follow_up = app.update(Msg::Local(LocalMsg::ScanFinished {
+        index_path: None,
+        result: crate::local::LocalScanResult {
+            index: crate::local::LocalIndex::default(),
+            summary: crate::local::LocalScanSummary::default(),
+            errors: Vec::new(),
+        },
+    }));
+    assert!(
+        follow_up
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    );
+    assert!(app.local_mode.index.scanning);
+    assert_eq!(app.local_mode.index.pending_rescan, None);
+    fixture.cleanup();
 }
 
 #[test]
