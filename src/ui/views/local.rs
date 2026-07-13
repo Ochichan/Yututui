@@ -683,7 +683,7 @@ pub fn render_local_accept_all_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalAcceptAll,
-            t!(" Accept & write (Enter) ", " 수락 및 작성 (Enter) "),
+            t!(" Mark Ready (Enter) ", " 준비 완료 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(

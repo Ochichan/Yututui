@@ -579,7 +579,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
         .unwrap_or_else(|| panic!("missing saved session in labels: {labels:?}"));
     assert_eq!(
         labels[session_index],
-        "sp2yt-local-inbox-session  (0 written, 1/3 local, 1 failed, 1 review, 1 missing, 0 pending)"
+        "sp2yt-local-inbox-session  (Ready ?/3 · Local 1/3 · 1 failed · 1 review · 1 missing · 0 pending)"
     );
 
     app.local_mode.ui.filter_query = session_id.to_owned();
@@ -591,7 +591,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
     assert_eq!(
         labels,
         vec![
-            "sp2yt-local-inbox-session  (0 written, 1/3 local, 1 failed, 1 review, 1 missing, 0 pending)"
+            "sp2yt-local-inbox-session  (Ready ?/3 · Local 1/3 · 1 failed · 1 review · 1 missing · 0 pending)"
         ]
     );
     let session_index = 0;
@@ -601,8 +601,8 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
     for expected in [
         "Import session: sp2yt-local-inbox-session",
         "Rows: 3 rows",
-        "Written: 0",
-        "Local files: 1/3",
+        "Ready: ?/3",
+        "Local: 1/3",
         "Failed: 1",
         "Review: 1",
         "Missing: 1",
@@ -1047,6 +1047,7 @@ fn local_deck_import_row_s_starts_manual_youtube_search() {
     app.local_mode.ui.filter_query.clear();
     let hint = app.local_import_action_hint().expect("review action hint");
     for expected in [
+        "A mark all ready",
         "a accept",
         "r reject",
         "c candidate",
@@ -1241,7 +1242,7 @@ fn local_deck_import_review_keys_choose_next_and_skip_rows() {
 }
 
 #[test]
-fn local_deck_shift_a_confirms_and_accepts_all_session_candidates() {
+fn local_deck_shift_a_marks_all_safe_session_candidates_ready_without_writing() {
     let session_id = "sp2yt-local-review-accept-all";
     save_ambiguous_import_job(session_id);
 
@@ -1261,30 +1262,28 @@ fn local_deck_shift_a_confirms_and_accepts_all_session_candidates() {
             .map(|confirm| (
                 confirm.session_id.clone(),
                 confirm.candidate_count,
-                confirm.ready_count
+                confirm.ready_count,
+                confirm.total_count,
+                confirm.local_count,
             )),
-        Some((session_id.to_owned(), 1, 1))
+        Some((session_id.to_owned(), 1, 1, 1, 0))
     );
 
     let cmd = single_cmd(app.update(Msg::Key(key(KeyCode::Enter))));
-    let write_cmd = single_cmd(finish_import_accept_all_cmd(&mut app, cmd));
+    let follow_up = finish_import_accept_all_cmd(&mut app, cmd);
     let accepted =
         crate::transfer::session::ImportSession::load(session_id).expect("load accepted session");
     assert!(matches!(
         accepted.rows[0].review_decision,
         Some(ReviewDecision::Accepted { ref key, .. }) if key == "dQw4w9WgXcQ"
     ));
-    assert!(matches!(
-        write_cmd,
-        Cmd::Transfer(crate::transfer::actor::TransferCmd::WriteReviewedLocal { ref job_id })
-            if job_id == session_id
-    ));
-    assert!(app.transfer_running);
-    assert!(app.status.text.contains("writing Library playlist"));
+    assert!(follow_up.is_empty(), "Ready must not start a transfer");
+    assert!(!app.transfer_running);
+    assert_eq!(app.status.text, "Ready 1/1 · Local 0/1");
 }
 
 #[test]
-fn local_deck_shift_a_writes_ready_rows_without_review_candidates() {
+fn local_deck_shift_a_reports_already_ready_without_confirmation_or_transfer() {
     let session_id = "sp2yt-local-ready-write";
     save_ready_local_playlist_job(session_id);
 
@@ -1297,26 +1296,41 @@ fn local_deck_shift_a_writes_ready_rows_without_review_candidates() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
     assert!(cmds.is_empty());
-    assert_eq!(
-        app.local_mode
-            .pending_accept_all_confirm
-            .as_ref()
-            .map(|confirm| (confirm.candidate_count, confirm.ready_count)),
-        Some((0, 1))
-    );
+    assert!(app.local_mode.pending_accept_all_confirm.is_none());
+    assert!(!app.transfer_running);
+    assert_eq!(app.status.text, "Ready 1/1 · Local 0/1");
+}
 
-    let write_cmd = single_cmd(app.update(Msg::Key(key(KeyCode::Enter))));
-    assert!(matches!(
-        write_cmd,
-        Cmd::Transfer(crate::transfer::actor::TransferCmd::WriteReviewedLocal { ref job_id })
-            if job_id == session_id
-    ));
-    assert!(app.transfer_running);
-    assert!(
-        app.status
-            .text
-            .contains("Writing accepted import rows to Library playlist")
-    );
+#[test]
+fn local_deck_shift_a_keeps_visible_enqueue_fallback_for_ordinary_tracks() {
+    let tracks = vec![
+        local_deck_track(
+            "/tmp/local-a-first.m4a",
+            "First",
+            &["Artist"],
+            Some("Album"),
+            Some("Artist"),
+            &[],
+            1,
+        ),
+        local_deck_track(
+            "/tmp/local-a-second.m4a",
+            "Second",
+            &["Artist"],
+            Some("Album"),
+            Some("Artist"),
+            &[],
+            2,
+        ),
+    ];
+    let mut app = app_with_local_deck_index(tracks);
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
+
+    assert!(!cmds.is_empty());
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(app.queue.len(), 2);
+    assert!(app.local_mode.pending_accept_all_confirm.is_none());
 }
 
 #[test]

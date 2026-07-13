@@ -8,6 +8,8 @@ pub(super) struct ReconcileFilePolicy<'a> {
     pub(super) after_publish: ArtifactMoveFaultPoint,
     pub(super) retained_source_boundary: ArtifactMoveFaultPoint,
     pub(super) max_bytes: u64,
+    pub(super) publish_mode: Option<u32>,
+    pub(super) verify_legacy_existing_mode: bool,
 }
 
 pub(super) struct PinnedTransactionScopes {
@@ -19,6 +21,7 @@ pub(super) struct ReconcileFilePair<'a> {
     pub(super) source_parent: &'a safe_fs::PinnedDir,
     pub(super) source_name: &'a std::ffi::OsStr,
     pub(super) expected_source_object: safe_fs::FileObjectId,
+    pub(super) stage_parent: &'a safe_fs::PinnedDir,
     pub(super) destination_parent: &'a safe_fs::PinnedDir,
     pub(super) destination_stage_name: &'a std::ffi::OsStr,
     pub(super) expected_stage_object: Option<safe_fs::FileObjectId>,
@@ -35,6 +38,7 @@ pub(super) fn reconcile_file_pair(
         source_parent,
         source_name,
         expected_source_object,
+        stage_parent,
         destination_parent,
         destination_stage_name,
         expected_stage_object,
@@ -61,7 +65,7 @@ pub(super) fn reconcile_file_pair(
         Err(error) => return Err(error),
     };
 
-    if let Some(destination) = destination.as_ref() {
+    if let Some(mut destination) = destination {
         if destination.identity != *expected {
             return Err(identity_conflict(
                 "destination",
@@ -89,10 +93,16 @@ pub(super) fn reconcile_file_pair(
                 "final destination aliases the retained source object",
             ));
         }
-        if let Some(stage_object) = expected_stage_object {
-            match destination_parent
-                .open_existing_child_readonly(destination_stage_name, stage_object)
-            {
+        let destination_is_owned_stage = expected_stage_object
+            .is_some_and(|stage_object| stage_object == destination.generation.identity());
+        if destination_is_owned_stage {
+            apply_publish_mode(&mut destination.generation, policy.publish_mode)?;
+            destination.generation.sync_durable()?;
+        } else if policy.verify_legacy_existing_mode {
+            verify_publish_mode(&destination.generation, policy.publish_mode)?;
+        }
+        if let Some(stage_object) = expected_stage_object.filter(|_| !destination_is_owned_stage) {
+            match stage_parent.open_existing_child_readonly(destination_stage_name, stage_object) {
                 Ok(_) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
@@ -109,11 +119,11 @@ pub(super) fn reconcile_file_pair(
     let stage = match expected_stage_object {
         Some(expected_object) => {
             #[cfg(windows)]
-            let reopened = destination_parent
+            let reopened = stage_parent
                 .open_existing_recoverable_child(destination_stage_name, expected_object);
             #[cfg(not(windows))]
             let reopened =
-                destination_parent.open_existing_child(destination_stage_name, expected_object);
+                stage_parent.open_existing_child(destination_stage_name, expected_object);
             match reopened {
                 Ok(generation) => Some(generation),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -122,7 +132,7 @@ pub(super) fn reconcile_file_pair(
         }
         None => None,
     };
-    let stage = match (stage, source.as_ref()) {
+    let mut stage = match (stage, source.as_ref()) {
         (Some(generation), source) => {
             let mut stage = bound_artifact(
                 generation,
@@ -160,25 +170,28 @@ pub(super) fn reconcile_file_pair(
             // macOS can clone directly from the exact source handle into the final name. This is
             // independent copy-on-write publication and leaves no destination stage. Filesystems
             // without clone support fall through to the recoverable copy stage below.
-            #[cfg(target_os = "macos")]
-            inject(policy.fault, policy.before_publish)?;
-            if let Some(published) = try_publish_independent_clone(
-                source.as_ref().expect("source matched above"),
-                destination_parent,
-                destination_name,
-            )? {
-                return validate_published_pair(
-                    source.as_ref(),
+            if policy.publish_mode.is_none() {
+                #[cfg(target_os = "macos")]
+                inject(policy.fault, policy.before_publish)?;
+                if let Some(published) = try_publish_independent_clone(
+                    source.as_ref().expect("source matched above"),
                     destination_parent,
                     destination_name,
-                    expected,
-                    policy,
-                    published,
-                );
+                    policy.publish_mode,
+                )? {
+                    return validate_published_pair(
+                        source.as_ref(),
+                        destination_parent,
+                        destination_name,
+                        expected,
+                        policy,
+                        published,
+                    );
+                }
             }
             create_destination_stage(
                 source.as_ref().expect("source matched above"),
-                destination_parent,
+                stage_parent,
                 destination_stage_name,
                 expected,
                 policy.max_bytes,
@@ -196,6 +209,8 @@ pub(super) fn reconcile_file_pair(
         }
     };
 
+    apply_publish_mode(&mut stage.generation, policy.publish_mode)?;
+    stage.generation.sync_durable()?;
     inject(policy.fault, policy.before_publish)?;
     let stage_retained_on_error = stage.generation.retains_name_on_drop();
     let published = match stage
@@ -279,12 +294,17 @@ fn try_publish_independent_clone(
     source: &BoundArtifact,
     destination_parent: &safe_fs::PinnedDir,
     destination_name: &std::ffi::OsStr,
+    publish_mode: Option<u32>,
 ) -> std::io::Result<Option<safe_fs::OwnedGeneration>> {
     match source
         .generation
         .publish_noreplace(destination_parent, destination_name)
     {
-        Ok(published) => Ok(Some(published)),
+        Ok(mut published) => {
+            apply_publish_mode(&mut published, publish_mode)?;
+            published.sync_durable()?;
+            Ok(Some(published))
+        }
         Err(error)
             if matches!(
                 error.raw_os_error(),
@@ -302,6 +322,7 @@ fn try_publish_independent_clone(
     _source: &BoundArtifact,
     _destination_parent: &safe_fs::PinnedDir,
     _destination_name: &std::ffi::OsStr,
+    _publish_mode: Option<u32>,
 ) -> std::io::Result<Option<safe_fs::OwnedGeneration>> {
     Ok(None)
 }
@@ -310,6 +331,7 @@ pub(super) struct ReconcileOptionalFilePair<'a> {
     pub(super) source_parent: &'a safe_fs::PinnedDir,
     pub(super) source_name: &'a std::ffi::OsStr,
     pub(super) expected_source_object: Option<safe_fs::FileObjectId>,
+    pub(super) stage_parent: &'a safe_fs::PinnedDir,
     pub(super) destination_parent: &'a safe_fs::PinnedDir,
     pub(super) destination_stage_name: &'a std::ffi::OsStr,
     pub(super) expected_stage_object: Option<safe_fs::FileObjectId>,
@@ -321,11 +343,14 @@ pub(super) fn reconcile_optional_file_pair(
     pair: ReconcileOptionalFilePair<'_>,
     record_stage_object: &mut dyn FnMut(safe_fs::FileObjectId) -> std::io::Result<()>,
     fault: Option<&dyn Fn(ArtifactMoveFaultPoint) -> std::io::Result<()>>,
+    publish_mode: Option<u32>,
+    verify_legacy_existing_mode: bool,
 ) -> std::io::Result<()> {
     let ReconcileOptionalFilePair {
         source_parent,
         source_name,
         expected_source_object,
+        stage_parent,
         destination_parent,
         destination_stage_name,
         expected_stage_object,
@@ -338,6 +363,7 @@ pub(super) fn reconcile_optional_file_pair(
                 source_parent,
                 source_name,
                 expected_source_object: object,
+                stage_parent,
                 destination_parent,
                 destination_stage_name,
                 expected_stage_object,
@@ -352,6 +378,8 @@ pub(super) fn reconcile_optional_file_pair(
                 retained_source_boundary:
                     ArtifactMoveFaultPoint::BeforeSidecarSourceUnlinkValidation,
                 max_bytes: ARTIFACT_SIDECAR_MAX_BYTES,
+                publish_mode,
+                verify_legacy_existing_mode,
             },
         ),
         (None, None) => {
@@ -365,7 +393,7 @@ pub(super) fn reconcile_optional_file_pair(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => return Err(error),
             };
-            let stage = match destination_parent.open_child(destination_stage_name) {
+            let stage = match stage_parent.open_child(destination_stage_name) {
                 Ok(_) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => return Err(error),
@@ -384,6 +412,42 @@ pub(super) fn reconcile_optional_file_pair(
             "sidecar content and object identities are inconsistent",
         )),
     }
+}
+
+fn apply_publish_mode(
+    generation: &mut safe_fs::OwnedGeneration,
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        generation.set_mode(mode)?;
+    }
+    #[cfg(not(unix))]
+    let _ = (generation, mode);
+    Ok(())
+}
+
+fn verify_publish_mode(
+    generation: &safe_fs::OwnedGeneration,
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let observed = generation.file()?.metadata()?.mode() & 0o777;
+        if observed != mode {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "legacy artifact destination has mode {observed:04o}; expected {mode:04o} and lacks transaction-owned chmod proof"
+                ),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (generation, mode);
+    Ok(())
 }
 
 struct BoundArtifact {

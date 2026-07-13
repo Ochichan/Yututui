@@ -35,11 +35,12 @@ impl ImportSession {
                     continue;
                 };
                 let target_changed = row_download_target(row) != row_download_target(previous);
+                let has_local_artifact = super::claim::row_has_artifact_ownership(previous);
                 row.revision = previous.revision.max(1);
-                if target_changed && !previous.written && previous.download_claim.is_none() {
+                if target_changed && !has_local_artifact && previous.download_claim.is_none() {
                     row.revision = row.revision.saturating_add(1);
                 }
-                if previous.written || previous.download_claim.is_some() {
+                if has_local_artifact || previous.download_claim.is_some() {
                     preserve_review_identity(row, previous);
                 }
                 row.written = previous.written;

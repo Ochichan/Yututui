@@ -19,6 +19,8 @@ use crate::util::safe_fs;
 
 mod recovery;
 use recovery::committed_session_path;
+mod permissions;
+use permissions::{artifact_publish_modes, ensure_scoped_directory, validate_publish_mode};
 mod reconcile;
 use reconcile::{
     ReconcileFilePair, ReconcileFilePolicy, ReconcileOptionalFilePair, pin_transaction_scopes,
@@ -135,6 +137,16 @@ struct ArtifactMoveTxn {
     sidecar_stage_name: String,
     audio_stage_object_id: Option<safe_fs::FileObjectId>,
     sidecar_stage_object_id: Option<safe_fs::FileObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_publish_mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidecar_publish_mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    audio_source_private_stage: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    sidecar_source_private_stage: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    verify_legacy_existing_modes: bool,
     audio_object_id: safe_fs::FileObjectId,
     audio_identity: ArtifactIdentity,
     sidecar_object_id: Option<safe_fs::FileObjectId>,
@@ -403,7 +415,9 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
             request.destination_root.display()
         )
     })?;
-    let requested_parent = ensure_scoped_directory(&destination_root, relative_parent)?;
+    let publish_modes = artifact_publish_modes(request.kind, &destination_root)?;
+    let requested_parent =
+        ensure_scoped_directory(&destination_root, relative_parent, publish_modes.directory)?;
     let destination_parent = destination_root.join(relative_parent);
     let (
         destination_root_pin,
@@ -541,6 +555,14 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
             sidecar_from.display()
         );
     }
+    // Linux can publish an anonymous O_TMPFILE created on the destination filesystem, so keep
+    // staging there. Besides avoiding a recoverable public stage, this also lets an inbox and
+    // library live on different mounts. Other Unix platforms need the app-owned source namespace
+    // for their named no-replace staging fallback.
+    let source_private_stage = cfg!(all(unix, not(target_os = "linux")))
+        && matches!(request.kind, ArtifactMoveKind::Organize)
+        && source_private_root.is_some()
+        && destination_private_root.is_none();
     Ok(ArtifactMoveTxn {
         schema_version: TXN_SCHEMA_VERSION,
         kind: request.kind,
@@ -568,6 +590,11 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
         sidecar_stage_name: format!(".ytt-stage-{stage_tag}-sidecar"),
         audio_stage_object_id: None,
         sidecar_stage_object_id: None,
+        audio_publish_mode: publish_modes.audio,
+        sidecar_publish_mode: publish_modes.sidecar,
+        audio_source_private_stage: source_private_stage,
+        sidecar_source_private_stage: source_private_stage,
+        verify_legacy_existing_modes: false,
         audio_object_id: source_audio.identity(),
         audio_identity,
         sidecar_object_id: source_sidecar.as_ref().map(|sidecar| sidecar.identity()),
@@ -582,6 +609,7 @@ fn resume_transaction(
     fault: Option<&dyn Fn(ArtifactMoveFaultPoint) -> std::io::Result<()>>,
 ) -> anyhow::Result<PathBuf> {
     validate_transaction(txn)?;
+    backfill_publication_policy(path, txn)?;
     if let Some(claim) = txn.claim.as_ref() {
         super::session::validate_import_download_claim_unlocked(claim, true)?;
     }
@@ -601,6 +629,13 @@ fn resume_transaction(
         let expected = txn.audio_identity.clone();
         let expected_source = txn.audio_object_id;
         let expected_stage = txn.audio_stage_object_id;
+        let publish_mode = txn.audio_publish_mode;
+        let verify_legacy_existing_mode = txn.verify_legacy_existing_modes;
+        let stage_parent = if txn.audio_source_private_stage {
+            &scopes.source_parent
+        } else {
+            &scopes.destination_parent
+        };
         let mut record_stage = |identity| {
             txn.audio_stage_object_id = Some(identity);
             persist_transaction(path, txn)
@@ -610,6 +645,7 @@ fn resume_transaction(
                 source_parent: &scopes.source_parent,
                 source_name: &source_name,
                 expected_source_object: expected_source,
+                stage_parent,
                 destination_parent: &scopes.destination_parent,
                 destination_stage_name: std::ffi::OsStr::new(&stage_name),
                 expected_stage_object: expected_stage,
@@ -623,6 +659,8 @@ fn resume_transaction(
                 after_publish: ArtifactMoveFaultPoint::AfterAudioPublishBeforeSourceUnlink,
                 retained_source_boundary: ArtifactMoveFaultPoint::BeforeAudioSourceUnlinkValidation,
                 max_bytes: ARTIFACT_AUDIO_MAX_BYTES,
+                publish_mode,
+                verify_legacy_existing_mode,
             },
         )
         .context("reconcile import audio move")?;
@@ -646,6 +684,13 @@ fn resume_transaction(
         let expected = txn.sidecar_identity.clone();
         let expected_source = txn.sidecar_object_id;
         let expected_stage = txn.sidecar_stage_object_id;
+        let publish_mode = txn.sidecar_publish_mode;
+        let verify_legacy_existing_mode = txn.verify_legacy_existing_modes;
+        let stage_parent = if txn.sidecar_source_private_stage {
+            &scopes.source_parent
+        } else {
+            &scopes.destination_parent
+        };
         let mut record_stage = |identity| {
             txn.sidecar_stage_object_id = Some(identity);
             persist_transaction(path, txn)
@@ -655,6 +700,7 @@ fn resume_transaction(
                 source_parent: &scopes.source_parent,
                 source_name: &source_name,
                 expected_source_object: expected_source,
+                stage_parent,
                 destination_parent: &scopes.destination_parent,
                 destination_stage_name: std::ffi::OsStr::new(&stage_name),
                 expected_stage_object: expected_stage,
@@ -663,6 +709,8 @@ fn resume_transaction(
             },
             &mut record_stage,
             fault,
+            publish_mode,
+            verify_legacy_existing_mode,
         )
         .context("reconcile import sidecar move")?;
     }
@@ -724,6 +772,32 @@ fn import_private_root(path: &Path) -> Option<PathBuf> {
                 .is_some_and(|name| name == ".yututui-inbox")
         })
         .map(Path::to_path_buf)
+}
+
+fn backfill_publication_policy(path: &Path, txn: &mut ArtifactMoveTxn) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        if txn.audio_publish_mode.is_none() && txn.sidecar_publish_mode.is_none() {
+            let modes = artifact_publish_modes(txn.kind, &txn.destination_root)?;
+            if modes.audio.is_some() || modes.sidecar.is_some() {
+                txn.audio_publish_mode = modes.audio;
+                txn.sidecar_publish_mode = modes.sidecar;
+                txn.verify_legacy_existing_modes = matches!(txn.kind, ArtifactMoveKind::Organize);
+                if cfg!(all(unix, not(target_os = "linux")))
+                    && matches!(txn.kind, ArtifactMoveKind::Organize)
+                    && txn.source_private_root.is_some()
+                    && txn.destination_private_root.is_none()
+                {
+                    txn.audio_source_private_stage = txn.audio_stage_object_id.is_none();
+                    txn.sidecar_source_private_stage = txn.sidecar_stage_object_id.is_none();
+                }
+                persist_transaction(path, txn)?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, txn);
+    Ok(())
 }
 
 fn reclaim_private_sources(
@@ -918,6 +992,8 @@ fn validate_transaction(txn: &ArtifactMoveTxn) -> anyhow::Result<()> {
     if txn.sidecar_identity.is_some() != txn.sidecar_object_id.is_some() {
         bail!("artifact move sidecar content/object identities are inconsistent");
     }
+    validate_publish_mode(txn.audio_publish_mode)?;
+    validate_publish_mode(txn.sidecar_publish_mode)?;
     match (txn.source_private_root.as_ref(), txn.source_private_root_id) {
         (Some(root), Some(_))
             if root
@@ -939,6 +1015,13 @@ fn validate_transaction(txn: &ArtifactMoveTxn) -> anyhow::Result<()> {
                 && txn.destination_parent.starts_with(root) => {}
         (None, None) => {}
         _ => bail!("artifact move private destination root is inconsistent"),
+    }
+    if (txn.audio_source_private_stage || txn.sidecar_source_private_stage)
+        && (!matches!(txn.kind, ArtifactMoveKind::Organize)
+            || txn.source_private_root.is_none()
+            || txn.destination_private_root.is_some())
+    {
+        bail!("artifact move private stage policy is inconsistent");
     }
     reject_parent_components(&txn.audio_from)?;
     reject_parent_components(&txn.audio_to)?;
@@ -1045,36 +1128,8 @@ fn reject_parent_components(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create only real directory components beneath an already-canonical root. In particular, do
-/// not let `create_dir_all` follow an existing in-root symlink and create directories outside the
-/// selected destination before the later canonical-scope check gets a chance to reject it.
-fn ensure_scoped_directory(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            if matches!(component, Component::CurDir) {
-                continue;
-            }
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("invalid relative artifact directory {}", relative.display()),
-            ));
-        };
-        current.push(component);
-        match fs::symlink_metadata(&current) {
-            Ok(_) => reject_symlink_or_non_directory(&current)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::create_dir(&current) {
-                    Ok(()) => safe_fs::sync_parent_dir(&current)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                    Err(error) => return Err(error),
-                }
-                reject_symlink_or_non_directory(&current)?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(current)
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn reject_symlink_or_non_directory(path: &Path) -> std::io::Result<()> {

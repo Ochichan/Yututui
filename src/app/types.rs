@@ -1136,34 +1136,34 @@ impl LocalOrganizeConfirm {
     }
 }
 
-/// Pending confirmation before accepting every reviewable candidate in an import session.
+/// Pending confirmation before marking every safely reviewable candidate Ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalImportAcceptAllConfirm {
     pub session_id: String,
     pub candidate_count: u32,
     pub ready_count: u32,
+    pub total_count: u32,
+    pub local_count: u32,
     pub review_left: u32,
     pub missing_left: u32,
 }
 
 impl LocalImportAcceptAllConfirm {
     pub fn title(&self) -> &'static str {
-        t!(" Accept & write import ", " 임포트 수락 및 작성 ")
+        t!(" Mark all Ready ", " 전체 준비 완료 표시 ")
     }
 
     pub fn prompt(&self) -> String {
         if crate::i18n::is_korean() {
             format!(
-                "후보 {}개를 수락하고 준비된 {}행을 Library 플레이리스트에 쓸까요?",
-                self.candidate_count, self.ready_count
+                "안전한 후보 {}개를 준비 완료로 표시할까요?",
+                self.candidate_count
             )
         } else {
             format!(
-                "Accept {} candidate{} and write {} ready row{} to the Library playlist?",
+                "Mark {} safe candidate{} Ready for this playlist?",
                 self.candidate_count,
                 if self.candidate_count == 1 { "" } else { "s" },
-                self.ready_count,
-                if self.ready_count == 1 { "" } else { "s" }
             )
         }
     }
@@ -1171,13 +1171,23 @@ impl LocalImportAcceptAllConfirm {
     pub fn detail(&self) -> String {
         if crate::i18n::is_korean() {
             format!(
-                "세션: {} · 남을 검토 {} · 누락 {}",
-                self.session_id, self.review_left, self.missing_left
+                "준비 {}/{} · 로컬 {}/{} · 남을 검토 {} · 누락 {}",
+                self.ready_count,
+                self.total_count,
+                self.local_count,
+                self.total_count,
+                self.review_left,
+                self.missing_left
             )
         } else {
             format!(
-                "Session: {} · review left {} · missing {}",
-                self.session_id, self.review_left, self.missing_left
+                "Ready {}/{} · Local {}/{} · review left {} · missing {}",
+                self.ready_count,
+                self.total_count,
+                self.local_count,
+                self.total_count,
+                self.review_left,
+                self.missing_left
             )
         }
     }

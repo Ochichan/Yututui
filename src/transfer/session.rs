@@ -29,8 +29,8 @@ pub(crate) use artifact_receipt::{
     record_import_download_interruption,
 };
 pub(crate) use claim::{
-    claim_import_download, ensure_review_row_mutable_unlocked,
-    validate_import_download_claim_unlocked,
+    claim_import_download, ensure_ready_row_mutable_unlocked, ensure_review_row_mutable_unlocked,
+    row_has_artifact_ownership, validate_import_download_claim_unlocked,
 };
 
 const IMPORT_SESSION_SCHEMA_VERSION: u32 = 1;

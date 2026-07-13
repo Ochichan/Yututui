@@ -210,8 +210,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::AcceptAllImportReview,
         "accept_all_import_review",
-        "Accept all import candidates",
-        "임포트 후보 전체 수락",
+        "Mark all import tracks Ready",
+        "임포트 곡 전체 준비 완료",
     ),
     (
         Action::ToggleShuffle,
