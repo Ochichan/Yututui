@@ -121,6 +121,8 @@ pub struct FxState {
     pub popup: Option<u64>,
     /// The current synced-lyric line advanced → flash on the newly-current line.
     pub lyric: Option<u64>,
+    /// Play/pause toggled on a current track → light wave across the transport controls.
+    pub pause: Option<u64>,
 
     // Last-observed values the central diff compares against (reducer-only) ----
     pub(in crate::app) last_track_id: Option<String>,
@@ -138,6 +140,9 @@ pub struct FxState {
     /// track); a bit turning on means "a popup just opened".
     pub(in crate::app) last_popup_mask: u32,
     pub(in crate::app) last_lyric_index: Option<usize>,
+    /// Diff anchor for the pause flash (`false`, matching a fresh `Playback`); the arm is
+    /// additionally gated on a live `time_pos` so loader-driven flips stay quiet.
+    pub(in crate::app) last_paused: bool,
 }
 
 impl FxState {
@@ -156,6 +161,7 @@ impl FxState {
             list: None,
             popup: None,
             lyric: None,
+            pause: None,
             last_track_id: None,
             last_volume: volume,
             last_liked: false,
@@ -167,6 +173,7 @@ impl FxState {
             last_searching: false,
             last_popup_mask: 0,
             last_lyric_index: None,
+            last_paused: false,
         }
     }
 
@@ -183,6 +190,7 @@ impl FxState {
         self.list = None;
         self.popup = None;
         self.lyric = None;
+        self.pause = None;
     }
 }
 

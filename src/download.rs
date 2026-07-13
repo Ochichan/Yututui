@@ -66,7 +66,10 @@ pub(crate) fn delete_download_files(
     (deleted, failures)
 }
 
-fn remove_download_file_if_safe(path: &Path, download_dir: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_download_file_if_safe(
+    path: &Path,
+    download_dir: &Path,
+) -> std::io::Result<()> {
     crate::persist::ensure_persistence_writes_allowed()?;
     let root = download_dir.canonicalize()?;
     let meta = std::fs::symlink_metadata(path)?;

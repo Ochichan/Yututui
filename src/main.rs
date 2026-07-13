@@ -195,6 +195,20 @@ fn cli_identity() -> (&'static str, &'static str) {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    let pause_after_exit = explorer_double_click_launch();
+    let result = run();
+    #[cfg(windows)]
+    if pause_after_exit {
+        pause_explorer_console(&result);
+        if result.is_err() {
+            std::process::exit(1);
+        }
+    }
+    result
+}
+
+fn run() -> Result<()> {
     // Windows shell identity (media flyout, taskbar grouping). Before anything else:
     // the daemon path below inherits it, and it must precede any window/session.
     #[cfg(windows)]
@@ -362,6 +376,46 @@ fn main() -> Result<()> {
     result
 }
 
+#[cfg(windows)]
+fn explorer_double_click_launch() -> bool {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    if std::env::args_os().count() != 1 {
+        return false;
+    }
+    let mut system = System::new();
+    let current = Pid::from_u32(std::process::id());
+    system.refresh_processes(ProcessesToUpdate::Some(&[current]), true);
+    let Some(parent) = system.process(current).and_then(sysinfo::Process::parent) else {
+        return false;
+    };
+    system.refresh_processes(ProcessesToUpdate::Some(&[parent]), true);
+    let parent_name = system
+        .process(parent)
+        .map(|process| process.name().to_string_lossy().into_owned());
+    should_pause_explorer_launch(1, parent_name.as_deref())
+}
+
+#[cfg(any(windows, test))]
+fn should_pause_explorer_launch(argument_count: usize, parent_name: Option<&str>) -> bool {
+    argument_count == 1 && parent_name.is_some_and(|name| name.eq_ignore_ascii_case("explorer.exe"))
+}
+
+#[cfg(windows)]
+fn pause_explorer_console(result: &Result<()>) {
+    use std::io::Write;
+
+    if let Err(error) = result {
+        eprintln!("YuTuTui! could not start / 시작하지 못했습니다: {error:#}");
+    } else {
+        println!("YuTuTui! closed / YuTuTui!가 종료되었습니다.");
+    }
+    print!("Press Enter to close this window / 창을 닫으려면 Enter를 누르세요: ");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+}
+
 async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {
     // Single-instance guard + control socket. Done BEFORE the terminal is touched so the
     // "already running" notice prints to a clean screen and, critically, before any config
@@ -447,6 +501,18 @@ mod tests {
     #[test]
     fn ordinary_interactive_owner_requests_the_writer_capability() {
         assert_eq!(interactive_persistence_mode(false), CliPersistence::Writer);
+    }
+
+    #[test]
+    fn explorer_double_click_pause_policy_is_narrow() {
+        assert!(should_pause_explorer_launch(1, Some("explorer.exe")));
+        assert!(should_pause_explorer_launch(1, Some("EXPLORER.EXE")));
+        assert!(!should_pause_explorer_launch(2, Some("explorer.exe")));
+        assert!(!should_pause_explorer_launch(
+            1,
+            Some("WindowsTerminal.exe")
+        ));
+        assert!(!should_pause_explorer_launch(1, None));
     }
 
     #[test]

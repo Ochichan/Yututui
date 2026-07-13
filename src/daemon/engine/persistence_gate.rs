@@ -8,7 +8,13 @@ use crate::remote::proto::{RemoteCommand, RemoteResponse};
 fn may_continue_read_only(command: &RemoteCommand) -> bool {
     matches!(
         command,
-        RemoteCommand::Status | RemoteCommand::RunSearch { .. } | RemoteCommand::Quit
+        RemoteCommand::Status
+            | RemoteCommand::RunSearch { .. }
+            | RemoteCommand::Quit
+            // v8 pure reads: paging/drill-down/provenance never touch durable state.
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. }
     )
 }
 
@@ -110,6 +116,15 @@ impl DaemonEngine {
             return;
         }
         if let Err(error) = save_store(StoreKind::Library, || self.library.save()) {
+            self.record_persistence_failure(context, error);
+        }
+    }
+
+    pub(super) fn save_playlists(&mut self, context: &str) {
+        if self.should_skip_remote_save() {
+            return;
+        }
+        if let Err(error) = save_store(StoreKind::Playlists, || self.playlists.save()) {
             self.record_persistence_failure(context, error);
         }
     }

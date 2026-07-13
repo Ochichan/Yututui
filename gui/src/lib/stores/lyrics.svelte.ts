@@ -1,23 +1,14 @@
 // Synced lyrics for the Now Playing pane.
 //
-// TODO(wire:B1/lyrics.live): the `lyrics` topic does not exist in the core yet (it is a
-// B1 deliverable). The { kind: 'lyrics_snapshot', lines } shape below is PROVISIONAL —
-// today only the browser demo core emits it. When B1 lands, align this with the real
-// PushEvent variant and the regenerated ts-rs types. See gui/WIRING.md.
+// LIVE-WIRED (B1): mirrors the `lyrics` topic — the core pushes a `lyrics_snapshot`
+// as the initial subscribe snapshot, a clearing push on track change, and the resolved
+// lines when its fetch completes. Shapes come from the generated ts-rs types.
 
+import type { LyricLineModel } from '../../generated/protocol/LyricLineModel';
+import type { PushEvent } from '../../generated/protocol/PushEvent';
 import type { Client } from '../ipc/client';
 
-export interface LyricLine {
-  /** Timestamp; null for unsynced lines. */
-  ms: number | null;
-  text: string;
-}
-
-interface ProvisionalLyricsPush {
-  kind: string;
-  video_id?: string;
-  lines?: LyricLine[];
-}
+export type LyricLine = LyricLineModel;
 
 export class LyricsStore {
   lines = $state<LyricLine[]>([]);
@@ -25,7 +16,7 @@ export class LyricsStore {
 
   constructor(client: Client) {
     client.on('lyrics', (payload) => {
-      const ev = payload as ProvisionalLyricsPush;
+      const ev = payload as PushEvent;
       if (ev.kind !== 'lyrics_snapshot') return;
       this.lines = ev.lines ?? [];
       this.videoId = ev.video_id ?? null;

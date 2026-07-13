@@ -1,5 +1,5 @@
 // The animation runtime (docs/gui/06 §5). Mirrors the core's `AnimationsConfig`
-// (src/config.rs): a global `master` kill-switch, an fps target, `pause_unfocused`, and 25
+// (src/config.rs): a global `master` kill-switch, an fps target, `pause_unfocused`, and 40
 // independent effect flags. This store owns the *behaviour* — the shared, fps-gated rAF
 // ticker and the `<html class="no-anim">` transition kill — while stores/settings.svelte.ts
 // owns the editable form model. Both consume the `settings` push (each client.on handler
@@ -25,7 +25,15 @@ export const FPS_DEFAULT = 30;
 export const EFFECT_GROUPS = [
   {
     id: 'oneShot',
-    effects: ['like_burst', 'track_intro', 'seek_flash', 'volume_flash', 'toast'],
+    effects: [
+      'error_shake',
+      'like_burst',
+      'track_intro',
+      'seek_flash',
+      'pause_flash',
+      'volume_flash',
+      'toast',
+    ],
   },
   {
     id: 'uiWide',
@@ -33,16 +41,42 @@ export const EFFECT_GROUPS = [
   },
   {
     id: 'element',
-    effects: ['heart', 'spinner', 'controls', 'eq_bars', 'seekbar', 'title', 'lyrics', 'border'],
+    effects: [
+      'time_glow',
+      'heart',
+      'spinner',
+      'controls',
+      'eq_bars',
+      'seekbar',
+      'progress_sparkle',
+      'title',
+      'lyrics',
+      'border_chase',
+      'border',
+    ],
   },
   {
     id: 'filler',
-    effects: ['bounce', 'starfield', 'visualizer', 'rain', 'donut'],
+    effects: [
+      'bounce',
+      'comets',
+      'snow',
+      'starfield',
+      'fireflies',
+      'cube',
+      'aquarium',
+      'waves',
+      'visualizer',
+    ],
+  },
+  {
+    id: 'showpiece',
+    effects: ['fireworks', 'rain', 'life', 'pipes', 'donut', 'plasma'],
   },
 ] as const;
 
 export type EffectId = (typeof EFFECT_GROUPS)[number]['effects'][number];
-/** The 25 flags flattened in their Settings order (docs/gui/06 §5.1). */
+/** The 40 flags flattened in their Settings order (docs/gui/06 §5.1). */
 export const EFFECT_IDS: readonly EffectId[] = EFFECT_GROUPS.flatMap((group) => group.effects);
 export type EffectFlags = Record<EffectId, boolean>;
 

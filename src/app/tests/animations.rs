@@ -105,11 +105,26 @@ fn all_animations_on_render_every_view_without_panic() {
     a.popup_fade = true;
     a.activity = true;
     a.about_fx = true;
+    a.time_glow = true;
+    a.progress_sparkle = true;
+    a.border_chase = true;
+    a.pause_flash = true;
+    a.error_shake = true;
     a.rain = true;
     a.donut = true;
     a.visualizer = true;
     a.starfield = true;
     a.bounce = true;
+    a.comets = true;
+    a.snow = true;
+    a.fireflies = true;
+    a.cube = true;
+    a.aquarium = true;
+    a.waves = true;
+    a.fireworks = true;
+    a.life = true;
+    a.pipes = true;
+    a.plasma = true;
     assert!(app.config.animations.active());
 
     // Content for every effect to chew on.
@@ -149,6 +164,7 @@ fn all_animations_on_render_every_view_without_panic() {
     app.fx.list = Some((0, Mode::Library));
     app.fx.popup = Some(0);
     app.fx.lyric = Some(0);
+    app.fx.pause = Some(0);
     app.fx.until = u64::MAX;
 
     // Overlays stacked on top of whatever screen is active.
@@ -202,6 +218,69 @@ fn volume_change_arms_the_volume_flash_from_any_path() {
     assert!(app.fx.volume.is_some());
     assert!(app.fx_active(), "the one-shot keeps the clock awake");
     assert!(app.animation_active());
+}
+
+#[test]
+fn pause_toggle_arms_the_pause_flash_but_track_changes_do_not() {
+    let mut app = app_playing(2, 0);
+    app.config.animations.master = true;
+    app.config.animations.pause_flash = true;
+    app.playback.time_pos = Some(42.0); // mid-track: a user toggle always has a position
+    app.update(Msg::Resize); // seed the diff anchors from launch state
+    assert!(app.fx.pause.is_none(), "no phantom flash at startup");
+
+    app.playback.paused = true;
+    app.update(Msg::Resize);
+    assert!(app.fx.pause.is_some(), "pause toggle arms the wave");
+    assert!(app.fx_active());
+
+    // A track change flips `paused` as a loading side effect — that must not read as a
+    // user pause, so the wave stays quiet.
+    app.fx.cancel();
+    app.queue.next(false);
+    app.playback.time_pos = None; // `reset_progress` clears the position with the flip
+    app.playback.paused = false;
+    app.update(Msg::Resize);
+    assert!(
+        app.fx.pause.is_none(),
+        "track-change pause flip stays quiet"
+    );
+
+    // The loader's *asynchronous* resume flip (a later turn, `track_changed` already
+    // consumed, position not yet reported) must stay quiet too — this is the every-track
+    // start flow, not a user toggle.
+    app.playback.paused = true;
+    app.update(Msg::Resize); // paused flip in a turn of its own, time_pos still None
+    assert!(
+        app.fx.pause.is_none(),
+        "async loader flip without a position stays quiet"
+    );
+
+    // Once the track is actually progressing, a real toggle arms again.
+    app.playback.time_pos = Some(1.5);
+    app.update(Msg::Resize);
+    app.playback.paused = false;
+    app.update(Msg::Resize);
+    assert!(app.fx.pause.is_some(), "mid-track resume arms the wave");
+}
+
+#[test]
+fn error_shake_arms_the_toast_window_without_the_typewriter() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.error_shake = true; // toast (typewriter) itself stays OFF
+    app.update(Msg::Resize);
+
+    // An info message must not arm anything: the shake is error feedback only.
+    // (`detect_fx(true, ..)` is the central diff with "the status changed this turn".)
+    app.set_status_info("saved");
+    app.detect_fx(true, false);
+    assert!(app.fx.toast.is_none(), "info must not arm the shake window");
+
+    app.set_status_error("boom");
+    app.detect_fx(true, false);
+    assert!(app.fx.toast.is_some(), "an error arms the shared window");
+    assert!(app.fx_active());
 }
 
 #[test]

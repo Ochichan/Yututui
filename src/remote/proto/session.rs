@@ -234,6 +234,57 @@ pub enum PushEvent {
     SettingsSnapshot {
         model: Box<super::model_settings::SettingsModelV8>,
     },
+    /// `lyrics` topic: the current track's lyrics — the initial snapshot for the topic,
+    /// a clearing push (empty `lines`) on track change, and the resolved lines when the
+    /// fetch completes. `video_id` names the track the lines belong to; empty `lines`
+    /// means none found (or none yet).
+    LyricsSnapshot {
+        video_id: Option<String>,
+        lines: Vec<super::model::LyricLineModel>,
+    },
+    /// `library` topic: a mutation invalidated the client's paged library cache.
+    LibraryInvalidated,
+    /// `playlists` topic: the retained full playlist summary list.
+    PlaylistsSnapshot {
+        items: Vec<super::model::PlaylistSummaryModel>,
+    },
+    /// `downloads` topic: the retained ordered projection of daemon-owned downloads.
+    DownloadsSnapshot {
+        items: Vec<super::model::DownloadStatusModel>,
+    },
+    /// `transfer` topic: retained daemon-side Spotify import state.
+    TransferState {
+        phase: super::model::TransferPhaseModel,
+        sources: Vec<super::model::SpotifyPlaylistModel>,
+        job: Option<super::model::TransferJobModel>,
+        report: Option<super::model::TransferReportModel>,
+        #[cfg_attr(feature = "ts-export", ts(type = "string | null"))]
+        error: Option<String>,
+    },
+    /// `ai` topic: retained daemon-side DJ Gem transcript and current turn state.
+    AiState {
+        messages: Vec<super::model::AiMessageModel>,
+        thinking: bool,
+        suggestions: Vec<super::model::TrackModel>,
+    },
+    /// `accounts` topic: the retained presence/toggles projection — secrets never
+    /// appear here (session keys and tokens stay config-side).
+    AccountsSnapshot {
+        lastfm: super::model::LastfmAccountModel,
+        listenbrainz: super::model::ListenBrainzAccountModel,
+        spotify: super::model::SpotifyAccountModel,
+        scrobble_local: bool,
+    },
+    /// `accounts` topic, connect half: the browser-approval URL for a just-started
+    /// auth flow. One-shot event — the GUI opens it via win:openUrl; never retained.
+    AccountsAuthUrl { service: String, url: String },
+    /// `accounts` topic: a started auth flow ended without connecting (denied, timed
+    /// out, or errored). One-shot like the URL — the GUI stops its waiting state.
+    AccountsAuthFailed { service: String, error: String },
+    /// `ai` topic sibling: which queue rows carry recorded DJ Gem / autoplay pick
+    /// provenance — the GUI shows its "why?" affordance exactly on these ids and pulls
+    /// the rationale on demand with `fetch_why_gem`.
+    WhyGemProvenance { video_ids: Vec<String> },
 }
 
 /// One catalog's slice of a completed search: a concrete source (never `all`), its

@@ -17,7 +17,7 @@ fn radio_station(id: &str) -> Song {
     song
 }
 
-pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
+pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     let mut queue = Queue::default();
     queue.set(ids.iter().map(|id| song(id)).collect(), 0);
     DaemonEngine {
@@ -36,6 +36,9 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         },
         config: Config::default(),
         library: Library::default(),
+        playlists: crate::playlists::Playlists::default(),
+        playlists_rev: 0,
+        library_invalidations: 0,
         signals: Signals::default(),
         station: StationStore::default(),
         loaded_video_id: None,
@@ -63,6 +66,11 @@ pub(super) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         session_events: VecDeque::new(),
         media_art: None,
         gui_search_index: GuiSearchIndex::default(),
+        why_gem: Vec::new(),
+        why_gem_rev: 0,
+        accounts_rev: 0,
+        spotify_user: None,
+        video_overlay: None,
     }
 }
 
@@ -347,9 +355,13 @@ fn gui_apply_routes_settings_to_live_daemon_state() {
     apply_gui_ok(&mut engine, "animations", "fps", json!(999));
     apply_gui_ok(&mut engine, "animations", "master", json!(true));
     apply_gui_ok(&mut engine, "animations", "bounce", json!(true));
+    apply_gui_ok(&mut engine, "animations", "plasma", json!(true));
+    apply_gui_ok(&mut engine, "animations", "error_shake", json!(true));
     assert_eq!(engine.config.animations.fps, crate::config::FPS_MAX);
     assert!(engine.config.animations.master);
     assert!(engine.config.animations.bounce);
+    assert!(engine.config.animations.plasma);
+    assert!(engine.config.animations.error_shake);
 
     apply_gui_ok(&mut engine, "theme", "preset", json!("light"));
     apply_gui_ok(&mut engine, "theme", "retro", json!(true));

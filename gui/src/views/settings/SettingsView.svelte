@@ -94,6 +94,6 @@
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-    padding: var(--space-6) var(--space-8) var(--space-8) var(--space-4);
+    padding: var(--space-6) var(--space-8) var(--space-8) var(--space-6);
   }
 </style>

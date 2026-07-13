@@ -233,3 +233,65 @@ fn tier_flip_moves_the_art_geometry_key() {
         "entering mini hides native art — the parked bytes need one clear"
     );
 }
+
+#[test]
+fn mini_title_marquees_on_overflow_with_animations_off() {
+    let mut app = App::new(100);
+    app.queue.set(
+        vec![Song::remote(
+            "long",
+            "An Extremely Long Title That Cannot Possibly Fit In A Mini Row",
+            "Some Very Long Artist Name",
+            "3:00",
+        )],
+        0,
+    );
+    app.mode = Mode::Player;
+    assert!(
+        !app.config.animations.master,
+        "every animation toggle is off"
+    );
+
+    app.anim.anim_frame = 0;
+    let first = render_app_buffer(&app, 28, 8);
+    assert_eq!(app.bridges.ui_tier.get(), UiTier::Mini);
+    assert!(
+        app.animation_active(),
+        "a clipped mini title must keep the clock awake with the masters off"
+    );
+    let title_y = (0..8)
+        .find(|&y| buffer_row(&first, y).contains("Extremely"))
+        .expect("mini title row");
+
+    app.anim.anim_frame = 60;
+    let later = render_app_buffer(&app, 28, 8);
+    assert_ne!(
+        buffer_row(&first, title_y),
+        buffer_row(&later, title_y),
+        "the clipped mini title crawls so the whole song name can be read"
+    );
+}
+
+#[test]
+fn mini_title_that_fits_stays_byte_identical_and_lets_the_clock_sleep() {
+    let mut app = App::new(100);
+    app.queue
+        .set(vec![Song::remote("short", "Tiny", "A", "0:10")], 0);
+    app.mode = Mode::Player;
+
+    app.anim.anim_frame = 0;
+    let first = render_app_buffer(&app, 28, 8);
+    assert!(
+        !app.animation_active(),
+        "a fitting mini title must not keep the clock awake"
+    );
+    app.anim.anim_frame = 60;
+    let later = render_app_buffer(&app, 28, 8);
+    for y in 0..8 {
+        assert_eq!(
+            buffer_row(&first, y),
+            buffer_row(&later, y),
+            "off-mode mini renders byte-identically when nothing overflows"
+        );
+    }
+}

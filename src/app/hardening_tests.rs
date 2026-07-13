@@ -205,10 +205,10 @@ fn art_overlay_mask_bits_are_unique_and_fit_u32() {
     }
     assert_eq!(
         ART_OVERLAY_BITS.len(),
-        17,
+        18,
         "all assigned u32 overlay bits are inventoried"
     );
-    assert!(seen & (1 << 16) != 0, "highest allocated bit is tracked");
+    assert!(seen & (1 << 17) != 0, "highest allocated bit is tracked");
     assert_eq!(seen.count_ones(), ART_OVERLAY_BITS.len() as u32);
 }
 

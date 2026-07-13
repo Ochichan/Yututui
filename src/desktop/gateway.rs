@@ -136,7 +136,7 @@ pub enum GatewayEvent {
     Push {
         sequence: u64,
         topic: Topic,
-        event: PushEvent,
+        event: Box<PushEvent>,
         envelope: InEnvelope,
     },
 }
@@ -866,7 +866,7 @@ async fn run_session<F: Fn(GatewayEvent)>(
                         emit(GatewayEvent::Push {
                             sequence: seq,
                             topic,
-                            event,
+                            event: Box::new(event),
                             envelope,
                         });
                         if shutting_down {
@@ -937,6 +937,19 @@ async fn forward_command<F: Fn(GatewayEvent)>(
                 correlation.id,
                 correlation.page_id,
                 serde_json::json!({ "reason": "bad_page_id" }),
+            )));
+        }
+        return None;
+    }
+    // The About card's IPC self-test. `ping` is not a core command: the wire under test
+    // is exactly WebView → bridge → gateway, so answer natively (the demo core replies
+    // with the same bare string, and reaching this point proves the session is live).
+    if matches!(env.kind, OutKind::Cmd | OutKind::Req) && env.name == "ping" {
+        if let Some(correlation) = correlation {
+            emit(GatewayEvent::Frame(InEnvelope::res_for_page(
+                correlation.id,
+                correlation.page_id,
+                serde_json::json!("pong"),
             )));
         }
         return None;

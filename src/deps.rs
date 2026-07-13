@@ -146,6 +146,57 @@ pub fn missing() -> Vec<&'static str> {
         .collect()
 }
 
+/// Tools required before handing a download to yt-dlp. mpv is playback-only; yt-dlp and
+/// ffmpeg are both part of the download pipeline.
+pub fn missing_for_downloads() -> Vec<&'static str> {
+    ["yt-dlp", "ffmpeg"]
+        .into_iter()
+        .filter(|bin| match *bin {
+            "yt-dlp" => {
+                crate::tools::ytdlp_selection_error().is_some()
+                    || (crate::tools::ytdlp_selection().is_none() && !on_path(bin))
+            }
+            other => !on_path(other),
+        })
+        .collect()
+}
+
+/// A copyable, platform-appropriate command assembled only from the closed tool-name set above.
+pub fn install_command(missing: &[&str]) -> Option<String> {
+    let tools = missing
+        .iter()
+        .copied()
+        .filter(|tool| TOOLS.iter().any(|(known, _)| known == tool))
+        .collect::<Vec<_>>();
+    if tools.is_empty() {
+        return None;
+    }
+    if cfg!(target_os = "windows") {
+        let prefix = if tools.contains(&"mpv") {
+            "scoop bucket add extras; "
+        } else {
+            ""
+        };
+        Some(format!("{prefix}scoop install {}", tools.join(" ")))
+    } else if cfg!(target_os = "macos") {
+        Some(format!("brew install {}", tools.join(" ")))
+    } else if on_path("apt") || on_path("apt-get") {
+        Some(format!("sudo apt install {}", tools.join(" ")))
+    } else if on_path("pacman") {
+        Some(format!("sudo pacman -S {}", tools.join(" ")))
+    } else {
+        None
+    }
+}
+
+pub fn setup_guide_url() -> &'static str {
+    if crate::i18n::is_korean() {
+        "https://github.com/Ochichan/Yututui/blob/main/README.ko.md#재생-도구"
+    } else {
+        "https://github.com/Ochichan/Yututui/blob/main/README.md#runtime-tools"
+    }
+}
+
 /// A one-line, OS-appropriate install hint for the given missing tools.
 pub fn install_hint(missing: &[&str]) -> String {
     let tools = missing.join(" ");
@@ -192,6 +243,11 @@ mod tests {
     #[test]
     fn nonexistent_binary_is_not_on_path() {
         assert!(!on_path("yututui-definitely-not-a-real-binary-xyzzy"));
+    }
+
+    #[test]
+    fn install_command_rejects_unknown_tool_names() {
+        assert_eq!(install_command(&["not-a-tool"]), None);
     }
 
     #[test]

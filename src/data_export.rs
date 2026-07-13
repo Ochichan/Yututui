@@ -649,38 +649,10 @@ fn project_streaming(streaming: &StreamingConfig, defaults: &StreamingConfig) ->
 }
 
 fn project_animations(config: &Config) -> Value {
-    let value = config.animations;
-    json!({
-        "master": value.master,
-        "radio_master": value.radio_master,
-        "title": value.title,
-        "heart": value.heart,
-        "seekbar": value.seekbar,
-        "spinner": value.spinner,
-        "eq_bars": value.eq_bars,
-        "controls": value.controls,
-        "border": value.border,
-        "track_intro": value.track_intro,
-        "lyrics": value.lyrics,
-        "toast": value.toast,
-        "volume_flash": value.volume_flash,
-        "like_burst": value.like_burst,
-        "seek_flash": value.seek_flash,
-        "selection": value.selection,
-        "stagger": value.stagger,
-        "caret": value.caret,
-        "tabs": value.tabs,
-        "popup_fade": value.popup_fade,
-        "activity": value.activity,
-        "about_fx": value.about_fx,
-        "rain": value.rain,
-        "donut": value.donut,
-        "visualizer": value.visualizer,
-        "starfield": value.starfield,
-        "bounce": value.bounce,
-        "pause_unfocused": value.pause_unfocused,
-        "fps": value.fps,
-    })
+    // `AnimationsConfig` is a flat serde struct whose field names ARE the portable keys, so
+    // serializing it directly keeps this projection in lock-step with every new effect flag
+    // (a hand-written `json!` here also blew the macro recursion limit at ~33 keys).
+    serde_json::to_value(config.animations).unwrap_or(Value::Null)
 }
 
 fn project_tracks<'a>(

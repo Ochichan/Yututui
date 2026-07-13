@@ -25,8 +25,12 @@ use crate::streaming::{StreamingConfig, StreamingMode};
 use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
+mod accounts;
+mod ai_context;
 mod delivery;
+mod gui_library;
 mod gui_search;
+mod keymap_theme;
 mod persistence_gate;
 mod personal_export;
 mod streaming;
@@ -64,6 +68,7 @@ pub(crate) struct EngineState {
     pub config: Config,
     pub station: StationStore,
     pub library: Library,
+    pub playlists: crate::playlists::Playlists,
     pub signals: Signals,
 }
 
@@ -116,6 +121,9 @@ pub struct DaemonEngine {
     playback: DaemonPlayback,
     config: Config,
     library: Library,
+    playlists: crate::playlists::Playlists,
+    playlists_rev: u64,
+    library_invalidations: u64,
     signals: Signals,
     station: StationStore,
     loaded_video_id: Option<String>,
@@ -163,6 +171,16 @@ pub struct DaemonEngine {
     /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
     /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
     gui_search_index: GuiSearchIndex,
+    /// v1 why-gem provenance: pick origin per video id (bounded; see ai_context.rs).
+    why_gem: Vec<(String, crate::remote::proto::WhyGemModel)>,
+    why_gem_rev: u64,
+    /// `accounts` topic revision + the transfer actor's live Spotify display name.
+    accounts_rev: u64,
+    spotify_user: Option<String>,
+    /// The `PlayVideo` overlay child, held so the window outlives the command turn.
+    /// A replacement spawn drops (closes) the previous window — one overlay at a time,
+    /// like the TUI. The daemon has no IPC observer; closing the window is the user's.
+    video_overlay: Option<crate::util::process_tree::OwnedProcessTree>,
 }
 
 struct PlayerRuntime {
@@ -217,6 +235,7 @@ impl DaemonEngine {
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
         let crate::persist::StartupStoreSet {
             library,
+            playlists,
             session_cache,
             signals,
             station,
@@ -226,6 +245,7 @@ impl DaemonEngine {
             config,
             station,
             library,
+            playlists,
             signals,
         };
         crate::persist::ensure_startup_recovery_coherent().map_err(EngineError::from)?;
@@ -265,6 +285,7 @@ impl DaemonEngine {
             mut config,
             station,
             library,
+            playlists,
             signals,
         } = state;
         if let Some(profile) = &station.active {
@@ -297,6 +318,9 @@ impl DaemonEngine {
             ),
             config,
             library,
+            playlists,
+            playlists_rev: 0,
+            library_invalidations: 0,
             signals,
             station,
             loaded_video_id: None,
@@ -324,6 +348,11 @@ impl DaemonEngine {
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: GuiSearchIndex::default(),
+            why_gem: Vec::new(),
+            why_gem_rev: 0,
+            accounts_rev: 0,
+            spotify_user: None,
+            video_overlay: None,
         }
     }
 
@@ -343,6 +372,13 @@ impl DaemonEngine {
 
     pub fn api_cookie(&self) -> Option<String> {
         self.config.effective_cookie()
+    }
+
+    pub(crate) fn download_runtime(&self) -> crate::config::DownloadRuntimeConfig {
+        self.config.download_runtime(
+            self.config
+                .cookies_file_for_external_tools(data_dir().as_deref()),
+        )
     }
 
     /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
@@ -558,6 +594,103 @@ impl DaemonEngine {
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
             }
+            // Queue order surgery never touches the current track or playback position
+            // (no position_epoch interaction); the shared Queue methods keep both
+            // owners byte-identical for the parity harness.
+            RemoteCommand::QueueMove { from, to, .. } => {
+                if self.queue.move_item(from, to).is_none() {
+                    RemoteResponse::err("queue_index")
+                } else {
+                    self.save_session();
+                    RemoteResponse::status(self.status())
+                }
+            }
+            RemoteCommand::QueueClearUpcoming { .. } => {
+                if self.queue.clear_upcoming() > 0 {
+                    self.save_session();
+                }
+                RemoteResponse::status(self.status())
+            }
+            RemoteCommand::PlayVideo { video_id } => self.play_video(requester.as_ref(), video_id),
+            RemoteCommand::LibraryPlay { scope, filter } => {
+                self.gui_library_play(&scope, &filter).await
+            }
+            RemoteCommand::LibraryEnqueue { scope, filter } => {
+                self.gui_library_enqueue(&scope, &filter).await
+            }
+            RemoteCommand::LibraryRemove { scope, video_id } => {
+                self.gui_library_remove(&scope, &video_id)
+            }
+            RemoteCommand::FetchLibraryPage {
+                scope,
+                filter,
+                offset,
+                limit,
+            } => self.gui_fetch_library_page(&scope, &filter, offset, limit),
+            RemoteCommand::PlaylistCreate { name } => self.gui_playlist_create(&name),
+            RemoteCommand::PlaylistDelete { playlist_id } => self.gui_playlist_delete(&playlist_id),
+            RemoteCommand::PlaylistAddTracks {
+                playlist_id,
+                video_ids,
+            } => self.gui_playlist_add_tracks(requester.as_ref(), &playlist_id, &video_ids),
+            RemoteCommand::PlaylistRemoveTrack {
+                playlist_id,
+                video_id,
+            } => self.gui_playlist_remove_track(&playlist_id, &video_id),
+            RemoteCommand::PlaylistPlay { playlist_id } => {
+                self.gui_playlist_play(&playlist_id).await
+            }
+            RemoteCommand::FetchPlaylistDetail { playlist_id } => {
+                self.gui_fetch_playlist_detail(&playlist_id)
+            }
+            RemoteCommand::Rate { video_id, rating } => self.gui_rate(&video_id, rating),
+            RemoteCommand::FetchWhyGem { video_id } => self.gui_fetch_why_gem(&video_id),
+            // Deferred v8 GUI surface (gui/WIRING.md §1.5): variants exist so the
+            // gateway stops answering bad_command; each stream replaces its arms with
+            // real dispatch. Until then the reason is an honest not_supported (the
+            // frontend gates these paths behind the v8-commands capability anyway).
+            // Defensive backstop: the daemon owner loop owns the download actor and
+            // intercepts these before engine dispatch.
+            RemoteCommand::Download { .. } | RemoteCommand::DeleteDownload { .. } => {
+                RemoteResponse::err("not_supported")
+            }
+            RemoteCommand::KeymapBind {
+                context,
+                action,
+                chord,
+            } => self.gui_keymap_bind(&context, &action, &chord),
+            RemoteCommand::KeymapUnbind { context, action } => {
+                self.gui_keymap_unbind(&context, &action)
+            }
+            RemoteCommand::KeymapResetAll => self.gui_keymap_reset_all(),
+            RemoteCommand::ThemeSetOverride { role, hex } => {
+                let (response, theme_effects) = self.gui_theme_set_override(role, hex);
+                effects.extend(theme_effects);
+                response
+            }
+            RemoteCommand::ThemeClearOverride { role } => self.gui_theme_clear_override(&role),
+            RemoteCommand::ClearRomanizationCache => self.gui_clear_romanization_cache(),
+            // queue_remove_many has no frontend sender yet; ask_ai and lastfm_connect
+            // are intercepted by the owner-loop hosts before engine dispatch (backstops).
+            RemoteCommand::QueueRemoveMany { .. }
+            | RemoteCommand::AskAi { .. }
+            | RemoteCommand::LastfmConnect => RemoteResponse::err("not_supported"),
+            // Defensive backstop: the daemon owner loop owns the transfer actor and
+            // intercepts these before engine dispatch.
+            RemoteCommand::TransferListSpotify
+            | RemoteCommand::TransferStart { .. }
+            | RemoteCommand::TransferCancel
+            | RemoteCommand::SpotifyConnect => RemoteResponse::err("not_supported"),
+            RemoteCommand::ListenBrainzConfigure {
+                submit,
+                token,
+                custom_url,
+            } => self.gui_listen_brainz_configure(submit, token, custom_url),
+            RemoteCommand::AccountSet {
+                service,
+                field,
+                value,
+            } => self.gui_account_set(&service, &field, &value),
         };
         self.finish_remote_persistence(response, shutdown, effects)
     }
@@ -975,11 +1108,26 @@ impl DaemonEngine {
             "popup_fade" => &mut anim.popup_fade,
             "activity" => &mut anim.activity,
             "about_fx" => &mut anim.about_fx,
+            "time_glow" => &mut anim.time_glow,
+            "progress_sparkle" => &mut anim.progress_sparkle,
+            "border_chase" => &mut anim.border_chase,
+            "pause_flash" => &mut anim.pause_flash,
+            "error_shake" => &mut anim.error_shake,
             "visualizer" => &mut anim.visualizer,
             "rain" => &mut anim.rain,
             "donut" => &mut anim.donut,
             "starfield" => &mut anim.starfield,
             "bounce" => &mut anim.bounce,
+            "comets" => &mut anim.comets,
+            "snow" => &mut anim.snow,
+            "fireflies" => &mut anim.fireflies,
+            "cube" => &mut anim.cube,
+            "aquarium" => &mut anim.aquarium,
+            "waves" => &mut anim.waves,
+            "fireworks" => &mut anim.fireworks,
+            "life" => &mut anim.life,
+            "pipes" => &mut anim.pipes,
+            "plasma" => &mut anim.plasma,
             _ => return false,
         };
         *slot = v;
@@ -1023,6 +1171,59 @@ impl DaemonEngine {
         assert!(self.gui_search_index.complete(requester, 0, groups));
     }
 
+    /// `PlayVideo` host: spawn the shared mpv overlay for a track and pause the audio
+    /// instance (the same intent as the TUI's admission-atomic transition, minus its
+    /// IPC observer — the daemon cannot watch the window, so closing it and resuming
+    /// audio stay with the user/GUI). One overlay at a time; a new spawn replaces it.
+    fn play_video(&mut self, requester: Option<&RequesterKey>, video_id: String) -> RemoteResponse {
+        // Reap a window the user already closed so it doesn't linger as a zombie until
+        // engine teardown (no IPC observer to notice the exit), and so a replacement
+        // spawn doesn't pay the drop path's kill-and-wait for an already-dead child.
+        if self
+            .video_overlay
+            .as_mut()
+            .is_some_and(|overlay| matches!(overlay.try_wait(), Ok(Some(_))))
+        {
+            self.video_overlay = None;
+        }
+        let song = self
+            .queue
+            .ordered_iter()
+            .find(|song| song.video_id == video_id)
+            .cloned()
+            .or_else(|| self.resolve_video_id(requester, &video_id));
+        let Some(song) = song else {
+            return RemoteResponse::err("unknown_track");
+        };
+        let Some(youtube_id) = song.youtube_id().map(str::to_owned) else {
+            // Non-YouTube rows have no watch page to open a video for.
+            return RemoteResponse::err("not_supported");
+        };
+        let url = format!("https://music.youtube.com/watch?v={youtube_id}");
+        let cookies = self.config.cookies_file.clone();
+        let overlay = crate::video_overlay::spawn_video_overlay(
+            &url,
+            cookies.as_deref(),
+            self.config.video_layout,
+            None,
+        );
+        let Some(overlay) = overlay else {
+            return RemoteResponse::err("player_spawn_failed");
+        };
+        self.video_overlay = Some(overlay);
+        // Don't fight the video for audio focus. Best-effort: a dead transport just
+        // means there was nothing playing to pause.
+        if !self.playback.paused
+            && self.loaded_video_id.is_some()
+            && self
+                .send_active_player_command("cycle_pause", PlayerCmd::CyclePause)
+                .is_ok()
+        {
+            self.playback.paused = true;
+        }
+        RemoteResponse::ok("video overlay started".to_string())
+    }
+
     /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
     /// first, then the library (favorites/history), then a bare row mpv resolves at load time
     /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
@@ -1042,6 +1243,14 @@ impl DaemonEngine {
             return Some(song.clone());
         }
         crate::api::is_youtube_video_id(video_id).then(|| Song::remote(video_id, video_id, "", ""))
+    }
+
+    pub(crate) fn resolve_gui_track(
+        &self,
+        requester: Option<&RequesterKey>,
+        video_id: &str,
+    ) -> Option<Song> {
+        self.resolve_video_id(requester, video_id)
     }
 
     async fn play_tracks(
@@ -1511,6 +1720,7 @@ impl DaemonEngine {
             if like {
                 self.library.toggle_favorite(&song);
                 self.save_library("daemon radio favorite");
+                self.library_invalidations = self.library_invalidations.wrapping_add(1);
             }
             return;
         }
@@ -1546,12 +1756,24 @@ impl DaemonEngine {
         }
         self.save_library("daemon media rating library");
         self.save_signals("daemon media rating signals");
+        // Favorites membership changed: a subscribed GUI's paged library view is stale.
+        self.library_invalidations = self.library_invalidations.wrapping_add(1);
     }
 
     /// The v8 publisher's read view of this owner (the daemon analog of
     /// `App::core_view`; docs/gui/02 §14). Interpolates elapsed to "now" from the same
     /// anchor the OS media session uses. EQ reflects config (the daemon's live EQ apply
     /// lands at S4/B3); the daemon has no ICY now-playing surface yet.
+    /// Read-only store accessors for the owner loop's push projections (search rows
+    /// carry the rating halves too).
+    pub(crate) fn library(&self) -> &Library {
+        &self.library
+    }
+
+    pub(crate) fn signals(&self) -> &Signals {
+        &self.signals
+    }
+
     pub(crate) fn core_view(&self) -> crate::remote::publish::CoreView<'_> {
         let cur = self.queue.current();
         crate::remote::publish::CoreView {
@@ -1582,6 +1804,8 @@ impl DaemonEngine {
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
             config: &self.config,
+            library: &self.library,
+            signals: &self.signals,
             // Same current-track gate as status()/media_snapshot: stale art from the
             // previous track never rides a push.
             artwork: cur.and_then(|song| {
@@ -2241,12 +2465,17 @@ impl DaemonEngine {
 }
 
 #[cfg(test)]
+pub(in crate::daemon) fn test_engine() -> DaemonEngine {
+    tests::engine_with_queue(&[])
+}
+
+#[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]
 mod gui_search_tests;
 #[cfg(test)]
 mod persistence_gate_tests;
 #[cfg(test)]
-mod tests;
+pub(in crate::daemon) mod tests;
 #[cfg(test)]
 mod transport_tests;

@@ -19,7 +19,7 @@
       "stateLabel", "artImg", "title", "artist", "ownerLabel", "queueLabel", "onAir", "error",
       "previous", "playPause", "next", "shuffle", "repeat", "repeatText", "streaming",
       "seekBack", "seekForward", "progressBar", "progressFill", "progressKnob",
-      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct",
+      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct", "tamaVolume",
       "modeMusic", "modeRadio", "radioHint",
       "queueSummary", "queueList", "queueRefresh", "refreshTop", "hide",
       "streamingToggle", "modeFocused", "modeBalanced", "modeDiscovery", "streamingSource",
@@ -42,7 +42,7 @@
       radioMode: "라디오 모드", tuiOnly: "(TUI 전용)", speed: "속도", seekStep: "탐색 간격",
       normalize: "음량 평준화", gapless: "끊김 없는 재생", theme: "스킨",
       start: "시작", startNew: "새 플레이어 시작", resume: "재개", resumePrevious: "이전 세션 재개",
-      stop: "중지", openTui: "TUI 열기", playerPages: "미니플레이어 페이지",
+      stop: "중지", openTui: "플레이어 열기", playerPages: "미니플레이어 페이지",
       playbackMode: "재생 모드", playbackControls: "재생 제어", autoplayMode: "자동 재생 모드", playerSkin: "플레이어 스킨",
       queueEmpty: "대기열이 비어 있습니다", remove: "삭제", confirmRemove: "삭제 확인", removing: "삭제 중",
       applying: "변경 사항 적용 중", commandTimeout: "명령 응답이 지연되고 있습니다. 다시 시도해 주세요.",
@@ -59,7 +59,7 @@
       radioMode: "Radio mode", tuiOnly: "(TUI only)", speed: "Speed", seekStep: "Seek step",
       normalize: "Normalize", gapless: "Gapless", theme: "Theme",
       start: "Start", startNew: "Start new player", resume: "Resume", resumePrevious: "Resume previous session",
-      stop: "Stop", openTui: "Open TUI", playerPages: "Mini player pages",
+      stop: "Stop", openTui: "Open Player", playerPages: "Mini player pages",
       playbackMode: "Playback mode", playbackControls: "Playback controls", autoplayMode: "Autoplay mode", playerSkin: "Player skin",
       queueEmpty: "queue is napping…", remove: "Remove", confirmRemove: "Confirm removal of", removing: "Removing",
       applying: "Applying change", commandTimeout: "The command response is delayed. Please try again.",
@@ -115,6 +115,8 @@
       });
       els.progressBar.setAttribute("aria-label", copy.position);
       els.volumeBar.setAttribute("aria-label", copy.volume);
+      els.tamaVolume.setAttribute("aria-label", copy.volume);
+      els.tamaVolume.title = copy.volume;
       els.shuffle.setAttribute("aria-label", copy.shuffle);
       [els.streaming, els.streamingToggle].forEach(button => button.setAttribute("aria-label", copy.autoplay));
       els.sharedSheetBack.title = copy.back;
@@ -627,16 +629,24 @@
     }
 
     // Every theme renders the same semantic volume slider from shared `vol` state.
+    // The Tamagotchi egg's dot row is a second face of the same slider: dot k lights
+    // at >= 20k+10 % (so 0% sleeps, 50% wakes three, 100% all five) and lit dots grow
+    // with the level via the --vol custom property.
     const volBars = [
       { bar: els.volumeBar, fill: els.volumeFill, knob: els.volumeKnob, pct: els.volumePct },
+      { bar: els.tamaVolume, dots: Array.from(els.tamaVolume.querySelectorAll(".td")) },
     ];
 
     function renderVolume() {
       const value = currentVolume();
       const pct = Math.min(100, Math.max(0, value));
       for (const entry of volBars) {
-        entry.fill.style.width = pct + "%";
-        entry.knob.style.left = pct + "%";
+        if (entry.fill) entry.fill.style.width = pct + "%";
+        if (entry.knob) entry.knob.style.left = pct + "%";
+        if (entry.dots) {
+          entry.bar.style.setProperty("--vol", (pct / 100).toFixed(2));
+          entry.dots.forEach((dot, i) => dot.classList.toggle("on", pct >= i * 20 + 10));
+        }
         if (entry.pct) entry.pct.textContent = currentPayload.connected ? pct + "%" : "--";
         entry.bar.classList.toggle("disabled", !vol.canVolume);
         entry.bar.setAttribute("aria-disabled", String(!vol.canVolume));

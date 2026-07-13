@@ -406,7 +406,10 @@ mod tests {
         // On a current-thread runtime this waiter can only run if verifier polling is async.
         // The fixture publishes both PIDs with an atomic rename: observing mere creation of a
         // redirected file is not sufficient because the shell creates it before `printf` writes.
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // The full workspace suite launches many process fixtures in parallel. Give the shell
+        // enough wall time to be scheduled under that load; this does not weaken the async
+        // liveness assertion because a blocked current-thread runtime cannot drive this timer.
+        tokio::time::timeout(Duration::from_secs(15), async {
             while !pid_file.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

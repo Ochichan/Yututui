@@ -21,7 +21,6 @@ import type { KeymapStore } from './stores/keymap.svelte';
 import type { LyricsStore } from './stores/lyrics.svelte';
 import type { WhyGemStore } from './stores/whygem.svelte';
 import type { ToastStore } from './stores/toasts.svelte';
-import type { WipStore } from './wiring/wip.svelte';
 
 export interface AppCtx {
   boot: BootPayload;
@@ -52,5 +51,4 @@ export interface AppCtx {
   /** Why-DJ-Gem provenance + the anchored popover fetch (docs/gui/07 §13). */
   whygem: WhyGemStore;
   toasts: ToastStore;
-  wip: WipStore;
 }

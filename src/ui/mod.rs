@@ -70,6 +70,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
         }
     }
+    views::onboarding::render_search_hint(frame, app, area);
     // The `?` cheat-sheet draws on top of whatever screen is active.
     if app.overlays.help_visible {
         views::help::render(frame, app, area);
@@ -154,6 +155,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // closes it first, so this layer only competes with its underlying list/queue popup.
     if app.overlays.context_menu.is_some() {
         views::context_menu::render(frame, app, area);
+    }
+    if app.tool_setup.is_some() {
+        views::onboarding::render_tool_setup(frame, app, area);
     }
     retro::scrub_frame(frame, app);
 }

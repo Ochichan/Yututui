@@ -532,7 +532,7 @@ impl MacTrayApp {
                 event,
                 envelope,
             } => {
-                if self.desktop_app.apply_push(sequence, topic, event) {
+                if self.desktop_app.apply_push(sequence, topic, *event) {
                     if let Some(main) = &self.main_window {
                         main.eval(&bridge::receive_script(&envelope));
                     }

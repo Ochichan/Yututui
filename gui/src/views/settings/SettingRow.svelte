@@ -27,9 +27,11 @@
 <style>
   .row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-6);
+    gap: var(--space-2) var(--space-6);
+    min-height: 40px;
     padding: var(--space-3) var(--space-4);
   }
   .lab {
@@ -61,5 +63,6 @@
     align-items: center;
     gap: var(--space-2);
     flex: none;
+    max-width: 100%;
   }
 </style>

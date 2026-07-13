@@ -198,24 +198,37 @@ describe('animation helpers', () => {
     expect(d.master).toBe(false);
     expect(d.pause_unfocused).toBe(true);
     expect(d.fps).toBe(FPS_DEFAULT);
-    expect(EFFECT_IDS).toHaveLength(25);
-    expect(new Set(EFFECT_IDS).size).toBe(25);
+    expect(EFFECT_IDS).toHaveLength(40);
+    expect(new Set(EFFECT_IDS).size).toBe(40);
     expect(EFFECT_GROUPS.map((group) => [group.id, group.effects.length])).toEqual([
-      ['oneShot', 5],
+      ['oneShot', 7],
       ['uiWide', 7],
-      ['element', 8],
-      ['filler', 5],
+      ['element', 11],
+      ['filler', 9],
+      ['showpiece', 6],
     ]);
     expect(EFFECT_GROUPS[2].effects).toContain('lyrics');
     expect(EFFECT_GROUPS[3].effects).toEqual([
       'bounce',
+      'comets',
+      'snow',
       'starfield',
+      'fireflies',
+      'cube',
+      'aquarium',
+      'waves',
       'visualizer',
+    ]);
+    expect(EFFECT_GROUPS[4].effects).toEqual([
+      'fireworks',
       'rain',
+      'life',
+      'pipes',
       'donut',
+      'plasma',
     ]);
     for (const id of EFFECT_IDS) expect(d[id]).toBe(false);
-    // 25 effects + master + pause_unfocused + fps.
-    expect(Object.keys(d)).toHaveLength(28);
+    // 40 effects + master + pause_unfocused + fps.
+    expect(Object.keys(d)).toHaveLength(43);
   });
 });

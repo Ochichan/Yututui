@@ -38,6 +38,9 @@ impl App {
             queue_popup: QueuePopup::default(),
             search_filter: SearchFilterPopup::default(),
             config: Config::default(),
+            onboarding: OnboardingState::default(),
+            tool_setup: None,
+            runtime_tool_checks: false,
             settings: None,
             ai: AiState {
                 available: false,

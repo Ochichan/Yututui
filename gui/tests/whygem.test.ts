@@ -140,8 +140,9 @@ describe('demo core why-gem', () => {
     const { t, frames } = boot();
     t.send({ v: 1, kind: 'cmd', name: 'ask_ai', payload: { ticket: 1, prompt: 'meownlight' } });
     vi.advanceTimersByTime(500);
-    const pick = ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'ai')!
-      .payload as AiState).suggestions[0];
+    const pick = (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'ai')!.payload as AiState
+    ).suggestions[0];
     expect(pick).toBeTruthy();
 
     t.send({ v: 1, kind: 'cmd', name: 'enqueue_tracks', payload: { video_ids: [pick.video_id] } });

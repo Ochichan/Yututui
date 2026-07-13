@@ -290,11 +290,13 @@
   }
   .dopt {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
     font-size: 13px;
   }
   .dopt span {
+    flex: none;
     min-width: 128px;
   }
   .note {

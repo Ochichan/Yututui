@@ -1,64 +1,65 @@
-// Chord normalization (docs/gui/05 §8.3–§8.4). Mirrors `Chord::new` (src/keymap.rs) closely
-// enough that a GUI keypress produces the SAME persisted chord string the TUI stores, so the
-// user's remap is honored identically. The format is self-consistent with the demo bindings
-// (lib/stores/keymap.svelte.ts); the Rust chord-fixture cross-test (§8.5) is deferred until
-// the export exists.
+// Chord normalization (docs/gui/05 §8.3–§8.4). Mirrors `Chord::new` + `chord_to_config`
+// (src/keymap.rs) so a GUI keypress produces the SAME canonical config chord string the core
+// persists and pushes (`wire_bindings`) — dispatch is then a plain string match and rebinds
+// round-trip byte-stable. The Rust chord-fixture cross-test (§8.5) is deferred until the
+// export exists.
 //
-// Format: modifier tokens `Ctrl+`, `Alt+`, `Shift+` (in that order) prefix a base key. A
-// plain shifted letter is the uppercase char with NO Shift token (`Shift+a → A`); Ctrl/Alt +
-// letter lowercases the base but keeps modifiers (`Ctrl+Shift+A → Ctrl+Shift+a`). `Shift+Tab`
-// is `BackTab`. Named keys: Space, Enter, Esc, Tab, BackTab, Backspace, Delete, Left, Right,
-// Up, Down, Home, End, PageUp, PageDown, Insert, F1–F12.
+// Format (canonical config form): modifier tokens `ctrl+`, `alt+`, `shift+` (in that order)
+// prefix a base key. A plain shifted letter is the uppercase char with NO shift token
+// (`Shift+a → A`); Ctrl/Alt + letter lowercases the base but keeps modifiers
+// (`Ctrl+Shift+A → ctrl+shift+a`). `Shift+Tab` is `backtab`. Named keys: space, enter, esc,
+// tab, backtab, backspace, delete, left, right, up, down, home, end, pageup, pagedown,
+// insert, f1–f12. `displayChord` prettifies for the UI (`ctrl+u → Ctrl+u`, `space → Space`).
 
 import { KOREAN2SET } from './korean2set';
 
 const NAMED_FROM_KEY: Record<string, string> = {
-  ' ': 'Space',
-  Spacebar: 'Space',
-  Escape: 'Esc',
-  Esc: 'Esc',
-  Enter: 'Enter',
-  Tab: 'Tab',
-  Backspace: 'Backspace',
-  Delete: 'Delete',
-  Del: 'Delete',
-  ArrowLeft: 'Left',
-  ArrowRight: 'Right',
-  ArrowUp: 'Up',
-  ArrowDown: 'Down',
-  Home: 'Home',
-  End: 'End',
-  PageUp: 'PageUp',
-  PageDown: 'PageDown',
-  Insert: 'Insert',
+  ' ': 'space',
+  Spacebar: 'space',
+  Escape: 'esc',
+  Esc: 'esc',
+  Enter: 'enter',
+  Tab: 'tab',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Del: 'delete',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'pageup',
+  PageDown: 'pagedown',
+  Insert: 'insert',
 };
 
 const NAMED_FROM_CODE: Record<string, string> = {
-  Space: 'Space',
-  Escape: 'Esc',
-  Enter: 'Enter',
-  NumpadEnter: 'Enter',
-  Tab: 'Tab',
-  Backspace: 'Backspace',
-  Delete: 'Delete',
-  ArrowLeft: 'Left',
-  ArrowRight: 'Right',
-  ArrowUp: 'Up',
-  ArrowDown: 'Down',
-  Home: 'Home',
-  End: 'End',
-  PageUp: 'PageUp',
-  PageDown: 'PageDown',
-  Insert: 'Insert',
+  Space: 'space',
+  Escape: 'esc',
+  Enter: 'enter',
+  NumpadEnter: 'enter',
+  Tab: 'tab',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'pageup',
+  PageDown: 'pagedown',
+  Insert: 'insert',
 };
 
-const FKEY = /^F([1-9]|1[0-2])$/;
+const FKEY = /^[Ff]([1-9]|1[0-2])$/;
 
 function withMods(e: KeyboardEvent, base: string, dropShift: boolean): string {
   const mods: string[] = [];
-  if (e.ctrlKey) mods.push('Ctrl');
-  if (e.altKey) mods.push('Alt');
-  if (!dropShift && e.shiftKey) mods.push('Shift');
+  if (e.ctrlKey) mods.push('ctrl');
+  if (e.altKey) mods.push('alt');
+  if (!dropShift && e.shiftKey) mods.push('shift');
   return mods.length ? `${mods.join('+')}+${base}` : base;
 }
 
@@ -67,15 +68,15 @@ export function chordFromKey(e: KeyboardEvent): string | null {
   let key = e.key;
   if (KOREAN2SET[key]) key = KOREAN2SET[key]; // plain jamo delivered outside an IME composition
 
-  if (key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.altKey) return 'BackTab';
-  if (FKEY.test(key)) return withMods(e, key, false);
+  if (key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.altKey) return 'backtab';
+  if (FKEY.test(key)) return withMods(e, key.toLowerCase(), false);
   const named = NAMED_FROM_KEY[key];
   if (named) return withMods(e, named, /* dropShift for Tab handled above */ false);
 
   if (key.length === 1) {
     if (/[a-zA-Z]/.test(key)) {
       // Letters: Ctrl/Alt lowercases the base and keeps modifiers; plain uses e.key's case
-      // (the browser already gives 'A' for Shift+a), with no Shift token.
+      // (the browser already gives 'A' for Shift+a), with no shift token.
       if (e.ctrlKey || e.altKey) return withMods(e, key.toLowerCase(), false);
       return key;
     }
@@ -102,7 +103,7 @@ export function chordFromCode(e: KeyboardEvent): string | null {
   } else if (numpad) {
     base = numpad[1];
   } else if (FKEY.test(code)) {
-    base = code;
+    base = code.toLowerCase();
   } else if (NAMED_FROM_CODE[code]) {
     base = NAMED_FROM_CODE[code];
   }
@@ -116,20 +117,54 @@ export function chordFromCode(e: KeyboardEvent): string | null {
 }
 
 /**
- * The 3-branch rule (docs/gui/05 §8.4): key-first, with a code fallback only while an IME is
- * mid-composition (isComposing / Process / Dead), so GUI chord semantics match the TUI on
- * every layout including Korean.
+ * The 3-branch rule (docs/gui/05 §8.4): key-first, with a code fallback while an IME is
+ * mid-composition (isComposing / Process / Dead) OR any Alt-modified chord, so GUI chord
+ * semantics match the TUI on every layout including Korean. Alt (Option on macOS) composes
+ * layout-dependent glyphs into `e.key` (Option+Shift+R → '®'), which would drop the base
+ * key and Shift; the physical code recovers the intended `alt+shift+r`.
  */
 export function chordFromEvent(e: KeyboardEvent): string | null {
   if (e.metaKey) return null; // leave Cmd/Meta shortcuts to the OS/browser
-  if (e.key === 'Process' || e.key === 'Dead' || e.isComposing) return chordFromCode(e);
+  if (e.altKey || e.key === 'Process' || e.key === 'Dead' || e.isComposing) {
+    return chordFromCode(e);
+  }
   return chordFromKey(e);
 }
 
-/** Capture is always code-based (works while an IME is active — §8.4 branch 3). */
+/** Capture follows dispatch normalization, including its IME/Alt physical-code fallback. */
 export function chordFromCapture(e: KeyboardEvent): string | null {
-  if (e.metaKey) return null;
-  return chordFromCode(e);
+  return chordFromEvent(e);
+}
+
+/** Pretty token for display: modifiers / named keys TitleCased, letter case preserved. */
+const DISPLAY_TOKEN: Record<string, string> = {
+  ctrl: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  space: 'Space',
+  enter: 'Enter',
+  esc: 'Esc',
+  tab: 'Tab',
+  backtab: 'BackTab',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  insert: 'Insert',
+  left: 'Left',
+  right: 'Right',
+  up: 'Up',
+  down: 'Down',
+  home: 'Home',
+  end: 'End',
+  pageup: 'PageUp',
+  pagedown: 'PageDown',
+};
+
+/** Render a canonical config chord for humans (`ctrl+u → Ctrl+u`, `shift+f10 → Shift+F10`). */
+export function displayChord(chord: string): string {
+  return chord
+    .split('+')
+    .map((tok) => DISPLAY_TOKEN[tok] ?? (FKEY.test(tok) ? tok.toUpperCase() : tok))
+    .join('+');
 }
 
 /** A DOM target that accepts text entry — the is_typeable guard's focus check. */

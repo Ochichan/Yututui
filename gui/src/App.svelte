@@ -15,7 +15,6 @@
   import TransportBar from './views/TransportBar.svelte';
   import HelpOverlay from './views/overlays/HelpOverlay.svelte';
   import AboutCard from './views/overlays/AboutCard.svelte';
-  import WipModal from './lib/components/WipModal.svelte';
   import ChordCapture from './lib/components/ChordCapture.svelte';
   import { chordFromEvent, isTypeableTarget, isPlainTypeable } from './lib/keyboard/chord';
   import { resolveContext } from './lib/keyboard/dispatcher';
@@ -28,7 +27,7 @@
   // The ctx bundle is assembled once in main.ts and its identity never changes — the
   // stores inside are the reactive things, so capturing them at init is intended.
   // svelte-ignore state_referenced_locally
-  const { ui, connection, playback, settings, toasts, wip, client, boot, demo, keymap } = ctx;
+  const { ui, connection, playback, settings, toasts, client, boot, demo, keymap } = ctx;
 
   // Live-switch the whole UI language off the settings model (i18n.catalog).
   $effect(() => {
@@ -115,7 +114,7 @@
   }
 
   // The real keymap dispatcher (docs/gui/05 §8): normalize the chord (3-branch Korean rule),
-  // resolve the focus context, look it up in the user's keymap (specific → Common → Global),
+  // resolve the focus context, look it up in the user's keymap (specific → common → global),
   // and run the action. The is_typeable guard keeps plain keys flowing into text fields.
   function onkeydown(e: KeyboardEvent) {
     // While a chord is being captured, ChordCapture owns the keyboard.
@@ -125,26 +124,39 @@
     if (isTypeableTarget(e.target) && isPlainTypeable(e)) return;
     const context = resolveContext(ui.view, document.activeElement);
     const action = keymap.match(context, chord);
-    if (!action) return;
+    if (!action) {
+      // GUI-fixed keys, like the TUI's own fixed handlers (not remappable): plain digits
+      // jump the rail (the rail buttons advertise them), Esc closes the top overlay.
+      if (/^[1-9]$/.test(chord)) {
+        const item = NAV_ITEMS[Number(chord) - 1];
+        if (item) {
+          ui.setView(item.id);
+          e.preventDefault();
+        }
+        return;
+      }
+      if (chord === 'esc' && ui.closeTopOverlay()) e.preventDefault();
+      return;
+    }
     if (runAction(action, ctx)) e.preventDefault();
   }
 </script>
 
 <svelte:window {onkeydown} onscroll={persistUiSoon} onfocusin={persistUiSoon} />
 
-{#if connection.info.state !== 'online'}
-  <div class="banner" role="status" class:offline={connection.info.state === 'offline'}>
-    <span class="dot" style:background={stateColor}></span>
-    <span>{bannerText}</span>
-    {#if connection.info.state === 'offline'}
-      <button class="banner-action" onclick={() => client.win('startDaemon')}
-        >{t('conn.startDaemon')}</button
-      >
-    {/if}
-  </div>
-{/if}
-
 <div class="frame">
+  {#if connection.info.state !== 'online'}
+    <div class="banner" role="status" class:offline={connection.info.state === 'offline'}>
+      <span class="dot" style:background={stateColor}></span>
+      <span>{bannerText}</span>
+      {#if connection.info.state === 'offline'}
+        <button class="banner-action" onclick={() => client.win('startDaemon')}
+          >{t('conn.startDaemon')}</button
+        >
+      {/if}
+    </div>
+  {/if}
+
   <div class="shell">
     <nav class="rail" aria-label={t('nav.primary')}>
       {#each NAV_ITEMS as item, i (item.id)}
@@ -226,7 +238,6 @@
 {#if ui.aboutOpen}
   <AboutCard {ctx} />
 {/if}
-<WipModal {wip} {client} {toasts} transportLive={!demo} />
 <ChordCapture {keymap} />
 
 <div class="toasts" aria-live="polite">
@@ -240,8 +251,11 @@
 </div>
 
 <style>
+  /* The banner lives inside the flex frame, so however tall it wraps (long ko strings at
+     narrow widths) the shell shrinks to fit and the transport bar is never pushed off. */
   .banner {
     display: flex;
+    flex: none;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-2) var(--space-4);
@@ -267,9 +281,6 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-  }
-  :global(body:has(.banner)) .frame {
-    height: calc(100% - 38px);
   }
   .shell {
     flex: 1;
@@ -325,11 +336,11 @@
 
   .mode-switch {
     display: flex;
-    gap: 2px;
-    padding: 2px;
+    gap: 3px;
+    padding: 3px;
     border: 1px solid var(--role-border-muted);
     border-radius: var(--radius-pill);
-    margin: 0 var(--space-2) var(--space-3);
+    margin: 0 var(--space-2) var(--space-4);
   }
   .mode {
     flex: 1;
@@ -371,7 +382,7 @@
   }
   .demo-chip {
     align-self: flex-start;
-    padding: 1px 8px;
+    padding: 2px 10px;
     border-radius: var(--radius-pill);
     background: var(--surface-2);
     color: var(--role-warning);
@@ -398,7 +409,7 @@
   .toasts {
     position: fixed;
     left: var(--space-4);
-    bottom: 92px;
+    bottom: calc(var(--transport-h) + var(--space-4));
     z-index: 70;
     display: flex;
     flex-direction: column;

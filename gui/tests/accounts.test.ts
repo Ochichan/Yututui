@@ -57,7 +57,11 @@ describe('AccountsStore', () => {
   it('opens the browser on an auth-url push', () => {
     const t = new MockTransport();
     const store = new AccountsStore(new Client(t));
-    const auth: AccountsAuthUrl = { kind: 'accounts_auth_url', service: 'spotify', url: 'https://x/y' };
+    const auth: AccountsAuthUrl = {
+      kind: 'accounts_auth_url',
+      service: 'spotify',
+      url: 'https://x/y',
+    };
     t.emit({ v: 1, kind: 'event', topic: 'accounts', payload: auth });
     expect(t.last('win', 'openUrl').payload).toMatchObject({ url: 'https://x/y' });
     // Not a snapshot — the model is untouched by an auth-url frame.
@@ -78,7 +82,10 @@ describe('AccountsStore', () => {
     });
 
     store.setScrobbleLocal(true);
-    expect(t.last('cmd', 'account_set').payload).toMatchObject({ field: 'scrobble_local', value: true });
+    expect(t.last('cmd', 'account_set').payload).toMatchObject({
+      field: 'scrobble_local',
+      value: true,
+    });
 
     store.configureListenBrainz({ submit: true, token: 'tok' });
     expect(t.last('cmd', 'listen_brainz_configure').payload).toMatchObject({
@@ -102,12 +109,14 @@ describe('demo core accounts', () => {
     return { t, frames };
   }
   const lastSnap = (frames: InEnvelope[]) =>
-    [...frames].reverse().find(
-      (e) =>
-        e.kind === 'event' &&
-        e.topic === 'accounts' &&
-        (e.payload as { kind: string }).kind === 'accounts_snapshot',
-    )!.payload as AccountsSnapshot;
+    [...frames]
+      .reverse()
+      .find(
+        (e) =>
+          e.kind === 'event' &&
+          e.topic === 'accounts' &&
+          (e.payload as { kind: string }).kind === 'accounts_snapshot',
+      )!.payload as AccountsSnapshot;
   const authUrls = (frames: InEnvelope[]) =>
     frames.filter(
       (e) =>

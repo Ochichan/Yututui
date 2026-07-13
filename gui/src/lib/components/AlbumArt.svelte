@@ -1,9 +1,8 @@
 <script lang="ts">
-  // Album art card (docs/gui/06 §4): loads from the custom scheme via ArtworkRef; missing
-  // art renders a deterministic themed placeholder (hue hashed from the track) — never a
-  // remote URL (no-network CSP).
-  //
-  // TODO(wire:B1/artwork.live): verify against real `artwork` pushes once B1 lands.
+  // Album art card (docs/gui/06 §4): loads from the custom scheme via ArtworkRef (riding
+  // the player snapshot's `track.artwork`, live since B1); missing art renders a
+  // deterministic themed placeholder (hue hashed from the track) — never a remote URL
+  // (no-network CSP).
   import type { TrackModel } from '../../generated/protocol/TrackModel';
   import { hueOf } from '../format';
 

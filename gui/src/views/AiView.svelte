@@ -77,7 +77,7 @@
       placeholder={t('ai.placeholder')}
       bind:value={prompt}
       aria-label={t('ai.messageLabel')}
-      data-kctx="AiInput"
+      data-kctx="ai_input"
       data-ui-draft-key="ai-prompt"
     />
     <button class="send" type="submit" title={t('ai.send')}>➤</button>

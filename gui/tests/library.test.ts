@@ -65,7 +65,12 @@ describe('LibraryStore', () => {
     const t = new MockTransport();
     const store = new LibraryStore(new Client(t));
     const first = store.load('all', '');
-    t.emit({ v: 1, id: t.lastReq('fetch_library_page').id, kind: 'res', payload: page('all', 50, 120) });
+    t.emit({
+      v: 1,
+      id: t.lastReq('fetch_library_page').id,
+      kind: 'res',
+      payload: page('all', 50, 120),
+    });
     await first;
     const next = store.more();
     const req = t.lastReq('fetch_library_page');
@@ -98,7 +103,12 @@ describe('LibraryStore', () => {
     const t = new MockTransport();
     const store = new LibraryStore(new Client(t));
     const first = store.load('favorites', '');
-    t.emit({ v: 1, id: t.lastReq('fetch_library_page').id, kind: 'res', payload: page('favorites', 2, 2) });
+    t.emit({
+      v: 1,
+      id: t.lastReq('fetch_library_page').id,
+      kind: 'res',
+      payload: page('favorites', 2, 2),
+    });
     await first;
 
     const before = t.reqCount('fetch_library_page');
@@ -124,13 +134,17 @@ describe('demo core library', () => {
   const resById = (frames: InEnvelope[], id: number) =>
     [...frames].reverse().find((e) => e.kind === 'res' && e.id === id)!.payload as LibraryPage;
   const lastQueue = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
-      model: QueueModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'queue')!.payload as {
+        model: QueueModel;
+      }
+    ).model;
   const lastPlayer = (frames: InEnvelope[]) =>
-    ([...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
-      model: PlayerModel;
-    }).model;
+    (
+      [...frames].reverse().find((e) => e.kind === 'event' && e.topic === 'player')!.payload as {
+        model: PlayerModel;
+      }
+    ).model;
 
   it('fetch_library_page returns the whole scope, filter narrows it', () => {
     const { t, frames } = boot();
@@ -157,7 +171,12 @@ describe('demo core library', () => {
 
   it('library_play replaces the queue with the scope and starts it', () => {
     const { t, frames } = boot();
-    t.send({ v: 1, kind: 'cmd', name: 'library_play', payload: { scope: 'favorites', filter: '' } });
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'library_play',
+      payload: { scope: 'favorites', filter: '' },
+    });
     vi.advanceTimersByTime(50);
     // The demo catalog has two favorites (demo-001, demo-007).
     expect(lastQueue(frames).items.length).toBe(2);

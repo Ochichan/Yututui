@@ -10,7 +10,7 @@ import type { TrackModel } from '../../generated/protocol/TrackModel';
 import type { Client } from '../ipc/client';
 
 // PROVISIONAL wire shape — only the demo core speaks it today. Reconcile with the real
-// `search` topic + ts-rs types when M2 core lands (mirrors the lyrics.live provisional note).
+// `search` topic + ts-rs types when M2 core lands.
 export interface SearchGroup {
   /** A concrete catalog, never `'all'`. */
   source: SearchSource;

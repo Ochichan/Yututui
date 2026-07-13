@@ -32,7 +32,7 @@ pub fn render_at(
     controls: Rect,
     status: Rect,
 ) {
-    render_title_row(frame, app, title, true);
+    render_title_row(frame, app, title, true, false);
     render_seekbar(frame, app, seek, true);
     render_controls(frame, app, controls, true);
     render_status_line(frame, app, status, true);
@@ -93,7 +93,7 @@ pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
         ),
         rows[0],
     );
-    render_title_row(frame, app, rows[1], animated);
+    render_title_row(frame, app, rows[1], animated, false);
     render_seekbar(frame, app, rows[2], animated);
     render_controls(frame, app, rows[3], animated);
     render_status_line(frame, app, rows[4], animated);
@@ -105,7 +105,19 @@ pub fn render_docked(frame: &mut Frame, app: &App, area: Rect) {
 /// scrolling line (and a pulsing ♥), which we render in place of it. A just-changed track's
 /// intro cascade and a just-set status message's typewriter reveal each take precedence for
 /// their short one-shot window, then fall through to these steady-state forms.
-pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
+///
+/// `marquee` opts the plain fallback into `selected_marquee` on overflow. Only the mini
+/// tier may pass true: it replaces the whole UI, so no other marquee surface (list cursor
+/// rows, the radio card) can render in the same frame and fight over the single-slot
+/// `marquee_key` — two same-frame callers would keep resetting each other's origin and
+/// freeze both crawls while pinning the animation clock awake.
+pub(in crate::ui) fn render_title_row(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    animated: bool,
+    marquee: bool,
+) {
     if !app.status.text.is_empty() {
         if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
             frame.render_widget(Paragraph::new(line), area);
@@ -143,7 +155,22 @@ pub(in crate::ui) fn render_title_row(frame: &mut Frame, app: &App, area: Rect, 
                 } else {
                     ""
                 };
-                format!("{heart}{title} — {artist}")
+                // Scroll an overflowing title so it stays readable in the mini player.
+                // `selected_marquee` is deliberately independent of the animation masters
+                // (like the radio card's title) and returns the text unchanged when it
+                // already fits, so the fits case stays byte-identical.
+                let text = format!("{heart}{title} — {artist}");
+                if marquee {
+                    crate::ui::anim::selected_marquee(
+                        app,
+                        crate::app::ScrollSurface::PlayerTitle,
+                        0,
+                        &text,
+                        usize::from(area.width),
+                    )
+                } else {
+                    text
+                }
             }
             None => {
                 // The search key respects rebinds (the chord bound to `OpenSearch`, not a
@@ -196,21 +223,34 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
             format::seekbar_label(app.playback.time_pos, app.playback.duration),
         )
     };
+    // With the time-glow animation on, the gauge and its label pulse toward the accent for
+    // a beat as each playback second lands (identity style/plain label otherwise).
+    let gauge_style = Style::default()
+        .fg(app.theme.color(R::GaugeFilled))
+        .bg(app.theme.color(R::GaugeEmpty));
+    let gauge_style = if animated {
+        crate::ui::anim::time_glow_gauge_style(app, gauge_style)
+    } else {
+        gauge_style
+    };
+    let label = if animated {
+        crate::ui::anim::time_glow_label(app, label)
+    } else {
+        ratatui::text::Span::raw(label)
+    };
     let seekbar = Gauge::default()
-        .gauge_style(
-            Style::default()
-                .fg(app.theme.color(R::GaugeFilled))
-                .bg(app.theme.color(R::GaugeEmpty)),
-        )
+        .gauge_style(gauge_style)
         .ratio(ratio)
         .label(label);
     frame.render_widget(seekbar, area);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
-    // otherwise), and a short ripple marks the head right after a seek. Skipped in the
-    // static (off-Player) forms — a frozen comet is a permanent bright smear.
+    // otherwise), a short ripple marks the head right after a seek, and sparks dance on
+    // the playhead while the sparkle flag is on. Skipped in the static (off-Player)
+    // forms — a frozen comet is a permanent bright smear.
     if animated {
         crate::ui::anim::seekbar_overlay(frame, app, area, ratio);
         crate::ui::anim::seek_flash_overlay(frame, app, area, ratio);
+        crate::ui::anim::progress_sparkle_overlay(frame, app, area, ratio);
     }
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.hits.set_seekbar_rect(area);
@@ -585,6 +625,9 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     // wheel hit rects registered above stay live, so the buttons keep taking clicks
     // while the gauge covers their glyphs (repeated +/+/+ nudges land blind).
     crate::ui::anim::volume_flash_overlay(frame, app, vol_rect);
+    // And right after a play/pause toggle, a light wave washes across the row (recolour
+    // only — glyphs and hit rects untouched; no-op outside its window).
+    crate::ui::anim::pause_flash_overlay(frame, app, area);
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets

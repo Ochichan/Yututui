@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, RateChange, RemoteCommand, RemoteResponse,
     RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
@@ -85,7 +85,39 @@ impl App {
             | RemoteCommand::EnqueueTracks { .. }
             | RemoteCommand::Apply { .. }
             | RemoteCommand::SetGeminiKey { .. }
-            | RemoteCommand::ResetAllSettings => {
+            | RemoteCommand::ResetAllSettings
+            // The deferred v8 GUI surface (gui/WIRING.md §1.5) is daemon-only by design:
+            // the GUI attaches to a daemon owner; the standalone TUI keeps its own paths.
+            // One exhaustive arm so the parity harness can never see divergent reasons.
+            | RemoteCommand::QueueRemoveMany { .. }
+            | RemoteCommand::PlayVideo { .. }
+            | RemoteCommand::AskAi { .. }
+            | RemoteCommand::LibraryPlay { .. }
+            | RemoteCommand::LibraryEnqueue { .. }
+            | RemoteCommand::LibraryRemove { .. }
+            | RemoteCommand::FetchLibraryPage { .. }
+            | RemoteCommand::Download { .. }
+            | RemoteCommand::DeleteDownload { .. }
+            | RemoteCommand::KeymapBind { .. }
+            | RemoteCommand::KeymapUnbind { .. }
+            | RemoteCommand::KeymapResetAll
+            | RemoteCommand::ThemeSetOverride { .. }
+            | RemoteCommand::ThemeClearOverride { .. }
+            | RemoteCommand::ClearRomanizationCache
+            | RemoteCommand::PlaylistCreate { .. }
+            | RemoteCommand::PlaylistDelete { .. }
+            | RemoteCommand::PlaylistAddTracks { .. }
+            | RemoteCommand::PlaylistRemoveTrack { .. }
+            | RemoteCommand::PlaylistPlay { .. }
+            | RemoteCommand::FetchPlaylistDetail { .. }
+            | RemoteCommand::FetchWhyGem { .. }
+            | RemoteCommand::TransferListSpotify
+            | RemoteCommand::TransferStart { .. }
+            | RemoteCommand::TransferCancel
+            | RemoteCommand::LastfmConnect
+            | RemoteCommand::SpotifyConnect
+            | RemoteCommand::ListenBrainzConfigure { .. }
+            | RemoteCommand::AccountSet { .. } => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
             // Intercepted by the top-level reducer before this playback/settings dispatcher so
@@ -181,6 +213,41 @@ impl App {
             RemoteCommand::QueueRemove { position }
             | RemoteCommand::QueueRemoveIfRevision { position, .. } => {
                 self.remote_queue_remove(position)
+            }
+            // Order surgery on the shared Queue methods: never touches the current
+            // track or playback (no player commands, no position_epoch) — the daemon
+            // arm is line-for-line the same semantics for the parity harness.
+            RemoteCommand::QueueMove { from, to, .. } => {
+                if self.queue.move_item(from, to).is_none() {
+                    (RemoteResponse::err("queue_index"), Vec::new())
+                } else {
+                    self.commit_queue_removal_ui(self.queue_popup.cursor);
+                    self.dirty = true;
+                    (RemoteResponse::status(self.status_snapshot()), Vec::new())
+                }
+            }
+            RemoteCommand::QueueClearUpcoming { .. } => {
+                if self.queue.clear_upcoming() > 0 {
+                    self.commit_queue_removal_ui(self.queue_popup.cursor);
+                    self.dirty = true;
+                }
+                (RemoteResponse::status(self.status_snapshot()), Vec::new())
+            }
+            // The GUI's rating chip binds the player model's CURRENT track (its only
+            // sender uses the current id), so both owners accept exactly that; the
+            // cycle rides the same reducer path as the `f` key. The daemon mirrors
+            // these guards and the cycle transitions lockstep (parity-tested).
+            RemoteCommand::Rate { video_id, rating } => {
+                if rating != RateChange::Cycle {
+                    return (RemoteResponse::err("not_supported"), Vec::new());
+                }
+                if self.queue.current().map(|song| song.video_id.as_str())
+                    != Some(video_id.as_str())
+                {
+                    return (RemoteResponse::err("unknown_track"), Vec::new());
+                }
+                let cmds = self.on_player_action(Action::CycleRating);
+                (RemoteResponse::ok("rating cycled".to_string()), cmds)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
@@ -530,6 +597,8 @@ impl App {
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
             config: &self.config,
+            library: &self.library,
+            signals: &self.signals,
             // Same current-track gate as status_snapshot above.
             artwork: cur.and_then(|song| {
                 self.media_art

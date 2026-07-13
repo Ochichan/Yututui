@@ -228,6 +228,7 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
@@ -320,6 +321,7 @@
   .foot {
     display: flex;
     justify-content: flex-end;
+    padding-top: var(--space-1);
   }
   .count {
     font-size: 11px;

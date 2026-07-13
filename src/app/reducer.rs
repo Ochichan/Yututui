@@ -76,6 +76,19 @@ impl App {
     }
 
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
+        if self.tool_setup.is_some()
+            && matches!(
+                &msg,
+                Msg::MouseDoubleClick { .. }
+                    | Msg::MouseRightClick { .. }
+                    | Msg::MouseRightDoubleClick { .. }
+                    | Msg::MouseDrag { .. }
+                    | Msg::MouseLeftUp
+                    | Msg::MouseScroll { .. }
+            )
+        {
+            return Vec::new();
+        }
         match msg {
             Msg::Noop => return Vec::new(),
             Msg::Key(k) => return self.on_key(k),
@@ -163,6 +176,7 @@ impl App {
                         self.dirty = true;
                     }
                 }
+                return self.tick_search_onboarding(Instant::now());
             }
             Msg::AnimTick => {
                 // Advance the logical animation phase on every configured tick, but only request
@@ -791,10 +805,8 @@ impl App {
                     // (check_and_update already traced it); only an app with no usable
                     // yt-dlp at all needs the user's attention.
                     if crate::tools::ytdlp_selection().is_none() {
-                        self.status.kind = StatusKind::Error;
-                        self.status.text =
-                            format!("{}: {error}", t!("yt-dlp unavailable", "yt-dlp 사용 불가"));
-                        self.dirty = true;
+                        tracing::warn!(%error, "yt-dlp setup requires attention");
+                        self.show_tool_setup(ToolSetupContext::Startup, vec!["yt-dlp"]);
                     }
                 }
             },

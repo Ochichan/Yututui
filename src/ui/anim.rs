@@ -16,16 +16,15 @@
 //!   window from [`fx_window`]; the window is defined in wall-clock ms and converted through
 //!   [`App::anim_ms_frames`], so a one-shot feels the same length at 5 fps and at 60 fps.
 //! * **Canvas** — drawn straight into the back buffer in the blank filler zone only (never over
-//!   album art or lyrics): matrix rain, spinning donut, faux visualizer, starfield, bouncing logo.
+//!   album art or lyrics), dispatched by [`render_canvas`] across the `canvas` (matrix rain,
+//!   donut, visualizer, starfield, bounce), `canvas_ext` (comets, snow, fireflies, cube,
+//!   aquarium, waves) and `canvas_sim` (fireworks, Life, pipes, plasma) submodules.
 //! * **Overlay** — the About card's sparkles and brand gradient.
 //!
 //! All phase comes from [`App::anim_frame`] (a frame counter frozen while paused, except while a
 //! one-shot keeps the clock briefly awake), so the effects are deterministic and resume cleanly.
 //! Canvas/overlay glyphs are all display-width 1, so direct cell writes never drift the layout;
 //! everything degrades in retro mode either at the source or through the CP437 scrubber.
-
-use std::cell::RefCell;
-use std::sync::OnceLock;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -39,6 +38,17 @@ use crate::theme::ThemeRole as R;
 use crate::ui::marquee::col_window;
 
 pub use crate::ui::marquee::selected_marquee;
+
+mod canvas;
+mod canvas_ext;
+mod canvas_sim;
+mod element_ext;
+
+pub use canvas::render_canvas;
+pub use element_ext::{
+    border_chase_overlay, pause_flash_overlay, progress_sparkle_overlay, time_glow_gauge_style,
+    time_glow_label,
+};
 
 /// One-shot effect windows, in wall-clock milliseconds. `App::detect_fx` arms the clock with
 /// these; the matching render helpers here derive their progress from the same values, so
@@ -60,6 +70,8 @@ pub mod fx_window {
     pub const POPUP_MS: u64 = 160;
     /// Flash on a newly-current synced-lyric line.
     pub const LYRIC_MS: u64 = 450;
+    /// Light wave across the transport controls after a play/pause toggle.
+    pub const PAUSE_MS: u64 = 320;
     /// Typewriter speed for the status toast (display columns per second).
     pub const TOAST_COLS_PER_SEC: u64 = 70;
 
@@ -549,10 +561,17 @@ pub fn title_intro_line(
 
 /// The transient status message typing itself in with a bright caret head — shared by every
 /// view's status band. Reads the text and kind straight off [`App::status`]; `None` when the
-/// flag is off or the window has passed (callers render their plain centered line).
+/// flags are off or the window has passed (callers render their plain centered line).
+///
+/// Doubles as the error-shake surface: with `error_shake` on, an error message's centering
+/// pad oscillates side-to-side with a decaying amplitude for the same window. Shake composes
+/// with the typewriter when both flags are on; with `toast` off it shows the full text (no
+/// reveal, no caret) and only shakes — so each flag alone still reads as designed.
 pub fn status_toast_line(app: &App, width: u16) -> Option<Line<'static>> {
     let a = app.animations();
-    if !(a.master && a.toast) {
+    let error = matches!(app.status.kind, crate::app::StatusKind::Error);
+    let shake_on = a.master && a.error_shake && error;
+    if !(shake_on || (a.master && a.toast)) {
         return None;
     }
     let text = app.status.text.as_str();
@@ -563,9 +582,14 @@ pub fn status_toast_line(app: &App, width: u16) -> Option<Line<'static>> {
     let window_ms = fx_window::toast_ms(cols);
     let t = fx_t(app, app.fx.toast, window_ms)?;
     // The window is type-time plus a fixed glow tail; typing progress maps onto the type
-    // portion so the last characters land just before the tail starts.
+    // portion so the last characters land just before the tail starts. With the typewriter
+    // off (shake-only) the text is fully revealed from the first frame.
     let type_frac = 1.0 - 250.0 / window_ms as f64;
-    let progress = (t / type_frac.max(0.05)).min(1.0);
+    let progress = if a.toast {
+        (t / type_frac.max(0.05)).min(1.0)
+    } else {
+        1.0
+    };
     let shown = col_window(text, 0, width as usize);
     let shown_cols = UnicodeWidthStr::width(shown.as_str());
     let reveal = progress * shown_cols as f64;
@@ -574,7 +598,12 @@ pub fn status_toast_line(app: &App, width: u16) -> Option<Line<'static>> {
         crate::app::StatusKind::Info => R::Success,
     };
     let style = app.theme.style(role);
-    let pad = (width as usize).saturating_sub(shown_cols) / 2;
+    let mut pad = (width as usize).saturating_sub(shown_cols) / 2;
+    if shake_on {
+        // ~6 swings over the window, ±2 columns, dying out toward the end.
+        let swing = (t * std::f64::consts::TAU * 6.0).sin() * 2.0 * (1.0 - t);
+        pad = pad.saturating_add_signed(swing.round() as isize);
+    }
     let mut b = RunBuilder::new(vec![Span::raw(" ".repeat(pad))]);
     let mut col = 0f64;
     for ch in shown.chars() {
@@ -925,371 +954,6 @@ pub fn about_brand_line(app: &App, name: &str, version: &str) -> Option<Line<'st
         app.theme.style(R::TextMuted).bg(bg),
     ));
     Some(Line::from(spans))
-}
-
-// ── canvas effects ──────────────────────────────────────────────────────────
-
-/// Draw all enabled canvas effects into a blank `zone` (back to front: rain, starfield, then the
-/// visualizer strip, the donut and finally the bouncing logo on top). Called only for the blank
-/// filler region, so it never overdraws album art or lyrics.
-pub fn render_canvas(frame: &mut Frame, app: &App, zone: Rect) {
-    let a = app.animations();
-    if !a.master || zone.width < 4 || zone.height < 2 {
-        return;
-    }
-    let f = app.anim_frame();
-    if a.rain {
-        rain(frame, app, zone, f);
-    }
-    if a.starfield {
-        starfield(frame, app, zone, f);
-    }
-    if a.visualizer {
-        visualizer(frame, app, zone, f);
-    }
-    if a.donut {
-        donut(frame, app, zone, f);
-    }
-    if a.bounce {
-        bounce(frame, app, zone, f);
-    }
-}
-
-const RAIN_GLYPHS: [char; 22] = [
-    '0', '1', '7', '9', '=', '+', '*', '/', '<', '>', ':', '.', '#', '$', '%', '&', '?', 'Z', 'X',
-    'A', 'V', '|',
-];
-
-#[derive(Clone, Copy)]
-struct RainColumn {
-    col: u64,
-    speed: u64,
-    len: u64,
-    period: u64,
-    offset: u64,
-}
-
-#[derive(Default)]
-struct RainScratch {
-    width: u16,
-    height: u16,
-    columns: Vec<RainColumn>,
-}
-
-thread_local! {
-    static RAIN_SCRATCH: RefCell<RainScratch> = RefCell::new(RainScratch::default());
-}
-
-/// Classic matrix digital rain: each column is an independently-falling head with a fading green
-/// trail. Speed / length / phase are hashed from the column index so columns desync but stay
-/// stable frame to frame.
-fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
-    let h = u64::from(zone.height);
-    RAIN_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
-        if scratch.width != zone.width || scratch.height != zone.height {
-            scratch.width = zone.width;
-            scratch.height = zone.height;
-            scratch.columns.clear();
-            scratch.columns.reserve(usize::from(zone.width));
-            let h_mod = h.max(1) as u32;
-            for col in 0..u64::from(zone.width) {
-                let speed = 1 + u64::from(hash32(col) % 3);
-                let len = 4 + u64::from(hash32(col.wrapping_mul(2_654_435_761)) % h_mod);
-                let period = h + len + 3;
-                let offset = u64::from(hash32(col ^ 0x9E37_79B9)) % period;
-                scratch.columns.push(RainColumn {
-                    col,
-                    speed,
-                    len,
-                    period,
-                    offset,
-                });
-            }
-        }
-
-        let buf = frame.buffer_mut();
-        for (i, column) in scratch.columns.iter().enumerate() {
-            let x = zone.left() + i as u16;
-            let head = (f / column.speed + column.offset) % column.period;
-            for k in 0..=column.len {
-                if head < k {
-                    continue;
-                }
-                let row = head - k;
-                if row >= h {
-                    continue;
-                }
-                let y = zone.top() + row as u16;
-                let g = RAIN_GLYPHS[(hash32(
-                    column
-                        .col
-                        .wrapping_mul(31)
-                        .wrapping_add(row)
-                        .wrapping_add(f / 6),
-                ) as usize)
-                    % RAIN_GLYPHS.len()];
-                let color = if k == 0 {
-                    Color::Rgb(200, 255, 200)
-                } else {
-                    let b = 1.0 - k as f64 / column.len as f64;
-                    Color::Rgb((30.0 * b) as u8, (60.0 + 180.0 * b) as u8, (40.0 * b) as u8)
-                };
-                put_char(buf, x, y, g, Style::default().fg(color));
-            }
-        }
-    });
-}
-
-const STAR_GLYPHS: [char; 8] = ['·', '✦', '✧', '*', '+', '.', '°', '⋆'];
-
-#[derive(Clone, Copy)]
-struct Star {
-    x: u16,
-    speed: u64,
-    seed: u64,
-}
-
-#[derive(Default)]
-struct StarScratch {
-    width: u16,
-    height: u16,
-    count: u32,
-    stars: Vec<Star>,
-}
-
-thread_local! {
-    static STAR_SCRATCH: RefCell<StarScratch> = RefCell::new(StarScratch::default());
-}
-
-/// Drifting stars / musical sparkles rising slowly up the zone, each twinkling between a subtle and
-/// an accent colour. Density scales with the zone area.
-fn starfield(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    let w = u32::from(zone.width);
-    let h = u64::from(zone.height);
-    let count = ((w * u32::from(zone.height)) / 40).clamp(6, 60);
-    let dim = app.theme.color(R::TextSubtle);
-    let bright = app.theme.color(R::AccentAlt);
-    let wave24: [f64; 24] = std::array::from_fn(|i| wave(i as u64, 24));
-    STAR_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
-        if scratch.width != zone.width || scratch.height != zone.height || scratch.count != count {
-            scratch.width = zone.width;
-            scratch.height = zone.height;
-            scratch.count = count;
-            scratch.stars.clear();
-            scratch.stars.reserve(count as usize);
-            for i in 0..u64::from(count) {
-                let x = (hash32(i * 2 + 1) % w) as u16;
-                let speed = 1 + u64::from(hash32(i * 3 + 2) % 4);
-                let seed = u64::from(hash32(i * 5 + 3));
-                scratch.stars.push(Star { x, speed, seed });
-            }
-        }
-
-        let buf = frame.buffer_mut();
-        for (i, star) in scratch.stars.iter().enumerate() {
-            let i = i as u64;
-            let yv = (f / star.speed + star.seed) % (h + 4);
-            if yv >= h {
-                continue; // off-screen pause → a twinkle gap
-            }
-            let y = zone.top() + (h - 1 - yv) as u16;
-            let g = STAR_GLYPHS[(hash32(i * 7 + f / 20) as usize) % STAR_GLYPHS.len()];
-            let color = lerp_color(dim, bright, wave24[((f + i * 5) % 24) as usize]);
-            put_char(buf, zone.left() + star.x, y, g, Style::default().fg(color));
-        }
-    });
-}
-
-/// A decorative (non-audio-reactive) spectrum: bars rising from the bottom strip of the zone, each
-/// mixing two waves, coloured from the gauge colour up to the accent.
-fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    let blocks = bar_blocks(app);
-    let strip = (zone.height / 3).clamp(2, 8);
-    let baseline = i32::from(zone.bottom());
-    let top = i32::from(zone.top());
-    let filled = app.theme.color(R::GaugeFilled);
-    let accent = app.theme.color(R::Accent);
-    let wave14: [f64; 14] = std::array::from_fn(|i| wave(i as u64, 14));
-    let wave9: [f64; 9] = std::array::from_fn(|i| wave(i as u64, 9));
-    let row_styles: [Style; 8] = std::array::from_fn(|i| {
-        let row = i as u16;
-        if row < strip {
-            Style::default().fg(lerp_color(
-                filled,
-                accent,
-                f64::from(row + 1) / f64::from(strip),
-            ))
-        } else {
-            Style::default()
-        }
-    });
-    let buf = frame.buffer_mut();
-    for bx in 0..zone.width {
-        let x = zone.left() + bx;
-        let phase = u64::from(bx) * 3;
-        let t =
-            wave14[((f + phase) % 14) as usize] * 0.6 + wave9[((f * 2 + phase) % 9) as usize] * 0.4;
-        let cells = t * f64::from(strip);
-        let full = cells.floor() as u16;
-        let frac = cells - f64::from(full);
-        for row in 0..strip {
-            let yy = baseline - 1 - i32::from(row);
-            if yy < top {
-                break;
-            }
-            let y = yy as u16;
-            let style = row_styles[row as usize];
-            if row < full {
-                put_char(buf, x, y, '█', style);
-            } else if row == full && frac > 0.05 {
-                let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
-                put_char(buf, x, y, blocks[idx.min(blocks.len() - 1)], style);
-            }
-        }
-    }
-}
-
-const DONUT_LUM: &[u8; 12] = b".,-~:;=!*#$@";
-
-#[derive(Default)]
-struct DonutScratch {
-    zbuf: Vec<f64>,
-    out: Vec<u8>,
-}
-
-thread_local! {
-    static DONUT_SCRATCH: RefCell<DonutScratch> = RefCell::new(DonutScratch::default());
-}
-
-fn donut_trig_steps() -> &'static [(f64, f64)] {
-    static STEPS: OnceLock<Vec<(f64, f64)>> = OnceLock::new();
-    STEPS.get_or_init(|| {
-        let mut steps = Vec::new();
-        let mut angle = 0.0f64;
-        while angle < std::f64::consts::TAU {
-            steps.push(angle.sin_cos());
-            angle += 0.06;
-        }
-        steps
-    })
-}
-
-/// The classic spinning ASCII torus (Andy Sloane's donut), z-buffered into the centre of the zone.
-/// Two rotation angles advance with the frame counter. Luminance picks a glyph and a colour ramp
-/// from accent to alt-accent.
-fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    let w = i32::from(zone.width);
-    let h = i32::from(zone.height);
-    if w < 8 || h < 5 {
-        return;
-    }
-    let (sa, ca) = (f as f64 * 0.04).sin_cos();
-    let (sb, cb) = (f as f64 * 0.02).sin_cos();
-    let cells = (w * h) as usize;
-    let k1 = (f64::from(w) * 0.32).min(f64::from(h) * 0.62);
-    let k2 = 5.0;
-    let steps = donut_trig_steps();
-    let base = app.theme.color(R::Accent);
-    let bright = app.theme.color(R::AccentAlt);
-    let styles: [Style; 12] = std::array::from_fn(|ci| {
-        let t = ci as f64 / (DONUT_LUM.len() - 1) as f64;
-        Style::default().fg(lerp_color(base, bright, t))
-    });
-
-    DONUT_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
-        if scratch.zbuf.len() != cells {
-            scratch.zbuf.resize(cells, 0.0);
-            scratch.out.resize(cells, 0);
-        } else {
-            scratch.zbuf.fill(0.0);
-            scratch.out.fill(0);
-        }
-
-        for &(st, ct) in steps {
-            for &(sp, cp) in steps {
-                let circle_x = 2.0 + ct; // R2 + R1*cos(theta), R1 = 1, R2 = 2
-                let circle_y = st;
-                let x = circle_x * (cb * cp + sa * sb * sp) - circle_y * ca * sb;
-                let y = circle_x * (sb * cp - sa * cb * sp) + circle_y * ca * cb;
-                let z = k2 + ca * circle_x * sp + circle_y * sa;
-                let ooz = 1.0 / z;
-                let xp = (f64::from(w) / 2.0 + k1 * ooz * x) as i32;
-                let yp = (f64::from(h) / 2.0 - k1 * ooz * y * 0.5) as i32;
-                if xp >= 0 && xp < w && yp >= 0 && yp < h {
-                    let idx = (xp + yp * w) as usize;
-                    if ooz > scratch.zbuf[idx] {
-                        let lum =
-                            cp * ct * sb - ca * ct * sp - sa * st + cb * (ca * st - ct * sa * sp);
-                        scratch.zbuf[idx] = ooz;
-                        let li = if lum > 0.0 { (lum * 8.0) as usize } else { 0 };
-                        scratch.out[idx] = (li.min(DONUT_LUM.len() - 1) + 1) as u8;
-                    }
-                }
-            }
-        }
-
-        let buf = frame.buffer_mut();
-        for yy in 0..h {
-            for xx in 0..w {
-                let v = scratch.out[(xx + yy * w) as usize];
-                if v == 0 {
-                    continue;
-                }
-                let ci = (v as usize - 1).min(DONUT_LUM.len() - 1);
-                put_char(
-                    buf,
-                    zone.left() + xx as u16,
-                    zone.top() + yy as u16,
-                    DONUT_LUM[ci] as char,
-                    styles[ci],
-                );
-            }
-        }
-    });
-}
-
-/// DVD-style bouncing logo: an ASCII tag ricochets around the zone on a triangle-wave path, its
-/// colour cycling each time it crosses a wall.
-fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    const LABEL: &str = "<yututui>";
-    let tw = LABEL.chars().count() as i64;
-    let w = i64::from(zone.width);
-    let h = i64::from(zone.height);
-    if w <= tw || h < 2 {
-        return;
-    }
-    let span_x = (w - tw).max(1);
-    let span_y = (h - 1).max(1);
-    // Triangle wave in `0..=span`.
-    let tri = |t: i64, span: i64| -> i64 {
-        let period = span * 2;
-        let m = t.rem_euclid(period);
-        if m < span { m } else { period - m }
-    };
-    let t = f as i64;
-    let x = i64::from(zone.left()) + tri(t / 2, span_x);
-    let y = i64::from(zone.top()) + tri(t / 3, span_y);
-    let cyc = (t / span_x.max(1) + t / span_y.max(1)) as usize;
-    const PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R::Error];
-    let color = app.theme.color(PALETTE[cyc % PALETTE.len()]);
-    let right = i64::from(zone.right());
-    let buf = frame.buffer_mut();
-    for (i, ch) in LABEL.chars().enumerate() {
-        let cx = x + i as i64;
-        if cx < i64::from(zone.left()) || cx >= right {
-            continue;
-        }
-        put_char(
-            buf,
-            cx as u16,
-            y as u16,
-            ch,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        );
-    }
 }
 
 #[cfg(test)]

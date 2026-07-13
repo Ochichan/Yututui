@@ -67,15 +67,12 @@ enum LaunchPlanKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchError {
     pub attempts: Vec<(LaunchPlan, String)>,
+    message: String,
 }
 
 impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not launch ytt in a terminal")?;
-        if let Some((plan, err)) = self.attempts.last() {
-            write!(f, " (last attempt: {}: {err})", plan.program)?;
-        }
-        Ok(())
+        f.write_str(&self.message)
     }
 }
 
@@ -192,6 +189,16 @@ pub fn open_tui() -> Result<LaunchPlan, LaunchError> {
 }
 
 pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
+    if !is_executable_file(ytt_path) {
+        return Err(LaunchError {
+            attempts: Vec::new(),
+            message: crate::t!(
+                "The YuTuTui! player executable was not found. Reinstall YuTuTui! or run `ytt doctor`.",
+                "YuTuTui! 플레이어 실행 파일을 찾지 못했습니다. YuTuTui!를 다시 설치하거나 `ytt doctor`를 실행하세요."
+            )
+            .to_owned(),
+        });
+    }
     let terminal = std::env::var("TERMINAL").ok();
     let plans = candidate_plans_for(ytt_path, terminal.as_deref());
     let mut attempts = Vec::new();
@@ -227,7 +234,24 @@ pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
             }
         }
     }
-    Err(LaunchError { attempts })
+    let english = if cfg!(target_os = "windows") {
+        "YuTuTui! could not open a terminal. Install Windows Terminal or open a terminal and run `ytt`."
+    } else {
+        "YuTuTui! could not open a terminal. Open your terminal and run `ytt`."
+    };
+    let korean = if cfg!(target_os = "windows") {
+        "YuTuTui!가 터미널을 열지 못했습니다. Windows Terminal을 설치하거나 터미널에서 `ytt`를 실행하세요."
+    } else {
+        "YuTuTui!가 터미널을 열지 못했습니다. 터미널을 열고 `ytt`를 실행하세요."
+    };
+    Err(LaunchError {
+        attempts,
+        message: if crate::i18n::is_korean() {
+            korean.to_owned()
+        } else {
+            english.to_owned()
+        },
+    })
 }
 
 pub fn candidate_plans_for(ytt_path: &Path, terminal_env: Option<&str>) -> Vec<LaunchPlan> {
@@ -271,21 +295,39 @@ fn platform_candidate_plans(ytt_path: &Path, _terminal_env: Option<&str>) -> Vec
 #[cfg(any(target_os = "windows", test))]
 fn windows_candidate_plans(ytt_path: &Path) -> Vec<LaunchPlan> {
     let path = ytt_path.to_string_lossy().into_owned();
+    let command = format!("& {}", powershell_quote(&path));
     vec![
-        LaunchPlan::new("wt.exe", vec![path.clone()]),
+        LaunchPlan::new(
+            "wt.exe",
+            vec![
+                "-w".to_string(),
+                "new".to_string(),
+                "new-tab".to_string(),
+                "--title".to_string(),
+                "YuTuTui!".to_string(),
+                "powershell.exe".to_string(),
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                command.clone(),
+            ],
+        ),
         LaunchPlan::new(
             "powershell.exe",
             vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
                 "-NoExit".to_string(),
                 "-Command".to_string(),
-                format!("& {}", powershell_quote(&path)),
+                command,
             ],
         ),
         // The bare path, not a pre-quoted one: std::process already quotes an arg
         // containing spaces once, so pre-quoting handed cmd.exe `"\"…\""` — a command
         // it can never resolve. With a single level of quotes, cmd's two-quote rule
         // runs the path as-is.
-        LaunchPlan::new("cmd.exe", vec!["/K".to_string(), path]),
+        LaunchPlan::new("cmd.exe", vec!["/D".to_string(), "/K".to_string(), path]),
     ]
 }
 
@@ -461,18 +503,62 @@ mod tests {
         assert_eq!(plans[0].program, "wt.exe");
         assert_eq!(plans[1].program, "powershell.exe");
         assert_eq!(plans[2].program, "cmd.exe");
-        assert!(plans[1].args[2].contains("C:\\Program Files\\YuTuTui!\\ytt.exe"));
+        assert_eq!(
+            &plans[0].args[..6],
+            [
+                "-w",
+                "new",
+                "new-tab",
+                "--title",
+                "YuTuTui!",
+                "powershell.exe"
+            ]
+        );
+        assert!(plans[1].args[4].contains("C:\\Program Files\\YuTuTui!\\ytt.exe"));
     }
 
     #[test]
     fn windows_fallbacks_quote_absolute_ytt_path() {
         let plans = windows_candidate_plans(Path::new(r"C:\Users\Ochi Music\ytt.exe"));
-        assert_eq!(plans[0].args, vec![r"C:\Users\Ochi Music\ytt.exe"]);
+        assert_eq!(
+            plans[0].args,
+            vec![
+                "-w",
+                "new",
+                "new-tab",
+                "--title",
+                "YuTuTui!",
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                r"& 'C:\Users\Ochi Music\ytt.exe'",
+            ]
+        );
         assert_eq!(
             plans[1].args,
-            vec!["-NoExit", "-Command", r"& 'C:\Users\Ochi Music\ytt.exe'"]
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                r"& 'C:\Users\Ochi Music\ytt.exe'"
+            ]
         );
-        assert_eq!(plans[2].args, vec!["/K", r"C:\Users\Ochi Music\ytt.exe"]);
+        assert_eq!(
+            plans[2].args,
+            vec!["/D", "/K", r"C:\Users\Ochi Music\ytt.exe"]
+        );
+    }
+
+    #[test]
+    fn windows_powershell_path_escapes_single_quotes() {
+        let plans = windows_candidate_plans(Path::new(r"C:\Users\O'Chi\ytt.exe"));
+        assert_eq!(
+            plans[1].args.last().map(String::as_str),
+            Some(r"& 'C:\Users\O''Chi\ytt.exe'")
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

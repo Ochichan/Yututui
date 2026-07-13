@@ -533,6 +533,10 @@ pub enum ImportReviewAction {
 pub enum MouseTarget {
     /// An action row in the open TUI context menu.
     ContextMenuItem(usize),
+    ToolSetupCopy,
+    ToolSetupGuide,
+    ToolSetupRetry,
+    ToolSetupLater,
     Global(Action),
     Player(Action),
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
@@ -718,6 +722,8 @@ pub enum ScrollSurface {
     Queue,
     /// The radio "now playing" (지듣노) card's title line — marquee-only, no scrollbar.
     NowPlaying,
+    /// The player/mini/docked title row — marquee-only, no scrollbar.
+    PlayerTitle,
 }
 
 /// Who authored a line in the DJ Gem chat transcript.

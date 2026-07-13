@@ -13,6 +13,9 @@ impl App {
         if chord == Chord::new(KeyCode::Char('c'), KeyModifiers::CONTROL) {
             return self.quit_app();
         }
+        if self.tool_setup.is_some() {
+            return self.on_key_tool_setup(k);
+        }
 
         // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
         // rejected rebind already left the binding untouched), so it never leaks through to

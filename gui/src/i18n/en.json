@@ -214,6 +214,7 @@
   "settings.graphics.animGroup.element": "Now playing",
   "settings.graphics.animGroup.filler": "Ambient canvas / terminal-only",
   "settings.graphics.animGroup.oneShot": "Event feedback",
+  "settings.graphics.animGroup.showpiece": "Canvas showpieces / terminal-only",
   "settings.graphics.animGroup.uiWide": "Interface motion",
   "settings.graphics.animations": "Animations",
   "settings.graphics.backgroundNone": "Background: none",
@@ -241,8 +242,8 @@
   "settings.hotkeys.resetToChord": "Reset to {chord}",
   "settings.hotkeys.unbound": "unbound",
   "settings.playback.audioBackend": "Audio backend",
-  "settings.playback.bandTitle": "{freq} Hz · {gain} dB — click to zero",
-  "settings.playback.bankHint": "±12 dB per ISO band — click a band to zero it",
+  "settings.playback.bandTitle": "{freq} Hz · {gain} dB — drag to set, double-click to zero",
+  "settings.playback.bankHint": "±12 dB per ISO band — drag, scroll, or use the arrow keys; double-click zeroes a band",
   "settings.playback.backend": "Backend",
   "settings.playback.backendHint": "yututui controls mpv as the playback engine",
   "settings.playback.cacheBack": "Cache back",
@@ -326,5 +327,6 @@
   "whygem.confidence": "confidence",
   "whygem.none": "No explanation available.",
   "whygem.reading": "reading the gem…",
-  "whygem.title": "Why this pick?"
+  "whygem.title": "Why this pick?",
+  "settings.playback.bandAria": "EQ band {freq} Hz"
 }

@@ -174,6 +174,7 @@ async fn forward_cmd_translates_and_rewrites_the_id() {
             page_id: Some("test-page".to_string()),
             id: 99,
             mutation: true,
+            req: false,
         })
     );
 }
@@ -222,6 +223,7 @@ async fn forward_req_records_the_reply_correlation() {
             page_id: None,
             id: 77,
             mutation: false,
+            req: true,
         })
     );
 }

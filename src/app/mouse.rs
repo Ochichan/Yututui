@@ -103,6 +103,11 @@ impl App {
     /// list-row hit does — toggle the row in/out of the selection — and is ignored by
     /// every other surface, so a modifier click still presses buttons and closes modals.
     pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16, multi: bool) -> Vec<Cmd> {
+        if self.tool_setup.is_some() {
+            return self
+                .mouse_target_at(col, row)
+                .map_or_else(Vec::new, |target| self.activate_tool_setup(target));
+        }
         // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
         // below if this click grabs a track.
@@ -503,6 +508,10 @@ impl App {
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
             MouseTarget::ContextMenuItem(_) => Vec::new(),
+            target @ (MouseTarget::ToolSetupCopy
+            | MouseTarget::ToolSetupGuide
+            | MouseTarget::ToolSetupRetry
+            | MouseTarget::ToolSetupLater) => self.activate_tool_setup(target),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;

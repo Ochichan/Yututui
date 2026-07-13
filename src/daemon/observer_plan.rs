@@ -30,7 +30,17 @@ impl DaemonEvent {
             DaemonEvent::Player(
                 crate::player::PlayerEvent::TimePos(_) | crate::player::PlayerEvent::CacheTime(_),
             ) => ObserverPlan::PROGRESS,
+            // A lyrics result never changes player/queue/media state — skip projections.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
+            | DaemonEvent::Lyrics(_)
+            | DaemonEvent::Download(_)
+            | DaemonEvent::Transfer(_)
+            | DaemonEvent::Ai(
+                crate::ai::AiEvent::Thinking(_)
+                | crate::ai::AiEvent::Chat(_)
+                | crate::ai::AiEvent::Error(_)
+                | crate::ai::AiEvent::Suggestions(_),
+            )
             | DaemonEvent::Signal
             | DaemonEvent::TelemetryWake => ObserverPlan::INERT,
             _ => ObserverPlan::PROJECTED,
@@ -75,5 +85,24 @@ mod tests {
             "a real media facet still runs media/remote observers"
         );
         assert_eq!(DaemonEvent::Signal.observer_plan(), ObserverPlan::INERT);
+        assert_eq!(
+            DaemonEvent::Transfer(crate::transfer::actor::TransferEvent::AuthError(
+                "failed".to_owned()
+            ))
+            .observer_plan(),
+            ObserverPlan::INERT
+        );
+    }
+
+    #[test]
+    fn ai_chat_projection_is_inert_but_actions_are_projected() {
+        assert_eq!(
+            DaemonEvent::Ai(crate::ai::AiEvent::Chat("hello".to_owned())).observer_plan(),
+            ObserverPlan::INERT
+        );
+        assert_eq!(
+            DaemonEvent::Ai(crate::ai::AiEvent::Enqueue(Vec::new())).observer_plan(),
+            ObserverPlan::PROJECTED
+        );
     }
 }

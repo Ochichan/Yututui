@@ -626,7 +626,7 @@ impl Action {
         }
     }
 
-    fn from_id(id: &str) -> Option<Action> {
+    pub fn from_id(id: &str) -> Option<Action> {
         if id == "toggle_radio" {
             return Some(Action::ToggleStreaming);
         }
@@ -735,7 +735,7 @@ impl KeyContext {
             .unwrap_or("?")
     }
 
-    fn from_id(id: &str) -> Option<KeyContext> {
+    pub fn from_id(id: &str) -> Option<KeyContext> {
         CONTEXT_META
             .iter()
             .find(|(_, i, ..)| *i == id)
@@ -918,6 +918,11 @@ impl KeyMap {
                 }
                 continue;
             };
+            if val.is_empty() {
+                // Explicitly unbound (the GUI's per-row unbind): drop the default.
+                labels.remove(&(ctx, action));
+                continue;
+            }
             let Some(chord) = parse_chord(val) else {
                 tracing::warn!(key, value = val, "ignoring unknown keybinding override");
                 continue;
@@ -1086,13 +1091,42 @@ impl KeyMap {
     pub fn to_overrides(&self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
         for (ctx, action, def) in default_bindings() {
-            let cur = self.labels.get(&(ctx, action)).copied().unwrap_or(def);
-            if cur != def {
-                out.insert(
-                    format!("{}.{}", ctx.id(), action.id()),
-                    chord_to_config(cur),
-                );
+            match self.labels.get(&(ctx, action)).copied() {
+                // Explicitly unbound persists as "" (see `from_overrides`).
+                None => {
+                    out.insert(format!("{}.{}", ctx.id(), action.id()), String::new());
+                }
+                Some(cur) if cur != def => {
+                    out.insert(
+                        format!("{}.{}", ctx.id(), action.id()),
+                        chord_to_config(cur),
+                    );
+                }
+                Some(_) => {}
             }
+        }
+        out
+    }
+
+    /// Remove `(ctx, action)`'s binding entirely (the GUI's per-row unbind). The action
+    /// simply stops dispatching until rebound or reset.
+    pub fn unbind(&mut self, ctx: KeyContext, action: Action) {
+        if let Some(old) = self.labels.remove(&(ctx, action)) {
+            self.bindings.remove(&(ctx, old));
+        }
+    }
+
+    /// The full effective wire bindings for the settings model
+    /// (`"<ctx>.<action>"` → config chord string; `""` = unbound).
+    pub fn wire_bindings(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (ctx, action, _) in default_bindings() {
+            let chord = self
+                .labels
+                .get(&(ctx, action))
+                .map(|chord| chord_to_config(*chord))
+                .unwrap_or_default();
+            out.insert(format!("{}.{}", ctx.id(), action.id()), chord);
         }
         out
     }
@@ -1308,6 +1342,28 @@ pub fn groups() -> Vec<(KeyContext, Vec<Action>)> {
 
 /// A flat, header-free list of every editable `(context, action)`, in display order. The
 /// Keys-tab cursor indexes directly into this.
+/// One editable action row for the wire keymap catalog (docs/gui/05 Hotkeys tab).
+pub struct WireAction {
+    pub context: &'static str,
+    pub id: &'static str,
+    pub label: String,
+    pub default_chord: String,
+}
+
+/// Every editable action with its context, human label, and factory chord — the
+/// settings model's `keymap.actions` catalog.
+pub fn wire_actions() -> Vec<WireAction> {
+    default_bindings()
+        .into_iter()
+        .map(|(ctx, action, def)| WireAction {
+            context: ctx.id(),
+            id: action.id(),
+            label: action.human_label_for(ctx).to_string(),
+            default_chord: chord_to_config(def),
+        })
+        .collect()
+}
+
 pub fn editable_entries() -> Vec<(KeyContext, Action)> {
     default_bindings()
         .into_iter()

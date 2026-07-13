@@ -9,6 +9,7 @@ pub mod library;
 pub mod local;
 pub mod mini;
 pub mod now_playing;
+pub mod onboarding;
 pub mod player;
 pub mod search;
 pub mod settings;

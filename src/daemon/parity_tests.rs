@@ -27,8 +27,8 @@ use crate::config::Config;
 use crate::library::Library;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
-    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RemoteCommand, RemoteResponse,
-    RemoteSettingChange, ServerFrame, ToggleState, Topic,
+    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RateChange, RemoteCommand,
+    RemoteResponse, RemoteSettingChange, ServerFrame, ToggleState, Topic,
 };
 use crate::remote::publish;
 use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
@@ -60,6 +60,7 @@ fn hermetic_pair() -> (App, DaemonEngine) {
             config: Config::default(),
             station: StationStore::default(),
             library: Library::default(),
+            playlists: crate::playlists::Playlists::default(),
             signals: Signals::default(),
         },
         Arc::new(|_event| {}),
@@ -179,6 +180,47 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::SetVolume { percent: 100 }, // upper clamp behavior
         RemoteCommand::VolumeUp,
         RemoteCommand::QueueRemove { position: 0 }, // before the cursor: no track load
+        // Order surgery on the shared Queue methods (v8 GUI wires): reorder around the
+        // cursor, out-of-range rejection, then trim everything upcoming — none of these
+        // may touch the current track or need a player.
+        RemoteCommand::QueueMove {
+            from: 2,
+            to: 0,
+            expected_rev: None,
+        },
+        RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: None,
+        },
+        RemoteCommand::QueueMove {
+            from: 99,
+            to: 0,
+            expected_rev: None,
+        }, // queue_index on both owners
+        // The rating cycle on the current track ("b" since the seed): the projected
+        // TrackModel favorite/disliked halves must stay equal through a full
+        // neutral → like → dislike → neutral revolution, and the guards must agree.
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        },
+        RemoteCommand::Rate {
+            video_id: "not-current".to_owned(),
+            rating: RateChange::Cycle,
+        }, // unknown_track on both owners
+        RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Up,
+        }, // not_supported on both owners (only the cycle is wired today)
         RemoteCommand::ToggleShuffle,
         RemoteCommand::CycleRepeat,
         RemoteCommand::CycleRepeat,
@@ -207,6 +249,10 @@ fn b0_script() -> Vec<RemoteCommand> {
         },
         RemoteCommand::ToggleShuffle, // back to natural order
         RemoteCommand::CycleRepeat,   // Off → All remains allowed after streaming is off
+        // Last: membership trimming (leaves one track, so it must not weaken the
+        // shuffle steps above). Cursor track survives; the repeat is an ok no-op.
+        RemoteCommand::QueueClearUpcoming { expected_rev: None },
+        RemoteCommand::QueueClearUpcoming { expected_rev: None },
     ]
 }
 
@@ -440,6 +486,96 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
 }
 
 #[tokio::test]
+async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent() {
+    let (mut app, mut engine) = hermetic_pair();
+
+    // Stale guard: both owners reject before any mutation.
+    let stale = RemoteCommand::QueueMove {
+        from: 0,
+        to: 1,
+        expected_rev: Some(u64::MAX),
+    };
+    let app_resp = app_apply(&mut app, stale.clone());
+    let (engine_resp, shutdown, effects) = engine.handle_remote(stale).await;
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("stale revision-checked move", &app, &engine);
+
+    // Fresh guard: accepted on both owners.
+    let app_rev = app.core_view().queue.rev();
+    let engine_rev = engine.core_view().queue.rev();
+    let app_resp = app_apply(
+        &mut app,
+        RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: Some(app_rev),
+        },
+    );
+    let (engine_resp, shutdown, _) = engine
+        .handle_remote(RemoteCommand::QueueMove {
+            from: 0,
+            to: 2,
+            expected_rev: Some(engine_rev),
+        })
+        .await;
+    assert!(!shutdown);
+    assert!(app_resp.ok && engine_resp.ok);
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("fresh revision-checked move", &app, &engine);
+
+    // Absent guard (the keyboard path): stale check skipped, clear applies.
+    let stale_clear = RemoteCommand::QueueClearUpcoming {
+        expected_rev: Some(u64::MAX),
+    };
+    let app_resp = app_apply(&mut app, stale_clear.clone());
+    let (engine_resp, ..) = engine.handle_remote(stale_clear).await;
+    assert_eq!(app_resp.reason.as_deref(), Some("stale_rev"));
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    let unguarded = RemoteCommand::QueueClearUpcoming { expected_rev: None };
+    let app_resp = app_apply(&mut app, unguarded.clone());
+    let (engine_resp, ..) = engine.handle_remote(unguarded).await;
+    assert!(app_resp.ok && engine_resp.ok);
+    assert_eq!(app_resp.reason, engine_resp.reason);
+    assert_parity("unguarded clear-upcoming", &app, &engine);
+}
+
+#[tokio::test]
+async fn radio_station_rating_cycle_stays_in_parity() {
+    // The radio branch of the rating cycle is dual-implemented by hand (App
+    // player.rs vs daemon gui_rate) — pin it: the cycle toggles radio-favorite
+    // membership, which projects through TrackModel.favorite on both owners.
+    let (mut app, mut engine) = hermetic_pair();
+    let mut station = Song::remote("st1", "station-st1", "", "");
+    station.playable = Some(crate::api::PlayableRef::RadioStream {
+        url: "https://radio.example/st1.mp3".to_owned(),
+    });
+    let mut queue = Queue::default();
+    queue.set(vec![station], 0);
+    let snap = queue.snapshot();
+    engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
+    app.queue.restore_snapshot(snap);
+    assert_parity("radio baseline", &app, &engine);
+
+    for step in ["favorite", "unfavorite"] {
+        let cmd = RemoteCommand::Rate {
+            video_id: "st1".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        let app_resp = app_apply(&mut app, cmd.clone());
+        let (engine_resp, shutdown, _) = engine.handle_remote(cmd).await;
+        assert!(!shutdown);
+        assert_eq!(
+            app_resp.reason, engine_resp.reason,
+            "radio rating {step}: owners disagree on the reason"
+        );
+        assert_parity(&format!("radio rating {step}"), &app, &engine);
+    }
+}
+
+#[tokio::test]
 async fn daemon_conflicts_reject_without_state_or_effects() {
     for command in [
         RemoteCommand::Streaming {
@@ -557,6 +693,7 @@ fn streaming_exclude_ids_matches_across_owners() {
             config: Config::default(),
             station: StationStore::default(),
             library: library.clone(),
+            playlists: crate::playlists::Playlists::default(),
             signals: Signals::default(),
         },
         Arc::new(|_event| {}),

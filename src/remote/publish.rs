@@ -25,8 +25,9 @@ use crate::api::Song;
 use crate::queue::Queue;
 
 use super::proto::{
-    EqModel, InstanceMode, PlayerModel, PushEvent, QueueModel, RemoteResponse, ServerFrame, Topic,
-    TrackModel,
+    AiMessageModel, DownloadStatusModel, EqModel, InstanceMode, PlayerModel, PlaylistSummaryModel,
+    PushEvent, QueueModel, RemoteResponse, ServerFrame, SpotifyPlaylistModel, Topic, TrackModel,
+    TransferJobModel, TransferPhaseModel, TransferReportModel,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
@@ -55,6 +56,18 @@ pub struct CoreView<'a> {
     /// host — stale art from a previous track never appears here). Rides the player
     /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
     pub artwork: Option<CoreArtwork<'a>>,
+    /// Library favorite membership and dislike signals — the two halves the rating
+    /// cycle is synthesized from, projected into every [`TrackModel`]
+    /// (docs/gui/02 §11.2). Both owners hold these stores natively.
+    pub library: &'a crate::library::Library,
+    pub signals: &'a crate::signals::Signals,
+}
+
+/// The two rating stores every [`TrackModel`] projection resolves against — the
+/// borrowed pair hosts hand to [`Publisher::search_completed`].
+pub struct RatingStores<'a> {
+    pub library: &'a crate::library::Library,
+    pub signals: &'a crate::signals::Signals,
 }
 
 /// Borrowed current-art projection. It is converted to the owned wire type only when a player
@@ -96,6 +109,12 @@ struct PlayerFingerprint {
     queue_len: usize,
     /// Art resolves ~1–2 s after track start, so its arrival must produce its own push.
     artwork_key: Option<String>,
+    /// The CURRENT track's rating halves: a `rate` mutation changes neither the queue
+    /// revision nor any other player facet, so the flags themselves must re-push.
+    /// (Other rows' flags refresh with the next queue snapshot — the GUI's rating
+    /// affordance binds the player model's current track.)
+    favorite: bool,
+    disliked: bool,
 }
 
 impl PlayerFingerprint {
@@ -119,6 +138,14 @@ impl PlayerFingerprint {
             queue_pos: if len == 0 { 0 } else { pos.saturating_sub(1) },
             queue_len: len,
             artwork_key: view.artwork.as_ref().map(|art| art.key.to_owned()),
+            favorite: view
+                .queue
+                .current()
+                .is_some_and(|song| view.library.is_favorite(&song.video_id)),
+            disliked: view
+                .queue
+                .current()
+                .is_some_and(|song| view.signals.is_disliked(&song.video_id)),
         }
     }
 
@@ -144,6 +171,16 @@ impl PlayerFingerprint {
             && self.queue_pos == if len == 0 { 0 } else { pos.saturating_sub(1) }
             && self.queue_len == len
             && self.artwork_key.as_deref() == view.artwork.as_ref().map(|art| art.key)
+            && self.favorite
+                == view
+                    .queue
+                    .current()
+                    .is_some_and(|song| view.library.is_favorite(&song.video_id))
+            && self.disliked
+                == view
+                    .queue
+                    .current()
+                    .is_some_and(|song| view.signals.is_disliked(&song.video_id))
     }
 }
 
@@ -157,6 +194,19 @@ pub struct Publisher {
     /// immune to forgotten-field drift, unlike a hand-listed fingerprint struct.
     last_settings: Option<Vec<u8>>,
     settings_rev: u64,
+    /// Retained serialized `lyrics_snapshot` payload — the event-driven lyrics lane's
+    /// initial-snapshot source for `handle_subscribe`. Unlike player/queue/settings,
+    /// lyrics never ride `observe`: the host publishes explicitly on track change and
+    /// fetch completion (B1, docs/gui/02 §7).
+    last_lyrics: Option<Arc<Vec<u8>>>,
+    last_playlists: Option<Arc<Vec<u8>>>,
+    last_downloads: Option<Arc<Vec<u8>>>,
+    last_transfer: Option<Arc<Vec<u8>>>,
+    last_ai: Option<Arc<Vec<u8>>>,
+    /// Retained `why_gem_provenance` — the `ai` topic's second subscribe snapshot.
+    last_whygem: Option<Arc<Vec<u8>>>,
+    /// Retained `accounts_snapshot` (presence/toggles only — never credentials).
+    last_accounts: Option<Arc<Vec<u8>>>,
     #[cfg(test)]
     last_projection_work: ProjectionWork,
 }
@@ -178,6 +228,13 @@ impl Publisher {
             last_queue_rev: None,
             last_settings: None,
             settings_rev: 0,
+            last_lyrics: None,
+            last_playlists: None,
+            last_downloads: None,
+            last_transfer: None,
+            last_ai: None,
+            last_whygem: None,
+            last_accounts: None,
             #[cfg(test)]
             last_projection_work: ProjectionWork::default(),
         }
@@ -326,6 +383,19 @@ impl Publisher {
         session
             .apply_subscribe(page_id, topics, |new_topics| {
                 for &topic in new_topics {
+                    // The `ai` topic retains two sibling snapshots (transcript state and
+                    // why-gem provenance); every other topic serves at most one payload.
+                    if topic == Topic::Ai {
+                        for payload in [self.last_ai.clone(), self.last_whygem.clone()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            if !self.hub.send_event_to(session, topic, &payload) {
+                                return false;
+                            }
+                        }
+                        continue;
+                    }
                     let payload = match topic {
                         Topic::Player => Some(event_payload(&PushEvent::PlayerSnapshot {
                             model: Box::new(player_model(view)),
@@ -336,6 +406,13 @@ impl Publisher {
                         Topic::Settings => Some(event_payload(&PushEvent::SettingsSnapshot {
                             model: Box::new(settings_model(view, self.settings_rev)),
                         })),
+                        // Event-driven lane: serve the retained payload (None before the
+                        // host's first publish — the client's empty default covers that).
+                        Topic::Lyrics => self.last_lyrics.clone(),
+                        Topic::Playlists => self.last_playlists.clone(),
+                        Topic::Downloads => self.last_downloads.clone(),
+                        Topic::Transfer => self.last_transfer.clone(),
+                        Topic::Accounts => self.last_accounts.clone(),
                         // Event-only (system, search) or not yet served (B1+ topics):
                         // registered, no initial snapshot.
                         _ => None,
@@ -382,6 +459,159 @@ impl Publisher {
             .unwrap_or(false)
     }
 
+    /// Whether any session wants lyrics right now — the host gates its lrclib fetches
+    /// on this so a headless daemon with no GUI attached never talks to the network.
+    pub fn lyrics_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Lyrics)
+    }
+
+    /// Publish the current track's lyrics (`lines` empty = cleared / none found). The
+    /// payload is retained as the topic's initial snapshot for later subscribers, and
+    /// broadcast only when someone is subscribed.
+    pub fn publish_lyrics(
+        &mut self,
+        video_id: Option<String>,
+        lines: Vec<super::proto::LyricLineModel>,
+    ) {
+        let payload = event_payload(&PushEvent::LyricsSnapshot { video_id, lines });
+        self.last_lyrics = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Lyrics) {
+            self.hub.broadcast(Topic::Lyrics, &payload);
+        }
+    }
+
+    pub fn playlists_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Playlists)
+    }
+
+    pub fn publish_playlists(&mut self, items: Vec<PlaylistSummaryModel>) {
+        let payload = event_payload(&PushEvent::PlaylistsSnapshot { items });
+        self.last_playlists = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Playlists) {
+            self.hub.broadcast(Topic::Playlists, &payload);
+        }
+    }
+
+    pub fn downloads_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Downloads)
+    }
+
+    pub fn publish_downloads(&mut self, items: Vec<DownloadStatusModel>) {
+        let payload = event_payload(&PushEvent::DownloadsSnapshot { items });
+        self.last_downloads = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Downloads) {
+            self.hub.broadcast(Topic::Downloads, &payload);
+        }
+    }
+
+    pub fn transfer_subscribed(&self) -> bool {
+        self.hub.any_subscribed(Topic::Transfer)
+    }
+
+    pub fn publish_transfer(
+        &mut self,
+        phase: TransferPhaseModel,
+        sources: Vec<SpotifyPlaylistModel>,
+        job: Option<TransferJobModel>,
+        report: Option<TransferReportModel>,
+        error: Option<String>,
+    ) {
+        let payload = event_payload(&PushEvent::TransferState {
+            phase,
+            sources,
+            job,
+            report,
+            error,
+        });
+        self.last_transfer = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Transfer) {
+            self.hub.broadcast(Topic::Transfer, &payload);
+        }
+    }
+
+    pub fn publish_ai(
+        &mut self,
+        messages: Vec<AiMessageModel>,
+        thinking: bool,
+        suggestions: Vec<TrackModel>,
+    ) {
+        let payload = event_payload(&PushEvent::AiState {
+            messages,
+            thinking,
+            suggestions,
+        });
+        self.last_ai = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Ai) {
+            self.hub.broadcast(Topic::Ai, &payload);
+        }
+    }
+
+    pub fn whygem_recorded(&self) -> bool {
+        self.last_whygem.is_some()
+    }
+
+    /// Publish which rows carry pick provenance (the "why?" affordance set). Retained
+    /// beside the transcript as the `ai` topic's second subscribe snapshot.
+    pub fn publish_why_gem(&mut self, video_ids: Vec<String>) {
+        let payload = event_payload(&PushEvent::WhyGemProvenance { video_ids });
+        self.last_whygem = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Ai) {
+            self.hub.broadcast(Topic::Ai, &payload);
+        }
+    }
+
+    /// Publish the retained accounts snapshot (presence/toggles only). The auth-URL
+    /// half of the topic is one-shot (`publish_accounts_auth_url`) and never retained.
+    pub fn publish_accounts(
+        &mut self,
+        lastfm: super::proto::LastfmAccountModel,
+        listenbrainz: super::proto::ListenBrainzAccountModel,
+        spotify: super::proto::SpotifyAccountModel,
+        scrobble_local: bool,
+    ) {
+        let payload = event_payload(&PushEvent::AccountsSnapshot {
+            lastfm,
+            listenbrainz,
+            spotify,
+            scrobble_local,
+        });
+        self.last_accounts = Some(Arc::clone(&payload));
+        if self.hub.any_subscribed(Topic::Accounts) {
+            self.hub.broadcast(Topic::Accounts, &payload);
+        }
+    }
+
+    /// One-shot: the browser-approval URL for a just-started auth flow. Deliberately
+    /// NOT retained — replaying a stale approval URL to a later subscriber would send
+    /// the user into a dead flow.
+    pub fn publish_accounts_auth_url(&self, service: &str, url: &str) {
+        if self.hub.any_subscribed(Topic::Accounts) {
+            let payload = event_payload(&PushEvent::AccountsAuthUrl {
+                service: service.to_owned(),
+                url: url.to_owned(),
+            });
+            self.hub.broadcast(Topic::Accounts, &payload);
+        }
+    }
+
+    /// One-shot sibling of the auth URL: the flow ended without connecting.
+    pub fn publish_accounts_auth_failed(&self, service: &str, error: &str) {
+        if self.hub.any_subscribed(Topic::Accounts) {
+            let payload = event_payload(&PushEvent::AccountsAuthFailed {
+                service: service.to_owned(),
+                error: error.to_owned(),
+            });
+            self.hub.broadcast(Topic::Accounts, &payload);
+        }
+    }
+
+    pub fn publish_library_invalidated(&self) {
+        if self.hub.any_subscribed(Topic::Library) {
+            let payload = event_payload(&PushEvent::LibraryInvalidated);
+            self.hub.broadcast(Topic::Library, &payload);
+        }
+    }
+
     /// Fan a completed GUI search out on the `search` topic (one-off event, not a
     /// snapshot — the host loop calls this straight from the api-answer lane).
     pub fn search_completed(
@@ -391,6 +621,7 @@ impl Publisher {
         query: &str,
         source: crate::search_source::SearchSource,
         groups: &[crate::api::GuiSearchGroup],
+        stores: RatingStores<'_>,
     ) -> bool {
         let Some(session) = requester.session() else {
             return false;
@@ -404,7 +635,11 @@ impl Publisher {
                 .iter()
                 .map(|group| super::proto::SearchGroup {
                     source: group.source,
-                    tracks: group.songs.iter().map(gui_search_track_model).collect(),
+                    tracks: group
+                        .songs
+                        .iter()
+                        .map(|song| gui_search_track_model(song, stores.library, stores.signals))
+                        .collect(),
                     error: group.error.clone(),
                 })
                 .collect(),
@@ -444,7 +679,7 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     let (pos, len) = view.queue.position();
     PlayerModel {
         track: view.queue.current().map(|song| {
-            let mut track = track_model(song);
+            let mut track = track_model(song, view.library, view.signals);
             track.artwork = view.artwork.as_ref().map(CoreArtwork::to_wire);
             track
         }),
@@ -473,7 +708,11 @@ pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
 pub(crate) fn queue_model(view: &CoreView<'_>) -> QueueModel {
     QueueModel {
         rev: view.queue.rev(),
-        items: view.queue.ordered_iter().map(track_model).collect(),
+        items: view
+            .queue
+            .ordered_iter()
+            .map(|song| track_model(song, view.library, view.signals))
+            .collect(),
     }
 }
 
@@ -579,11 +818,26 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
             popup_fade: anim.popup_fade,
             activity: anim.activity,
             about_fx: anim.about_fx,
+            time_glow: anim.time_glow,
+            progress_sparkle: anim.progress_sparkle,
+            border_chase: anim.border_chase,
+            pause_flash: anim.pause_flash,
+            error_shake: anim.error_shake,
             visualizer: anim.visualizer,
             rain: anim.rain,
             donut: anim.donut,
             starfield: anim.starfield,
             bounce: anim.bounce,
+            comets: anim.comets,
+            snow: anim.snow,
+            fireflies: anim.fireflies,
+            cube: anim.cube,
+            aquarium: anim.aquarium,
+            waves: anim.waves,
+            fireworks: anim.fireworks,
+            life: anim.life,
+            pipes: anim.pipes,
+            plasma: anim.plasma,
         },
         theme: ThemeSettingsModel {
             preset: c.theme.preset.clone(),
@@ -607,16 +861,34 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
                 })
                 .collect(),
         },
-        keymap: KeymapSettingsModel {
-            bindings: c.keybindings.clone(),
-            actions: Vec::new(),
+        keymap: {
+            // The wire carries the FULL effective map ("" = unbound), not just the
+            // config overrides — the Hotkeys tab renders every row from it.
+            let keymap = crate::keymap::KeyMap::from_config(c);
+            KeymapSettingsModel {
+                bindings: keymap.wire_bindings(),
+                actions: crate::keymap::wire_actions()
+                    .into_iter()
+                    .map(|action| super::proto::ActionInfoModel {
+                        context: action.context.to_owned(),
+                        id: action.id.to_owned(),
+                        label: action.label,
+                        default_chord: action.default_chord,
+                    })
+                    .collect(),
+            }
         },
     }
 }
 
-/// Project a [`Song`] to the wire track shape. B0 carries what the `Song` itself knows;
-/// favorite/disliked/display/artwork enrichment lands with its milestone (B1/B2).
-fn track_model(song: &Song) -> TrackModel {
+/// Project a [`Song`] to the wire track shape, with the rating halves resolved from the
+/// owner's library/signals stores (docs/gui/02 §11.2); display/romanization enrichment
+/// still lands with its milestone (B3).
+pub(crate) fn track_model(
+    song: &Song,
+    library: &crate::library::Library,
+    signals: &crate::signals::Signals,
+) -> TrackModel {
     TrackModel {
         video_id: crate::api::sanitize_provider_id(&song.video_id),
         title: crate::api::sanitize_title(&song.title),
@@ -626,8 +898,8 @@ fn track_model(song: &Song) -> TrackModel {
         source: song.source,
         is_local: song.local_path.is_some(),
         downloaded: false,
-        favorite: false,
-        disliked: false,
+        favorite: library.is_favorite(&song.video_id),
+        disliked: signals.is_disliked(&song.video_id),
         display_title: None,
         display_artist: None,
         artwork: None,
@@ -636,8 +908,12 @@ fn track_model(song: &Song) -> TrackModel {
     }
 }
 
-fn gui_search_track_model(song: &Song) -> TrackModel {
-    let mut model = track_model(song);
+fn gui_search_track_model(
+    song: &Song,
+    library: &crate::library::Library,
+    signals: &crate::signals::Signals,
+) -> TrackModel {
+    let mut model = track_model(song, library, signals);
     model.video_id = crate::api::gui_search_row_id(song);
     model
 }
@@ -689,616 +965,10 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         eq_normalize: false,
         config: Box::leak(Box::new(crate::config::Config::default())),
         artwork: None,
+        library: Box::leak(Box::new(crate::library::Library::default())),
+        signals: Box::leak(Box::new(crate::signals::Signals::default())),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::proto::PROTOCOL_VERSION;
-    use super::super::sessions::{
-        RemoteSessionScope, SessionLine, SessionTuning, SubscribeIngress, test_register,
-        test_register_next,
-    };
-    use super::*;
-
-    fn view(queue: &Queue) -> CoreView<'_> {
-        test_view(queue)
-    }
-
-    fn song(id: &str) -> Song {
-        Song::remote(id, format!("t-{id}"), "a", "3:45")
-    }
-
-    fn drain(rx: &mut tokio::sync::mpsc::Receiver<SessionLine>) -> Vec<SessionLine> {
-        let mut out = Vec::new();
-        while let Ok(line) = rx.try_recv() {
-            out.push(line);
-        }
-        out
-    }
-
-    fn kinds(lines: &[SessionLine]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| match line {
-                SessionLine::Raw(bytes) | SessionLine::TrackedRaw { bytes, .. } => format!(
-                    "raw:{}",
-                    String::from_utf8_lossy(bytes)
-                        .split_once('"')
-                        .map(|_| "frame")
-                        .unwrap_or("?")
-                ),
-                SessionLine::Event { topic, .. } => format!("event:{}", topic.wire_str()),
-            })
-            .collect()
-    }
-
-    fn admit(session: &RemoteSessionRef, page_id: Option<&str>) {
-        assert_eq!(
-            session.admit_subscribe(page_id, || Some(true)),
-            SubscribeIngress::Accepted
-        );
-    }
-
-    fn settings_revs(lines: &[SessionLine]) -> Vec<u64> {
-        lines
-            .iter()
-            .filter_map(|line| match line {
-                SessionLine::Event {
-                    topic: Topic::Settings,
-                    payload,
-                    ..
-                } => serde_json::from_slice::<serde_json::Value>(payload)
-                    .ok()
-                    .and_then(|event| event["model"]["rev"].as_u64()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn subscribe_emits_snapshots_before_reply_and_only_for_new_topics() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-        queue.set(vec![song("a"), song("b")], 0);
-
-        publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            None,
-            1,
-            &[Topic::Player, Topic::Queue, Topic::System],
-        );
-        let lines = drain(&mut rx);
-        assert_eq!(
-            kinds(&lines),
-            vec!["event:player", "event:queue", "raw:frame"],
-            "snapshots strictly precede the reply; system has no snapshot"
-        );
-
-        // Duplicate subscribe: idempotent — no second snapshot stream, just the reply.
-        publisher.handle_subscribe(&view(&queue), &session, None, 2, &[Topic::Player]);
-        let lines = drain(&mut rx);
-        assert_eq!(kinds(&lines), vec!["raw:frame"]);
-    }
-
-    #[test]
-    fn delayed_subscribe_is_page_gated_and_new_page_gets_a_fresh_snapshot() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-
-        admit(&session, Some("page-a"));
-        // Hold A's owner event while the reader admits the newer page generation.
-        admit(&session, Some("page-b"));
-        queue.set(vec![song("fresh-b")], 0);
-
-        assert!(!publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            Some("page-a"),
-            1,
-            &[Topic::Queue],
-        ));
-        assert!(
-            drain(&mut rx).is_empty(),
-            "stale A must be completely inert"
-        );
-
-        assert!(publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            Some("page-b"),
-            2,
-            &[Topic::Queue],
-        ));
-        let lines = drain(&mut rx);
-        assert_eq!(kinds(&lines), vec!["event:queue", "raw:frame"]);
-        let SessionLine::Event { payload, .. } = &lines[0] else {
-            panic!("B must receive a fresh queue snapshot");
-        };
-        let PushEvent::QueueSnapshot { model } =
-            serde_json::from_slice::<PushEvent>(payload).unwrap()
-        else {
-            panic!("B must receive a queue snapshot");
-        };
-        assert_eq!(model.items[0].video_id, "fresh-b");
-    }
-
-    #[test]
-    fn rejected_page_admission_rolls_back_without_losing_old_subscriptions() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-        queue.set(vec![song("a")], 0);
-
-        admit(&session, Some("page-a"));
-        assert!(publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            Some("page-a"),
-            1,
-            &[Topic::Player],
-        ));
-        drain(&mut rx);
-
-        assert_eq!(
-            session.admit_subscribe(Some("page-b"), || Some(false)),
-            SubscribeIngress::Busy
-        );
-        assert!(publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            Some("page-a"),
-            2,
-            &[Topic::Player, Topic::Queue],
-        ));
-        assert_eq!(
-            kinds(&drain(&mut rx)),
-            vec!["event:queue", "raw:frame"],
-            "the rejected B transition must retain A and its Player subscription"
-        );
-    }
-
-    #[test]
-    fn saturated_new_page_cannot_make_an_older_accepted_event_disappear() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut queue = Queue::default();
-        queue.set(vec![song("page-a")], 0);
-        admit(&session, Some("page-a"));
-
-        let (busy_started_tx, busy_started_rx) = std::sync::mpsc::channel();
-        let (release_busy_tx, release_busy_rx) = std::sync::mpsc::channel();
-        let busy_session = session.clone();
-        let busy = std::thread::spawn(move || {
-            busy_session.admit_subscribe(Some("page-b"), || {
-                busy_started_tx.send(()).unwrap();
-                release_busy_rx.recv().unwrap();
-                Some(false)
-            })
-        });
-        busy_started_rx.recv().unwrap();
-
-        let owner_session = session.clone();
-        let (owner_started_tx, owner_started_rx) = std::sync::mpsc::channel();
-        let (owner_done_tx, owner_done_rx) = std::sync::mpsc::channel();
-        let owner = std::thread::spawn(move || {
-            let mut publisher = Publisher::new(hub);
-            owner_started_tx.send(()).unwrap();
-            let applied = publisher.handle_subscribe(
-                &view(&queue),
-                &owner_session,
-                Some("page-a"),
-                1,
-                &[Topic::Queue],
-            );
-            owner_done_tx.send(applied).unwrap();
-        });
-        owner_started_rx.recv().unwrap();
-        assert!(
-            owner_done_rx
-                .recv_timeout(std::time::Duration::from_millis(30))
-                .is_err(),
-            "A's owner transaction must wait for B's ingress linearization"
-        );
-
-        release_busy_tx.send(()).unwrap();
-        assert_eq!(busy.join().unwrap(), SubscribeIngress::Busy);
-        assert!(owner_done_rx.recv().unwrap());
-        owner.join().unwrap();
-        assert_eq!(
-            kinds(&drain(&mut rx)),
-            vec!["event:queue", "raw:frame"],
-            "busy B must leave accepted A able to publish its snapshot and reply"
-        );
-    }
-
-    #[test]
-    fn owner_can_park_projection_work_without_model_subscribers() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let queue = Queue::default();
-
-        assert!(
-            publisher.should_observe(false),
-            "first turn primes baselines"
-        );
-        publisher.observe(&view(&queue));
-        assert!(
-            !publisher.should_observe(false),
-            "an empty queue at revision zero must not force perpetual observation"
-        );
-
-        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Player]);
-        drain(&mut rx);
-        assert!(
-            publisher.should_observe(false),
-            "active model subscriber stays observed"
-        );
-    }
-
-    #[test]
-    fn search_completion_targets_only_its_live_subscribed_session_and_page() {
-        let (hub, session_a, mut rx_a) = test_register(SessionTuning::default());
-        let (session_b, mut rx_b) = test_register_next(&hub);
-        let mut publisher = Publisher::new(hub);
-        let queue = Queue::default();
-        admit(&session_a, Some("page-a"));
-        admit(&session_b, Some("page-b"));
-        publisher.handle_subscribe(
-            &view(&queue),
-            &session_a,
-            Some("page-a"),
-            1,
-            &[Topic::Search],
-        );
-        publisher.handle_subscribe(
-            &view(&queue),
-            &session_b,
-            Some("page-b"),
-            1,
-            &[Topic::Search],
-        );
-        drain(&mut rx_a);
-        drain(&mut rx_b);
-
-        let requester = RemoteSessionScope::new(session_a.clone(), Some("page-a".to_owned()));
-        assert!(publisher.search_completed(
-            &requester,
-            1,
-            "alpha",
-            crate::search_source::SearchSource::Youtube,
-            &[crate::api::GuiSearchGroup {
-                source: crate::search_source::SearchSource::Youtube,
-                songs: vec![song("a")],
-                error: None,
-            }],
-        ));
-        let lines = drain(&mut rx_a);
-        assert_eq!(lines.len(), 1);
-        let SessionLine::Event { payload, .. } = &lines[0] else {
-            panic!("search completion must be an event");
-        };
-        match serde_json::from_slice::<PushEvent>(payload).unwrap() {
-            PushEvent::SearchCompleted {
-                ticket, page_id, ..
-            } => {
-                assert_eq!(ticket, 1);
-                assert_eq!(page_id.as_deref(), Some("page-a"));
-            }
-            other => panic!("unexpected event {other:?}"),
-        }
-        assert!(
-            drain(&mut rx_b).is_empty(),
-            "session B must not see A's result"
-        );
-
-        admit(&session_a, Some("page-new"));
-        assert!(publisher.handle_subscribe(
-            &view(&queue),
-            &session_a,
-            Some("page-new"),
-            2,
-            &[Topic::Search],
-        ));
-        drain(&mut rx_a);
-        assert!(!publisher.search_completed(
-            &requester,
-            2,
-            "stale page",
-            crate::search_source::SearchSource::Youtube,
-            &[],
-        ));
-        let current = RemoteSessionScope::new(session_a.clone(), Some("page-new".to_owned()));
-        assert!(publisher.search_completed(
-            &current,
-            2,
-            "current page",
-            crate::search_source::SearchSource::Youtube,
-            &[],
-        ));
-        drain(&mut rx_a);
-
-        assert!(!session_a.unsubscribe_if_current(Some("page-a"), &[Topic::Search]));
-        assert!(session_a.unsubscribe_if_current(Some("page-new"), &[Topic::Search]));
-        assert!(!publisher.search_completed(
-            &current,
-            3,
-            "late",
-            crate::search_source::SearchSource::Youtube,
-            &[],
-        ));
-        assert!(drain(&mut rx_a).is_empty());
-    }
-
-    #[test]
-    fn cheap_baselines_refresh_while_settings_projection_stays_subscriber_gated() {
-        let queue = Queue::default();
-
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        assert_eq!(
-            publisher.observe_work(&view(&queue)),
-            ProjectionWork {
-                player_fingerprint: true,
-                queue_revision: true,
-                settings_model: true,
-            },
-            "the first owner turn primes each baseline exactly once"
-        );
-        assert_eq!(
-            publisher.observe_work(&view(&queue)),
-            ProjectionWork {
-                player_fingerprint: true,
-                queue_revision: true,
-                settings_model: false,
-            },
-            "origin-compatible cheap baselines refresh without rebuilding settings"
-        );
-        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Settings]);
-        drain(&mut rx);
-        assert_eq!(
-            publisher.observe_work(&view(&queue)),
-            ProjectionWork {
-                settings_model: true,
-                player_fingerprint: true,
-                queue_revision: true,
-            },
-            "settings projection is added only for a settings subscriber"
-        );
-
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        publisher.observe(&view(&queue));
-        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Player]);
-        drain(&mut rx);
-        assert_eq!(
-            publisher.observe_work(&view(&queue)),
-            ProjectionWork {
-                player_fingerprint: true,
-                queue_revision: true,
-                settings_model: false,
-            },
-            "a player-only client does not build settings"
-        );
-
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        publisher.observe(&view(&queue));
-        publisher.handle_subscribe(&view(&queue), &session, None, 1, &[Topic::Queue]);
-        drain(&mut rx);
-        assert_eq!(
-            publisher.observe_work(&view(&queue)),
-            ProjectionWork {
-                player_fingerprint: true,
-                queue_revision: true,
-                settings_model: false,
-            },
-            "a queue-only client does not build settings"
-        );
-    }
-
-    #[test]
-    fn time_tick_only_turns_emit_nothing_frozen() {
-        // THE frozen no-tick rule (docs/gui/02 §14): elapsed_ms is outside the player
-        // fingerprint, so a PlayerTimePos-only turn (elapsed advanced, nothing else)
-        // must emit zero events. Do not weaken this test; fix the fingerprint instead.
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-        queue.set(vec![song("a")], 0);
-
-        // Prime the baseline the way a real host does: observe runs from the first
-        // loop turn, long before any subscriber exists.
-        publisher.observe(&view(&queue));
-        publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            None,
-            1,
-            &[Topic::Player, Topic::Queue],
-        );
-        drain(&mut rx);
-
-        let mut v = view(&queue);
-        publisher.observe(&v);
-        assert!(drain(&mut rx).is_empty(), "no-change turn emits nothing");
-
-        for tick in 0..30 {
-            v.elapsed_ms = Some(1_000 + tick * 1_000);
-            publisher.observe(&v);
-        }
-        assert!(
-            drain(&mut rx).is_empty(),
-            "30 time-tick turns must emit nothing"
-        );
-
-        // A real discontinuity still pushes exactly once (and carries fresh elapsed).
-        v.paused = true;
-        publisher.observe(&v);
-        publisher.observe(&v);
-        let lines = drain(&mut rx);
-        assert_eq!(kinds(&lines), vec!["event:player"], "once per change");
-    }
-
-    #[test]
-    fn queue_changes_push_queue_snapshots_but_cursor_moves_do_not() {
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-        queue.set(vec![song("a"), song("b"), song("c")], 0);
-
-        publisher.observe(&view(&queue));
-        publisher.handle_subscribe(
-            &view(&queue),
-            &session,
-            None,
-            1,
-            &[Topic::Player, Topic::Queue],
-        );
-        drain(&mut rx);
-
-        // Membership change → one queue event (and no player event: fingerprint's
-        // queue_len changed too, so actually both. Assert the queue event exists and
-        // dedup on a second observe).
-        queue.extend(vec![song("d")]);
-        publisher.observe(&view(&queue));
-        let lines = drain(&mut rx);
-        assert!(
-            kinds(&lines).contains(&"event:queue".to_string()),
-            "membership change pushes a queue snapshot: {:?}",
-            kinds(&lines)
-        );
-        publisher.observe(&view(&queue));
-        assert!(drain(&mut rx).is_empty(), "no re-push without changes");
-
-        // Cursor move (track advance): player push only — never a queue snapshot.
-        queue.next(false);
-        publisher.observe(&view(&queue));
-        let lines = drain(&mut rx);
-        assert_eq!(
-            kinds(&lines),
-            vec!["event:player"],
-            "a track advance is a small player push, not a queue re-push"
-        );
-    }
-
-    #[test]
-    fn late_settings_subscriber_still_sees_changes() {
-        // The settings path in `observe` is gated on an actual Settings subscriber (perf: skip
-        // the model build + JSON serialize on every keypress when nobody is listening — the
-        // default standalone config). This guards the two properties that gate must not break:
-        // (1) a subscriber that connects *after* a settings change still learns the current
-        // value, and (2) a change made while subscribed still pushes.
-        let (hub, session, mut rx) = test_register(SessionTuning::default());
-        let mut publisher = Publisher::new(hub);
-        let mut queue = Queue::default();
-        queue.set(vec![song("a")], 0);
-
-        // First observe primes the baseline (no subscriber yet), as the real host does.
-        publisher.observe(&view(&queue));
-
-        // A setting changes while nobody is subscribed: the gate skips the serialize and pushes
-        // nothing, but the change must not be lost to a future subscriber.
-        let mut v = view(&queue);
-        v.eq_preset = "Rock";
-        publisher.observe(&v);
-        assert!(
-            drain(&mut rx).is_empty(),
-            "no subscriber yet → nothing pushed"
-        );
-
-        // Subscriber connects: `handle_subscribe` sends the current settings snapshot.
-        publisher.handle_subscribe(&v, &session, None, 1, &[Topic::Settings]);
-        let initial = drain(&mut rx);
-        assert!(
-            kinds(&initial).contains(&"event:settings".to_string()),
-            "a new Settings subscriber receives the current snapshot despite the serialize gate"
-        );
-        assert_eq!(
-            settings_revs(&initial),
-            vec![1],
-            "subscribe reports the existing owner revision without mutating observer baselines"
-        );
-
-        // Preserve the established wire sequence: subscription itself never advances the parked
-        // observer baseline, so the next owner observation publishes the already-current model.
-        publisher.observe(&v);
-        let follow_up = drain(&mut rx);
-        assert_eq!(settings_revs(&follow_up), vec![2]);
-
-        // A further change while subscribed still pushes a settings snapshot.
-        v.eq_preset = "Jazz";
-        publisher.observe(&v);
-        let changed = drain(&mut rx);
-        assert!(
-            kinds(&changed).contains(&"event:settings".to_string()),
-            "a subscribed settings change still pushes"
-        );
-        assert_eq!(settings_revs(&changed), vec![3]);
-    }
-
-    #[test]
-    fn duration_parses_from_display_string_when_secs_absent() {
-        let s = song("a"); // "3:45", no duration_secs
-        assert_eq!(song_duration_ms(&s), Some(225_000));
-        let mut hms = song("b");
-        hms.duration = "1:02:03".to_string();
-        assert_eq!(song_duration_ms(&hms), Some(3_723_000));
-        let mut none = song("c");
-        none.duration = String::new();
-        assert_eq!(song_duration_ms(&none), None);
-        let mut secs = song("d");
-        secs.duration_secs = Some(20);
-        assert_eq!(song_duration_ms(&secs), Some(20_000));
-        // A colon-free garbage duration parses into a huge value; the seconds→ms scale must
-        // not overflow (debug panic / wrong value) — it returns None (unknown) instead.
-        let mut huge = song("e");
-        huge.duration = "18446744073709552".to_string(); // parses to u64, but *1000 overflows
-        assert_eq!(song_duration_ms(&huge), None);
-    }
-
-    #[test]
-    fn track_model_sanitizes_persisted_metadata() {
-        let mut song = Song::remote("id", "title", "artist", "3:45");
-        song.video_id = format!(
-            "{}\n{}",
-            "x".repeat(crate::api::MAX_PROVIDER_ID_CHARS + 20),
-            '\u{202e}'
-        );
-        song.title = format!(
-            "{}{}",
-            "t".repeat(crate::api::MAX_TITLE_CHARS + 20),
-            '\u{202e}'
-        );
-        song.artist = "a\nb".to_owned();
-        song.album = Some(format!(
-            "{}{}",
-            "z".repeat(crate::api::MAX_ALBUM_CHARS + 20),
-            '\u{202e}'
-        ));
-
-        let track = track_model(&song);
-
-        assert_eq!(
-            track.video_id.chars().count(),
-            crate::api::MAX_PROVIDER_ID_CHARS
-        );
-        assert_eq!(track.title.chars().count(), crate::api::MAX_TITLE_CHARS);
-        assert_eq!(track.artist, "ab");
-        assert_eq!(
-            track.album.as_ref().unwrap().chars().count(),
-            crate::api::MAX_ALBUM_CHARS
-        );
-        assert!(!track.video_id.contains('\u{202e}'));
-        assert!(!track.title.contains('\u{202e}'));
-        assert!(!track.album.as_ref().unwrap().contains('\u{202e}'));
-    }
-
-    #[test]
-    fn version_constant_still_v8() {
-        // publish.rs is v8-only machinery; a bump above 8 must revisit the snapshots.
-        assert_eq!(PROTOCOL_VERSION, 8);
-    }
-}
+mod tests;

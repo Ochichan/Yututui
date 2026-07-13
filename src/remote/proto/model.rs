@@ -8,6 +8,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::search_source::SearchSource;
 
+/// Speaker identity for one retained DJ Gem transcript message.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiRoleModel {
+    User,
+    Assistant,
+}
+
+/// One line in the retained daemon-side DJ Gem transcript.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiMessageModel {
+    pub role: AiRoleModel,
+    pub text: String,
+}
+
 /// The one wire shape for a track, used by player/queue/library/search/AI models alike.
 ///
 /// Rating note (docs/gui/02 §11.2): there is no stored tri-state rating in the core —
@@ -78,6 +103,254 @@ pub struct ArtworkRef {
     pub mime: Option<String>,
 }
 
+/// One synced-lyrics line on the `lyrics` topic (docs/gui/02 §7). `ms` is `None` for
+/// unsynced lines — the client renders them without a highlight clock.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LyricLineModel {
+    // ms fit a JS number safely (same rule as TrackModel::duration_ms).
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub ms: Option<u64>,
+    pub text: String,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadStateModel {
+    Running,
+    Done,
+    Failed,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DownloadStatusModel {
+    pub video_id: String,
+    pub title: String,
+    pub state: DownloadStateModel,
+    pub pct: f64,
+    #[cfg_attr(feature = "ts-export", ts(type = "string | null"))]
+    pub error: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyPlaylistModel {
+    pub id: String,
+    pub name: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub count: u64,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferJobModel {
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub done: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub total: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub matched: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub failed: u64,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReportModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub job_id: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub matched: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub failed: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub skipped: u64,
+    pub unmatched: Vec<String>,
+    pub dest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub review_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub report_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub download_preview_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub organize_preview_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub local_deck_hint: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferPhaseModel {
+    #[default]
+    Idle,
+    Listing,
+    Ready,
+    Running,
+    Done,
+    Failed,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryPageModel {
+    pub scope: String,
+    pub filter: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub offset: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub total: u64,
+    pub tracks: Vec<TrackModel>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistSummaryModel {
+    pub id: String,
+    pub name: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub count: u64,
+    pub description: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistDetailModel {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub tracks: Vec<TrackModel>,
+}
+
+/// Why a track sits in the queue (docs/gui/07 §whygem): the DJ Gem / autoplay pick
+/// rationale behind the GUI's "why?" popover. v1 provenance carries the slot label and
+/// whatever the pick context knew; `reasons` may be empty and `confidence` is null when
+/// no model score exists (the popover renders both gracefully).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhyGemModel {
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // The autoplay slot / origin label, e.g. "DJ Gem" or the streaming mode.
+    pub slot: String,
+    pub reasons: Vec<String>,
+    // Model confidence `0..1`; null when the pick had no model score. A JSON `Number`
+    // (not `f64`) because this rides `ResponseData`, whose `Eq` the response cache
+    // relies on — `serde_json::Number` is `Eq`, floats are not.
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub confidence: Option<serde_json::Number>,
+}
+
+/// Account blocks for the `accounts` topic (docs/gui/07 §accounts). Presence/booleans
+/// only — session keys and tokens NEVER ride the wire (`has_token`, `connected`).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastfmAccountModel {
+    pub connected: bool,
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // Display-only account name; null when disconnected.
+    pub user: Option<String>,
+    pub scrobbling: bool,
+    pub love_sync: bool,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenBrainzAccountModel {
+    pub submit: bool,
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // Presence only — the token never round-trips.
+    pub has_token: bool,
+    pub custom_url: Option<String>,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyAccountModel {
+    pub connected: bool,
+    pub user: Option<String>,
+    pub client_id: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
+    pub redirect_port: Option<u16>,
+}
+
+/// Core-side keymap conflict info for `keymap_bind` replies (the shadowed binding, as
+/// display text). The bind is NOT applied on conflict — the authoritative settings push
+/// reconciles the GUI's optimistic chord back while this explains why.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapConflictModel {
+    pub shadows: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +363,20 @@ mod tests {
         assert!(!track.disliked);
         assert_eq!(track.duration_ms, None);
         assert_eq!(track.artwork, None);
+    }
+
+    #[test]
+    fn download_status_serializes_absent_error_as_null() {
+        let status = DownloadStatusModel {
+            video_id: "v".to_owned(),
+            title: "Track".to_owned(),
+            state: DownloadStateModel::Running,
+            pct: 0.0,
+            error: None,
+        };
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["state"], "running");
+        assert!(value["error"].is_null());
     }
 
     #[test]
@@ -135,5 +422,29 @@ mod tests {
             mime: None,
         };
         assert_eq!(serde_json::to_string(&pending).unwrap(), r#"{"key":"vid"}"#);
+    }
+
+    #[test]
+    fn playlist_descriptions_serialize_absence_as_null() {
+        let summary = PlaylistSummaryModel {
+            id: "mix".to_owned(),
+            name: "Mix".to_owned(),
+            count: 0,
+            description: None,
+        };
+        assert_eq!(
+            serde_json::to_value(summary).unwrap()["description"],
+            serde_json::Value::Null
+        );
+        let detail = PlaylistDetailModel {
+            id: "mix".to_owned(),
+            name: "Mix".to_owned(),
+            description: None,
+            tracks: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(detail).unwrap()["description"],
+            serde_json::Value::Null
+        );
     }
 }

@@ -6,8 +6,7 @@
 //
 // Wiring agents: when you connect a new feature, teach it here too (answer the command,
 // push the topic) so the browser demo keeps exercising the whole surface. Keep shapes
-// identical to the generated protocol types — this file must never invent wire forms
-// except the PROVISIONAL lyrics shape flagged in lyrics.svelte.ts.
+// identical to the generated protocol types — this file must never invent wire forms.
 
 import type { InEnvelope, OutEnvelope } from '../ipc/envelope';
 import type { Transport } from '../ipc/transport';
@@ -408,7 +407,7 @@ export class DemoCoreTransport implements Transport {
           state: 'online',
           coreVersion: 'demo-core',
           protocolVersion: 8,
-          capabilities: ['events-v8'],
+          capabilities: ['events-v8', 'v8-commands'],
           ownerMode: 'daemon',
         },
       });
@@ -1112,31 +1111,38 @@ export class DemoCoreTransport implements Transport {
 
   // ── keymap (settings.hotkeys) ────────────────────────────────────────────────────────
 
-  /** Bind a chord; returns any core-side shadow conflict (detection stays here, not the GUI). */
+  /**
+   * Bind a chord; returns any core-side shadow conflict (detection stays here, not the
+   * GUI). Mirrors `gui_keymap_bind`: a conflicted bind is NOT applied (and pushes
+   * nothing), the reply's `shadows` is display text.
+   */
   #keymapBind(context: KeyContext, action: string, chord: string): { shadows: string } | null {
     if (!context || !action || !chord) return null;
     const conflict = this.#keymapConflict(context, action, chord);
+    if (conflict) return conflict;
     this.#settings.keymap.bindings[`${context}.${action}`] = chord;
     this.#settings.rev++;
     this.#pushSettings();
-    return conflict;
+    return null;
   }
 
   /** The first other action whose chord this bind collides with, across the effective contexts. */
   #keymapConflict(context: KeyContext, action: string, chord: string): { shadows: string } | null {
     const order: KeyContext[] =
-      context === 'Common'
-        ? ['Common', 'Global']
-        : context === 'Global'
-          ? ['Global']
-          : [context, 'Common', 'Global'];
+      context === 'common'
+        ? ['common', 'global']
+        : context === 'global'
+          ? ['global']
+          : [context, 'common', 'global'];
     const self = `${context}.${action}`;
     for (const ctx of order) {
       for (const a of this.#settings.keymap.actions) {
         if (a.context !== ctx) continue;
         const key = `${ctx}.${a.id}`;
         if (key === self) continue;
-        if (this.#settings.keymap.bindings[key] === chord) return { shadows: a.id };
+        if (this.#settings.keymap.bindings[key] === chord) {
+          return { shadows: `${ctx} — ${a.label}` };
+        }
       }
     }
     return null;
@@ -1144,7 +1150,8 @@ export class DemoCoreTransport implements Transport {
 
   #keymapUnbind(context: KeyContext, action: string): void {
     if (!context || !action) return;
-    delete this.#settings.keymap.bindings[`${context}.${action}`];
+    // The wire's unbound form is the empty string (`wire_bindings`), not a missing key.
+    this.#settings.keymap.bindings[`${context}.${action}`] = '';
     this.#settings.rev++;
     this.#pushSettings();
   }
@@ -1473,7 +1480,7 @@ export class DemoCoreTransport implements Transport {
       v: 1,
       kind: 'event',
       topic: 'lyrics',
-      // PROVISIONAL shape — see TODO(wire:B1/lyrics.live) in lyrics.svelte.ts.
+      // Canonical B1 shape — PushEvent::LyricsSnapshot (generated LyricLineModel lines).
       payload: {
         kind: 'lyrics_snapshot',
         video_id: t?.video_id ?? null,

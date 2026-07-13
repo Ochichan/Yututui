@@ -9,30 +9,37 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
-
 use crate::remote::PERSONAL_EXPORT_CAPABILITY;
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{
     InstanceMode, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, StatusSnapshot,
 };
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
-use crate::util::delivery::{DeliveryResult, OwnerEvent, OwnerEventIngress};
-use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
 use crate::util::process::{self, ProcessProfile};
 
+mod accounts_host;
+mod ai_host;
 mod cli;
+mod downloads_host;
 mod effects;
 mod engine;
+mod events;
 mod gui_search_pending;
+mod lyrics_host;
 mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 mod personal_export;
 mod shutdown_drain;
+mod transfer_host;
 
 use cli::{ParseOutcome, parse};
 use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
+#[cfg(any(windows, test))]
+use events::emit_daemon_callback_result_until;
+use events::{DaemonEvent, DaemonEventSender, emit_daemon_event, record_daemon_event};
+#[cfg(test)]
+use events::{DaemonTelemetrySlot, emit_daemon_callback_result};
 use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
 use shutdown_drain::drain_daemon_shutdown_ingress;
 
@@ -185,289 +192,6 @@ async fn start_cli(resume: bool) -> i32 {
     }
 }
 
-enum DaemonEvent {
-    Remote(RemoteEvent),
-    Player(crate::player::PlayerEvent),
-    Api(crate::api::ApiEvent),
-    /// A command from the OS media session (media keys / Now Playing / SMTC / MPRIS).
-    Media(crate::media::MediaCommand),
-    /// The media-artwork cache resolved a local file for a track.
-    MediaArt(crate::media::artwork::MediaArtworkReady),
-    /// Scrobble-actor notices. The daemon has no UI and never runs the interactive auth
-    /// flow (`ytt auth lastfm` does), so these only reach the log.
-    Scrobble(crate::scrobble::ScrobbleEvent),
-    /// A playback-self-heal yt-dlp update check finished (see
-    /// [`engine::EngineEffect::YtdlpSelfHeal`]).
-    YtdlpHeal {
-        video_id: String,
-        updated: bool,
-    },
-    /// Bounded, generation-tagged retry after an automatic player restart/replay failed.
-    TransportRecoveryRetry {
-        generation: u64,
-    },
-    /// An owned blocking personal-data projection finished and is ready to settle its retained
-    /// remote request on the owner lane.
-    PersonalExportFinished(personal_export::Finished),
-    Signal,
-    TelemetryWake,
-}
-
-impl DaemonEvent {
-    fn policy(&self) -> EventPolicy {
-        match self {
-            DaemonEvent::Remote(
-                RemoteEvent::Command(_, _)
-                | RemoteEvent::SessionCommand { .. }
-                | RemoteEvent::SessionSubscribe { .. },
-            ) => EventPolicy::MustReplyOrBusy {
-                lane: Lane::RemoteCommand,
-            },
-            DaemonEvent::Player(event) => match event.unscoped() {
-                crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerTimePos,
-                },
-                crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerDuration,
-                },
-                crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerPaused,
-                },
-                crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerVolume,
-                },
-                crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::WorkResult,
-                    key: Key::PlayerMetadata,
-                },
-                crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerCacheTime,
-                },
-                crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerAudioCodec,
-                },
-                crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerFileFormat,
-                },
-                crate::player::PlayerEvent::Eof
-                | crate::player::PlayerEvent::Error(_)
-                | crate::player::PlayerEvent::TransportClosed(_) => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
-                crate::player::PlayerEvent::FileScoped { .. } => {
-                    unreachable!("daemon audio event was unscoped before policy lookup")
-                }
-            },
-            DaemonEvent::Api(event) => match event {
-                crate::api::ApiEvent::ModeResolved { .. }
-                | crate::api::ApiEvent::TrackResolved { .. }
-                | crate::api::ApiEvent::PlaylistTracks { .. }
-                | crate::api::ApiEvent::PlaylistTracksError { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-                crate::api::ApiEvent::SearchResults { .. }
-                | crate::api::ApiEvent::SearchError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::SearchRequest,
-                },
-                crate::api::ApiEvent::StreamingResults { .. }
-                | crate::api::ApiEvent::StreamingPreflighted { .. }
-                | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::StreamingSeed,
-                },
-                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-            },
-            DaemonEvent::Media(_) => EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            },
-            DaemonEvent::MediaArt(_) => EventPolicy::CoalesceLatest {
-                lane: Lane::Telemetry,
-                key: Key::MediaArtVideo,
-            },
-            DaemonEvent::Scrobble(event) => match event {
-                crate::scrobble::ScrobbleEvent::AuthUrl(_)
-                | crate::scrobble::ScrobbleEvent::AuthDone { .. }
-                | crate::scrobble::ScrobbleEvent::AuthFailed(_)
-                | crate::scrobble::ScrobbleEvent::SessionInvalid(_)
-                | crate::scrobble::ScrobbleEvent::QueueDropped { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
-                crate::scrobble::ScrobbleEvent::QueueStalled { .. } => {
-                    EventPolicy::CoalesceLatest {
-                        lane: Lane::Telemetry,
-                        key: Key::ScrobbleQueueStalled,
-                    }
-                }
-            },
-            DaemonEvent::YtdlpHeal { .. } => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
-            DaemonEvent::TransportRecoveryRetry { .. } => EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            },
-            DaemonEvent::PersonalExportFinished(_) => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
-            DaemonEvent::Signal => EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            },
-            DaemonEvent::TelemetryWake => EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            },
-        }
-    }
-
-    fn kind(&self) -> &'static str {
-        match self {
-            DaemonEvent::Remote(_) => "remote",
-            DaemonEvent::Player(_) => "player",
-            DaemonEvent::Api(_) => "api",
-            DaemonEvent::Media(_) => "media",
-            DaemonEvent::MediaArt(_) => "media_art",
-            DaemonEvent::Scrobble(_) => "scrobble",
-            DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
-            DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
-            DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",
-            DaemonEvent::Signal => "signal",
-            DaemonEvent::TelemetryWake => "telemetry_wake",
-        }
-    }
-
-    fn is_telemetry_wake(&self) -> bool {
-        matches!(self, DaemonEvent::TelemetryWake)
-    }
-
-    fn telemetry_slot(&self) -> Option<DaemonTelemetrySlot> {
-        match self {
-            DaemonEvent::MediaArt(ready) => Some(DaemonTelemetrySlot::MediaArt(ready.key.clone())),
-            DaemonEvent::Api(crate::api::ApiEvent::SearchResults { request_id, .. })
-            | DaemonEvent::Api(crate::api::ApiEvent::SearchError { request_id, .. }) => {
-                Some(DaemonTelemetrySlot::StaleSearch(*request_id))
-            }
-            DaemonEvent::Api(crate::api::ApiEvent::StreamingResults { seed_video_id, .. })
-            | DaemonEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
-                seed_video_id, ..
-            })
-            | DaemonEvent::Api(crate::api::ApiEvent::StreamingError { seed_video_id, .. }) => {
-                Some(DaemonTelemetrySlot::StaleStreaming(seed_video_id.clone()))
-            }
-            _ => match self.policy() {
-                EventPolicy::CoalesceLatest { key, .. } => Some(DaemonTelemetrySlot::Static(key)),
-                _ => None,
-            },
-        }
-    }
-}
-
-const DAEMON_TELEMETRY_SLOTS: usize = 256;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum DaemonTelemetrySlot {
-    Static(Key),
-    MediaArt(String),
-    StaleSearch(u64),
-    StaleStreaming(String),
-}
-
-impl OwnerEvent for DaemonEvent {
-    type CoalesceKey = DaemonTelemetrySlot;
-
-    fn policy(&self) -> EventPolicy {
-        Self::policy(self)
-    }
-
-    fn kind(&self) -> &'static str {
-        Self::kind(self)
-    }
-
-    fn coalesce_key(&self) -> Option<Self::CoalesceKey> {
-        self.telemetry_slot()
-    }
-
-    fn wake_event() -> Self {
-        Self::TelemetryWake
-    }
-}
-
-#[derive(Clone)]
-struct DaemonEventSender {
-    ingress: OwnerEventIngress<DaemonEvent>,
-}
-
-impl DaemonEventSender {
-    fn new(tx: mpsc::Sender<DaemonEvent>) -> Self {
-        Self {
-            ingress: OwnerEventIngress::new("daemon", tx, DAEMON_TELEMETRY_SLOTS),
-        }
-    }
-
-    fn drain_coalesced(&self) -> Vec<DaemonEvent> {
-        self.ingress.drain_coalesced()
-    }
-
-    fn close_admission(&self) -> bool {
-        self.ingress.close_admission()
-    }
-
-    fn deferred_is_idle(&self) -> bool {
-        self.ingress.deferred_is_idle()
-    }
-
-    fn emit_terminal_owned(
-        &self,
-        event: DaemonEvent,
-    ) -> Result<
-        crate::util::delivery::DeliveryReceipt,
-        (crate::util::delivery::DeliveryError, Box<DaemonEvent>),
-    > {
-        self.ingress.emit_must_deliver_owned(event)
-    }
-
-    #[cfg(test)]
-    fn with_deferred_capacity(tx: mpsc::Sender<DaemonEvent>, capacity: usize) -> Self {
-        Self {
-            ingress: OwnerEventIngress::with_deferred_capacity(
-                "daemon",
-                tx,
-                DAEMON_TELEMETRY_SLOTS,
-                capacity,
-            ),
-        }
-    }
-}
-
-fn emit_daemon_event(tx: &DaemonEventSender, event: DaemonEvent) -> DeliveryResult {
-    tx.ingress.emit(event)
-}
-
-#[cfg(test)]
-fn emit_daemon_callback_result(tx: &DaemonEventSender, event: DaemonEvent) -> DeliveryResult {
-    tx.ingress.emit_callback_blocking(event)
-}
-
-#[cfg(any(windows, test))]
-fn emit_daemon_callback_result_until(
-    tx: &DaemonEventSender,
-    event: DaemonEvent,
-    cancellation: &crate::util::delivery::CallbackCancellation,
-) -> DeliveryResult {
-    tx.ingress.emit_callback_blocking_until(event, cancellation)
-}
-
-fn record_daemon_event(tx: &DaemonEventSender, event: DaemonEvent) {
-    if let Err(error) = tx.ingress.emit_callback_blocking(event) {
-        tracing::debug!(%error, "daemon event sink rejected event");
-    }
-}
-
 /// Poll shutdown before an owner handler on every wake, and discard a result if the latch won
 /// immediately after the handler completed. Callers must still check the latch before applying
 /// synchronous follow-up effects because shutdown can arrive between any two owner operations.
@@ -544,9 +268,19 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let (mut remote_guard, session_hub) = server.start(move |event| {
         emit_daemon_event(&remote_event_tx, DaemonEvent::Remote(event)).is_ok()
     });
-    // The v8 publisher runs on this loop (the owner lane), next to the media/scrobble
-    // post-event observers below.
     let mut publisher = crate::remote::publish::Publisher::new(session_hub);
+    let download_runtime = engine.download_runtime();
+    let mut downloads_host = downloads_host::DownloadsHost::spawn(
+        event_tx.clone(),
+        download_runtime.dir,
+        download_runtime.cookies_file,
+        download_runtime.max_concurrent,
+    );
+    publisher.publish_downloads(downloads_host.models());
+    let mut transfer_host = transfer_host::TransferHost::spawn(event_tx.clone());
+    transfer_host.publish(&mut publisher);
+    let mut ai_host = ai_host::AiHost::new(event_tx.clone());
+    ai_host.publish(&engine, &mut publisher);
 
     let shutdown = crate::player::lifetime::ShutdownLatch::new();
     let signal_event_tx = event_tx.clone();
@@ -598,6 +332,14 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
         record_daemon_event(&scrobble_event_tx, DaemonEvent::Scrobble(event));
     });
+    let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
+    let mut published_playlists_rev = None;
+    let mut published_library_invalidations = engine.library_invalidations();
+    let mut published_why_gem_rev = None;
+    let mut published_accounts_rev = None;
+    // Advances only on an accepted reconfigure, so a Busy drop retries next turn — a
+    // user who turned scrobbling OFF must never be left with a live actor still on.
+    let mut configured_accounts_rev = engine.accounts_rev();
 
     if !shutdown.is_triggered() {
         let startup_snapshot = engine.media_snapshot();
@@ -684,7 +426,38 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             pending_events.extend(event_tx.drain_coalesced());
             continue;
         }
+        let Some(event) = downloads_host.intercept(event, &engine, &mut publisher) else {
+            continue;
+        };
+        let Some(event) = accounts_host::intercept(event, &scrobble) else {
+            continue;
+        };
+        let Some(event) = transfer_host.intercept(event, &mut engine, &mut publisher) else {
+            continue;
+        };
         let (observer_plan, media_position_turn, media_before) = event.observer_context(&engine);
+        // AI-triggered track loads (PlayTracks/PlayPlaylist) await network + mpv spawn;
+        // shutdown must be able to preempt them like any other owner handler.
+        let Some(intercepted) = await_owner_handler(
+            &shutdown,
+            ai_host.intercept(event, &mut engine, &mut publisher),
+        )
+        .await
+        else {
+            engine.suppress_transport_recovery_for_shutdown();
+            break;
+        };
+        pending_events.extend(dispatch_engine_effects(
+            &api,
+            &event_tx,
+            &shutdown,
+            &mut effect_tasks,
+            &mut gui_search_pending,
+            intercepted.effects,
+        ));
+        let event = intercepted
+            .event
+            .unwrap_or(DaemonEvent::Ai(crate::ai::AiEvent::Thinking(false)));
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
                 RemoteCommand::ExportPersonalData { directory } => {
@@ -907,13 +680,25 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 ));
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
-            DaemonEvent::Scrobble(event) => log_scrobble_event(event),
+            DaemonEvent::Scrobble(event) => {
+                accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
+            }
+            DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result { video_id, lines }) => {
+                lyrics_host.on_result(&mut publisher, video_id, &lines);
+            }
+            DaemonEvent::Download(_) => unreachable!("downloads are intercepted above"),
+            DaemonEvent::Transfer(event) => {
+                transfer_host.on_event(event, &mut engine, &mut publisher);
+            }
+            DaemonEvent::Ai(_) => {}
             DaemonEvent::Signal => {
                 shutdown.trigger();
                 engine.suppress_transport_recovery_for_shutdown();
                 break;
             }
-            DaemonEvent::TelemetryWake => unreachable!("telemetry wake is handled before dispatch"),
+            DaemonEvent::TelemetryWake => {
+                unreachable!("telemetry wake is handled before dispatch")
+            }
         }
         if shutdown.is_triggered() {
             engine.suppress_transport_recovery_for_shutdown();
@@ -972,7 +757,43 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         }
         // Preserve origin's baseline-refresh/event ordering on every dispatched daemon event.
         // The view is borrowed and unchanged topics do not allocate or serialize models.
-        publisher.observe(&engine.core_view());
+        let view = engine.core_view();
+        publisher.observe(&view);
+        lyrics_host.observe(&mut publisher, view.queue.current());
+        let playlists_rev = engine.playlists_rev();
+        if published_playlists_rev != Some(playlists_rev) {
+            publisher.publish_playlists(engine.playlists_models());
+            published_playlists_rev = Some(playlists_rev);
+        }
+        let library_invalidations = engine.library_invalidations();
+        if published_library_invalidations != library_invalidations {
+            publisher.publish_library_invalidated();
+            published_library_invalidations = library_invalidations;
+        }
+        let why_gem_rev = engine.why_gem_rev();
+        if published_why_gem_rev != Some(why_gem_rev) {
+            publisher.publish_why_gem(engine.why_gem_ids());
+            published_why_gem_rev = Some(why_gem_rev);
+        }
+        let accounts_rev = engine.accounts_rev();
+        if published_accounts_rev != Some(accounts_rev) {
+            let models = engine.accounts_models();
+            publisher.publish_accounts(
+                models.lastfm,
+                models.listenbrainz,
+                models.spotify,
+                models.scrobble_local,
+            );
+            published_accounts_rev = Some(accounts_rev);
+        }
+        // Retarget the live scrobble actor after any account mutation, from one place,
+        // with retry: a Busy reconfigure leaves configured_accounts_rev behind so the
+        // next turn tries again.
+        if configured_accounts_rev != accounts_rev
+            && scrobble.reconfigure(engine.scrobble_settings()).is_ok()
+        {
+            configured_accounts_rev = accounts_rev;
+        }
     }
     shutdown.trigger();
     engine.suppress_transport_recovery_for_shutdown();
@@ -1054,6 +875,10 @@ fn route_gui_search_completion(
             &pending.query,
             pending.source,
             groups,
+            crate::remote::publish::RatingStores {
+                library: engine.library(),
+                signals: engine.signals(),
+            },
         )
     {
         return false;
@@ -1219,6 +1044,10 @@ fn daemon_capabilities() -> Vec<String> {
         // v8 sessions with live push (docs/gui/02 §10).
         "events-v8".to_string(),
         PERSONAL_EXPORT_CAPABILITY.to_string(),
+        // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
+        // rating, video, library, playlists, downloads, AI, accounts, transfer,
+        // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.
+        "v8-commands".to_string(),
     ]
 }
 

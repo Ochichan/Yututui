@@ -1,6 +1,6 @@
 <script lang="ts">
   // Settings → Graphics (docs/gui/07 §9): preset gallery, the 34-role color editor, and
-  // the 25-effect animation grid — all live now.
+  // the 40-effect animation grid — all live now.
   //
   // The LOCAL themes section is frontend-owned skins (applied live, persisted). The core
   // theme is wired (settings.theme-editor): the preset gallery renders from the pushed
@@ -44,11 +44,32 @@
   const ANIM_GROUPS = $derived(
     EFFECT_GROUPS.map((group) => ({
       title: t(`settings.graphics.animGroup.${group.id}`),
-      tui: group.id === 'filler',
+      tui: group.id === 'filler' || group.id === 'showpiece',
       effects: group.effects,
     })),
   );
-  const TUI_ONLY = new Set(['rain', 'donut', 'starfield', 'bounce']);
+  // Effects only the terminal renders today (the web port lands consumers incrementally).
+  const TUI_ONLY = new Set([
+    'rain',
+    'donut',
+    'starfield',
+    'bounce',
+    'comets',
+    'snow',
+    'fireflies',
+    'cube',
+    'aquarium',
+    'waves',
+    'fireworks',
+    'life',
+    'pipes',
+    'plasma',
+    'time_glow',
+    'progress_sparkle',
+    'border_chase',
+    'pause_flash',
+    'error_shake',
+  ]);
 </script>
 
 <SettingSection title={t('settings.graphics.localThemes')}>
@@ -247,14 +268,14 @@
   .roles {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 1px;
+    gap: 2px 6px;
     padding: var(--space-2);
   }
   .role-row {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-1) var(--space-2);
+    padding: 6px var(--space-2);
     border: none;
     border-radius: var(--radius-s);
     background: transparent;
@@ -358,7 +379,7 @@
     align-items: center;
     gap: var(--space-2);
     width: 100%;
-    padding: 3px var(--space-2);
+    padding: 4px var(--space-2);
     border: none;
     border-radius: var(--radius-s);
     background: transparent;

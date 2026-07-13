@@ -350,6 +350,8 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
         let style = if app.mode == *mode {
             // A brief accent wash on the tab just switched to (identity when off).
             crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Nav, active)
+        } else if *mode == Mode::Search && app.onboarding.visible() {
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
         } else {
             muted
         };
@@ -454,6 +456,8 @@ fn render_nav_paged(
         );
         let style = if app.mode == *mode {
             crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Nav, active)
+        } else if *mode == Mode::Search && app.onboarding.visible() {
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
         } else {
             muted
         };

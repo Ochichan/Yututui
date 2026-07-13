@@ -26,6 +26,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // A bright comet chasing the outer border (no-op unless its flag is on). Drawn before
+    // the nav strip, so the comet ducks under the nav labels along the top edge.
+    crate::ui::anim::border_chase_overlay(frame, app, area);
 
     // The nav strip rides the top border line itself; `render_nav` overlays only the cells
     // its text covers, so the border keeps drawing on either side of it.

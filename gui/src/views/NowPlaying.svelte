@@ -43,6 +43,10 @@
     const result = await client.cmd('play_video', { video_id: track.video_id });
     if (result.ok) toasts.show('info', t('np.videoRequested'));
   }
+
+  function cycleRating() {
+    playback.cycleRating();
+  }
 </script>
 
 <div class="np">
@@ -89,7 +93,7 @@
             class="tp rate"
             class:up={rating === 'up'}
             class:down={rating === 'down'}
-            onclick={() => playback.cycleRating()}
+            onclick={cycleRating}
             disabled={disabled || !track}
             title={t('np.cycleRating')}
             >{rating === 'up' ? '👍' : rating === 'down' ? '👎' : '–'}</button
@@ -269,7 +273,7 @@
     width: min(560px, 100%);
   }
   .icy {
-    margin: calc(-1 * var(--space-2)) 0 0;
+    margin: 0;
     font-size: 11px;
     color: var(--role-text-subtle);
   }
@@ -318,6 +322,7 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--space-2);
+    margin-top: var(--space-2);
   }
   .chip {
     padding: var(--space-1) var(--space-3);

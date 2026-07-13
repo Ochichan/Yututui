@@ -12,7 +12,7 @@ for continuing that work. Read it before touching anything.
 | Surface                            | How it's wired                                                                                                                                                                                                                                                                                                                            |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `player` / `queue` topic rendering | `playback.svelte.ts` / `queue.svelte.ts` consume `player_snapshot` / `queue_snapshot` pushes (the B0 wire), incl. interpolation with the ported mini-player constants (`lib/time.ts` — do not re-derive)                                                                                                                                  |
-| Transport commands                 | `toggle_pause` `next` `prev` `seek_to` `set_volume` `toggle_shuffle` `cycle_repeat` `streaming` (v7-frozen) + `rate` `queue_play` `queue_remove_many` `queue_clear_upcoming` `play_video` (v8) — every mutation has a correlated acknowledgement, a page-scoped `request_id`, a bounded timeout, and a visible busy/offline/error outcome |
+| Transport commands                 | Exactly the surface `src/remote/proto/command.rs` accepts today: `toggle_pause` `next` `prev` `play` `enqueue` `seek_to` `seek_back` `seek_forward` `set_volume` `vol_up` `vol_down` `toggle_shuffle` `cycle_repeat` `queue_play` `queue_remove` `queue_play_if_revision` `queue_remove_if_revision` `streaming` `run_search` `play_tracks` `enqueue_tracks` `set_setting` `apply` `set_gemini_key` `reset_all_settings` `export_personal_data` `status` `resume_session` `quit` — every mutation has a correlated acknowledgement, a page-scoped `request_id`, a bounded timeout, and a visible busy/offline/error outcome. **Anything not in that enum is a Deferred v8 command (next section), not wired.** |
 | Local themes                       | `lib/theme/local.ts` + `ThemeStore.applyLocal` — 5 GUI-owned skins (incl. Crimson Mono and Ember Wine), applied live, persisted in localStorage                                                                                                                                                                                           |
 | Demo core                          | `lib/dev/democore.ts` — a stateful in-page core for `npm run dev` / browsers: transport, queue ops, rating, auto-advance, lyrics all actually behave                                                                                                                                                                                      |
 
@@ -36,20 +36,64 @@ again because its immediate reply only acknowledges a completion push scoped to 
 session, `page_id`, and ticket. Replaying that acknowledgement after reconnect would point at a
 dead session and leave the replacement page waiting for a result it can never receive.
 
-### 2. Pending — the patch-bay registry
+### 1.5 Deferred v8 commands (registry id `core.v8-commands`)
 
-`gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
-UI is finished but whose wire is not. Current entries (delete each as you wire it):
+The stores and views are finished and speak the final shapes, and the **demo core**
+implements all of them. Server-side (feat/gui-wiring): every variant now EXISTS in
+`src/remote/proto/command.rs` (the gateway no longer answers `bad_command`), and the
+daemon dispatches most of them for real:
 
-`lyrics.live` · `artwork.live`
+- **Live on a daemon owner**: `rate` · `queue_move` · `queue_clear_upcoming` ·
+  `play_video` · `library_play` / `library_enqueue` / `library_remove` /
+  `fetch_library_page` · `playlist_create` / `playlist_delete` / `playlist_play` /
+  `playlist_add_tracks` / `playlist_remove_track` / `fetch_playlist_detail` ·
+  `download` / `delete_download` · `ask_ai` · `fetch_why_gem` (v1 provenance:
+  slot + empty reasons + null confidence; unknown tracks answer null) ·
+  `lastfm_connect` / `listen_brainz_configure` / `account_set` (accounts topic:
+  presence-only snapshots, one-shot auth-url/auth-failed events, secrets never on
+  the wire) · `spotify_connect` / `transfer_list_spotify` / `transfer_start` /
+  `transfer_cancel` (transfer topic; GUI imports land in the app's LOCAL playlist
+  store — create-or-append by name, never the YouTube Music account)
+- **Still `not_supported`**: `queue_remove_many` only (no frontend sender exists;
+  the variant waits for a multi-select remove UI)
+- The standalone TUI owner answers `daemon_required` for the whole set (the GUI
+  surface is daemon-only by design)
 
-(these two are B1 reconciles — the stores already consume the PROVISIONAL demo shapes; they
-can only be _verified/aligned_ against a real core push once B1 lands.)
+The registry entry `core.v8-commands` (capability `v8-commands`) carries the plan. The
+main-screen entry points — rating, 🎬 video, queue drag-reorder / clear-upcoming, and the
+DJ Gem composer — gate through `wip.gate('core.v8-commands')`, so a real core shows the
+WipModal (with the agent brief) instead of a raw error toast; demo mode is always wired
+(the demo core genuinely implements everything). Deeper surfaces (playlists CRUD, accounts
+connect, transfer wizard, hotkey editing, downloads) still surface the plain toast until
+the variants land. Server-side landing order: `RemoteCommand` variants + core dispatch +
+parity tests (lockstep), regenerate ts-rs types, advertise the capability — every gate
+then dissolves without a frontend release.
+
+### 2. Pending — the patch-bay registry (RETIRED)
+
+**The registry is empty and the patch-bay machinery is gone.** `core.v8-commands` was
+the last entry: the daemon now dispatches the full deferred surface and advertises the
+`v8-commands` capability, so the wiring module (`lib/wiring/`), WipModal/WireTag/
+PendingSurface, the `TODO(wire:…)` markers, and `tests/wiring.test.ts` were all retired
+with it. Against a standalone **TUI** owner the deep surfaces answer `daemon_required`,
+which the global mutation-failure toast reports — the GUI is a daemon-owner client by
+design.
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
 `help.keymap`, `library.playlists`, `settings.accounts`, `transfer.wizard`, `ai.whygem`,
-`queue.reorder`, and `i18n.catalog` are now wired — deleted from the registry.)
+`queue.reorder`, `i18n.catalog`, and `lyrics.live` are now wired — deleted from the
+registry. `lyrics.live` rides the real B1 daemon wire: `PushEvent::LyricsSnapshot` +
+`LyricLineModel` (generated types), published by `src/daemon/lyrics_host.rs`, retained
+as the subscribe snapshot in `src/remote/publish.rs`, fetch gated on a live `lyrics`
+subscriber. Daemon-owner only — a standalone TUI owner keeps its own lyrics panel and
+pushes nothing on the topic. `artwork.live` needed **no new PushEvent**: art rides the
+player snapshot (`TrackModel.artwork` ← `CoreView::artwork`, whose arrival re-pushes via
+the fingerprint's `artwork_key`), the shell already serves `ytm://app/art/<key>`, and the
+missing half was only that `MediaSession::publish` gated `request_artwork` behind the
+platform-session gates — it now runs ahead of them, so disabled/not-yet-activated owners
+(headless daemon, paused-at-rest restore) still populate the cache. The `artwork` Topic
+enum slot stays reserved, unused.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -59,14 +103,21 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
 
 ### 3. Provisional — placeholder shapes to reconcile, not extend
 
-- **Lyrics wire shape** `{ kind: 'lyrics_snapshot', lines: [{ ms, text }] }` in
-  `lyrics.svelte.ts` — only the demo core speaks it. Align with the real B1 topic + ts-rs
-  types when they exist.
-- **Keyboard** (wired): the live keymap read model (`stores/keymap.svelte.ts`) drives the
-  dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` + `App.svelte`),
-  Settings→Hotkeys, and the Help overlay from one source. The demo core speaks a PROVISIONAL
-  `keymap` block; the Korean 2-set table + chord format are self-consistent with the demo
-  bindings until the Rust chord-fixture cross-test (05 §8.5) lands.
+- **Lyrics wire shape** (wired, `lyrics.live`): `PushEvent::LyricsSnapshot { video_id,
+  lines: LyricLineModel[] }` — canonical generated types; the daemon publishes it
+  (`src/daemon/lyrics_host.rs`), the demo core speaks the same shape.
+- **Keyboard** (wired, real vocabulary): the live keymap read model (`stores/keymap.svelte.ts`)
+  drives the dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` +
+  `App.svelte`), Settings→Hotkeys, and the Help overlay from one source. The wire is the C6
+  `KeymapSettingsModel`: `wire_bindings()`'s FULL effective map (`"" = unbound`) + the
+  `wire_actions()` catalog — src/keymap.rs snake_case context/action ids and canonical
+  config-format chords (`ctrl+u`, `space`; `displayChord` prettifies for the UI). Alt-modified
+  chords read the physical `e.code` (macOS Option composes layout glyphs into `e.key`), like
+  IME composition. The demo core's seed mirrors `default_bindings()` row-for-row, and mirrors
+  the bind semantics: a
+  shadow conflict answers `{conflict}` display text and does NOT apply. GUI-fixed keys (rail
+  digits 1–5, Esc-close) stay hardcoded in App.svelte, like the TUI's fixed handlers. Still
+  deferred: the Rust chord-fixture cross-test (05 §8.5).
 - **Settings tab values**: General / Playback / DJ Gem now bind the live `settings` read
   model via `stores/settings.svelte.ts` (model + pending overlay + dirty, docs/gui/05 §5.2);
   the demo core speaks the PROVISIONAL `settings_snapshot` + `apply {group,field,value}`
