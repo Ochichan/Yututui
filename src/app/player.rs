@@ -615,6 +615,18 @@ impl App {
                     self.remove_queue_range(self.queue.cursor_pos(), self.queue.cursor_pos())
                 }
             }
+            Action::LyricsDelayEarlier => {
+                if self.adjust_lyrics_delay(LyricsDelayDirection::Earlier, Instant::now()) {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            Action::LyricsDelayLater => {
+                if self.adjust_lyrics_delay(LyricsDelayDirection::Later, Instant::now()) {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             // Toggle the lyrics panel; fetch on first open for the current track.
             Action::ToggleLyrics => {
                 self.lyrics.visible = !self.lyrics.visible;

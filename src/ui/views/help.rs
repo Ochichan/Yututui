@@ -381,6 +381,24 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                     "원하는 위치를 클릭해 그 시점으로 이동합니다.",
                 ),
                 mouse_row(
+                    "Lyric line",
+                    "가사 행",
+                    "Click a visible lyric line to seek to its synced position.",
+                    "보이는 가사 행을 클릭해 해당 싱크 시점으로 이동합니다.",
+                ),
+                mouse_row(
+                    "Lyrics [±]",
+                    "가사 [±]",
+                    "Click the collapsed handle to reopen the lyric-sync controls for 3 seconds.",
+                    "접힌 핸들을 클릭하면 가사 싱크 컨트롤이 3초 동안 다시 펼쳐집니다.",
+                ),
+                mouse_row(
+                    "Lyrics −/+",
+                    "가사 −/+",
+                    "Click − to show lyrics 0.1s earlier or + to show them 0.1s later.",
+                    "−는 가사를 0.1초 앞당기고 +는 0.1초 늦춥니다.",
+                ),
+                mouse_row(
                     "Queue count",
                     "대기열 숫자",
                     "Click N/M to open the queue window.",
@@ -910,6 +928,23 @@ mod tests {
                 .any(|(gesture, what)| gesture == "Ctrl + wheel" && what.contains("Zoom")),
             "mouse cheat-sheet should explain Ctrl+wheel zoom"
         );
+    }
+
+    #[test]
+    fn player_mouse_help_lists_lyric_navigation_and_sync_controls() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let player = mouse_help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Player").then_some(rows))
+            .expect("player mouse group");
+
+        for gesture in ["Lyric line", "Lyrics [±]", "Lyrics −/+"] {
+            assert!(
+                player.iter().any(|(label, _)| label == gesture),
+                "mouse cheat-sheet should list {gesture}"
+            );
+        }
     }
 
     #[test]

@@ -17,6 +17,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MediaKeyCode, ModifierKe
 
 use crate::t;
 
+mod compat;
+
 /// A semantic command, decoupled from the physical key that triggers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -34,6 +36,8 @@ pub enum Action {
     OpenLibrary,
     OpenQueue,
     ToggleLyrics,
+    LyricsDelayEarlier,
+    LyricsDelayLater,
     Download,
     /// Download every song in the current list/playlist at once (deduped), distinct from the
     /// single-track `Download`.
@@ -178,6 +182,18 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "toggle_lyrics",
         "Toggle lyrics",
         "가사 켜기 / 끄기",
+    ),
+    (
+        Action::LyricsDelayEarlier,
+        "lyrics_delay_earlier",
+        "Lyrics earlier",
+        "가사 앞당기기",
+    ),
+    (
+        Action::LyricsDelayLater,
+        "lyrics_delay_later",
+        "Lyrics later",
+        "가사 늦추기",
     ),
     (
         Action::Download,
@@ -932,6 +948,7 @@ impl KeyMap {
             }
             labels.insert((ctx, action), chord);
         }
+        compat::preserve_legacy_lyrics_delay_overrides(overrides, &mut labels);
         // Preserve the old Search-results shortcut as an unlisted compatibility binding:
         // the Player search key also focuses the query box from results. The new advertised
         // bidirectional binding is SearchInput/SearchResults FocusPrev (Shift+Tab).
@@ -1194,6 +1211,8 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenQueue, ch('c')),
         (C::Player, A::QueueRemove, key(KeyCode::Delete)),
         (C::Player, A::ToggleLyrics, ch('L')),
+        (C::Player, A::LyricsDelayEarlier, ch('z')),
+        (C::Player, A::LyricsDelayLater, ch('Z')),
         (C::Player, A::Download, ch('d')),
         (C::Player, A::ToggleShuffle, ch('S')),
         (C::Player, A::CycleRepeat, ch('r')),

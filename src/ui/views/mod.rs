@@ -11,6 +11,7 @@ pub mod mini;
 pub mod now_playing;
 pub mod onboarding;
 pub mod player;
+mod player_lyrics;
 pub mod search;
 pub mod settings;
 pub mod why_ai;

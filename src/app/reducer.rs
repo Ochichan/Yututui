@@ -61,6 +61,13 @@ impl App {
         if self.playback.paused != paused_before {
             self.playback.time_pos_at = Some(Instant::now());
         }
+        // Reconcile after admission and navigation, but before animation diffing so the renderer
+        // and lyric flash observe the same stored row. This is also the first point where a real
+        // resize can synchronously promote Mini back to the full Player surface.
+        self.sync_ui_tier();
+        if self.reconcile_lyrics_surface_at(Instant::now()) {
+            self.dirty = true;
+        }
         // One-shot animation feedback, detected centrally for the same reason as the status
         // TTL above: every input path (key, mouse, remote, DJ Gem) changes the same state, so
         // diffing it here means no call site can forget to trigger the matching effect.
@@ -70,7 +77,6 @@ impl App {
         }
         self.sync_art_overlay_state();
         self.sync_art_geometry();
-        self.sync_ui_tier();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
     }
@@ -106,6 +112,17 @@ impl App {
             Msg::Resize => {
                 // A centered art band moves with the grid height; ratatui's diff can't
                 // repaint parked native-image bytes, so resync with one full clear.
+                if self.native_art_active() {
+                    self.request_native_image_clear();
+                }
+                self.dirty = true;
+            }
+            Msg::TerminalResize { width, height } => {
+                self.bridges
+                    .ui_tier
+                    .set(crate::ui::layout::tier(ratatui::layout::Rect::new(
+                        0, 0, width, height,
+                    )));
                 if self.native_art_active() {
                     self.request_native_image_clear();
                 }
@@ -176,7 +193,15 @@ impl App {
                         self.dirty = true;
                     }
                 }
+                if self.expire_lyrics_delay_osd(Instant::now()) {
+                    self.dirty = true;
+                }
                 return self.tick_search_onboarding(Instant::now());
+            }
+            Msg::LyricsTick => {
+                if self.lyrics_tick_at(Instant::now()) {
+                    self.dirty = true;
+                }
             }
             Msg::AnimTick => {
                 // Advance the logical animation phase on every configured tick, but only request
@@ -197,8 +222,9 @@ impl App {
                     // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
                     // reach the interpolation clock, the OS media session, or the seekbar gauge.
                     let t = crate::playback_policy::norm_position(t);
+                    let now = Instant::now();
                     self.playback.time_pos = Some(t);
-                    self.playback.time_pos_at = Some(Instant::now());
+                    self.playback.time_pos_at = Some(now);
                     // Real progress means the current track opened and is playing, so the
                     // auto-skip streak is broken — clear it.
                     if t > 0.0 {
@@ -469,9 +495,13 @@ impl App {
             }
             Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
-                self.lyrics.loading = false;
                 // Ignore stale results for a track we've already skipped past.
                 if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                    self.lyrics.loading = false;
+                    self.lyrics.initial_osd_pending = !lines.is_empty();
+                    if lines.is_empty() {
+                        self.lyrics.delay_osd_until = None;
+                    }
                     self.lyrics.track = Some(TrackLyrics { video_id, lines });
                     self.dirty = true;
                 }

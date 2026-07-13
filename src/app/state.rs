@@ -5,6 +5,7 @@
 //! Behaviour-preserving: the fields are the same, just nested (`app.search.input`).
 
 use super::*;
+use crate::lyrics::LyricDelay;
 
 /// Live audio-processing settings: the active EQ preset and its per-band gains, loudness
 /// normalization, and the seek step. The in-session working copy mpv's filter chain is built
@@ -387,8 +388,7 @@ pub struct RecordingsBrowser {
 /// notify · browse.
 pub const RECORDING_POPUP_ROWS: usize = 7;
 
-/// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
-/// lyrics for the current track.
+/// Lyrics-panel state: fetched lines plus session-only sync controls for the current track.
 #[derive(Default)]
 pub struct Lyrics {
     /// Whether the lyrics panel is shown in the player view.
@@ -397,6 +397,18 @@ pub struct Lyrics {
     pub loading: bool,
     /// Lyrics for the current track, if fetched.
     pub track: Option<TrackLyrics>,
+    /// Session-only timing adjustment. Positive values display lyrics later.
+    pub delay: LyricDelay,
+    /// Video id the timing adjustment belongs to, retained across same-track reloads.
+    pub delay_video_id: Option<String>,
+    /// Current line shared by the lyric renderer and lyric-transition animation.
+    pub active_index: Option<usize>,
+    /// A fresh non-empty payload is waiting for its first visible full-Player frame. Keeping this
+    /// separate from the wall-clock deadline prevents an off-screen load from spending the OSD's
+    /// three-second exposure before the user can see it.
+    pub initial_osd_pending: bool,
+    /// Wall-clock deadline while the expanded delay control is visible.
+    pub delay_osd_until: Option<Instant>,
 }
 
 /// Search-screen state: the query, its results, selection, focus, and in-flight flag.

@@ -499,16 +499,10 @@ impl App {
         }
 
         // The synced-lyric line advanced → flash the newly-current line. Only tracked while
-        // the panel is visible on the player, so the index scan never runs anywhere else.
+        // the panel is visible on the player. Rendering and flash share the same index written by
+        // the 100 ms lyric clock, so interpolation cannot make their frames disagree.
         if matches!(self.mode, Mode::Player) && self.lyrics.visible && on(a.lyrics) {
-            let idx = self
-                .lyrics
-                .track
-                .as_ref()
-                .filter(|t| !t.lines.is_empty())
-                .and_then(|t| {
-                    crate::lyrics::current_index(&t.lines, self.playback.time_pos.unwrap_or(0.0))
-                });
+            let idx = self.current_loaded_lyrics().and(self.lyrics.active_index);
             if idx != self.fx.last_lyric_index {
                 self.fx.last_lyric_index = idx;
                 if idx.is_some() {

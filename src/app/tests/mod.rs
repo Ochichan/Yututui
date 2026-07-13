@@ -28,6 +28,7 @@ mod local_import_rows_cache;
 #[cfg(test)]
 mod local_rows_cache;
 mod lyrics_art_download;
+mod lyrics_sync_controls;
 mod mini_tier;
 mod mouse_player;
 mod multi_select;

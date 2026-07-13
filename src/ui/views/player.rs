@@ -11,7 +11,6 @@ use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, MouseTarget, RadioModeConfirm, ScrollSurface};
-use crate::lyrics;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -318,9 +317,9 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
                         width: area.width,
                         height: lyrics_bottom.saturating_sub(lyrics_y),
                     };
-                    render_lyrics(frame, app, lyrics_area);
+                    super::player_lyrics::render(frame, app, lyrics_area);
                 }
-                None => render_lyrics(frame, app, area),
+                None => super::player_lyrics::render(frame, app, area),
             }
         }
         // Art only: medium size, capped to ~55% of the filler height. Top mode anchors it
@@ -371,7 +370,7 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
                 crate::ui::anim::render_canvas(frame, app, zone);
             }
         }
-        (false, true) => render_lyrics(frame, app, area),
+        (false, true) => super::player_lyrics::render(frame, app, area),
         // No art, no lyrics: the whole filler is blank — the maximum canvas. With every animation
         // off this stays empty (drawing nothing), exactly as before.
         (false, false) => crate::ui::anim::render_canvas(frame, app, area),
@@ -502,9 +501,9 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
                 width: area.width,
                 height: area.bottom().saturating_sub(lyrics_y),
             };
-            render_lyrics(frame, app, lyrics_area);
+            super::player_lyrics::render(frame, app, lyrics_area);
         }
-        None if app.lyrics.visible => render_lyrics(frame, app, area),
+        None if app.lyrics.visible => super::player_lyrics::render(frame, app, area),
         // Too small for the set piece and no lyrics: the whole filler is canvas, like
         // the music-mode no-art arm.
         None => crate::ui::anim::render_canvas(frame, app, area),
@@ -714,76 +713,6 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
         );
     }
     Some(rect)
-}
-
-/// The synced-lyrics panel: a window of lines centered on the current one, which is
-/// highlighted. Auto-scrolls as `time-pos` advances.
-fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
-    let centered = |s: &str, style: Style| {
-        Line::from(s.to_owned())
-            .style(style)
-            .alignment(Alignment::Center)
-    };
-    let dim = app.theme.style(R::LyricsDim);
-
-    let lines = match &app.lyrics.track {
-        Some(t) if !t.lines.is_empty() => &t.lines,
-        _ => {
-            let base = if app.lyrics.loading {
-                t!("Searching lyrics", "가사 검색 중")
-            } else if app.lyrics.track.is_some() {
-                t!("No synced lyrics found.", "동기화된 가사가 없어요.")
-            } else {
-                t!("Fetching lyrics", "가사 가져오는 중")
-            };
-            // In-flight messages carry animated dots when the activity flag is on; the
-            // static ellipsis otherwise (and always for the terminal "not found" state).
-            let msg = if app.lyrics.track.is_some() && !app.lyrics.loading {
-                base.to_owned()
-            } else if let Some(dots) = crate::ui::anim::activity_dots(app) {
-                format!("{base}{dots}")
-            } else {
-                format!("{base}…")
-            };
-            frame.render_widget(Paragraph::new(centered(&msg, dim)), area);
-            return;
-        }
-    };
-
-    let height = area.height as usize;
-    if height == 0 {
-        return;
-    }
-    let pos = app.playback.time_pos.unwrap_or(0.0);
-    let cur = lyrics::current_index(lines, pos);
-    // Keep the current line vertically centered.
-    let start = cur.unwrap_or(0).saturating_sub(height / 2);
-
-    // With the lyrics animation on, the current line breathes toward the accent (flashing as
-    // it first becomes current) and far lines fade slightly with distance; identity when off.
-    let current_style = crate::ui::anim::lyrics_current_style(
-        app,
-        app.theme
-            .style(R::LyricsCurrent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let rendered: Vec<Line> = lines
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(height)
-        .map(|(i, l)| {
-            let style = if Some(i) == cur {
-                current_style
-            } else {
-                // No current line yet (intro silence) → no distance fade, plain dim.
-                let distance = cur.map_or(0, |c| c.abs_diff(i));
-                crate::ui::anim::lyrics_dim_style(app, dim, distance)
-            };
-            centered(&l.text, style)
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(rendered), area);
 }
 
 /// A modal confirmation for entering/leaving dedicated Radio mode. It intentionally mirrors the

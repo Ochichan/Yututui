@@ -73,6 +73,16 @@ impl App {
         }
     }
 
+    /// Apply the backend's actual logical grid tier before drawing. Text zoom can cross the Mini
+    /// boundary without a terminal resize event, so waiting for the render bridge's next reducer
+    /// turn would show one stale paused-lyric frame and start a pending OSD late.
+    pub(crate) fn prepare_ui_tier_for_render(&mut self, tier: crate::ui::layout::UiTier) {
+        if self.bridges.ui_tier.replace(tier) != tier {
+            let commands = self.update(Msg::Noop);
+            debug_assert!(commands.is_empty());
+        }
+    }
+
     /// Collapse or expand the docked control box on non-Player screens (Bottom bar mode
     /// only — in the Top layout there is nothing to collapse, and the Player screen always
     /// shows its controls). Shared by the `B` shortcut and the ▲/▼ footer button. Persists

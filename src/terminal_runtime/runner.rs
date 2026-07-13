@@ -194,6 +194,12 @@ fn ime_scrub_interval() -> tokio::time::Interval {
     interval
 }
 
+fn lyrics_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval
+}
+
 /// Take only an immediately-adjacent time/cache pair. Both messages still pass through
 /// `App::update` in their original order; sharing the post-update draw/observer work is safe while
 /// skipping over any intervening message would not be.
@@ -259,7 +265,9 @@ impl ObserverPlan {
         };
         if progress(first) && paired.is_none_or(progress) {
             Self::PROGRESS
-        } else if paired.is_none() && matches!(first, Msg::AnimTick | Msg::StatusTick) {
+        } else if paired.is_none()
+            && matches!(first, Msg::AnimTick | Msg::StatusTick | Msg::LyricsTick)
+        {
             Self::INERT
         } else {
             Self::PROJECTED
@@ -272,6 +280,9 @@ fn draw_app_frame(
     app: &mut App,
     perf: &mut PerfStats,
 ) -> std::io::Result<bool> {
+    let size = terminal.size()?;
+    let tier = crate::ui::layout::tier(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+    app.prepare_ui_tier_for_render(tier);
     let start = perf.enabled.then(Instant::now);
     let clear_before = app.take_clear_before_draw();
     let synchronized = clear_before || app.synchronized_draw_active();
@@ -1080,10 +1091,11 @@ pub async fn run(
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
     let mut ime_scrub = ime_scrub_interval();
-    // Only polled while a transient status is covering the song title; lets the reducer
-    // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
+    // Polled only while transient status or the lyric-delay OSD has a deadline; lets the reducer
+    // restore the title and collapse the control after their respective TTLs. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut lyrics_tick = lyrics_interval();
 
     // 1 Hz while a radio recording is in progress; parked otherwise (like the other guarded
     // ticks). Drives the max-duration force-split.
@@ -1179,7 +1191,7 @@ pub async fn run(
                     // while the UI is scaled.
                     Some(Ok(ev)) => {
                         let (cs, rs) = zoom.mouse_scale();
-                        match input.translate(ev, cs, rs) {
+                        match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
@@ -1277,7 +1289,8 @@ pub async fn run(
                     perf.maybe_log(&app);
                     continue;
                 },
-                _ = status_tick.tick(), if app.status_visible() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
                 _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
                 _ = scrobble_retry_tick.tick(), if handles.scrobble_retry_needed() => {
