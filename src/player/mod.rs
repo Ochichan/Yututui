@@ -38,7 +38,7 @@ use crate::util::process_guard::ChildTreeGuard;
 /// Accuracy/latency contract for an absolute seek.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SeekPrecision {
-    /// User-facing scrub/jump: land at the nearest keyframe for low restart latency.
+    /// User-facing scrub/jump intent; the wire stays exact until fast-seek evidence passes.
     InteractiveFast,
     /// Restoration/recovery: preserve the requested position exactly.
     Exact,
