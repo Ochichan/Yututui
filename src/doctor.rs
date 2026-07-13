@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_800;
+
 #[path = "doctor/directory_probe.rs"]
 mod directory_probe;
 #[cfg(test)]
@@ -119,13 +121,18 @@ fn run_terminal_json() -> i32 {
     // No config load, cookie read, playback init, mpv spawn, terminal raw mode, or writes.
     let term = std::env::var("TERM").ok();
     let term_program = std::env::var("TERM_PROGRAM").ok();
+    let konsole_version = std::env::var("KONSOLE_VERSION").ok();
     let wt_session = std::env::var_os("WT_SESSION").is_some();
     let image_protocol_override = std::env::var("YTM_TUI_IMAGE_PROTOCOL").ok();
     let image_protocol_override_supported = image_protocol_override
         .as_deref()
         .map(image_protocol_override_supported);
-    let image_protocol =
-        terminal_image_protocol(term.as_deref(), term_program.as_deref(), wt_session);
+    let image_protocol = terminal_image_protocol(
+        term.as_deref(),
+        term_program.as_deref(),
+        wt_session,
+        konsole_version.as_deref(),
+    );
     let native_image_hint =
         terminal_native_image_hint(term.as_deref(), term_program.as_deref(), wt_session);
     let image_protocol_override_suggestions =
@@ -591,10 +598,7 @@ fn terminal_image_override_suggestions(
         ];
     }
     if env_nonempty("KONSOLE_VERSION") || term.contains("konsole") {
-        return vec![
-            "YTM_TUI_IMAGE_PROTOCOL=kitty",
-            "YTM_TUI_IMAGE_PROTOCOL=sixel",
-        ];
+        return vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"];
     }
     if wt_session || term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
         return vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"];
@@ -613,6 +617,7 @@ fn terminal_image_protocol(
     term: Option<&str>,
     term_program: Option<&str>,
     wt_session: bool,
+    konsole_version: Option<&str>,
 ) -> &'static str {
     let term = term.unwrap_or_default().to_ascii_lowercase();
     let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
@@ -626,8 +631,16 @@ fn terminal_image_protocol(
         "sixel_versioned"
     } else if term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
         "sixel"
-    } else if term.contains("konsole") {
-        "kitty_or_sixel"
+    } else if term.contains("konsole") || konsole_version.is_some_and(|version| !version.is_empty())
+    {
+        if konsole_version
+            .and_then(|version| version.trim().parse::<u32>().ok())
+            .is_some_and(|version| version >= KONSOLE_SIXEL_TUI_MIN_VERSION)
+        {
+            "sixel_versioned"
+        } else {
+            "halfblocks"
+        }
     } else if term_program.contains("ghostty") || term.contains("ghostty") {
         "kitty"
     } else if term.contains("linux") {
@@ -1250,19 +1263,19 @@ mod tests {
     fn terminal_doctor_detects_common_protocol_hints_without_probing() {
         with_var("YTM_TUI_TEXT_SIZING", None, || {
             assert_eq!(
-                terminal_image_protocol(Some("xterm-kitty"), None, false),
+                terminal_image_protocol(Some("xterm-kitty"), None, false, None),
                 "kitty"
             );
             assert_eq!(
-                terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false),
+                terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false, None),
                 "iterm2_or_kitty_or_sixel"
             );
             assert_eq!(
-                terminal_image_protocol(Some("xterm-256color"), Some("iTerm.app"), false),
+                terminal_image_protocol(Some("xterm-256color"), Some("iTerm.app"), false, None),
                 "iterm2"
             );
             assert_eq!(
-                terminal_image_protocol(Some("xterm-256color"), None, true),
+                terminal_image_protocol(Some("xterm-256color"), None, true, None),
                 "sixel_versioned"
             );
             assert_eq!(
@@ -1279,25 +1292,40 @@ mod tests {
     #[test]
     fn terminal_doctor_covers_protocol_keyboard_and_zoom_edges() {
         with_var("YTM_TUI_TEXT_SIZING", None, || {
-            assert_eq!(terminal_image_protocol(Some("foot"), None, false), "sixel");
             assert_eq!(
-                terminal_image_protocol(Some("mintty"), None, false),
+                terminal_image_protocol(Some("foot"), None, false, None),
                 "sixel"
             );
             assert_eq!(
-                terminal_image_protocol(Some("konsole"), None, false),
-                "kitty_or_sixel"
+                terminal_image_protocol(Some("mintty"), None, false, None),
+                "sixel"
             );
             assert_eq!(
-                terminal_image_protocol(Some("ghostty"), Some("ignored"), false),
+                terminal_image_protocol(Some("konsole"), None, false, None),
+                "halfblocks"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), None, false, Some("invalid")),
+                "halfblocks"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260799")),
+                "halfblocks"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260800")),
+                "sixel_versioned"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("ghostty"), Some("ignored"), false, None),
                 "kitty"
             );
             assert_eq!(
-                terminal_image_protocol(Some("linux"), None, false),
+                terminal_image_protocol(Some("linux"), None, false, None),
                 "halfblocks_or_retro"
             );
             assert_eq!(
-                terminal_image_protocol(Some("dumb"), None, false),
+                terminal_image_protocol(Some("dumb"), None, false, None),
                 "unknown"
             );
             assert_eq!(
@@ -1367,6 +1395,14 @@ mod tests {
             assert_eq!(
                 terminal_image_override_suggestions(Some("ghostty"), None, false),
                 vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"]
+            );
+        });
+
+        with_terminal_env(&[("KONSOLE_VERSION", Some("260800"))], || {
+            assert!(terminal_native_image_hint(None, None, false));
+            assert_eq!(
+                terminal_image_override_suggestions(None, None, false),
+                vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"]
             );
         });
 

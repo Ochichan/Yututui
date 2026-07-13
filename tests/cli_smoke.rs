@@ -229,6 +229,7 @@ fn top_level_help_and_version_exit_before_tui_startup() {
     let help_out = stdout(&help);
     assert!(help_out.contains("Usage: ytt [OPTIONS]"));
     assert!(help_out.contains("ytt doctor terminal --json"));
+    assert!(help_out.contains("--new-instance"));
 
     let version = run(&["--version"]);
     assert!(version.status.success(), "stderr: {}", stderr(&version));
@@ -644,6 +645,30 @@ fn doctor_terminal_json_reports_capabilities_without_config_or_runtime_startup()
             .and_then(|v| v.as_bool()),
         Some(true)
     );
+
+    let run_konsole_doctor = |version: &str| {
+        Command::new(env!("CARGO_BIN_EXE_ytt"))
+            .args(["doctor", "terminal", "--json"])
+            .env("TERM", "xterm-256color")
+            .env("KONSOLE_VERSION", version)
+            .env_remove("TERM_PROGRAM")
+            .env_remove("WEZTERM_EXECUTABLE")
+            .env_remove("KITTY_WINDOW_ID")
+            .env_remove("WT_SESSION")
+            .output()
+            .expect("Konsole doctor terminal JSON")
+    };
+    for (version, expected) in [("260799", "halfblocks"), ("260800", "sixel_versioned")] {
+        let output = run_konsole_doctor(version);
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("Konsole doctor terminal JSON");
+        assert_eq!(
+            json.get("image_protocol").and_then(|value| value.as_str()),
+            Some(expected),
+            "KONSOLE_VERSION={version}"
+        );
+    }
 }
 
 #[test]
