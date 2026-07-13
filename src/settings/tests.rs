@@ -251,8 +251,8 @@ fn playback_tab_groups_now_playing_and_eq() {
     crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Playback.fields();
     // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-    // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio backend, then EQ.
-    assert_eq!(f.len(), 9 + 5 + 1 + eq::BANDS + 1);
+    // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio controls and EQ.
+    assert_eq!(f.len(), 9 + 4 + 1 + eq::BANDS + 1);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
     assert_eq!(f[2], Field::MouseWheelVolume);
@@ -263,10 +263,10 @@ fn playback_tab_groups_now_playing_and_eq() {
     assert_eq!(f[7], Field::AlbumArtQuality);
     assert_eq!(f[8], Field::RadioRecording);
     assert_eq!(f[9], Field::AudioBackend);
-    assert_eq!(f[10], Field::AudioMpvOutput);
-    assert_eq!(f[13], Field::AudioMpvCacheBack);
-    assert_eq!(f[14], Field::EqPreset);
-    assert_eq!(f[14 + eq::BANDS + 1], Field::Normalize);
+    assert_eq!(f[10], Field::AudioOutput);
+    assert_eq!(f[12], Field::AudioMpvCacheBack);
+    assert_eq!(f[13], Field::EqPreset);
+    assert_eq!(f[13 + eq::BANDS + 1], Field::Normalize);
     assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
     assert_eq!(Field::AlbumArtQuality.kind(), FieldKind::Select);
     assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");

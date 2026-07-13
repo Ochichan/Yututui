@@ -819,7 +819,7 @@ impl DaemonEngine {
             },
             ("audio", "mpv_device") => match as_optional_str() {
                 Some(value) => {
-                    self.config.audio.mpv.device = value;
+                    self.config.audio.mpv.set_manual_device(value);
                     self.save_config("daemon mpv device setting");
                     ok(self)
                 }
@@ -1390,6 +1390,12 @@ impl DaemonEngine {
             PlayerEvent::CacheTime(_) => Vec::new(),
             // Recording is a TUI-only feature; the headless engine ignores container hints.
             PlayerEvent::AudioCodec(_) | PlayerEvent::FileFormat(_) => Vec::new(),
+            // Audio-output discovery and picker acknowledgements belong to the interactive TUI.
+            PlayerEvent::AudioDeviceList(_)
+            | PlayerEvent::AudioDeviceRefreshFailed(_)
+            | PlayerEvent::AudioDeviceChanged(_)
+            | PlayerEvent::CurrentAudioOutput(_)
+            | PlayerEvent::AudioDeviceSelectionResult { .. } => Vec::new(),
             PlayerEvent::Eof => {
                 self.record_outgoing(true);
                 self.advance_after_end().await

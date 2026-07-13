@@ -66,6 +66,9 @@ pub use state::*;
 
 mod ai_reducer;
 pub use ai_reducer::AiMsg;
+mod audio_output;
+mod audio_output_picker;
+pub use audio_output_picker::*;
 mod artwork;
 mod clipboard;
 mod context_menu;
@@ -266,6 +269,8 @@ pub struct App {
     /// the seek step) — the in-session working copy mpv's filter chain is built from, mirrored
     /// from the persisted `config` (see [`AudioEq`]).
     pub audio: AudioEq,
+    /// Hotplug-aware local output inventory and correlated selection state from mpv.
+    pub audio_devices: AudioDeviceRuntime,
     /// Auto-extend the queue with related tracks when it runs low (streaming mode).
     pub autoplay_streaming: bool,
     /// The two mutually-exclusive player status-line dropdowns (EQ preset + streaming mode); both

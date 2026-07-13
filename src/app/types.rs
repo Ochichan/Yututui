@@ -645,6 +645,8 @@ pub enum MouseTarget {
     SettingsSpotifyImportModeMenu,
     /// Pick a Settings Spotify import-mode dropdown option.
     SettingsSpotifyImportModeSelect(crate::config::SpotifyImportMode),
+    /// A row in the Settings audio-output picker.
+    AudioOutputRow(usize),
     /// A list row, by absolute item index (interpreted per the active screen). Single-click
     /// selects; double-click plays.
     ListRow(usize),

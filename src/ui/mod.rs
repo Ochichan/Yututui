@@ -136,6 +136,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.overlays.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);
     }
+    if app.overlays.audio_output_picker.is_some() {
+        views::audio_output_picker::render(frame, app, area);
+    }
     // The radio-recording settings popup is modal over the Playback tab.
     if app.overlays.recording_settings.is_some() {
         views::settings::render_recording_settings(frame, app, area);

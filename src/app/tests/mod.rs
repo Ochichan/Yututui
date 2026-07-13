@@ -13,6 +13,8 @@ mod ai;
 mod animations;
 mod art_overlay;
 mod beginner_settings;
+mod audio_output;
+mod audio_output_picker;
 mod context_menu;
 mod docked_bar;
 mod downloads;

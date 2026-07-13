@@ -126,6 +126,9 @@ impl App {
         self.interaction.context_menu_click = None;
         self.interaction.color_picker_click = None;
         self.interaction.pending_double_click_selection = None;
+        if let Some(cmds) = self.audio_output_picker_mouse_click(col, row) {
+            return cmds;
+        }
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
         if self.overlays.context_menu.is_some() {
@@ -948,12 +951,17 @@ impl App {
             | MouseTarget::RecordingChange { .. }
             | MouseTarget::RecordingSlider(_)
             | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
+            MouseTarget::AudioOutputRow(_) => Vec::new(),
         }
     }
 
+    /// Double-click activates a list row; other targets retain single-click behavior.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         if self.beginner_coach_hit(col, row) {
             return Vec::new();
+        }
+        if self.overlays.audio_output_picker.is_some() {
+            return self.audio_output_picker_mouse_double_click(col, row);
         }
         // The first press may have activated a menu command that opened a confirmation/picker.
         // Consume its paired double-click press before that new modal can see and act on it.
@@ -1263,6 +1271,9 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
+        if self.audio_output_picker_scroll(up, MOUSE_SCROLL_LINES) {
+            return Vec::new();
+        }
         if self.overlays.context_menu.is_some() {
             self.move_context_menu_selection(up);
             return Vec::new();

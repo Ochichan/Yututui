@@ -3,6 +3,7 @@ all_count_cache
 anim
 art
 audio
+audio_devices
 authenticated
 autoplay_streaming
 bridges

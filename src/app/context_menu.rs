@@ -181,6 +181,7 @@ impl App {
             || self.overlays.key_conflict.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.overlays.spotify_picker.is_some()
+            || self.overlays.audio_output_picker.is_some()
             || self.overlays.recordings_browser.is_some()
             || self.overlays.recording_settings.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()

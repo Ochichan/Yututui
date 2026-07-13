@@ -216,12 +216,11 @@ pub fn spawn(
 }
 
 pub(crate) fn structured_audio_args(audio: &MpvAudioRuntimeConfig) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(output) = &audio.output {
-        args.push(format!("--ao={output}"));
-    }
+    let mut args = vec!["--audio-fallback-to-null=yes".to_owned()];
     if let Some(device) = &audio.device {
         args.push(format!("--audio-device={device}"));
+    } else if let Some(output) = &audio.output {
+        args.push(format!("--ao={output}"));
     }
     args.push(format!("--demuxer-max-bytes={}", audio.cache_forward));
     args.push(format!("--demuxer-max-back-bytes={}", audio.cache_back));
@@ -293,10 +292,10 @@ mod tests {
     }
 
     #[test]
-    fn structured_audio_args_include_output_device_and_cache() {
+    fn structured_audio_args_prefer_device_and_enable_safe_fallback() {
         let audio = MpvAudioRuntimeConfig {
             output: Some("pipewire".to_owned()),
-            device: Some("auto".to_owned()),
+            device: Some("pipewire/42".to_owned()),
             cache_forward: "64MiB".to_owned(),
             cache_back: "16MiB".to_owned(),
             extra_args: vec!["--ao=null".to_owned()],
@@ -305,10 +304,31 @@ mod tests {
         assert_eq!(
             structured_audio_args(&audio),
             [
-                "--ao=pipewire",
-                "--audio-device=auto",
+                "--audio-fallback-to-null=yes",
+                "--audio-device=pipewire/42",
                 "--demuxer-max-bytes=64MiB",
                 "--demuxer-max-back-bytes=16MiB",
+            ]
+        );
+    }
+
+    #[test]
+    fn structured_audio_args_include_output_only_without_device() {
+        let audio = MpvAudioRuntimeConfig {
+            output: Some("coreaudio".to_owned()),
+            device: None,
+            cache_forward: "32MiB".to_owned(),
+            cache_back: "8MiB".to_owned(),
+            extra_args: Vec::new(),
+        };
+
+        assert_eq!(
+            structured_audio_args(&audio),
+            [
+                "--audio-fallback-to-null=yes",
+                "--ao=coreaudio",
+                "--demuxer-max-bytes=32MiB",
+                "--demuxer-max-back-bytes=8MiB",
             ]
         );
     }

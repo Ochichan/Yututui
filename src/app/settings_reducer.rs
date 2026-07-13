@@ -920,6 +920,7 @@ impl App {
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
             | Field::RadioRecording
+            | Field::AudioOutput
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => Vec::new(),
@@ -971,6 +972,7 @@ impl App {
                 Vec::new()
             }
             FieldKind::Button => match field {
+                Field::AudioOutput => self.open_audio_output_picker(),
                 Field::ExportPersonalData => self.start_personal_export_to_downloads(),
                 Field::ResetKeybindings => {
                     self.settings_request_confirm(SettingsConfirm::ResetKeybindings);
@@ -1803,6 +1805,7 @@ impl App {
         self.overlays.recording_settings = None;
         self.overlays.recordings_browser = None;
         self.overlays.spotify_picker = None;
+        self.overlays.audio_output_picker = None;
         self.settings = None;
         self.mode = Mode::Player;
         self.dirty = true;

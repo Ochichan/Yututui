@@ -21,6 +21,10 @@ const fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AudioBackend {
     #[default]
@@ -97,6 +101,11 @@ pub struct MpvAudioConfig {
     pub output: Option<String>,
     /// mpv audio device (`--audio-device`). `None`, blank, and `auto` leave mpv on its default.
     pub device: Option<String>,
+    /// Private origin marker for device IDs selected from mpv's detected-device picker.
+    /// Missing in older configs means the ID was entered manually and must not be subject to
+    /// automatic missing-device fallback policy.
+    #[serde(rename = "_device_detected", default, skip_serializing_if = "is_false")]
+    pub(crate) device_detected: bool,
     /// Forward demuxer cache size (`--demuxer-max-bytes`). Takes effect on the next player launch.
     pub cache_forward: String,
     /// Backward demuxer cache size (`--demuxer-max-back-bytes`). Takes effect on the next player launch.
@@ -113,6 +122,7 @@ impl Default for MpvAudioConfig {
             cache_defaults_revision: MPV_CACHE_DEFAULTS_REVISION,
             output: None,
             device: None,
+            device_detected: false,
             cache_forward: MPV_CACHE_FORWARD_DEFAULT.to_owned(),
             cache_back: MPV_CACHE_BACK_DEFAULT.to_owned(),
             extra_args: Vec::new(),
@@ -121,6 +131,34 @@ impl Default for MpvAudioConfig {
 }
 
 impl MpvAudioConfig {
+    /// Save a device ID selected from mpv's detected-device list. Device routing owns the output
+    /// choice, so a stale explicit `--ao` must be cleared rather than emitted alongside it.
+    pub(crate) fn set_detected_device(&mut self, device: String) {
+        self.set_picker_device(Some(device), true);
+    }
+
+    /// Save a device ID entered through the picker's advanced manual fallback.
+    pub(crate) fn set_manual_device(&mut self, device: Option<String>) {
+        self.set_picker_device(device, false);
+    }
+
+    /// Restore mpv's automatic system-default routing.
+    pub(crate) fn set_system_default_device(&mut self) {
+        self.set_picker_device(None, false);
+    }
+
+    /// Whether the configured ID came from the detected-device picker. Treat malformed external
+    /// edits (`_device_detected=true` without a concrete ID) as manual/default defensively.
+    pub(crate) fn device_is_detected(&self) -> bool {
+        self.device_detected && normalize_optional(&self.device).is_some()
+    }
+
+    fn set_picker_device(&mut self, device: Option<String>, detected: bool) {
+        self.output = None;
+        self.device = normalize_optional(&device);
+        self.device_detected = detected && self.device.is_some();
+    }
+
     pub(crate) fn set_cache_forward(&mut self, value: Option<String>) {
         self.cache_forward = value.unwrap_or_else(|| MPV_CACHE_FORWARD_DEFAULT.to_owned());
         self.mark_cache_defaults_current();
@@ -343,6 +381,7 @@ mod tests {
         assert_eq!(runtime.backend, AudioBackend::Mpv);
         assert_eq!(runtime.mpv.output, None);
         assert_eq!(runtime.mpv.device, None);
+        assert!(!cfg.mpv.device_is_detected());
         assert_eq!(runtime.mpv.cache_forward, MPV_CACHE_FORWARD_DEFAULT);
         assert_eq!(runtime.mpv.cache_back, MPV_CACHE_BACK_DEFAULT);
     }
@@ -353,6 +392,7 @@ mod tests {
             cache_defaults_revision: MPV_CACHE_DEFAULTS_REVISION,
             output: Some(" auto ".to_owned()),
             device: Some(" pipewire/thing ".to_owned()),
+            device_detected: false,
             cache_forward: "bad".to_owned(),
             cache_back: "64MiB".to_owned(),
             extra_args: vec!["".to_owned(), " --volume=0 ".to_owned()],
@@ -383,6 +423,87 @@ mod tests {
         assert_eq!(fresh.cache_defaults_revision, MPV_CACHE_DEFAULTS_REVISION);
         let json = serde_json::to_value(fresh).unwrap();
         assert!(json.get("_cache_defaults_revision").is_none());
+    }
+
+    #[test]
+    fn legacy_device_ids_default_to_manual_origin() {
+        let cfg: MpvAudioConfig = serde_json::from_value(serde_json::json!({
+            "device": " wasapi/{legacy-guid} ",
+            "cache_forward": "32MiB",
+            "cache_back": "8MiB"
+        }))
+        .unwrap();
+
+        assert!(!cfg.device_is_detected());
+        let encoded = serde_json::to_value(cfg).unwrap();
+        assert!(encoded.get("_device_detected").is_none());
+    }
+
+    #[test]
+    fn picker_device_setters_clear_output_normalize_and_track_origin() {
+        let mut cfg = MpvAudioConfig {
+            output: Some("pipewire".to_owned()),
+            ..MpvAudioConfig::default()
+        };
+
+        cfg.set_detected_device("  pipewire/42  ".to_owned());
+        assert_eq!(cfg.output, None);
+        assert_eq!(cfg.device.as_deref(), Some("pipewire/42"));
+        assert!(cfg.device_is_detected());
+        let detected_json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(detected_json["_device_detected"], true);
+        let detected_round_trip: MpvAudioConfig = serde_json::from_value(detected_json).unwrap();
+        assert!(detected_round_trip.device_is_detected());
+        assert_eq!(detected_round_trip.device.as_deref(), Some("pipewire/42"));
+
+        cfg.output = Some("alsa".to_owned());
+        cfg.set_manual_device(Some("  alsa/custom  ".to_owned()));
+        assert_eq!(cfg.output, None);
+        assert_eq!(cfg.device.as_deref(), Some("alsa/custom"));
+        assert!(!cfg.device_is_detected());
+        assert!(
+            serde_json::to_value(&cfg)
+                .unwrap()
+                .get("_device_detected")
+                .is_none()
+        );
+
+        for value in [None, Some(String::new()), Some(" auto ".to_owned())] {
+            cfg.output = Some("wasapi".to_owned());
+            cfg.set_manual_device(value);
+            assert_eq!(cfg.output, None);
+            assert_eq!(cfg.device, None);
+            assert!(!cfg.device_is_detected());
+        }
+
+        cfg.output = Some("coreaudio".to_owned());
+        cfg.set_detected_device(" auto ".to_owned());
+        assert_eq!(cfg.output, None);
+        assert_eq!(cfg.device, None);
+        assert!(!cfg.device_is_detected());
+
+        cfg.output = Some("coreaudio".to_owned());
+        cfg.set_system_default_device();
+        assert_eq!(cfg.output, None);
+        assert_eq!(cfg.device, None);
+        assert!(!cfg.device_is_detected());
+    }
+
+    #[test]
+    fn malformed_detected_marker_without_concrete_device_is_not_trusted() {
+        for device in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("auto"),
+        ] {
+            let cfg: MpvAudioConfig = serde_json::from_value(serde_json::json!({
+                "device": device,
+                "_device_detected": true
+            }))
+            .unwrap();
+            assert!(!cfg.device_is_detected());
+            assert_eq!(cfg.effective().device, None);
+        }
     }
 
     #[test]
