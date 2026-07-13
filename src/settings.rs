@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT,
-    SpotifyImportMode, default_cookies_file, default_download_dir,
+    AlbumArtQuality, AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT,
+    MPV_CACHE_FORWARD_DEFAULT, SpotifyImportMode, default_cookies_file, default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -136,6 +136,7 @@ impl SettingsTab {
                     Field::MediaControls,
                     Field::AutoContinueVideos,
                     Field::VideoLayout,
+                    Field::AlbumArtQuality,
                     // Radio-only entry (the recording popup); filtered out by
                     // `SettingsState::fields` when not in radio mode. Keep it last in the
                     // "Now Playing" section so the static count below stays partition-correct.
@@ -239,10 +240,10 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                // 8 = the 7 Now-Playing controls + the radio-only recording entry. When not
-                // in radio mode, `SettingsState::sections` decrements this back to 7 in
+                // 9 = the 8 Now-Playing controls + the radio-only recording entry. When not
+                // in radio mode, `SettingsState::sections` decrements this back to 8 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
-                (t!("Now Playing", "현재 재생"), 8),
+                (t!("Now Playing", "현재 재생"), 9),
                 (t!("Audio backend", "오디오 백엔드"), 5),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
@@ -330,6 +331,8 @@ pub enum Field {
     /// Which layout the `v` video overlay opens in by default (Compact / Large / Fullscreen);
     /// a Select field cycled like the others. `Shift+V` still cycles the live window.
     VideoLayout,
+    /// Detail level for remote album art rendered inside the terminal.
+    AlbumArtQuality,
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
     RadioRecording,
@@ -580,6 +583,7 @@ pub struct SettingsDraft {
     pub search: SearchConfig,
     pub mouse: bool,
     pub album_art: bool,
+    pub album_art_quality: AlbumArtQuality,
     /// Where the player control block sits (previewed live while Settings is open).
     pub player_bar_position: crate::config::PlayerBarPosition,
     pub autoplay_on_start: bool,
@@ -736,6 +740,7 @@ impl SettingsDraft {
             Field::LocalMusicRootRecursive => toggle_str(self.local_music_root_recursive),
             Field::Mouse => toggle_str(self.mouse),
             Field::AlbumArt => toggle_str(self.album_art),
+            Field::AlbumArtQuality => self.album_art_quality.label().to_owned(),
             Field::PlayerBarPosition => self.player_bar_position.label().to_owned(),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::EnqueueNext => toggle_str(self.enqueue_next),
@@ -950,6 +955,7 @@ impl SettingsDraft {
         cfg.search = self.search.clone().normalized();
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
+        cfg.album_art_quality = self.album_art_quality;
         cfg.player_bar_position = Some(self.player_bar_position);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.enqueue_next = Some(self.enqueue_next);

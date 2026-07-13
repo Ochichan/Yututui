@@ -117,6 +117,7 @@ impl App {
             search: self.config.effective_search(),
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
+            album_art_quality: self.config.album_art_quality,
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             enqueue_next: self.config.effective_enqueue_next(),
             update_check_enabled: self.config.update_check_enabled,
@@ -680,6 +681,17 @@ impl App {
                 let next = s.draft.video_layout.cycled(dir >= 0);
                 s.draft.video_layout = next;
                 self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
+                Vec::new()
+            }
+            Field::AlbumArtQuality => {
+                let s = self.settings_mut();
+                let next = s.draft.album_art_quality.cycled(dir >= 0);
+                s.draft.album_art_quality = next;
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Album art quality", "앨범 아트 화질"),
+                    next.label()
+                );
                 Vec::new()
             }
             Field::PlayerBarPosition => {
@@ -1829,6 +1841,7 @@ impl App {
         let old_key = self.config.gemini_api_key.clone();
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_romanized_titles = self.config.effective_romanized_titles();
+        let old_album_art_quality = self.config.album_art_quality;
         let old_download_dir = self.config.effective_download_dir();
         let old_local_roots = self.local_scan_roots();
         let normal_theme = if self.radio_dedicated_mode {
@@ -1843,6 +1856,7 @@ impl App {
         };
         let old_zoom = self.zoom.percent();
         d.apply_to(&mut self.config);
+        let album_art_quality_changed = self.config.album_art_quality != old_album_art_quality;
         // Push the resolved DJ Gem reply language to the AI actor. The UI language was set live
         // as the user cycled it; this global isn't, so it's resolved and applied here on save
         // (retro → English, `Auto` → the UI language, else the concrete pick).
@@ -1927,21 +1941,27 @@ impl App {
         cmds.push(Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
             self.config.scrobble_settings(),
         ))));
-        // React to an album-art toggle. Turning it off drops the held image (frees RAM).
-        // Turning it on fetches the current track's art live: the graphics protocol is probed
-        // unconditionally at startup, so the picker is always present and `artwork_source`
-        // resolves as soon as the flag flips — no relaunch needed.
+        // React to an album-art toggle or quality change. Turning it off drops the held image
+        // (frees RAM). Turning it on or selecting a different quality fetches the current track's
+        // art live: the graphics protocol is probed unconditionally at startup, so the picker is
+        // always present and `artwork_source` resolves without a relaunch.
         if !self.config.effective_album_art() {
             self.clear_artwork();
-        } else if let Some(song) = self.queue.current().cloned()
-            && self.art.video_id.as_deref() != Some(song.video_id.as_str())
-            && let Some(source) = self.artwork_source(&song)
-        {
-            self.art.loading = true;
-            cmds.push(Cmd::FetchArtwork {
-                video_id: song.video_id.clone(),
-                source,
-            });
+        } else if let Some(song) = self.queue.current().cloned() {
+            // Local embedded covers keep the legacy 768px cap, so a remote-quality change must
+            // not re-read and decode the same local file.
+            if album_art_quality_changed && song.local_path.is_none() {
+                self.clear_artwork();
+            }
+            if self.art.video_id.as_deref() != Some(song.video_id.as_str())
+                && let Some(source) = self.artwork_source(&song)
+            {
+                self.art.loading = true;
+                cmds.push(Cmd::FetchArtwork {
+                    video_id: song.video_id.clone(),
+                    source,
+                });
+            }
         }
         cmds
     }

@@ -441,6 +441,7 @@ fn reset_settings_state(state: &mut SettingsState) {
     draft.search = defaults.effective_search();
     draft.mouse = defaults.effective_mouse();
     draft.album_art = defaults.effective_album_art();
+    draft.album_art_quality = defaults.album_art_quality;
     draft.autoplay_on_start = defaults.effective_autoplay_on_start();
     draft.enqueue_next = defaults.effective_enqueue_next();
     draft.speed = defaults.effective_speed();

@@ -416,9 +416,15 @@ impl From<RuntimeEvent> for Msg {
                 // (`daemon_required`), so its api actor never produces this.
                 crate::api::ApiEvent::GuiSearchCompleted { .. } => Msg::Noop,
             },
-            RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result { video_id, image }) => {
-                Msg::ArtworkResult { video_id, image }
-            }
+            RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result {
+                video_id,
+                quality,
+                image,
+            }) => Msg::ArtworkResult {
+                video_id,
+                quality,
+                image,
+            },
             RuntimeEvent::ArtworkResized(response) => Msg::ArtworkResized(response),
             RuntimeEvent::Download(event) => match event {
                 crate::download::DownloadEvent::Progress { video_id, percent } => {

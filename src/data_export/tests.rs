@@ -175,6 +175,7 @@ fn projection_is_fail_closed_for_secrets_paths_urls_and_transfer_fields() {
     assert!(snapshot.privacy.contains_listening_history);
     assert_eq!(snapshot.summary.omitted_signal_tracks, 1);
     assert_eq!(snapshot.summary.omitted_signal_events, 1);
+    assert_eq!(snapshot.settings.playback["album_art_quality"], "high");
 }
 
 #[test]

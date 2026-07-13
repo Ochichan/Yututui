@@ -788,6 +788,7 @@ impl App {
             Some(path) => ArtSource::Local(path.clone()),
             None => ArtSource::Remote {
                 video_id: song.youtube_id()?.to_owned(),
+                quality: self.config.album_art_quality,
             },
         })
     }

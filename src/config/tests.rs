@@ -114,7 +114,7 @@ fn recording_config_round_trips_and_forward_migrates() {
 }
 
 #[test]
-fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
+fn drifted_enums_recover_instead_of_wiping_the_whole_config() {
     // A config written by a previous build whose `video_layout` value this build no
     // longer understands. Under the old strict load this reset the ENTIRE file (and
     // overwrote it) — the "settings reset after every install" bug. Now only the drifted
@@ -131,6 +131,7 @@ fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
 
     let mut value = serde_json::to_value(&original).unwrap();
     value["video_layout"] = serde_json::Value::String("hologram".into());
+    value["album_art_quality"] = serde_json::Value::String("future_ultra".into());
 
     // Strict parse fails outright (the behaviour that caused the reset)...
     assert!(
@@ -152,6 +153,11 @@ fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
         recovered.video_layout,
         VideoOverlay::default(),
         "only the drifted field falls back to default",
+    );
+    assert_eq!(
+        recovered.album_art_quality,
+        AlbumArtQuality::High,
+        "the new drifted field also falls back without losing siblings",
     );
 }
 
@@ -182,6 +188,7 @@ fn json_round_trips() {
         download_concurrency: Some(2),
         mouse: Some(false),
         album_art: Some(true),
+        album_art_quality: AlbumArtQuality::Original,
         player_bar_position: Some(PlayerBarPosition::Bottom),
         control_box_collapsed: Some(true),
         eq_preset: EqPreset::BassBoost,
@@ -290,6 +297,7 @@ fn json_round_trips() {
     assert_eq!(back.local.import_path_template(), "{artist}/{title}");
     assert_eq!(back.mouse, Some(false));
     assert_eq!(back.album_art, Some(true));
+    assert_eq!(back.album_art_quality, AlbumArtQuality::Original);
     assert_eq!(back.player_bar_position, Some(PlayerBarPosition::Bottom));
     assert_eq!(back.control_box_collapsed, Some(true));
     assert_eq!(back.eq_preset, EqPreset::BassBoost);
@@ -605,6 +613,32 @@ fn album_art_off_by_default_and_overridable() {
         ..Config::default()
     };
     assert!(on.effective_album_art());
+}
+
+#[test]
+fn album_art_quality_defaults_to_legacy_high_and_cycles() {
+    let legacy: Config = serde_json::from_str("{}").unwrap();
+    assert_eq!(legacy.album_art_quality, AlbumArtQuality::High);
+    assert_eq!(
+        AlbumArtQuality::Standard.cycled(true),
+        AlbumArtQuality::High
+    );
+    assert_eq!(
+        AlbumArtQuality::High.cycled(true),
+        AlbumArtQuality::Original
+    );
+    assert_eq!(
+        AlbumArtQuality::Original.cycled(true),
+        AlbumArtQuality::Standard
+    );
+    assert_eq!(
+        AlbumArtQuality::Standard.cycled(false),
+        AlbumArtQuality::Original
+    );
+    assert_eq!(
+        serde_json::to_string(&AlbumArtQuality::Original).unwrap(),
+        "\"original\""
+    );
 }
 
 #[test]

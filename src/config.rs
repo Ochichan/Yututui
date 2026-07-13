@@ -352,6 +352,41 @@ impl AnimationsConfig {
     }
 }
 
+/// Source/detail level for remote album art shown inside the terminal. `High` preserves the
+/// historical max-resolution preference and 768px cap; `Original` keeps the fetched source
+/// dimensions intact. Persisted in `config.json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlbumArtQuality {
+    Standard,
+    #[default]
+    High,
+    Original,
+}
+
+impl AlbumArtQuality {
+    /// Step through `Standard → High → Original`, wrapping in either direction.
+    pub fn cycled(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Self::Standard, true) => Self::High,
+            (Self::High, true) => Self::Original,
+            (Self::Original, true) => Self::Standard,
+            (Self::Standard, false) => Self::Original,
+            (Self::High, false) => Self::Standard,
+            (Self::Original, false) => Self::High,
+        }
+    }
+
+    /// Short human label for the Playback settings row.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => t!("Standard · up to 640 px", "표준 · 최대 640 px"),
+            Self::High => t!("High · up to 768 px", "고화질 · 최대 768 px"),
+            Self::Original => t!("Original source", "원본 화질"),
+        }
+    }
+}
+
 /// Window layout for the external mpv video overlay launched from the player (`v`), cycled
 /// live with `Shift+V` and chosen as the open default in Settings. `Compact` docks a small
 /// ~30% window top-right; `Large` centers a ~50% window; `Fullscreen` fills the screen.
@@ -615,6 +650,9 @@ pub struct Config {
     /// terminal's graphics protocol is probed unconditionally at startup (the About icon needs
     /// it regardless), so turning this on takes effect live. See [`crate::artwork`].
     pub album_art: Option<bool>,
+    /// Detail level for remote album art rendered inside the terminal. Defaults to `High`, which
+    /// matches the pre-setting 768px cap; local embedded covers retain that existing cap.
+    pub album_art_quality: AlbumArtQuality,
     /// Where the player control block sits (see [`PlayerBarPosition`]). `None` → `Bottom`,
     /// the docked layout; `Top` keeps the legacy layout.
     pub player_bar_position: Option<PlayerBarPosition>,
@@ -881,6 +919,7 @@ impl Default for Config {
             download_concurrency: None,
             mouse: None,
             album_art: None,
+            album_art_quality: AlbumArtQuality::default(),
             player_bar_position: None,
             control_box_collapsed: None,
             eq_preset: EqPreset::default(),

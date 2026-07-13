@@ -175,6 +175,7 @@ pub enum Msg {
     /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
     ArtworkResult {
         video_id: String,
+        quality: Option<crate::config::AlbumArtQuality>,
         image: Option<DynamicImage>,
     },
     /// Album-art protocol resize/encode finished off the UI thread.
