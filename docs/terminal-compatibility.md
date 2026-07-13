@@ -1,6 +1,6 @@
 # Terminal Compatibility
 
-Status: initial public-beta matrix, updated 2026-07-07. Entries marked
+Status: initial public-beta matrix, updated 2026-07-13. Entries marked
 `Expected` still need a dated ytm-tui smoke run before they are marketed as
 fully verified.
 
@@ -31,7 +31,7 @@ ytm-tui configuration.
 | Legacy conhost / bare cmd.exe | Unknown / Versioned | Expected partial | Version-dependent | Yes | Expected only in a desktop session with mpv | Unknown | Do not promise without a Windows build and terminal version. |
 | Ghostty | Expected via Kitty graphics | Expected | Expected; grapheme clustering is documented | Yes | Expected on macOS/Linux with mpv | Unknown unless OSC 66 lands or DECDHL probe passes | Windows support must be verified separately. |
 | foot | Expected via Sixel | Expected | Expected; package descriptions document IME through text-input-v3 | Yes | Expected on Linux GUI with mpv | Unknown | Wayland-only in normal use; verify on the target compositor. |
-| Konsole | Expected via Kitty or Sixel | Expected | Expected | Yes | Expected on Linux GUI with mpv | Unknown | Probe longer, but use an override until smoke evidence records the best protocol. |
+| Konsole / Yakuake | Versioned: < 26.08 defaults to halfblocks; >= 26.08 is Expected via capability-gated Sixel | Expected | Expected | Yes | Expected on Linux GUI with mpv | Unknown | Yakuake inherits Konsole's terminal behavior. Sixel is selected only when DA1 advertises it and a real cell size is obtained; Kitty is not recommended. |
 | mintty | Expected via Sixel | Expected | Expected | Yes | Expected on Windows desktop with mpv | Unknown | Probe longer, but Sixel is the first override to try. |
 | mlterm | Expected via Sixel | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown | Probe longer, but Sixel is the first override to try. |
 | VS Code integrated terminal | Fallback: halfblocks | Expected | Expected | Yes | Expected only through the host desktop session | Unknown | Keep conservative fallback unless a specific VS Code build is verified. |
@@ -44,6 +44,12 @@ ytm-tui configuration.
 - Album art uses `ratatui-image`, which can query Kitty, Sixel, iTerm2, and
   halfblock fallback protocols. If stdout is not a TTY, ytm-tui skips image
   probing and uses halfblocks.
+- Detected Konsole and Yakuake versions older than 26.08, or detected sessions
+  without a valid `KONSOLE_VERSION`, stay on halfblocks by default. Starting with 26.08,
+  ytm-tui permits a Sixel probe and selects Sixel only when DA1 advertises the
+  capability and the terminal returns a real cell size. A missing response or
+  either failed check still falls back to halfblocks. Kitty is not part of the
+  normal Konsole/Yakuake path.
 - Text zoom uses OSC 66 when the probe succeeds, `WT_SESSION` / DECDHL where
   applicable, and otherwise stays at 100%.
 - Keyboard enhancement intentionally omits `REPORT_ALL_KEYS_AS_ESCAPE_CODES` so
@@ -76,8 +82,13 @@ Recommended first override by terminal:
 | WezTerm | `YTM_TUI_IMAGE_PROTOCOL=iterm2` | `kitty`, `sixel` |
 | Windows Terminal | `YTM_TUI_IMAGE_PROTOCOL=sixel` | None |
 | foot / mintty / mlterm | `YTM_TUI_IMAGE_PROTOCOL=sixel` | None |
-| Konsole | `YTM_TUI_IMAGE_PROTOCOL=kitty` | `sixel` |
+| Konsole / Yakuake | `YTM_TUI_IMAGE_PROTOCOL=sixel` | None |
 | Unknown native hint | `YTM_TUI_IMAGE_PROTOCOL=kitty` | `iterm2`, `sixel` |
+
+On Konsole/Yakuake versions older than 26.08, manually forcing Sixel is an
+experimental escape hatch: it bypasses the conservative default and may leave
+stale or broken image fragments. Do not use Kitty as the normal Konsole or
+Yakuake override.
 
 ## Smoke Runbook
 
