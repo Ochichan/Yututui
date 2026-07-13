@@ -105,6 +105,8 @@ impl App {
             &cfg_spotify_client_id,
         );
         let draft = SettingsDraft {
+            beginner_mode: self.config.beginner_mode,
+            restart_beginner_tutorial: false,
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
             local_include_download_dir: self.config.local.include_download_dir(),
@@ -511,6 +513,15 @@ impl App {
         };
         self.dirty = true;
         match field {
+            Field::BeginnerMode => {
+                let s = self.settings_mut();
+                let was_enabled = s.draft.beginner_mode;
+                s.draft.beginner_mode = !was_enabled;
+                if !was_enabled {
+                    s.draft.restart_beginner_tutorial = true;
+                }
+                Vec::new()
+            }
             Field::Mouse => {
                 let s = self.settings_mut();
                 s.draft.mouse = !s.draft.mouse;
@@ -1844,6 +1855,7 @@ impl App {
         let model_changed = self.ai.model != d.gemini_model;
         self.ai.model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
+        let old_beginner_mode = self.config.beginner_mode;
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_romanized_titles = self.config.effective_romanized_titles();
         let old_album_art_quality = self.config.album_art_quality;
@@ -1909,6 +1921,12 @@ impl App {
             )
             .to_owned();
         }
+        // The transition owns tutorial completion/restart and its user-facing toast. Keep it
+        // after the generic save message but before cloning the one persisted Config snapshot.
+        self.apply_beginner_mode_settings_transition(
+            old_beginner_mode,
+            d.restart_beginner_tutorial,
+        );
         let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
         )))];

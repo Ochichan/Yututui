@@ -25,6 +25,13 @@ impl App {
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
         }
+        // Beginner Mode's F6 focus bridge runs before ordinary surface routing, while every
+        // established overlay keeps precedence. Unowned keys continue through unchanged.
+        if !self.beginner_higher_overlay_open()
+            && let Some(cmds) = self.on_key_beginner(k)
+        {
+            return cmds;
+        }
 
         // The Settings color picker is a mode-owned modal (also rendered in Mini). Capture every
         // key before global shortcuts or the hidden Settings form can act on it.

@@ -74,7 +74,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
         }
     }
-    views::onboarding::render_search_hint(frame, app, area);
+    // The Beginner coach floats over the live surface. Its visibility gate yields to every
+    // established popup below, so those existing modal layers keep their input and z-order.
+    views::onboarding::render_beginner_coach(frame, app, area);
     // The `?` cheat-sheet draws on top of whatever screen is active.
     if app.overlays.help_visible {
         views::help::render(frame, app, area);

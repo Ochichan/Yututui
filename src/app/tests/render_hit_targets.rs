@@ -122,6 +122,172 @@ fn volume_flash_geometry_is_stable_and_off_mode_keeps_legacy_layout() {
 }
 
 #[test]
+fn beginner_control_row_tracks_volume_rebinds_and_responsive_fallbacks() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(2, 0);
+    app.config.beginner_mode = true;
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
+    let buf = render_app_buffer(&app, 80, 20);
+    let row = (0..80).map(|x| buf[(x, 6)].symbol()).collect::<String>();
+    assert!(row.contains("Volume  [↓] - 100% + [↑]"), "got {row:?}");
+    assert!(
+        app.hits
+            .rect_of_target(MouseTarget::VolumeArea)
+            .is_some_and(|rect| rect.width > 0)
+    );
+
+    // The Player block contributes two border cells, leaving a 35-cell control area.
+    let narrow = render_app_buffer(&app, 37, 20);
+    let narrow_row = (0..37).map(|x| narrow[(x, 6)].symbol()).collect::<String>();
+    assert!(
+        narrow_row.contains("vol  [↓] - 100% + [↑]"),
+        "got {narrow_row:?}"
+    );
+
+    app.keymap
+        .rebind(
+            KeyContext::Player,
+            Action::VolDown,
+            crate::keymap::parse_chord("f8").unwrap(),
+        )
+        .unwrap();
+    app.keymap
+        .rebind(
+            KeyContext::Player,
+            Action::VolUp,
+            crate::keymap::parse_chord("f9").unwrap(),
+        )
+        .unwrap();
+    let rebound = render_app_buffer(&app, 80, 20);
+    let rebound_row = (0..80)
+        .map(|x| rebound[(x, 6)].symbol())
+        .collect::<String>();
+    assert!(
+        rebound_row.contains("Volume  [F8] - 100% + [F9]"),
+        "got {rebound_row:?}"
+    );
+
+    let mini = render_app_buffer(&app, 28, 8);
+    let mini_row = (0..28).map(|x| mini[(x, 2)].symbol()).collect::<String>();
+    assert!(mini_row.contains("vol  - 100% +"), "got {mini_row:?}");
+    assert!(!mini_row.contains("[F"), "got {mini_row:?}");
+
+    app.keymap.unbind(KeyContext::Player, Action::VolDown);
+    let unbound = render_app_buffer(&app, 80, 20);
+    let unbound_row = (0..80)
+        .map(|x| unbound[(x, 6)].symbol())
+        .collect::<String>();
+    assert!(
+        unbound_row.contains("Volume  - 100% + [F9]"),
+        "got {unbound_row:?}"
+    );
+    assert!(!unbound_row.contains("[F8]"), "got {unbound_row:?}");
+}
+
+#[test]
+fn beginner_status_buttons_use_accent_bold_without_changing_off_mode() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(2, 0);
+    app.config.beginner_mode = true;
+    app.config.player_bar_position = Some(crate::config::PlayerBarPosition::Top);
+    let beginner = render_app_buffer(&app, 100, 20);
+    let rect = app
+        .hits
+        .rect_of_target(MouseTarget::Player(Action::ToggleShuffle))
+        .expect("beginner Shuffle hit target");
+    let cell = beginner
+        .cell((rect.x, rect.y))
+        .expect("Shuffle starts inside the buffer");
+    assert_eq!(cell.fg, app.theme.color(crate::theme::ThemeRole::Accent));
+    assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD));
+
+    app.config.beginner_mode = false;
+    let legacy = render_app_buffer(&app, 100, 20);
+    let rect = app
+        .hits
+        .rect_of_target(MouseTarget::Player(Action::ToggleShuffle))
+        .expect("legacy shuffle hit target");
+    let cell = legacy
+        .cell((rect.x, rect.y))
+        .expect("shuffle starts inside the buffer");
+    assert_eq!(
+        cell.fg,
+        app.theme.color(crate::theme::ThemeRole::PlayerLabel)
+    );
+    assert!(!cell.modifier.contains(ratatui::style::Modifier::BOLD));
+}
+
+#[test]
+fn beginner_coach_actions_fit_the_full_minimum_and_mini_only_offers_skip() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.config.beginner_mode = true;
+    app.prepare_beginner_onboarding(true);
+
+    let _ = render_app_buffer(&app, 32, 14);
+    let full_regions = app
+        .hits
+        .regions()
+        .iter()
+        .filter(|region| matches!(region.target, MouseTarget::Onboarding(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    for action in [
+        OnboardingAction::Noop,
+        OnboardingAction::Back,
+        OnboardingAction::Primary,
+        OnboardingAction::Skip,
+    ] {
+        assert!(
+            full_regions
+                .iter()
+                .any(|region| region.target == MouseTarget::Onboarding(action)),
+            "minimum full layout omitted {action:?}: {full_regions:?}"
+        );
+    }
+    assert!(full_regions.iter().all(|region| {
+        let rect = region.rect;
+        rect.width > 0 && rect.height > 0 && rect.right() <= 32 && rect.bottom() <= 14
+    }));
+
+    let _ = render_app_buffer(&app, 31, 14);
+    let mini_actions = app
+        .hits
+        .regions()
+        .iter()
+        .filter_map(|region| match region.target {
+            MouseTarget::Onboarding(OnboardingAction::Noop) => None,
+            MouseTarget::Onboarding(action) => Some(action),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mini_actions, vec![OnboardingAction::Skip]);
+}
+
+#[test]
+fn minimum_full_finish_primary_turns_beginner_mode_off_for_mouse_users() {
+    let mut app = app_playing(1, 0);
+    app.config.beginner_mode = true;
+    app.config.beginner_tutorial.next_step = "finish".to_owned();
+    app.prepare_beginner_onboarding(true);
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::General, Field::BeginnerMode);
+    let _ = render_app_buffer(&app, 32, 14);
+    let button = app
+        .hits
+        .regions()
+        .iter()
+        .find(|region| region.target == MouseTarget::Onboarding(OnboardingAction::Primary))
+        .cloned()
+        .expect("Finish primary button");
+
+    app.on_mouse_click(button.rect.x, button.rect.y, false);
+    assert!(!app.settings.as_ref().unwrap().draft.beginner_mode);
+    assert!(app.onboarding.active(), "saving is still required");
+}
+
+#[test]
 fn rendering_settings_registers_clickable_controls() {
     // Each control kind must publish its own hit target *on top of* the row-select rect, so a
     // click changes/activates the value rather than only moving the cursor onto it.
@@ -489,6 +655,11 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.show_tool_setup(ToolSetupContext::Startup, vec!["mpv"]);
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_TOOL_SETUP_BIT);
     app.tool_setup = None;
+    app.config.beginner_mode = true;
+    app.prepare_beginner_onboarding(true);
+    assert!(app.onboarding.visible());
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_BEGINNER_BIT);
+    app.onboarding = OnboardingState::default();
     app.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,

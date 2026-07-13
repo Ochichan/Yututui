@@ -53,6 +53,42 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
 }
 
 #[test]
+fn beginner_overlay_open_and_close_clear_native_art() {
+    use super::artwork::ART_OVERLAY_BEGINNER_BIT;
+
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    app.config.beginner_mode = true;
+
+    app.prepare_beginner_onboarding(true);
+    app.sync_art_overlay_state();
+    assert_eq!(app.art.overlay_mask, ART_OVERLAY_BEGINNER_BIT);
+    assert!(app.take_clear_before_draw());
+    assert!(!app.take_clear_before_draw());
+
+    app.onboarding = OnboardingState::default();
+    app.sync_art_overlay_state();
+    assert_eq!(app.art.overlay_mask, 0);
+    assert!(app.take_clear_before_draw());
+    assert!(!app.take_clear_before_draw());
+}
+
+#[test]
+fn beginner_player_anchor_volume_change_requests_native_art_clear() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    app.config.beginner_mode = true;
+    app.config.beginner_tutorial.next_step = "player".to_owned();
+    app.prepare_beginner_onboarding(true);
+    let before = app.onboarding_observation();
+    app.playback.volume = 90;
+
+    assert!(app.observe_beginner_tutorial(before).is_empty());
+    assert!(app.take_clear_before_draw());
+    assert!(!app.take_clear_before_draw());
+}
+
+#[test]
 fn art_overlay_transition_does_not_clear_without_art() {
     let mut app = app_playing(1, 0);
 

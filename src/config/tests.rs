@@ -22,7 +22,11 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
         "x".repeat(1024 * 1024)
     );
     std::fs::write(&path, &big).unwrap();
-    let _ = Config::load_from(&path);
+    let recovered = Config::load_from(&path);
+    assert!(
+        !recovered.beginner_mode,
+        "recovering an existing oversized config must not look like a fresh install"
+    );
     let too_large = path.with_extension("too-large.bak");
     assert!(
         too_large.exists(),
@@ -39,7 +43,11 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
 
     // (2) Invalid UTF-8 → moved to *.corrupt.bak, original bytes preserved.
     std::fs::write(&path, [0xff, 0xfe, 0xfd, 0xfc]).unwrap();
-    let _ = Config::load_from(&path);
+    let recovered = Config::load_from(&path);
+    assert!(
+        !recovered.beginner_mode,
+        "recovering an existing corrupt config must not opt into onboarding"
+    );
     let corrupt = path.with_extension("corrupt.bak");
     assert!(corrupt.exists(), "invalid-UTF-8 config must be preserved");
     assert_eq!(
@@ -50,8 +58,13 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
 
     // (3) First run (missing) → defaults written, no backup created.
     std::fs::remove_file(&path).unwrap();
-    let _ = Config::load_from(&path);
+    let fresh = recovery::load_from_path_with_legacy(&path, None);
+    assert!(fresh.beginner_mode);
+    assert_eq!(fresh.beginner_tutorial, BeginnerTutorialProgress::welcome());
     assert!(path.exists());
+    let installed: Config = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(installed.beginner_mode);
+    assert_eq!(installed.beginner_tutorial, fresh.beginner_tutorial);
     assert!(!path.with_extension("too-large.bak").exists());
     assert!(!path.with_extension("corrupt.bak").exists());
 
@@ -171,7 +184,11 @@ fn json_round_trips() {
     let mut radio_theme = ThemeConfig::default();
     radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
     let c = Config {
-        search_onboarding_seen: true,
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: BEGINNER_TUTORIAL_VERSION,
+            next_step: "settings".to_owned(),
+        },
         cookie: Some("SID=abc".to_owned()),
         cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
         volume: 70,
@@ -278,6 +295,8 @@ fn json_round_trips() {
     };
     let s = serde_json::to_string(&c).unwrap();
     let back: Config = serde_json::from_str(&s).unwrap();
+    assert!(back.beginner_mode);
+    assert_eq!(back.beginner_tutorial.next_step, "settings");
     assert!(!back.update_check_enabled);
     assert_eq!(back.recording.mode, crate::recorder::RecordingMode::Decide);
     assert_eq!(back.recording.min_duration_secs, 20);
@@ -399,10 +418,69 @@ fn custom_theme_palettes_round_trip_independently() {
 }
 
 #[test]
-fn search_onboarding_is_fresh_only_for_new_profiles() {
-    assert!(!Config::default().search_onboarding_seen);
-    let legacy: Config = serde_json::from_str("{\"volume\": 42}").unwrap();
-    assert!(legacy.search_onboarding_seen);
+fn beginner_mode_is_opt_in_only_for_genuinely_fresh_profiles() {
+    let defaults = Config::default();
+    assert!(!defaults.beginner_mode);
+    assert_eq!(
+        defaults.beginner_tutorial,
+        BeginnerTutorialProgress::welcome()
+    );
+
+    for marker in [None, Some(true), Some(false)] {
+        let mut value = serde_json::json!({"volume": 42});
+        if let Some(seen) = marker {
+            value["search_onboarding_seen"] = serde_json::json!(seen);
+        }
+        let legacy: Config = serde_json::from_value(value).unwrap();
+        assert!(
+            !legacy.beginner_mode,
+            "an existing config must stay off for legacy marker {marker:?}"
+        );
+        let rewritten = serde_json::to_value(&legacy).unwrap();
+        assert!(rewritten.get("search_onboarding_seen").is_none());
+    }
+
+    assert!(config_for_missing_profile(None).beginner_mode);
+
+    let dir = std::env::temp_dir().join(format!(
+        "ytm-existing-legacy-beginner-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let legacy_path = dir.join("config.json");
+    fs::write(&legacy_path, "{}").unwrap();
+    assert!(
+        !config_for_missing_profile(Some(&legacy_path)).beginner_mode,
+        "a present legacy profile keeps onboarding off"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn beginner_progress_round_trips_unknown_future_step_without_resetting_it() {
+    let original = Config {
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: BEGINNER_TUTORIAL_VERSION + 1,
+            next_step: "future_spatial_mixer".to_owned(),
+        },
+        ..Config::default()
+    };
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: Config = serde_json::from_str(&json).unwrap();
+    assert!(decoded.beginner_mode);
+    assert_eq!(decoded.beginner_tutorial, original.beginner_tutorial);
+
+    let partial: Config = serde_json::from_str(
+        r#"{"beginner_mode":true,"beginner_tutorial":{"next_step":"library"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        partial.beginner_tutorial.content_version,
+        BEGINNER_TUTORIAL_VERSION
+    );
+    assert_eq!(partial.beginner_tutorial.next_step, "library");
 }
 
 #[test]

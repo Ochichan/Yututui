@@ -196,6 +196,21 @@ impl App {
         )
     }
 
+    /// Live Beginner Mode flag. Settings previews the explanatory labels immediately, while the
+    /// persisted value controls whether a walkthrough is eligible on the next writable launch.
+    pub fn beginner_mode(&self) -> bool {
+        self.settings
+            .as_ref()
+            .map_or(self.config.beginner_mode, |settings| {
+                settings.draft.beginner_mode
+            })
+    }
+
+    /// Whether expanded, explanatory control labels should render on the current frame.
+    pub fn beginner_labels_enabled(&self) -> bool {
+        self.beginner_mode()
+    }
+
     /// Live player-bar position. Same draft-first rule as [`Self::retro_mode`]: while
     /// Settings is open the user is looking at the draft, so cycling the row previews the
     /// layout immediately, before it's committed on close.

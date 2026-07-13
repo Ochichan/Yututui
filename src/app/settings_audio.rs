@@ -58,6 +58,7 @@ enum SettingsAudioPreviewApply {
 #[derive(Clone, PartialEq)]
 struct SettingsResetGuard {
     projected: Vec<u8>,
+    restart_beginner_tutorial: bool,
     tab: SettingsTab,
     row: usize,
     editing_text: bool,
@@ -71,6 +72,7 @@ impl SettingsResetGuard {
     fn capture(config: &Config, state: &SettingsState) -> Self {
         Self {
             projected: settings_projection(config, state),
+            restart_beginner_tutorial: state.draft.restart_beginner_tutorial,
             tab: state.tab,
             row: state.row,
             editing_text: state.editing_text,
@@ -83,6 +85,7 @@ impl SettingsResetGuard {
 
     fn matches(&self, config: &Config, state: &SettingsState) -> bool {
         self.projected == settings_projection(config, state)
+            && self.restart_beginner_tutorial == state.draft.restart_beginner_tutorial
             && self.tab == state.tab
             && self.row == state.row
             && self.editing_text == state.editing_text
@@ -362,6 +365,8 @@ impl App {
                 SettingsAudioSnapshot::from_draft(&current.draft) == plan.expected_draft
                     && SettingsAudioSnapshot::from_live(self) == plan.expected_live
                     && settings_projection(&self.config, current) == plan.expected_settings
+                    && current.draft.restart_beginner_tutorial
+                        == plan.settings.draft.restart_beginner_tutorial
             })
     }
 
@@ -436,6 +441,10 @@ fn settings_projection(config: &Config, state: &SettingsState) -> Vec<u8> {
 fn reset_settings_state(state: &mut SettingsState) {
     let defaults = Config::default();
     let draft = &mut state.draft;
+    // Reset All is a user-facing factory reset, unlike `Config::default()`'s conservative
+    // legacy/recovery baseline: it opts into Beginner Mode and schedules a Welcome restart.
+    draft.beginner_mode = true;
+    draft.restart_beginner_tutorial = true;
     draft.cookies_file = String::new();
     draft.download_dir = String::new();
     draft.search = defaults.effective_search();
@@ -648,6 +657,8 @@ mod tests {
             assert_eq!(draft.speed, 1.8);
             assert_eq!(draft.eq_bands[0], 6.0);
             assert_eq!(draft.gemini_api_key, "keep-me");
+            assert!(!draft.beginner_mode);
+            assert!(!draft.restart_beginner_tutorial);
             assert_eq!(app.playback.speed, 1.0);
         }
 
@@ -667,6 +678,8 @@ mod tests {
         let draft = &app.settings.as_deref().unwrap().draft;
         assert_eq!(draft.speed, 1.0);
         assert!(draft.gemini_api_key.is_empty());
+        assert!(draft.beginner_mode);
+        assert!(draft.restart_beginner_tutorial);
         assert_eq!(app.playback.speed, 1.0);
         assert_eq!(app.config.speed, None);
     }

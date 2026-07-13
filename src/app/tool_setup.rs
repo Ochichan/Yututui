@@ -97,7 +97,7 @@ impl App {
                         "Playback tools are ready",
                         "재생 도구가 준비되었습니다"
                     ));
-                    self.arm_search_onboarding();
+                    self.arm_beginner_onboarding();
                     if prompt.context == ToolSetupContext::Downloads {
                         return self.pump_downloads();
                     }
@@ -122,7 +122,7 @@ impl App {
                     self.downloads.pending.clear();
                 }
                 self.tool_setup = None;
-                self.arm_search_onboarding();
+                self.arm_beginner_onboarding();
                 self.dirty = true;
             }
             _ => return Vec::new(),

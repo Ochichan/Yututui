@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AlbumArtQuality, AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT,
-    MPV_CACHE_FORWARD_DEFAULT, SpotifyImportMode, default_cookies_file, default_download_dir,
+    AlbumArtQuality, AnimationsConfig, BeginnerTutorialProgress, Config, LocalRootConfig,
+    MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT, SpotifyImportMode, default_cookies_file,
+    default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -104,6 +105,7 @@ impl SettingsTab {
     pub fn fields(self) -> Vec<Field> {
         match self {
             SettingsTab::General => vec![
+                Field::BeginnerMode,
                 Field::Language,
                 Field::SearchSource,
                 Field::StreamingSource,
@@ -285,6 +287,8 @@ impl SettingsTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     // General
+    /// Explanatory labels plus the interactive walkthrough on the next writable launch.
+    BeginnerMode,
     /// The UI language (English / 한국어), cycled like any other Select field.
     Language,
     /// Default source selected in the search box.
@@ -580,6 +584,10 @@ pub fn freq_label(i: usize) -> String {
 // No `Debug`: holds the plaintext `gemini_api_key`, so it must not be `{:?}`-printable (see `Config`).
 #[derive(Clone)]
 pub struct SettingsDraft {
+    pub beginner_mode: bool,
+    /// Internal save intent: re-enabling Beginner Mode and Reset All restart the walkthrough at
+    /// Welcome on the next launch. This is projected into `Config`, but is not itself persisted.
+    pub restart_beginner_tutorial: bool,
     pub cookies_file: String,
     pub download_dir: String,
     pub local_include_download_dir: bool,
@@ -688,6 +696,7 @@ impl SettingsDraft {
     /// Render the current value of `field` for display.
     pub fn value_display(&self, field: Field) -> String {
         match field {
+            Field::BeginnerMode => toggle_str(self.beginner_mode),
             Field::RadioRecording => self.recording_mode.label(),
             // Each language names itself, so this value is the same regardless of the active
             // UI language (English / 한국어).
@@ -957,6 +966,10 @@ impl SettingsDraft {
     /// Merge the draft's persisted fields into `cfg` (called on save). Live audio fields
     /// are also written so they survive a restart.
     pub fn apply_to(&self, cfg: &mut Config) {
+        cfg.beginner_mode = self.beginner_mode;
+        if self.beginner_mode && self.restart_beginner_tutorial {
+            cfg.beginner_tutorial = BeginnerTutorialProgress::welcome();
+        }
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);
         cfg.local.include_download_dir = Some(self.local_include_download_dir);

@@ -97,16 +97,24 @@ impl App {
         self.hits.region_at(col, row)
     }
 
-    /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
-    /// seekbar seeks to the matching fraction of the track. Hit rects are published by
-    /// views each render. `multi` (Ctrl/Cmd held) only changes what a Library/Search
-    /// list-row hit does — toggle the row in/out of the selection — and is ignored by
-    /// every other surface, so a modifier click still presses buttons and closes modals.
+    fn beginner_coach_hit(&self, col: u16, row: u16) -> bool {
+        matches!(
+            self.mouse_target_at(col, row),
+            Some(MouseTarget::Onboarding(_))
+        )
+    }
+
+    /// Dispatch a hit-tested left click; `multi` only modifies Search/Library list rows.
     pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16, multi: bool) -> Vec<Cmd> {
         if self.tool_setup.is_some() {
             return self
                 .mouse_target_at(col, row)
                 .map_or_else(Vec::new, |target| self.activate_tool_setup(target));
+        }
+        if !self.beginner_higher_overlay_open()
+            && let Some(MouseTarget::Onboarding(action)) = self.mouse_target_at(col, row)
+        {
+            return self.activate_onboarding(action);
         }
         // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
@@ -521,6 +529,7 @@ impl App {
             | MouseTarget::ToolSetupGuide
             | MouseTarget::ToolSetupRetry
             | MouseTarget::ToolSetupLater) => self.activate_tool_setup(target),
+            MouseTarget::Onboarding(action) => self.activate_onboarding(action),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;
@@ -942,10 +951,10 @@ impl App {
         }
     }
 
-    /// A left double-click: play a song/queue row (vs. single-click, which selects). Falls
-    /// back to single-click behavior anywhere else so buttons, tabs, and the seekbar still
-    /// respond to the first press of a double-click.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.beginner_coach_hit(col, row) {
+            return Vec::new();
+        }
         // The first press may have activated a menu command that opened a confirmation/picker.
         // Consume its paired double-click press before that new modal can see and act on it.
         if self.interaction.context_menu_click.take() == Some((col, row)) {
@@ -1028,9 +1037,11 @@ impl App {
         }
     }
 
-    /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
-    /// stays fixed). Works in the queue window and, identically, in the Library list.
+    /// Extend the active pointer gesture while preserving its original surface.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.beginner_coach_hit(col, row) {
+            return Vec::new();
+        }
         if self.interaction.context_menu_press {
             return Vec::new();
         }
@@ -1244,12 +1255,7 @@ impl App {
         }
     }
 
-    /// Wheel scroll nudges volume when the pointer is over the player's volume cluster.
-    /// Everywhere else it moves the *viewport* of whichever list is on top by
-    /// [`MOUSE_SCROLL_LINES`] rows — decoupled from the selection, which stays put (it may
-    /// scroll out of view; the render pass keeps it visible only for keyboard nav). An open
-    /// overlay (the queue window) wins over the active screen. Ctrl+wheel bypasses all of
-    /// that and steps the text zoom, browser-style, wherever the pointer is.
+    /// Scroll the topmost pointer surface; Ctrl+wheel retains its text-zoom override.
     pub(in crate::app) fn on_mouse_scroll(
         &mut self,
         up: bool,
@@ -1259,6 +1265,9 @@ impl App {
     ) -> Vec<Cmd> {
         if self.overlays.context_menu.is_some() {
             self.move_context_menu_selection(up);
+            return Vec::new();
+        }
+        if self.beginner_coach_hit(col, row) {
             return Vec::new();
         }
         // While the wheel-zoom lock is on, Ctrl+wheel degrades to a plain wheel scroll

@@ -57,7 +57,7 @@ pub(in crate::app) use helpers::{
 mod mode_switch;
 mod navigation;
 mod onboarding;
-pub use onboarding::OnboardingState;
+pub use onboarding::{BeginnerStep, OnboardingState};
 mod reducer;
 mod session_restore;
 
