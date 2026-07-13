@@ -1,21 +1,22 @@
 use super::*;
 
+fn buffer_contains_compact_row(buffer: &ratatui::buffer::Buffer, needle: &str) -> bool {
+    let needle: String = needle
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    (0..buffer.area.height).any(|y| {
+        buffer_row(buffer, y)
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            .contains(&needle)
+    })
+}
+
 #[test]
 fn long_form_seek_row_renders_and_exposes_controls_at_supported_widths_in_both_languages() {
     let _guard = crate::i18n::lock_for_test();
-    let contains_compact_row = |buffer: &ratatui::buffer::Buffer, needle: &str| {
-        let needle: String = needle
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect();
-        (0..buffer.area.height).any(|y| {
-            buffer_row(buffer, y)
-                .chars()
-                .filter(|character| !character.is_whitespace())
-                .collect::<String>()
-                .contains(&needle)
-        })
-    };
     let mut app = App::new(100);
     app.open_settings();
     focus_settings_field(
@@ -23,7 +24,10 @@ fn long_form_seek_row_renders_and_exposes_controls_at_supported_widths_in_both_l
         SettingsTab::Playback,
         Field::LongFormSeekOptimization,
     );
-    let row = SettingsTab::Playback
+    let row = app
+        .settings
+        .as_ref()
+        .expect("settings")
         .fields()
         .iter()
         .position(|field| *field == Field::LongFormSeekOptimization)
@@ -37,11 +41,11 @@ fn long_form_seek_row_renders_and_exposes_controls_at_supported_widths_in_both_l
         for width in [40, 60, 80] {
             let buffer = render_app_buffer(&app, width, 40);
             assert!(
-                contains_compact_row(&buffer, label),
+                buffer_contains_compact_row(&buffer, label),
                 "{label} missing at width {width}"
             );
             assert!(
-                contains_compact_row(&buffer, value),
+                buffer_contains_compact_row(&buffer, value),
                 "{value} missing at width {width}"
             );
             assert!(
@@ -56,6 +60,55 @@ fn long_form_seek_row_renders_and_exposes_controls_at_supported_widths_in_both_l
                 }),
                 "increase control missing for {label} at width {width}"
             );
+        }
+    }
+}
+
+#[test]
+fn long_form_seek_row_scrolls_or_hides_safely_at_short_terminal_sizes() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.open_settings();
+    focus_settings_field(
+        &mut app,
+        SettingsTab::Playback,
+        Field::LongFormSeekOptimization,
+    );
+    let row = app
+        .settings
+        .as_ref()
+        .expect("settings")
+        .fields()
+        .iter()
+        .position(|field| *field == Field::LongFormSeekOptimization)
+        .expect("long-form seek field");
+
+    for (language, label) in [
+        (crate::i18n::Language::English, "Long-form seek"),
+        (crate::i18n::Language::Korean, "긴 미디어 탐색"),
+    ] {
+        crate::i18n::set_language(language);
+        for (width, height, field_visible) in [(80, 24, true), (60, 15, true), (40, 12, false)] {
+            let buffer = render_app_buffer(&app, width, height);
+            assert!(
+                buffer_contains(&buffer, "0:00"),
+                "player fallback missing for {label} at {width}x{height}"
+            );
+            assert_eq!(
+                buffer_contains_compact_row(&buffer, label),
+                field_visible,
+                "unexpected {label} visibility at {width}x{height}"
+            );
+            for delta in [-1, 1] {
+                assert_eq!(
+                    app.hits.regions().iter().any(|region| {
+                        region.target == MouseTarget::SettingsChange { row, delta }
+                    }),
+                    field_visible,
+                    "unexpected {label} delta {delta} hit target at {width}x{height}: {:?}",
+                    app.hits.regions()
+                );
+            }
         }
     }
 }

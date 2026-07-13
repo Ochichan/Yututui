@@ -192,7 +192,13 @@ fn validate_real_directory_components(path: &Path) -> io::Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                // On Windows a canonical verbatim prefix (`\\?\C:`) reports itself as rooted,
+                // but it is not an openable path until the following RootDir is appended.
+                continue;
+            }
+            Component::RootDir | Component::Normal(_) => {
                 current.push(component.as_os_str());
             }
             Component::CurDir | Component::ParentDir => {
@@ -202,8 +208,7 @@ fn validate_real_directory_components(path: &Path) -> io::Result<()> {
                 ));
             }
         }
-        // A platform prefix by itself is not an openable directory. Its following RootDir makes
-        // the first Windows path probe absolute (for example `C:\\`).
+        // Relative paths were rejected above; this guard only covers platform component quirks.
         if !current.has_root() {
             continue;
         }
@@ -443,6 +448,17 @@ mod tests {
         }
     }
 
+    fn test_scratch(label: &str) -> PathBuf {
+        let target = std::env::current_dir()
+            .expect("test working directory")
+            .join("target")
+            .join("cache-support-tests");
+        std::fs::create_dir_all(&target).expect("create cache-support test scratch");
+        std::fs::canonicalize(target)
+            .expect("canonical cache-support test scratch")
+            .join(format!("{label}-{}", std::process::id()))
+    }
+
     #[test]
     fn detects_all_lifecycle_overrides_and_precedence() {
         for arg in [
@@ -516,12 +532,7 @@ mod tests {
 
     #[test]
     fn modern_then_legacy_probe_selection_is_version_free() {
-        let root = std::fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "yututui-cache-support-family-{}",
-                std::process::id()
-            ));
+        let root = test_scratch("family");
         let _ = std::fs::remove_dir_all(&root);
         crate::util::safe_fs::ensure_private_dir(&root).unwrap();
 
@@ -561,12 +572,7 @@ mod tests {
 
     #[test]
     fn static_inspection_is_read_only_and_reports_the_probed_family() {
-        let base = std::fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "yututui-cache-support-inspect-{}",
-                std::process::id()
-            ));
+        let base = test_scratch("inspect");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let missing = base.join("not-created");

@@ -274,6 +274,7 @@ mod windows_launcher {
         });
 
         // Keep the private input writer open but never write a byte: controlled empty input.
+        // SAFETY: process_handle remains live for the call and timeout_ms is a valid wait bound.
         let wait_result = unsafe { WaitForSingleObject(process_handle.raw(), args.timeout_ms) };
         let timed_out = match wait_result {
             WAIT_OBJECT_0 => false,
@@ -336,7 +337,7 @@ mod windows_launcher {
     }
 
     fn create_pipe(label: &str) -> Result<(OwnedHandle, OwnedHandle), String> {
-        let mut attributes = SECURITY_ATTRIBUTES {
+        let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: null_mut(),
             bInheritHandle: 1,
@@ -344,7 +345,7 @@ mod windows_launcher {
         let mut read = null_mut();
         let mut write = null_mut();
         // SAFETY: pointers target writable handle storage and attributes is fully initialized.
-        if unsafe { CreatePipe(&mut read, &mut write, &mut attributes, 0) } == 0 {
+        if unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) } == 0 {
             return Err(last_error(label));
         }
         Ok((
