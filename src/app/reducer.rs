@@ -476,10 +476,17 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::ArtworkResult { video_id, image } => {
-                self.art.loading = false;
-                // Drop results for a track we've already skipped past.
-                if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+            Msg::ArtworkResult {
+                video_id,
+                quality,
+                image,
+            } => {
+                // Drop results for a track we've already skipped past, and remote results that
+                // belong to the same track's previous quality selection.
+                let current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+                let current_quality = quality.is_none_or(|q| q == self.config.album_art_quality);
+                if current && current_quality {
+                    self.art.loading = false;
                     self.set_artwork(video_id, image);
                     self.dirty = true;
                 }

@@ -86,12 +86,18 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     assert!(app.art.loading);
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Cmd::FetchArtwork { video_id, source: ArtSource::Remote { video_id: vid } }
-            if video_id == "id1" && vid == "id1"
+        Cmd::FetchArtwork {
+            video_id,
+            source: ArtSource::Remote {
+                video_id: vid,
+                quality: crate::config::AlbumArtQuality::High,
+            },
+        } if video_id == "id1" && vid == "id1"
     )));
     // The decoded image becomes a render-ready protocol for the current track.
     app.update(Msg::ArtworkResult {
         video_id: "id1".to_owned(),
+        quality: Some(crate::config::AlbumArtQuality::High),
         image: Some(image::DynamicImage::new_rgb8(120, 120)),
     });
     assert!(!app.art.loading);
@@ -157,9 +163,36 @@ fn artwork_result_for_stale_track_is_ignored() {
     app.art.picker = Some(Picker::halfblocks());
     app.update(Msg::ArtworkResult {
         video_id: "stale".to_owned(),
+        quality: Some(crate::config::AlbumArtQuality::High),
         image: Some(image::DynamicImage::new_rgb8(8, 8)),
     });
     assert!(!app.art_active());
+}
+
+#[test]
+fn artwork_result_for_previous_quality_is_ignored_on_the_same_track() {
+    let mut app = app_playing(1, 0);
+    app.config.album_art = Some(true);
+    app.config.album_art_quality = crate::config::AlbumArtQuality::Original;
+    app.art.picker = Some(Picker::halfblocks());
+    app.art.loading = true;
+
+    app.update(Msg::ArtworkResult {
+        video_id: "id0".to_owned(),
+        quality: Some(crate::config::AlbumArtQuality::High),
+        image: None,
+    });
+    assert!(
+        app.art.loading,
+        "the replacement Original request is still in flight"
+    );
+
+    app.update(Msg::ArtworkResult {
+        video_id: "id0".to_owned(),
+        quality: Some(crate::config::AlbumArtQuality::Original),
+        image: None,
+    });
+    assert!(!app.art.loading);
 }
 
 #[test]

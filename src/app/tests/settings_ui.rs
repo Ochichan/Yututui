@@ -1034,6 +1034,7 @@ fn reset_all_button_confirms_then_restores_defaults() {
         d.speed = 1.8;
         d.seek_seconds = 45.0;
         d.gemini_api_key = "AIzaSecret".to_owned();
+        d.album_art_quality = crate::config::AlbumArtQuality::Original;
     }
     // Enter opens the confirmation modal (does not reset yet).
     app.update(Msg::Key(key(KeyCode::Enter)));
@@ -1049,6 +1050,7 @@ fn reset_all_button_confirms_then_restores_defaults() {
     assert!((d.speed - 1.0).abs() < 1e-9);
     assert!((d.seek_seconds - 10.0).abs() < 1e-9);
     assert!(d.gemini_api_key.is_empty());
+    assert_eq!(d.album_art_quality, crate::config::AlbumArtQuality::High);
 }
 
 #[test]

@@ -2,6 +2,89 @@ use super::*;
 use std::sync::Arc;
 
 #[test]
+fn album_art_quality_cycles_persists_and_refetches_the_current_remote_track() {
+    let mut app = app_playing(1, 0);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(Picker::halfblocks());
+    app.art.video_id = Some("id0".to_owned());
+
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Playback, Field::AlbumArtQuality);
+    assert!(app.settings_change(1).is_empty()); // High -> Original
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.album_art_quality,
+        crate::config::AlbumArtQuality::Original
+    );
+
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.config.album_art_quality,
+        crate::config::AlbumArtQuality::Original
+    );
+    assert!(app.art.loading);
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::FetchArtwork {
+            video_id,
+            source: ArtSource::Remote {
+                quality: crate::config::AlbumArtQuality::Original,
+                ..
+            },
+        } if video_id == "id0"
+    )));
+    assert_eq!(
+        save_config(&cmds)
+            .expect("quality save persists config")
+            .album_art_quality,
+        crate::config::AlbumArtQuality::Original
+    );
+}
+
+#[test]
+fn remote_album_art_quality_change_does_not_refetch_a_loaded_local_cover() {
+    let mut app = App::new(100);
+    let song = Song::local_file(std::path::PathBuf::from("/music/local.m4a"));
+    let video_id = song.video_id.clone();
+    app.queue.set(vec![song], 0);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(Picker::halfblocks());
+    app.art.video_id = Some(video_id.clone());
+
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Playback, Field::AlbumArtQuality);
+    assert!(app.settings_change(1).is_empty());
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    admit_player_transition(&mut app, &mut cmds);
+
+    assert_eq!(app.art.video_id.as_deref(), Some(video_id.as_str()));
+    assert!(
+        !cmds
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::FetchArtwork { .. }))
+    );
+}
+
+#[test]
+fn unchanged_album_art_quality_keeps_the_loaded_remote_cover() {
+    let mut app = app_playing(1, 0);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(Picker::halfblocks());
+    app.art.video_id = Some("id0".to_owned());
+
+    app.open_settings();
+    let mut cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    admit_player_transition(&mut app, &mut cmds);
+
+    assert_eq!(app.art.video_id.as_deref(), Some("id0"));
+    assert!(
+        !cmds
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::FetchArtwork { .. }))
+    );
+}
+
+#[test]
 fn settings_search_provider_toggles_normalize_selected_sources() {
     let mut app = App::new(100);
     app.open_settings();

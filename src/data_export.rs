@@ -528,6 +528,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "autoplay_on_start": config.autoplay_on_start,
             "auto_continue_videos": config.auto_continue_videos,
             "video_layout": config.video_layout,
+            "album_art_quality": config.album_art_quality,
             "media_controls": config.media_controls,
         }),
         search: project_search(&config.search),

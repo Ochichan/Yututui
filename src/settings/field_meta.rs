@@ -104,6 +104,7 @@ impl Field {
             | Field::DjGemLanguage
             | Field::AudioBackend
             | Field::VideoLayout
+            | Field::AlbumArtQuality
             | Field::PlayerBarPosition
             | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
@@ -201,6 +202,7 @@ impl Field {
             }
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
             Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
+            Field::AlbumArtQuality => t!("Album art quality", "앨범 아트 화질").to_owned(),
             Field::PlayerBarPosition => t!("Player bar position", "플레이어 바 위치").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),

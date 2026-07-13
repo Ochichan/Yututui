@@ -12,6 +12,7 @@ fn base_draft() -> SettingsDraft {
         search: SearchConfig::default(),
         mouse: true,
         album_art: false,
+        album_art_quality: crate::config::AlbumArtQuality::High,
         player_bar_position: crate::config::PlayerBarPosition::Bottom,
         autoplay_on_start: false,
         enqueue_next: false,
@@ -243,10 +244,12 @@ fn background_none_toggle_tracks_transparency() {
 
 #[test]
 fn playback_tab_groups_now_playing_and_eq() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Playback.fields();
     // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-    // VideoLayout + RadioRecording (radio-only), then audio backend, then EQ.
-    assert_eq!(f.len(), 8 + 5 + 1 + eq::BANDS + 1);
+    // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio backend, then EQ.
+    assert_eq!(f.len(), 9 + 5 + 1 + eq::BANDS + 1);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
     assert_eq!(f[2], Field::MouseWheelVolume);
@@ -254,14 +257,20 @@ fn playback_tab_groups_now_playing_and_eq() {
     assert_eq!(f[4], Field::MediaControls);
     assert_eq!(f[5], Field::AutoContinueVideos);
     assert_eq!(f[6], Field::VideoLayout);
-    assert_eq!(f[7], Field::RadioRecording);
-    assert_eq!(f[8], Field::AudioBackend);
-    assert_eq!(f[9], Field::AudioMpvOutput);
-    assert_eq!(f[12], Field::AudioMpvCacheBack);
-    assert_eq!(f[13], Field::EqPreset);
-    assert_eq!(f[13 + eq::BANDS + 1], Field::Normalize);
+    assert_eq!(f[7], Field::AlbumArtQuality);
+    assert_eq!(f[8], Field::RadioRecording);
+    assert_eq!(f[9], Field::AudioBackend);
+    assert_eq!(f[10], Field::AudioMpvOutput);
+    assert_eq!(f[13], Field::AudioMpvCacheBack);
+    assert_eq!(f[14], Field::EqPreset);
+    assert_eq!(f[14 + eq::BANDS + 1], Field::Normalize);
     assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
+    assert_eq!(Field::AlbumArtQuality.kind(), FieldKind::Select);
     assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
+    assert_eq!(
+        base_draft().value_display(Field::AlbumArtQuality),
+        "High · up to 768 px"
+    );
     assert_eq!(base_draft().value_display(Field::AudioBackend), "mpv");
     let total: usize = SettingsTab::Playback
         .sections()
@@ -269,6 +278,18 @@ fn playback_tab_groups_now_playing_and_eq() {
         .map(|(_, n)| n)
         .sum();
     assert_eq!(total, f.len());
+}
+
+#[test]
+fn album_art_quality_has_localized_labels() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::Korean);
+    assert_eq!(Field::AlbumArtQuality.label(), "앨범 아트 화질");
+    assert_eq!(
+        base_draft().value_display(Field::AlbumArtQuality),
+        "고화질 · 최대 768 px"
+    );
+    crate::i18n::set_language(crate::i18n::Language::English);
 }
 
 #[test]
@@ -471,6 +492,7 @@ fn apply_to_persists_every_settings_field() {
         },
         mouse: false,
         album_art: true,
+        album_art_quality: crate::config::AlbumArtQuality::Original,
         player_bar_position: crate::config::PlayerBarPosition::Top,
         autoplay_on_start: true,
         enqueue_next: true,
@@ -567,6 +589,10 @@ fn apply_to_persists_every_settings_field() {
     assert_eq!(cfg.search.jamendo_client_id.as_deref(), Some("jam-id"));
     assert_eq!(cfg.mouse, Some(false));
     assert_eq!(cfg.album_art, Some(true));
+    assert_eq!(
+        cfg.album_art_quality,
+        crate::config::AlbumArtQuality::Original
+    );
     assert_eq!(
         cfg.player_bar_position,
         Some(crate::config::PlayerBarPosition::Top)
