@@ -26,6 +26,20 @@ pub enum PlayerMsg {
     AudioCodec(Option<String>),
     /// mpv `file-format` (container) for the active stream (radio recorder container hint).
     FileFormat(Option<String>),
+    /// Latest cross-platform audio endpoint inventory reported by mpv.
+    AudioDeviceList(Vec<crate::player::AudioDevice>),
+    /// A manual device-list refresh failed without affecting playback.
+    AudioDeviceRefreshFailed(String),
+    /// The configured mpv `audio-device` value (`None` means system/default auto routing).
+    AudioDeviceChanged(Option<String>),
+    /// The active audio output driver, or `None` while no real output is open.
+    CurrentAudioOutput(Option<String>),
+    /// Correlated acknowledgement for a Settings audio-output selection request.
+    AudioDeviceSelectionResult {
+        correlation_id: u64,
+        device: Option<String>,
+        result: Result<(), String>,
+    },
     /// The current track reached its end.
     Eof,
     /// mpv reported a playback error.

@@ -967,6 +967,8 @@ pub struct Overlays {
     /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
     /// select, Enter imports, Esc closes.
     pub spotify_picker: Option<SpotifyPicker>,
+    /// Hotplug-aware local audio-output chooser opened from Settings › Playback.
+    pub audio_output_picker: Option<AudioOutputPicker>,
     /// The radio-recording settings popup (over the Playback settings tab).
     pub recording_settings: Option<RecordingSettingsPopup>,
     /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.

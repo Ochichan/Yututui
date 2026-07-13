@@ -141,8 +141,7 @@ impl SettingsTab {
                     // "Now Playing" section so the static count below stays partition-correct.
                     Field::RadioRecording,
                     Field::AudioBackend,
-                    Field::AudioMpvOutput,
-                    Field::AudioMpvDevice,
+                    Field::AudioOutput,
                     Field::AudioMpvCacheForward,
                     Field::AudioMpvCacheBack,
                     Field::EqPreset,
@@ -243,7 +242,7 @@ impl SettingsTab {
                 // in radio mode, `SettingsState::sections` decrements this back to 7 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
                 (t!("Now Playing", "현재 재생"), 8),
-                (t!("Audio backend", "오디오 백엔드"), 5),
+                (t!("Audio backend", "오디오 백엔드"), 4),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             // Animation sections and the fields within each are ordered by average resource
@@ -335,6 +334,9 @@ pub enum Field {
     RadioRecording,
     /// The selected audio backend. v1 exposes mpv as the only backend.
     AudioBackend,
+    /// Opens the automatically populated local audio-output picker.
+    AudioOutput,
+    // Kept as internal draft/edit compatibility fields; no longer rendered as raw rows.
     AudioMpvOutput,
     AudioMpvDevice,
     AudioMpvCacheForward,
@@ -754,6 +756,7 @@ impl SettingsDraft {
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
             Field::VideoLayout => self.video_layout.label().to_owned(),
             Field::AudioBackend => self.audio_backend.id().to_owned(),
+            Field::AudioOutput => audio_optional_display(&self.audio_mpv_device),
             Field::AudioMpvOutput => audio_optional_display(&self.audio_mpv_output),
             Field::AudioMpvDevice => audio_optional_display(&self.audio_mpv_device),
             Field::AudioMpvCacheForward => {

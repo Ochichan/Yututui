@@ -3,6 +3,7 @@
 
 pub mod about;
 pub mod ai;
+pub mod audio_output_picker;
 pub mod context_menu;
 pub mod help;
 pub mod library;

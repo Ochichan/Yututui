@@ -18,7 +18,7 @@ fn configured_cache_values_flow_to_remote_projection_and_player_argv() {
     assert_eq!(
         crate::player::mpv::structured_audio_args(&runtime.audio.mpv),
         [
-            "--ao=pipewire",
+            "--audio-fallback-to-null=yes",
             "--audio-device=alsa/custom",
             "--demuxer-max-bytes=64MiB",
             "--demuxer-max-back-bytes=12MiB",

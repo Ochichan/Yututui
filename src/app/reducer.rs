@@ -242,6 +242,25 @@ impl App {
                 PlayerMsg::FileFormat(format) => {
                     self.playback.file_format = format;
                 }
+                PlayerMsg::AudioDeviceList(devices) => {
+                    return self.on_audio_device_list(devices);
+                }
+                PlayerMsg::AudioDeviceRefreshFailed(error) => {
+                    return self.on_audio_device_refresh_failed(error);
+                }
+                PlayerMsg::AudioDeviceChanged(device) => {
+                    return self.on_audio_device_changed(device);
+                }
+                PlayerMsg::CurrentAudioOutput(output) => {
+                    return self.on_current_audio_output(output);
+                }
+                PlayerMsg::AudioDeviceSelectionResult {
+                    correlation_id,
+                    device,
+                    result,
+                } => {
+                    return self.finish_audio_device_selection(correlation_id, device, result);
+                }
                 PlayerMsg::Paused(p) => {
                     self.playback.paused = p;
                     self.dirty = true;
@@ -287,6 +306,7 @@ impl App {
                 }
                 PlayerMsg::Error(e) => return self.on_player_error(e),
                 PlayerMsg::TransportClosed(reason) => {
+                    self.audio_output_transport_closed(&reason);
                     return self.recover_player_transport(reason);
                 }
                 PlayerMsg::IntentAdmitted(commit) => {

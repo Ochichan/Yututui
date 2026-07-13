@@ -33,6 +33,7 @@ impl App {
             anim: Animation::default(),
             fx: FxState::new(volume.clamp(0, VOLUME_MAX)),
             audio: AudioEq::default(),
+            audio_devices: AudioDeviceRuntime::default(),
             autoplay_streaming: false,
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),

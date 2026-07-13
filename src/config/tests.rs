@@ -254,6 +254,7 @@ fn json_round_trips() {
                 cache_defaults_revision: MPV_CACHE_DEFAULTS_REVISION,
                 output: Some("pipewire".to_owned()),
                 device: Some("alsa/default".to_owned()),
+                device_detected: false,
                 cache_forward: "64MiB".to_owned(),
                 cache_back: "16MiB".to_owned(),
                 extra_args: vec!["--audio-exclusive=no".to_owned()],

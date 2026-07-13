@@ -310,6 +310,10 @@ impl App {
             return self.recordings_browser_key(k);
         }
 
+        if self.overlays.audio_output_picker.is_some() {
+            return self.audio_output_picker_key(k);
+        }
+
         // The recording-settings popup renders as a top-level overlay (`ui::mod`), so it must
         // capture input here too — not only inside Settings-mode dispatch. Otherwise a global
         // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the

@@ -73,7 +73,10 @@ impl App {
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::AudioMpvDevice => {
-                self.config.audio.mpv.device = settings::blank_to_none(&value);
+                self.config
+                    .audio
+                    .mpv
+                    .set_manual_device(settings::blank_to_none(&value));
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::AudioMpvCacheForward => {

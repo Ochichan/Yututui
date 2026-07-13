@@ -32,6 +32,13 @@ impl DaemonEvent {
             ) => ObserverPlan::PROGRESS,
             // A lyrics result never changes player/queue/media state — skip projections.
             DaemonEvent::Remote(RemoteEvent::SessionSubscribe { .. })
+            | DaemonEvent::Player(
+                crate::player::PlayerEvent::AudioDeviceList(_)
+                | crate::player::PlayerEvent::AudioDeviceRefreshFailed(_)
+                | crate::player::PlayerEvent::AudioDeviceChanged(_)
+                | crate::player::PlayerEvent::CurrentAudioOutput(_)
+                | crate::player::PlayerEvent::AudioDeviceSelectionResult { .. },
+            )
             | DaemonEvent::Lyrics(_)
             | DaemonEvent::Download(_)
             | DaemonEvent::Transfer(_)

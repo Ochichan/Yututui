@@ -547,6 +547,7 @@ fn slider_str(bar: &str, num: &str) -> String {
 fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
     match (field, field.kind()) {
         (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
+        (Field::AudioOutput, _) => app.audio_output_display_label(&st.draft.audio_mpv_device),
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
         (f, _) if f.is_secret() && focused && st.editing_text => {

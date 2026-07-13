@@ -30,7 +30,7 @@ use crate::util::delivery::DeliveryError;
 use delivery_reporting::{ActorRejectionRecovery, recover_actor_rejection, report_actor_delivery};
 #[cfg(test)]
 use event_policy::player_msg_policy as app_player_msg_policy;
-use event_policy::{app_msg_policy, video_event_policy};
+use event_policy::{app_msg_policy, player_event_policy, video_event_policy};
 #[cfg(test)]
 use player_delivery::{
     PENDING_PLAYER_CMDS_MAX, PENDING_PLAYER_INTENTS_MAX, PlayerRestartDecision,
@@ -147,48 +147,7 @@ impl RuntimeEvent {
             RuntimeEvent::Lyrics(_) => EventPolicy::DropIfStale {
                 stale_key: Key::LyricsVideo,
             },
-            RuntimeEvent::Player(event) => match event.unscoped() {
-                crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerTimePos,
-                },
-                crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerDuration,
-                },
-                crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerPaused,
-                },
-                crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerVolume,
-                },
-                crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::WorkResult,
-                    key: Key::PlayerMetadata,
-                },
-                crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerCacheTime,
-                },
-                crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerAudioCodec,
-                },
-                crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerFileFormat,
-                },
-                crate::player::PlayerEvent::Eof
-                | crate::player::PlayerEvent::Error(_)
-                | crate::player::PlayerEvent::TransportClosed(_) => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
-                crate::player::PlayerEvent::FileScoped { .. } => {
-                    unreachable!("audio file event was unscoped before policy lookup")
-                }
-            },
+            RuntimeEvent::Player(event) => player_event_policy(event.unscoped()),
             RuntimeEvent::Persist(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
@@ -458,6 +417,27 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::CacheTime(t) => Msg::Player(PlayerMsg::CacheTime(t)),
                 crate::player::PlayerEvent::AudioCodec(c) => Msg::Player(PlayerMsg::AudioCodec(c)),
                 crate::player::PlayerEvent::FileFormat(f) => Msg::Player(PlayerMsg::FileFormat(f)),
+                crate::player::PlayerEvent::AudioDeviceList(devices) => {
+                    Msg::Player(PlayerMsg::AudioDeviceList(devices))
+                }
+                crate::player::PlayerEvent::AudioDeviceRefreshFailed(error) => {
+                    Msg::Player(PlayerMsg::AudioDeviceRefreshFailed(error))
+                }
+                crate::player::PlayerEvent::AudioDeviceChanged(device) => {
+                    Msg::Player(PlayerMsg::AudioDeviceChanged(device))
+                }
+                crate::player::PlayerEvent::CurrentAudioOutput(output) => {
+                    Msg::Player(PlayerMsg::CurrentAudioOutput(output))
+                }
+                crate::player::PlayerEvent::AudioDeviceSelectionResult {
+                    correlation_id,
+                    device,
+                    result,
+                } => Msg::Player(PlayerMsg::AudioDeviceSelectionResult {
+                    correlation_id,
+                    device,
+                    result,
+                }),
                 crate::player::PlayerEvent::Eof => Msg::Player(PlayerMsg::Eof),
                 crate::player::PlayerEvent::Error(error) => Msg::Player(PlayerMsg::Error(error)),
                 crate::player::PlayerEvent::TransportClosed(reason) => {

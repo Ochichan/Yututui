@@ -92,6 +92,28 @@ impl DaemonEvent {
                     lane: Lane::Telemetry,
                     key: Key::PlayerFileFormat,
                 },
+                crate::player::PlayerEvent::AudioDeviceList(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerAudioDeviceList,
+                },
+                crate::player::PlayerEvent::AudioDeviceRefreshFailed(_) => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::Control,
+                    }
+                }
+                crate::player::PlayerEvent::AudioDeviceChanged(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerAudioDevice,
+                },
+                crate::player::PlayerEvent::CurrentAudioOutput(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerCurrentAudioOutput,
+                },
+                crate::player::PlayerEvent::AudioDeviceSelectionResult { .. } => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::Control,
+                    }
+                }
                 crate::player::PlayerEvent::Eof
                 | crate::player::PlayerEvent::Error(_)
                 | crate::player::PlayerEvent::TransportClosed(_) => EventPolicy::MustDeliver {

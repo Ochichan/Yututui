@@ -73,6 +73,12 @@ impl PlayerIntent {
 /// State changes whose validity depends on player command admission.
 #[derive(Clone)]
 pub enum PlayerCommit {
+    AudioOutputRefresh,
+    AudioOutputSelection {
+        correlation_id: u64,
+        target: Option<String>,
+        source: AudioOutputSelectionSource,
+    },
     Pause {
         paused: bool,
         clear_video_pause: bool,
@@ -118,6 +124,9 @@ impl PlayerCommit {
     /// every stateful plan validates the same guards as its commit before mpv sees the batch.
     pub(crate) fn is_current_for(&self, app: &App) -> bool {
         match self {
+            Self::AudioOutputSelection { correlation_id, .. } => {
+                app.audio_output_selection_is_current(*correlation_id)
+            }
             Self::SettingsAudioPreview(plan) => app.settings_audio_preview_is_current(plan),
             Self::SettingsSave(plan) => app.settings_save_is_current(plan),
             Self::PrefetchWatchRetry(plan) => app.prefetch_watch_retry_is_current(plan),
@@ -127,7 +136,8 @@ impl PlayerCommit {
             Self::Track(plan) => app.track_transition_is_current(plan),
             Self::VideoOpen(plan) => app.video_open_is_current(plan),
             Self::VideoFinish(plan) => app.video_finish_is_current(plan),
-            Self::Pause { .. }
+            Self::AudioOutputRefresh
+            | Self::Pause { .. }
             | Self::Volume { .. }
             | Self::Seek { .. }
             | Self::Speed { .. }
@@ -217,6 +227,14 @@ impl App {
 
     pub(crate) fn commit_player_intent(&mut self, commit: PlayerCommit) -> Vec<Cmd> {
         match commit {
+            PlayerCommit::AudioOutputRefresh => self.commit_audio_output_refresh(),
+            PlayerCommit::AudioOutputSelection {
+                correlation_id,
+                target,
+                source,
+            } => {
+                self.commit_audio_output_selection(correlation_id, target, source);
+            }
             PlayerCommit::Pause {
                 paused,
                 clear_video_pause,

@@ -43,6 +43,7 @@ impl App {
         self.overlays.recording_settings = None;
         self.overlays.recordings_browser = None;
         self.overlays.spotify_picker = None;
+        self.overlays.audio_output_picker = None;
         self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.

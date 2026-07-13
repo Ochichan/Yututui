@@ -115,6 +115,7 @@ impl Field {
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
             | Field::RadioRecording
+            | Field::AudioOutput
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => FieldKind::Button,
@@ -222,6 +223,7 @@ impl Field {
             Field::VideoLayout => t!("Video window", "영상 창").to_owned(),
             Field::RadioRecording => t!("Radio recording", "라디오 녹음").to_owned(),
             Field::AudioBackend => t!("Backend (mpv)", "백엔드 (mpv)").to_owned(),
+            Field::AudioOutput => t!("Audio output", "오디오 출력").to_owned(),
             Field::AudioMpvOutput => {
                 t!("mpv output (next launch)", "mpv 출력 (재시작 후 적용)").to_owned()
             }

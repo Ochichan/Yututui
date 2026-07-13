@@ -5,6 +5,7 @@
 //! scope for the whole session: dropping it kills mpv. See [`lifetime`] for the full
 //! no-orphan story.
 
+mod audio;
 pub mod backend;
 pub mod ipc;
 pub mod lifetime;
@@ -28,6 +29,8 @@ use tokio::sync::mpsc::{self, Sender};
 use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use crate::util::process::ProcessProfile;
 use crate::util::process_guard::ChildTreeGuard;
+
+pub use audio::AudioDevice;
 
 /// Commands the reducer sends to the player actor.
 #[derive(Clone)]
@@ -55,6 +58,14 @@ pub enum PlayerCmd {
     },
     /// Set an arbitrary mpv property (e.g. `speed`).
     SetProperty { name: String, value: Value },
+    /// Refresh the cross-platform output list exposed by mpv.
+    RefreshAudioDevices,
+    /// Clear any forced output driver, then select a local output. `None` means mpv `auto`.
+    /// `correlation_id` is returned unchanged in [`PlayerEvent::AudioDeviceSelectionResult`].
+    SelectAudioDevice {
+        correlation_id: u64,
+        device: Option<String>,
+    },
     /// Set a property whose exact mpv reply is a resource-lifetime boundary. The recorder uses
     /// this only for the final `stream-record` command which closes the previous source.
     TrackedProperty(TrackedProperty),
@@ -76,6 +87,8 @@ impl PlayerCmd {
                 | Self::CyclePause
                 | Self::SetAudioFilter(_)
                 | Self::SetProperty { .. }
+                | Self::RefreshAudioDevices
+                | Self::SelectAudioDevice { .. }
                 | Self::TrackedProperty(_)
         )
     }
@@ -126,6 +139,20 @@ pub enum PlayerEvent {
     /// mpv `file-format` (container) — a fallback / HLS signal for the recorder's extension
     /// choice. `None` when unavailable.
     FileFormat(Option<String>),
+    /// Latest sanitized snapshot from mpv's cross-platform `audio-device-list` property.
+    AudioDeviceList(Vec<AudioDevice>),
+    /// A manual device-list refresh failed without changing playback state.
+    AudioDeviceRefreshFailed(String),
+    /// Selected mpv output ID. `None` represents mpv's automatic system-default routing.
+    AudioDeviceChanged(Option<String>),
+    /// Active mpv audio-output driver (`coreaudio`, `wasapi`, `pipewire`, and so on).
+    CurrentAudioOutput(Option<String>),
+    /// Terminal result for one [`PlayerCmd::SelectAudioDevice`] request.
+    AudioDeviceSelectionResult {
+        correlation_id: u64,
+        device: Option<String>,
+        result: std::result::Result<(), String>,
+    },
     Eof,
     Error(String),
     /// The mpv IPC transport ended unexpectedly. The detail is sanitized at the actor

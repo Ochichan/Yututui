@@ -1,9 +1,7 @@
-//! The mpv IPC client: connect to the socket/pipe, then run the actor loop.
+//! The mpv IPC client: connect to the cross-platform local socket, then run the actor loop.
 //!
-//! `interprocess` gives us one async `LocalSocket` API over Unix sockets and Windows
-//! named pipes. mpv creates the endpoint a moment after spawn, so [`connect_retry`]
-//! polls briefly. The actor holds a single connection and reads events while writing
-//! commands concurrently by sharing `&conn` (the documented `interprocess` pattern).
+//! mpv creates the endpoint after spawn, so [`connect_retry`] polls briefly. The actor reads
+//! events and writes commands over one shared `interprocess` connection.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -16,12 +14,26 @@ use std::time::Instant;
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::{mpsc::Receiver, watch};
 use tokio::time::{Duration, sleep};
 
 use super::proto::{self, MpvIncoming};
 use super::{EventSink, PlayerCmd, PlayerEvent};
+
+mod audio_output;
+mod wire;
+
+use audio_output::evict_oldest_unprotected_pending;
+pub(super) use wire::write_json;
+
+#[cfg(test)]
+use audio_output::{
+    Selection as PendingAudioDeviceSelection, SelectionPhase as AudioDeviceSelectionPhase,
+    fail_pending_commands, remember_refresh as remember_pending_audio_device_refresh,
+    remember_selection as remember_pending_audio_device_selection,
+    selection_command as audio_device_selection_command, timeout as timeout_audio_device_selection,
+};
 
 /// Upper bound on a single mpv IPC line. mpv's JSON events are well under a kilobyte; the
 /// cap only guards against a broken/hostile endpoint growing one line without limit.
@@ -131,6 +143,7 @@ struct DispatchState {
     /// Raw mpv numeric-property traffic for the opt-in `YTM_PERF` trace. Kept behind an
     /// `Option` so normal runs pay only one predictable branch per incoming IPC line.
     numeric_perf: Option<NumericPerfWindow>,
+    audio_output: audio_output::State,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -153,7 +166,6 @@ const ENTRY_GENERATION_CAPACITY: usize = 2048;
 const PENDING_REDIRECT_CAPACITY: usize = 128;
 const LEGACY_LOAD_CAPACITY: usize = 128;
 const LOAD_VALIDATION_BACKLOG_CAPACITY: usize = 256;
-const MPV_IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct PendingLoadValidation {
     request_id: u64,
@@ -207,6 +219,7 @@ impl Default for DispatchState {
             legacy_pending_end_generation: None,
             quarantined_file_events: VecDeque::new(),
             numeric_perf: None,
+            audio_output: audio_output::State::default(),
         }
     }
 }
@@ -215,6 +228,7 @@ struct PendingCommand {
     label: String,
     file_generation: Option<u64>,
     acknowledgement: Option<crate::util::command_barrier::CommandBarrierSignal>,
+    audio_output: Option<audio_output::Pending>,
 }
 
 struct NumericPerfWindow {
@@ -576,6 +590,7 @@ fn remember_pending_command(state: &mut DispatchState, request_id: u64, label: i
             label: label.into(),
             file_generation: None,
             acknowledgement: None,
+            audio_output: None,
         },
     );
 }
@@ -595,6 +610,7 @@ fn remember_pending_load(
             label: label.into(),
             file_generation: Some(generation),
             acknowledgement: None,
+            audio_output: None,
         },
     );
     true
@@ -616,34 +632,10 @@ fn remember_pending_tracked(
             label,
             file_generation: None,
             acknowledgement: Some(acknowledgement),
+            audio_output: None,
         },
     );
     Ok(())
-}
-
-fn fail_pending_barriers(state: &DispatchState, error: &str) {
-    for pending in state.pending.values() {
-        if let Some(acknowledgement) = &pending.acknowledgement {
-            acknowledgement.fail(error.to_owned());
-        }
-    }
-}
-
-fn evict_oldest_unprotected_pending(state: &mut DispatchState) -> bool {
-    let oldest = state
-        .pending
-        .iter()
-        .filter(|(_, pending)| {
-            pending.file_generation.is_none() && pending.acknowledgement.is_none()
-        })
-        .map(|(request_id, _)| *request_id)
-        .min();
-    if let Some(oldest) = oldest {
-        state.pending.remove(&oldest);
-        true
-    } else {
-        false
-    }
 }
 
 /// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
@@ -695,6 +687,9 @@ pub async fn run_actor(
         // mpv 0.32 also omits end-file reasons from JSON IPC. This observed property is its
         // reliable natural-EOF signal; newer mpv remains covered by explicit end-file data.
         (10, "eof-reached"),
+        (11, "audio-device-list"),
+        (12, "audio-device"),
+        (13, "current-ao"),
     ] {
         remember_pending_command(&mut state, id, format!("observe {prop}"));
         if let Err(error) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
@@ -713,14 +708,16 @@ pub async fn run_actor(
 
     let mut reader = BufReader::new(&conn);
     let mut line: Vec<u8> = Vec::new();
-    let mut request_id: u64 = 10;
+    let mut request_id: u64 = 13;
     let mut validating_load: Option<PendingLoadValidation> = None;
     let mut validation_backlog = VecDeque::new();
     let exit = loop {
+        let audio_device_selection_deadline = state.audio_output.tokio_deadline();
         // Commands accepted after a load whose destination check was slow remain ordered here.
         // A newer Load/Stop cancels that obsolete validation, then this backlog is replayed in
         // FIFO order before fresh channel work.
-        if validating_load.is_none()
+        if state.audio_output.is_idle()
+            && validating_load.is_none()
             && let Some(cmd) = validation_backlog.pop_front()
         {
             match begin_or_dispatch_command(
@@ -748,9 +745,10 @@ pub async fn run_actor(
         }
 
         tokio::select! {
-            cmd = cmd_rx.recv(), if (validating_load.is_some()
+            cmd = cmd_rx.recv(), if state.audio_output.is_idle()
+                && ((validating_load.is_some()
                 && validation_backlog.len() < LOAD_VALIDATION_BACKLOG_CAPACITY)
-                || (validating_load.is_none() && validation_backlog.is_empty()) => match cmd {
+                || (validating_load.is_none() && validation_backlog.is_empty())) => match cmd {
                 None => {
                     if let Some(validation) = validating_load.take() {
                         validation.task.abort();
@@ -850,13 +848,39 @@ pub async fn run_actor(
                     // Keep a partial frame across cancellation of the read branch by a ready
                     // command. Clear only after a complete newline-delimited frame was handled.
                     line.clear();
+                    if let Some(selection) = state.audio_output.followup.take()
+                        && let Err(error) = audio_output::perform_followup(
+                            &conn,
+                            &emit,
+                            &mut state,
+                            &mut request_id,
+                            selection,
+                        ).await
+                    {
+                        break transport_exit_or_shutdown(
+                            &cmd_rx,
+                            &intentional_close,
+                            ActorExit::Write {
+                                operation: "audio device command",
+                                error,
+                            },
+                        );
+                    }
                 }
             },
             // Replay one queued command, then give the read side a scheduling point before
             // writing another. This keeps a 256-command validation backlog from starving mpv
             // replies/events while preserving strict FIFO ahead of fresh channel commands.
             _ = tokio::task::yield_now(), if validating_load.is_none()
+                && state.audio_output.is_idle()
                 && !validation_backlog.is_empty() => {},
+            _ = async {
+                tokio::time::sleep_until(
+                    audio_device_selection_deadline.expect("timeout branch is guarded")
+                ).await;
+            }, if audio_device_selection_deadline.is_some() => {
+                audio_output::timeout(&mut state, &emit);
+            },
         }
     };
 
@@ -866,7 +890,7 @@ pub async fn run_actor(
     log_numeric_perf(&mut state, true);
 
     let barrier_error = exit.barrier_reason();
-    fail_pending_barriers(&state, &barrier_error);
+    audio_output::fail_pending_commands(&state, &emit, &barrier_error);
 
     // This is deliberately the actor's final action. The owner may start a replacement only
     // after processing this event, so no event from the old actor can follow the terminal one.
@@ -875,7 +899,7 @@ pub async fn run_actor(
 
 async fn begin_or_dispatch_command(
     conn: &Stream,
-    _emit: &EventSink,
+    emit: &EventSink,
     state: &mut DispatchState,
     request_id: &mut u64,
     file_generation_rx: &watch::Receiver<u64>,
@@ -897,7 +921,7 @@ async fn begin_or_dispatch_command(
             task,
         }));
     }
-    dispatch_command(conn, state, request_id, cmd).await?;
+    dispatch_command(conn, emit, state, request_id, cmd).await?;
     Ok(None)
 }
 
@@ -1020,12 +1044,16 @@ async fn finish_load_validation(
 
 async fn dispatch_command(
     conn: &Stream,
+    emit: &EventSink,
     state: &mut DispatchState,
     request_id: &mut u64,
     cmd: PlayerCmd,
 ) -> io::Result<()> {
     *request_id = request_id.wrapping_add(1);
     let command_request_id = *request_id;
+    if audio_output::is_command(&cmd) {
+        return audio_output::dispatch_command(conn, emit, state, command_request_id, cmd).await;
+    }
     let (json, label, acknowledgement) = match cmd {
         PlayerCmd::Load(_) => unreachable!("loads start in begin_or_dispatch_command"),
         PlayerCmd::Stop => {
@@ -1083,6 +1111,12 @@ async fn dispatch_command(
                 None,
             )
         }
+        PlayerCmd::RefreshAudioDevices => {
+            unreachable!("audio-device refreshes are handled before ordinary commands")
+        }
+        PlayerCmd::SelectAudioDevice { .. } => {
+            unreachable!("audio-device selections are handled before ordinary commands")
+        }
         PlayerCmd::TrackedProperty(tracked) => {
             let label = format!("set_property {}", tracked.name);
             (
@@ -1100,23 +1134,8 @@ async fn dispatch_command(
     write_json(conn, &json).await
 }
 
-/// Write one newline-terminated JSON command to mpv. Shared with the video-overlay
-/// client ([`super::video`]), which drives a second mpv over the same wire format.
-pub(super) async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
-    tokio::time::timeout(MPV_IPC_WRITE_TIMEOUT, async {
-        let mut writer = conn;
-        writer.write_all(json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "mpv IPC write timed out"))?
-}
-
-/// Borrowed view of the two high-rate numeric mpv properties. Parsing into this (zero-copy
-/// `&str` fields, `data` as a plain optional number) skips the full `serde_json::Value` tree that
-/// `proto::parse_line` builds. `None` deliberately covers both JSON null and a missing `data`
-/// field, matching the general parser's `Value::Null` fallback.
+/// Zero-copy view of the high-rate numeric properties, avoiding a `serde_json::Value` tree.
+/// `None` covers both JSON null and a missing `data` field.
 #[derive(serde::Deserialize)]
 struct NumericPropertyLine<'a> {
     event: &'a str,
@@ -1231,6 +1250,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     PlayerEvent::FileFormat(value.as_str().map(str::to_owned)),
                 );
             }
+            audio_property if audio_output::dispatch_property(audio_property, &value, emit) => {}
             "playlist" => {
                 if let Some(selection) = playlist_selection(Some(&value)) {
                     if selection.entry_id.is_some() {
@@ -1399,9 +1419,12 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             error,
             data,
         } => {
-            let Some(pending) = state.pending.remove(&request_id) else {
+            let Some(mut pending) = state.pending.remove(&request_id) else {
                 return;
             };
+            if audio_output::dispatch_reply(state, &mut pending, &error, data.as_ref(), emit) {
+                return;
+            }
             if let Some(acknowledgement) = &pending.acknowledgement {
                 if error == "success" || error.is_empty() {
                     acknowledgement.succeed();
