@@ -154,7 +154,7 @@ impl App {
                 || a.time_glow
                 || a.progress_sparkle
                 || a.border_chase
-                || (!self.lyrics.visible && a.any_canvas()))
+                || self.bridges.canvas_active.get())
     }
 
     /// Whether an enabled one-shot feedback effect is still inside its window. While true the clock
@@ -275,7 +275,7 @@ impl App {
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
-        if player_running && a.master && !self.lyrics.visible && a.any_canvas_heavy() {
+        if player_running && a.master && self.bridges.canvas_heavy_active.get() {
             return fps.min(20);
         }
         if player_running
@@ -522,8 +522,8 @@ impl App {
     /// status redraws avoid the extra escape traffic; album art and canvas animation keep the
     /// atomic swap that prevents tearing/ghosting on terminals that support it.
     pub fn synchronized_draw_active(&self) -> bool {
-        let a = self.animations();
-        self.art_active() || (matches!(self.mode, Mode::Player) && a.master && a.any_canvas_heavy())
+        self.art_active()
+            || (matches!(self.mode, Mode::Player) && self.bridges.canvas_heavy_active.get())
     }
 
     /// Whether the "Gemini-tan" mascot on the DJ Gem start screen should be dancing right now. True

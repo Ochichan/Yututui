@@ -388,12 +388,20 @@ fn art_geometry_moves_request_a_native_clear() {
         app.take_clear_before_draw(),
         "lyrics toggle moves the art band"
     );
+    assert!(
+        !app.take_clear_before_draw(),
+        "lyrics reflow should request exactly one native clear"
+    );
     // Moving the bar between Top and Bottom relocates the whole filler.
     app.config.player_bar_position = Some(PlayerBarPosition::Top);
     app.sync_art_geometry();
     assert!(
         app.take_clear_before_draw(),
         "bar-position change moves the art band"
+    );
+    assert!(
+        !app.take_clear_before_draw(),
+        "bar relocation should request exactly one native clear"
     );
 }
 

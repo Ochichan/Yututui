@@ -7,6 +7,8 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
     // Master + one effect on → animations are logically running.
     app.config.animations.master = true;
     app.config.animations.rain = true;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
     assert!(
         app.config.animations.pause_unfocused,
         "pause_unfocused defaults on"
@@ -36,6 +38,8 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
     app.playback.paused = false;
     app.config.animations.master = true;
     app.config.animations.rain = true;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
 
     assert!(app.animation_active());
 
@@ -590,6 +594,8 @@ fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
     app.config.animations.master = true;
     app.config.animations.rain = true;
     app.config.animations.fps = 30;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
 
     assert_eq!(app.animation_tick_fps(), 30);
     assert_eq!(app.animation_draw_fps(), 20);
@@ -719,6 +725,8 @@ async fn delayed_interval_skip_matches_one_tick_oracle_for_canvas_marquee_and_fx
         app.config.animations.master = true;
         app.config.animations.rain = true;
         app.config.animations.fps = 30;
+        app.bridges.canvas_active.set(true);
+        app.bridges.canvas_heavy_active.set(true);
         assert_eq!(app.animation_draw_fps(), 20);
         app
     }

@@ -468,16 +468,14 @@ fn popup_art_marker_leaves_current_player_anchor_unchanged() {
 }
 
 #[test]
-fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
+fn player_popup_marker_keeps_full_kitty_art_rows_at_the_edges() {
     use image::imageops::FilterType;
     use ratatui_image::picker::ProtocolType;
     use ratatui_image::{Resize, ResizeEncodeRender};
 
     let area = Rect::new(0, 0, 120, 50);
-    let popup = centered_fixed(area, 60, 25);
     let image = image::DynamicImage::new_rgba8(160, 90);
     let mut app = app_playing(1, 0);
-    app.overlays.about_visible = true;
     configure_test_art_picker(&mut app, ProtocolType::Kitty);
     let video_id = app.queue.current().unwrap().video_id.clone();
     app.set_artwork(video_id, Some(image.clone()));
@@ -491,6 +489,12 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
         .rect
         .get()
         .expect("player render should publish art rect");
+    let popup = Rect::new(
+        art.left() + art.width / 4,
+        art.top() + art.height / 4,
+        art.width / 2,
+        (art.height / 2).max(1),
+    );
     assert!(
         art.left() < popup.left(),
         "test geometry must expose a left art edge"
@@ -513,7 +517,15 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
 
-    let buf = render_app_buffer(&app, area.width, area.height);
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            crate::ui::render(frame, &app);
+            crate::ui::mark_art_rows_for_popup(frame, &app, popup);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer();
     let overlap = art.intersection(popup);
     for y in overlap.top()..overlap.bottom() {
         let symbol = buf

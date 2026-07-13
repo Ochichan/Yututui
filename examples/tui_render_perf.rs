@@ -3,6 +3,22 @@
 //! This is intentionally an `example`, not a criterion benchmark: the exact same source can
 //! be copied onto the frozen baseline tree, it needs no new dependency, and it emits one stable
 //! JSON schema that `scripts/tui-perf.py compare` can pair across revisions.
+//!
+//! ## Interactive Player performance TODO
+//!
+//! `TODO(interactive-player-canvas-perf)`: recover the full-field Player canvas cost without
+//! lowering configured FPS, density, animation phase, or visual cadence. Against frozen
+//! `origin/main` `435e362c8c0bea05df8f2688a6b748609d841a83`, seven alternating release-mode
+//! AB/BA pairs recorded median candidate/baseline draw-p95 ratios of 1.234 (art 100x30), 1.310
+//! (art 160x50), 1.366 (art + lyrics 100x30), and 1.547 (art + lyrics 160x50). The acceptance
+//! ceiling is 1.10; baseline mean-draw CV remained between 0.40% and 1.93%.
+//!
+//! The lyrics cases compare intentionally different work: the frozen baseline suppresses canvas
+//! rendering while lyrics are visible, whereas the interactive layout requires one full-Player
+//! canvas behind lyrics. Keep the four `canvas_art*` cases below until the debt is resolved, and
+//! report them separately from the pre-existing general `render_and_interaction` gate. Resolution
+//! requires a fresh seven-pair AB/BA run with baseline CV at most 10%, at least six passing pairs,
+//! draw p95 at most 1.10, and the original one-sided ytt/process-tree CPU bounds at most 1.05.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::hash_map::DefaultHasher;
@@ -10,18 +26,26 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use image::DynamicImage;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui_image::picker::Picker;
+use ratatui_image::thread::ThreadProtocol;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use yututui::api::Song;
-use yututui::app::{AiMessage, AiRole, App, LibraryTab, LocalSection, Mode, Msg, SearchFocus};
+use yututui::app::{
+    AiMessage, AiRole, App, LibraryTab, LocalSection, Mode, Msg, SearchFocus, TrackLyrics,
+};
+use yututui::config::PlayerBarPosition;
 use yututui::i18n::Language;
 use yututui::local::{LocalIndex, LocalTrack};
+use yututui::lyrics::LyricLine;
 
 const SCHEMA: &str = "ytt.tui-perf.render.v1";
 const LOCAL_SCROLL_TRACKS: usize = 180;
@@ -167,7 +191,9 @@ fn positive_usize(name: &str, raw: &str) -> Result<usize, String> {
 fn usage() -> &'static str {
     "Usage: tui_render_perf [--output FILE] [--case NAME] [--warmup N] [--batches N] [--draws N]\n\
      Cases: player, search50, library999, ai_long, reducer_input, retro160x50, normal80x24, \
-     local_empty60x16, local_scroll72x18, local_max120x30, local_filter_ko90x24"
+     local_empty60x16, local_scroll72x18, local_max120x30, local_filter_ko90x24, \
+     canvas_art100x30, canvas_art160x50, canvas_art_lyrics100x30, \
+     canvas_art_lyrics160x50"
 }
 
 #[derive(Serialize)]
@@ -413,6 +439,42 @@ fn case_specs() -> Vec<CaseSpec> {
             update: mutate_for_interaction,
         },
         CaseSpec {
+            name: "canvas_art100x30",
+            update_path: "direct_fixture_state",
+            width: 100,
+            height: 30,
+            language: Language::English,
+            build: canvas_art_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "canvas_art160x50",
+            update_path: "direct_fixture_state",
+            width: 160,
+            height: 50,
+            language: Language::English,
+            build: canvas_art_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "canvas_art_lyrics100x30",
+            update_path: "direct_fixture_state",
+            width: 100,
+            height: 30,
+            language: Language::English,
+            build: canvas_art_lyrics_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "canvas_art_lyrics160x50",
+            update_path: "direct_fixture_state",
+            width: 160,
+            height: 50,
+            language: Language::English,
+            build: canvas_art_lyrics_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
             name: "local_empty60x16",
             update_path: "direct_fixture_state",
             width: 60,
@@ -610,6 +672,39 @@ fn player_app() -> App {
     app.playback.duration = Some(245.0);
     app.playback.time_pos = Some(73.0);
     app.playback.volume = 67;
+    app
+}
+
+fn canvas_art_app() -> App {
+    let mut app = player_app();
+    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
+    app.config.album_art = Some(true);
+    app.config.animations.master = true;
+    app.config.animations.plasma = true;
+    app.playback.paused = false;
+
+    let picker = Picker::halfblocks();
+    let image = Arc::new(DynamicImage::new_rgba8(32, 32));
+    let protocol = picker.new_resize_protocol_shared(image);
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    app.art.dims = (32, 32);
+    app.art.picker = Some(picker);
+    *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
+    app
+}
+
+fn canvas_art_lyrics_app() -> App {
+    let mut app = canvas_art_app();
+    let video_id = app.queue.current().expect("fixture track").video_id.clone();
+    app.lyrics.visible = true;
+    app.lyrics.track = Some(TrackLyrics {
+        video_id,
+        lines: vec![LyricLine {
+            time: 0.0,
+            text: "Deterministic performance fixture lyric".to_owned(),
+        }]
+        .into(),
+    });
     app
 }
 
@@ -812,13 +907,18 @@ fn mutate_for_interaction(app: &mut App, step: usize) {
     }
 }
 
+fn canvas_interaction(app: &mut App, step: usize) {
+    app.update(Msg::AnimTick);
+    app.playback.time_pos = Some((step % 244) as f64);
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
 
     use super::{
-        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, local_empty_app,
+        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, case_specs, local_empty_app,
         local_filter_korean_app, local_max_app, local_scroll_app,
         measure_update_to_draw_with_clock, percentile, reducer_input, search_app,
     };
@@ -907,5 +1007,22 @@ mod tests {
         );
         assert_eq!(filtered.local_mode.ui.filter_query, "한글 바늘");
         assert!(filtered.local_mode.ui.filter_editing);
+    }
+
+    #[test]
+    fn interactive_player_performance_todo_cases_remain_in_the_harness() {
+        let cases = case_specs();
+        for (name, width, height) in [
+            ("canvas_art100x30", 100, 30),
+            ("canvas_art160x50", 160, 50),
+            ("canvas_art_lyrics100x30", 100, 30),
+            ("canvas_art_lyrics160x50", 160, 50),
+        ] {
+            let case = cases
+                .iter()
+                .find(|case| case.name == name)
+                .unwrap_or_else(|| panic!("missing tracked performance TODO case {name}"));
+            assert_eq!((case.width, case.height), (width, height));
+        }
     }
 }

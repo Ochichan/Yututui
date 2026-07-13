@@ -35,6 +35,7 @@ mod nav_mouse;
 mod now_playing_overlay;
 mod playback_auto_advance;
 mod playback_settings;
+mod player_composition;
 mod player_controls;
 mod player_intent_preflight;
 mod playlist_search;
