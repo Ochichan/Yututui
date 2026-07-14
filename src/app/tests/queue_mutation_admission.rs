@@ -285,7 +285,7 @@ fn current_range_busy_and_closed_preserve_queue_popup_and_playback_until_retry()
         app.queue_popup.cursor = 3;
         app.art.video_id = Some("art-id1".to_owned());
         app.lyrics.track = Some(TrackLyrics {
-            video_id: "id1".to_owned(),
+            video_id: "id1".into(),
             lines: Vec::new().into(),
         });
         let before_ids = ordered_ids(&app.queue);
@@ -309,7 +309,7 @@ fn current_range_busy_and_closed_preserve_queue_popup_and_playback_until_retry()
             app.lyrics
                 .track
                 .as_ref()
-                .map(|lyrics| lyrics.video_id.as_str()),
+                .map(|lyrics| lyrics.video_id.as_ref()),
             Some("id1")
         );
 

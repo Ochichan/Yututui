@@ -44,6 +44,7 @@ pub fn render_at(
     // message covers the title (nothing to celebrate over) — drawn after the neighbours so the
     // sparks sit on top of the blank gap rows.
     if app.status.text.is_empty()
+        && crate::ui::anim::like_burst_active(app, title.width)
         && let Some(s) = app.queue.current()
     {
         let title_text = app.display_title(s);
@@ -386,7 +387,8 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
     };
     if app.beginner_labels_enabled() {
         // Shed keycaps and decoration before names, then use compact labels only when necessary.
-        [
+        let mut parts = StatusLineParts::with_capacity(16);
+        for (gap, minimal, labels) in [
             ("    ", false, StatusLabelTier::BeginnerKeys),
             ("  ", false, StatusLabelTier::BeginnerKeys),
             (" ", false, StatusLabelTier::BeginnerKeys),
@@ -395,27 +397,30 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
             (" ", false, StatusLabelTier::BeginnerNames),
             (" ", true, StatusLabelTier::BeginnerNames),
             (" ", true, StatusLabelTier::Compact),
-        ]
-        .into_iter()
-        .map(|(gap, minimal, labels)| {
-            (
-                buttons::text_width(gap),
-                status_line_parts_with_labels(app, gap, minimal, animated, labels),
-            )
-        })
-        .find(|(_, parts)| fits(parts))
-        .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+        ] {
+            parts =
+                status_line_parts_with_labels_reusing(app, gap, minimal, animated, labels, parts);
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
+        }
+        (1, parts)
     } else {
-        [("    ", false), ("  ", false), (" ", false), (" ", true)]
-            .into_iter()
-            .map(|(gap, minimal)| {
-                (
-                    buttons::text_width(gap),
-                    status_line_parts(app, gap, minimal, animated),
-                )
-            })
-            .find(|(_, parts)| fits(parts))
-            .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+        let mut parts = StatusLineParts::with_capacity(16);
+        for (gap, minimal) in [("    ", false), ("  ", false), (" ", false), (" ", true)] {
+            parts = status_line_parts_with_labels_reusing(
+                app,
+                gap,
+                minimal,
+                animated,
+                StatusLabelTier::Compact,
+                parts,
+            );
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
+        }
+        (1, parts)
     }
 }
 
@@ -429,6 +434,7 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
 /// drop away, so the clickable toggles never fall off the right edge.
 /// `animated` is false in the docked box's static (off-Player) forms: the clock-driven
 /// decorations (spinner, VU bars) drop instead of freezing mid-frame.
+#[cfg(test)]
 fn status_line_parts(
     app: &App,
     gap: &'static str,
@@ -437,7 +443,7 @@ fn status_line_parts(
 ) -> StatusLineParts {
     status_line_parts_with_labels(app, gap, minimal, animated, StatusLabelTier::Compact)
 }
-
+#[cfg(test)]
 fn status_line_parts_with_labels(
     app: &App,
     gap: &'static str,
@@ -445,8 +451,26 @@ fn status_line_parts_with_labels(
     animated: bool,
     labels: StatusLabelTier,
 ) -> StatusLineParts {
+    status_line_parts_with_labels_reusing(
+        app,
+        gap,
+        minimal,
+        animated,
+        labels,
+        StatusLineParts::with_capacity(16),
+    )
+}
+
+fn status_line_parts_with_labels_reusing(
+    app: &App,
+    gap: &'static str,
+    minimal: bool,
+    animated: bool,
+    labels: StatusLabelTier,
+    mut parts: StatusLineParts,
+) -> StatusLineParts {
     let retro = app.retro_mode();
-    let mut parts = StatusLineParts::with_capacity(16);
+    parts.clear();
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
     if (!minimal || !labels.beginner())
@@ -829,7 +853,7 @@ fn status_line_parts_with_labels(
     {
         let tag = match state {
             DownloadState::Running(p) => {
-                let head = crate::ui::anim::download_spinner(app).unwrap_or_else(|| "⬇".to_owned());
+                let head = crate::ui::anim::download_spinner(app).unwrap_or("⬇");
                 format!("{head} {p}%")
             }
             DownloadState::Done => "⬇ ✓".to_owned(),
@@ -925,10 +949,7 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), volume_up),
     ];
-    let widths: Vec<u16> = segments
-        .iter()
-        .map(|s| buttons::text_width(s.text))
-        .collect();
+    let widths: [u16; 10] = std::array::from_fn(|index| buttons::text_width(segments[index].text));
     let total = widths.iter().copied().sum::<u16>();
     let volume_offset = widths[..6].iter().copied().sum::<u16>();
     let volume_width = widths[6..].iter().copied().sum::<u16>();

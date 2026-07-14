@@ -344,24 +344,18 @@ fn ime_scrub_state_requires_full_draw(
     reducer_turn_unrendered: bool,
     dirty: bool,
     clear_before_draw_pending: bool,
-    animation_active: bool,
     radio_stream_active: bool,
 ) -> bool {
-    reducer_turn_unrendered
-        || dirty
-        || clear_before_draw_pending
-        || animation_active
-        || radio_stream_active
+    reducer_turn_unrendered || dirty || clear_before_draw_pending || radio_stream_active
 }
 
 fn ime_scrub_requires_full_draw(app: &App, reducer_turn_unrendered: bool) -> bool {
+    // Animation ticks own animation redraw cadence. The IME clock may scrub the current terminal
+    // buffer between them, but must not turn its independent 80 ms period into extra full frames.
     ime_scrub_state_requires_full_draw(
         reducer_turn_unrendered,
         app.dirty,
         app.clear_before_draw_pending(),
-        // Active animation renders can depend on wall-clock interpolation between reducer ticks.
-        // Keep origin's 80 ms full redraw in those windows so visible timing remains exact.
-        app.animation_active(),
         // Live-radio rendering reads `cache_time_at.elapsed()` for its stale-edge verdict, even
         // when the stream was started outside dedicated Radio mode.
         app.current_is_radio_stream(),

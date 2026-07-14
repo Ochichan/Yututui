@@ -1,7 +1,8 @@
 //! Canvas composition and first-wave effects. [`render_canvas_composite`] paints each enabled
 //! effect once in its assigned coordinate space and hard-masks album art for every write.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::mem::size_of;
 use std::sync::OnceLock;
 
 use ratatui::Frame;
@@ -43,6 +44,19 @@ impl<'a> CanvasWriter<'a> {
             return;
         }
         put_char(self.buffer, x, y, ch, style);
+    }
+
+    /// Patch only a cell's character and foreground colour while preserving its background and
+    /// modifiers. Most canvas effects use exactly `Style::default().fg(fg)`; keeping that intent
+    /// explicit avoids constructing and merging a temporary [`Style`] for every sparse glyph.
+    pub(super) fn put_fg(&mut self, x: u16, y: u16, ch: char, fg: Color) {
+        if self.masked(x, y) {
+            return;
+        }
+        if let Some(cell) = self.buffer.cell_mut((x, y)) {
+            cell.set_char(ch);
+            cell.fg = fg;
+        }
     }
 
     /// Write a cell already proven visible by [`Self::visible_spans`]. Callers must keep the
@@ -108,6 +122,77 @@ impl<'a> CanvasWriter<'a> {
             (false, false) => ([CellSpan::default(); 2], 0),
         }
     }
+}
+
+const SCRATCH_SHRINK_MIN_EXCESS_BYTES: usize = 64 * 1024;
+
+/// Prepare a reusable scratch vector for a geometry-derived rebuild. Capacity is retained across
+/// ordinary size changes unless it is both four times the new need and at least 64 KiB excessive.
+/// This keeps resize churn low while eventually returning memory after a very large terminal is
+/// replaced by a much smaller one.
+pub(super) fn reset_scratch_vec<T>(values: &mut Vec<T>, needed: usize) {
+    let element_bytes = size_of::<T>();
+    let capacity_bytes = values.capacity().saturating_mul(element_bytes);
+    let needed_bytes = needed.saturating_mul(element_bytes);
+    let shrink_threshold = needed_bytes
+        .saturating_mul(4)
+        .max(needed_bytes.saturating_add(SCRATCH_SHRINK_MIN_EXCESS_BYTES));
+    if element_bytes != 0 && capacity_bytes > shrink_threshold {
+        *values = Vec::with_capacity(needed);
+    } else {
+        values.clear();
+        values.reserve(needed);
+    }
+}
+
+/// Resize a scratch vector while retaining the same overlapping prefix as [`Vec::resize`]. This
+/// is required for the donut's historical first frame after geometry changes; only capacity may
+/// change when the old allocation is far larger than the new grid.
+fn resize_scratch_vec_preserving<T: Clone>(values: &mut Vec<T>, needed: usize, fill: T) {
+    let element_bytes = size_of::<T>();
+    let capacity_bytes = values.capacity().saturating_mul(element_bytes);
+    let needed_bytes = needed.saturating_mul(element_bytes);
+    let shrink_threshold = needed_bytes
+        .saturating_mul(4)
+        .max(needed_bytes.saturating_add(SCRATCH_SHRINK_MIN_EXCESS_BYTES));
+    if element_bytes != 0 && capacity_bytes > shrink_threshold {
+        let retained = values.len().min(needed);
+        let mut replacement = Vec::with_capacity(needed);
+        replacement.extend_from_slice(&values[..retained]);
+        replacement.resize(needed, fill);
+        *values = replacement;
+    } else {
+        values.resize(needed, fill);
+    }
+}
+
+fn fixed_wave_table<const N: usize>() -> [f64; N] {
+    std::array::from_fn(|i| wave(i as u64, N as u64))
+}
+
+pub(super) fn wave_24_table() -> &'static [f64; 24] {
+    static TABLE: OnceLock<[f64; 24]> = OnceLock::new();
+    TABLE.get_or_init(fixed_wave_table::<24>)
+}
+
+pub(super) fn wave_70_table() -> &'static [f64; 70] {
+    static TABLE: OnceLock<[f64; 70]> = OnceLock::new();
+    TABLE.get_or_init(fixed_wave_table::<70>)
+}
+
+pub(super) fn wave_110_table() -> &'static [f64; 110] {
+    static TABLE: OnceLock<[f64; 110]> = OnceLock::new();
+    TABLE.get_or_init(fixed_wave_table::<110>)
+}
+
+fn wave_14_table() -> &'static [f64; 14] {
+    static TABLE: OnceLock<[f64; 14]> = OnceLock::new();
+    TABLE.get_or_init(fixed_wave_table::<14>)
+}
+
+fn wave_9_table() -> &'static [f64; 9] {
+    static TABLE: OnceLock<[f64; 9]> = OnceLock::new();
+    TABLE.get_or_init(fixed_wave_table::<9>)
 }
 
 const MAX_FREE_RECTS: usize = 16;
@@ -297,13 +382,32 @@ fn best_single(options: &RectList<MAX_FOCAL_OPTIONS>) -> Option<Rect> {
         .max_by_key(|rect| rect_score(*rect))
 }
 
-fn focal_placements(
+type FocalPlacement = (Option<Rect>, Option<Rect>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocalPlacementKey {
     player_rect: Rect,
     art_mask: Option<Rect>,
     lyrics_rect: Option<Rect>,
     cube_on: bool,
     donut_on: bool,
-) -> (Option<Rect>, Option<Rect>) {
+}
+
+thread_local! {
+    /// Exactly one entry is enough for steady-state rendering, where geometry and toggles are
+    /// unchanged for thousands of frames. A different player surface simply evicts it.
+    static FOCAL_PLACEMENT_CACHE: Cell<Option<(FocalPlacementKey, FocalPlacement)>> = const {
+        Cell::new(None)
+    };
+}
+
+fn focal_placements_uncached(
+    player_rect: Rect,
+    art_mask: Option<Rect>,
+    lyrics_rect: Option<Rect>,
+    cube_on: bool,
+    donut_on: bool,
+) -> FocalPlacement {
     if !cube_on && !donut_on {
         return (None, None);
     }
@@ -352,6 +456,33 @@ fn focal_placements(
     }
     let donut = focal_options(&free, 10, 5);
     (None, best_single(&donut))
+}
+
+fn focal_placements(
+    player_rect: Rect,
+    art_mask: Option<Rect>,
+    lyrics_rect: Option<Rect>,
+    cube_on: bool,
+    donut_on: bool,
+) -> FocalPlacement {
+    let key = FocalPlacementKey {
+        player_rect,
+        art_mask,
+        lyrics_rect,
+        cube_on,
+        donut_on,
+    };
+    FOCAL_PLACEMENT_CACHE.with(|cache| {
+        if let Some((cached_key, placement)) = cache.get()
+            && cached_key == key
+        {
+            return placement;
+        }
+        let placement =
+            focal_placements_uncached(player_rect, art_mask, lyrics_rect, cube_on, donut_on);
+        cache.set(Some((key, placement)));
+        placement
+    })
 }
 
 fn supports(zone: Rect, min_width: u16, min_height: u16) -> bool {
@@ -501,8 +632,7 @@ fn rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
         if scratch.width != zone.width || scratch.height != zone.height {
             scratch.width = zone.width;
             scratch.height = zone.height;
-            scratch.columns.clear();
-            scratch.columns.reserve(usize::from(zone.width));
+            reset_scratch_vec(&mut scratch.columns, usize::from(zone.width));
             let h_mod = h.max(1) as u32;
             for col in 0..u64::from(zone.width) {
                 let speed = 1 + u64::from(hash32(col) % 3);
@@ -545,7 +675,7 @@ fn rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
                     let b = 1.0 - k as f64 / column.len as f64;
                     Color::Rgb((30.0 * b) as u8, (60.0 + 180.0 * b) as u8, (40.0 * b) as u8)
                 };
-                canvas.put(x, y, g, Style::default().fg(color));
+                canvas.put_fg(x, y, g, color);
             }
         }
     });
@@ -580,15 +710,14 @@ fn starfield(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let count = ((w * u32::from(zone.height)) / 40).clamp(6, 60);
     let dim = app.theme.color(R::TextSubtle);
     let bright = app.theme.color(R::AccentAlt);
-    let wave24: [f64; 24] = std::array::from_fn(|i| wave(i as u64, 24));
+    let wave24 = wave_24_table();
     STAR_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
         if scratch.width != zone.width || scratch.height != zone.height || scratch.count != count {
             scratch.width = zone.width;
             scratch.height = zone.height;
             scratch.count = count;
-            scratch.stars.clear();
-            scratch.stars.reserve(count as usize);
+            reset_scratch_vec(&mut scratch.stars, count as usize);
             for i in 0..u64::from(count) {
                 let x = (hash32(i * 2 + 1) % w) as u16;
                 let speed = 1 + u64::from(hash32(i * 3 + 2) % 4);
@@ -606,7 +735,7 @@ fn starfield(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
             let y = zone.top() + (h - 1 - yv) as u16;
             let g = STAR_GLYPHS[(hash32(i * 7 + f / 20) as usize) % STAR_GLYPHS.len()];
             let color = lerp_color(dim, bright, wave24[((f + i * 5) % 24) as usize]);
-            canvas.put(zone.left() + star.x, y, g, Style::default().fg(color));
+            canvas.put_fg(zone.left() + star.x, y, g, color);
         }
     });
 }
@@ -620,18 +749,14 @@ fn visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let top = i32::from(zone.top());
     let filled = app.theme.color(R::GaugeFilled);
     let accent = app.theme.color(R::Accent);
-    let wave14: [f64; 14] = std::array::from_fn(|i| wave(i as u64, 14));
-    let wave9: [f64; 9] = std::array::from_fn(|i| wave(i as u64, 9));
-    let row_styles: [Style; 8] = std::array::from_fn(|i| {
+    let wave14 = wave_14_table();
+    let wave9 = wave_9_table();
+    let row_colors: [Color; 8] = std::array::from_fn(|i| {
         let row = i as u16;
         if row < strip {
-            Style::default().fg(lerp_color(
-                filled,
-                accent,
-                f64::from(row + 1) / f64::from(strip),
-            ))
+            lerp_color(filled, accent, f64::from(row + 1) / f64::from(strip))
         } else {
-            Style::default()
+            Color::Reset
         }
     });
     for bx in 0..zone.width {
@@ -648,12 +773,12 @@ fn visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
                 break;
             }
             let y = yy as u16;
-            let style = row_styles[row as usize];
+            let color = row_colors[row as usize];
             if row < full {
-                canvas.put(x, y, '█', style);
+                canvas.put_fg(x, y, '█', color);
             } else if row == full && frac > 0.05 {
                 let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
-                canvas.put(x, y, blocks[idx.min(blocks.len() - 1)], style);
+                canvas.put_fg(x, y, blocks[idx.min(blocks.len() - 1)], color);
             }
         }
     }
@@ -701,16 +826,16 @@ fn donut(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let steps = donut_trig_steps();
     let base = app.theme.color(R::Accent);
     let bright = app.theme.color(R::AccentAlt);
-    let styles: [Style; 12] = std::array::from_fn(|ci| {
+    let colors: [Color; 12] = std::array::from_fn(|ci| {
         let t = ci as f64 / (DONUT_LUM.len() - 1) as f64;
-        Style::default().fg(lerp_color(base, bright, t))
+        lerp_color(base, bright, t)
     });
 
     DONUT_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
         if scratch.zbuf.len() != cells {
-            scratch.zbuf.resize(cells, 0.0);
-            scratch.out.resize(cells, 0);
+            resize_scratch_vec_preserving(&mut scratch.zbuf, cells, 0.0);
+            resize_scratch_vec_preserving(&mut scratch.out, cells, 0);
         } else {
             scratch.zbuf.fill(0.0);
             scratch.out.fill(0);
@@ -746,11 +871,11 @@ fn donut(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
                     continue;
                 }
                 let ci = (v as usize - 1).min(DONUT_LUM.len() - 1);
-                canvas.put(
+                canvas.put_fg(
                     zone.left() + xx as u16,
                     zone.top() + yy as u16,
                     DONUT_LUM[ci] as char,
-                    styles[ci],
+                    colors[ci],
                 );
             }
         }
@@ -836,6 +961,126 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn foreground_writer_matches_fg_only_style_patching() {
+        let area = Rect::new(0, 0, 6, 4);
+        let mask = Rect::new(2, 1, 2, 2);
+        let mut styled = Buffer::empty(area);
+        for cell in &mut styled.content {
+            cell.set_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::ITALIC),
+            );
+        }
+        let mut foreground = styled.clone();
+        {
+            let mut writer = CanvasWriter::new(&mut styled, Some(mask));
+            for (x, y, ch, color) in [
+                (1, 1, 'a', Color::Red),
+                (2, 1, 'b', Color::Green),
+                (4, 3, 'c', Color::Yellow),
+                (9, 9, 'd', Color::Cyan),
+            ] {
+                writer.put(x, y, ch, Style::default().fg(color));
+            }
+        }
+        {
+            let mut writer = CanvasWriter::new(&mut foreground, Some(mask));
+            for (x, y, ch, color) in [
+                (1, 1, 'a', Color::Red),
+                (2, 1, 'b', Color::Green),
+                (4, 3, 'c', Color::Yellow),
+                (9, 9, 'd', Color::Cyan),
+            ] {
+                writer.put_fg(x, y, ch, color);
+            }
+        }
+        assert_eq!(foreground, styled);
+    }
+
+    #[test]
+    fn fixed_wave_tables_are_bit_identical_to_direct_evaluation() {
+        for (actual, expected) in wave_24_table().iter().zip((0..24).map(|i| wave(i, 24))) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        for (actual, expected) in wave_70_table().iter().zip((0..70).map(|i| wave(i, 70))) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        for (actual, expected) in wave_110_table().iter().zip((0..110).map(|i| wave(i, 110))) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        for (actual, expected) in wave_14_table().iter().zip((0..14).map(|i| wave(i, 14))) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        for (actual, expected) in wave_9_table().iter().zip((0..9).map(|i| wave(i, 9))) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn scratch_capacity_downsize_has_four_x_and_64_kib_hysteresis() {
+        let mut retained = Vec::<u8>::with_capacity(64 * 1024);
+        let retained_capacity = retained.capacity();
+        reset_scratch_vec(&mut retained, 1);
+        assert_eq!(retained.capacity(), retained_capacity);
+        assert!(retained.is_empty());
+
+        let mut downsized = Vec::<u8>::with_capacity(70 * 1024);
+        let oversized_capacity = downsized.capacity();
+        reset_scratch_vec(&mut downsized, 1);
+        assert!(downsized.capacity() < oversized_capacity);
+        assert!(downsized.capacity() >= 1);
+        assert!(downsized.is_empty());
+    }
+
+    #[test]
+    fn preserving_resize_matches_vec_resize_prefix_while_downsizing_capacity() {
+        let mut expected = Vec::with_capacity(80 * 1024);
+        expected.extend(0..70 * 1024u32);
+        let mut actual = expected.clone();
+        actual.reserve(80 * 1024);
+        let oversized_capacity = actual.capacity();
+
+        expected.resize(32, u32::MAX);
+        resize_scratch_vec_preserving(&mut actual, 32, u32::MAX);
+
+        assert_eq!(actual, expected);
+        assert!(actual.capacity() < oversized_capacity);
+    }
+
+    #[test]
+    fn one_entry_focal_cache_matches_uncached_placements_and_evicts() {
+        FOCAL_PLACEMENT_CACHE.with(|cache| cache.set(None));
+        let cases = [
+            (
+                Rect::new(0, 0, 100, 30),
+                Some(Rect::new(4, 6, 30, 12)),
+                Some(Rect::new(58, 5, 36, 18)),
+                true,
+                true,
+            ),
+            (Rect::new(3, 4, 22, 6), None, None, true, true),
+            (
+                Rect::new(1, 2, 30, 5),
+                None,
+                Some(Rect::new(1, 2, 30, 5)),
+                false,
+                true,
+            ),
+        ];
+        for (player, art, lyrics, cube, donut) in cases {
+            let expected = focal_placements_uncached(player, art, lyrics, cube, donut);
+            assert_eq!(focal_placements(player, art, lyrics, cube, donut), expected);
+            let cached = FOCAL_PLACEMENT_CACHE.with(Cell::get).expect("cache entry");
+            assert_eq!(cached.1, expected);
+        }
+        let cached = FOCAL_PLACEMENT_CACHE
+            .with(Cell::get)
+            .expect("last cache entry");
+        assert_eq!(cached.0.player_rect, cases[2].0);
     }
 
     /// Every canvas effect must (a) never write a cell outside the zone it was given, and

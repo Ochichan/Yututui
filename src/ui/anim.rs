@@ -165,6 +165,49 @@ fn put_char(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
 
 // ── element-level effects ───────────────────────────────────────────────────
 
+const TITLE_SEPARATOR: &str = " — ";
+const TITLE_LOOP_GAP: &str = "   •   ";
+
+fn title_body_chars<'a>(title: &'a str, artist: &'a str) -> impl Iterator<Item = char> + 'a {
+    title
+        .chars()
+        .chain(TITLE_SEPARATOR.chars())
+        .chain(artist.chars())
+}
+
+fn title_body(title: &str, artist: &str) -> String {
+    let mut body = String::with_capacity(
+        title
+            .len()
+            .saturating_add(TITLE_SEPARATOR.len())
+            .saturating_add(artist.len()),
+    );
+    body.push_str(title);
+    body.push_str(TITLE_SEPARATOR);
+    body.push_str(artist);
+    body
+}
+
+fn title_col_window(title: &str, artist: &str, start_col: usize, width: usize) -> String {
+    let one_loop = || title_body_chars(title, artist).chain(TITLE_LOOP_GAP.chars());
+    let mut out = String::with_capacity(width);
+    let mut col = 0usize;
+    let mut taken = 0usize;
+    for ch in one_loop().chain(one_loop()) {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col < start_col {
+            col += ch_width;
+            continue;
+        }
+        if taken + ch_width > width {
+            break;
+        }
+        out.push(ch);
+        taken += ch_width;
+    }
+    out
+}
+
 /// Build the animated now-playing title line, or `None` when neither the title-shimmer nor the
 /// heart-pulse flag is on (the caller then renders its plain title unchanged). Handles three
 /// combinations: heart-only (pulse the `♥`, plain body), title-only (shimmer + marquee, static
@@ -200,22 +243,24 @@ pub fn title_line(
         spans.push(Span::styled("♥ ", style));
     }
 
-    let body = format!("{title} — {artist}");
     if a.title {
         let base = app.theme.color(R::TextPrimary);
         let bright = app.theme.color(R::Accent);
         let used = if liked { 2 } else { 0 };
         let avail = (width as usize).saturating_sub(used);
-        let total = UnicodeWidthStr::width(body.as_str());
+        let total = UnicodeWidthStr::width(title)
+            .saturating_add(UnicodeWidthStr::width(TITLE_SEPARATOR))
+            .saturating_add(UnicodeWidthStr::width(artist));
 
         // Long titles scroll; short ones sit still. `•`-separated wrap-around for a clean loop.
         let window = if total > avail && avail > 4 {
-            let loop_s = format!("{body}   •   ");
-            let period = UnicodeWidthStr::width(loop_s.as_str()).max(1);
+            let period = total
+                .saturating_add(UnicodeWidthStr::width(TITLE_LOOP_GAP))
+                .max(1);
             let start = (f / 4) as usize % period;
-            col_window(&format!("{loop_s}{loop_s}"), start, avail)
+            title_col_window(title, artist, start, avail)
         } else {
-            body
+            title_body(title, artist)
         };
 
         // A bright band sweeps across the characters (shimmer). Outside the ~6-cell band
@@ -252,7 +297,7 @@ pub fn title_line(
     } else {
         // Heart-only: the body stays exactly as the plain path would render it.
         spans.push(Span::styled(
-            body,
+            title_body(title, artist),
             app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD),
         ));
     }
@@ -293,7 +338,7 @@ pub fn controls_style(app: &App, base: Style) -> Style {
 /// A short spinner glyph for the front of the status line, or `None` when the `spinner` flag is
 /// off. Frames come from the well-known `throbber-widgets-tui` braille set — or its classic
 /// `|/-\` ASCII set in retro mode, where a console font rarely covers braille.
-pub fn spinner_prefix(app: &App) -> Option<String> {
+pub fn spinner_prefix(app: &App) -> Option<&'static str> {
     let a = app.animations();
     if !(a.master && a.spinner) {
         return None;
@@ -304,7 +349,7 @@ pub fn spinner_prefix(app: &App) -> Option<String> {
         throbber_widgets_tui::BRAILLE_EIGHT.symbols
     };
     let i = (app.anim_frame() / 2) as usize % syms.len();
-    Some(syms[i].to_owned())
+    Some(syms[i])
 }
 
 /// One-cell bar levels: eighth-blocks normally; a CP437 shade ramp in retro mode, where the
@@ -624,9 +669,13 @@ pub fn status_toast_line(app: &App, width: u16) -> Option<Line<'static>> {
 /// liked. Drawn over the title row and the blank gap rows directly above/below it; the row of
 /// cells the title text itself occupies (`occupied_cols`, centered) is left untouched so the
 /// words never glitch.
-pub fn like_burst_overlay(frame: &mut Frame, app: &App, area: Rect, occupied_cols: u16) {
+pub(in crate::ui) fn like_burst_active(app: &App, width: u16) -> bool {
     let a = app.animations();
-    if !(a.master && a.like_burst) || area.width < 12 {
+    a.master && a.like_burst && width >= 12 && fx_t(app, app.fx.like, fx_window::LIKE_MS).is_some()
+}
+
+pub fn like_burst_overlay(frame: &mut Frame, app: &App, area: Rect, occupied_cols: u16) {
+    if !like_burst_active(app, area.width) {
         return;
     }
     let Some(t) = fx_t(app, app.fx.like, fx_window::LIKE_MS) else {
@@ -797,22 +846,19 @@ pub fn popup_fade_overlay(frame: &mut Frame, app: &App, area: Rect) {
 /// Animated trailing dots for an in-progress label (`Searching`, `…thinking`): cycles
 /// `∅ → . → .. → ...` about three times a second, padded to a fixed three cells so the line
 /// never shifts. `None` when the flag is off (callers keep their static `…`).
-pub fn activity_dots(app: &App) -> Option<String> {
+pub fn activity_dots(app: &App) -> Option<&'static str> {
     let a = app.animations();
     if !(a.master && a.activity) {
         return None;
     }
     let step = (app.anim_frame() / app.anim_ms_frames(350).max(1)) % 4;
-    let mut s = ".".repeat(step as usize);
-    while s.len() < 3 {
-        s.push(' ');
-    }
-    Some(s)
+    const DOTS: [&str; 4] = ["   ", ".  ", ".. ", "..."];
+    Some(DOTS[step as usize])
 }
 
 /// A spinner glyph standing in for the `⬇` of a *running* download's status tag, so live
 /// progress reads as activity at a glance. `None` when the flag is off (the static `⬇` stays).
-pub fn download_spinner(app: &App) -> Option<String> {
+pub fn download_spinner(app: &App) -> Option<&'static str> {
     let a = app.animations();
     if !(a.master && a.activity) {
         return None;
@@ -823,7 +869,7 @@ pub fn download_spinner(app: &App) -> Option<String> {
         throbber_widgets_tui::BRAILLE_EIGHT.symbols
     };
     let i = (app.anim_frame() / 2) as usize % syms.len();
-    Some(syms[i].to_owned())
+    Some(syms[i])
 }
 
 /// The current synced-lyric line's style: breathes toward the accent, with a bright flash as
@@ -1085,16 +1131,40 @@ mod tests {
         assert_ne!(controls_style(&app, base).fg, base.fg);
 
         app.config.retro_mode = true;
-        assert!(matches!(
-            spinner_prefix(&app).as_deref(),
-            Some("|" | "/" | "-" | "\\")
-        ));
+        assert!(matches!(spinner_prefix(&app), Some("|" | "/" | "-" | "\\")));
         assert!(
             eq_bars(&app)
                 .expect("retro bars")
                 .chars()
                 .all(|ch| ['.', ':', '░', '▒', '▓', '█'].contains(&ch))
         );
+    }
+
+    #[test]
+    fn title_window_matches_the_previous_composed_string_bytes() {
+        for (title, artist) in [
+            ("A Very Long Animated Title", "Artist"),
+            ("긴 애니메이션 제목", "가수"),
+            ("Cafe\u{301} Mix", "DJ Wide 界"),
+        ] {
+            let body = format!("{title}{TITLE_SEPARATOR}{artist}");
+            let loop_s = format!("{body}{TITLE_LOOP_GAP}");
+            let period = UnicodeWidthStr::width(loop_s.as_str()).max(1);
+            for avail in [5usize, 9, 14, 23] {
+                if UnicodeWidthStr::width(body.as_str()) <= avail {
+                    continue;
+                }
+                for frame in [0u64, 4, 20, 76, 240] {
+                    let start = (frame / 4) as usize % period;
+                    let expected = col_window(&format!("{loop_s}{loop_s}"), start, avail);
+                    assert_eq!(
+                        title_col_window(title, artist, start, avail),
+                        expected,
+                        "title={title:?} artist={artist:?} frame={frame} avail={avail}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

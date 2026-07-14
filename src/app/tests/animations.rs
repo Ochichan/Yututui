@@ -136,7 +136,7 @@ fn all_animations_on_render_every_view_without_panic() {
     app.library.toggle_favorite(&cur); // liked → heart + burst path
     app.lyrics.visible = true;
     app.lyrics.track = Some(TrackLyrics {
-        video_id: cur.video_id.clone(),
+        video_id: cur.video_id.clone().into(),
         lines: (0..12)
             .map(|i| crate::lyrics::LyricLine {
                 time: f64::from(i) * 5.0,
@@ -629,6 +629,30 @@ fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
         redraws += usize::from(app.dirty);
     }
     assert_eq!(redraws, 20);
+}
+
+#[test]
+fn animation_tick_fast_path_skips_unrelated_fx_anchor_scans() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.volume_flash = true;
+    app.fx.last_volume = app.playback.volume;
+    app.playback.volume = app.playback.volume.saturating_sub(5);
+    let anchor = app.fx.last_volume;
+
+    app.dirty = false;
+    app.update(Msg::AnimTick);
+
+    assert_eq!(app.anim_frame(), 1);
+    assert_eq!(app.fx.last_volume, anchor);
+    assert!(app.fx.volume.is_none());
+
+    app.update(Msg::Resize);
+    assert_eq!(app.fx.last_volume, app.playback.volume);
+    assert!(
+        app.fx.volume.is_some(),
+        "the next state-changing reducer turn still observes the volume delta"
+    );
 }
 
 #[test]

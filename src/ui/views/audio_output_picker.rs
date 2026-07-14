@@ -67,7 +67,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         format!(
             "{}{}",
             t!("Detecting devices", "장치 탐지 중"),
-            crate::ui::anim::activity_dots(app).unwrap_or_else(|| "…".to_owned())
+            crate::ui::anim::activity_dots(app).unwrap_or("…")
         )
     } else {
         let count = app

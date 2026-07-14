@@ -60,7 +60,7 @@ fn keyboard_mouse_and_repeat_share_exact_100ms_steps() {
 
     assert!(
         app.on_mouse_target(MouseTarget::LyricsDelayLater {
-            video_id: "id0".to_owned(),
+            video_id: "id0".into(),
         })
         .is_empty()
     );
@@ -160,7 +160,7 @@ fn admitted_track_identity_alone_resets_the_session_delay() {
 #[test]
 fn hidden_empty_stale_live_and_unloaded_lyrics_fail_closed() {
     let target = || MouseTarget::LyricsLine {
-        video_id: "id0".to_owned(),
+        video_id: "id0".into(),
         line_index: 1,
     };
 
@@ -180,7 +180,7 @@ fn hidden_empty_stale_live_and_unloaded_lyrics_fail_closed() {
     assert!(
         stale
             .on_mouse_target(MouseTarget::LyricsLine {
-                video_id: "old-id".to_owned(),
+                video_id: "old-id".into(),
                 line_index: 1,
             })
             .is_empty()
@@ -188,7 +188,7 @@ fn hidden_empty_stale_live_and_unloaded_lyrics_fail_closed() {
     assert!(
         stale
             .on_mouse_target(MouseTarget::LyricsDelayEarlier {
-                video_id: "old-id".to_owned(),
+                video_id: "old-id".into(),
             })
             .is_empty()
     );
@@ -210,14 +210,14 @@ fn hidden_empty_stale_live_and_unloaded_lyrics_fail_closed() {
     live.lyrics.visible = true;
     live.playback.duration = Some(10.0);
     live.lyrics.track = Some(TrackLyrics {
-        video_id: current(&live).to_owned(),
+        video_id: current(&live).into(),
         lines: timed_lines(&[0.0, 5.0]),
     });
     live.update(Msg::Key(key(KeyCode::Char('z'))));
     assert_eq!(live.lyrics.delay.steps(), 0);
     assert!(
         live.on_mouse_target(MouseTarget::LyricsLine {
-            video_id: current(&live).to_owned(),
+            video_id: current(&live).into(),
             line_index: 1,
         })
         .is_empty()
@@ -232,7 +232,7 @@ fn lyric_click_mutates_position_only_after_admission_and_bumps_epoch_once() {
     let before_position = app.playback.time_pos;
     let before_epoch = app.playback.position_epoch;
     let cmds = app.on_mouse_target(MouseTarget::LyricsLine {
-        video_id: "id0".to_owned(),
+        video_id: "id0".into(),
         line_index: 1,
     });
     assert_eq!(seek_position(&cmds), Some(5.1));
@@ -254,7 +254,7 @@ fn lyric_click_mutates_position_only_after_admission_and_bumps_epoch_once() {
     let epoch = rejected.playback.position_epoch;
     let position = rejected.playback.time_pos;
     let cmds = rejected.on_mouse_target(MouseTarget::LyricsLine {
-        video_id: "id0".to_owned(),
+        video_id: "id0".into(),
         line_index: 1,
     });
     reject_player_transition(
@@ -403,14 +403,14 @@ fn osd_arms_refreshes_expires_reopens_and_blocks_click_through() {
     app.dirty = false;
     assert!(
         app.on_mouse_target(MouseTarget::LyricsDelayHandle {
-            video_id: "old-id".to_owned(),
+            video_id: "old-id".into(),
         })
         .is_empty()
     );
     assert!(app.lyrics.delay_osd_until.is_none());
     assert!(
         app.on_mouse_target(MouseTarget::LyricsDelayHandle {
-            video_id: "id0".to_owned(),
+            video_id: "id0".into(),
         })
         .is_empty()
     );
@@ -433,7 +433,7 @@ fn osd_arms_refreshes_expires_reopens_and_blocks_click_through() {
     assert_eq!(
         app.hits.target_at(blocker.rect.x + 2, blocker.rect.y),
         Some(MouseTarget::LyricsDelayEarlier {
-            video_id: "id0".to_owned()
+            video_id: "id0".into()
         })
     );
     let delay = app.lyrics.delay;
@@ -462,6 +462,35 @@ fn osd_arms_refreshes_expires_reopens_and_blocks_click_through() {
         app.hits.target_at(handle.rect.x, handle.rect.y),
         Some(MouseTarget::LyricsDelayHandle { .. })
     ));
+}
+
+#[test]
+fn rendered_lyric_targets_share_the_track_video_id_allocation() {
+    let app = synced_app(&[0.0, 5.0, 9.0], 5.05, 10.0);
+    let owner = app
+        .lyrics
+        .track
+        .as_ref()
+        .expect("loaded lyrics")
+        .video_id
+        .clone();
+    let _buffer = render_app_buffer(&app, 80, 24);
+    let mut shared_targets = 0usize;
+    let regions = app.hits.regions();
+    for region in regions.iter() {
+        let target_id = match &region.target {
+            MouseTarget::LyricsLine { video_id, .. }
+            | MouseTarget::LyricsDelayHandle { video_id }
+            | MouseTarget::LyricsDelayEarlier { video_id }
+            | MouseTarget::LyricsDelayLater { video_id } => Some(video_id),
+            _ => None,
+        };
+        if let Some(video_id) = target_id {
+            assert!(std::sync::Arc::ptr_eq(&owner, video_id));
+            shared_targets += 1;
+        }
+    }
+    assert!(shared_targets > 1, "expected lyric rows and an OSD target");
 }
 
 #[test]
@@ -494,6 +523,27 @@ fn lyric_clock_redraws_only_at_boundaries_and_parks_outside_active_player() {
     app.mode = Mode::Player;
     app.bridges.ui_tier.set(crate::ui::layout::UiTier::Mini);
     assert!(!app.lyrics_clock_active());
+}
+
+#[test]
+fn animation_tick_reconciles_the_lyric_row_before_arming_its_flash() {
+    let mut app = synced_app(&[0.0, 5.0], 1.0, 10.0);
+    app.config.animations.master = true;
+    app.config.animations.lyrics = true;
+    app.playback.time_pos = Some(5.1);
+    app.playback.time_pos_at = Some(Instant::now());
+    app.lyrics.active_index = Some(0);
+    app.fx.last_lyric_index = Some(0);
+    app.fx.lyric = None;
+    let expected_start = app.anim_frame().wrapping_add(1);
+
+    app.dirty = false;
+    app.update(Msg::AnimTick);
+
+    assert_eq!(app.lyrics.active_index, Some(1));
+    assert_eq!(app.fx.last_lyric_index, Some(1));
+    assert_eq!(app.fx.lyric, Some(expected_start));
+    assert!(app.dirty);
 }
 
 #[test]
@@ -533,7 +583,7 @@ fn render_targets_stay_visible_osd_wins_and_art_never_overlaps() {
                 assert_eq!(
                     app.hits.target_at(blocker.rect.x + 2, blocker.rect.y),
                     Some(MouseTarget::LyricsDelayEarlier {
-                        video_id: "id0".to_owned()
+                        video_id: "id0".into()
                     }),
                     "OSD button wins over the lyric row beneath it"
                 );

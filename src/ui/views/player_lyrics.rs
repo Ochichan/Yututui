@@ -1,5 +1,6 @@
 //! Synced-lyrics rendering and its frame-local mouse hit map.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -56,7 +57,7 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) {
         app.register_mouse_button(
             rect,
             MouseTarget::LyricsLine {
-                video_id: track.video_id.clone(),
+                video_id: Arc::clone(&track.video_id),
                 line_index,
             },
         );
@@ -83,7 +84,7 @@ fn render_empty(frame: &mut Frame, app: &App, area: Rect, dim: Style) {
     frame.render_widget(Paragraph::new(centered(&message, dim)), area);
 }
 
-fn render_delay_osd(frame: &mut Frame, app: &App, area: Rect, video_id: &str) {
+fn render_delay_osd(frame: &mut Frame, app: &App, area: Rect, video_id: &Arc<str>) {
     if area.width < 3 || area.height == 0 {
         return;
     }
@@ -91,9 +92,12 @@ fn render_delay_osd(frame: &mut Frame, app: &App, area: Rect, video_id: &str) {
         .lyrics
         .delay_osd_until
         .is_some_and(|deadline| deadline > Instant::now());
+    if !expanded {
+        return render_handle(frame, app, area, video_id);
+    }
     let value = delay_label(app);
     let expanded_label = format!("[ − {value} + ]");
-    if !expanded || expanded_label.width() > usize::from(area.width) {
+    if expanded_label.width() > usize::from(area.width) {
         return render_handle(frame, app, area, video_id);
     }
 
@@ -123,18 +127,18 @@ fn render_delay_osd(frame: &mut Frame, app: &App, area: Rect, video_id: &str) {
     app.register_mouse_button(
         Rect::new(rect.x + 2, rect.y, 1, 1),
         MouseTarget::LyricsDelayEarlier {
-            video_id: video_id.to_owned(),
+            video_id: Arc::clone(video_id),
         },
     );
     app.register_mouse_button(
         Rect::new(rect.right() - 3, rect.y, 1, 1),
         MouseTarget::LyricsDelayLater {
-            video_id: video_id.to_owned(),
+            video_id: Arc::clone(video_id),
         },
     );
 }
 
-fn render_handle(frame: &mut Frame, app: &App, area: Rect, video_id: &str) {
+fn render_handle(frame: &mut Frame, app: &App, area: Rect, video_id: &Arc<str>) {
     let rect = Rect::new(area.right() - 3, area.bottom() - 1, 3, 1);
     let style = Style::default()
         .fg(app.theme.color(R::Accent))
@@ -144,7 +148,7 @@ fn render_handle(frame: &mut Frame, app: &App, area: Rect, video_id: &str) {
     app.register_mouse_button(
         rect,
         MouseTarget::LyricsDelayHandle {
-            video_id: video_id.to_owned(),
+            video_id: Arc::clone(video_id),
         },
     );
 }
@@ -160,8 +164,6 @@ fn delay_label(app: &App) -> String {
     }
 }
 
-fn centered(text: &str, style: Style) -> Line<'static> {
-    Line::from(text.to_owned())
-        .style(style)
-        .alignment(Alignment::Center)
+fn centered(text: &str, style: Style) -> Line<'_> {
+    Line::from(text).style(style).alignment(Alignment::Center)
 }

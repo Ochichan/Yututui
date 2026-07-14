@@ -39,7 +39,7 @@ fn lyrics_result_stored_only_for_current_track() {
         video_id: "stale".to_owned(),
         lines: lyric_lines(),
     });
-    assert_eq!(app.lyrics.track.as_ref().unwrap().video_id, "id0");
+    assert_eq!(app.lyrics.track.as_ref().unwrap().video_id.as_ref(), "id0");
 }
 
 #[test]

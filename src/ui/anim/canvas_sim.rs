@@ -10,9 +10,9 @@
 use std::cell::RefCell;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 
-use super::canvas::CanvasWriter;
+use super::canvas::{CanvasWriter, reset_scratch_vec};
 use super::{ease_out_cubic, hash32, lerp_color};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
@@ -20,6 +20,48 @@ use crate::theme::ThemeRole as R;
 // ── fireworks ───────────────────────────────────────────────────────────────
 
 const FIREWORK_PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R::Error];
+const FIREWORK_PARTICLE_COUNT: usize = 24;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FireworkParticle {
+    burn_roll: u64,
+    angle_cos: f64,
+    angle_sin: f64,
+}
+
+impl FireworkParticle {
+    fn new(seed: u32, particle: u64) -> Self {
+        let burn_roll = u64::from(hash32(particle * 53 + u64::from(seed))) % 100;
+        let jitter = f64::from(hash32(particle * 31 + u64::from(seed)) % 100) / 700.0;
+        let angle =
+            (particle as f64 / FIREWORK_PARTICLE_COUNT as f64 + jitter) * std::f64::consts::TAU;
+        // Keep the original evaluation order instead of using `sin_cos`, whose last bits may
+        // differ on some targets.
+        let angle_cos = angle.cos();
+        let angle_sin = angle.sin();
+        Self {
+            burn_roll,
+            angle_cos,
+            angle_sin,
+        }
+    }
+}
+
+#[derive(Default)]
+struct FireworkLauncherCache {
+    valid: bool,
+    seed: u32,
+    particles: [FireworkParticle; FIREWORK_PARTICLE_COUNT],
+}
+
+#[derive(Default)]
+struct FireworkScratch {
+    launchers: [FireworkLauncherCache; 2],
+}
+
+thread_local! {
+    static FIREWORK_SCRATCH: RefCell<FireworkScratch> = RefCell::new(FireworkScratch::default());
+}
 
 /// One launcher's state within its cycle, all derived from `f`: a rocket climbs from the
 /// bottom, then a radial burst blooms at the apex, droops under gravity and fades out.
@@ -32,88 +74,94 @@ pub(super) fn fireworks(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
     }
     let retro = app.retro_mode();
     let period = 130u64;
-    for launcher in 0..2u64 {
-        let lf = f + launcher * (period / 2); // half-cycle offset between the two
-        let cycle = lf / period;
-        let t = (lf % period) as i64;
-        let seed = hash32(cycle.wrapping_mul(97) + launcher * 41);
-        let launch_x = 2 + i64::from(seed % (zone.width.saturating_sub(4)).max(1) as u32);
-        let apex_y = 1 + i64::from(hash32(u64::from(seed) + 11) % ((h / 3).max(1) as u32));
-        let climb = (h - apex_y).max(1);
-        let color = app
-            .theme
-            .color(FIREWORK_PALETTE[(seed as usize / 7) % FIREWORK_PALETTE.len()]);
+    FIREWORK_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        for launcher in 0..2u64 {
+            let lf = f + launcher * (period / 2); // half-cycle offset between the two
+            let cycle = lf / period;
+            let t = (lf % period) as i64;
+            let seed = hash32(cycle.wrapping_mul(97) + launcher * 41);
+            let launch_x = 2 + i64::from(seed % (zone.width.saturating_sub(4)).max(1) as u32);
+            let apex_y = 1 + i64::from(hash32(u64::from(seed) + 11) % ((h / 3).max(1) as u32));
+            let climb = (h - apex_y).max(1);
+            let color = app
+                .theme
+                .color(FIREWORK_PALETTE[(seed as usize / 7) % FIREWORK_PALETTE.len()]);
 
-        if t < climb {
-            // Ascent: a bright head with a two-cell ember tail, wiggling one column.
-            let y = h - 1 - t;
-            let x = launch_x + ((t / 5) % 2) - ((t / 7) % 2);
-            for k in 0..3i64 {
-                let yy = y + k;
-                if yy >= h || x < 0 || x >= w {
+            if t < climb {
+                // Ascent: a bright head with a two-cell ember tail, wiggling one column.
+                let y = h - 1 - t;
+                let x = launch_x + ((t / 5) % 2) - ((t / 7) % 2);
+                for k in 0..3i64 {
+                    let yy = y + k;
+                    if yy >= h || x < 0 || x >= w {
+                        continue;
+                    }
+                    let (g, c) = match k {
+                        0 => {
+                            if retro {
+                                ('^', Color::Rgb(255, 255, 220))
+                            } else {
+                                ('▲', Color::Rgb(255, 255, 220))
+                            }
+                        }
+                        1 => ('|', color),
+                        _ => ('.', app.theme.color(R::TextSubtle)),
+                    };
+                    canvas.put_fg(
+                        (i64::from(zone.left()) + x) as u16,
+                        (i64::from(zone.top()) + yy) as u16,
+                        g,
+                        c,
+                    );
+                }
+                continue;
+            }
+
+            // Burst: particles fly out radially, decelerating, drooping, and dying young→old.
+            let bt = (t - climb) as f64 / (period as f64 - climb as f64);
+            let spread = ease_out_cubic(bt);
+            let radius = 2.0 + spread * (w.min(h * 2) as f64 * 0.28);
+            let cache = &mut scratch.launchers[launcher as usize];
+            if !cache.valid || cache.seed != seed {
+                cache.valid = true;
+                cache.seed = seed;
+                for (particle, descriptor) in cache.particles.iter_mut().enumerate() {
+                    *descriptor = FireworkParticle::new(seed, particle as u64);
+                }
+            }
+            for descriptor in &cache.particles {
+                // Sparks burn out one by one over the back half of the bloom.
+                if bt > 0.5 && descriptor.burn_roll < ((bt - 0.5) * 220.0) as u64 {
                     continue;
                 }
-                let (g, c) = match k {
-                    0 => {
-                        if retro {
-                            ('^', Color::Rgb(255, 255, 220))
-                        } else {
-                            ('▲', Color::Rgb(255, 255, 220))
-                        }
-                    }
-                    1 => ('|', color),
-                    _ => ('.', app.theme.color(R::TextSubtle)),
+                let droop = spread * spread * 2.5; // gravity pulls the whole shell down
+                let x = launch_x as f64 + descriptor.angle_cos * radius;
+                let y = apex_y as f64 + descriptor.angle_sin * radius * 0.45 + droop;
+                if x < 0.0 || x >= w as f64 || y < 0.0 || y >= h as f64 {
+                    continue;
+                }
+                let (glyph, bright) = if bt < 0.25 {
+                    (if retro { '*' } else { '✦' }, 1.0)
+                } else if bt < 0.6 {
+                    ('*', 0.75)
+                } else {
+                    ('.', 0.4)
                 };
-                canvas.put(
-                    (i64::from(zone.left()) + x) as u16,
-                    (i64::from(zone.top()) + yy) as u16,
-                    g,
-                    Style::default().fg(c),
+                let c = lerp_color(
+                    app.theme.color(R::TextSubtle),
+                    color,
+                    bright * (1.0 - bt * 0.5),
+                );
+                canvas.put_fg(
+                    (i64::from(zone.left()) + x as i64) as u16,
+                    (i64::from(zone.top()) + y as i64) as u16,
+                    glyph,
+                    c,
                 );
             }
-            continue;
         }
-
-        // Burst: particles fly out radially, decelerating, drooping, and dying young→old.
-        let bt = (t - climb) as f64 / (period as f64 - climb as f64);
-        let spread = ease_out_cubic(bt);
-        let radius = 2.0 + spread * (w.min(h * 2) as f64 * 0.28);
-        let particles = 24u64;
-        for p in 0..particles {
-            // Sparks burn out one by one over the back half of the bloom.
-            if bt > 0.5
-                && u64::from(hash32(p * 53 + u64::from(seed))) % 100 < ((bt - 0.5) * 220.0) as u64
-            {
-                continue;
-            }
-            let jitter = f64::from(hash32(p * 31 + u64::from(seed)) % 100) / 700.0;
-            let ang = (p as f64 / particles as f64 + jitter) * std::f64::consts::TAU;
-            let droop = spread * spread * 2.5; // gravity pulls the whole shell down
-            let x = launch_x as f64 + ang.cos() * radius;
-            let y = apex_y as f64 + ang.sin() * radius * 0.45 + droop;
-            if x < 0.0 || x >= w as f64 || y < 0.0 || y >= h as f64 {
-                continue;
-            }
-            let (glyph, bright) = if bt < 0.25 {
-                (if retro { '*' } else { '✦' }, 1.0)
-            } else if bt < 0.6 {
-                ('*', 0.75)
-            } else {
-                ('.', 0.4)
-            };
-            let c = lerp_color(
-                app.theme.color(R::TextSubtle),
-                color,
-                bright * (1.0 - bt * 0.5),
-            );
-            canvas.put(
-                (i64::from(zone.left()) + x as i64) as u16,
-                (i64::from(zone.top()) + y as i64) as u16,
-                glyph,
-                Style::default().fg(c),
-            );
-        }
-    }
+    });
 }
 
 // ── Game of Life ────────────────────────────────────────────────────────────
@@ -161,10 +209,15 @@ pub(super) fn life(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64)
         let mut scratch = scratch.borrow_mut();
         let s = &mut *scratch;
         let cells = w * h;
-        if s.width != zone.width || s.height != zone.height || f < s.last_step {
+        let geometry_changed = s.width != zone.width || s.height != zone.height;
+        if geometry_changed || f < s.last_step {
             // Resize — or a frame-counter context change (f went backwards) — restarts the show.
             s.width = zone.width;
             s.height = zone.height;
+            if geometry_changed {
+                reset_scratch_vec(&mut s.age, cells);
+                reset_scratch_vec(&mut s.next, cells);
+            }
             s.age.resize(cells, 0);
             s.age.fill(0);
             s.next.resize(cells, 0);
@@ -313,17 +366,25 @@ pub(super) fn pipes(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64
         let s = &mut *scratch;
         let cells = w * h;
         let clogged = s.filled * 10 >= cells * 6;
-        if s.width != zone.width || s.height != zone.height || f < s.last_f || clogged {
+        let geometry_changed = s.width != zone.width || s.height != zone.height;
+        if geometry_changed || f < s.last_f || clogged {
             s.width = zone.width;
             s.height = zone.height;
+            if geometry_changed {
+                reset_scratch_vec(&mut s.cells, cells);
+            }
             s.cells.resize(cells, 0);
             s.cells.fill(0);
             s.filled = 0;
             s.epoch = s.epoch.wrapping_add(1);
             let epoch = s.epoch;
             let pipe_count = (w / 24 + 2).min(5);
-            s.heads.clear();
-            s.heads.reserve(pipe_count);
+            if geometry_changed {
+                reset_scratch_vec(&mut s.heads, pipe_count);
+            } else {
+                s.heads.clear();
+                s.heads.reserve(pipe_count);
+            }
             for i in 0..pipe_count {
                 let seed = hash32(epoch.wrapping_mul(31) + i as u64);
                 s.heads.push((
@@ -452,6 +513,15 @@ pub(super) fn plasma(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u6
 
     PLASMA_SCRATCH.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
+        if scratch.col_wave.len() != w {
+            reset_scratch_vec(&mut scratch.col_wave, w);
+        }
+        if scratch.row_wave.len() != h {
+            reset_scratch_vec(&mut scratch.row_wave, h);
+        }
+        if scratch.diag_wave.len() != w + h {
+            reset_scratch_vec(&mut scratch.diag_wave, w + h);
+        }
         scratch.col_wave.resize(w, 0.0);
         scratch.row_wave.resize(h, 0.0);
         scratch.diag_wave.resize(w + h, 0.0);
@@ -523,6 +593,137 @@ mod tests {
             }
         }
         count
+    }
+
+    #[test]
+    fn cached_firework_particles_match_the_original_formulas() {
+        for seed in [0, 1, 0xDEAD_BEEF] {
+            for particle in 0..FIREWORK_PARTICLE_COUNT as u64 {
+                let descriptor = FireworkParticle::new(seed, particle);
+                assert_eq!(
+                    descriptor.burn_roll,
+                    u64::from(hash32(particle * 53 + u64::from(seed))) % 100
+                );
+                let jitter = f64::from(hash32(particle * 31 + u64::from(seed)) % 100) / 700.0;
+                let angle = (particle as f64 / FIREWORK_PARTICLE_COUNT as f64 + jitter)
+                    * std::f64::consts::TAU;
+                assert_eq!(descriptor.angle_cos.to_bits(), angle.cos().to_bits());
+                assert_eq!(descriptor.angle_sin.to_bits(), angle.sin().to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn firework_cache_reuses_identical_output_and_rekeys_by_cycle() {
+        FIREWORK_SCRATCH.with(|scratch| *scratch.borrow_mut() = FireworkScratch::default());
+        let app = App::new(100);
+        let zone = Rect::new(4, 2, 40, 14);
+        let first = render_effect(&app, zone, None, 35, fireworks);
+        let warm = render_effect(&app, zone, None, 35, fireworks);
+        assert_eq!(warm, first);
+        let old_seeds = FIREWORK_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert!(scratch.launchers.iter().all(|cache| cache.valid));
+            [scratch.launchers[0].seed, scratch.launchers[1].seed]
+        });
+
+        render_effect(&app, zone, None, 165, fireworks);
+        FIREWORK_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_ne!(scratch.launchers[0].seed, old_seeds[0]);
+            assert_ne!(scratch.launchers[1].seed, old_seeds[1]);
+        });
+    }
+
+    #[test]
+    fn geometry_resets_downsize_large_state_without_changing_life_or_pipes_epochs() {
+        const LARGE_CELLS: usize = 80 * 1024;
+        LIFE_SCRATCH.with(|scratch| {
+            let mut age = Vec::with_capacity(LARGE_CELLS);
+            age.resize(LARGE_CELLS, 1);
+            let next = vec![0; LARGE_CELLS];
+            *scratch.borrow_mut() = LifeScratch {
+                width: 400,
+                height: 200,
+                age,
+                next,
+                last_step: 0,
+                epoch: 7,
+            };
+        });
+        let app = App::new(100);
+        let zone = Rect::new(4, 2, 40, 14);
+        render_effect(&app, zone, None, 0, life);
+        LIFE_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.epoch, 8);
+            assert_eq!(scratch.age.len(), usize::from(zone.width * zone.height));
+            assert_eq!(scratch.next.len(), usize::from(zone.width * zone.height));
+            assert!(scratch.age.capacity() < LARGE_CELLS);
+            assert!(scratch.next.capacity() < LARGE_CELLS);
+        });
+
+        PIPES_SCRATCH.with(|scratch| {
+            let mut cells = Vec::with_capacity(LARGE_CELLS);
+            cells.resize(LARGE_CELLS, 1);
+            let mut heads = Vec::with_capacity(16 * 1024);
+            heads.resize(16 * 1024, (0, 0, 0));
+            *scratch.borrow_mut() = PipesScratch {
+                width: 400,
+                height: 200,
+                cells,
+                heads,
+                filled: 1,
+                last_f: 0,
+                epoch: 11,
+            };
+        });
+        render_effect(&app, zone, None, 1, pipes);
+        PIPES_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.epoch, 12);
+            assert_eq!(scratch.cells.len(), usize::from(zone.width * zone.height));
+            assert!(scratch.cells.capacity() < LARGE_CELLS);
+            assert!(scratch.heads.capacity() < 16 * 1024);
+        });
+    }
+
+    #[test]
+    fn plasma_downsizes_large_vectors_only_when_geometry_changes() {
+        const LARGE_LEN: usize = 10 * 1024;
+        PLASMA_SCRATCH.with(|scratch| {
+            *scratch.borrow_mut() = PlasmaScratch {
+                col_wave: vec![0.0; LARGE_LEN],
+                row_wave: vec![0.0; LARGE_LEN],
+                diag_wave: vec![0.0; LARGE_LEN],
+            };
+        });
+        let app = App::new(100);
+        let zone = Rect::new(4, 2, 40, 14);
+        render_effect(&app, zone, None, 1, plasma);
+        let capacities = PLASMA_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert!(scratch.col_wave.capacity() < LARGE_LEN);
+            assert!(scratch.row_wave.capacity() < LARGE_LEN);
+            assert!(scratch.diag_wave.capacity() < LARGE_LEN);
+            (
+                scratch.col_wave.capacity(),
+                scratch.row_wave.capacity(),
+                scratch.diag_wave.capacity(),
+            )
+        });
+        render_effect(&app, zone, None, 2, plasma);
+        PLASMA_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(
+                (
+                    scratch.col_wave.capacity(),
+                    scratch.row_wave.capacity(),
+                    scratch.diag_wave.capacity(),
+                ),
+                capacities
+            );
+        });
     }
 
     #[test]

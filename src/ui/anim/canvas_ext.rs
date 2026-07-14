@@ -7,10 +7,12 @@
 //! and each effect degrades in retro mode either at the source (forked glyph sets) or through
 //! the CP437 scrubber. Nothing here allocates per frame beyond tiny fixed buffers.
 
+use std::cell::RefCell;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::canvas::CanvasWriter;
+use super::canvas::{CanvasWriter, wave_24_table, wave_70_table, wave_110_table};
 use super::{hash32, lerp_color, wave};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
@@ -69,11 +71,11 @@ pub(super) fn comets(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u6
                     lerp_color(tail_base, dim, fade),
                 )
             };
-            canvas.put(
+            canvas.put_fg(
                 (i64::from(zone.left()) + x) as u16,
                 (i64::from(zone.top()) + y) as u16,
                 glyph,
-                Style::default().fg(color),
+                color,
             );
         }
     }
@@ -116,16 +118,50 @@ pub(super) fn snow(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64)
             continue;
         }
         let color = lerp_color(dim, bright, class as f64 / 3.0);
-        canvas.put(
+        canvas.put_fg(
             zone.left() + x as u16,
             zone.top() + yv as u16,
             glyphs[3 - class],
-            Style::default().fg(color),
+            color,
         );
     }
 }
 
 // ── fireflies ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FireflyDescriptor {
+    wx: f64,
+    wy: f64,
+    px: f64,
+    py: f64,
+    breath_phase: u64,
+}
+
+impl FireflyDescriptor {
+    fn for_index(i: u64) -> Self {
+        let s = |k: u64| f64::from(hash32(i * 11 + k));
+        Self {
+            wx: 0.008 + (s(1) % 100.0) / 9000.0,
+            wy: 0.011 + (s(2) % 100.0) / 8000.0,
+            px: (s(3) % 628.0) / 100.0,
+            py: (s(4) % 628.0) / 100.0,
+            breath_phase: u64::from(hash32(i * 17 + 9) % 120),
+        }
+    }
+}
+
+#[derive(Default)]
+struct FireflyScratch {
+    width: u16,
+    height: u16,
+    count: u32,
+    flies: [FireflyDescriptor; 24],
+}
+
+thread_local! {
+    static FIREFLY_SCRATCH: RefCell<FireflyScratch> = RefCell::new(FireflyScratch::default());
+}
 
 /// Fireflies wandering on smooth per-fly Lissajous paths, each breathing between the subtle
 /// text colour and a warm glow on its own phase — the calm counterpart to the starfield.
@@ -143,31 +179,38 @@ pub(super) fn fireflies(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
     } else {
         ('●', '·')
     };
-    for i in 0..u64::from(count) {
-        // Two incommensurate angular speeds per axis make the path wander without looping
-        // visibly; amplitudes keep every fly comfortably inside the zone.
-        let s = |k: u64| f64::from(hash32(i * 11 + k));
-        let wx = 0.008 + (s(1) % 100.0) / 9000.0;
-        let wy = 0.011 + (s(2) % 100.0) / 8000.0;
-        let px = (s(3) % 628.0) / 100.0;
-        let py = (s(4) % 628.0) / 100.0;
-        let x = (w / 2.0) + (f as f64 * wx + px).sin() * (w / 2.0 - 1.0);
-        let y = (h / 2.0) + (f as f64 * wy + py).sin() * (h / 2.0 - 0.6);
-        let xi = x.floor().clamp(0.0, w - 1.0) as u16;
-        let yi = y.floor().clamp(0.0, h - 1.0) as u16;
-        // Slow personal breath; fully dark part of the cycle leaves the cell alone.
-        let b = wave(f + u64::from(hash32(i * 17 + 9) % 120), 110);
-        if b < 0.2 {
-            continue;
+    let breath_wave = wave_110_table();
+    FIREFLY_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.width != zone.width || scratch.height != zone.height || scratch.count != count {
+            scratch.width = zone.width;
+            scratch.height = zone.height;
+            scratch.count = count;
+            for (i, descriptor) in scratch.flies[..count as usize].iter_mut().enumerate() {
+                *descriptor = FireflyDescriptor::for_index(i as u64);
+            }
         }
-        let glyph = if b > 0.62 { bright_glyph } else { dim_glyph };
-        canvas.put(
-            zone.left() + xi,
-            zone.top() + yi,
-            glyph,
-            Style::default().fg(lerp_color(dim, glow, b)),
-        );
-    }
+        for descriptor in &scratch.flies[..count as usize] {
+            // Two incommensurate angular speeds per axis make the path wander without looping
+            // visibly; amplitudes keep every fly comfortably inside the zone.
+            let x = (w / 2.0) + (f as f64 * descriptor.wx + descriptor.px).sin() * (w / 2.0 - 1.0);
+            let y = (h / 2.0) + (f as f64 * descriptor.wy + descriptor.py).sin() * (h / 2.0 - 0.6);
+            let xi = x.floor().clamp(0.0, w - 1.0) as u16;
+            let yi = y.floor().clamp(0.0, h - 1.0) as u16;
+            // Slow personal breath; fully dark part of the cycle leaves the cell alone.
+            let b = breath_wave[((f + descriptor.breath_phase) % 110) as usize];
+            if b < 0.2 {
+                continue;
+            }
+            let glyph = if b > 0.62 { bright_glyph } else { dim_glyph };
+            canvas.put_fg(
+                zone.left() + xi,
+                zone.top() + yi,
+                glyph,
+                lerp_color(dim, glow, b),
+            );
+        }
+    });
 }
 
 // ── wireframe cube ──────────────────────────────────────────────────────────
@@ -238,11 +281,17 @@ pub(super) fn cube(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64)
         }
         // depth runs ~[dist-√3, dist+√3]; map near→bright.
         let t = ((depth - (dist - 1.8)) / 3.6).clamp(0.0, 1.0);
-        let mut style = Style::default().fg(lerp_color(near, far, t));
+        let color = lerp_color(near, far, t);
         if bold {
-            style = style.add_modifier(Modifier::BOLD);
+            canvas.put(
+                zone.left() + x as u16,
+                zone.top() + y as u16,
+                glyph,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            );
+        } else {
+            canvas.put_fg(zone.left() + x as u16, zone.top() + y as u16, glyph, color);
         }
-        canvas.put(zone.left() + x as u16, zone.top() + y as u16, glyph, style);
     };
 
     for &(a, b) in &CUBE_EDGES {
@@ -284,6 +333,8 @@ pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: 
         return;
     }
     let retro = app.retro_mode();
+    let bob_wave = wave_70_table();
+    let bubble_wave = wave_24_table();
 
     // Fish: one per ~3 rows, capped so a huge zone doesn't become a trawler's net.
     let fish_count = (h / 3).clamp(2, 5);
@@ -303,7 +354,7 @@ pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: 
         let pos = ((f / speed + u64::from(hash32(i * 13 + 6))) % span) as i64 - len;
         let x0 = if rightward { pos } else { w - len - pos };
         // A subtle vertical bob so the tank feels alive without lane collisions.
-        let bob = if wave(f + i * 9, 70) > 0.75 && lane + 1 < zone.height {
+        let bob = if bob_wave[((f + i * 9) % 70) as usize] > 0.75 && lane + 1 < zone.height {
             1
         } else {
             0
@@ -316,12 +367,7 @@ pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: 
             if x < 0 || x >= w {
                 continue;
             }
-            canvas.put(
-                zone.left() + x as u16,
-                zone.top() + lane + bob,
-                ch,
-                Style::default().fg(color),
-            );
+            canvas.put_fg(zone.left() + x as u16, zone.top() + lane + bob, ch, color);
         }
     }
 
@@ -343,17 +389,17 @@ pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: 
         }
         let y = (h - 1 - yv) as u16;
         let base_x = i64::from(hash32(i * 29 + 7) % u32::from(zone.width));
-        let x = base_x + ((wave(f + seed, 24) - 0.5) * 2.0).round() as i64;
+        let x = base_x + ((bubble_wave[((f + seed) % 24) as usize] - 0.5) * 2.0).round() as i64;
         if x < 0 || x >= w {
             continue;
         }
         // Bubbles grow as they rise: dot → ring near the surface.
         let stage = ((yv * 3) / h.max(1)).min(2) as usize;
-        canvas.put(
+        canvas.put_fg(
             zone.left() + x as u16,
             zone.top() + y,
             glyphs[2 - stage],
-            Style::default().fg(lerp_color(dim, bright, yv as f64 / h as f64)),
+            lerp_color(dim, bright, yv as f64 / h as f64),
         );
     }
 }
@@ -386,26 +432,79 @@ pub(super) fn waves(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64
         let freq = 0.22 - li * 0.03;
         let phase = f as f64 * (0.06 + li * 0.02);
         let color = lerp_color(surf, deep, li / f64::from(layers.max(1)));
-        let style = Style::default().fg(color);
         for x in 0..w {
             let sway = (f64::from(x) * freq + phase).sin() * amp;
             let y = base - sway.round() as i32;
             if y < i32::from(top) || y > i32::from(bottom) {
                 continue;
             }
-            canvas.put(zone.left() + x, y as u16, crest_glyph, style);
+            canvas.put_fg(zone.left() + x, y as u16, crest_glyph, color);
             // Foam: rare bright flecks dancing on the front crest only.
             if layer == 0
                 && hash32(u64::from(x) * 37 + f / 8).is_multiple_of(23)
                 && y > i32::from(top)
             {
-                canvas.put(
-                    zone.left() + x,
-                    (y - 1) as u16,
-                    foam_glyph,
-                    Style::default().fg(foam_color),
-                );
+                canvas.put_fg(zone.left() + x, (y - 1) as u16, foam_glyph, foam_color);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn render_fireflies(app: &App, zone: Rect, frame: u64) -> Buffer {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 30));
+        let mut canvas = CanvasWriter::new(&mut buffer, None);
+        fireflies(&mut canvas, app, zone, frame);
+        buffer
+    }
+
+    #[test]
+    fn cached_firefly_descriptors_match_the_original_formulas() {
+        for i in 0..24u64 {
+            let descriptor = FireflyDescriptor::for_index(i);
+            let s = |k: u64| f64::from(hash32(i * 11 + k));
+            assert_eq!(
+                descriptor.wx.to_bits(),
+                (0.008 + (s(1) % 100.0) / 9000.0).to_bits()
+            );
+            assert_eq!(
+                descriptor.wy.to_bits(),
+                (0.011 + (s(2) % 100.0) / 8000.0).to_bits()
+            );
+            assert_eq!(descriptor.px.to_bits(), ((s(3) % 628.0) / 100.0).to_bits());
+            assert_eq!(descriptor.py.to_bits(), ((s(4) % 628.0) / 100.0).to_bits());
+            assert_eq!(descriptor.breath_phase, u64::from(hash32(i * 17 + 9) % 120));
+        }
+    }
+
+    #[test]
+    fn firefly_cache_reuses_identical_output_and_rekeys_on_resize() {
+        FIREFLY_SCRATCH.with(|scratch| *scratch.borrow_mut() = FireflyScratch::default());
+        let app = App::new(100);
+        let first_zone = Rect::new(3, 2, 60, 20);
+        let first = render_fireflies(&app, first_zone, 47);
+        let warm = render_fireflies(&app, first_zone, 47);
+        assert_eq!(warm, first);
+
+        let second_zone = Rect::new(3, 2, 30, 10);
+        render_fireflies(&app, second_zone, 48);
+        FIREFLY_SCRATCH.with(|scratch| {
+            let scratch = scratch.borrow();
+            assert_eq!(scratch.width, second_zone.width);
+            assert_eq!(scratch.height, second_zone.height);
+            assert_eq!(scratch.count, 6);
+            for (i, descriptor) in scratch.flies[..scratch.count as usize].iter().enumerate() {
+                let expected = FireflyDescriptor::for_index(i as u64);
+                assert_eq!(descriptor.wx.to_bits(), expected.wx.to_bits());
+                assert_eq!(descriptor.wy.to_bits(), expected.wy.to_bits());
+                assert_eq!(descriptor.px.to_bits(), expected.px.to_bits());
+                assert_eq!(descriptor.py.to_bits(), expected.py.to_bits());
+                assert_eq!(descriptor.breath_phase, expected.breath_phase);
+            }
+        });
     }
 }

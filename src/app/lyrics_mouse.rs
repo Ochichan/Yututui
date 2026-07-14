@@ -9,7 +9,8 @@ impl App {
                 video_id,
                 line_index,
             } => {
-                let Some(position) = self.lyrics_line_seek_target(&video_id, line_index) else {
+                let Some(position) = self.lyrics_line_seek_target(video_id.as_ref(), line_index)
+                else {
                     return Vec::new();
                 };
                 self.player_intent(

@@ -57,6 +57,95 @@ RUN_CONTRACT_SCHEMA = "ytt.tui-perf.run-contract.v1"
 MPV_SELECTION_SCHEMA = "ytt.tui-perf.mpv-selection.v1"
 SETTING_OVERRIDES_SCHEMA = "ytt.tui-perf.setting-overrides.v1"
 LONG_FORM_SETTING_LEAF = "audio.mpv.long_form_seek_optimization"
+ANIMATION_EFFECT_FIELDS = (
+    "title",
+    "heart",
+    "seekbar",
+    "spinner",
+    "eq_bars",
+    "controls",
+    "border",
+    "track_intro",
+    "lyrics",
+    "toast",
+    "volume_flash",
+    "like_burst",
+    "seek_flash",
+    "selection",
+    "stagger",
+    "caret",
+    "tabs",
+    "popup_fade",
+    "activity",
+    "about_fx",
+    "time_glow",
+    "progress_sparkle",
+    "border_chase",
+    "pause_flash",
+    "error_shake",
+    "rain",
+    "donut",
+    "visualizer",
+    "starfield",
+    "bounce",
+    "comets",
+    "snow",
+    "fireflies",
+    "cube",
+    "aquarium",
+    "waves",
+    "fireworks",
+    "life",
+    "pipes",
+    "plasma",
+)
+ANIMATION_PROFILE_NAMES = ("balanced_half", "heavy_half")
+ANIMATION_PROFILE_EFFECTS = {
+    "balanced_half": (
+        "track_intro",
+        "toast",
+        "volume_flash",
+        "seek_flash",
+        "selection",
+        "caret",
+        "activity",
+        "popup_fade",
+        "title",
+        "heart",
+        "seekbar",
+        "spinner",
+        "eq_bars",
+        "controls",
+        "border",
+        "time_glow",
+        "bounce",
+        "starfield",
+        "visualizer",
+        "rain",
+    ),
+    "heavy_half": (
+        "title",
+        "lyrics",
+        "seekbar",
+        "eq_bars",
+        "controls",
+        "border",
+        "rain",
+        "donut",
+        "visualizer",
+        "starfield",
+        "comets",
+        "snow",
+        "fireflies",
+        "cube",
+        "aquarium",
+        "waves",
+        "fireworks",
+        "life",
+        "pipes",
+        "plasma",
+    ),
+}
 MPV_032_PINNED_COMMIT = "70b991749df389bcc0a4e145b5687233a03b4ed7"
 MPV_032_COMPAT_UPSTREAM_COMMIT = "1805681aaba22aa19a27ecfdb639c983d91f83e6"
 MPV_032_COMPAT_PATCHED_FILES = [
@@ -958,6 +1047,20 @@ def tracked_worktree_is_clean(root: Path) -> bool:
     return True
 
 
+def tracked_diff_paths(root: Path, *, cached: bool = False) -> list[str]:
+    arguments = ["diff"]
+    if cached:
+        arguments.append("--cached")
+    arguments.extend(["--name-only", "-z"])
+    raw = run_git(root, *arguments, binary=True)
+    assert isinstance(raw, bytes)
+    return sorted(
+        item.decode("utf-8", errors="surrogateescape")
+        for item in raw.split(b"\0")
+        if item
+    )
+
+
 def refresh_origin_main(candidate_root: Path) -> str:
     result = subprocess.run(
         [
@@ -1020,30 +1123,61 @@ def validate_source_contract(
             "baseline HEAD must equal the candidate repository's exact origin/main OID "
             f"{expected_baseline}"
         )
-    if not tracked_worktree_is_clean(baseline_root):
-        raise ValueError("baseline source has tracked or staged changes")
 
     render_relative = "examples/tui_render_perf.rs"
     candidate_harness = candidate_root / render_relative
     baseline_harness = baseline_root / render_relative
+    baseline_staged = tracked_diff_paths(baseline_root, cached=True)
+    if baseline_staged:
+        raise ValueError(f"baseline source has staged changes: {baseline_staged}")
+    baseline_changed = tracked_diff_paths(baseline_root)
     baseline_untracked = untracked_paths(baseline_root)
     if render:
         if not candidate_harness.is_file():
             raise ValueError(f"candidate render harness is missing: {candidate_harness}")
+        if baseline_changed not in ([], [render_relative]):
+            raise ValueError(
+                "baseline may contain only the authenticated render harness overlay; found "
+                f"tracked changes {baseline_changed}"
+            )
+        if baseline_untracked not in ([], [render_relative]):
+            raise ValueError(
+                "baseline may contain only the untracked render harness; found "
+                f"{baseline_untracked}"
+            )
+        if (
+            (baseline_changed == [render_relative] or baseline_untracked == [render_relative])
+            and (
+                not baseline_harness.is_file()
+                or baseline_harness.read_bytes() != candidate_harness.read_bytes()
+            )
+        ):
+            raise ValueError(
+                "existing baseline render harness overlay is not byte-identical to candidate"
+            )
         if not baseline_harness.exists():
             baseline_harness.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(candidate_harness, baseline_harness)
+        elif not baseline_changed and not baseline_untracked:
+            if baseline_harness.read_bytes() != candidate_harness.read_bytes():
+                shutil.copyfile(candidate_harness, baseline_harness)
+        baseline_changed = tracked_diff_paths(baseline_root)
         baseline_untracked = untracked_paths(baseline_root)
-    if baseline_untracked not in ([], [render_relative]):
+    elif baseline_changed or baseline_untracked:
         raise ValueError(
-            "baseline may contain only the untracked render harness; found "
+            "baseline source has tracked or untracked changes "
+            f"(tracked={baseline_changed}, untracked={baseline_untracked})"
+        )
+    if render and baseline_changed not in ([], [render_relative]):
+        raise ValueError(
+            "baseline render overlay changed unexpected tracked files: "
+            f"{baseline_changed}"
+        )
+    if render and baseline_untracked not in ([], [render_relative]):
+        raise ValueError(
+            "baseline render overlay changed unexpected untracked files: "
             f"{baseline_untracked}"
         )
-    if baseline_untracked == [render_relative]:
-        if not candidate_harness.is_file():
-            raise ValueError("candidate has no render harness to authenticate the baseline copy")
-        if baseline_harness.read_bytes() != candidate_harness.read_bytes():
-            raise ValueError("baseline untracked render harness is not byte-identical to candidate")
     if render and baseline_harness.read_bytes() != candidate_harness.read_bytes():
         raise ValueError("baseline render harness is not byte-identical to candidate")
 
@@ -1984,6 +2118,49 @@ def validate_scenarios(document: dict[str, Any]) -> None:
             "statistical_contract must preserve run/media-generation clustering, "
             "7-pair core, 3-pair fault/soak, and six independent OS x mpv cells"
         )
+    animation_profiles = document.get("animation_profiles")
+    if not isinstance(animation_profiles, dict) or set(animation_profiles) != set(
+        ANIMATION_PROFILE_NAMES
+    ):
+        raise ValueError(
+            "animation_profiles must declare exactly balanced_half and heavy_half"
+        )
+    for profile_name, expected_effects in ANIMATION_PROFILE_EFFECTS.items():
+        profile = animation_profiles.get(profile_name)
+        if not isinstance(profile, dict) or set(profile) != {
+            "effects",
+            "master",
+            "fps",
+            "pause_unfocused",
+        }:
+            raise ValueError(
+                f"animation_profiles.{profile_name} has an invalid schema"
+            )
+        effects = profile.get("effects")
+        if effects != list(expected_effects):
+            raise ValueError(
+                f"animation_profiles.{profile_name}.effects must preserve the fixed "
+                "20-effect profile"
+            )
+        if len(effects) * 2 != len(ANIMATION_EFFECT_FIELDS) or len(set(effects)) != len(
+            effects
+        ):
+            raise ValueError(
+                f"animation_profiles.{profile_name} must enable exactly half of the effects"
+            )
+        if not set(effects) <= set(ANIMATION_EFFECT_FIELDS):
+            raise ValueError(
+                f"animation_profiles.{profile_name} names an unknown animation effect"
+            )
+        if (
+            profile.get("master") is not True
+            or profile.get("fps") != 30
+            or profile.get("pause_unfocused") is not True
+        ):
+            raise ValueError(
+                f"animation_profiles.{profile_name} must use master=true, fps=30, "
+                "pause_unfocused=true"
+            )
     sampling = document.get("sampling")
     if not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
@@ -2204,9 +2381,24 @@ def validate_scenarios(document: dict[str, Any]) -> None:
         requires_mpv = scenario.get("requires_mpv")
         if not isinstance(requires_mpv, bool):
             raise ValueError(f"{name}.requires_mpv must be boolean")
+        animation_profile_name = scenario.get("animation_profile")
+        if animation_profile_name is not None:
+            if animation_profile_name not in animation_profiles:
+                raise ValueError(
+                    f"{name}.animation_profile references unknown profile "
+                    f"{animation_profile_name!r}"
+                )
+            if "setting_leaf_overrides" in scenario:
+                raise ValueError(
+                    f"{name} cannot combine animation_profile and setting_leaf_overrides"
+                )
+            if not requires_mpv:
+                raise ValueError(f"{name}.animation_profile requires playback")
         controller = scenario.get("controller")
         if not isinstance(controller, bool):
             raise ValueError(f"{name}.controller must be boolean")
+        if animation_profile_name is not None and not controller:
+            raise ValueError(f"{name}.animation_profile requires controller=true")
         pause_policy = scenario.get("pause_policy")
         if pause_policy not in {"none", "pause-resume"}:
             raise ValueError(f"{name}.pause_policy must be none or pause-resume")
@@ -2567,6 +2759,16 @@ def scenario_validation_self_test() -> None:
             lambda value: value["statistics"].__setitem__("baseline_cv_max", -0.1),
         ),
         (
+            "truncated balanced animation profile",
+            lambda value: value["animation_profiles"]["balanced_half"]["effects"].pop(),
+        ),
+        (
+            "unknown animation profile reference",
+            lambda value: find_scenario(value, "animation_half_balanced").__setitem__(
+                "animation_profile", "unknown"
+            ),
+        ),
+        (
             "non-finite fixture duration",
             lambda value: value["fixture"].__setitem__("duration_s", math.nan),
         ),
@@ -2740,6 +2942,43 @@ def find_scenario(document: dict[str, Any], name: str) -> dict[str, Any]:
         if scenario["id"] == name:
             return scenario
     raise ValueError(f"unknown scenario {name!r}")
+
+
+def animation_profile_setting_overrides(
+    document: dict[str, Any], profile_name: str
+) -> dict[str, Any]:
+    profile = document["animation_profiles"][profile_name]
+    enabled = set(profile["effects"])
+    overrides = {
+        f"animations.{field}": field in enabled
+        for field in ANIMATION_EFFECT_FIELDS
+    }
+    overrides.update(
+        {
+            "animations.master": profile["master"],
+            "animations.radio_master": None,
+            "animations.pause_unfocused": profile["pause_unfocused"],
+            "animations.fps": profile["fps"],
+        }
+    )
+    return overrides
+
+
+def setting_overrides_for_role(
+    document: dict[str, Any], scenario: dict[str, Any], role: str
+) -> dict[str, Any] | None:
+    animation_profile = scenario.get("animation_profile")
+    if animation_profile is not None:
+        return animation_profile_setting_overrides(document, animation_profile)
+    overrides_by_role = scenario.get("setting_leaf_overrides")
+    if overrides_by_role is None:
+        return None
+    if not isinstance(overrides_by_role, dict):
+        raise ValueError(f"scenario {scenario['id']!r} has malformed setting overrides")
+    overrides = overrides_by_role.get(role)
+    if not isinstance(overrides, dict) or not overrides:
+        raise ValueError(f"scenario {scenario['id']!r} has no {role} overrides")
+    return overrides
 
 
 def dotted(value: Any, path: str) -> Any:
@@ -4712,11 +4951,8 @@ def set_json_leaf(document: dict[str, Any], dotted_path: str, value: Any) -> Non
 def command_apply_setting_overrides(args: argparse.Namespace) -> int:
     scenario_document, scenario_hash = load_scenarios(args.scenarios)
     scenario = find_scenario(scenario_document, args.scenario)
-    overrides_by_role = scenario.get("setting_leaf_overrides")
-    if not isinstance(overrides_by_role, dict):
-        raise ValueError(f"scenario {args.scenario!r} has no setting leaf overrides")
-    overrides = overrides_by_role.get(args.role)
-    if not isinstance(overrides, dict) or not overrides:
+    overrides = setting_overrides_for_role(scenario_document, scenario, args.role)
+    if overrides is None:
         raise ValueError(f"scenario {args.scenario!r} has no {args.role} overrides")
 
     root = args.root.resolve()
@@ -4740,7 +4976,25 @@ def command_apply_setting_overrides(args: argparse.Namespace) -> int:
         leaf: json_leaf_state(document, leaf) for leaf in sorted(overrides)
     }
     for leaf, value in sorted(overrides.items()):
-        if leaf != LONG_FORM_SETTING_LEAF or value not in {"auto", "off", "on"}:
+        animation_field = leaf.removeprefix("animations.")
+        valid_animation_override = (
+            leaf.startswith("animations.")
+            and (
+                (animation_field in ANIMATION_EFFECT_FIELDS and isinstance(value, bool))
+                or (animation_field in {"master", "pause_unfocused"} and isinstance(value, bool))
+                or (animation_field == "radio_master" and value is None)
+                or (
+                    animation_field == "fps"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value == 30
+                )
+            )
+        )
+        if not (
+            (leaf == LONG_FORM_SETTING_LEAF and value in {"auto", "off", "on"})
+            or valid_animation_override
+        ):
             raise ValueError(f"unsupported setting override {leaf!r}={value!r}")
         set_json_leaf(document, leaf, value)
     atomic_json(config, document)
@@ -6175,6 +6429,7 @@ def validate_setting_overrides(
     path: Path,
     run_root: Path,
     scenario: dict[str, Any],
+    scenario_document: dict[str, Any],
     scenario_hash: str,
     role: str,
     launch_policy: dict[str, Any],
@@ -6191,7 +6446,9 @@ def validate_setting_overrides(
     require_artifact_value(
         path, "config path", manifest.get("config"), "stores/config/config.json"
     )
-    expected = scenario["setting_leaf_overrides"][role]
+    expected = setting_overrides_for_role(scenario_document, scenario, role)
+    if expected is None:
+        raise ValueError(f"{path}: scenario declares no setting overrides")
     require_artifact_value(path, "setting overrides", manifest.get("overrides"), expected)
     expected_values = {
         leaf: {"present": True, "value": value}
@@ -6276,6 +6533,7 @@ def setting_overrides_self_test() -> None:
             setting_path,
             run_root,
             scenario,
+            scenario_document,
             scenario_hash,
             "candidate",
             launch_policy,
@@ -6289,6 +6547,7 @@ def setting_overrides_self_test() -> None:
                 setting_path,
                 run_root,
                 scenario,
+                scenario_document,
                 scenario_hash,
                 "candidate",
                 launch_policy,
@@ -6297,6 +6556,52 @@ def setting_overrides_self_test() -> None:
             pass
         else:
             raise AssertionError("setting override snapshot tampering was accepted")
+
+    animation_scenario = find_scenario(scenario_document, "animation_half_balanced")
+    with tempfile.TemporaryDirectory(
+        prefix="ytt-perf-animation-overrides-self-test-"
+    ) as raw:
+        run_root = Path(raw) / "run"
+        home = run_root / "home"
+        config = home / "stores" / "config" / "config.json"
+        config.parent.mkdir(parents=True)
+        atomic_json(config, {"animations": {"plasma": True}})
+        setting_path = run_root / "setting-overrides.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            command_apply_setting_overrides(
+                argparse.Namespace(
+                    scenarios=DEFAULT_SCENARIOS,
+                    scenario=animation_scenario["id"],
+                    role="baseline",
+                    root=home,
+                    output=setting_path,
+                )
+            )
+            command_launch_policy(
+                argparse.Namespace(
+                    root=home,
+                    output=run_root / "launch-policy.json",
+                )
+            )
+        launch_policy, _artifacts = validate_launch_policy(
+            run_root / "launch-policy.json", run_root
+        )
+        validate_setting_overrides(
+            setting_path,
+            run_root,
+            animation_scenario,
+            scenario_document,
+            scenario_hash,
+            "baseline",
+            launch_policy,
+        )
+        applied = load_json_object(config)["animations"]
+        assert sum(bool(applied[field]) for field in ANIMATION_EFFECT_FIELDS) == 20
+        assert applied["plasma"] is False
+        assert applied["master"] is True
+        assert applied["fps"] == 30
+        assert applied["pause_unfocused"] is True
+        assert applied["radio_master"] is None
 
 
 def launch_policy_self_test() -> None:
@@ -8786,6 +9091,12 @@ def render_metrics_from_document(document: dict[str, Any], path: Path) -> dict[s
         metrics[f"{prefix}.p95_draw_ns"] = float(case_p95)
         metrics[f"{prefix}.buffer_style_digest"] = case["buffer_style_digest"]
         metrics[f"{prefix}.hit_map_digest"] = case["hit_map_digest"]
+        checkpoint_digest = case.get("checkpoint_digest")
+        if not isinstance(checkpoint_digest, str) or not re.fullmatch(r"[0-9a-f]{16}", checkpoint_digest):
+            raise ValueError(
+                f"{path}: render case {case.get('name')} checkpoint_digest is malformed"
+            )
+        metrics[f"{prefix}.checkpoint_digest"] = checkpoint_digest
         metrics[f"{prefix}.update_path"] = case["update_path"]
         if case["update_path"] == "app_update_msg_key":
             metrics[f"{prefix}.p95_reducer_input_to_draw_ns"] = float(case_p95)
@@ -12440,12 +12751,18 @@ def validate_process_directory(
         raise ValueError(f"{path}: missing launch-policy.json")
     launch_policy, launch_artifacts = validate_launch_policy(launch_policy_path, path)
     setting_artifacts: list[Path] = []
-    if "setting_leaf_overrides" in scenario:
+    if "setting_leaf_overrides" in scenario or "animation_profile" in scenario:
         setting_path = path / "setting-overrides.json"
         if not setting_path.is_file():
             raise ValueError(f"{path}: missing setting-overrides.json")
         setting_artifacts = validate_setting_overrides(
-            setting_path, path, scenario, scenario_hash, role, launch_policy
+            setting_path,
+            path,
+            scenario,
+            scenario_document,
+            scenario_hash,
+            role,
+            launch_policy,
         )
     artifacts = [
         samples_path,
@@ -14275,6 +14592,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
             "batches": [render_batch, render_batch],
             "buffer_style_digest": "buffer",
             "hit_map_digest": "hits",
+            "checkpoint_digest": "0123456789abcdef",
         }],
     }
     render_metrics = render_metrics_from_document(render_document, Path("<self-test>"))
@@ -14341,6 +14659,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "latency_histogram": [{"ns": 5, "count": 3}],
                 "buffer_style_digest": "buffer",
                 "hit_map_digest": "hits",
+                "checkpoint_digest": "0123456789abcdef",
                 "batches": [
                     {
                         "draws": 3,
@@ -14557,15 +14876,23 @@ def command_self_test(_args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         (candidate_source / ".gitignore").write_text("/.cargo/\n", encoding="utf-8")
-        git_checked(candidate_source, "add", "Cargo.lock", "Cargo.toml", ".gitignore")
+        render_harness = candidate_source / "examples" / "tui_render_perf.rs"
+        render_harness.parent.mkdir()
+        render_harness.write_text("fn main() { /* origin */ }\n", encoding="utf-8")
+        git_checked(
+            candidate_source,
+            "add",
+            "Cargo.lock",
+            "Cargo.toml",
+            ".gitignore",
+            "examples/tui_render_perf.rs",
+        )
         git_checked(candidate_source, "-c", "commit.gpgsign=false", "commit", "-m", "main")
         remote_source.mkdir()
         git_checked(remote_source, "init", "--bare", "--initial-branch=main")
         git_checked(candidate_source, "remote", "add", "origin", str(remote_source))
         git_checked(candidate_source, "push", "-u", "origin", "main")
         git_checked(candidate_source, "switch", "-c", "candidate")
-        render_harness = candidate_source / "examples" / "tui_render_perf.rs"
-        render_harness.parent.mkdir()
         render_harness.write_text("fn main() {}\n", encoding="utf-8")
         git_checked(candidate_source, "add", "examples/tui_render_perf.rs")
         git_checked(
@@ -15255,7 +15582,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "sample_cpu_window_tamper_cases": 2,
                 "sample_jitter_weighting_cases": 1,
                 "control_buffering_tamper_cases": 1,
-                "scenario_schema_tamper_cases": 33,
+                "scenario_schema_tamper_cases": 35,
                 "control_operation_tamper_cases": 13,
                 "http_server_authenticated_shutdown_cases": 1,
                 "http_server_leading_dash_token_cases": 1,

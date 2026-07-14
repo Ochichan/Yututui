@@ -90,6 +90,9 @@ has_setting_overrides=false
 if python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" \
   --field setting_leaf_overrides >/dev/null 2>&1; then
   has_setting_overrides=true
+elif python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" \
+  --field animation_profile >/dev/null 2>&1; then
+  has_setting_overrides=true
 fi
 traffic_profile=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field traffic_profile)
 source_rate_bound_bps=$(python3 "$python_tool" traffic \
