@@ -45,8 +45,8 @@ fn bottom_final_art_rects_follow_requested_frame_geometry_and_yield_tiny_space()
     let _guard = crate::i18n::lock_for_test();
     let app = bottom_player_with_art_and_lyrics();
     let cases = [
-        ((160, 50), Some(Rect::new(44, 15, 30, 15))),
-        ((100, 30), Some(Rect::new(14, 5, 30, 15))),
+        ((160, 50), Some(Rect::new(38, 12, 42, 21))),
+        ((100, 30), Some(Rect::new(8, 2, 42, 21))),
         ((80, 24), Some(Rect::new(4, 2, 30, 15))),
         ((60, 18), Some(Rect::new(1, 2, 18, 9))),
         ((32, 14), None),
@@ -76,6 +76,22 @@ fn bottom_final_art_rects_follow_requested_frame_geometry_and_yield_tiny_space()
                 "{width}x{height}: lyrics row {lyrics_y} escaped the filler"
             );
         }
+    }
+}
+
+#[test]
+fn top_and_bottom_art_only_match_the_large_frame_preferred_size() {
+    let _guard = crate::i18n::lock_for_test();
+    for (position, expected) in [
+        (PlayerBarPosition::Top, Rect::new(59, 10, 42, 21)),
+        (PlayerBarPosition::Bottom, Rect::new(59, 12, 42, 21)),
+    ] {
+        let mut app = app_playing(2, 0);
+        app.config.player_bar_position = Some(position);
+        make_test_art_active(&mut app, ProtocolType::Halfblocks);
+
+        let _ = render_app_buffer(&app, 160, 50);
+        assert_eq!(app.art.rect.get(), Some(expected));
     }
 }
 

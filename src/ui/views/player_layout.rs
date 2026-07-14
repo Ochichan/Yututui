@@ -11,8 +11,11 @@ use crate::config::PlayerBarPosition;
 
 pub(super) const ART_MIN_WIDTH: u16 = 6;
 pub(super) const ART_MIN_HEIGHT: u16 = 3;
-pub(super) const ART_PREFERRED_WIDTH: u16 = 48;
-pub(super) const ART_PREFERRED_HEIGHT: u16 = 15;
+// The classic Top art-only band inside the canonical 160x50 frame is 158x21 cells. Sharing that
+// complete box (rather than only its height) keeps square covers and wide thumbnails identical
+// between Top and Bottom at the large-frame reference size.
+pub(super) const ART_PREFERRED_WIDTH: u16 = 158;
+pub(super) const ART_PREFERRED_HEIGHT: u16 = 21;
 pub(super) const LYRICS_MIN_WIDTH: u16 = 24;
 pub(super) const LYRICS_MIN_HEIGHT: u16 = 3;
 pub(super) const LYRICS_PREFERRED_WIDTH: u16 = 40;
@@ -80,9 +83,8 @@ pub(super) fn calculate_player_filler_layout(
     }
 }
 
-/// The classic Top geometry is intentionally a direct transcription of the old render-time
-/// calculation. In particular, its art is top-anchored after `App::art_fit_rect` and its lyrics
-/// consume the full width below the real art bottom.
+/// Top keeps its classic anchor and full-width stacked lyrics, but shares Bottom's stable
+/// preferred art box: outer padding collapses before the art itself has to shrink.
 fn top_layout(
     app: &App,
     area: Rect,
@@ -91,10 +93,12 @@ fn top_layout(
 ) -> PlayerFillerLayout {
     match (art_visible, lyrics_visible) {
         (true, true) => {
-            let after_gap = area.height.saturating_sub(TOP_ART_GAP);
-            let cap = (after_gap / 2).min(after_gap.saturating_sub(LYRICS_MIN_HEIGHT));
-            let band = top_art_band(area, TOP_ART_GAP, cap);
-            let Some(art) = top_art_rect(app, band) else {
+            // Preserve the classic top gap, the art/lyrics gap, and a readable lyrics window.
+            // The art keeps its preferred size until those fixed reservations consume the filler.
+            let art_budget_height = area
+                .height
+                .saturating_sub(TOP_ART_GAP + STACK_GAP + LYRICS_MIN_HEIGHT);
+            let Some(art) = top_art_rect(app, area, art_budget_height) else {
                 return PlayerFillerLayout::lyrics_only(area);
             };
             let lyrics_y = art.bottom().saturating_add(STACK_GAP);
@@ -111,8 +115,7 @@ fn top_layout(
             }
         }
         (true, false) => {
-            let cap = (u32::from(area.height) * 11 / 20) as u16;
-            let art = top_art_rect(app, top_art_band(area, TOP_ART_GAP, cap));
+            let art = top_art_rect(app, area, area.height.saturating_sub(TOP_ART_GAP));
             PlayerFillerLayout {
                 art,
                 lyrics: None,
@@ -137,7 +140,7 @@ fn bottom_layout(
     match (art_visible, lyrics_visible) {
         (true, true) => bottom_art_and_lyrics(app, area),
         (true, false) => {
-            let art = fitted_bottom_art(app, area.width, area.height)
+            let art = fitted_preferred_art(app, area.width, area.height)
                 .map(|size| centered_rect(area, size));
             PlayerFillerLayout {
                 art,
@@ -163,7 +166,7 @@ fn bottom_art_and_lyrics(app: &App, area: Rect) -> PlayerFillerLayout {
 
 /// Prefer the fully fitted art and spend width on lyrics down toward their minimum. Only after
 /// that minimum is reached may the art shrink. Height constraints aspect-fit the art immediately;
-/// there is no useful vertical padding left once the preferred 15-row box no longer fits.
+/// there is no useful vertical padding left once the preferred 21-row box no longer fits.
 fn side_by_side_layout(app: &App, area: Rect) -> Option<PlayerFillerLayout> {
     if area.width < ART_MIN_WIDTH + SIDE_GAP + LYRICS_MIN_WIDTH
         || area.height < ART_MIN_HEIGHT.max(LYRICS_MIN_HEIGHT)
@@ -171,10 +174,10 @@ fn side_by_side_layout(app: &App, area: Rect) -> Option<PlayerFillerLayout> {
         return None;
     }
 
-    let mut art = fitted_bottom_art(app, area.width, area.height)?;
+    let mut art = fitted_preferred_art(app, area.width, area.height)?;
     if art.width + SIDE_GAP + LYRICS_MIN_WIDTH > area.width {
         let art_budget = area.width.saturating_sub(SIDE_GAP + LYRICS_MIN_WIDTH);
-        art = fitted_bottom_art(app, art_budget, area.height)?;
+        art = fitted_preferred_art(app, art_budget, area.height)?;
     }
 
     let lyrics_width = area
@@ -222,7 +225,7 @@ fn stacked_layout(app: &App, area: Rect) -> Option<PlayerFillerLayout> {
     // Reserve the minimum readable lyrics window first. The art retains its preferred size while
     // it fits in the remaining space, then aspect-fits monotonically as rows/columns disappear.
     let art_budget_height = area.height.saturating_sub(STACK_GAP + LYRICS_MIN_HEIGHT);
-    let art = fitted_bottom_art(app, area.width, art_budget_height)?;
+    let art = fitted_preferred_art(app, area.width, art_budget_height)?;
     let lyrics_height = area
         .height
         .saturating_sub(art.height + STACK_GAP)
@@ -256,10 +259,10 @@ fn stacked_layout(app: &App, area: Rect) -> Option<PlayerFillerLayout> {
     })
 }
 
-/// Fit the source aspect into the preferred 48x15-cell box, clipped by the available size.
+/// Fit the source aspect into the preferred 158x21-cell box, clipped by the available size.
 /// Reject the result (not merely its bounding box) when aspect fitting makes it smaller than the
 /// legibility floor.
-fn fitted_bottom_art(app: &App, available_width: u16, available_height: u16) -> Option<Size> {
+fn fitted_preferred_art(app: &App, available_width: u16, available_height: u16) -> Option<Size> {
     let bounds = Rect::new(
         0,
         0,
@@ -274,24 +277,14 @@ fn fitted_bottom_art(app: &App, available_width: u16, available_height: u16) -> 
         .then_some(Size::new(fitted.width, fitted.height))
 }
 
-fn top_art_band(area: Rect, gap: u16, max_height: u16) -> Rect {
-    let available = area.height.saturating_sub(gap);
-    Rect {
-        x: area.x,
-        y: area.y + gap,
-        width: area.width,
-        height: max_height.min(available),
-    }
-}
-
-fn top_art_rect(app: &App, band: Rect) -> Option<Rect> {
-    // This check is on the band, not the aspect-fitted result, matching the classic renderer.
-    if band.width < ART_MIN_WIDTH || band.height < ART_MIN_HEIGHT {
-        return None;
-    }
-    let mut rect = app.art_fit_rect(band);
-    rect.y = band.y;
-    Some(rect)
+fn top_art_rect(app: &App, area: Rect, available_height: u16) -> Option<Rect> {
+    let size = fitted_preferred_art(app, area.width, available_height)?;
+    Some(Rect::new(
+        area.x + area.width.saturating_sub(size.width) / 2,
+        area.y + TOP_ART_GAP,
+        size.width,
+        size.height,
+    ))
 }
 
 fn centered_rect(area: Rect, size: Size) -> Rect {
@@ -333,17 +326,63 @@ mod tests {
     }
 
     #[test]
-    fn bottom_art_only_keeps_preferred_size_while_padding_collapses() {
-        let app = app_with_art(PlayerBarPosition::Bottom, (100, 100));
-        let large = layout(&app, Rect::new(0, 0, 98, 21), true, false);
-        let less_padding = layout(&app, Rect::new(0, 0, 40, 15), true, false);
-        let no_padding = layout(&app, Rect::new(0, 0, 30, 15), true, false);
+    fn top_and_bottom_share_the_large_frame_preferred_size_for_every_aspect() {
+        for (dimensions, expected_top, expected_bottom) in [
+            (
+                (100, 100),
+                Rect::new(59, 10, 42, 21),
+                Rect::new(59, 12, 42, 21),
+            ),
+            (
+                (160, 90),
+                Rect::new(42, 10, 75, 21),
+                Rect::new(42, 12, 75, 21),
+            ),
+        ] {
+            let top = app_with_art(PlayerBarPosition::Top, dimensions);
+            let bottom = app_with_art(PlayerBarPosition::Bottom, dimensions);
+            let top_art = layout(&top, Rect::new(1, 9, 158, 39), true, false)
+                .art
+                .unwrap();
+            let bottom_art = layout(&bottom, Rect::new(1, 2, 158, 41), true, false)
+                .art
+                .unwrap();
 
-        assert_eq!(large.art.unwrap().as_size(), Size::new(30, 15));
-        assert_eq!(less_padding.art.unwrap().as_size(), Size::new(30, 15));
-        assert_eq!(no_padding.art.unwrap().as_size(), Size::new(30, 15));
-        assert_eq!(large.art.unwrap(), Rect::new(34, 3, 30, 15));
-        assert_eq!(less_padding.art.unwrap(), Rect::new(5, 0, 30, 15));
+            assert_eq!(top_art, expected_top);
+            assert_eq!(bottom_art, expected_bottom);
+            assert_eq!(top_art.as_size(), bottom_art.as_size());
+        }
+    }
+
+    #[test]
+    fn art_only_keeps_preferred_size_until_padding_is_exhausted() {
+        let bottom = app_with_art(PlayerBarPosition::Bottom, (100, 100));
+        let bottom_large = layout(&bottom, Rect::new(0, 0, 98, 30), true, false)
+            .art
+            .unwrap();
+        let bottom_exact = layout(&bottom, Rect::new(0, 0, 42, 21), true, false)
+            .art
+            .unwrap();
+        let bottom_shrunk = layout(&bottom, Rect::new(0, 0, 40, 20), true, false)
+            .art
+            .unwrap();
+        assert_eq!(bottom_large, Rect::new(28, 4, 42, 21));
+        assert_eq!(bottom_exact, Rect::new(0, 0, 42, 21));
+        assert_eq!(bottom_shrunk, Rect::new(0, 0, 40, 20));
+
+        let top = app_with_art(PlayerBarPosition::Top, (100, 100));
+        let top_large = layout(&top, Rect::new(0, 0, 98, 30), true, false)
+            .art
+            .unwrap();
+        let top_exact = layout(&top, Rect::new(0, 0, 42, 22), true, false)
+            .art
+            .unwrap();
+        let top_shrunk = layout(&top, Rect::new(0, 0, 40, 21), true, false)
+            .art
+            .unwrap();
+        assert_eq!(top_large, Rect::new(28, 1, 42, 21));
+        assert_eq!(top_exact, Rect::new(0, 1, 42, 21));
+        assert_eq!(top_shrunk, Rect::new(0, 1, 40, 20));
     }
 
     #[test]
@@ -392,12 +431,12 @@ mod tests {
     #[test]
     fn wide_art_spends_lyrics_width_before_shrinking() {
         let app = app_with_art(PlayerBarPosition::Bottom, (160, 90));
-        let preferred = layout(&app, Rect::new(0, 0, 90, 15), true, true);
-        assert_eq!(preferred.art.unwrap().as_size(), Size::new(48, 14));
+        let preferred = layout(&app, Rect::new(0, 0, 117, 21), true, true);
+        assert_eq!(preferred.art.unwrap().as_size(), Size::new(75, 21));
         assert_eq!(preferred.lyrics.unwrap().as_size(), Size::new(40, 12));
 
-        let narrower = layout(&app, Rect::new(0, 0, 78, 15), true, true);
-        assert_eq!(narrower.art.unwrap().as_size(), Size::new(48, 14));
+        let narrower = layout(&app, Rect::new(0, 0, 105, 21), true, true);
+        assert_eq!(narrower.art.unwrap().as_size(), Size::new(75, 21));
         assert_eq!(narrower.lyrics.unwrap().width, 28);
 
         let short = layout(&app, Rect::new(0, 0, 58, 9), true, true);
@@ -445,30 +484,27 @@ mod tests {
     }
 
     #[test]
-    fn top_art_only_geometry_matches_the_classic_formula() {
+    fn top_art_and_lyrics_preserve_minimum_lyrics_before_art_shrinks() {
         let app = app_with_art(PlayerBarPosition::Top, (100, 100));
-        let area = Rect::new(1, 9, 78, 13);
-        let result = layout(&app, area, true, false);
-        // cap=floor(13*11/20)=7; a square is 14x7 cells and is re-anchored at y+1.
-        assert_eq!(result.art, Some(Rect::new(33, 10, 14, 7)));
-        assert_eq!(result.lyrics, None);
+        let roomy = layout(&app, Rect::new(1, 9, 158, 30), true, true);
+        let exact = layout(&app, Rect::new(1, 9, 158, 26), true, true);
+        let shrunk = layout(&app, Rect::new(1, 9, 158, 25), true, true);
+
+        assert_eq!(roomy.art, Some(Rect::new(59, 10, 42, 21)));
+        assert_eq!(roomy.lyrics, Some(Rect::new(1, 32, 158, 7)));
+        assert_eq!(exact.art, Some(Rect::new(59, 10, 42, 21)));
+        assert_eq!(exact.lyrics, Some(Rect::new(1, 32, 158, 3)));
+        assert_eq!(shrunk.art, Some(Rect::new(60, 10, 40, 20)));
+        assert_eq!(shrunk.lyrics, Some(Rect::new(1, 31, 158, 3)));
+        assert_eq!(roomy.arrangement, PlayerFillerArrangement::Stacked);
+        assert_eq!(exact.arrangement, PlayerFillerArrangement::Stacked);
+        assert_eq!(shrunk.arrangement, PlayerFillerArrangement::Stacked);
     }
 
     #[test]
-    fn top_art_and_lyrics_geometry_matches_the_classic_formula() {
+    fn top_tiny_final_art_is_rejected_and_lyrics_take_the_filler() {
         let app = app_with_art(PlayerBarPosition::Top, (100, 100));
-        let area = Rect::new(1, 9, 78, 13);
-        let result = layout(&app, area, true, true);
-        // after_gap=12, cap=min(6, 9)=6; square art=12x6, then the old one-row gap.
-        assert_eq!(result.art, Some(Rect::new(34, 10, 12, 6)));
-        assert_eq!(result.lyrics, Some(Rect::new(1, 17, 78, 5)));
-        assert_eq!(result.arrangement, PlayerFillerArrangement::Stacked);
-    }
-
-    #[test]
-    fn top_tiny_band_preserves_old_art_rejection_and_lyrics_fallback() {
-        let app = app_with_art(PlayerBarPosition::Top, (100, 100));
-        let area = Rect::new(0, 0, 30, 5);
+        let area = Rect::new(0, 0, 30, 3);
         assert_eq!(
             layout(&app, area, true, true),
             PlayerFillerLayout::lyrics_only(area)
