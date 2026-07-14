@@ -193,7 +193,8 @@ fn usage() -> &'static str {
      Cases: player, search50, library999, ai_long, reducer_input, retro160x50, normal80x24, \
      local_empty60x16, local_scroll72x18, local_max120x30, local_filter_ko90x24, \
      canvas_art100x30, canvas_art160x50, canvas_art_lyrics100x30, \
-     canvas_art_lyrics160x50"
+     canvas_art_lyrics160x50, animation_half100x30, animation_half_art_lyrics160x50, \
+     animation_heavy_half100x30, animation_heavy_half_art_lyrics160x50"
 }
 
 #[derive(Serialize)]
@@ -237,6 +238,7 @@ struct CaseReport {
     batches: Vec<BatchReport>,
     buffer_style_digest: String,
     hit_map_digest: String,
+    checkpoint_digest: String,
 }
 
 #[derive(Serialize)]
@@ -475,6 +477,42 @@ fn case_specs() -> Vec<CaseSpec> {
             update: canvas_interaction,
         },
         CaseSpec {
+            name: "animation_half100x30",
+            update_path: "app_update_msg_anim_tick",
+            width: 100,
+            height: 30,
+            language: Language::English,
+            build: animation_half_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "animation_half_art_lyrics160x50",
+            update_path: "app_update_msg_anim_tick",
+            width: 160,
+            height: 50,
+            language: Language::English,
+            build: animation_half_art_lyrics_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "animation_heavy_half100x30",
+            update_path: "app_update_msg_anim_tick",
+            width: 100,
+            height: 30,
+            language: Language::English,
+            build: animation_heavy_half_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "animation_heavy_half_art_lyrics160x50",
+            update_path: "app_update_msg_anim_tick",
+            width: 160,
+            height: 50,
+            language: Language::English,
+            build: animation_heavy_half_art_lyrics_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
             name: "local_empty60x16",
             update_path: "direct_fixture_state",
             width: 60,
@@ -520,6 +558,7 @@ fn run_case(
     draws_per_batch: usize,
 ) -> Result<CaseReport, String> {
     yututui::i18n::set_language(spec.language);
+    let checkpoint_digest = checkpoint_digest(spec)?;
     let mut app = (spec.build)();
     let backend = TestBackend::new(spec.width, spec.height);
     let mut terminal = Terminal::new(backend).map_err(|e| format!("create backend: {e}"))?;
@@ -590,7 +629,31 @@ fn run_case(
         batches,
         buffer_style_digest,
         hit_map_digest,
+        checkpoint_digest,
     })
+}
+
+fn checkpoint_digest(spec: CaseSpec) -> Result<String, String> {
+    const CHECKPOINTS: [usize; 6] = [0, 1, 29, 30, 59, 119];
+    let mut app = (spec.build)();
+    let backend = TestBackend::new(spec.width, spec.height);
+    let mut terminal =
+        Terminal::new(backend).map_err(|e| format!("create checkpoint backend: {e}"))?;
+    let mut hasher = DefaultHasher::new();
+    for step in 0..=CHECKPOINTS[CHECKPOINTS.len() - 1] {
+        if step > 0 {
+            (spec.update)(&mut app, step - 1);
+        }
+        terminal
+            .draw(|frame| yututui::ui::render(frame, &app))
+            .map_err(|e| format!("checkpoint draw: {e}"))?;
+        if CHECKPOINTS.contains(&step) {
+            step.hash(&mut hasher);
+            terminal.backend().buffer().hash(&mut hasher);
+            digest_hit_map(&app, spec.width, spec.height).hash(&mut hasher);
+        }
+    }
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 fn latency_histogram(sorted: &[u128]) -> Vec<LatencyBucket> {
@@ -683,6 +746,11 @@ fn canvas_art_app() -> App {
     app.config.animations.plasma = true;
     app.playback.paused = false;
 
+    attach_art(&mut app);
+    app
+}
+
+fn attach_art(app: &mut App) {
     let picker = Picker::halfblocks();
     let image = Arc::new(DynamicImage::new_rgba8(32, 32));
     let protocol = picker.new_resize_protocol_shared(image);
@@ -690,7 +758,6 @@ fn canvas_art_app() -> App {
     app.art.dims = (32, 32);
     app.art.picker = Some(picker);
     *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
-    app
 }
 
 fn canvas_art_lyrics_app() -> App {
@@ -698,13 +765,123 @@ fn canvas_art_lyrics_app() -> App {
     let video_id = app.queue.current().expect("fixture track").video_id.clone();
     app.lyrics.visible = true;
     app.lyrics.track = Some(TrackLyrics {
-        video_id,
+        video_id: video_id.into(),
         lines: vec![LyricLine {
             time: 0.0,
             text: "Deterministic performance fixture lyric".to_owned(),
         }]
         .into(),
     });
+    app
+}
+
+fn attach_lyrics(app: &mut App) {
+    let video_id = app.queue.current().expect("fixture track").video_id.clone();
+    app.lyrics.visible = true;
+    app.lyrics.track = Some(TrackLyrics {
+        video_id: video_id.into(),
+        lines: vec![
+            LyricLine {
+                time: 0.0,
+                text: "Deterministic performance fixture lyric".to_owned(),
+            },
+            LyricLine {
+                time: 60.0,
+                text: "Second deterministic performance fixture lyric".to_owned(),
+            },
+        ]
+        .into(),
+    });
+}
+
+fn configure_animation_half(app: &mut App) {
+    let a = &mut app.config.animations;
+    a.master = true;
+    a.fps = 30;
+    a.pause_unfocused = true;
+    a.track_intro = true;
+    a.toast = true;
+    a.volume_flash = true;
+    a.seek_flash = true;
+    a.selection = true;
+    a.caret = true;
+    a.activity = true;
+    a.popup_fade = true;
+    a.title = true;
+    a.heart = true;
+    a.seekbar = true;
+    a.spinner = true;
+    a.eq_bars = true;
+    a.controls = true;
+    a.border = true;
+    a.time_glow = true;
+    a.bounce = true;
+    a.starfield = true;
+    a.visualizer = true;
+    a.rain = true;
+    app.playback.paused = false;
+}
+
+fn configure_animation_heavy_half(app: &mut App) {
+    let a = &mut app.config.animations;
+    a.master = true;
+    a.fps = 30;
+    a.pause_unfocused = true;
+    a.title = true;
+    a.lyrics = true;
+    a.seekbar = true;
+    a.eq_bars = true;
+    a.controls = true;
+    a.border = true;
+    a.rain = true;
+    a.donut = true;
+    a.visualizer = true;
+    a.starfield = true;
+    a.comets = true;
+    a.snow = true;
+    a.fireflies = true;
+    a.cube = true;
+    a.aquarium = true;
+    a.waves = true;
+    a.fireworks = true;
+    a.life = true;
+    a.pipes = true;
+    a.plasma = true;
+    app.playback.paused = false;
+}
+
+fn animation_half_app() -> App {
+    let mut app = player_app();
+    // The fixture mutates queue/volume directly. Let the ordinary reducer observe that
+    // steady state while animations are still disabled so the first measured AnimTick does
+    // not synthesize track-intro/volume-flash effects that real runtime setup already saw.
+    let _ = app.update(Msg::Noop);
+    configure_animation_half(&mut app);
+    app
+}
+
+fn animation_half_art_lyrics_app() -> App {
+    let mut app = animation_half_app();
+    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
+    app.config.album_art = Some(true);
+    attach_art(&mut app);
+    attach_lyrics(&mut app);
+    app
+}
+
+fn animation_heavy_half_app() -> App {
+    let mut app = player_app();
+    let _ = app.update(Msg::Noop);
+    configure_animation_heavy_half(&mut app);
+    app
+}
+
+fn animation_heavy_half_art_lyrics_app() -> App {
+    let mut app = animation_heavy_half_app();
+    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
+    app.config.album_art = Some(true);
+    attach_art(&mut app);
+    attach_lyrics(&mut app);
     app
 }
 
@@ -918,10 +1095,61 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, case_specs, local_empty_app,
+        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, animation_half_app,
+        animation_heavy_half_app, case_specs, checkpoint_digest, local_empty_app,
         local_filter_korean_app, local_max_app, local_scroll_app,
         measure_update_to_draw_with_clock, percentile, reducer_input, search_app,
     };
+    use yututui::app::App;
+
+    fn enabled_animation_effects(app: &App) -> Vec<&'static str> {
+        let a = &app.config.animations;
+        [
+            ("title", a.title),
+            ("heart", a.heart),
+            ("seekbar", a.seekbar),
+            ("spinner", a.spinner),
+            ("eq_bars", a.eq_bars),
+            ("controls", a.controls),
+            ("border", a.border),
+            ("track_intro", a.track_intro),
+            ("lyrics", a.lyrics),
+            ("toast", a.toast),
+            ("volume_flash", a.volume_flash),
+            ("like_burst", a.like_burst),
+            ("seek_flash", a.seek_flash),
+            ("selection", a.selection),
+            ("stagger", a.stagger),
+            ("caret", a.caret),
+            ("tabs", a.tabs),
+            ("popup_fade", a.popup_fade),
+            ("activity", a.activity),
+            ("about_fx", a.about_fx),
+            ("time_glow", a.time_glow),
+            ("progress_sparkle", a.progress_sparkle),
+            ("border_chase", a.border_chase),
+            ("pause_flash", a.pause_flash),
+            ("error_shake", a.error_shake),
+            ("rain", a.rain),
+            ("donut", a.donut),
+            ("visualizer", a.visualizer),
+            ("starfield", a.starfield),
+            ("bounce", a.bounce),
+            ("comets", a.comets),
+            ("snow", a.snow),
+            ("fireflies", a.fireflies),
+            ("cube", a.cube),
+            ("aquarium", a.aquarium),
+            ("waves", a.waves),
+            ("fireworks", a.fireworks),
+            ("life", a.life),
+            ("pipes", a.pipes),
+            ("plasma", a.plasma),
+        ]
+        .into_iter()
+        .filter_map(|(name, enabled)| enabled.then_some(name))
+        .collect()
+    }
 
     #[test]
     fn percentile_uses_nearest_rank_upward() {
@@ -1024,5 +1252,92 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing tracked performance TODO case {name}"));
             assert_eq!((case.width, case.height), (width, height));
         }
+    }
+
+    #[test]
+    fn half_animation_cases_and_profiles_are_exact_and_checkpoint_repeatable() {
+        let cases = case_specs();
+        for (name, width, height) in [
+            ("animation_half100x30", 100, 30),
+            ("animation_half_art_lyrics160x50", 160, 50),
+            ("animation_heavy_half100x30", 100, 30),
+            ("animation_heavy_half_art_lyrics160x50", 160, 50),
+        ] {
+            let case = cases
+                .iter()
+                .find(|case| case.name == name)
+                .unwrap_or_else(|| panic!("missing half-animation performance case {name}"));
+            assert_eq!((case.width, case.height), (width, height));
+            assert_eq!(case.update_path, "app_update_msg_anim_tick");
+        }
+
+        let balanced = animation_half_app();
+        assert!(balanced.config.animations.master);
+        assert_eq!(balanced.config.animations.fps, 30);
+        assert!(balanced.config.animations.pause_unfocused);
+        assert_eq!(
+            enabled_animation_effects(&balanced),
+            [
+                "title",
+                "heart",
+                "seekbar",
+                "spinner",
+                "eq_bars",
+                "controls",
+                "border",
+                "track_intro",
+                "toast",
+                "volume_flash",
+                "seek_flash",
+                "selection",
+                "caret",
+                "popup_fade",
+                "activity",
+                "time_glow",
+                "rain",
+                "visualizer",
+                "starfield",
+                "bounce",
+            ]
+        );
+
+        let heavy = animation_heavy_half_app();
+        assert!(heavy.config.animations.master);
+        assert_eq!(heavy.config.animations.fps, 30);
+        assert!(heavy.config.animations.pause_unfocused);
+        assert_eq!(
+            enabled_animation_effects(&heavy),
+            [
+                "title",
+                "seekbar",
+                "eq_bars",
+                "controls",
+                "border",
+                "lyrics",
+                "rain",
+                "donut",
+                "visualizer",
+                "starfield",
+                "comets",
+                "snow",
+                "fireflies",
+                "cube",
+                "aquarium",
+                "waves",
+                "fireworks",
+                "life",
+                "pipes",
+                "plasma",
+            ]
+        );
+
+        let case = *cases
+            .iter()
+            .find(|case| case.name == "animation_half100x30")
+            .expect("balanced half-animation case");
+        assert_eq!(
+            checkpoint_digest(case).expect("first checkpoint digest"),
+            checkpoint_digest(case).expect("second checkpoint digest")
+        );
     }
 }

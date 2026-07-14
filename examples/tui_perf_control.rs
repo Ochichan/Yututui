@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, sleep_until, timeout};
 use yututui::remote::proto::{
@@ -1235,13 +1235,16 @@ async fn subscribe_and_confirm(
     Ok(reader)
 }
 
-async fn query_mpv_property(
-    reader: &mut BufReader<Stream>,
+async fn query_mpv_property<R>(
+    reader: &mut BufReader<R>,
     request_id: u64,
     property: &str,
     required: bool,
     wait: Duration,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<Value>, String>
+where
+    R: AsyncRead + AsyncWrite + Unpin,
+{
     let mut payload = serde_json::to_vec(&json!({
         "command": ["get_property", property],
         "request_id": request_id,
@@ -1259,46 +1262,55 @@ async fn query_mpv_property(
         .await
         .map_err(|error| format!("flush mpv {property} query: {error}"))?;
     let deadline = Instant::now() + wait;
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(format!("timed out waiting for mpv {property} query"));
-    }
     let mut line = Vec::new();
-    let outcome = timeout(
-        remaining,
-        yututui::util::io::read_bounded_line(reader, &mut line, IPC_LINE_CAP),
-    )
-    .await
-    .map_err(|_| format!("timed out waiting for mpv {property} query"))?
-    .map_err(|error| format!("read mpv {property} query: {error}"))?;
-    match outcome {
-        yututui::util::io::BoundedLine::Eof => {
+    loop {
+        line.clear();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("timed out waiting for mpv {property} query"));
+        }
+        let outcome = timeout(
+            remaining,
+            yututui::util::io::read_bounded_line(reader, &mut line, IPC_LINE_CAP),
+        )
+        .await
+        .map_err(|_| format!("timed out waiting for mpv {property} query"))?
+        .map_err(|error| format!("read mpv {property} query: {error}"))?;
+        match outcome {
+            yututui::util::io::BoundedLine::Eof => {
+                return Err(format!(
+                    "mpv cache query connection closed while reading {property}"
+                ));
+            }
+            yututui::util::io::BoundedLine::TooLarge => {
+                return Err(format!("mpv {property} query returned an oversized frame"));
+            }
+            yututui::util::io::BoundedLine::Line => {}
+        }
+        let response: Value = serde_json::from_slice(&line)
+            .map_err(|error| format!("parse mpv {property} query: {error}"))?;
+        match response.get("request_id") {
+            Some(actual) if actual.as_u64() == Some(request_id) => {}
+            None if response.get("event").and_then(Value::as_str).is_some() => continue,
+            actual => {
+                return Err(format!(
+                    "mpv {property} query returned an uncorrelated response \
+                     (expected request_id {request_id}, got {})",
+                    actual.unwrap_or(&Value::Null)
+                ));
+            }
+        }
+        if response.get("error").and_then(Value::as_str) == Some("success") {
+            return Ok(Some(response.get("data").cloned().unwrap_or(Value::Null)));
+        }
+        if required {
             return Err(format!(
-                "mpv cache query connection closed while reading {property}"
+                "required mpv {property} query failed: {}",
+                response.get("error").unwrap_or(&Value::Null)
             ));
         }
-        yututui::util::io::BoundedLine::TooLarge => {
-            return Err(format!("mpv {property} query returned an oversized frame"));
-        }
-        yututui::util::io::BoundedLine::Line => {}
+        return Ok(None);
     }
-    let response: Value = serde_json::from_slice(&line)
-        .map_err(|error| format!("parse mpv {property} query: {error}"))?;
-    if response.get("request_id").and_then(Value::as_u64) != Some(request_id) {
-        return Err(format!(
-            "mpv {property} query returned an uncorrelated response"
-        ));
-    }
-    if response.get("error").and_then(Value::as_str) == Some("success") {
-        return Ok(Some(response.get("data").cloned().unwrap_or(Value::Null)));
-    }
-    if required {
-        return Err(format!(
-            "required mpv {property} query failed: {}",
-            response.get("error").unwrap_or(&Value::Null)
-        ));
-    }
-    Ok(None)
 }
 
 fn narrow_demuxer_cache_state(state: Value) -> Result<Value, String> {
@@ -1349,25 +1361,25 @@ async fn poll_cache_telemetry(stream: Stream, tx: mpsc::Sender<IpcMessage>) {
             sleep_until(tokio::time::Instant::from_std(next_query)).await;
         }
         sequence = sequence.saturating_add(1);
-        let cache_speed = query_mpv_property(
-            &mut reader,
-            91_000,
-            "cache-speed",
-            false,
-            CACHE_QUERY_INTERVAL,
-        )
-        .await;
-        let cache_on_disk = query_mpv_property(
-            &mut reader,
-            91_001,
-            "cache-on-disk",
-            true,
-            CACHE_QUERY_INTERVAL,
-        )
-        .await;
         let result: Result<Vec<IpcEvent>, String> = async {
+            let cache_speed = query_mpv_property(
+                &mut reader,
+                91_000,
+                "cache-speed",
+                false,
+                CACHE_QUERY_INTERVAL,
+            )
+            .await?;
+            let cache_on_disk = query_mpv_property(
+                &mut reader,
+                91_001,
+                "cache-on-disk",
+                true,
+                CACHE_QUERY_INTERVAL,
+            )
+            .await?;
             let mut events = Vec::new();
-            if let Some(value) = cache_speed? {
+            if let Some(value) = cache_speed {
                 events.push(queried_property_event(
                     "cache-speed",
                     value,
@@ -1375,7 +1387,7 @@ async fn poll_cache_telemetry(stream: Stream, tx: mpsc::Sender<IpcMessage>) {
                     sequence,
                 ));
             }
-            if cache_on_disk?.and_then(|value| value.as_bool()) == Some(true) {
+            if cache_on_disk.and_then(|value| value.as_bool()) == Some(true) {
                 let state = query_mpv_property(
                     &mut reader,
                     91_002,
@@ -2235,6 +2247,110 @@ mod tests {
         ])
         .expect_err("multiple exact candidates must not be selected by iteration order");
         assert_eq!(ambiguity, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mpv_property_query_skips_events_before_its_correlated_response() {
+        let (stream, mut peer) = tokio::io::duplex(4_096);
+        peer.write_all(
+            b"{\"event\":\"start-file\",\"playlist_entry_id\":2}\n\
+              {\"event\":\"file-loaded\"}\n\
+              {\"data\":1234,\"request_id\":91000,\"error\":\"success\"}\n",
+        )
+        .await
+        .expect("queue interleaved mpv frames");
+        let mut reader = BufReader::new(stream);
+
+        let value = query_mpv_property(
+            &mut reader,
+            91_000,
+            "cache-speed",
+            false,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("unsolicited events must not consume the correlated response");
+
+        assert_eq!(value, Some(json!(1234)));
+        let mut peer = BufReader::new(peer);
+        let mut command = Vec::new();
+        assert!(matches!(
+            yututui::util::io::read_bounded_line(&mut peer, &mut command, IPC_LINE_CAP)
+                .await
+                .expect("read property query command"),
+            yututui::util::io::BoundedLine::Line
+        ));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&command).expect("parse property query command"),
+            json!({
+                "command": ["get_property", "cache-speed"],
+                "request_id": 91_000,
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mpv_property_query_still_rejects_a_different_request_id() {
+        let (stream, mut peer) = tokio::io::duplex(1_024);
+        peer.write_all(
+            b"{\"event\":\"file-loaded\"}\n\
+              {\"data\":1234,\"request_id\":91001,\"error\":\"success\"}\n",
+        )
+        .await
+        .expect("queue mismatched mpv response");
+        let mut reader = BufReader::new(stream);
+
+        let error = query_mpv_property(
+            &mut reader,
+            91_000,
+            "cache-speed",
+            false,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("a response for another command must remain fail-closed");
+
+        assert!(error.contains("uncorrelated response"));
+        assert!(error.contains("expected request_id 91000"));
+        assert!(error.contains("got 91001"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mpv_property_query_events_do_not_extend_the_absolute_deadline() {
+        let (stream, mut peer) = tokio::io::duplex(1_024);
+        let (event_sent, event_observed) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            sleep(Duration::from_millis(150)).await;
+            peer.write_all(b"{\"event\":\"file-loaded\",\"id\":91000}\n")
+                .await
+                .expect("write interleaved event");
+            let _ = event_sent.send(());
+            sleep(Duration::from_millis(500)).await;
+        });
+        let mut reader = BufReader::new(stream);
+        let started = Instant::now();
+
+        let error = query_mpv_property(
+            &mut reader,
+            91_000,
+            "cache-speed",
+            false,
+            Duration::from_millis(250),
+        )
+        .await
+        .expect_err("events without a correlated response must time out");
+        let elapsed = started.elapsed();
+        event_observed
+            .await
+            .expect("the event must arrive before the query deadline");
+        writer.abort();
+
+        assert!(error.contains("timed out waiting for mpv cache-speed query"));
+        assert!(elapsed >= Duration::from_millis(150));
+        assert!(
+            elapsed < Duration::from_millis(325),
+            "the interleaved event reset the absolute deadline: {elapsed:?}"
+        );
     }
 
     #[test]

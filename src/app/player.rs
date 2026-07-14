@@ -1136,7 +1136,7 @@ impl App {
     /// Whether we lack lyrics for the current track (so a fetch is warranted).
     pub(in crate::app) fn lyrics_stale(&self) -> bool {
         match (&self.lyrics.track, self.queue.current()) {
-            (Some(l), Some(cur)) => l.video_id != cur.video_id,
+            (Some(l), Some(cur)) => l.video_id.as_ref() != cur.video_id.as_str(),
             (None, Some(_)) => true,
             _ => false,
         }

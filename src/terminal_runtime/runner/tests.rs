@@ -274,27 +274,35 @@ async fn ime_scrub_clock_retains_the_permanent_origin_period() {
 }
 
 #[test]
-fn ime_scrub_gate_fails_closed_for_state_and_wall_clock_rendering() {
+fn ime_scrub_gate_fails_closed_for_state_and_radio_wall_clock_rendering() {
     assert!(!ime_scrub_state_requires_full_draw(
-        false, false, false, false, false
+        false, false, false, false
     ));
     assert!(ime_scrub_state_requires_full_draw(
-        true, false, false, false, false
+        true, false, false, false
     ));
     assert!(ime_scrub_state_requires_full_draw(
-        false, true, false, false, false
+        false, true, false, false
     ));
     assert!(
-        ime_scrub_state_requires_full_draw(false, false, true, false, false),
+        ime_scrub_state_requires_full_draw(false, false, true, false),
         "a pending native-image clear must go through the consuming full-draw path"
     );
     assert!(
-        ime_scrub_state_requires_full_draw(false, false, false, true, false),
-        "animation-active views retain origin's wall-clock full draws"
-    );
-    assert!(
-        ime_scrub_state_requires_full_draw(false, false, false, false, true),
+        ime_scrub_state_requires_full_draw(false, false, false, true),
         "live-radio stale-edge rendering retains origin's wall-clock full draws"
+    );
+}
+
+#[test]
+fn active_animation_uses_the_fast_ime_scrub_between_animation_ticks() {
+    let mut app = ambient_animation_app();
+    assert!(app.animation_active());
+    app.dirty = false;
+
+    assert!(
+        !ime_scrub_requires_full_draw(&app, false),
+        "IME cleanup must not add redraws between the configured animation ticks"
     );
 }
 

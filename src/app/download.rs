@@ -223,13 +223,10 @@ impl App {
             .sources
             .get(&tracking_key)
             .and_then(|song| song.import_session_id.clone());
-        // Preserve the ordinary empty-path terminal behavior; import ownership must still be
-        // released so it cannot block the session's settled check forever.
-        let source = if saved || import_session_id.is_some() {
-            self.downloads.sources.remove(&tracking_key)
-        } else {
-            None
-        };
+        // A terminal completion no longer needs the source metadata, even when a worker reports
+        // an empty path. Retaining it until process exit leaks one full `Song` per such result.
+        // Capture import ownership first so its settled check still runs after removal.
+        let source = self.downloads.sources.remove(&tracking_key);
         if saved {
             let path_buf = PathBuf::from(&path);
             let local = source

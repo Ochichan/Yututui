@@ -18,6 +18,29 @@
     "pool_operating_systems": false,
     "selectively_discard_noisy_pairs": false
   },
+  "animation_profiles": {
+    "balanced_half": {
+      "effects": [
+        "track_intro", "toast", "volume_flash", "seek_flash", "selection",
+        "caret", "activity", "popup_fade", "title", "heart", "seekbar",
+        "spinner", "eq_bars", "controls", "border", "time_glow", "bounce",
+        "starfield", "visualizer", "rain"
+      ],
+      "master": true,
+      "fps": 30,
+      "pause_unfocused": true
+    },
+    "heavy_half": {
+      "effects": [
+        "title", "lyrics", "seekbar", "eq_bars", "controls", "border", "rain",
+        "donut", "visualizer", "starfield", "comets", "snow", "fireflies",
+        "cube", "aquarium", "waves", "fireworks", "life", "pipes", "plasma"
+      ],
+      "master": true,
+      "fps": 30,
+      "pause_unfocused": true
+    }
+  },
   "sampling": {
     "interval_ms": 1000,
     "cpu_unit": "percent_of_one_logical_core",
@@ -428,7 +451,7 @@
     },
     {
       "id": "render_and_interaction",
-      "description": "20 warmups, then 20 by 200 updates plus draws, including deterministic App::update(Msg::Key) reducer input",
+      "description": "20 warmups, then 20 by 200 updates plus draws, including deterministic reducer input, total allocation no-regression, and strict matched-control incremental animation churn",
       "pairs": 7,
       "candidate_repeats": 0,
       "min_improved_pairs": 6,
@@ -533,7 +556,127 @@
         "render.local_max120x30.buffer_style_digest": { "comparison": "exact" },
         "render.local_max120x30.hit_map_digest": { "comparison": "exact" },
         "render.local_filter_ko90x24.buffer_style_digest": { "comparison": "exact" },
-        "render.local_filter_ko90x24.hit_map_digest": { "comparison": "exact" }
+        "render.local_filter_ko90x24.hit_map_digest": { "comparison": "exact" },
+        "render.animation_half100x30.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half100x30.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half100x30.incremental_allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_half100x30.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half100x30.incremental_allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_half100x30.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_half100x30.hit_map_digest": { "comparison": "exact" },
+        "render.animation_half100x30.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_half100x30.update_path": { "comparison": "exact" },
+        "render.animation_half_art_lyrics160x50.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half_art_lyrics160x50.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half_art_lyrics160x50.incremental_allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_half_art_lyrics160x50.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_half_art_lyrics160x50.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_half_art_lyrics160x50.hit_map_digest": { "comparison": "exact" },
+        "render.animation_half_art_lyrics160x50.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_half_art_lyrics160x50.update_path": { "comparison": "exact" },
+        "render.animation_heavy_half100x30.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half100x30.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half100x30.incremental_allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_heavy_half100x30.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half100x30.incremental_allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_heavy_half100x30.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_heavy_half100x30.hit_map_digest": { "comparison": "exact" },
+        "render.animation_heavy_half100x30.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_heavy_half100x30.update_path": { "comparison": "exact" },
+        "render.animation_heavy_half_art_lyrics160x50.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half_art_lyrics160x50.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_heavy_half_art_lyrics160x50.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 0.85,
+          "min_improved_pairs": 6
+        },
+        "render.animation_heavy_half_art_lyrics160x50.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_heavy_half_art_lyrics160x50.hit_map_digest": { "comparison": "exact" },
+        "render.animation_heavy_half_art_lyrics160x50.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_heavy_half_art_lyrics160x50.update_path": { "comparison": "exact" }
       }
     },
     {
@@ -614,6 +757,155 @@
           "comparison": "ratio",
           "max_ratio": 1.05,
           "min_improved_pairs": 0
+        }
+      }
+    },
+    {
+      "id": "animation_half_balanced",
+      "description": "Seven paired steady-playback runs with the fixed balanced 20-of-40 animation profile at 30 fps",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 20,
+      "sample_s": 60,
+      "geometry": [[100, 30]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "fixture_profile": "wav-18m",
+      "animation_profile": "balanced_half",
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
+      "metrics": {
+        "ytt.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 0.8,
+          "min_improved_pairs": 6
+        },
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 6
+        },
+        "ytt.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": { "comparison": "no_increase", "max_delta": 0 },
+        "buffering_ms": { "comparison": "no_increase", "max_delta": 0 }
+      }
+    },
+    {
+      "id": "animation_half_heavy",
+      "description": "Seven paired steady-playback runs with the fixed heavy 20-of-40 animation profile at 30 fps",
+      "pairs": 7,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 6,
+      "warmup_s": 20,
+      "sample_s": 60,
+      "geometry": [[160, 50]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "fixture_profile": "wav-18m",
+      "animation_profile": "heavy_half",
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
+      "metrics": {
+        "ytt.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 0.8,
+          "min_improved_pairs": 6
+        },
+        "tree.mean_cpu_percent": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 6
+        },
+        "ytt.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "tree.mean_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "buffering_events": { "comparison": "no_increase", "max_delta": 0 },
+        "buffering_ms": { "comparison": "no_increase", "max_delta": 0 }
+      }
+    },
+    {
+      "id": "animation_half_memory_soak",
+      "description": "Three paired 15-minute runs measuring ytt-owned RSS with the fixed balanced half-animation profile",
+      "pairs": 3,
+      "candidate_repeats": 0,
+      "min_improved_pairs": 0,
+      "warmup_s": 90,
+      "sample_s": 900,
+      "geometry": [[100, 30]],
+      "traffic_profile": "normal",
+      "requires_mpv": true,
+      "fixture_profile": "wav-2h",
+      "animation_profile": "balanced_half",
+      "expected_effective_mpv_cache_args": {
+        "--demuxer-max-bytes": "32MiB",
+        "--demuxer-max-back-bytes": "8MiB"
+      },
+      "seed_contract": {
+        "require_identical_tree": true,
+        "require_identical_cache_policy": true,
+        "expected_cache_policy": null
+      },
+      "controller": true,
+      "controller_load": "resume-session",
+      "pause_policy": "none",
+      "pause_hold_ms": 0,
+      "seeks_s": [],
+      "minimum_playback_progress_fraction": 0.8,
+      "time_pos_tail_tolerance_s": 2.0,
+      "metrics": {
+        "ytt.peak_rss_bytes": {
+          "comparison": "ratio",
+          "max_ratio": 1.05,
+          "min_improved_pairs": 0
+        },
+        "ytt.rss_slope_bytes_per_s": {
+          "comparison": "no_increase",
+          "max_delta": 0
         }
       }
     },

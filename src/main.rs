@@ -323,6 +323,10 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         cli_identity().1,
     )
     .await;
+    // Keep a failed frame's buffered remainder on the alternate screen during normal teardown.
+    // Successful draws flush at ratatui's normal frame boundary; the panic-safe writer separately
+    // discards its remainder while unwinding, after ratatui's panic hook has already restored.
+    drop(terminal);
     tui::restore(mouse);
     result
 }

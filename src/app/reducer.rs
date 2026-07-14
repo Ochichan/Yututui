@@ -12,6 +12,10 @@ impl App {
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: impl Into<Msg>) -> Vec<Cmd> {
         let msg = msg.into();
+        if matches!(&msg, Msg::AnimTick) {
+            self.update_animation_tick();
+            return Vec::new();
+        }
         // Rendering is the only place that knows the real cell grid (text zoom can change it
         // without a terminal resize). Apply the bridged tier before routing this event so a
         // hidden Search/DJ input cannot consume the first global key after entering Mini.
@@ -82,6 +86,20 @@ impl App {
         self.sync_art_geometry();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
+    }
+
+    /// Advance one animation-clock turn without running the general reducer observers. An
+    /// animation tick cannot change status, onboarding, playback, seek, or art geometry; synced
+    /// lyrics are the one wall-clock projection that still needs reconciling before its FX diff.
+    fn update_animation_tick(&mut self) {
+        // Preserve the general wrapper's pre-dispatch tier repair. `advance_animation` cannot
+        // change the tier, so the wrapper's second sync would be redundant on this path.
+        self.sync_ui_tier();
+        self.advance_animation();
+        if self.reconcile_lyrics_surface_at(Instant::now()) {
+            self.dirty = true;
+        }
+        self.detect_lyrics_fx();
     }
 
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
@@ -233,12 +251,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::AnimTick => {
-                // Advance the logical animation phase on every configured tick, but only request
-                // an actual terminal redraw when the active effect mix is due. This keeps visual
-                // timing stable while cutting the expensive render/terminal/compositor path.
-                self.advance_animation();
-            }
+            Msg::AnimTick => unreachable!("animation ticks use the dedicated reducer fast path"),
             Msg::Focus(f) => {
                 // Terminal focus toggled. `animation_active()` reads `focused` to park the ~30 fps
                 // tick while we're hidden; one redraw repaints cleanly on the transition (freeze a
@@ -562,7 +575,10 @@ impl App {
                     if lines.is_empty() {
                         self.lyrics.delay_osd_until = None;
                     }
-                    self.lyrics.track = Some(TrackLyrics { video_id, lines });
+                    self.lyrics.track = Some(TrackLyrics {
+                        video_id: video_id.into(),
+                        lines,
+                    });
                     self.dirty = true;
                 }
             }
