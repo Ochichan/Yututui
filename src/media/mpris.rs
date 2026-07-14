@@ -531,6 +531,7 @@ impl mpris_server::PlayerInterface for Player {
 mod tests {
     use super::*;
     use crate::media::{MediaCaps, MediaTrack};
+    use crate::util::delivery::DeliveryReceipt;
 
     #[test]
     fn track_id_escapes_per_spec() {
@@ -572,6 +573,110 @@ mod tests {
             player.send_zbus(MediaCommand::Pause),
             Err(zbus::Error::Failure(message)) if message.contains("busy")
         ));
+    }
+
+    #[tokio::test]
+    async fn writable_playback_options_read_and_forward_exact_values() {
+        let mut snapshot = MediaSnapshot::idle();
+        snapshot.shuffle = true;
+        snapshot.repeat = Repeat::All;
+        snapshot.volume = 0.37;
+
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&commands);
+        let player = Player {
+            sink: Arc::new(move |command| {
+                captured.lock().unwrap().push(command);
+                Ok(DeliveryReceipt::Enqueued)
+            }),
+            state: Arc::new(Mutex::new(snapshot)),
+        };
+
+        assert!(
+            mpris_server::PlayerInterface::shuffle(&player)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            mpris_server::PlayerInterface::loop_status(&player)
+                .await
+                .unwrap(),
+            LoopStatus::Playlist
+        );
+        assert_eq!(
+            mpris_server::PlayerInterface::volume(&player)
+                .await
+                .unwrap(),
+            0.37
+        );
+
+        for (repeat, expected) in [
+            (Repeat::Off, LoopStatus::None),
+            (Repeat::One, LoopStatus::Track),
+            (Repeat::All, LoopStatus::Playlist),
+        ] {
+            player.state.lock().unwrap().repeat = repeat;
+            assert_eq!(
+                mpris_server::PlayerInterface::loop_status(&player)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+
+        mpris_server::PlayerInterface::set_shuffle(&player, false)
+            .await
+            .unwrap();
+        for loop_status in [LoopStatus::None, LoopStatus::Track, LoopStatus::Playlist] {
+            mpris_server::PlayerInterface::set_loop_status(&player, loop_status)
+                .await
+                .unwrap();
+        }
+        for volume in [-0.5, 0.0, 0.37, 1.0, 1.5] {
+            mpris_server::PlayerInterface::set_volume(&player, volume)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            *commands.lock().unwrap(),
+            vec![
+                MediaCommand::SetShuffle(false),
+                MediaCommand::SetRepeat(Repeat::Off),
+                MediaCommand::SetRepeat(Repeat::One),
+                MediaCommand::SetRepeat(Repeat::All),
+                MediaCommand::SetVolume(-0.5),
+                MediaCommand::SetVolume(0.0),
+                MediaCommand::SetVolume(0.37),
+                MediaCommand::SetVolume(1.0),
+                MediaCommand::SetVolume(1.5),
+            ]
+        );
+    }
+
+    #[test]
+    fn option_changes_emit_exact_mpris_properties() {
+        let mut snapshot = MediaSnapshot::idle();
+        snapshot.rate = 1.25;
+        snapshot.volume = 0.75;
+        snapshot.shuffle = true;
+        snapshot.repeat = Repeat::One;
+
+        assert_eq!(
+            changed_properties(
+                &snapshot,
+                MediaChanges {
+                    options: true,
+                    ..MediaChanges::default()
+                }
+            ),
+            vec![
+                Property::Rate(1.25),
+                Property::Volume(0.75),
+                Property::Shuffle(true),
+                Property::LoopStatus(LoopStatus::Track),
+            ]
+        );
     }
 
     #[test]

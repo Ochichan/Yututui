@@ -658,7 +658,11 @@ fn doctor_terminal_json_reports_capabilities_without_config_or_runtime_startup()
             .output()
             .expect("Konsole doctor terminal JSON")
     };
-    for (version, expected) in [("260799", "halfblocks"), ("260800", "sixel_versioned")] {
+    for (version, expected) in [
+        ("260399", "halfblocks"),
+        ("260400", "sixel_versioned"),
+        ("260401", "sixel_versioned"),
+    ] {
         let output = run_konsole_doctor(version);
         assert!(output.status.success(), "stderr: {}", stderr(&output));
         let json: serde_json::Value =
