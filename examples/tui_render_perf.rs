@@ -852,6 +852,10 @@ fn configure_animation_heavy_half(app: &mut App) {
 
 fn animation_half_app() -> App {
     let mut app = player_app();
+    // The fixture mutates queue/volume directly. Let the ordinary reducer observe that
+    // steady state while animations are still disabled so the first measured AnimTick does
+    // not synthesize track-intro/volume-flash effects that real runtime setup already saw.
+    let _ = app.update(Msg::Noop);
     configure_animation_half(&mut app);
     app
 }
@@ -867,6 +871,7 @@ fn animation_half_art_lyrics_app() -> App {
 
 fn animation_heavy_half_app() -> App {
     let mut app = player_app();
+    let _ = app.update(Msg::Noop);
     configure_animation_heavy_half(&mut app);
     app
 }

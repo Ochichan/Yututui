@@ -451,7 +451,7 @@
     },
     {
       "id": "render_and_interaction",
-      "description": "20 warmups, then 20 by 200 updates plus draws, including deterministic App::update(Msg::Key) reducer input",
+      "description": "20 warmups, then 20 by 200 updates plus draws, including deterministic reducer input, total allocation no-regression, and strict matched-control incremental animation churn",
       "pairs": 7,
       "candidate_repeats": 0,
       "min_improved_pairs": 6,
@@ -565,10 +565,20 @@
         },
         "render.animation_half100x30.allocations_per_draw": {
           "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half100x30.incremental_allocations_per_draw": {
+          "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
         },
         "render.animation_half100x30.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half100x30.incremental_allocated_bytes_per_draw": {
           "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
@@ -585,10 +595,20 @@
         },
         "render.animation_half_art_lyrics160x50.allocations_per_draw": {
           "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half_art_lyrics160x50.incremental_allocations_per_draw": {
+          "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
         },
         "render.animation_half_art_lyrics160x50.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": {
           "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
@@ -605,10 +625,20 @@
         },
         "render.animation_heavy_half100x30.allocations_per_draw": {
           "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half100x30.incremental_allocations_per_draw": {
+          "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
         },
         "render.animation_heavy_half100x30.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half100x30.incremental_allocated_bytes_per_draw": {
           "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
@@ -625,10 +655,20 @@
         },
         "render.animation_heavy_half_art_lyrics160x50.allocations_per_draw": {
           "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocations_per_draw": {
+          "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6
         },
         "render.animation_heavy_half_art_lyrics160x50.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": {
           "comparison": "ratio",
           "max_ratio": 0.85,
           "min_improved_pairs": 6

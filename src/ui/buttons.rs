@@ -142,6 +142,58 @@ struct SegmentRenderOptions {
     center_vertically: bool,
 }
 
+// Every in-tree control strip fits comfortably in this budget. Keeping the measured
+// display widths inline avoids one heap allocation on each render; synthetic/plugin-like
+// strips beyond the budget still get an exact-length backing slice.
+const INLINE_SEGMENT_WIDTHS: usize = 32;
+
+enum SegmentWidths {
+    Inline {
+        values: [u16; INLINE_SEGMENT_WIDTHS],
+        len: usize,
+    },
+    Heap(Box<[u16]>),
+}
+
+impl SegmentWidths {
+    fn measure(segments: &[Seg<'_>]) -> (Self, u16) {
+        let mut widths = if segments.len() <= INLINE_SEGMENT_WIDTHS {
+            Self::Inline {
+                values: [0; INLINE_SEGMENT_WIDTHS],
+                len: segments.len(),
+            }
+        } else {
+            Self::Heap(vec![0; segments.len()].into_boxed_slice())
+        };
+        let mut total = 0u16;
+        for (slot, seg) in widths.as_mut_slice().iter_mut().zip(segments) {
+            let width = text_width(seg.text);
+            *slot = width;
+            total = total.saturating_add(width);
+        }
+        (widths, total)
+    }
+
+    fn as_slice(&self) -> &[u16] {
+        match self {
+            Self::Inline { values, len } => &values[..*len],
+            Self::Heap(values) => values,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u16] {
+        match self {
+            Self::Inline { values, len } => &mut values[..*len],
+            Self::Heap(values) => values,
+        }
+    }
+
+    #[cfg(test)]
+    fn is_heap(&self) -> bool {
+        matches!(self, Self::Heap(_))
+    }
+}
+
 fn render_segments_inner(
     frame: &mut Frame,
     app: &App,
@@ -149,13 +201,7 @@ fn render_segments_inner(
     segments: &[Seg<'_>],
     opts: SegmentRenderOptions,
 ) {
-    let mut widths = Vec::with_capacity(segments.len());
-    let mut total = 0u16;
-    for seg in segments {
-        let width = text_width(seg.text);
-        total = total.saturating_add(width);
-        widths.push(width);
-    }
+    let (widths, total) = SegmentWidths::measure(segments);
     let mut x = match opts.alignment {
         Alignment::Center => area.x + area.width.saturating_sub(total) / 2,
         Alignment::Right => area.x + area.width.saturating_sub(total),
@@ -163,7 +209,7 @@ fn render_segments_inner(
     };
 
     let mut spans = Vec::with_capacity(segments.len());
-    for (seg, width) in segments.iter().zip(widths) {
+    for (seg, width) in segments.iter().zip(widths.as_slice().iter().copied()) {
         let style = if let Some(target) = seg.target.clone() {
             // The rect hugs the text, plus any `hit_pad` cells of flanking air —
             // clamped to `area` so padding never escapes the strip's row.
@@ -609,8 +655,76 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{nav_label, text_width};
-    use crate::app::Mode;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::{Alignment, Rect};
+    use ratatui::style::Style;
+
+    use super::{
+        INLINE_SEGMENT_WIDTHS, Seg, SegmentWidths, nav_label, render_segments, text_width,
+    };
+    use crate::app::{App, Mode, MouseTarget};
+    use crate::keymap::Action;
+
+    #[test]
+    fn segment_width_scratch_uses_heap_only_beyond_inline_budget() {
+        let inline = (0..INLINE_SEGMENT_WIDTHS)
+            .map(|_| Seg::label("한"))
+            .collect::<Vec<_>>();
+        let (widths, total) = SegmentWidths::measure(&inline);
+        assert!(!widths.is_heap());
+        assert_eq!(widths.as_slice(), vec![2; INLINE_SEGMENT_WIDTHS]);
+        assert_eq!(total, (INLINE_SEGMENT_WIDTHS as u16) * 2);
+
+        let heap = (0..=INLINE_SEGMENT_WIDTHS)
+            .map(|_| Seg::label("✨"))
+            .collect::<Vec<_>>();
+        let (widths, total) = SegmentWidths::measure(&heap);
+        assert!(widths.is_heap());
+        assert_eq!(widths.as_slice(), vec![2; INLINE_SEGMENT_WIDTHS + 1]);
+        assert_eq!(total, ((INLINE_SEGMENT_WIDTHS + 1) as u16) * 2);
+    }
+
+    #[test]
+    fn heap_backed_unicode_strip_keeps_rendered_cells_and_hit_rects_aligned() {
+        let mut segments = (0..30).map(|_| Seg::label("a")).collect::<Vec<_>>();
+        segments.push(Seg::button(MouseTarget::Global(Action::ToggleHelp), "한"));
+        segments.push(Seg::label("·"));
+        segments.push(Seg::button(MouseTarget::MouseHelp, "✨"));
+        assert!(segments.len() > INLINE_SEGMENT_WIDTHS);
+
+        let app = App::new(100);
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_segments(
+                    frame,
+                    &app,
+                    Rect::new(2, 1, 38, 1),
+                    &segments,
+                    Style::default(),
+                    Style::default(),
+                    Alignment::Left,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        for x in 2..32 {
+            assert_eq!(buffer[(x, 1)].symbol(), "a");
+        }
+        assert_eq!(buffer[(32, 1)].symbol(), "한");
+        assert_eq!(buffer[(34, 1)].symbol(), "·");
+        assert_eq!(buffer[(35, 1)].symbol(), "✨");
+
+        let help = Some(MouseTarget::Global(Action::ToggleHelp));
+        assert_eq!(app.hits.target_at(32, 1), help);
+        assert_eq!(app.hits.target_at(33, 1), help);
+        assert_eq!(app.hits.target_at(34, 1), None);
+        assert_eq!(app.hits.target_at(35, 1), Some(MouseTarget::MouseHelp));
+        assert_eq!(app.hits.target_at(36, 1), Some(MouseTarget::MouseHelp));
+    }
 
     #[test]
     fn sparkle_and_blank_nav_slot_are_both_two_cells() {

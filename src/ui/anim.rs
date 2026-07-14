@@ -168,13 +168,6 @@ fn put_char(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
 const TITLE_SEPARATOR: &str = " — ";
 const TITLE_LOOP_GAP: &str = "   •   ";
 
-fn title_body_chars<'a>(title: &'a str, artist: &'a str) -> impl Iterator<Item = char> + 'a {
-    title
-        .chars()
-        .chain(TITLE_SEPARATOR.chars())
-        .chain(artist.chars())
-}
-
 fn title_body(title: &str, artist: &str) -> String {
     let mut body = String::with_capacity(
         title
@@ -188,25 +181,49 @@ fn title_body(title: &str, artist: &str) -> String {
     body
 }
 
-fn title_col_window(title: &str, artist: &str, start_col: usize, width: usize) -> String {
-    let one_loop = || title_body_chars(title, artist).chain(TITLE_LOOP_GAP.chars());
-    let mut out = String::with_capacity(width);
+/// Visit the title body's visible characters without first composing an owned window. A
+/// scrolling window walks two body+gap loops, matching `col_window`'s wrap allowance; `None`
+/// visits the unabridged body used by a title that already fits.
+fn for_each_title_window_char(
+    title: &str,
+    artist: &str,
+    window: Option<(usize, usize)>,
+    mut visit: impl FnMut(char),
+) {
+    let sources = [
+        title,
+        TITLE_SEPARATOR,
+        artist,
+        TITLE_LOOP_GAP,
+        title,
+        TITLE_SEPARATOR,
+        artist,
+        TITLE_LOOP_GAP,
+    ];
+    let source_count = if window.is_some() { sources.len() } else { 3 };
+    let (start_col, width) = window.unwrap_or((0, usize::MAX));
     let mut col = 0usize;
     let mut taken = 0usize;
-    for ch in one_loop().chain(one_loop()) {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if col < start_col {
-            col += ch_width;
-            continue;
+    for source in &sources[..source_count] {
+        for ch in source.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col < start_col {
+                col += ch_width;
+                continue;
+            }
+            if taken + ch_width > width {
+                return;
+            }
+            visit(ch);
+            taken += ch_width;
         }
-        if taken + ch_width > width {
-            break;
-        }
-        out.push(ch);
-        taken += ch_width;
     }
-    out
 }
+
+// The shimmer is non-base only inside a six-column band. At most six positive-width
+// characters plus the base runs on either side can therefore produce distinct contiguous
+// styles; the optional heart needs one more span.
+const TITLE_MAX_STYLE_RUNS: usize = 8;
 
 /// Build the animated now-playing title line, or `None` when neither the title-shimmer nor the
 /// heart-pulse flag is on (the caller then renders its plain title unchanged). Handles three
@@ -224,7 +241,12 @@ pub fn title_line(
         return None;
     }
     let f = app.anim_frame();
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let span_capacity = if a.title {
+        TITLE_MAX_STYLE_RUNS + usize::from(liked)
+    } else {
+        1 + usize::from(liked)
+    };
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(span_capacity);
 
     // Leading heart marker (only when the track is favourited), pulsing if `heart` is on.
     if liked {
@@ -258,42 +280,33 @@ pub fn title_line(
                 .saturating_add(UnicodeWidthStr::width(TITLE_LOOP_GAP))
                 .max(1);
             let start = (f / 4) as usize % period;
-            title_col_window(title, artist, start, avail)
+            Some((start, avail))
         } else {
-            title_body(title, artist)
+            None
         };
 
         // A bright band sweeps across the characters (shimmer). Outside the ~6-cell band
         // the interpolation factor is exactly 0, so the whole tail shares one Style —
         // group equal-style runs into one Span each instead of one heap String per char
-        // (this runs at the animation FPS). Cell output is identical either way.
-        let span_len = window.chars().count() as f64 + 8.0;
+        // (this runs at the animation FPS). Visit the source strings twice instead of allocating
+        // an intermediate window: once to size the phase and once to build only the owned runs
+        // required by the returned `Line<'static>`.
+        let mut visible_chars = 0usize;
+        for_each_title_window_char(title, artist, window, |_| visible_chars += 1);
+        let span_len = visible_chars as f64 + 8.0;
         let head = (f as f64 / 2.0) % span_len;
         let mut col = 0.0f64;
-        let mut run = String::new();
-        let mut run_style: Option<Style> = None;
-        for ch in window.chars() {
+        let mut builder = RunBuilder::new(spans);
+        for_each_title_window_char(title, artist, window, |ch| {
             let d = (col - head).abs();
             let b = (1.0 - d / 3.0).clamp(0.0, 1.0);
             let style = Style::default()
                 .fg(lerp_color(base, bright, b))
                 .add_modifier(Modifier::BOLD);
-            if run_style != Some(style) {
-                if let Some(prev) = run_style.take()
-                    && !run.is_empty()
-                {
-                    spans.push(Span::styled(std::mem::take(&mut run), prev));
-                }
-                run_style = Some(style);
-            }
-            run.push(ch);
+            builder.push(ch, style);
             col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
-        }
-        if let Some(style) = run_style
-            && !run.is_empty()
-        {
-            spans.push(Span::styled(run, style));
-        }
+        });
+        spans = builder.finish();
     } else {
         // Heart-only: the body stays exactly as the plain path would render it.
         spans.push(Span::styled(
@@ -357,6 +370,9 @@ pub fn spinner_prefix(app: &App) -> Option<&'static str> {
 /// instead of height, which is how DOS-era meters drew it anyway.
 const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const RETRO_BLOCKS: [char; 8] = ['.', ':', '░', '░', '▒', '▒', '▓', '█'];
+const EQ_BAR_COUNT: usize = 5;
+const EQ_SEPARATOR_MAX_BYTES: usize = 4;
+const EQ_BARS_UTF8_CAPACITY: usize = EQ_BAR_COUNT * 3 + EQ_SEPARATOR_MAX_BYTES;
 
 fn bar_blocks(app: &App) -> &'static [char; 8] {
     if app.retro_mode() {
@@ -375,8 +391,11 @@ pub fn eq_bars(app: &App) -> Option<String> {
     }
     let blocks = bar_blocks(app);
     let f = app.anim_frame();
-    let mut s = String::with_capacity(5);
-    for i in 0..5u64 {
+    // Every normal/retro bar glyph is at most three UTF-8 bytes. Reserving columns (`5`) made
+    // the normal five-glyph string grow twice (5 -> 10 -> 20); reserve its byte ceiling plus the
+    // widest separator that `control_box` prefixes in place after this returns.
+    let mut s = String::with_capacity(EQ_BARS_UTF8_CAPACITY);
+    for i in 0..EQ_BAR_COUNT as u64 {
         let t = wave(f + i * 7, 16 + i * 3) * 0.6 + wave(f * 2 + i * 5, 9 + i) * 0.4;
         let idx = (t * (blocks.len() - 1) as f64).round() as usize;
         s.push(blocks[idx.min(blocks.len() - 1)]);
@@ -1023,6 +1042,81 @@ mod tests {
             .join("")
     }
 
+    fn line_cells(line: &Line<'_>) -> Vec<(char, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|span| {
+                span.content
+                    .chars()
+                    .map(move |ch| (ch, line.style.patch(span.style)))
+            })
+            .collect()
+    }
+
+    /// Cell/style oracle for the allocation-heavy title implementation that first composed an
+    /// owned body/window and then walked its characters. Keeping this test-only reference makes
+    /// the optimized visitor prove the exact rendered contract without restoring its hot-path
+    /// allocations.
+    fn previous_title_cells(
+        app: &App,
+        title: &str,
+        artist: &str,
+        liked: bool,
+        width: u16,
+    ) -> Vec<(char, Style)> {
+        let a = app.animations();
+        let f = app.anim_frame();
+        let mut cells = Vec::new();
+        if liked {
+            let style = if a.heart {
+                let t = wave(f, 28);
+                Style::default()
+                    .fg(lerp_color(
+                        app.theme.color(R::Error),
+                        app.theme.color(R::AccentAlt),
+                        t,
+                    ))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD)
+            };
+            cells.extend([('♥', style), (' ', style)]);
+        }
+
+        let body = format!("{title}{TITLE_SEPARATOR}{artist}");
+        if !a.title {
+            let style = app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD);
+            cells.extend(body.chars().map(|ch| (ch, style)));
+            return cells;
+        }
+
+        let used = if liked { 2 } else { 0 };
+        let avail = usize::from(width).saturating_sub(used);
+        let window = if UnicodeWidthStr::width(body.as_str()) > avail && avail > 4 {
+            let loop_s = format!("{body}{TITLE_LOOP_GAP}");
+            let period = UnicodeWidthStr::width(loop_s.as_str()).max(1);
+            let start = (f / 4) as usize % period;
+            col_window(&format!("{loop_s}{loop_s}"), start, avail)
+        } else {
+            body
+        };
+        let base = app.theme.color(R::TextPrimary);
+        let bright = app.theme.color(R::Accent);
+        let span_len = window.chars().count() as f64 + 8.0;
+        let head = (f as f64 / 2.0) % span_len;
+        let mut col = 0.0f64;
+        for ch in window.chars() {
+            let d = (col - head).abs();
+            let glow = (1.0 - d / 3.0).clamp(0.0, 1.0);
+            let style = Style::default()
+                .fg(lerp_color(base, bright, glow))
+                .add_modifier(Modifier::BOLD);
+            cells.push((ch, style));
+            col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
+        }
+        cells
+    }
+
     fn render_with(
         app: &App,
         width: u16,
@@ -1141,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn title_window_matches_the_previous_composed_string_bytes() {
+    fn title_window_visitor_matches_the_previous_composed_string_bytes() {
         for (title, artist) in [
             ("A Very Long Animated Title", "Artist"),
             ("긴 애니메이션 제목", "가수"),
@@ -1154,15 +1248,95 @@ mod tests {
                 if UnicodeWidthStr::width(body.as_str()) <= avail {
                     continue;
                 }
-                for frame in [0u64, 4, 20, 76, 240] {
-                    let start = (frame / 4) as usize % period;
+                // `start = 1` deliberately lands inside the first double-width Korean glyph;
+                // `start = 4` reaches the combining-mark case. These preserve the old
+                // column-window edge semantics, not just ordinary ASCII boundaries.
+                for start in [0usize, 1, 2, 3, 4, 5, period / 2, period - 1] {
                     let expected = col_window(&format!("{loop_s}{loop_s}"), start, avail);
+                    let mut actual = String::new();
+                    for_each_title_window_char(title, artist, Some((start, avail)), |ch| {
+                        actual.push(ch);
+                    });
                     assert_eq!(
-                        title_col_window(title, artist, start, avail),
-                        expected,
-                        "title={title:?} artist={artist:?} frame={frame} avail={avail}"
+                        actual, expected,
+                        "title={title:?} artist={artist:?} start={start} avail={avail}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn title_line_matches_previous_cells_and_styles_across_frames() {
+        let _guard = crate::i18n::lock_for_test();
+        for (title_on, heart_on) in [(true, false), (true, true), (false, true)] {
+            let mut app = App::new(100);
+            app.config.animations.master = true;
+            app.config.animations.title = title_on;
+            app.config.animations.heart = heart_on;
+            let mut advanced = 0;
+            for target in [0u64, 1, 4, 17, 76, 240] {
+                advance_frames(&mut app, target - advanced);
+                advanced = target;
+                for (title, artist) in [
+                    ("A Very Long Animated Title", "Artist"),
+                    ("긴 애니메이션 제목", "가수"),
+                    ("Cafe\u{301} Mix", "DJ Wide 界"),
+                    ("", ""),
+                ] {
+                    for liked in [false, true] {
+                        for width in [3u16, 5, 14, 40, 100] {
+                            let line = title_line(&app, title, artist, liked, width)
+                                .expect("enabled title line");
+                            assert_eq!(line.alignment, Some(Alignment::Center));
+                            assert_eq!(
+                                line_cells(&line),
+                                previous_title_cells(&app, title, artist, liked, width),
+                                "title={title:?} artist={artist:?} frame={} width={width} liked={liked} title_on={title_on} heart_on={heart_on}",
+                                app.anim_frame()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn title_line_keeps_static_owned_output() {
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.title = true;
+        let line: Line<'static> = {
+            let title = String::from("ephemeral title");
+            let artist = String::from("ephemeral artist");
+            title_line(&app, &title, &artist, false, 40).expect("enabled title line")
+        };
+        assert_eq!(line_text(&line), "ephemeral title — ephemeral artist");
+    }
+
+    #[test]
+    fn eq_bars_match_the_previous_formula_without_utf8_growth() {
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.eq_bars = true;
+        for retro in [false, true] {
+            app.config.retro_mode = retro;
+            for _ in 0..80 {
+                let blocks = bar_blocks(&app);
+                let f = app.anim_frame();
+                let expected: String = (0..EQ_BAR_COUNT as u64)
+                    .map(|i| {
+                        let t =
+                            wave(f + i * 7, 16 + i * 3) * 0.6 + wave(f * 2 + i * 5, 9 + i) * 0.4;
+                        let idx = (t * (blocks.len() - 1) as f64).round() as usize;
+                        blocks[idx.min(blocks.len() - 1)]
+                    })
+                    .collect();
+                let actual = eq_bars(&app).expect("enabled EQ bars");
+                assert_eq!(actual, expected);
+                assert!(actual.capacity() >= actual.len() + EQ_SEPARATOR_MAX_BYTES);
+                advance_frames(&mut app, 1);
             }
         }
     }

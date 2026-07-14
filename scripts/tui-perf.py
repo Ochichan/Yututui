@@ -9001,9 +9001,62 @@ def merged_histogram(histograms: list[list[tuple[int, int]]]) -> list[tuple[int,
     return sorted(merged.items())
 
 
+RENDER_INCREMENTAL_ALLOCATION_CONTROLS = {
+    "animation_half100x30": "player",
+    "animation_half_art_lyrics160x50": "canvas_art_lyrics160x50",
+    "animation_heavy_half100x30": "player",
+    "animation_heavy_half_art_lyrics160x50": "canvas_art_lyrics160x50",
+}
+RENDER_INCREMENTAL_ALLOCATION_FIELDS = (
+    "allocations_per_draw",
+    "allocated_bytes_per_draw",
+)
+
+
+def add_render_incremental_allocation_metrics(
+    metrics: dict[str, Any], case_names: set[str], path: Path
+) -> None:
+    for animation_case, control_case in RENDER_INCREMENTAL_ALLOCATION_CONTROLS.items():
+        if animation_case not in case_names:
+            continue
+        if control_case not in case_names:
+            raise ValueError(
+                f"{path}: render case {animation_case!r} requires matched control "
+                f"render case {control_case!r}"
+            )
+        animation_prefix = f"render.{animation_case}"
+        control_prefix = f"render.{control_case}"
+        for field in RENDER_INCREMENTAL_ALLOCATION_FIELDS:
+            animation_key = f"{animation_prefix}.{field}"
+            control_key = f"{control_prefix}.{field}"
+            animation_value = finite_non_negative_number(
+                metrics.get(animation_key), animation_key, path
+            )
+            control_value = finite_non_negative_number(
+                metrics.get(control_key), control_key, path
+            )
+            incremental = animation_value - control_value
+            if incremental < 0.0:
+                raise ValueError(
+                    f"{path}: render case {animation_case!r} has negative incremental "
+                    f"{field} relative to matched control case {control_case!r}: "
+                    f"{animation_value} - {control_value}"
+                )
+            metrics[f"{animation_prefix}.incremental_{field}"] = incremental
+
+
 def render_metrics_from_document(document: dict[str, Any], path: Path) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    case_names: set[str] = set()
     for case in document.get("cases", []):
+        if not isinstance(case, dict):
+            raise ValueError(f"{path}: render cases must contain only objects")
+        case_name = case.get("name")
+        if not isinstance(case_name, str) or not case_name:
+            raise ValueError(f"{path}: render case name must be a non-empty string")
+        if case_name in case_names:
+            raise ValueError(f"{path}: duplicate render case name {case_name!r}")
+        case_names.add(case_name)
         batches = case.get("batches", [])
         if not batches:
             raise ValueError(f"{path}: render case {case.get('name')} has no batches")
@@ -9100,7 +9153,148 @@ def render_metrics_from_document(document: dict[str, Any], path: Path) -> dict[s
         metrics[f"{prefix}.update_path"] = case["update_path"]
         if case["update_path"] == "app_update_msg_key":
             metrics[f"{prefix}.p95_reducer_input_to_draw_ns"] = float(case_p95)
+    add_render_incremental_allocation_metrics(metrics, case_names, path)
     return metrics
+
+
+def render_incremental_allocation_metrics_self_test() -> None:
+    path = Path("<render-incremental-allocation-self-test>")
+
+    def render_case(name: str, allocations: int, allocated_bytes: int) -> dict[str, Any]:
+        batch = {
+            "draws": 10,
+            "total_ns": 100,
+            "mean_draw_ns": 10,
+            "p50_draw_ns": 10,
+            "p95_draw_ns": 10,
+            "max_draw_ns": 10,
+            "latency_histogram": [{"ns": 10, "count": 10}],
+            "allocations": allocations,
+            "reallocations": 0,
+            "allocated_bytes": allocated_bytes,
+            "deallocated_bytes": allocated_bytes,
+            "retained_bytes_delta": 0,
+            "peak_live_bytes_delta": allocated_bytes,
+        }
+        return {
+            "name": name,
+            "update_path": "app_update_msg_anim_tick",
+            "measured_draws": 10,
+            "total_draw_ns": 100,
+            "mean_draw_ns": 10,
+            "p50_draw_ns": 10,
+            "p95_draw_ns": 10,
+            "max_draw_ns": 10,
+            "latency_histogram": [{"ns": 10, "count": 10}],
+            "batches": [batch],
+            "buffer_style_digest": f"buffer-{name}",
+            "hit_map_digest": f"hits-{name}",
+            "checkpoint_digest": "0123456789abcdef",
+        }
+
+    def render_document() -> dict[str, Any]:
+        # Animation cases intentionally precede their controls to pin order-independent
+        # derivation after every raw case has been authenticated.
+        return {
+            "schema": "ytt.tui-perf.render.v1",
+            "cases": [
+                render_case("animation_half100x30", 160, 1_600),
+                render_case("animation_half_art_lyrics160x50", 190, 2_900),
+                render_case("animation_heavy_half100x30", 140, 1_300),
+                render_case("animation_heavy_half_art_lyrics160x50", 180, 2_600),
+                render_case("player", 100, 1_000),
+                render_case("canvas_art_lyrics160x50", 120, 2_000),
+            ],
+        }
+
+    metrics = render_metrics_from_document(render_document(), path)
+    expected = {
+        "render.animation_half100x30.incremental_allocations_per_draw": 6.0,
+        "render.animation_half100x30.incremental_allocated_bytes_per_draw": 60.0,
+        "render.animation_half_art_lyrics160x50.incremental_allocations_per_draw": 7.0,
+        "render.animation_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": 90.0,
+        "render.animation_heavy_half100x30.incremental_allocations_per_draw": 4.0,
+        "render.animation_heavy_half100x30.incremental_allocated_bytes_per_draw": 30.0,
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocations_per_draw": 6.0,
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": 60.0,
+    }
+    for name, value in expected.items():
+        require_artifact_value(path, name, metrics.get(name), value)
+
+    selected_non_animation = {
+        "schema": "ytt.tui-perf.render.v1",
+        "cases": [render_case("player", 100, 1_000)],
+    }
+    selected_metrics = render_metrics_from_document(selected_non_animation, path)
+    require_artifact_value(
+        path,
+        "selected non-animation allocation metric",
+        selected_metrics.get("render.player.allocations_per_draw"),
+        10.0,
+    )
+    if any(".incremental_" in name for name in selected_metrics):
+        raise AssertionError(
+            "selected non-animation render unexpectedly emitted incremental metrics"
+        )
+
+    def expect_rejected(
+        label: str, document: dict[str, Any], message_fragment: str
+    ) -> None:
+        try:
+            render_metrics_from_document(document, path)
+        except ValueError as error:
+            if message_fragment not in str(error):
+                raise AssertionError(
+                    f"incremental allocation self-test {label!r} failed for the wrong "
+                    f"reason: {error}"
+                ) from error
+        else:
+            raise AssertionError(
+                f"incremental allocation self-test accepted {label!r} tampering"
+            )
+
+    selected_animation = {
+        "schema": "ytt.tui-perf.render.v1",
+        "cases": [render_case("animation_half100x30", 160, 1_600)],
+    }
+    expect_rejected(
+        "selected animation without control",
+        selected_animation,
+        "requires matched control render case 'player'",
+    )
+
+    missing_player = render_document()
+    missing_player["cases"] = [
+        case for case in missing_player["cases"] if case["name"] != "player"
+    ]
+    expect_rejected("missing player control", missing_player, "'player'")
+
+    missing_art = render_document()
+    missing_art["cases"] = [
+        case
+        for case in missing_art["cases"]
+        if case["name"] != "canvas_art_lyrics160x50"
+    ]
+    expect_rejected(
+        "missing art/lyrics control", missing_art, "'canvas_art_lyrics160x50'"
+    )
+
+    negative_allocations = render_document()
+    negative_allocations["cases"][0]["batches"][0]["allocations"] = 90
+    expect_rejected(
+        "negative allocations delta",
+        negative_allocations,
+        "negative incremental allocations_per_draw",
+    )
+
+    negative_bytes = render_document()
+    negative_bytes["cases"][0]["batches"][0]["allocated_bytes"] = 900
+    negative_bytes["cases"][0]["batches"][0]["deallocated_bytes"] = 900
+    expect_rejected(
+        "negative allocated bytes delta",
+        negative_bytes,
+        "negative incremental allocated_bytes_per_draw",
+    )
 
 
 def metrics_from_file(path: Path) -> dict[str, Any]:
@@ -14525,6 +14719,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     control_extended_telemetry_self_test()
     rate_factor_evidence_self_test()
     fixture_output_contract_self_test()
+    render_incremental_allocation_metrics_self_test()
     windows_build_wrapper_self_test()
     sample_tree_topology_self_test()
     point, upper, ratios = paired_bootstrap_ratios([0.0, 0.0], [0.0, 0.0], 100, 7, 0.95)
@@ -15567,6 +15762,8 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "multi_geometry_contract_cases": 2,
                 "duplicate_key_cases": 1,
                 "aggregate_render_p95_cases": 2,
+                "render_incremental_allocation_metrics": 8,
+                "render_incremental_allocation_tamper_cases": 5,
                 "render_identity_tamper_cases": 2,
                 "checksum_tamper_cases": 1,
                 "checksum_shadow_inventory_cases": 1,

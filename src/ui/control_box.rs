@@ -797,9 +797,14 @@ fn status_line_parts_with_labels_reusing(
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if !minimal
         && animated
-        && let Some(bars) = crate::ui::anim::eq_bars(app)
+        && let Some(mut bars) = crate::ui::anim::eq_bars(app)
     {
-        parts.push((None, Cow::Owned(format!("{gap}{bars}"))));
+        // `eq_bars` already owns this frame's five-glyph buffer. Prefix the separator in
+        // place instead of formatting it into a second allocation and immediately dropping
+        // the original. This keeps the single label segment (and therefore its exact cells)
+        // unchanged.
+        bars.insert_str(0, gap);
+        parts.push((None, Cow::Owned(bars)));
     }
     if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
@@ -901,7 +906,11 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     };
     let plain_down = " - ";
     let plain_up = " + ";
-    let (beginner_down, beginner_up) = beginner::volume_buttons(app);
+    // Resolving display keycaps allocates two strings. The legacy/non-beginner path never
+    // displays them, so do not build them on every animated frame just to discard them.
+    let beginner_buttons = app
+        .beginner_labels_enabled()
+        .then(|| beginner::volume_buttons(app));
     let tight_transport_width = 13u16;
     let cluster_width = |label: &str, down: &str, up: &str| {
         buttons::text_width(label)
@@ -912,24 +921,14 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     let fits_tight = |label: &str, down: &str, up: &str| {
         tight_transport_width.saturating_add(cluster_width(label, down, up)) <= area.width
     };
-    let (volume_label, volume_down, volume_up) = if app.beginner_labels_enabled()
-        && fits_tight(beginner_volume_label, &beginner_down, &beginner_up)
-    {
-        (
-            beginner_volume_label,
-            beginner_down.as_str(),
-            beginner_up.as_str(),
-        )
-    } else if app.beginner_labels_enabled()
-        && fits_tight(compact_volume_label, &beginner_down, &beginner_up)
-    {
-        (
-            compact_volume_label,
-            beginner_down.as_str(),
-            beginner_up.as_str(),
-        )
-    } else {
-        (compact_volume_label, plain_down, plain_up)
+    let (volume_label, volume_down, volume_up) = match beginner_buttons.as_ref() {
+        Some((down, up)) if fits_tight(beginner_volume_label, down, up) => {
+            (beginner_volume_label, down.as_str(), up.as_str())
+        }
+        Some((down, up)) if fits_tight(compact_volume_label, down, up) => {
+            (compact_volume_label, down.as_str(), up.as_str())
+        }
+        _ => (compact_volume_label, plain_down, plain_up),
     };
     let full = 21u16.saturating_add(cluster_width(volume_label, volume_down, volume_up));
     let (gap, vol_gap) = if full <= area.width {
