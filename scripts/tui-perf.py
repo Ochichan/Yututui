@@ -36,7 +36,7 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 
@@ -5276,6 +5276,51 @@ def command_launch_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+def macos_process_absent_or_zombie(
+    pid: int,
+    *,
+    existence_probe: Callable[[int], bool] | None = None,
+    state_probe: Callable[[int], tuple[int, str]] | None = None,
+) -> bool:
+    """Confirm a Darwin PID vanished or became a zombie without trusting one racy probe."""
+
+    def default_existence_probe(candidate: int) -> bool:
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def default_state_probe(candidate: int) -> tuple[int, str]:
+        environment = controlled_build_environment()
+        environment["LC_ALL"] = "C"
+        completed = subprocess.run(
+            ["/bin/ps", "-p", str(candidate), "-o", "state="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+            check=False,
+        )
+        return completed.returncode, completed.stdout
+
+    exists = existence_probe or default_existence_probe
+    inspect_state = state_probe or default_state_probe
+    if not exists(pid):
+        return True
+    returncode, output = inspect_state(pid)
+    state = output.strip()
+    if returncode == 0 and state.startswith("Z"):
+        return True
+    if returncode != 0 or not state:
+        # The process can be reaped after the first existence probe. Only ESRCH on this
+        # second probe is proof of absence; a still-live but uninspectable PID fails closed.
+        return not exists(pid)
+    return False
+
+
 def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[str, Any] | None:
     if pid <= 0:
         return None
@@ -5320,22 +5365,6 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
             libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
             length = libproc.proc_pidpath(pid, buffer, len(buffer))
             if length <= 0:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    return None
-                environment = controlled_build_environment()
-                environment["LC_ALL"] = "C"
-                state = subprocess.run(
-                    ["/bin/ps", "-p", str(pid), "-o", "state="],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=environment,
-                    check=False,
-                )
-                if state.returncode == 0 and state.stdout.strip().startswith("Z"):
-                    return None
                 raise ValueError(f"proc_pidpath failed for PID {pid}")
             executable = Path(os.fsdecode(buffer.value)).resolve(strict=True)
             libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -5377,7 +5406,10 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
                 check=False,
             )
             if completed.returncode != 0 or not completed.stdout.strip():
-                return None
+                raise ValueError(
+                    f"ps start-time query failed for PID {pid}: "
+                    f"returncode={completed.returncode}, stderr={completed.stderr.strip()!r}"
+                )
             line = completed.stdout.strip()
             match = re.fullmatch(
                 r"(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})",
@@ -5396,11 +5428,17 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
             )
             relation_fields = relation.stdout.split()
             if relation.returncode != 0 or len(relation_fields) != 2:
-                return None
+                raise ValueError(
+                    f"ps relation query failed for PID {pid}: "
+                    f"returncode={relation.returncode}, fields={relation_fields!r}, "
+                    f"stderr={relation.stderr.strip()!r}"
+                )
             parent_pid, process_group_id = map(int, relation_fields)
         except ProcessLookupError:
             return None
         except (OSError, ValueError) as error:
+            if macos_process_absent_or_zombie(pid):
+                return None
             raise ValueError(f"cannot inspect macOS PID {pid}: {error}") from error
         return {
             "pid": pid,
@@ -14695,6 +14733,44 @@ def host_identity_privacy_self_test() -> None:
             raise AssertionError("raw host identifier payload leaked into the serialized identity")
 
 
+def macos_process_absence_probe_self_test() -> None:
+    def existence_sequence(*results: bool) -> Callable[[int], bool]:
+        remaining = iter(results)
+        return lambda _pid: next(remaining)
+
+    def missing_state(_pid: int) -> tuple[int, str]:
+        return 1, ""
+
+    def unexpected_state(_pid: int) -> tuple[int, str]:
+        raise AssertionError("state probe must not run for a confirmed-absent PID")
+
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True, False),
+        state_probe=missing_state,
+    )
+    assert not macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True, True),
+        state_probe=missing_state,
+    )
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True),
+        state_probe=lambda _pid: (0, "Z"),
+    )
+    assert not macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True),
+        state_probe=lambda _pid: (0, "S"),
+    )
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(False),
+        state_probe=unexpected_state,
+    )
+
+
 def command_self_test(_args: argparse.Namespace) -> int:
     scenario_validation_self_test()
     tree_digest_self_test()
@@ -14705,6 +14781,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     cleanup_integration_self_test()
     startup_cleanup_integration_self_test()
     host_identity_privacy_self_test()
+    macos_process_absence_probe_self_test()
     run_contract_integration_self_test()
     multi_geometry_run_contract_integration_self_test()
     launch_policy_self_test()
