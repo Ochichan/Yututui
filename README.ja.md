@@ -100,6 +100,8 @@ ytt
 
 以上。音楽が流れます。
 
+**ターミナルは初めて？** 設定 → 一般で **ビギナーモード** をオンにすると、次回の起動に対話型のステップバイステップ案内が加わります — [やさしいマニュアル](MANUAL.ja.md)でも、すべてのモードを自分のペースで学べます。
+
 ## ツアー
 
 以下の機能はすべて **[機能ツアー](https://ochichan.github.io/Yututui/)** でライブで、詳しく見られます。
@@ -107,14 +109,14 @@ ytt
 <!-- 📸 メディアを追加する方へ: docs/media/ フォルダに、以下の名前のとおりファイルを置いてください:
 hero.gif · player.png · lyrics.gif · search.gif · sources.png · djgem.gif · assistant.gif ·
 video.gif · radio.png · radio-id.gif · library.png · queue.png · downloads.png ·
-localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · eq.png ·
-retro.png · transfer.gif · help.png
+localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · showpiece.gif · eq.png ·
+audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · context-menu.png
 同じファイルが README.md / README.ko.md / README.ja.md の3つで共用されます。下の各スロットに
 一行の説明があります。追加のショットも歓迎 — スロットのブロックをコピーしてください。 -->
 
 ### プレイヤー — 本物のアルバムアート & 同期歌詞
 
-実際のカバー画像がターミナルにそのまま描かれます（Kitty/Sixel/iTerm2 自動検出）。**`Shift+L`** でその下を時間同期の歌詞が流れます。表示中の歌詞行をクリックすればその時点へシークでき、**`z`** / **`Z`** で歌詞を 0.1 秒ずつ早く / 遅くできます。歌詞が読み込まれると **`[ − 0.0s + ]`** が 3 秒間表示され、**`[±]`** に折りたたまれた後はハンドルをクリックして再び 3 秒間開き、**`−/+`** で微調整できます。プレイヤーのコントロールはすべての画面の下部にドッキングされ（**`B`** で折りたたみ、クラシックな上部レイアウトも設定ひとつで復帰）、アルバムアートは残りの空間の中央に配置されます。ウィンドウを約 32×11 未満まで縮めるとアプリ全体が小さなミニプレイヤーになり、広げれば元に戻ります。
+実際のカバー画像がターミナルにそのまま描かれます（Kitty/Sixel/iTerm2 自動検出、画質は設定で Standard/High/Original から選択）。**`Shift+L`** でその下を時間同期の歌詞が流れます。表示中の歌詞行をクリックすればその時点へシークでき、**`z`** / **`Z`** で歌詞を 0.1 秒ずつ早く / 遅くできます。歌詞が読み込まれると **`[ − 0.0s + ]`** が 3 秒間表示され、**`[±]`** に折りたたまれた後はハンドルをクリックして再び 3 秒間開き、**`−/+`** で微調整できます。プレイヤーのコントロールはすべての画面の下部にドッキングされ（**`B`** で折りたたみ、クラシックな上部レイアウトも設定ひとつで復帰）、アルバムアートは残りの空間の中央に配置されます。ウィンドウを約 32×14 未満まで縮めるとアプリ全体が小さなミニプレイヤーになり、広げれば元に戻ります。
 
 > 🖼️ *スクリーンショットは近日追加予定。*
 <!-- 📸 埋め方: docs/media/player.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
@@ -122,6 +124,9 @@ retro.png · transfer.gif · help.png
 -->
 <!-- 📸 埋め方: docs/media/lyrics.gif を追加してコメントを外す:
 ![プレイヤーの下を流れる時間同期の歌詞](docs/media/lyrics.gif)
+-->
+<!-- 📸 埋め方: docs/media/audio-output.png を追加してコメントを外す:
+![設定でオーディオ出力デバイスを選ぶ様子](docs/media/audio-output.png)
 -->
 
 ### カタログは六つ、検索窓は一つ
@@ -213,7 +218,7 @@ retro.png · transfer.gif · help.png
 
 ### 自分好みに
 
-テーマ13種（34の色ロールすべて hex 編集可能）、アニメーション40種 — 流れ星からプラズマフィールドまで — そしてプリセット付き10バンド EQ + ラウドネスノーマライズ。
+テーマ14種（34の色ロールすべて hex 編集可能）、アニメーション40種 — 流れ星や回る ASCII ドーナツからフルキャンバスのショーピース（花火、ライフゲーム、パイプ、プラズマ）まで — プリセット付き10バンド EQ、オーディオ出力デバイスの選択、ラウドネスノーマライズまで。
 
 > 🖼️ *GIF は近日追加予定。*
 <!-- 📸 埋め方: docs/media/themes.gif を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
@@ -221,6 +226,9 @@ retro.png · transfer.gif · help.png
 -->
 <!-- 📸 埋め方: docs/media/animations.gif を追加してコメントを外す:
 ![回る ASCII ドーナツを含むアニメーション](docs/media/animations.gif)
+-->
+<!-- 📸 埋め方: docs/media/showpiece.gif を追加してコメントを外す:
+![フルキャンバスのショーピースアニメーション — 花火、ライフゲーム、パイプ、プラズマ](docs/media/showpiece.gif)
 -->
 <!-- 📸 埋め方: docs/media/eq.png を追加してコメントを外す:
 ![プリセット付きの10バンド EQ](docs/media/eq.png)
@@ -252,6 +260,12 @@ retro.png · transfer.gif · help.png
 <!-- 📸 埋め方: docs/media/help.png を追加し、上の「近日追加」行を消して、次の行のコメントを外してください:
 ![ライブのキーバインドチートシート](docs/media/help.png)
 -->
+<!-- 📸 埋め方: docs/media/onboarding.gif を追加してコメントを外す:
+![初回起動時のビギナーモードの対話型案内](docs/media/onboarding.gif)
+-->
+<!-- 📸 埋め方: docs/media/context-menu.png を追加してコメントを外す:
+![トラック行の右クリックコンテキストメニュー](docs/media/context-menu.png)
+-->
 
 ## 基本のキー
 
@@ -270,12 +284,13 @@ retro.png · transfer.gif · help.png
 | `Shift+L` | 同期歌詞。表示中の行をクリックしてその時点へシーク |
 | `z` / `Z` | 歌詞を 0.1 秒早く / 遅く（`[±]` で `−/+` を 3 秒間再表示） |
 | `v` | MV オーバーレイ |
+| `B` | ドッキングされたコントロールボックスの折りたたみ / 展開 |
 | `Ctrl+R` | DJ Gem ストリーミング |
 | `g` | DJ Gem アシスタント |
 | `o` | 設定 |
 | `Ctrl+Q` | 終了 |
 
-> **ハングル配列でも大丈夫。** ショートカットは 2ボル式の字母を理解します（`ㅂ` は `q` として効く）— IME を切り替える必要はありません。マウス派なら画面のすべてがクリックでき、ホイールは音量に効きます。行をドラッグすると範囲選択（検索結果でもライブラリと同じ）、`Ctrl`+クリック（macOS は `⌘`+クリック）で離れた行を個別に選択/解除できます。全リストはフッターの **mouse** ボタンのマウスチートシートで。
+> **ハングル配列でも大丈夫。** ショートカットは 2ボル式の字母を理解します（`ㅂ` は `q` として効く）— IME を切り替える必要はありません。マウス派なら画面のすべてがクリックでき、ホイールは音量に効きます。行をドラッグすると範囲選択（検索結果でもライブラリと同じ）、`Ctrl`+クリック（macOS は `⌘`+クリック）で離れた行を個別に選択/解除できます。行を右クリックするとコンテキストメニューが開き、ジェスチャーは `config.json` の `mouse_bindings` で再設定できます。全リストはフッターの **mouse** ボタンのマウスチートシートで。
 
 ## トラブルシューティング
 
@@ -286,6 +301,7 @@ retro.png · transfer.gif · help.png
 | 症状 | 対処 |
 | --- | --- |
 | 何も再生されない、再生でエラー | mpv か yt-dlp がありません — `ytt doctor` を実行。 |
+| 音が違うデバイスから出る | 設定 → 再生 → **オーディオ出力** で検出されたローカル出力から選択; **オーディオバックエンド** は mpv オプションを公開します。 |
 | 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
 | 複数の曲が 403/429 や "YouTube rejected the stream" で失敗 | `ytt doctor --verbose` を実行し、[リファレンス](#リファレンス)の Cookie の項を確認し、対応する JS ランタイムがあるか確認を; アクティブな yt-dlp は `ytt tools status --why` で。 |
 | 特定の曲だけ再生できない | サインインが必要かも — [リファレンス](#リファレンス)の Cookie の項を参照。 |
@@ -412,7 +428,7 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 4. **Which API/SDKs are you planning to use?** で **Web API** にチェック。
 5. 規約に同意して **Save**。
 6. アプリ → **Settings** で **Client ID** をコピー（Client secret は不要）。
-7. **User Management**（アプリ設定内）を開いて自分のアカウントを追加 — 名前 + Spotify アカウントのメール。Dev Mode アプリはこの許可ユーザーを最大25人まで受け付けます。
+7. **User Management**（アプリ設定内）を開いて自分のアカウントを追加 — 名前 + Spotify アカウントのメール。新しい Dev Mode アプリはこの許可ユーザーを最大5人まで受け付けます。
 8. ytt で **設定 → アカウント → Spotify** を開き、Client ID を貼り付けて **Connect** を押します（または `ytt auth spotify --client-id <ID>`）。ブラウザに Spotify の承認ページが開くので承認すれば完了。ブラウザが開かないヘッドレス/SSH 環境では、URL がクリップボードにコピーされ `spotify_auth_url.txt` にも保存されるので、どの端末でも開けます。
 
 マッチングはメタデータベースで（NFKC 正規化、CJK 安全）、Spotify インポートをキャッシュ優先・アルバム認識・YTM カタログ優先で解決してから、公開 YouTube 動画へ fallback します。CLI の既定は `--policy balanced`; 保守的なレビュー中心マッチングは `--policy strict`、レビュー行を減らすには `--policy aggressive`、一般の公開アップロードでも良い場合のみ `--allow-user-videos`。あいまいな曲は黙って当てずっぽうにせず、ジョブレポートに残ります — `--take-best` / `--min-score` で再実行するか、大きなプレイリストは `--dry-run` で確認してから `ytt transfer resume <job-id>` で書き込みを。

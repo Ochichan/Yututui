@@ -66,7 +66,7 @@
 <style>
 /* ============================================================
    YuTuTui! — promo page
-   Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own 13 themes.
+   Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own 14 themes.
    Type:  JetBrains Mono everywhere (terminal voice) + Bricolage Grotesque (headlines).
    ============================================================ */
 
@@ -123,7 +123,7 @@ body {
   color: var(--text);
   font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: clamp(14px, 0.5vw + 13px, 16px);
-  line-height: 1.65;
+  line-height: 1.8;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
@@ -162,21 +162,21 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .display {
   font-family: "Bricolage Grotesque", "JetBrains Mono", system-ui, sans-serif;
   letter-spacing: -0.02em;
-  line-height: 1.03;
+  line-height: 1.08;
   word-break: keep-all; /* keep Korean words intact, break only at spaces */
 }
 
 /* ---- layout helpers ---- */
 .wrap { width: min(1180px, 100% - 2.4rem); margin-inline: auto; position: relative; z-index: 1; }
-.section { padding-block: clamp(3.6rem, 8vw, 6.5rem); position: relative; z-index: 1; }
+.section { padding-block: clamp(4rem, 8.5vw, 7rem); position: relative; z-index: 1; }
 .eyebrow {
   font-size: .8rem; letter-spacing: .06em; color: var(--muted);
   display: inline-flex; align-items: center; gap: .55rem;
 }
 .eyebrow .dot { color: var(--love); }
-.section-head { max-width: 62ch; margin-bottom: clamp(2rem, 4vw, 3rem); }
+.section-head { max-width: 62ch; margin-bottom: clamp(2.3rem, 4.2vw, 3.3rem); }
 .section-head h2 { font-size: clamp(1.7rem, 3.6vw, 2.7rem); font-weight: 800; }
-.section-head p { color: var(--subtle); margin-top: .9rem; max-width: 58ch; }
+.section-head p { color: var(--subtle); margin-top: 1.1rem; max-width: 58ch; }
 
 /* skip link */
 .skip {
@@ -514,7 +514,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
    ============================================================ */
 .features-grid {
   display: grid; gap: 1px; background: var(--line);
-  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 10px; overflow: visible;
   grid-template-columns: repeat(3, 1fr);
 }
 @media (max-width: 900px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -542,6 +542,34 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
   .feature--wide p { flex: 1 1 34ch; min-width: 28ch; }
 }
 
+/* The nine 3×3 cells show a title only; the detail floats in on hover or
+   keyboard focus. Touch / narrow layouts fall back to the detail shown inline. */
+.features-grid .feature:not(.feature--wide) { min-height: 8.6rem; }
+.features-grid .feature:not(.feature--wide) > p {
+  position: absolute; left: -1px; right: -1px; top: 100%;
+  z-index: 20; margin: 0; padding: 1.15rem 1.4rem 1.3rem;
+  background: var(--overlay); border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 10px 10px; box-shadow: 0 26px 50px -18px rgba(0,0,0,.6);
+  opacity: 0; visibility: hidden; transform: translateY(-8px);
+  transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s;
+  pointer-events: none;
+}
+.features-grid .feature:not(.feature--wide):hover,
+.features-grid .feature:not(.feature--wide):focus-within { z-index: 30; background: var(--overlay); }
+.features-grid .feature:not(.feature--wide):hover > p,
+.features-grid .feature:not(.feature--wide):focus-within > p {
+  opacity: 1; visibility: visible; transform: translateY(0);
+  transition: opacity .18s ease, transform .18s ease; pointer-events: auto;
+}
+@media (hover: none), (max-width: 600px) {
+  .features-grid .feature:not(.feature--wide) { min-height: 0; }
+  .features-grid .feature:not(.feature--wide) > p {
+    position: static; opacity: 1; visibility: visible; transform: none;
+    pointer-events: auto; box-shadow: none; border: 0; border-radius: 0;
+    background: none; padding: 0; margin-top: .7rem;
+  }
+}
+
 /* by-the-numbers strip under the feature grid */
 .stats {
   margin-top: 1.2rem; display: grid; grid-template-columns: repeat(6, 1fr);
@@ -559,8 +587,8 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .stat:nth-child(5) b { color: var(--foam); } .stat:nth-child(6) b { color: var(--rose); }
 
 /* compact ✓-fact lists — used instead of second paragraphs */
-.facts { list-style: none; padding: 0; margin-top: 1.2rem; display: flex; flex-direction: column; gap: .55rem; }
-.facts li { display: flex; gap: .65rem; align-items: baseline; color: var(--subtle); font-size: .85rem; line-height: 1.55; }
+.facts { list-style: none; padding: 0; margin-top: 1.4rem; display: flex; flex-direction: column; gap: .75rem; }
+.facts li { display: flex; gap: .65rem; align-items: baseline; color: var(--subtle); font-size: .85rem; line-height: 1.72; }
 .facts .ic { color: var(--pine); flex: none; }
 .facts code { color: var(--text); }
 
@@ -826,7 +854,7 @@ kbd {
   <div class="trust" aria-label="At a glance">
     <span data-i18n="trust.ram">🪶 One tiny binary</span><span class="pipe">│</span>
     <span data-i18n="trust.ads">🚫 Zero ads</span><span class="pipe">│</span>
-    <span data-i18n="trust.themes">🎨 13 themes, recolorable to the last hex</span><span class="pipe">│</span>
+    <span data-i18n="trust.themes">🎨 14 themes, recolorable to the last hex</span><span class="pipe">│</span>
     <span data-i18n="trust.keys">⌨ Every key rebindable</span><span class="pipe">│</span>
     <span data-i18n="trust.mit">⚖ MIT</span>
   </div>
@@ -1077,21 +1105,21 @@ kbd {
     <article class="feature ros">
       <div class="feature__top"><kbd>,</kbd></div>
       <h3 class="display" data-i18n="f.custom.h">Unmistakably yours</h3>
-      <p data-i18n-html="f.custom.p">13 themes, all 34 color roles hex-editable, a 10-band EQ with presets, 25 animations up to a spinning ASCII donut — and a retro mode for a bare Linux console.</p>
+      <p data-i18n-html="f.custom.p">14 themes, all 34 color roles hex-editable, a 10-band EQ with presets, and your pick of audio-output device — plus 40 animations, from a spinning ASCII donut to full-canvas showpieces (fireworks, Game of Life, pipes, plasma), and a retro mode for a bare Linux console.</p>
     </article>
 
     <article class="feature iri feature--wide">
       <div class="feature__top"><kbd>?</kbd></div>
       <h3 class="display" data-i18n="f.help.h">The app remembers the keys</h3>
-      <p data-i18n-html="f.help.p">Press <code>?</code> for the always-current cheat sheet — your language, your custom bindings. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), everything on screen is clickable, and <code>Ctrl+-</code> / <code>Ctrl+=</code> zooms the whole UI. Drag to select row ranges — in Search results just like the Library — and <code>Ctrl</code>+click (<code>⌘</code>+click on macOS) toggles single rows in and out of the selection.</p>
+      <p data-i18n-html="f.help.p">Press <code>?</code> for the always-current cheat sheet — your language, your custom bindings — and a guided <em>Beginner Mode</em> walks first-timers through the app. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), everything on screen is clickable, right-click opens a context menu, and <code>Ctrl+-</code> / <code>Ctrl+=</code> zooms the whole UI. Drag to select row ranges — in Search results just like the Library — and <code>Ctrl</code>+click (<code>⌘</code>+click on macOS) toggles single rows in and out of the selection.</p>
     </article>
   </div>
 
   <div class="stats reveal" aria-label="YuTuTui! by the numbers">
     <div class="stat"><b class="display">6</b><span data-i18n="st.catalogs">catalogs, one search box</span></div>
-    <div class="stat"><b class="display">13</b><span data-i18n="st.themes">themes, yours to recolor</span></div>
+    <div class="stat"><b class="display">14</b><span data-i18n="st.themes">themes, yours to recolor</span></div>
     <div class="stat"><b class="display">34</b><span data-i18n="st.roles">hex-editable color roles</span></div>
-    <div class="stat"><b class="display">25</b><span data-i18n="st.anims">animations, donut included</span></div>
+    <div class="stat"><b class="display">40</b><span data-i18n="st.anims">animations, donut included</span></div>
     <div class="stat"><b class="display">10</b><span data-i18n="st.eq">EQ bands, with presets</span></div>
     <div class="stat"><b class="display">3</b><span data-i18n="st.os">platforms — macOS · Windows · Linux</span></div>
   </div>
@@ -1458,7 +1486,7 @@ var KO = {
   "hero.cta1": "YuTuTui! 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
-  "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 13종, 마지막 hex까지 내 마음대로",
+  "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 14종, 마지막 hex까지 내 마음대로",
   "trust.keys": "⌨ 모든 키 재설정 가능", "trust.mit": "⚖ MIT",
 
   "demo.empty": "재생 중인 곡 없음 — s 를 눌러 검색하세요",
@@ -1504,9 +1532,9 @@ var KO = {
   "f.remote.h": "어디서든 조종하기",
   "f.remote.p": "미디어 키, macOS Control Center, 메뉴 바/트레이 미니 플레이어, Linux MPRIS, 아무 셸에서나 <code>ytt -r</code> — 아니면 터미널 없이 headless 데몬으로.",
   "f.custom.h": "누가 봐도 내 취향",
-  "f.custom.p": "테마 13종, 색 역할 34개 전부 hex 편집, 프리셋 있는 10밴드 EQ, 도는 ASCII 도넛까지 25가지 애니메이션 — 그리고 맨몸 리눅스 콘솔용 레트로 모드.",
+  "f.custom.p": "테마 14종, 색 역할 34개 전부 hex 편집, 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택까지 — 그리고 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 애니메이션 40가지에, 맨몸 리눅스 콘솔용 레트로 모드도.",
   "f.help.h": "단축키는 앱이 기억합니다",
-  "f.help.p": "<code>?</code> 를 누르면 내 언어·내가 바꾼 키 그대로 최신 치트시트가 뜹니다. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 화면의 모든 게 클릭되고, <code>Ctrl+-</code> / <code>Ctrl+=</code> 로 화면 전체 확대까지. 드래그로 행 범위를 고르고(검색 결과에서도 라이브러리와 똑같이), <code>Ctrl</code>+클릭(macOS는 <code>⌘</code>+클릭)으로 떨어져 있는 행을 하나씩 선택/해제할 수 있어요.",
+  "f.help.p": "<code>?</code> 를 누르면 내 언어·내가 바꾼 키 그대로 최신 치트시트가 뜨고, 처음이라면 안내형 <em>비기너 모드</em>가 앱을 차근차근 알려줍니다. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 화면의 모든 게 클릭되며, 우클릭으로 컨텍스트 메뉴가 열리고, <code>Ctrl+-</code> / <code>Ctrl+=</code> 로 화면 전체 확대까지. 드래그로 행 범위를 고르고(검색 결과에서도 라이브러리와 똑같이), <code>Ctrl</code>+클릭(macOS는 <code>⌘</code>+클릭)으로 떨어져 있는 행을 하나씩 선택/해제할 수 있어요.",
 
   "st.catalogs": "카탈로그 — 검색창은 하나",
   "st.themes": "테마 — 전부 내 색으로",
@@ -1625,7 +1653,7 @@ var JA = {
   "hero.cta1": "YuTuTui! をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
-  "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ13種、最後の hex まで自分色",
+  "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ14種、最後の hex まで自分色",
   "trust.keys": "⌨ すべてのキーを再設定可能", "trust.mit": "⚖ MIT",
 
   "demo.empty": "再生中の曲なし — s を押して検索",
@@ -1671,9 +1699,9 @@ var JA = {
   "f.remote.h": "どこからでも操作",
   "f.remote.p": "メディアキー、macOS のコントロールセンター、メニューバー/トレイのミニプレイヤー、Linux の MPRIS、どのシェルからでも <code>ytt -r</code> — あるいはターミナルなしの headless デーモンで。",
   "f.custom.h": "誰が見ても自分好み",
-  "f.custom.p": "テーマ13種、34の色ロールすべて hex 編集、プリセット付き10バンド EQ、回る ASCII ドーナツまで25種のアニメーション — 素の Linux コンソール用レトロモードも。",
+  "f.custom.p": "テーマ14種、34の色ロールすべて hex 編集、プリセット付き10バンド EQ、オーディオ出力デバイスの選択まで — さらに回る ASCII ドーナツからフルキャンバスのショーピース（花火、ライフゲーム、パイプ、プラズマ）まで40種のアニメーション、素の Linux コンソール用レトロモードも。",
   "f.help.h": "ショートカットはアプリが覚えています",
-  "f.help.p": "<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出ます。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、画面のすべてがクリックでき、<code>Ctrl+-</code> / <code>Ctrl+=</code> で全体を拡大。ドラッグで行範囲を選択（検索結果でもライブラリと同じ）、<code>Ctrl</code>+クリック（macOS は <code>⌘</code>+クリック）で離れた行を個別に選択/解除できます。",
+  "f.help.p": "<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出て、初めてなら案内付きの<em>ビギナーモード</em>がアプリを一つずつ手ほどきします。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、画面のすべてがクリックでき、右クリックでコンテキストメニューが開き、<code>Ctrl+-</code> / <code>Ctrl+=</code> で全体を拡大。ドラッグで行範囲を選択（検索結果でもライブラリと同じ）、<code>Ctrl</code>+クリック（macOS は <code>⌘</code>+クリック）で離れた行を個別に選択/解除できます。",
 
   "st.catalogs": "カタログ — 検索窓は一つ",
   "st.themes": "テーマ — 全部自分色に",
@@ -1903,6 +1931,14 @@ document.querySelectorAll(".tab-btn").forEach(function (tab) {
     entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); } });
   }, { threshold: 0.12 });
   els.forEach(function (e) { io.observe(e); });
+})();
+
+/* ---- Feature grid: make the nine title-only cells keyboard-focusable so the
+   detail popover reveals on focus, not just hover. ---- */
+(function () {
+  document.querySelectorAll(".features-grid .feature:not(.feature--wide)").forEach(function (cell) {
+    cell.setAttribute("tabindex", "0");
+  });
 })();
 
 /* ============================================================

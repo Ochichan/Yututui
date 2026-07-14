@@ -41,6 +41,8 @@ The first launch points to Search for ten seconds; press its displayed key (norm
 
 Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.
 
+**Brand new to this?** In **Settings → General**, switch on **Beginner Mode** — the next launch adds an interactive, step-by-step walkthrough that points out each part as you go.
+
 ### The five screens
 
 YuTuTui! is five screens, each one key away:
@@ -64,7 +66,7 @@ away on those screens and reclaim the rows; the Player screen always keeps it. I
 prefer the classic look with the controls at the top of the Player screen only, switch
 *Settings › General › Player bar position* to **Top**.
 
-Shrink the window far enough (below ~32×11 cells) and the whole app becomes a tiny
+Shrink the window far enough (below ~32×14 cells) and the whole app becomes a tiny
 miniplayer — title, progress, transport — then springs back to the full layout as soon as
 the window grows again. Nothing to configure; it just follows the window.
 
@@ -88,6 +90,10 @@ the window grows again. Nothing to configure; it just follows the window.
 | `Ctrl+Q` | Quit |
 
 When synced lyrics load, **`[ − 0.0s + ]`** appears at the lower right for three seconds. After it folds to **`[±]`**, click the handle to reopen it for three seconds; **`−/+`** fine-tunes the lyrics earlier / later in 0.1-second steps. Clicking any visible lyric line seeks to its synced position.
+
+**Sound going to the wrong speakers?** Open **Settings → Playback → Audio output** to pick from the outputs the app detects on your machine; **Audio backend** exposes the underlying mpv audio options.
+
+The mouse works throughout: **right-click** a row for a context menu (its gestures are remappable via `mouse_bindings` in `config.json`).
 
 ### Your Library
 

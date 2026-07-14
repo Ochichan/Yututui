@@ -106,6 +106,8 @@ On a new profile, a ten-second hint points to **Search**. Press the displayed se
 
 That's it. Music.
 
+**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, step-by-step walkthrough — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
+
 ## Tour
 
 Every feature below is shown live, in detail, on the **[feature tour](https://ochichan.github.io/Yututui/)**.
@@ -113,14 +115,14 @@ Every feature below is shown live, in detail, on the **[feature tour](https://oc
 <!-- 📸 FOR THE PERSON ADDING MEDIA: drop files into docs/media/ with these exact names:
 hero.gif · player.png · lyrics.gif · search.gif · sources.png · djgem.gif · assistant.gif ·
 video.gif · radio.png · radio-id.gif · library.png · queue.png · downloads.png ·
-localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · eq.png ·
-retro.png · transfer.gif · help.png
+localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · showpiece.gif · eq.png ·
+audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · context-menu.png
 The same files serve README.md, README.ko.md and README.ja.md. Every slot below has the
 same one-line instruction; extra shots are welcome — just copy a slot block. -->
 
 ### The player — real album art & time-synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×11 turns the whole app into a tiny miniplayer that springs back when the window grows.
+Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected — pick Standard, High or Original quality in Settings); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×14 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
@@ -128,6 +130,9 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 -->
 <!-- 📸 TO FILL: add docs/media/lyrics.gif, then uncomment:
 ![Time-synced lyrics scrolling under the player](docs/media/lyrics.gif)
+-->
+<!-- 📸 TO FILL: add docs/media/audio-output.png, then uncomment:
+![Choosing the audio output device in Settings](docs/media/audio-output.png)
 -->
 
 ### Six catalogs, one search box
@@ -219,7 +224,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Make it yours
 
-13 themes with all 34 color roles hex-editable, 40 animations — from shooting stars up to a full plasma field — and a 10-band EQ with presets plus loudness normalization.
+14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization.
 
 > 🖼️ *GIFs coming soon.*
 <!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:
@@ -227,6 +232,9 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 -->
 <!-- 📸 TO FILL: add docs/media/animations.gif, then uncomment:
 ![Animations, including the spinning ASCII donut](docs/media/animations.gif)
+-->
+<!-- 📸 TO FILL: add docs/media/showpiece.gif, then uncomment:
+![A full-canvas showpiece animation — fireworks, Game of Life, pipes or plasma](docs/media/showpiece.gif)
 -->
 <!-- 📸 TO FILL: add docs/media/eq.png, then uncomment:
 ![The 10-band EQ with presets](docs/media/eq.png)
@@ -258,6 +266,12 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 <!-- 📸 TO FILL: add docs/media/help.png, delete the "coming soon" line above, then uncomment:
 ![The live keybinding cheat sheet](docs/media/help.png)
 -->
+<!-- 📸 TO FILL: add docs/media/onboarding.gif, then uncomment:
+![Beginner Mode's interactive walkthrough on first launch](docs/media/onboarding.gif)
+-->
+<!-- 📸 TO FILL: add docs/media/context-menu.png, then uncomment:
+![Right-click context menu on a track row](docs/media/context-menu.png)
+-->
 
 ## Essential keys
 
@@ -276,12 +290,13 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `Shift+L` | Synced lyrics; click a visible line to seek there |
 | `z` / `Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
+| `B` | Collapse / expand the docked control box |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |
 | `o` | Settings |
 | `Ctrl+Q` | Quit |
 
-> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume. Drag across rows to select a range — in Search results just like the Library — and `Ctrl`+click (`⌘`+click on macOS) toggles single rows in and out of the selection. The footer **mouse** button opens the full mouse cheat sheet.
+> **Korean keyboard?** Shortcuts understand 두벌식 jamo (`ㅂ` works like `q`) — no need to switch input. Prefer the mouse? Everything is clickable, and the wheel rides the volume. Drag across rows to select a range — in Search results just like the Library — and `Ctrl`+click (`⌘`+click on macOS) toggles single rows in and out of the selection. Right-click a row for a context menu, and remap any gesture under `mouse_bindings` in `config.json`. The footer **mouse** button opens the full mouse cheat sheet.
 
 ## Troubleshooting
 
@@ -292,6 +307,7 @@ First aid, always: **`ytt doctor`** checks mpv, yt-dlp and ffmpeg and tells you 
 | Symptom | Fix |
 | --- | --- |
 | Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
+| Sound goes to the wrong device | Settings → Playback → **Audio output** picks from the detected local outputs; **Audio backend** exposes the mpv options. |
 | Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
 | Several tracks fail with 403/429 or "YouTube rejected the stream" | Run `ytt doctor --verbose`, check the [cookies reference](#reference), and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. |
 | A specific song won't play | It may need sign-in — see the cookies section in the [reference](#reference). |
