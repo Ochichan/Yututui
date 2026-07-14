@@ -625,6 +625,13 @@ thread_local! {
 /// Classic matrix digital rain: each column is an independently-falling head with a fading green
 /// trail. Speed / length / phase are hashed from the column index so columns desync but stay
 /// stable frame to frame.
+fn rain_visible_k_bounds(head: u64, len: u64, height: u64) -> Option<(u64, u64)> {
+    let last_visible_row = height.checked_sub(1)?;
+    let first = head.saturating_sub(last_visible_row);
+    let last = head.min(len);
+    (first <= last).then_some((first, last))
+}
+
 fn rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
     let h = u64::from(zone.height);
     RAIN_SCRATCH.with(|scratch| {
@@ -652,14 +659,14 @@ fn rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
         for (i, column) in scratch.columns.iter().enumerate() {
             let x = zone.left() + i as u16;
             let head = (f / column.speed + column.offset) % column.period;
-            for k in 0..=column.len {
-                if head < k {
-                    continue;
-                }
+            // Intersect the trail (`0..=len`) with the only k values whose
+            // `row = head - k` lies inside `0..h`. Iterating that intersection in ascending k
+            // preserves the previous write order while avoiding the off-screen prefix/suffix.
+            let Some((first, last)) = rain_visible_k_bounds(head, column.len, h) else {
+                continue;
+            };
+            for k in first..=last {
                 let row = head - k;
-                if row >= h {
-                    continue;
-                }
                 let y = zone.top() + row as u16;
                 let g = RAIN_GLYPHS[(hash32(
                     column
@@ -742,6 +749,12 @@ fn starfield(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
 
 /// A decorative (non-audio-reactive) spectrum: bars rising from the bottom strip of the zone, each
 /// mixing two waves, coloured from the gauge colour up to the accent.
+fn visualizer_row_plan(full: u16, frac: f64, strip: u16) -> (u16, Option<u16>) {
+    let full_end = full.min(strip);
+    let partial = (full < strip && frac > 0.05).then_some(full);
+    (full_end, partial)
+}
+
 fn visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
     let blocks = bar_blocks(app);
     let strip = (zone.height / 3).clamp(2, 8);
@@ -767,19 +780,30 @@ fn visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
         let cells = t * f64::from(strip);
         let full = cells.floor() as u16;
         let frac = cells - f64::from(full);
-        for row in 0..strip {
+        // Only full cells plus at most one fractional cap can write. Keep their original
+        // bottom-up order without scanning the empty tail of the strip.
+        let (full_end, partial) = visualizer_row_plan(full, frac, strip);
+        for row in 0..full_end {
             let yy = baseline - 1 - i32::from(row);
             if yy < top {
                 break;
             }
             let y = yy as u16;
             let color = row_colors[row as usize];
-            if row < full {
-                canvas.put_fg(x, y, '█', color);
-            } else if row == full && frac > 0.05 {
-                let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
-                canvas.put_fg(x, y, blocks[idx.min(blocks.len() - 1)], color);
+            canvas.put_fg(x, y, '█', color);
+        }
+        if let Some(row) = partial {
+            let yy = baseline - 1 - i32::from(row);
+            if yy < top {
+                continue;
             }
+            let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
+            canvas.put_fg(
+                x,
+                yy as u16,
+                blocks[idx.min(blocks.len() - 1)],
+                row_colors[row as usize],
+            );
         }
     }
 }
@@ -1017,6 +1041,211 @@ mod tests {
         }
         for (actual, expected) in wave_9_table().iter().zip((0..9).map(|i| wave(i, 9))) {
             assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    /// Allocation-free reference for the former rain loop, which scanned the complete trail and
+    /// rejected its off-screen prefix and suffix one k at a time.
+    fn previous_rain(canvas: &mut CanvasWriter<'_>, _app: &App, zone: Rect, f: u64) {
+        let h = u64::from(zone.height);
+        let h_mod = h.max(1) as u32;
+        for col in 0..u64::from(zone.width) {
+            let speed = 1 + u64::from(hash32(col) % 3);
+            let len = 4 + u64::from(hash32(col.wrapping_mul(2_654_435_761)) % h_mod);
+            let period = h + len + 3;
+            let offset = u64::from(hash32(col ^ 0x9E37_79B9)) % period;
+            let x = zone.left() + col as u16;
+            let head = (f / speed + offset) % period;
+            for k in 0..=len {
+                if head < k {
+                    continue;
+                }
+                let row = head - k;
+                if row >= h {
+                    continue;
+                }
+                let y = zone.top() + row as u16;
+                let glyph =
+                    RAIN_GLYPHS[(hash32(col.wrapping_mul(31).wrapping_add(row).wrapping_add(f / 6))
+                        as usize)
+                        % RAIN_GLYPHS.len()];
+                let color = if k == 0 {
+                    Color::Rgb(200, 255, 200)
+                } else {
+                    let b = 1.0 - k as f64 / len as f64;
+                    Color::Rgb((30.0 * b) as u8, (60.0 + 180.0 * b) as u8, (40.0 * b) as u8)
+                };
+                canvas.put_fg(x, y, glyph, color);
+            }
+        }
+    }
+
+    /// Reference for the former visualizer row scan. It deliberately visits all strip rows and
+    /// lets the two predicates decide whether each row writes.
+    fn previous_visualizer(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
+        let blocks = bar_blocks(app);
+        let strip = (zone.height / 3).clamp(2, 8);
+        let baseline = i32::from(zone.bottom());
+        let top = i32::from(zone.top());
+        let filled = app.theme.color(R::GaugeFilled);
+        let accent = app.theme.color(R::Accent);
+        let wave14 = wave_14_table();
+        let wave9 = wave_9_table();
+        let row_colors: [Color; 8] = std::array::from_fn(|i| {
+            let row = i as u16;
+            if row < strip {
+                lerp_color(filled, accent, f64::from(row + 1) / f64::from(strip))
+            } else {
+                Color::Reset
+            }
+        });
+        for bx in 0..zone.width {
+            let x = zone.left() + bx;
+            let phase = u64::from(bx) * 3;
+            let t = wave14[((f + phase) % 14) as usize] * 0.6
+                + wave9[((f * 2 + phase) % 9) as usize] * 0.4;
+            let cells = t * f64::from(strip);
+            let full = cells.floor() as u16;
+            let frac = cells - f64::from(full);
+            for row in 0..strip {
+                let yy = baseline - 1 - i32::from(row);
+                if yy < top {
+                    break;
+                }
+                let y = yy as u16;
+                let color = row_colors[row as usize];
+                if row < full {
+                    canvas.put_fg(x, y, '█', color);
+                } else if row == full && frac > 0.05 {
+                    let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
+                    canvas.put_fg(x, y, blocks[idx.min(blocks.len() - 1)], color);
+                }
+            }
+        }
+    }
+
+    fn render_direct_effect(
+        app: &App,
+        zone: Rect,
+        art_mask: Option<Rect>,
+        frame: u64,
+        effect: fn(&mut CanvasWriter<'_>, &App, Rect, u64),
+    ) -> Buffer {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 72, 32));
+        for (index, cell) in buffer.content.iter_mut().enumerate() {
+            let background = if index.is_multiple_of(2) {
+                Color::Blue
+            } else {
+                Color::Magenta
+            };
+            cell.set_style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(background)
+                    .add_modifier(Modifier::ITALIC),
+            );
+        }
+        let mut canvas = CanvasWriter::new(&mut buffer, art_mask);
+        effect(&mut canvas, app, zone, frame);
+        buffer
+    }
+
+    #[test]
+    fn rain_visible_k_bounds_match_previous_filter_and_write_order() {
+        for height in 0..=32u64 {
+            for len in 0..=height + 5 {
+                for head in 0..=height + len + 5 {
+                    let mut expected = (0..=len).filter_map(|k| {
+                        if head < k {
+                            return None;
+                        }
+                        let row = head - k;
+                        (row < height).then_some((k, row))
+                    });
+                    if let Some((first, last)) = rain_visible_k_bounds(head, len, height) {
+                        for k in first..=last {
+                            assert_eq!(expected.next(), Some((k, head - k)));
+                        }
+                    }
+                    assert_eq!(
+                        expected.next(),
+                        None,
+                        "height={height} len={len} head={head}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn visualizer_row_plan_matches_previous_scan_and_write_order() {
+        for strip in 0..=8u16 {
+            for full in 0..=10u16 {
+                for frac in [0.0, 0.049_999, 0.05, 0.050_001, 0.5, 0.999] {
+                    let expected: Vec<(u16, bool)> = (0..strip)
+                        .filter_map(|row| {
+                            if row < full {
+                                Some((row, false))
+                            } else if row == full && frac > 0.05 {
+                                Some((row, true))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let (full_end, partial) = visualizer_row_plan(full, frac, strip);
+                    let actual: Vec<(u16, bool)> = (0..full_end)
+                        .map(|row| (row, false))
+                        .chain(partial.map(|row| (row, true)))
+                        .collect();
+                    assert_eq!(actual, expected, "strip={strip} full={full} frac={frac}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_rain_and_visualizer_match_previous_buffers() {
+        let _guard = crate::i18n::lock_for_test();
+        let zones = [
+            Rect::new(3, 2, 4, 2),
+            Rect::new(3, 2, 37, 13),
+            Rect::new(1, 1, 68, 29),
+        ];
+        let frames = [0, 1, 2, 5, 11, 23, 47, 89, 137, 251];
+        for retro in [false, true] {
+            let mut app = App::new(100);
+            app.config.retro_mode = retro;
+            for zone in zones {
+                let masks = [
+                    None,
+                    Some(Rect::new(
+                        zone.x + zone.width / 3,
+                        zone.y + zone.height / 3,
+                        (zone.width / 3).max(1),
+                        (zone.height / 3).max(1),
+                    )),
+                ];
+                for art_mask in masks {
+                    for frame in frames {
+                        let previous =
+                            render_direct_effect(&app, zone, art_mask, frame, previous_rain);
+                        let bounded = render_direct_effect(&app, zone, art_mask, frame, rain);
+                        assert_eq!(
+                            bounded, previous,
+                            "rain retro={retro} zone={zone:?} mask={art_mask:?} frame={frame}"
+                        );
+
+                        let previous =
+                            render_direct_effect(&app, zone, art_mask, frame, previous_visualizer);
+                        let bounded = render_direct_effect(&app, zone, art_mask, frame, visualizer);
+                        assert_eq!(
+                            bounded, previous,
+                            "visualizer retro={retro} zone={zone:?} mask={art_mask:?} frame={frame}"
+                        );
+                    }
+                }
+            }
         }
     }
 
