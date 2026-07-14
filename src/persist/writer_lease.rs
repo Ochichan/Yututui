@@ -38,11 +38,18 @@ struct PersistenceWriterLease {
 }
 
 enum ProcessWriterState {
+    Uninitialized,
     Writable(PersistenceWriterLease),
     ReadOnly(Arc<str>),
 }
 
-impl ProcessWriterState {
+/// A completed acquisition cannot represent the process-only pre-initialization state.
+enum InitializedWriterState {
+    Writable(PersistenceWriterLease),
+    ReadOnly(Arc<str>),
+}
+
+impl InitializedWriterState {
     fn access(&self) -> PersistenceAccess {
         match self {
             Self::Writable(_) => PersistenceAccess::Writable,
@@ -52,8 +59,52 @@ impl ProcessWriterState {
         }
     }
 
+    fn mutation_access(&self) -> Result<(), Arc<str>> {
+        match self {
+            Self::Writable(_) => Ok(()),
+            Self::ReadOnly(reason) => Err(Arc::clone(reason)),
+        }
+    }
+
+    #[cfg(test)]
     fn ensure_writable(&self) -> std::io::Result<()> {
         match self {
+            Self::Writable(lease) => {
+                let _held_root_count = lease._locks.len();
+                Ok(())
+            }
+            Self::ReadOnly(reason) => Err(read_only_error(reason)),
+        }
+    }
+}
+
+impl From<InitializedWriterState> for ProcessWriterState {
+    fn from(state: InitializedWriterState) -> Self {
+        match state {
+            InitializedWriterState::Writable(lease) => Self::Writable(lease),
+            InitializedWriterState::ReadOnly(reason) => Self::ReadOnly(reason),
+        }
+    }
+}
+
+impl ProcessWriterState {
+    fn access(&self) -> PersistenceAccess {
+        match self {
+            Self::Uninitialized => PersistenceAccess::ReadOnly {
+                reason: Arc::from("the process did not initialize its persistence writer lease"),
+            },
+            Self::Writable(_) => PersistenceAccess::Writable,
+            Self::ReadOnly(reason) => PersistenceAccess::ReadOnly {
+                reason: Arc::clone(reason),
+            },
+        }
+    }
+
+    fn ensure_writable(&self) -> std::io::Result<()> {
+        match self {
+            Self::Uninitialized => Err(read_only_error(
+                "the process did not initialize its persistence writer lease",
+            )),
             Self::Writable(lease) => {
                 // Reading the field documents that the RAII guards intentionally live as long as
                 // this state. An environment with no resolvable roots legitimately owns zero.
@@ -66,11 +117,11 @@ impl ProcessWriterState {
 }
 
 #[cfg(not(test))]
-static PROCESS_WRITER: OnceLock<Mutex<Option<ProcessWriterState>>> = OnceLock::new();
+static PROCESS_WRITER: OnceLock<Mutex<ProcessWriterState>> = OnceLock::new();
 
 #[cfg(not(test))]
-fn process_writer() -> &'static Mutex<Option<ProcessWriterState>> {
-    PROCESS_WRITER.get_or_init(|| Mutex::new(None))
+fn process_writer() -> &'static Mutex<ProcessWriterState> {
+    PROCESS_WRITER.get_or_init(|| Mutex::new(ProcessWriterState::Uninitialized))
 }
 
 fn read_only_error(reason: &str) -> std::io::Error {
@@ -177,7 +228,7 @@ fn configured_roots() -> Vec<PathBuf> {
 fn acquire_state_for_roots<I, P>(
     roots: I,
     allow_read_only: bool,
-) -> std::io::Result<ProcessWriterState>
+) -> std::io::Result<InitializedWriterState>
 where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
@@ -189,7 +240,7 @@ where
     let roots = match normalized_roots(&configured) {
         Ok(roots) => roots,
         Err(error) if allow_read_only => {
-            return Ok(ProcessWriterState::ReadOnly(Arc::from(format!(
+            return Ok(InitializedWriterState::ReadOnly(Arc::from(format!(
                 "the persistence roots could not be verified ({error}); changes are not saved"
             ))));
         }
@@ -214,13 +265,13 @@ where
                     root.display()
                 ));
                 return if allow_read_only {
-                    Ok(ProcessWriterState::ReadOnly(reason))
+                    Ok(InitializedWriterState::ReadOnly(reason))
                 } else {
                     Err(read_only_error(&reason))
                 };
             }
             Err(error) if allow_read_only => {
-                return Ok(ProcessWriterState::ReadOnly(Arc::from(format!(
+                return Ok(InitializedWriterState::ReadOnly(Arc::from(format!(
                     "the persistence writer lease at {} could not be verified ({error}); changes are not saved",
                     root.display()
                 ))));
@@ -243,7 +294,7 @@ where
     let verified_roots = match normalized_roots(&configured) {
         Ok(roots) => roots,
         Err(error) if allow_read_only => {
-            return Ok(ProcessWriterState::ReadOnly(Arc::from(format!(
+            return Ok(InitializedWriterState::ReadOnly(Arc::from(format!(
                 "persistence roots changed or became unreadable while acquiring the writer lease ({error}); changes are not saved"
             ))));
         }
@@ -255,16 +306,63 @@ where
             "persistence roots changed while acquiring the writer lease",
         );
         return if allow_read_only {
-            Ok(ProcessWriterState::ReadOnly(Arc::from(format!(
+            Ok(InitializedWriterState::ReadOnly(Arc::from(format!(
                 "{error}; changes are not saved"
             ))))
         } else {
             Err(error)
         };
     }
-    Ok(ProcessWriterState::Writable(PersistenceWriterLease {
+    Ok(InitializedWriterState::Writable(PersistenceWriterLease {
         _locks: locks,
     }))
+}
+
+fn initialize_writer_state<I, P>(
+    state: &mut ProcessWriterState,
+    roots: I,
+    allow_read_only: bool,
+    acquire: impl FnOnce(I, bool) -> std::io::Result<InitializedWriterState>,
+    configure: impl FnOnce(Result<(), Arc<str>>) -> std::io::Result<()>,
+) -> std::io::Result<PersistenceAccess>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    match state {
+        ProcessWriterState::Uninitialized => {}
+        existing => {
+            if !allow_read_only {
+                existing.ensure_writable()?;
+            }
+            return Ok(existing.access());
+        }
+    }
+
+    let acquired = acquire(roots, allow_read_only)?;
+    let access = acquired.access();
+    configure(acquired.mutation_access())?;
+    *state = acquired.into();
+    Ok(access)
+}
+
+fn initialize_reader_state(
+    state: &mut ProcessWriterState,
+    reason: Arc<str>,
+    configure: impl FnOnce(Result<(), Arc<str>>) -> std::io::Result<()>,
+) -> std::io::Result<PersistenceAccess> {
+    match state {
+        ProcessWriterState::Uninitialized => {
+            configure(Err(Arc::clone(&reason)))?;
+            *state = ProcessWriterState::ReadOnly(Arc::clone(&reason));
+            Ok(PersistenceAccess::ReadOnly { reason })
+        }
+        ProcessWriterState::ReadOnly(_) => Ok(state.access()),
+        ProcessWriterState::Writable(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "cannot downgrade an initialized persistence writer to a reader",
+        )),
+    }
 }
 
 /// Establish the process-wide writer lease before `Config::load` or any other mutating loader.
@@ -299,21 +397,13 @@ where
             tracing::error!("recovering poisoned persistence writer-lease state");
             poisoned.into_inner()
         });
-        if let Some(existing) = state.as_ref() {
-            if !allow_read_only {
-                existing.ensure_writable()?;
-            }
-            return Ok(existing.access());
-        }
-        let acquired = acquire_state_for_roots(roots, allow_read_only)?;
-        let access = acquired.access();
-        let mutation_access = match &access {
-            PersistenceAccess::Writable => Ok(()),
-            PersistenceAccess::ReadOnly { reason } => Err(Arc::clone(reason)),
-        };
-        crate::util::safe_fs::configure_process_mutations(mutation_access)?;
-        *state = Some(acquired);
-        Ok(access)
+        initialize_writer_state(
+            &mut state,
+            roots,
+            allow_read_only,
+            acquire_state_for_roots,
+            crate::util::safe_fs::configure_process_mutations,
+        )
     }
 }
 
@@ -331,18 +421,11 @@ pub fn initialize_persistence_reader() -> std::io::Result<PersistenceAccess> {
         let mut state = process_writer()
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = state.as_ref() {
-            return match existing {
-                ProcessWriterState::ReadOnly(_) => Ok(existing.access()),
-                ProcessWriterState::Writable(_) => Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "cannot downgrade an initialized persistence writer to a reader",
-                )),
-            };
-        }
-        crate::util::safe_fs::configure_process_mutations(Err(Arc::clone(&reason)))?;
-        *state = Some(ProcessWriterState::ReadOnly(Arc::clone(&reason)));
-        Ok(PersistenceAccess::ReadOnly { reason })
+        initialize_reader_state(
+            &mut state,
+            reason,
+            crate::util::safe_fs::configure_process_mutations,
+        )
     }
 }
 
@@ -356,11 +439,7 @@ pub(crate) fn persistence_access() -> PersistenceAccess {
         process_writer()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(ProcessWriterState::access)
-            .unwrap_or_else(|| PersistenceAccess::ReadOnly {
-                reason: Arc::from("the process did not initialize its persistence writer lease"),
-            })
+            .access()
     }
 }
 
@@ -377,10 +456,6 @@ pub(crate) fn writer_lease_allows_mutation() -> std::io::Result<()> {
                 tracing::error!("recovering poisoned persistence writer-lease state");
                 poisoned.into_inner()
             })
-            .as_ref()
-            .ok_or_else(|| {
-                read_only_error("the process did not initialize its persistence writer lease")
-            })?
             .ensure_writable()
     }
 }
@@ -404,151 +479,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_dir(label: &str) -> PathBuf {
-        let mut suffix = [0_u8; 8];
-        getrandom::fill(&mut suffix).unwrap();
-        let suffix = suffix
-            .into_iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        std::env::temp_dir().join(format!(
-            "yututui-writer-lease-{}-{label}-{suffix}",
-            std::process::id()
-        ))
-    }
-
-    fn assert_read_only(state: &ProcessWriterState) {
-        assert!(matches!(state.access(), PersistenceAccess::ReadOnly { .. }));
-        assert_eq!(
-            state.ensure_writable().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-
-    #[test]
-    fn configured_roots_include_the_local_index_storage_domain() {
-        let roots = configured_roots();
-        let local_index_root = crate::paths::local_index_data_dir().unwrap();
-
-        assert!(roots.contains(&local_index_root));
-        assert_eq!(
-            roots.len(),
-            4,
-            "all four configured storage domains remain leased"
-        );
-    }
-
-    #[test]
-    fn shared_root_is_deduplicated_and_only_one_writer_wins() {
-        let root = test_dir("dedupe");
-        let primary = acquire_state_for_roots([&root, &root, &root], false).unwrap();
-        primary.ensure_writable().unwrap();
-        let secondary = acquire_state_for_roots([&root], true).unwrap();
-        assert_read_only(&secondary);
-        drop(primary);
-        acquire_state_for_roots([&root], false)
-            .unwrap()
-            .ensure_writable()
-            .unwrap();
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn shared_config_with_split_data_and_cache_blocks_second_writer() {
-        let shared = test_dir("shared-config");
-        let a_data = test_dir("a-data");
-        let a_cache = test_dir("a-cache");
-        let b_data = test_dir("b-data");
-        let b_cache = test_dir("b-cache");
-        let primary = acquire_state_for_roots([&shared, &a_data, &a_cache], false).unwrap();
-        let secondary = acquire_state_for_roots([&shared, &b_data, &b_cache], true).unwrap();
-        assert_read_only(&secondary);
-        drop(primary);
-        for path in [shared, a_data, a_cache, b_data, b_cache] {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-
-    #[test]
-    fn shared_cache_with_split_config_and_data_blocks_second_writer() {
-        let shared = test_dir("shared-cache");
-        let a_config = test_dir("a-config");
-        let a_data = test_dir("a-data");
-        let b_config = test_dir("b-config");
-        let b_data = test_dir("b-data");
-        let primary = acquire_state_for_roots([&a_config, &a_data, &shared], false).unwrap();
-        let secondary = acquire_state_for_roots([&b_config, &b_data, &shared], true).unwrap();
-        assert_read_only(&secondary);
-        drop(primary);
-        for path in [shared, a_config, a_data, b_config, b_data] {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-
-    #[test]
-    fn fully_split_roots_allow_independent_writers() {
-        let a = [
-            test_dir("a-config"),
-            test_dir("a-data"),
-            test_dir("a-cache"),
-        ];
-        let b = [
-            test_dir("b-config"),
-            test_dir("b-data"),
-            test_dir("b-cache"),
-        ];
-        let first = acquire_state_for_roots(&a, false).unwrap();
-        let second = acquire_state_for_roots(&b, false).unwrap();
-        first.ensure_writable().unwrap();
-        second.ensure_writable().unwrap();
-        drop((first, second));
-        for path in a.into_iter().chain(b) {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-
-    #[test]
-    fn partial_acquisition_failure_releases_all_earlier_roots() {
-        let earlier = test_dir("a-earlier");
-        let later = test_dir("z-later");
-        let held_later = crate::util::safe_fs::try_lock_private_file(
-            &normalize_root(&later).unwrap().join(WRITER_LEASE_FILE),
-        )
-        .unwrap()
-        .unwrap();
-
-        let failed = acquire_state_for_roots([&earlier, &later], true).unwrap();
-        assert_read_only(&failed);
-        let earlier_lock = crate::util::safe_fs::try_lock_private_file(
-            &normalize_root(&earlier).unwrap().join(WRITER_LEASE_FILE),
-        )
-        .unwrap();
-        assert!(
-            earlier_lock.is_some(),
-            "partial lease stranded the first root"
-        );
-
-        drop((earlier_lock, held_later));
-        let _ = std::fs::remove_dir_all(earlier);
-        let _ = std::fs::remove_dir_all(later);
-    }
-
-    #[test]
-    fn primary_remains_writable_until_drop_then_successor_acquires_every_root() {
-        let roots = [test_dir("config"), test_dir("data"), test_dir("cache")];
-        let primary = acquire_state_for_roots(&roots, false).unwrap();
-        primary.ensure_writable().unwrap();
-        assert_read_only(&acquire_state_for_roots(&roots, true).unwrap());
-
-        drop(primary);
-        let successor = acquire_state_for_roots(&roots, false).unwrap();
-        successor.ensure_writable().unwrap();
-        drop(successor);
-        for path in roots {
-            let _ = std::fs::remove_dir_all(path);
-        }
-    }
-}
+#[path = "writer_lease/tests.rs"]
+mod tests;

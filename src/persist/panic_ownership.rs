@@ -7,8 +7,8 @@ type PanicDeleteRemover = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync
 
 impl PendingOperation {
     pub(super) fn panic_operation(&self) -> std::io::Result<PanicOperation> {
-        self.ensure_ordering()?;
-        let action = match self.action.as_ref() {
+        self.publication().ensure_ordering()?;
+        let action = match self.action() {
             PendingAction::Save(snapshot) => {
                 #[cfg(test)]
                 if let OwnedSnapshot::Test {
@@ -143,13 +143,6 @@ impl PanicOwnedOperation {
         match self {
             Self::Pending(operation) => write_operation_caught(operation),
             Self::Prepared(operation) => write_panic_operation(operation),
-        }
-    }
-
-    pub(super) fn priority(&self) -> u8 {
-        match self {
-            Self::Pending(_) => 0,
-            Self::Prepared(_) => 1,
         }
     }
 }

@@ -6,8 +6,14 @@ use super::{JournalOrder, PanicOwnedOperation, StoreKind};
 pub(super) struct PanicShadowSealed;
 
 struct PanicShadowState {
-    sealed: bool,
+    phase: PanicShadowPhase,
     slots: [Option<PanicOwnedOperation>; 8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PanicShadowPhase {
+    Publishing,
+    Sealed,
 }
 
 /// Fixed-size newest-owned persistence frontier read by the panic hook.
@@ -24,7 +30,7 @@ impl PanicShadow {
     pub(super) fn new() -> Self {
         Self {
             state: RwLock::new(PanicShadowState {
-                sealed: false,
+                phase: PanicShadowPhase::Publishing,
                 slots: std::array::from_fn(|_| None),
             }),
         }
@@ -33,26 +39,35 @@ impl PanicShadow {
     /// Publish one operation unless the panic hook has already fixed its one-shot frontier.
     #[must_use = "a sealed panic frontier rejects new persistence ownership"]
     pub(super) fn publish(&self, operation: PanicOwnedOperation) -> Result<(), PanicShadowSealed> {
+        self.publish_with_lock_hook(operation, || {})
+    }
+
+    fn publish_with_lock_hook(
+        &self,
+        operation: PanicOwnedOperation,
+        after_phase_check: impl FnOnce(),
+    ) -> Result<(), PanicShadowSealed> {
         let index = slot(operation.kind());
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if state.sealed {
+        if state.phase == PanicShadowPhase::Sealed {
             drop(state);
             drop(operation);
             return Err(PanicShadowSealed);
         }
-        let replace = state.slots[index].as_ref().is_none_or(|current| {
-            operation.order() > current.order()
-                || (operation.order() == current.order()
-                    && operation.priority() > current.priority())
-        });
-        let retired = if replace {
-            state.slots[index].replace(operation)
-        } else {
-            Some(operation)
-        };
+        after_phase_check();
+        let retired = replace_slot_if_newer(&mut state.slots[index], operation);
         drop(state);
         drop(retired);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_with_lock_hook_for_test(
+        &self,
+        operation: PanicOwnedOperation,
+        after_phase_check: impl FnOnce(),
+    ) -> Result<(), PanicShadowSealed> {
+        self.publish_with_lock_hook(operation, after_phase_check)
     }
 
     /// Atomically publish an owner's complete final batch or reject the whole batch.
@@ -62,7 +77,7 @@ impl PanicShadow {
         operations: Vec<PanicOwnedOperation>,
     ) -> Result<(), PanicShadowSealed> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if state.sealed {
+        if state.phase == PanicShadowPhase::Sealed {
             drop(state);
             drop(operations);
             return Err(PanicShadowSealed);
@@ -70,16 +85,7 @@ impl PanicShadow {
         let mut retired = Vec::with_capacity(operations.len());
         for operation in operations {
             let index = slot(operation.kind());
-            let replace = state.slots[index].as_ref().is_none_or(|current| {
-                operation.order() > current.order()
-                    || (operation.order() == current.order()
-                        && operation.priority() > current.priority())
-            });
-            if replace {
-                if let Some(operation) = state.slots[index].replace(operation) {
-                    retired.push(operation);
-                }
-            } else {
+            if let Some(operation) = replace_slot_if_newer(&mut state.slots[index], operation) {
                 retired.push(operation);
             }
         }
@@ -115,16 +121,40 @@ impl PanicShadow {
         &self,
     ) -> Result<[Option<PanicOwnedOperation>; 8], PanicShadowSealed> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if state.sealed {
+        if state.phase == PanicShadowPhase::Sealed {
             return Err(PanicShadowSealed);
         }
-        state.sealed = true;
+        state.phase = PanicShadowPhase::Sealed;
         Ok(std::array::from_fn(|index| state.slots[index].clone()))
     }
 
     #[cfg(test)]
     pub(super) fn peek_for_test(&self) -> [Option<PanicOwnedOperation>; 8] {
         self.snapshot()
+    }
+}
+
+fn replace_slot_if_newer(
+    slot: &mut Option<PanicOwnedOperation>,
+    incoming: PanicOwnedOperation,
+) -> Option<PanicOwnedOperation> {
+    let replace =
+        slot.as_ref()
+            .is_none_or(|current| match incoming.order().cmp(&current.order()) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => matches!(
+                    (&incoming, current),
+                    (
+                        PanicOwnedOperation::Prepared(_),
+                        PanicOwnedOperation::Pending(_)
+                    )
+                ),
+            });
+    if replace {
+        slot.replace(incoming)
+    } else {
+        Some(incoming)
     }
 }
 

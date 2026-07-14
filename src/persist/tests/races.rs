@@ -51,7 +51,7 @@ fn panic_shadow_is_independent_of_transition_locks_and_keeps_a_monotonic_frontie
         Arc::new(|| Ok(())),
     ));
     let newer_order = newer.order;
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
     let _pending_transition = lock(&pending);
     let _inflight_transition = lock_inflight(&inflight);
@@ -239,13 +239,16 @@ async fn panic_flush_owns_unjournaled_write_while_blocking_pool_is_full() {
         }),
     });
     let expected_order = operation.order;
-    let pending: SharedPending =
-        Arc::new(Mutex::new(HashMap::from([(StoreKind::Config, operation)])));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
+    lock(&pending).insert(StoreKind::Config, operation);
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
 
     journal_pending_operations(&pending).await;
     assert!(
-        !lock(&pending)[&StoreKind::Config].journaled,
+        matches!(
+            lock(&pending)[&StoreKind::Config].publication(),
+            SnapshotPublication::NeedsJournal
+        ),
         "the missing parent injects a journal failure before pool admission"
     );
     std::fs::remove_file(&late_parent).unwrap();
@@ -287,7 +290,7 @@ async fn panic_flush_owns_unjournaled_write_while_blocking_pool_is_full() {
     let panic_shadow = Arc::new(PanicShadow::new());
     panic_shadow
         .publish(PanicOwnedOperation::Pending(Arc::new(
-            lock(&pending)[&StoreKind::Config].clone(),
+            lock(&pending)[&StoreKind::Config].pending_clone(),
         )))
         .unwrap();
     let write_shadow = Arc::clone(&panic_shadow);

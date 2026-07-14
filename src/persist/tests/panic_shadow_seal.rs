@@ -6,12 +6,11 @@ fn test_handle() -> PersistHandle {
     );
     PersistHandle {
         tx,
-        pending: Arc::new(Mutex::new(HashMap::new())),
+        pending: Arc::new(Mutex::new(PendingQueue::new())),
         inflight: Arc::new(Mutex::new(HashMap::new())),
         dirty: Arc::new(Notify::new()),
         events: Arc::new(Mutex::new(None)),
         order_source: test_order_source(),
-        admission_open: Arc::new(AtomicBool::new(true)),
         panic_shadow: Arc::new(PanicShadow::new()),
     }
 }
@@ -110,7 +109,7 @@ async fn paused_panic_hook_snapshot_rejects_every_late_admission_without_partial
 
 #[tokio::test]
 async fn actor_prepared_rejection_preserves_the_pending_operation_captured_by_the_hook() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
     let shadow = PanicShadow::new();
     let writes = Arc::new(AtomicUsize::new(0));
@@ -156,4 +155,124 @@ async fn actor_prepared_rejection_preserves_the_pending_operation_captured_by_th
     assert!(lock_inflight(&inflight).is_empty());
     assert_eq!(captured.order(), order);
     assert!(matches!(captured, PanicOwnedOperation::Pending(_)));
+}
+
+fn pending_owner(order: JournalOrder) -> PanicOwnedOperation {
+    PanicOwnedOperation::Pending(Arc::new(test_operation(
+        StoreKind::Config,
+        order,
+        None,
+        Arc::new(|| Ok(())),
+    )))
+}
+
+fn prepared_owner(order: JournalOrder) -> PanicOwnedOperation {
+    let operation = test_operation(StoreKind::Config, order, None, Arc::new(|| Ok(())));
+    PanicOwnedOperation::Prepared(Arc::new(operation.panic_operation().unwrap()))
+}
+
+#[test]
+fn panic_shadow_slot_transitions_are_monotonic_and_exhaustive() {
+    let shadow = PanicShadow::new();
+    let older = journal_order_in_epoch(31, 1, 0xb1);
+    let current = journal_order_in_epoch(31, 2, 0xb2);
+    let newer = journal_order_in_epoch(31, 3, 0xb3);
+
+    shadow.publish(pending_owner(current)).unwrap();
+    assert!(matches!(
+        shadow.peek_for_test()[3],
+        Some(PanicOwnedOperation::Pending(_))
+    ));
+    shadow.publish(prepared_owner(current)).unwrap();
+    assert!(matches!(
+        shadow.peek_for_test()[3],
+        Some(PanicOwnedOperation::Prepared(_))
+    ));
+
+    shadow.publish(pending_owner(current)).unwrap();
+    shadow.publish(prepared_owner(older)).unwrap();
+    let retained = shadow.peek_for_test()[3].clone().unwrap();
+    assert_eq!(retained.order(), current);
+    assert!(matches!(retained, PanicOwnedOperation::Prepared(_)));
+
+    shadow.publish(pending_owner(newer)).unwrap();
+    let retained = shadow.peek_for_test()[3].clone().unwrap();
+    assert_eq!(retained.order(), newer);
+    assert!(matches!(retained, PanicOwnedOperation::Pending(_)));
+
+    shadow.clear_through(StoreKind::Config, current);
+    assert_eq!(shadow.peek_for_test()[3].as_ref().unwrap().order(), newer);
+    shadow.clear_through(StoreKind::Config, newer);
+    assert!(shadow.peek_for_test()[3].is_none());
+
+    shadow.publish(pending_owner(current)).unwrap();
+    shadow.clear_through(StoreKind::Config, newer);
+    assert!(
+        shadow.peek_for_test()[3].is_none(),
+        "a durable frontier above the retained order must clear stale panic ownership"
+    );
+}
+
+#[test]
+fn open_snapshot_does_not_seal_but_terminal_seal_rejects_every_publisher() {
+    let shadow = PanicShadow::new();
+    let first = journal_order_in_epoch(32, 1, 0xc1);
+    let second = journal_order_in_epoch(32, 2, 0xc2);
+    shadow.publish(pending_owner(first)).unwrap();
+    assert_eq!(shadow.snapshot()[3].as_ref().unwrap().order(), first);
+    shadow.publish(pending_owner(second)).unwrap();
+
+    let sealed = shadow.seal_and_snapshot().unwrap();
+    assert_eq!(sealed[3].as_ref().unwrap().order(), second);
+    assert!(matches!(
+        shadow.publish(prepared_owner(second)),
+        Err(PanicShadowSealed)
+    ));
+    assert!(matches!(
+        shadow.publish_batch(vec![pending_owner(journal_order_in_epoch(32, 3, 0xc3))]),
+        Err(PanicShadowSealed)
+    ));
+    assert!(matches!(shadow.seal_and_snapshot(), Err(PanicShadowSealed)));
+
+    shadow.clear_through(StoreKind::Config, second);
+    assert!(shadow.snapshot()[3].is_none());
+}
+
+#[test]
+fn concurrent_publish_and_seal_have_one_linearized_frontier() {
+    let shadow = Arc::new(PanicShadow::new());
+    let order = journal_order_in_epoch(33, 1, 0xd1);
+    let (publish_locked_tx, publish_locked_rx) = std::sync::mpsc::channel();
+    let (release_publish_tx, release_publish_rx) = std::sync::mpsc::channel();
+
+    let publish_shadow = Arc::clone(&shadow);
+    let publisher = std::thread::spawn(move || {
+        publish_shadow.publish_with_lock_hook_for_test(pending_owner(order), || {
+            publish_locked_tx.send(()).unwrap();
+            release_publish_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        })
+    });
+    publish_locked_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("publisher reaches the production write-lock critical section");
+
+    let seal_shadow = Arc::clone(&shadow);
+    let (seal_started_tx, seal_started_rx) = std::sync::mpsc::channel();
+    let sealer = std::thread::spawn(move || {
+        seal_started_tx.send(()).unwrap();
+        seal_shadow.seal_and_snapshot().unwrap()
+    });
+    seal_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("sealer starts while the publisher owns the write lock");
+    release_publish_tx.send(()).unwrap();
+
+    assert_eq!(publisher.join().unwrap(), Ok(()));
+    let sealed = sealer.join().unwrap();
+    let Some(PanicOwnedOperation::Pending(operation)) = sealed[3].as_ref() else {
+        panic!("publish-first frontier must retain the exact pending form");
+    };
+    assert_eq!(operation.order, order);
 }

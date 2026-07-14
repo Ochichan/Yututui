@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use super::*;
 
 impl PersistHandle {
@@ -7,20 +5,15 @@ impl PersistHandle {
         if ensure_persistence_writes_allowed().is_err() {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
-        let kind = snapshot.kind();
         let mut pending = lock(&self.pending);
-        if !self.admission_open.load(Ordering::Acquire) {
+        if pending.admission() == SnapshotAdmission::Sealed {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
         let accepted = self.order_source.accept();
         let operation = PendingOperation::save(snapshot, accepted);
-        if let Err(PanicShadowSealed) = self
-            .panic_shadow
-            .publish(PanicOwnedOperation::Pending(Arc::new(operation.clone())))
-        {
-            return Err(crate::util::delivery::DeliveryError::Closed);
-        }
-        let replaced_existing = pending.insert(kind, operation).is_some();
+        let operation = publish_pending_operation(&self.panic_shadow, operation)
+            .map_err(|PanicShadowSealed| crate::util::delivery::DeliveryError::Closed)?;
+        let replaced_existing = pending.insert_owned(operation).is_some();
         drop(pending);
         self.dirty.notify_one();
         if replaced_existing {
@@ -45,30 +38,61 @@ impl PersistHandle {
     where
         I: IntoIterator<Item = Snapshot>,
     {
-        if ensure_persistence_writes_allowed().is_err() {
-            self.admission_open.store(false, Ordering::Release);
+        let mutation_allowed = ensure_persistence_writes_allowed();
+        self.seal_with_snapshots_after_check(snapshots, mutation_allowed)
+    }
+
+    pub(super) fn seal_with_snapshots_after_check<I>(
+        &self,
+        snapshots: I,
+        mutation_allowed: std::io::Result<()>,
+    ) -> Result<(), crate::util::delivery::DeliveryError>
+    where
+        I: IntoIterator<Item = Snapshot>,
+    {
+        self.seal_with_snapshots_after_check_and_hook(snapshots, mutation_allowed, || {})
+    }
+
+    fn seal_with_snapshots_after_check_and_hook<I>(
+        &self,
+        snapshots: I,
+        mutation_allowed: std::io::Result<()>,
+        after_seal: impl FnOnce(),
+    ) -> Result<(), crate::util::delivery::DeliveryError>
+    where
+        I: IntoIterator<Item = Snapshot>,
+    {
+        let mut pending = lock(&self.pending);
+        pending.seal();
+        after_seal();
+        if mutation_allowed.is_err() {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
-        let mut pending = lock(&self.pending);
-        self.admission_open.store(false, Ordering::Release);
         let operations: Vec<_> = snapshots
             .into_iter()
             .map(|snapshot| PendingOperation::save(snapshot, self.order_source.accept()))
             .collect();
-        let shadow_operations = operations
-            .iter()
-            .cloned()
-            .map(|operation| PanicOwnedOperation::Pending(Arc::new(operation)))
-            .collect();
-        if let Err(PanicShadowSealed) = self.panic_shadow.publish_batch(shadow_operations) {
-            return Err(crate::util::delivery::DeliveryError::Closed);
-        }
+        let operations = publish_pending_batch(&self.panic_shadow, operations)
+            .map_err(|PanicShadowSealed| crate::util::delivery::DeliveryError::Closed)?;
         for operation in operations {
-            pending.insert(operation.kind(), operation);
+            pending.insert_owned(operation);
         }
         drop(pending);
         self.dirty.notify_one();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn seal_with_snapshots_after_check_and_hook_for_test<I>(
+        &self,
+        snapshots: I,
+        mutation_allowed: std::io::Result<()>,
+        after_seal: impl FnOnce(),
+    ) -> Result<(), crate::util::delivery::DeliveryError>
+    where
+        I: IntoIterator<Item = Snapshot>,
+    {
+        self.seal_with_snapshots_after_check_and_hook(snapshots, mutation_allowed, after_seal)
     }
 
     /// Make deletion the latest pending romanize-cache operation. The shared slot is
@@ -86,20 +110,14 @@ impl PersistHandle {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
         let mut pending = lock(&self.pending);
-        if !self.admission_open.load(Ordering::Acquire) {
+        if pending.admission() == SnapshotAdmission::Sealed {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
         let accepted = self.order_source.accept();
         let operation = PendingOperation::new(action, accepted);
-        if let Err(PanicShadowSealed) = self
-            .panic_shadow
-            .publish(PanicOwnedOperation::Pending(Arc::new(operation.clone())))
-        {
-            return Err(crate::util::delivery::DeliveryError::Closed);
-        }
-        let replaced_existing = pending
-            .insert(StoreKind::RomanizedTitles, operation)
-            .is_some();
+        let operation = publish_pending_operation(&self.panic_shadow, operation)
+            .map_err(|PanicShadowSealed| crate::util::delivery::DeliveryError::Closed)?;
+        let replaced_existing = pending.insert_owned(operation).is_some();
         drop(pending);
         self.dirty.notify_one();
         if replaced_existing {
