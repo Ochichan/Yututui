@@ -641,7 +641,11 @@ def stable_machine_id(system: str) -> str:
     raise ValueError(f"unsupported host system for stable machine identity: {system!r}")
 
 
-def stable_boot_id(system: str) -> str:
+def stable_boot_id(
+    system: str,
+    *,
+    identity_command: Callable[[list[str], str], str] = checked_identity_command,
+) -> str:
     if system == "Linux":
         path = Path("/proc/sys/kernel/random/boot_id")
         try:
@@ -652,13 +656,31 @@ def stable_boot_id(system: str) -> str:
             raise ValueError("Linux boot ID is missing or malformed")
         return f"linux-boot-id:{value}"
     if system == "Darwin":
-        output = checked_identity_command(
+        try:
+            value = identity_command(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                "macOS boot session UUID",
+            ).strip().lower()
+        except ValueError:
+            value = ""
+        if (
+            re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                value,
+            )
+            and value != "00000000-0000-0000-0000-000000000000"
+        ):
+            return f"darwin-boot-session-uuid:{value}"
+        output = identity_command(
             ["/usr/sbin/sysctl", "-n", "kern.boottime"], "macOS boot time"
         )
-        match = re.search(r"sec\s*=\s*(\d+)\s*,\s*usec\s*=\s*(\d+)", output)
+        match = re.search(r"\bsec\s*=\s*(\d+)", output)
         if match is None:
             raise ValueError("macOS boot time is missing or malformed")
-        return f"darwin-boottime:{int(match.group(1))}:{int(match.group(2))}"
+        seconds = int(match.group(1))
+        if seconds <= 0:
+            raise ValueError("macOS boot time is missing or malformed")
+        return f"darwin-boottime:{seconds}"
     if system == "Windows":
         value = checked_identity_command(
             [
@@ -14733,6 +14755,86 @@ def host_identity_privacy_self_test() -> None:
             raise AssertionError("raw host identifier payload leaked into the serialized identity")
 
 
+def darwin_boot_identity_self_test() -> None:
+    def command_mock(
+        responses: dict[str, str | ValueError],
+    ) -> tuple[list[str], Callable[[list[str], str], str]]:
+        calls: list[str] = []
+
+        def command(command: list[str], _label: str) -> str:
+            if len(command) != 3 or command[:2] != ["/usr/sbin/sysctl", "-n"]:
+                raise AssertionError(f"unexpected Darwin boot identity command: {command!r}")
+            key = command[-1]
+            calls.append(key)
+            response = responses[key]
+            if isinstance(response, ValueError):
+                raise response
+            return response
+
+        return calls, command
+
+    first_uuid = "12345678-1234-4ABC-9DEF-1234567890AB"
+    second_uuid = "87654321-4321-4abc-8def-ba0987654321"
+    calls, command = command_mock({"kern.bootsessionuuid": first_uuid})
+    first_session = stable_boot_id("Darwin", identity_command=command)
+    assert first_session == f"darwin-boot-session-uuid:{first_uuid.lower()}"
+    assert calls == ["kern.bootsessionuuid"]
+
+    calls, command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": (
+                "{ sec = 1720000000, usec = 123456 } Tue Jul  2 00:00:00 2024"
+            ),
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=command) == (
+        "darwin-boottime:1720000000"
+    )
+    assert calls == ["kern.bootsessionuuid", "kern.boottime"]
+
+    calls, command = command_mock(
+        {
+            "kern.bootsessionuuid": ValueError("simulated sysctl failure"),
+            "kern.boottime": (
+                "{ sec = 1720000000, usec = 654321 } Tue Jul  2 00:00:00 2024"
+            ),
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=command) == (
+        "darwin-boottime:1720000000"
+    )
+    assert calls == ["kern.bootsessionuuid", "kern.boottime"]
+
+    _, first_fallback_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000000, usec = 1 }",
+        }
+    )
+    _, second_fallback_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000000, usec = 999999 }",
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=first_fallback_command) == (
+        stable_boot_id("Darwin", identity_command=second_fallback_command)
+    )
+
+    _, second_session_command = command_mock({"kern.bootsessionuuid": second_uuid})
+    assert first_session != stable_boot_id("Darwin", identity_command=second_session_command)
+    _, reboot_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000001, usec = 1 }",
+        }
+    )
+    assert "darwin-boottime:1720000000" != stable_boot_id(
+        "Darwin", identity_command=reboot_command
+    )
+
+
 def macos_process_absence_probe_self_test() -> None:
     def existence_sequence(*results: bool) -> Callable[[int], bool]:
         remaining = iter(results)
@@ -14781,6 +14883,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     cleanup_integration_self_test()
     startup_cleanup_integration_self_test()
     host_identity_privacy_self_test()
+    darwin_boot_identity_self_test()
     macos_process_absence_probe_self_test()
     run_contract_integration_self_test()
     multi_geometry_run_contract_integration_self_test()
