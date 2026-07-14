@@ -885,6 +885,8 @@ fn import_batch_auto_organize_latches_refresh_behind_an_active_scan() {
 #[test]
 fn download_done_with_empty_path_does_not_save() {
     let mut app = App::new(100);
+    app.start_download(Song::remote("x", "Title", "Artist", "1:00"));
+    assert!(app.downloads.sources.contains_key("x"));
     let cmds = app.update(Msg::Download(DownloadMsg::Done {
         video_id: "x".to_owned(),
         path: "   ".to_owned(),
@@ -893,6 +895,10 @@ fn download_done_with_empty_path_does_not_save() {
         !cmds
             .iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Downloads)))
+    );
+    assert!(
+        !app.downloads.sources.contains_key("x"),
+        "terminal empty-path results must release retained source metadata"
     );
 }
 

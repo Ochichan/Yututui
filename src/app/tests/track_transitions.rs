@@ -24,7 +24,7 @@ fn busy_and_closed_next_leave_transition_state_unchanged() {
         let mut app = app_playing(3, 0);
         app.art.video_id = Some("art-id0".to_owned());
         app.lyrics.track = Some(TrackLyrics {
-            video_id: "id0".to_owned(),
+            video_id: "id0".into(),
             lines: Vec::new().into(),
         });
         let cursor = app.queue.cursor_pos();
@@ -92,7 +92,7 @@ fn next_preparation_leaves_all_transition_state_unchanged() {
     let mut app = app_playing(3, 0);
     app.art.video_id = Some("art-id0".to_owned());
     app.lyrics.track = Some(TrackLyrics {
-        video_id: "id0".to_owned(),
+        video_id: "id0".into(),
         lines: Vec::new().into(),
     });
     let cursor = app.queue.cursor_pos();

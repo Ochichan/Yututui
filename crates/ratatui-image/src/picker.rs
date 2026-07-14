@@ -45,8 +45,8 @@ pub enum Capability {
 
 const STDIN_READ_TIMEOUT_MILLIS: u64 = 2000;
 
-// yututui patch: Konsole's 26.08 line includes the Sixel placement cleanup needed for TUI redraws.
-const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_800;
+// yututui patch: allow a conservative, capability-gated Sixel probe on KDE 26.04+.
+const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_400;
 
 #[derive(Clone, Debug)]
 pub struct Picker {
@@ -126,7 +126,7 @@ impl Picker {
         let wezterm_executable = env::var("WEZTERM_EXECUTABLE").ok();
         let konsole_version = env::var("KONSOLE_VERSION").ok();
         let term = env::var("TERM").ok();
-        let require_reported_cell_size_for_konsole_sixel = konsole_supports_sixel_tui_redraws(
+        let require_reported_cell_size_for_konsole_sixel = konsole_allows_capability_gated_sixel(
             wezterm_executable.as_deref(),
             konsole_version.as_deref(),
             term.as_deref(),
@@ -340,7 +340,7 @@ impl Picker {
     }
 }
 
-// yututui patch: keep older/unknown Konsole versions conservative, and capability-gate 26.08+.
+// yututui patch: keep older/unknown Konsole versions conservative, and capability-gate 26.04+.
 fn terminal_protocol_blacklist(
     wezterm_executable: Option<&str>,
     konsole_version: Option<&str>,
@@ -359,7 +359,7 @@ fn terminal_protocol_blacklist(
         return Vec::new();
     }
 
-    if konsole_supports_sixel_tui_redraws(wezterm_executable, konsole_version, term) {
+    if konsole_allows_capability_gated_sixel(wezterm_executable, konsole_version, term) {
         // Konsole's Kitty implementation still lacks Unicode placeholders. Sixel remains subject
         // to the normal DA1 capability and cell-size response checks below.
         vec![ProtocolType::Kitty]
@@ -368,7 +368,7 @@ fn terminal_protocol_blacklist(
     }
 }
 
-fn konsole_supports_sixel_tui_redraws(
+fn konsole_allows_capability_gated_sixel(
     wezterm_executable: Option<&str>,
     konsole_version: Option<&str>,
     term: Option<&str>,
@@ -812,35 +812,35 @@ mod tests {
             Case {
                 name: "invalid Konsole version stays conservative",
                 wezterm_executable: None,
-                konsole_version: Some("26.08"),
+                konsole_version: Some("26.04"),
                 term: Some("xterm-256color"),
                 expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
             },
             Case {
-                name: "Konsole before 26.08 stays conservative",
+                name: "Konsole before 26.04 stays conservative",
                 wezterm_executable: None,
-                konsole_version: Some("260799"),
+                konsole_version: Some("260399"),
                 term: Some("xterm-256color"),
                 expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
             },
             Case {
-                name: "Konsole 26.08 allows Sixel capability queries",
+                name: "Konsole 26.04 allows Sixel capability queries",
                 wezterm_executable: None,
-                konsole_version: Some("260800"),
-                term: Some("xterm-256color"),
+                konsole_version: Some("260400"),
+                term: Some("konsole-256color"),
                 expected: vec![ProtocolType::Kitty],
             },
             Case {
-                name: "newer Konsole allows Sixel capability queries",
+                name: "Yakuake KonsolePart hint works with a generic TERM",
                 wezterm_executable: None,
-                konsole_version: Some("260801"),
+                konsole_version: Some("260401"),
                 term: Some("xterm-256color"),
                 expected: vec![ProtocolType::Kitty],
             },
             Case {
                 name: "WezTerm policy wins over a new Konsole hint",
                 wezterm_executable: Some("wezterm-gui"),
-                konsole_version: Some("260800"),
+                konsole_version: Some("260400"),
                 term: Some("konsole-256color"),
                 expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
             },
@@ -874,11 +874,11 @@ mod tests {
             Parser::query(false, options)
         };
 
-        let old_konsole_query = query_for("260799");
+        let old_konsole_query = query_for("260399");
         assert!(!old_konsole_query.contains("_Gi="));
         assert!(!old_konsole_query.contains("\x1b[c"));
 
-        let new_konsole_query = query_for("260800");
+        let new_konsole_query = query_for("260400");
         assert!(!new_konsole_query.contains("_Gi="));
         assert!(new_konsole_query.contains("\x1b[c"));
     }
@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn test_terminal_blacklist_preserves_caller_entries() {
         let mut blacklist = vec![ProtocolType::Iterm2];
-        for protocol in terminal_protocol_blacklist(None, Some("260799"), None) {
+        for protocol in terminal_protocol_blacklist(None, Some("260399"), None) {
             if !blacklist.contains(&protocol) {
                 blacklist.push(protocol);
             }

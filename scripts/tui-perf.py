@@ -36,7 +36,7 @@ import threading
 import time
 import wave
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 
@@ -57,6 +57,100 @@ RUN_CONTRACT_SCHEMA = "ytt.tui-perf.run-contract.v1"
 MPV_SELECTION_SCHEMA = "ytt.tui-perf.mpv-selection.v1"
 SETTING_OVERRIDES_SCHEMA = "ytt.tui-perf.setting-overrides.v1"
 LONG_FORM_SETTING_LEAF = "audio.mpv.long_form_seek_optimization"
+RATE_FACTOR_POLICY_REQUIRED = "required"
+RATE_FACTOR_POLICY_NOT_APPLICABLE = "not_applicable"
+RATE_FACTOR_ANIMATION_NA_REASON = (
+    "animation resource profiles do not exercise long-form cache-rate admission"
+)
+ANIMATION_EFFECT_FIELDS = (
+    "title",
+    "heart",
+    "seekbar",
+    "spinner",
+    "eq_bars",
+    "controls",
+    "border",
+    "track_intro",
+    "lyrics",
+    "toast",
+    "volume_flash",
+    "like_burst",
+    "seek_flash",
+    "selection",
+    "stagger",
+    "caret",
+    "tabs",
+    "popup_fade",
+    "activity",
+    "about_fx",
+    "time_glow",
+    "progress_sparkle",
+    "border_chase",
+    "pause_flash",
+    "error_shake",
+    "rain",
+    "donut",
+    "visualizer",
+    "starfield",
+    "bounce",
+    "comets",
+    "snow",
+    "fireflies",
+    "cube",
+    "aquarium",
+    "waves",
+    "fireworks",
+    "life",
+    "pipes",
+    "plasma",
+)
+ANIMATION_PROFILE_NAMES = ("balanced_half", "heavy_half")
+ANIMATION_PROFILE_EFFECTS = {
+    "balanced_half": (
+        "track_intro",
+        "toast",
+        "volume_flash",
+        "seek_flash",
+        "selection",
+        "caret",
+        "activity",
+        "popup_fade",
+        "title",
+        "heart",
+        "seekbar",
+        "spinner",
+        "eq_bars",
+        "controls",
+        "border",
+        "time_glow",
+        "bounce",
+        "starfield",
+        "visualizer",
+        "rain",
+    ),
+    "heavy_half": (
+        "title",
+        "lyrics",
+        "seekbar",
+        "eq_bars",
+        "controls",
+        "border",
+        "rain",
+        "donut",
+        "visualizer",
+        "starfield",
+        "comets",
+        "snow",
+        "fireflies",
+        "cube",
+        "aquarium",
+        "waves",
+        "fireworks",
+        "life",
+        "pipes",
+        "plasma",
+    ),
+}
 MPV_032_PINNED_COMMIT = "70b991749df389bcc0a4e145b5687233a03b4ed7"
 MPV_032_COMPAT_UPSTREAM_COMMIT = "1805681aaba22aa19a27ecfdb639c983d91f83e6"
 MPV_032_COMPAT_PATCHED_FILES = [
@@ -552,7 +646,11 @@ def stable_machine_id(system: str) -> str:
     raise ValueError(f"unsupported host system for stable machine identity: {system!r}")
 
 
-def stable_boot_id(system: str) -> str:
+def stable_boot_id(
+    system: str,
+    *,
+    identity_command: Callable[[list[str], str], str] = checked_identity_command,
+) -> str:
     if system == "Linux":
         path = Path("/proc/sys/kernel/random/boot_id")
         try:
@@ -563,13 +661,31 @@ def stable_boot_id(system: str) -> str:
             raise ValueError("Linux boot ID is missing or malformed")
         return f"linux-boot-id:{value}"
     if system == "Darwin":
-        output = checked_identity_command(
+        try:
+            value = identity_command(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                "macOS boot session UUID",
+            ).strip().lower()
+        except ValueError:
+            value = ""
+        if (
+            re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                value,
+            )
+            and value != "00000000-0000-0000-0000-000000000000"
+        ):
+            return f"darwin-boot-session-uuid:{value}"
+        output = identity_command(
             ["/usr/sbin/sysctl", "-n", "kern.boottime"], "macOS boot time"
         )
-        match = re.search(r"sec\s*=\s*(\d+)\s*,\s*usec\s*=\s*(\d+)", output)
+        match = re.search(r"\bsec\s*=\s*(\d+)", output)
         if match is None:
             raise ValueError("macOS boot time is missing or malformed")
-        return f"darwin-boottime:{int(match.group(1))}:{int(match.group(2))}"
+        seconds = int(match.group(1))
+        if seconds <= 0:
+            raise ValueError("macOS boot time is missing or malformed")
+        return f"darwin-boottime:{seconds}"
     if system == "Windows":
         value = checked_identity_command(
             [
@@ -958,6 +1074,20 @@ def tracked_worktree_is_clean(root: Path) -> bool:
     return True
 
 
+def tracked_diff_paths(root: Path, *, cached: bool = False) -> list[str]:
+    arguments = ["diff"]
+    if cached:
+        arguments.append("--cached")
+    arguments.extend(["--name-only", "-z"])
+    raw = run_git(root, *arguments, binary=True)
+    assert isinstance(raw, bytes)
+    return sorted(
+        item.decode("utf-8", errors="surrogateescape")
+        for item in raw.split(b"\0")
+        if item
+    )
+
+
 def refresh_origin_main(candidate_root: Path) -> str:
     result = subprocess.run(
         [
@@ -977,6 +1107,119 @@ def refresh_origin_main(candidate_root: Path) -> str:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"cannot refresh candidate origin/main: {detail}")
     return str(run_git(candidate_root, "rev-parse", "origin/main^{commit}"))
+
+
+@contextlib.contextmanager
+def scoped_render_harness_overlay(
+    baseline_root: Path, candidate_root: Path, render: bool
+) -> Iterable[None]:
+    if not render:
+        yield
+        return
+
+    baseline_root = baseline_root.resolve()
+    candidate_root = candidate_root.resolve()
+    render_relative = "examples/tui_render_perf.rs"
+    candidate_harness = candidate_root / render_relative
+    baseline_harness = baseline_root / render_relative
+
+    try:
+        candidate_metadata = candidate_harness.lstat()
+    except OSError as error:
+        raise ValueError(
+            f"cannot inspect candidate render harness {candidate_harness}: {error}"
+        ) from error
+    if not stat.S_ISREG(candidate_metadata.st_mode):
+        raise ValueError(
+            f"candidate render harness must be a regular non-symlink file: "
+            f"{candidate_harness}"
+        )
+    candidate_bytes = candidate_harness.read_bytes()
+
+    baseline_staged_before = tracked_diff_paths(baseline_root, cached=True)
+    baseline_changed_before = tracked_diff_paths(baseline_root)
+    baseline_untracked_before = untracked_paths(baseline_root)
+    if baseline_staged_before or baseline_changed_before or baseline_untracked_before:
+        raise ValueError(
+            "baseline source must be clean before applying the scoped render harness "
+            f"overlay (staged={baseline_staged_before}, "
+            f"tracked={baseline_changed_before}, untracked={baseline_untracked_before})"
+        )
+
+    baseline_existed = os.path.lexists(baseline_harness)
+    baseline_bytes: bytes | None = None
+    baseline_mode: int | None = None
+    baseline_atime_ns: int | None = None
+    baseline_mtime_ns: int | None = None
+    if baseline_existed:
+        baseline_metadata = baseline_harness.lstat()
+        if not stat.S_ISREG(baseline_metadata.st_mode):
+            raise ValueError(
+                f"baseline render harness must be a regular non-symlink file: "
+                f"{baseline_harness}"
+            )
+        baseline_bytes = baseline_harness.read_bytes()
+        baseline_mode = stat.S_IMODE(baseline_metadata.st_mode)
+        baseline_atime_ns = baseline_metadata.st_atime_ns
+        baseline_mtime_ns = baseline_metadata.st_mtime_ns
+
+    try:
+        if baseline_bytes != candidate_bytes:
+            if not baseline_harness.parent.is_dir():
+                raise ValueError(
+                    f"baseline render harness parent is missing: "
+                    f"{baseline_harness.parent}"
+                )
+            baseline_harness.write_bytes(candidate_bytes)
+            if not baseline_existed:
+                os.chmod(
+                    baseline_harness, stat.S_IMODE(candidate_metadata.st_mode)
+                )
+        if baseline_harness.read_bytes() != candidate_bytes:
+            raise ValueError("failed to apply the scoped baseline render harness overlay")
+        yield
+    finally:
+        if baseline_existed:
+            if os.path.lexists(baseline_harness):
+                current_metadata = baseline_harness.lstat()
+                if not stat.S_ISREG(current_metadata.st_mode):
+                    raise ValueError(
+                        "cannot restore baseline render harness over a non-regular path"
+                    )
+            else:
+                baseline_harness.parent.mkdir(parents=True, exist_ok=True)
+            assert baseline_bytes is not None
+            assert baseline_mode is not None
+            assert baseline_atime_ns is not None
+            assert baseline_mtime_ns is not None
+            if not baseline_harness.exists() or baseline_harness.read_bytes() != baseline_bytes:
+                baseline_harness.write_bytes(baseline_bytes)
+            os.chmod(baseline_harness, baseline_mode)
+            os.utime(
+                baseline_harness,
+                ns=(baseline_atime_ns, baseline_mtime_ns),
+                follow_symlinks=False,
+            )
+        elif os.path.lexists(baseline_harness):
+            baseline_metadata = baseline_harness.lstat()
+            if not stat.S_ISREG(baseline_metadata.st_mode):
+                raise ValueError(
+                    "cannot remove scoped baseline render overlay from a non-regular path"
+                )
+            baseline_harness.unlink()
+
+        baseline_staged_after = tracked_diff_paths(baseline_root, cached=True)
+        baseline_changed_after = tracked_diff_paths(baseline_root)
+        baseline_untracked_after = untracked_paths(baseline_root)
+        if (
+            baseline_staged_after != baseline_staged_before
+            or baseline_changed_after != baseline_changed_before
+            or baseline_untracked_after != baseline_untracked_before
+        ):
+            raise ValueError(
+                "scoped baseline render harness overlay did not restore the caller's "
+                "worktree state"
+            )
 
 
 def validate_source_contract(
@@ -1020,32 +1263,36 @@ def validate_source_contract(
             "baseline HEAD must equal the candidate repository's exact origin/main OID "
             f"{expected_baseline}"
         )
-    if not tracked_worktree_is_clean(baseline_root):
-        raise ValueError("baseline source has tracked or staged changes")
 
     render_relative = "examples/tui_render_perf.rs"
     candidate_harness = candidate_root / render_relative
     baseline_harness = baseline_root / render_relative
+    baseline_staged = tracked_diff_paths(baseline_root, cached=True)
+    if baseline_staged:
+        raise ValueError(f"baseline source has staged changes: {baseline_staged}")
+    baseline_changed = tracked_diff_paths(baseline_root)
     baseline_untracked = untracked_paths(baseline_root)
-    if render:
-        if not candidate_harness.is_file():
-            raise ValueError(f"candidate render harness is missing: {candidate_harness}")
-        if not baseline_harness.exists():
-            baseline_harness.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(candidate_harness, baseline_harness)
-        baseline_untracked = untracked_paths(baseline_root)
-    if baseline_untracked not in ([], [render_relative]):
+    if baseline_changed or baseline_untracked:
         raise ValueError(
-            "baseline may contain only the untracked render harness; found "
-            f"{baseline_untracked}"
+            "baseline source has tracked or untracked changes "
+            f"(tracked={baseline_changed}, untracked={baseline_untracked})"
         )
-    if baseline_untracked == [render_relative]:
-        if not candidate_harness.is_file():
-            raise ValueError("candidate has no render harness to authenticate the baseline copy")
-        if baseline_harness.read_bytes() != candidate_harness.read_bytes():
-            raise ValueError("baseline untracked render harness is not byte-identical to candidate")
-    if render and baseline_harness.read_bytes() != candidate_harness.read_bytes():
-        raise ValueError("baseline render harness is not byte-identical to candidate")
+    if render:
+        for role, harness in (
+            ("baseline", baseline_harness),
+            ("candidate", candidate_harness),
+        ):
+            try:
+                harness_metadata = harness.lstat()
+            except OSError as error:
+                raise ValueError(
+                    f"cannot inspect {role} render harness {harness}: {error}"
+                ) from error
+            if not stat.S_ISREG(harness_metadata.st_mode):
+                raise ValueError(
+                    f"{role} render harness must be a regular non-symlink file: "
+                    f"{harness}"
+                )
 
     baseline_identity = source_identity(baseline_root)
     candidate_identity = source_identity(candidate_root)
@@ -1589,13 +1836,21 @@ def harness_source_identities(
     identities: dict[str, Any] = {}
     for name in names:
         candidate = candidate_root / "examples" / name
-        identities[name] = {"candidate": identity_for_file(candidate)}
+        candidate_identity = identity_for_file(candidate)
+        identities[name] = {"candidate": candidate_identity}
         if render:
             baseline = baseline_root / "examples" / name
-            baseline_identity = identity_for_file(baseline)
-            if baseline_identity["sha256"] != identities[name]["candidate"]["sha256"]:
-                raise ValueError("baseline and candidate render harness sources differ")
-            identities[name]["baseline"] = baseline_identity
+            baseline_original = identity_for_file(baseline)
+            identities[name].update(
+                {
+                    "baseline_original": baseline_original,
+                    "baseline_effective": {
+                        "path": str(baseline.resolve()),
+                        "bytes": candidate_identity["bytes"],
+                        "sha256": candidate_identity["sha256"],
+                    },
+                }
+            )
     return identities
 
 
@@ -1708,7 +1963,17 @@ def validate_build_receipt(
             require_artifact_value(Path("<build-receipt>"), f"{label} {field}", artifact.get(field), current[field])
 
 
-def command_build(args: argparse.Namespace) -> int:
+def command_build(
+    args: argparse.Namespace,
+    *,
+    build_runner: Callable[
+        [Path, Path, list[str], dict[str, str], dict[str, Any]],
+        tuple[list[str], dict[str, Path]],
+    ] = run_fixed_cargo_build,
+    toolchain_capture: Callable[
+        [Path, Path, dict[str, str] | None], dict[str, dict[str, Any]]
+    ] = capture_build_toolchains,
+) -> int:
     if args.output.exists():
         raise ValueError("build receipt output must name a new path")
     document, _ = load_scenarios(args.scenarios)
@@ -1728,7 +1993,7 @@ def command_build(args: argparse.Namespace) -> int:
     )
     harness_sources = harness_source_identities(baseline_root, candidate_root, render)
     environment = controlled_build_environment()
-    toolchains = capture_build_toolchains(
+    toolchains = toolchain_capture(
         baseline_root, candidate_root, environment
     )
     toolchain = summarized_toolchain(toolchains["baseline"])
@@ -1743,13 +2008,18 @@ def command_build(args: argparse.Namespace) -> int:
     for role, selectors, mapping in build_specs(render):
         source_root = baseline_root if role == "baseline" else candidate_root
         target_dir = target_root / role
-        command, executables = run_fixed_cargo_build(
-            source_root,
-            target_dir,
-            selectors,
-            environment,
-            toolchains[role],
-        )
+        with scoped_render_harness_overlay(
+            baseline_root,
+            candidate_root,
+            render and role == "baseline",
+        ):
+            command, executables = build_runner(
+                source_root,
+                target_dir,
+                selectors,
+                environment,
+                toolchains[role],
+            )
         missing = sorted(set(mapping) - set(executables))
         if missing:
             raise ValueError(f"cargo did not report expected executables: {missing}")
@@ -1984,6 +2254,49 @@ def validate_scenarios(document: dict[str, Any]) -> None:
             "statistical_contract must preserve run/media-generation clustering, "
             "7-pair core, 3-pair fault/soak, and six independent OS x mpv cells"
         )
+    animation_profiles = document.get("animation_profiles")
+    if not isinstance(animation_profiles, dict) or set(animation_profiles) != set(
+        ANIMATION_PROFILE_NAMES
+    ):
+        raise ValueError(
+            "animation_profiles must declare exactly balanced_half and heavy_half"
+        )
+    for profile_name, expected_effects in ANIMATION_PROFILE_EFFECTS.items():
+        profile = animation_profiles.get(profile_name)
+        if not isinstance(profile, dict) or set(profile) != {
+            "effects",
+            "master",
+            "fps",
+            "pause_unfocused",
+        }:
+            raise ValueError(
+                f"animation_profiles.{profile_name} has an invalid schema"
+            )
+        effects = profile.get("effects")
+        if effects != list(expected_effects):
+            raise ValueError(
+                f"animation_profiles.{profile_name}.effects must preserve the fixed "
+                "20-effect profile"
+            )
+        if len(effects) * 2 != len(ANIMATION_EFFECT_FIELDS) or len(set(effects)) != len(
+            effects
+        ):
+            raise ValueError(
+                f"animation_profiles.{profile_name} must enable exactly half of the effects"
+            )
+        if not set(effects) <= set(ANIMATION_EFFECT_FIELDS):
+            raise ValueError(
+                f"animation_profiles.{profile_name} names an unknown animation effect"
+            )
+        if (
+            profile.get("master") is not True
+            or profile.get("fps") != 30
+            or profile.get("pause_unfocused") is not True
+        ):
+            raise ValueError(
+                f"animation_profiles.{profile_name} must use master=true, fps=30, "
+                "pause_unfocused=true"
+            )
     sampling = document.get("sampling")
     if not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
@@ -2204,9 +2517,41 @@ def validate_scenarios(document: dict[str, Any]) -> None:
         requires_mpv = scenario.get("requires_mpv")
         if not isinstance(requires_mpv, bool):
             raise ValueError(f"{name}.requires_mpv must be boolean")
+        animation_profile_name = scenario.get("animation_profile")
+        if animation_profile_name is not None:
+            if animation_profile_name not in animation_profiles:
+                raise ValueError(
+                    f"{name}.animation_profile references unknown profile "
+                    f"{animation_profile_name!r}"
+                )
+            if "setting_leaf_overrides" in scenario:
+                raise ValueError(
+                    f"{name} cannot combine animation_profile and setting_leaf_overrides"
+                )
+            if not requires_mpv:
+                raise ValueError(f"{name}.animation_profile requires playback")
+        rate_factor_policy = scenario.get("rate_factor_policy")
+        if animation_profile_name is not None:
+            if rate_factor_policy != RATE_FACTOR_POLICY_NOT_APPLICABLE:
+                raise ValueError(
+                    f"{name}.animation_profile requires explicit "
+                    "rate_factor_policy='not_applicable'"
+                )
+        elif requires_mpv:
+            if rate_factor_policy not in (None, RATE_FACTOR_POLICY_REQUIRED):
+                raise ValueError(
+                    f"{name}.rate_factor_policy must remain 'required' for "
+                    "non-animation playback"
+                )
+        elif rate_factor_policy not in (None, RATE_FACTOR_POLICY_NOT_APPLICABLE):
+            raise ValueError(
+                f"{name}.rate_factor_policy must be 'not_applicable' for non-playback"
+            )
         controller = scenario.get("controller")
         if not isinstance(controller, bool):
             raise ValueError(f"{name}.controller must be boolean")
+        if animation_profile_name is not None and not controller:
+            raise ValueError(f"{name}.animation_profile requires controller=true")
         pause_policy = scenario.get("pause_policy")
         if pause_policy not in {"none", "pause-resume"}:
             raise ValueError(f"{name}.pause_policy must be none or pause-resume")
@@ -2567,6 +2912,34 @@ def scenario_validation_self_test() -> None:
             lambda value: value["statistics"].__setitem__("baseline_cv_max", -0.1),
         ),
         (
+            "truncated balanced animation profile",
+            lambda value: value["animation_profiles"]["balanced_half"]["effects"].pop(),
+        ),
+        (
+            "unknown animation profile reference",
+            lambda value: find_scenario(value, "animation_half_balanced").__setitem__(
+                "animation_profile", "unknown"
+            ),
+        ),
+        (
+            "animation rate-factor policy omitted",
+            lambda value: find_scenario(value, "animation_half_balanced").pop(
+                "rate_factor_policy"
+            ),
+        ),
+        (
+            "unknown animation rate-factor policy",
+            lambda value: find_scenario(value, "animation_half_balanced").__setitem__(
+                "rate_factor_policy", "diagnostic"
+            ),
+        ),
+        (
+            "long-form rate-factor bypass",
+            lambda value: find_scenario(
+                value, "long_form_cold_warm_burst_auto"
+            ).__setitem__("rate_factor_policy", RATE_FACTOR_POLICY_NOT_APPLICABLE),
+        ),
+        (
             "non-finite fixture duration",
             lambda value: value["fixture"].__setitem__("duration_s", math.nan),
         ),
@@ -2740,6 +3113,43 @@ def find_scenario(document: dict[str, Any], name: str) -> dict[str, Any]:
         if scenario["id"] == name:
             return scenario
     raise ValueError(f"unknown scenario {name!r}")
+
+
+def animation_profile_setting_overrides(
+    document: dict[str, Any], profile_name: str
+) -> dict[str, Any]:
+    profile = document["animation_profiles"][profile_name]
+    enabled = set(profile["effects"])
+    overrides = {
+        f"animations.{field}": field in enabled
+        for field in ANIMATION_EFFECT_FIELDS
+    }
+    overrides.update(
+        {
+            "animations.master": profile["master"],
+            "animations.radio_master": None,
+            "animations.pause_unfocused": profile["pause_unfocused"],
+            "animations.fps": profile["fps"],
+        }
+    )
+    return overrides
+
+
+def setting_overrides_for_role(
+    document: dict[str, Any], scenario: dict[str, Any], role: str
+) -> dict[str, Any] | None:
+    animation_profile = scenario.get("animation_profile")
+    if animation_profile is not None:
+        return animation_profile_setting_overrides(document, animation_profile)
+    overrides_by_role = scenario.get("setting_leaf_overrides")
+    if overrides_by_role is None:
+        return None
+    if not isinstance(overrides_by_role, dict):
+        raise ValueError(f"scenario {scenario['id']!r} has malformed setting overrides")
+    overrides = overrides_by_role.get(role)
+    if not isinstance(overrides, dict) or not overrides:
+        raise ValueError(f"scenario {scenario['id']!r} has no {role} overrides")
+    return overrides
 
 
 def dotted(value: Any, path: str) -> Any:
@@ -4712,11 +5122,8 @@ def set_json_leaf(document: dict[str, Any], dotted_path: str, value: Any) -> Non
 def command_apply_setting_overrides(args: argparse.Namespace) -> int:
     scenario_document, scenario_hash = load_scenarios(args.scenarios)
     scenario = find_scenario(scenario_document, args.scenario)
-    overrides_by_role = scenario.get("setting_leaf_overrides")
-    if not isinstance(overrides_by_role, dict):
-        raise ValueError(f"scenario {args.scenario!r} has no setting leaf overrides")
-    overrides = overrides_by_role.get(args.role)
-    if not isinstance(overrides, dict) or not overrides:
+    overrides = setting_overrides_for_role(scenario_document, scenario, args.role)
+    if overrides is None:
         raise ValueError(f"scenario {args.scenario!r} has no {args.role} overrides")
 
     root = args.root.resolve()
@@ -4740,7 +5147,25 @@ def command_apply_setting_overrides(args: argparse.Namespace) -> int:
         leaf: json_leaf_state(document, leaf) for leaf in sorted(overrides)
     }
     for leaf, value in sorted(overrides.items()):
-        if leaf != LONG_FORM_SETTING_LEAF or value not in {"auto", "off", "on"}:
+        animation_field = leaf.removeprefix("animations.")
+        valid_animation_override = (
+            leaf.startswith("animations.")
+            and (
+                (animation_field in ANIMATION_EFFECT_FIELDS and isinstance(value, bool))
+                or (animation_field in {"master", "pause_unfocused"} and isinstance(value, bool))
+                or (animation_field == "radio_master" and value is None)
+                or (
+                    animation_field == "fps"
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value == 30
+                )
+            )
+        )
+        if not (
+            (leaf == LONG_FORM_SETTING_LEAF and value in {"auto", "off", "on"})
+            or valid_animation_override
+        ):
             raise ValueError(f"unsupported setting override {leaf!r}={value!r}")
         set_json_leaf(document, leaf, value)
     atomic_json(config, document)
@@ -5022,6 +5447,51 @@ def command_launch_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+def macos_process_absent_or_zombie(
+    pid: int,
+    *,
+    existence_probe: Callable[[int], bool] | None = None,
+    state_probe: Callable[[int], tuple[int, str]] | None = None,
+) -> bool:
+    """Confirm a Darwin PID vanished or became a zombie without trusting one racy probe."""
+
+    def default_existence_probe(candidate: int) -> bool:
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def default_state_probe(candidate: int) -> tuple[int, str]:
+        environment = controlled_build_environment()
+        environment["LC_ALL"] = "C"
+        completed = subprocess.run(
+            ["/bin/ps", "-p", str(candidate), "-o", "state="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+            check=False,
+        )
+        return completed.returncode, completed.stdout
+
+    exists = existence_probe or default_existence_probe
+    inspect_state = state_probe or default_state_probe
+    if not exists(pid):
+        return True
+    returncode, output = inspect_state(pid)
+    state = output.strip()
+    if returncode == 0 and state.startswith("Z"):
+        return True
+    if returncode != 0 or not state:
+        # The process can be reaped after the first existence probe. Only ESRCH on this
+        # second probe is proof of absence; a still-live but uninspectable PID fails closed.
+        return not exists(pid)
+    return False
+
+
 def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[str, Any] | None:
     if pid <= 0:
         return None
@@ -5066,22 +5536,6 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
             libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
             length = libproc.proc_pidpath(pid, buffer, len(buffer))
             if length <= 0:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    return None
-                environment = controlled_build_environment()
-                environment["LC_ALL"] = "C"
-                state = subprocess.run(
-                    ["/bin/ps", "-p", str(pid), "-o", "state="],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=environment,
-                    check=False,
-                )
-                if state.returncode == 0 and state.stdout.strip().startswith("Z"):
-                    return None
                 raise ValueError(f"proc_pidpath failed for PID {pid}")
             executable = Path(os.fsdecode(buffer.value)).resolve(strict=True)
             libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -5123,7 +5577,10 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
                 check=False,
             )
             if completed.returncode != 0 or not completed.stdout.strip():
-                return None
+                raise ValueError(
+                    f"ps start-time query failed for PID {pid}: "
+                    f"returncode={completed.returncode}, stderr={completed.stderr.strip()!r}"
+                )
             line = completed.stdout.strip()
             match = re.fullmatch(
                 r"(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})",
@@ -5142,11 +5599,17 @@ def unix_process_observation(pid: int, *, hash_executable: bool = True) -> dict[
             )
             relation_fields = relation.stdout.split()
             if relation.returncode != 0 or len(relation_fields) != 2:
-                return None
+                raise ValueError(
+                    f"ps relation query failed for PID {pid}: "
+                    f"returncode={relation.returncode}, fields={relation_fields!r}, "
+                    f"stderr={relation.stderr.strip()!r}"
+                )
             parent_pid, process_group_id = map(int, relation_fields)
         except ProcessLookupError:
             return None
         except (OSError, ValueError) as error:
+            if macos_process_absent_or_zombie(pid):
+                return None
             raise ValueError(f"cannot inspect macOS PID {pid}: {error}") from error
         return {
             "pid": pid,
@@ -6175,6 +6638,7 @@ def validate_setting_overrides(
     path: Path,
     run_root: Path,
     scenario: dict[str, Any],
+    scenario_document: dict[str, Any],
     scenario_hash: str,
     role: str,
     launch_policy: dict[str, Any],
@@ -6191,7 +6655,9 @@ def validate_setting_overrides(
     require_artifact_value(
         path, "config path", manifest.get("config"), "stores/config/config.json"
     )
-    expected = scenario["setting_leaf_overrides"][role]
+    expected = setting_overrides_for_role(scenario_document, scenario, role)
+    if expected is None:
+        raise ValueError(f"{path}: scenario declares no setting overrides")
     require_artifact_value(path, "setting overrides", manifest.get("overrides"), expected)
     expected_values = {
         leaf: {"present": True, "value": value}
@@ -6276,6 +6742,7 @@ def setting_overrides_self_test() -> None:
             setting_path,
             run_root,
             scenario,
+            scenario_document,
             scenario_hash,
             "candidate",
             launch_policy,
@@ -6289,6 +6756,7 @@ def setting_overrides_self_test() -> None:
                 setting_path,
                 run_root,
                 scenario,
+                scenario_document,
                 scenario_hash,
                 "candidate",
                 launch_policy,
@@ -6297,6 +6765,52 @@ def setting_overrides_self_test() -> None:
             pass
         else:
             raise AssertionError("setting override snapshot tampering was accepted")
+
+    animation_scenario = find_scenario(scenario_document, "animation_half_balanced")
+    with tempfile.TemporaryDirectory(
+        prefix="ytt-perf-animation-overrides-self-test-"
+    ) as raw:
+        run_root = Path(raw) / "run"
+        home = run_root / "home"
+        config = home / "stores" / "config" / "config.json"
+        config.parent.mkdir(parents=True)
+        atomic_json(config, {"animations": {"plasma": True}})
+        setting_path = run_root / "setting-overrides.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            command_apply_setting_overrides(
+                argparse.Namespace(
+                    scenarios=DEFAULT_SCENARIOS,
+                    scenario=animation_scenario["id"],
+                    role="baseline",
+                    root=home,
+                    output=setting_path,
+                )
+            )
+            command_launch_policy(
+                argparse.Namespace(
+                    root=home,
+                    output=run_root / "launch-policy.json",
+                )
+            )
+        launch_policy, _artifacts = validate_launch_policy(
+            run_root / "launch-policy.json", run_root
+        )
+        validate_setting_overrides(
+            setting_path,
+            run_root,
+            animation_scenario,
+            scenario_document,
+            scenario_hash,
+            "baseline",
+            launch_policy,
+        )
+        applied = load_json_object(config)["animations"]
+        assert sum(bool(applied[field]) for field in ANIMATION_EFFECT_FIELDS) == 20
+        assert applied["plasma"] is False
+        assert applied["master"] is True
+        assert applied["fps"] == 30
+        assert applied["pause_unfocused"] is True
+        assert applied["radio_master"] is None
 
 
 def launch_policy_self_test() -> None:
@@ -8696,9 +9210,104 @@ def merged_histogram(histograms: list[list[tuple[int, int]]]) -> list[tuple[int,
     return sorted(merged.items())
 
 
+RENDER_INCREMENTAL_ALLOCATION_CONTROLS = {
+    "animation_half100x30": "animation_control100x30",
+    "animation_half_art_lyrics160x50": "animation_control_art_lyrics160x50",
+    "animation_heavy_half100x30": "animation_control100x30",
+    "animation_heavy_half_art_lyrics160x50": "animation_control_art_lyrics160x50",
+}
+RENDER_INCREMENTAL_ALLOCATION_FIELDS = (
+    "allocations_per_draw",
+    "allocated_bytes_per_draw",
+)
+
+
+def add_render_incremental_allocation_metrics(
+    metrics: dict[str, Any], cases_by_name: dict[str, dict[str, Any]], path: Path
+) -> None:
+    for animation_case, control_case in RENDER_INCREMENTAL_ALLOCATION_CONTROLS.items():
+        if animation_case not in cases_by_name:
+            continue
+        if control_case not in cases_by_name:
+            raise ValueError(
+                f"{path}: render case {animation_case!r} requires matched control "
+                f"render case {control_case!r}"
+            )
+        animation_document = cases_by_name[animation_case]
+        control_document = cases_by_name[control_case]
+        for field in ("width", "height"):
+            animation_value = animation_document.get(field)
+            control_value = control_document.get(field)
+            for case_name, value in (
+                (animation_case, animation_value),
+                (control_case, control_value),
+            ):
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value <= 0
+                ):
+                    raise ValueError(
+                        f"{path}: matched render case {case_name!r} has invalid {field} "
+                        f"{value!r}"
+                    )
+            if animation_value != control_value:
+                raise ValueError(
+                    f"{path}: render case {animation_case!r} and matched control "
+                    f"{control_case!r} must have identical {field}; observed "
+                    f"{animation_value!r} and {control_value!r}"
+                )
+        animation_update_path = animation_document.get("update_path")
+        control_update_path = control_document.get("update_path")
+        if (
+            not isinstance(animation_update_path, str)
+            or not animation_update_path
+            or not isinstance(control_update_path, str)
+            or not control_update_path
+        ):
+            raise ValueError(
+                f"{path}: matched animation/control update_path values must be "
+                "non-empty strings"
+            )
+        if animation_update_path != control_update_path:
+            raise ValueError(
+                f"{path}: render case {animation_case!r} and matched control "
+                f"{control_case!r} must have identical update_path; observed "
+                f"{animation_update_path!r} and {control_update_path!r}"
+            )
+        animation_prefix = f"render.{animation_case}"
+        control_prefix = f"render.{control_case}"
+        for field in RENDER_INCREMENTAL_ALLOCATION_FIELDS:
+            animation_key = f"{animation_prefix}.{field}"
+            control_key = f"{control_prefix}.{field}"
+            animation_value = finite_non_negative_number(
+                metrics.get(animation_key), animation_key, path
+            )
+            control_value = finite_non_negative_number(
+                metrics.get(control_key), control_key, path
+            )
+            incremental = animation_value - control_value
+            if incremental < 0.0:
+                raise ValueError(
+                    f"{path}: render case {animation_case!r} has negative incremental "
+                    f"{field} relative to matched control case {control_case!r}: "
+                    f"{animation_value} - {control_value}"
+                )
+            metrics[f"{animation_prefix}.incremental_{field}"] = incremental
+
+
 def render_metrics_from_document(document: dict[str, Any], path: Path) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    cases_by_name: dict[str, dict[str, Any]] = {}
     for case in document.get("cases", []):
+        if not isinstance(case, dict):
+            raise ValueError(f"{path}: render cases must contain only objects")
+        case_name = case.get("name")
+        if not isinstance(case_name, str) or not case_name:
+            raise ValueError(f"{path}: render case name must be a non-empty string")
+        if case_name in cases_by_name:
+            raise ValueError(f"{path}: duplicate render case name {case_name!r}")
+        cases_by_name[case_name] = case
         batches = case.get("batches", [])
         if not batches:
             raise ValueError(f"{path}: render case {case.get('name')} has no batches")
@@ -8786,10 +9395,209 @@ def render_metrics_from_document(document: dict[str, Any], path: Path) -> dict[s
         metrics[f"{prefix}.p95_draw_ns"] = float(case_p95)
         metrics[f"{prefix}.buffer_style_digest"] = case["buffer_style_digest"]
         metrics[f"{prefix}.hit_map_digest"] = case["hit_map_digest"]
+        checkpoint_digest = case.get("checkpoint_digest")
+        if not isinstance(checkpoint_digest, str) or not re.fullmatch(r"[0-9a-f]{16}", checkpoint_digest):
+            raise ValueError(
+                f"{path}: render case {case.get('name')} checkpoint_digest is malformed"
+            )
+        metrics[f"{prefix}.checkpoint_digest"] = checkpoint_digest
         metrics[f"{prefix}.update_path"] = case["update_path"]
         if case["update_path"] == "app_update_msg_key":
             metrics[f"{prefix}.p95_reducer_input_to_draw_ns"] = float(case_p95)
+    add_render_incremental_allocation_metrics(metrics, cases_by_name, path)
     return metrics
+
+
+def render_incremental_allocation_metrics_self_test() -> None:
+    path = Path("<render-incremental-allocation-self-test>")
+
+    def render_case(
+        name: str,
+        allocations: int,
+        allocated_bytes: int,
+        *,
+        width: int = 100,
+        height: int = 30,
+        update_path: str = "app_update_msg_anim_tick",
+    ) -> dict[str, Any]:
+        batch = {
+            "draws": 10,
+            "total_ns": 100,
+            "mean_draw_ns": 10,
+            "p50_draw_ns": 10,
+            "p95_draw_ns": 10,
+            "max_draw_ns": 10,
+            "latency_histogram": [{"ns": 10, "count": 10}],
+            "allocations": allocations,
+            "reallocations": 0,
+            "allocated_bytes": allocated_bytes,
+            "deallocated_bytes": allocated_bytes,
+            "retained_bytes_delta": 0,
+            "peak_live_bytes_delta": allocated_bytes,
+        }
+        return {
+            "name": name,
+            "update_path": update_path,
+            "width": width,
+            "height": height,
+            "measured_draws": 10,
+            "total_draw_ns": 100,
+            "mean_draw_ns": 10,
+            "p50_draw_ns": 10,
+            "p95_draw_ns": 10,
+            "max_draw_ns": 10,
+            "latency_histogram": [{"ns": 10, "count": 10}],
+            "batches": [batch],
+            "buffer_style_digest": f"buffer-{name}",
+            "hit_map_digest": f"hits-{name}",
+            "checkpoint_digest": "0123456789abcdef",
+        }
+
+    def render_document() -> dict[str, Any]:
+        # Animation cases intentionally precede their controls to pin order-independent
+        # derivation after every raw case has been authenticated.
+        return {
+            "schema": "ytt.tui-perf.render.v1",
+            "cases": [
+                render_case("animation_half100x30", 160, 1_600),
+                render_case(
+                    "animation_half_art_lyrics160x50",
+                    190,
+                    2_900,
+                    width=160,
+                    height=50,
+                ),
+                render_case("animation_heavy_half100x30", 140, 1_300),
+                render_case(
+                    "animation_heavy_half_art_lyrics160x50",
+                    180,
+                    2_600,
+                    width=160,
+                    height=50,
+                ),
+                render_case("animation_control100x30", 100, 1_000),
+                render_case(
+                    "animation_control_art_lyrics160x50",
+                    120,
+                    2_000,
+                    width=160,
+                    height=50,
+                ),
+            ],
+        }
+
+    metrics = render_metrics_from_document(render_document(), path)
+    expected = {
+        "render.animation_half100x30.incremental_allocations_per_draw": 6.0,
+        "render.animation_half100x30.incremental_allocated_bytes_per_draw": 60.0,
+        "render.animation_half_art_lyrics160x50.incremental_allocations_per_draw": 7.0,
+        "render.animation_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": 90.0,
+        "render.animation_heavy_half100x30.incremental_allocations_per_draw": 4.0,
+        "render.animation_heavy_half100x30.incremental_allocated_bytes_per_draw": 30.0,
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocations_per_draw": 6.0,
+        "render.animation_heavy_half_art_lyrics160x50.incremental_allocated_bytes_per_draw": 60.0,
+    }
+    for name, value in expected.items():
+        require_artifact_value(path, name, metrics.get(name), value)
+
+    selected_non_animation = {
+        "schema": "ytt.tui-perf.render.v1",
+        "cases": [render_case("player", 100, 1_000)],
+    }
+    selected_metrics = render_metrics_from_document(selected_non_animation, path)
+    require_artifact_value(
+        path,
+        "selected non-animation allocation metric",
+        selected_metrics.get("render.player.allocations_per_draw"),
+        10.0,
+    )
+    if any(".incremental_" in name for name in selected_metrics):
+        raise AssertionError(
+            "selected non-animation render unexpectedly emitted incremental metrics"
+        )
+
+    def expect_rejected(
+        label: str, document: dict[str, Any], message_fragment: str
+    ) -> None:
+        try:
+            render_metrics_from_document(document, path)
+        except ValueError as error:
+            if message_fragment not in str(error):
+                raise AssertionError(
+                    f"incremental allocation self-test {label!r} failed for the wrong "
+                    f"reason: {error}"
+                ) from error
+        else:
+            raise AssertionError(
+                f"incremental allocation self-test accepted {label!r} tampering"
+            )
+
+    selected_animation = {
+        "schema": "ytt.tui-perf.render.v1",
+        "cases": [render_case("animation_half100x30", 160, 1_600)],
+    }
+    expect_rejected(
+        "selected animation without control",
+        selected_animation,
+        "requires matched control render case 'animation_control100x30'",
+    )
+
+    missing_control = render_document()
+    missing_control["cases"] = [
+        case
+        for case in missing_control["cases"]
+        if case["name"] != "animation_control100x30"
+    ]
+    expect_rejected(
+        "missing 100x30 control",
+        missing_control,
+        "'animation_control100x30'",
+    )
+
+    missing_art = render_document()
+    missing_art["cases"] = [
+        case
+        for case in missing_art["cases"]
+        if case["name"] != "animation_control_art_lyrics160x50"
+    ]
+    expect_rejected(
+        "missing art/lyrics control",
+        missing_art,
+        "'animation_control_art_lyrics160x50'",
+    )
+
+    mismatched_geometry = render_document()
+    mismatched_geometry["cases"][4]["width"] = 101
+    expect_rejected(
+        "mismatched control geometry",
+        mismatched_geometry,
+        "must have identical width",
+    )
+
+    mismatched_update_path = render_document()
+    mismatched_update_path["cases"][4]["update_path"] = "direct_fixture_state"
+    expect_rejected(
+        "mismatched control update path",
+        mismatched_update_path,
+        "must have identical update_path",
+    )
+
+    negative_allocations = render_document()
+    negative_allocations["cases"][0]["batches"][0]["allocations"] = 90
+    expect_rejected(
+        "negative allocations delta",
+        negative_allocations,
+        "negative incremental allocations_per_draw",
+    )
+
+    negative_bytes = render_document()
+    negative_bytes["cases"][0]["batches"][0]["allocated_bytes"] = 900
+    negative_bytes["cases"][0]["batches"][0]["deallocated_bytes"] = 900
+    expect_rejected(
+        "negative allocated bytes delta",
+        negative_bytes,
+        "negative incremental allocated_bytes_per_draw",
+    )
 
 
 def metrics_from_file(path: Path) -> dict[str, Any]:
@@ -9730,6 +10538,70 @@ def rate_factor_evidence(
     }
 
 
+def rate_factor_gate_for_scenario(
+    scenario: dict[str, Any], rate_factor_runs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    requires_mpv = scenario.get("requires_mpv") is True
+    policy = scenario.get("rate_factor_policy")
+    if policy is None:
+        policy = (
+            RATE_FACTOR_POLICY_REQUIRED
+            if requires_mpv
+            else RATE_FACTOR_POLICY_NOT_APPLICABLE
+        )
+    if policy not in {
+        RATE_FACTOR_POLICY_REQUIRED,
+        RATE_FACTOR_POLICY_NOT_APPLICABLE,
+    }:
+        raise ValueError(f"unsupported rate-factor policy {policy!r}")
+    if not requires_mpv and policy != RATE_FACTOR_POLICY_NOT_APPLICABLE:
+        raise ValueError("non-playback scenarios cannot require rate-factor evidence")
+    animation_profile = scenario.get("animation_profile")
+    if requires_mpv and policy == RATE_FACTOR_POLICY_NOT_APPLICABLE and (
+        not isinstance(animation_profile, str) or not animation_profile
+    ):
+        raise ValueError(
+            "playback rate-factor evidence may be not-applicable only for an "
+            "animation resource profile"
+        )
+
+    diagnostic_supported = bool(rate_factor_runs) and all(
+        run["supported"] for run in rate_factor_runs
+    )
+    diagnostic_pass = bool(rate_factor_runs) and all(
+        run["pass"] for run in rate_factor_runs
+    )
+    diagnostic_ship_eligible = bool(rate_factor_runs) and all(
+        run["ship_evidence_eligible"] for run in rate_factor_runs
+    )
+    required = policy == RATE_FACTOR_POLICY_REQUIRED
+    not_applicable_reason = None
+    if not required:
+        not_applicable_reason = (
+            RATE_FACTOR_ANIMATION_NA_REASON
+            if requires_mpv
+            else "scenario does not require mpv playback"
+        )
+    return {
+        "schema": "ytt.tui-perf.rate-factor-gate.v1",
+        "factor": RATE_SAFETY_FACTOR,
+        "factor_provenance": (
+            "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
+        ),
+        "policy": policy,
+        "required": required,
+        "runs": rate_factor_runs,
+        "supported": diagnostic_supported,
+        "diagnostic_pass": diagnostic_pass,
+        "pass": diagnostic_pass if required else True,
+        "diagnostic_ship_evidence_eligible": diagnostic_ship_eligible,
+        "ship_evidence_eligible": diagnostic_ship_eligible if required else True,
+        "unsupported_is_ship_evidence": False,
+        "not_applicable": not required,
+        "not_applicable_reason": not_applicable_reason,
+    }
+
+
 def rate_factor_evidence_self_test() -> None:
     path = Path("<rate-factor-self-test>")
 
@@ -9784,6 +10656,38 @@ def rate_factor_evidence_self_test() -> None:
         Path(__file__).resolve().parent.parent / "src" / "player" / "long_form_seek.rs"
     ).read_text(encoding="utf-8")
     assert "const CACHE_SPEED_SAFETY_FACTOR: u64 = 2;" in production
+
+    unsupported_run = {
+        "supported": False,
+        "pass": False,
+        "ship_evidence_eligible": False,
+    }
+    required_gate = rate_factor_gate_for_scenario(
+        {"requires_mpv": True}, [unsupported_run]
+    )
+    assert required_gate["required"] is True
+    assert required_gate["pass"] is False
+    assert required_gate["ship_evidence_eligible"] is False
+
+    animation_gate = rate_factor_gate_for_scenario(
+        {
+            "requires_mpv": True,
+            "animation_profile": "balanced_half",
+            "rate_factor_policy": RATE_FACTOR_POLICY_NOT_APPLICABLE,
+        },
+        [unsupported_run],
+    )
+    assert animation_gate["not_applicable"] is True
+    assert animation_gate["diagnostic_pass"] is False
+    assert animation_gate["pass"] is True
+    assert animation_gate["ship_evidence_eligible"] is True
+    assert animation_gate["not_applicable_reason"] == RATE_FACTOR_ANIMATION_NA_REASON
+
+    non_playback_gate = rate_factor_gate_for_scenario(
+        {"requires_mpv": False}, []
+    )
+    assert non_playback_gate["not_applicable"] is True
+    assert non_playback_gate["pass"] is True
 
 
 def validate_cache_mode_evidence(
@@ -12440,12 +13344,18 @@ def validate_process_directory(
         raise ValueError(f"{path}: missing launch-policy.json")
     launch_policy, launch_artifacts = validate_launch_policy(launch_policy_path, path)
     setting_artifacts: list[Path] = []
-    if "setting_leaf_overrides" in scenario:
+    if "setting_leaf_overrides" in scenario or "animation_profile" in scenario:
         setting_path = path / "setting-overrides.json"
         if not setting_path.is_file():
             raise ValueError(f"{path}: missing setting-overrides.json")
         setting_artifacts = validate_setting_overrides(
-            setting_path, path, scenario, scenario_hash, role, launch_policy
+            setting_path,
+            path,
+            scenario,
+            scenario_document,
+            scenario_hash,
+            role,
+            launch_policy,
         )
     artifacts = [
         samples_path,
@@ -14184,6 +15094,124 @@ def host_identity_privacy_self_test() -> None:
             raise AssertionError("raw host identifier payload leaked into the serialized identity")
 
 
+def darwin_boot_identity_self_test() -> None:
+    def command_mock(
+        responses: dict[str, str | ValueError],
+    ) -> tuple[list[str], Callable[[list[str], str], str]]:
+        calls: list[str] = []
+
+        def command(command: list[str], _label: str) -> str:
+            if len(command) != 3 or command[:2] != ["/usr/sbin/sysctl", "-n"]:
+                raise AssertionError(f"unexpected Darwin boot identity command: {command!r}")
+            key = command[-1]
+            calls.append(key)
+            response = responses[key]
+            if isinstance(response, ValueError):
+                raise response
+            return response
+
+        return calls, command
+
+    first_uuid = "12345678-1234-4ABC-9DEF-1234567890AB"
+    second_uuid = "87654321-4321-4abc-8def-ba0987654321"
+    calls, command = command_mock({"kern.bootsessionuuid": first_uuid})
+    first_session = stable_boot_id("Darwin", identity_command=command)
+    assert first_session == f"darwin-boot-session-uuid:{first_uuid.lower()}"
+    assert calls == ["kern.bootsessionuuid"]
+
+    calls, command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": (
+                "{ sec = 1720000000, usec = 123456 } Tue Jul  2 00:00:00 2024"
+            ),
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=command) == (
+        "darwin-boottime:1720000000"
+    )
+    assert calls == ["kern.bootsessionuuid", "kern.boottime"]
+
+    calls, command = command_mock(
+        {
+            "kern.bootsessionuuid": ValueError("simulated sysctl failure"),
+            "kern.boottime": (
+                "{ sec = 1720000000, usec = 654321 } Tue Jul  2 00:00:00 2024"
+            ),
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=command) == (
+        "darwin-boottime:1720000000"
+    )
+    assert calls == ["kern.bootsessionuuid", "kern.boottime"]
+
+    _, first_fallback_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000000, usec = 1 }",
+        }
+    )
+    _, second_fallback_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000000, usec = 999999 }",
+        }
+    )
+    assert stable_boot_id("Darwin", identity_command=first_fallback_command) == (
+        stable_boot_id("Darwin", identity_command=second_fallback_command)
+    )
+
+    _, second_session_command = command_mock({"kern.bootsessionuuid": second_uuid})
+    assert first_session != stable_boot_id("Darwin", identity_command=second_session_command)
+    _, reboot_command = command_mock(
+        {
+            "kern.bootsessionuuid": "malformed",
+            "kern.boottime": "{ sec = 1720000001, usec = 1 }",
+        }
+    )
+    assert "darwin-boottime:1720000000" != stable_boot_id(
+        "Darwin", identity_command=reboot_command
+    )
+
+
+def macos_process_absence_probe_self_test() -> None:
+    def existence_sequence(*results: bool) -> Callable[[int], bool]:
+        remaining = iter(results)
+        return lambda _pid: next(remaining)
+
+    def missing_state(_pid: int) -> tuple[int, str]:
+        return 1, ""
+
+    def unexpected_state(_pid: int) -> tuple[int, str]:
+        raise AssertionError("state probe must not run for a confirmed-absent PID")
+
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True, False),
+        state_probe=missing_state,
+    )
+    assert not macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True, True),
+        state_probe=missing_state,
+    )
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True),
+        state_probe=lambda _pid: (0, "Z"),
+    )
+    assert not macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(True),
+        state_probe=lambda _pid: (0, "S"),
+    )
+    assert macos_process_absent_or_zombie(
+        42,
+        existence_probe=existence_sequence(False),
+        state_probe=unexpected_state,
+    )
+
+
 def command_self_test(_args: argparse.Namespace) -> int:
     scenario_validation_self_test()
     tree_digest_self_test()
@@ -14194,6 +15222,8 @@ def command_self_test(_args: argparse.Namespace) -> int:
     cleanup_integration_self_test()
     startup_cleanup_integration_self_test()
     host_identity_privacy_self_test()
+    darwin_boot_identity_self_test()
+    macos_process_absence_probe_self_test()
     run_contract_integration_self_test()
     multi_geometry_run_contract_integration_self_test()
     launch_policy_self_test()
@@ -14208,6 +15238,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
     control_extended_telemetry_self_test()
     rate_factor_evidence_self_test()
     fixture_output_contract_self_test()
+    render_incremental_allocation_metrics_self_test()
     windows_build_wrapper_self_test()
     sample_tree_topology_self_test()
     point, upper, ratios = paired_bootstrap_ratios([0.0, 0.0], [0.0, 0.0], 100, 7, 0.95)
@@ -14275,6 +15306,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
             "batches": [render_batch, render_batch],
             "buffer_style_digest": "buffer",
             "hit_map_digest": "hits",
+            "checkpoint_digest": "0123456789abcdef",
         }],
     }
     render_metrics = render_metrics_from_document(render_document, Path("<self-test>"))
@@ -14341,6 +15373,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "latency_histogram": [{"ns": 5, "count": 3}],
                 "buffer_style_digest": "buffer",
                 "hit_map_digest": "hits",
+                "checkpoint_digest": "0123456789abcdef",
                 "batches": [
                     {
                         "draws": 3,
@@ -14557,15 +15590,23 @@ def command_self_test(_args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         (candidate_source / ".gitignore").write_text("/.cargo/\n", encoding="utf-8")
-        git_checked(candidate_source, "add", "Cargo.lock", "Cargo.toml", ".gitignore")
+        render_harness = candidate_source / "examples" / "tui_render_perf.rs"
+        render_harness.parent.mkdir()
+        render_harness.write_text("fn main() { /* origin */ }\n", encoding="utf-8")
+        git_checked(
+            candidate_source,
+            "add",
+            "Cargo.lock",
+            "Cargo.toml",
+            ".gitignore",
+            "examples/tui_render_perf.rs",
+        )
         git_checked(candidate_source, "-c", "commit.gpgsign=false", "commit", "-m", "main")
         remote_source.mkdir()
         git_checked(remote_source, "init", "--bare", "--initial-branch=main")
         git_checked(candidate_source, "remote", "add", "origin", str(remote_source))
         git_checked(candidate_source, "push", "-u", "origin", "main")
         git_checked(candidate_source, "switch", "-c", "candidate")
-        render_harness = candidate_source / "examples" / "tui_render_perf.rs"
-        render_harness.parent.mkdir()
         render_harness.write_text("fn main() {}\n", encoding="utf-8")
         git_checked(candidate_source, "add", "examples/tui_render_perf.rs")
         git_checked(
@@ -14585,9 +15626,102 @@ def command_self_test(_args: argparse.Namespace) -> int:
         )
         if completed.returncode != 0:
             raise AssertionError(f"self-test git clone failed: {completed.stderr.strip()}")
+        baseline_harness = baseline_source / "examples" / "tui_render_perf.rs"
+        baseline_original_bytes = baseline_harness.read_bytes()
+        baseline_original_metadata = baseline_harness.stat()
         validate_source_contract(
             baseline_source, candidate_source, render=True, refresh=True
         )
+        assert baseline_harness.read_bytes() == baseline_original_bytes
+        assert tracked_worktree_is_clean(baseline_source)
+        assert not untracked_paths(baseline_source)
+        harness_identities = harness_source_identities(
+            baseline_source, candidate_source, render=True
+        )["tui_render_perf.rs"]
+        assert harness_identities["baseline_original"]["sha256"] == hashlib.sha256(
+            baseline_original_bytes
+        ).hexdigest()
+        assert harness_identities["baseline_effective"]["sha256"] == sha256_file(
+            render_harness
+        )
+        assert harness_identities["candidate"]["sha256"] == sha256_file(
+            render_harness
+        )
+
+        with scoped_render_harness_overlay(
+            baseline_source, candidate_source, render=True
+        ):
+            assert baseline_harness.read_bytes() == render_harness.read_bytes()
+            assert tracked_diff_paths(baseline_source) == [
+                "examples/tui_render_perf.rs"
+            ]
+        restored_metadata = baseline_harness.stat()
+        assert baseline_harness.read_bytes() == baseline_original_bytes
+        assert stat.S_IMODE(restored_metadata.st_mode) == stat.S_IMODE(
+            baseline_original_metadata.st_mode
+        )
+        assert restored_metadata.st_mtime_ns == baseline_original_metadata.st_mtime_ns
+        assert tracked_worktree_is_clean(baseline_source)
+        assert not untracked_paths(baseline_source)
+
+        executable_identity = identity_for_file(Path(sys.executable))
+
+        def self_test_toolchain_capture(
+            baseline: Path,
+            candidate: Path,
+            _environment: dict[str, str] | None = None,
+        ) -> dict[str, dict[str, Any]]:
+            def identity(source: Path) -> dict[str, Any]:
+                return {
+                    "source_root": str(source.resolve()),
+                    "cargo": {"version": "cargo self-test"},
+                    "rustc": {
+                        "version": "rustc self-test",
+                        "selected_executable": executable_identity,
+                    },
+                }
+
+            return {"baseline": identity(baseline), "candidate": identity(candidate)}
+
+        def fail_baseline_build(
+            source_root: Path,
+            _target_dir: Path,
+            _selectors: list[str],
+            _environment: dict[str, str],
+            _toolchain: dict[str, Any],
+        ) -> tuple[list[str], dict[str, Path]]:
+            assert source_root == baseline_source.resolve()
+            assert baseline_harness.read_bytes() == render_harness.read_bytes()
+            assert tracked_diff_paths(baseline_source) == [
+                "examples/tui_render_perf.rs"
+            ]
+            raise ValueError("injected baseline cargo failure")
+
+        try:
+            command_build(
+                argparse.Namespace(
+                    scenarios=DEFAULT_SCENARIOS,
+                    scenario="render_and_interaction",
+                    baseline_root=baseline_source,
+                    candidate_root=candidate_source,
+                    output=root / "build-evidence" / "build.json",
+                    target_root=root / "build-target",
+                ),
+                build_runner=fail_baseline_build,
+                toolchain_capture=self_test_toolchain_capture,
+            )
+        except ValueError as error:
+            assert "injected baseline cargo failure" in str(error)
+        else:
+            raise AssertionError("injected baseline Cargo failure must be propagated")
+        restored_metadata = baseline_harness.stat()
+        assert baseline_harness.read_bytes() == baseline_original_bytes
+        assert stat.S_IMODE(restored_metadata.st_mode) == stat.S_IMODE(
+            baseline_original_metadata.st_mode
+        )
+        assert restored_metadata.st_mtime_ns == baseline_original_metadata.st_mtime_ns
+        assert tracked_worktree_is_clean(baseline_source)
+        assert not untracked_paths(baseline_source)
 
         (candidate_source / "Cargo.lock").write_text("dirty\n", encoding="utf-8")
         try:
@@ -14600,7 +15734,6 @@ def command_self_test(_args: argparse.Namespace) -> int:
             raise AssertionError("dirty candidate source must be rejected")
         (candidate_source / "Cargo.lock").write_text("lock\n", encoding="utf-8")
 
-        baseline_harness = baseline_source / "examples" / "tui_render_perf.rs"
         baseline_harness.write_text("fn main() { panic!(); }\n", encoding="utf-8")
         try:
             validate_source_contract(
@@ -14610,7 +15743,7 @@ def command_self_test(_args: argparse.Namespace) -> int:
             pass
         else:
             raise AssertionError("mismatched baseline render harness must be rejected")
-        baseline_harness.write_bytes(render_harness.read_bytes())
+        baseline_harness.write_bytes(baseline_original_bytes)
 
         ignored_config = candidate_source / ".cargo" / "config.toml"
         ignored_config.parent.mkdir()
@@ -15240,6 +16373,8 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "multi_geometry_contract_cases": 2,
                 "duplicate_key_cases": 1,
                 "aggregate_render_p95_cases": 2,
+                "render_incremental_allocation_metrics": 8,
+                "render_incremental_allocation_tamper_cases": 7,
                 "render_identity_tamper_cases": 2,
                 "checksum_tamper_cases": 1,
                 "checksum_shadow_inventory_cases": 1,
@@ -15255,14 +16390,16 @@ def command_self_test(_args: argparse.Namespace) -> int:
                 "sample_cpu_window_tamper_cases": 2,
                 "sample_jitter_weighting_cases": 1,
                 "control_buffering_tamper_cases": 1,
-                "scenario_schema_tamper_cases": 33,
+                "scenario_schema_tamper_cases": 38,
                 "control_operation_tamper_cases": 13,
                 "http_server_authenticated_shutdown_cases": 1,
                 "http_server_leading_dash_token_cases": 1,
                 "http_server_stale_pid_no_signal_cases": 1,
                 "sample_tree_topology_tamper_cases": 4,
                 "source_contract_tamper_cases": 3,
+                "baseline_render_overlay_restore_cases": 2,
                 "source_rate_bound_tamper_cases": 3,
+                "rate_factor_policy_cases": 3,
                 "toolchain_identity_tamper_cases": 3,
                 "cleanup_scope_tamper_cases": 1,
                 "raw_role_binding_cases": 1,
@@ -15539,36 +16676,7 @@ def command_compare(args: argparse.Namespace) -> int:
     if not results:
         raise ValueError(f"scenario {args.scenario} produced no metric comparisons")
 
-    if scenario["requires_mpv"]:
-        rate_factor_gate = {
-            "schema": "ytt.tui-perf.rate-factor-gate.v1",
-            "factor": RATE_SAFETY_FACTOR,
-            "factor_provenance": (
-                "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
-            ),
-            "runs": rate_factor_runs,
-            "supported": bool(rate_factor_runs)
-            and all(run["supported"] for run in rate_factor_runs),
-            "pass": bool(rate_factor_runs)
-            and all(run["pass"] for run in rate_factor_runs),
-            "ship_evidence_eligible": bool(rate_factor_runs)
-            and all(run["ship_evidence_eligible"] for run in rate_factor_runs),
-            "unsupported_is_ship_evidence": False,
-        }
-    else:
-        rate_factor_gate = {
-            "schema": "ytt.tui-perf.rate-factor-gate.v1",
-            "factor": RATE_SAFETY_FACTOR,
-            "factor_provenance": (
-                "src/player/long_form_seek.rs::CACHE_SPEED_SAFETY_FACTOR"
-            ),
-            "runs": [],
-            "supported": False,
-            "pass": True,
-            "ship_evidence_eligible": True,
-            "unsupported_is_ship_evidence": False,
-            "not_applicable": True,
-        }
+    rate_factor_gate = rate_factor_gate_for_scenario(scenario, rate_factor_runs)
 
     seen_artifacts: dict[Path, str] = {}
     raw_artifacts = []
@@ -15680,9 +16788,15 @@ def markdown_report(report: dict[str, Any]) -> str:
         if report["ship_evidence_eligible"]
         else "Ship evidence: **NOT ELIGIBLE (fail-closed)**",
         "",
-        "Rate-factor gate: **PASS**"
-        if report["evidence"]["rate_factor_gate"]["pass"]
-        else "Rate-factor gate: **FAIL / UNSUPPORTED**",
+        (
+            "Rate-factor gate: **N/A**"
+            if report["evidence"]["rate_factor_gate"]["not_applicable"]
+            else (
+                "Rate-factor gate: **PASS**"
+                if report["evidence"]["rate_factor_gate"]["pass"]
+                else "Rate-factor gate: **FAIL / UNSUPPORTED**"
+            )
+        ),
         "",
         f"Incomplete A-I families: `{','.join(incomplete_families)}`",
         "",

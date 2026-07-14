@@ -381,21 +381,23 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
         let body_w = row_width.saturating_sub(delete_width) as usize;
         let marker = if selected { "> " } else { "  " };
         let text = app.local_row_text_at(local_rows, i);
-        let text = if selected {
-            crate::ui::anim::selected_marquee(
+        let body = if selected {
+            let mut body = crate::ui::anim::selected_marquee(
                 app,
                 ScrollSurface::Library,
                 i,
                 text.as_ref(),
                 body_w.saturating_sub(3),
-            )
+            );
+            body.reserve(marker.len());
+            body.insert_str(0, marker);
+            crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1))
         } else {
-            text.to_string()
+            let mut body = String::with_capacity(marker.len().saturating_add(text.len()));
+            body.push_str(marker);
+            body.push_str(text.as_ref());
+            crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1))
         };
-        let body = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{text}"),
-            body_w.saturating_sub(1),
-        );
         let style = if selected {
             crate::ui::anim::selection_style(
                 app,

@@ -44,6 +44,7 @@ pub fn render_at(
     // message covers the title (nothing to celebrate over) — drawn after the neighbours so the
     // sparks sit on top of the blank gap rows.
     if app.status.text.is_empty()
+        && crate::ui::anim::like_burst_active(app, title.width)
         && let Some(s) = app.queue.current()
     {
         let title_text = app.display_title(s);
@@ -386,7 +387,8 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
     };
     if app.beginner_labels_enabled() {
         // Shed keycaps and decoration before names, then use compact labels only when necessary.
-        [
+        let mut parts = StatusLineParts::with_capacity(16);
+        for (gap, minimal, labels) in [
             ("    ", false, StatusLabelTier::BeginnerKeys),
             ("  ", false, StatusLabelTier::BeginnerKeys),
             (" ", false, StatusLabelTier::BeginnerKeys),
@@ -395,27 +397,30 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
             (" ", false, StatusLabelTier::BeginnerNames),
             (" ", true, StatusLabelTier::BeginnerNames),
             (" ", true, StatusLabelTier::Compact),
-        ]
-        .into_iter()
-        .map(|(gap, minimal, labels)| {
-            (
-                buttons::text_width(gap),
-                status_line_parts_with_labels(app, gap, minimal, animated, labels),
-            )
-        })
-        .find(|(_, parts)| fits(parts))
-        .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+        ] {
+            parts =
+                status_line_parts_with_labels_reusing(app, gap, minimal, animated, labels, parts);
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
+        }
+        (1, parts)
     } else {
-        [("    ", false), ("  ", false), (" ", false), (" ", true)]
-            .into_iter()
-            .map(|(gap, minimal)| {
-                (
-                    buttons::text_width(gap),
-                    status_line_parts(app, gap, minimal, animated),
-                )
-            })
-            .find(|(_, parts)| fits(parts))
-            .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+        let mut parts = StatusLineParts::with_capacity(16);
+        for (gap, minimal) in [("    ", false), ("  ", false), (" ", false), (" ", true)] {
+            parts = status_line_parts_with_labels_reusing(
+                app,
+                gap,
+                minimal,
+                animated,
+                StatusLabelTier::Compact,
+                parts,
+            );
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
+        }
+        (1, parts)
     }
 }
 
@@ -429,6 +434,7 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
 /// drop away, so the clickable toggles never fall off the right edge.
 /// `animated` is false in the docked box's static (off-Player) forms: the clock-driven
 /// decorations (spinner, VU bars) drop instead of freezing mid-frame.
+#[cfg(test)]
 fn status_line_parts(
     app: &App,
     gap: &'static str,
@@ -437,7 +443,7 @@ fn status_line_parts(
 ) -> StatusLineParts {
     status_line_parts_with_labels(app, gap, minimal, animated, StatusLabelTier::Compact)
 }
-
+#[cfg(test)]
 fn status_line_parts_with_labels(
     app: &App,
     gap: &'static str,
@@ -445,8 +451,26 @@ fn status_line_parts_with_labels(
     animated: bool,
     labels: StatusLabelTier,
 ) -> StatusLineParts {
+    status_line_parts_with_labels_reusing(
+        app,
+        gap,
+        minimal,
+        animated,
+        labels,
+        StatusLineParts::with_capacity(16),
+    )
+}
+
+fn status_line_parts_with_labels_reusing(
+    app: &App,
+    gap: &'static str,
+    minimal: bool,
+    animated: bool,
+    labels: StatusLabelTier,
+    mut parts: StatusLineParts,
+) -> StatusLineParts {
     let retro = app.retro_mode();
-    let mut parts = StatusLineParts::with_capacity(16);
+    parts.clear();
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
     if (!minimal || !labels.beginner())
@@ -773,9 +797,14 @@ fn status_line_parts_with_labels(
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if !minimal
         && animated
-        && let Some(bars) = crate::ui::anim::eq_bars(app)
+        && let Some(mut bars) = crate::ui::anim::eq_bars(app)
     {
-        parts.push((None, Cow::Owned(format!("{gap}{bars}"))));
+        // `eq_bars` already owns this frame's five-glyph buffer. Prefix the separator in
+        // place instead of formatting it into a second allocation and immediately dropping
+        // the original. This keeps the single label segment (and therefore its exact cells)
+        // unchanged.
+        bars.insert_str(0, gap);
+        parts.push((None, Cow::Owned(bars)));
     }
     if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
@@ -829,7 +858,7 @@ fn status_line_parts_with_labels(
     {
         let tag = match state {
             DownloadState::Running(p) => {
-                let head = crate::ui::anim::download_spinner(app).unwrap_or_else(|| "⬇".to_owned());
+                let head = crate::ui::anim::download_spinner(app).unwrap_or("⬇");
                 format!("{head} {p}%")
             }
             DownloadState::Done => "⬇ ✓".to_owned(),
@@ -877,7 +906,11 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     };
     let plain_down = " - ";
     let plain_up = " + ";
-    let (beginner_down, beginner_up) = beginner::volume_buttons(app);
+    // Resolving display keycaps allocates two strings. The legacy/non-beginner path never
+    // displays them, so do not build them on every animated frame just to discard them.
+    let beginner_buttons = app
+        .beginner_labels_enabled()
+        .then(|| beginner::volume_buttons(app));
     let tight_transport_width = 13u16;
     let cluster_width = |label: &str, down: &str, up: &str| {
         buttons::text_width(label)
@@ -888,24 +921,14 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     let fits_tight = |label: &str, down: &str, up: &str| {
         tight_transport_width.saturating_add(cluster_width(label, down, up)) <= area.width
     };
-    let (volume_label, volume_down, volume_up) = if app.beginner_labels_enabled()
-        && fits_tight(beginner_volume_label, &beginner_down, &beginner_up)
-    {
-        (
-            beginner_volume_label,
-            beginner_down.as_str(),
-            beginner_up.as_str(),
-        )
-    } else if app.beginner_labels_enabled()
-        && fits_tight(compact_volume_label, &beginner_down, &beginner_up)
-    {
-        (
-            compact_volume_label,
-            beginner_down.as_str(),
-            beginner_up.as_str(),
-        )
-    } else {
-        (compact_volume_label, plain_down, plain_up)
+    let (volume_label, volume_down, volume_up) = match beginner_buttons.as_ref() {
+        Some((down, up)) if fits_tight(beginner_volume_label, down, up) => {
+            (beginner_volume_label, down.as_str(), up.as_str())
+        }
+        Some((down, up)) if fits_tight(compact_volume_label, down, up) => {
+            (compact_volume_label, down.as_str(), up.as_str())
+        }
+        _ => (compact_volume_label, plain_down, plain_up),
     };
     let full = 21u16.saturating_add(cluster_width(volume_label, volume_down, volume_up));
     let (gap, vol_gap) = if full <= area.width {
@@ -925,10 +948,7 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), volume_up),
     ];
-    let widths: Vec<u16> = segments
-        .iter()
-        .map(|s| buttons::text_width(s.text))
-        .collect();
+    let widths: [u16; 10] = std::array::from_fn(|index| buttons::text_width(segments[index].text));
     let total = widths.iter().copied().sum::<u16>();
     let volume_offset = widths[..6].iter().copied().sum::<u16>();
     let volume_width = widths[6..].iter().copied().sum::<u16>();

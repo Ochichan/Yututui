@@ -504,10 +504,21 @@ impl App {
             self.fx.popup = Some(self.fx_arm(w::POPUP_MS));
         }
 
-        // The synced-lyric line advanced → flash the newly-current line. Only tracked while
-        // the panel is visible on the player. Rendering and flash share the same index written by
-        // the 100 ms lyric clock, so interpolation cannot make their frames disagree.
-        if matches!(self.mode, Mode::Player) && self.lyrics.visible && on(a.lyrics) {
+        self.detect_lyrics_fx_when(on(a.lyrics));
+    }
+
+    /// Diff the synced-lyric row separately so the animation-clock fast path need not scan every
+    /// unrelated one-shot FX anchor. Reconciliation writes `active_index` immediately before
+    /// this call, keeping the rendered row and flash on the same animation turn.
+    pub(in crate::app) fn detect_lyrics_fx(&mut self) {
+        let a = self.animations();
+        self.detect_lyrics_fx_when(a.master && a.lyrics);
+    }
+
+    fn detect_lyrics_fx_when(&mut self, enabled: bool) {
+        use crate::ui::anim::fx_window as w;
+
+        if matches!(self.mode, Mode::Player) && self.lyrics.visible && enabled {
             let idx = self.current_loaded_lyrics().and(self.lyrics.active_index);
             if idx != self.fx.last_lyric_index {
                 self.fx.last_lyric_index = idx;

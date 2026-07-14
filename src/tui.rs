@@ -18,10 +18,58 @@ use ratatui::{Frame, Terminal};
 
 use crate::zoom::{ZoomBackend, ZoomHandle};
 
-/// The app's terminal: a [`CrosstermBackend`] wrapped in the OSC 66 text-zoom layer.
-/// At zoom 1 (always, on terminals without the text sizing protocol) the wrapper is a
-/// transparent pass-through of ratatui's `DefaultTerminal`.
-pub type AppTerminal = Terminal<ZoomBackend<io::Stdout>>;
+/// Reusable terminal output buffer that never leaks a partial frame after panic restoration.
+///
+/// Normal drop retains `BufWriter`'s best-effort flush. During unwinding, ratatui's panic hook has
+/// already restored the terminal before locals are dropped, so the pending bytes are detached and
+/// discarded instead of being emitted onto the restored screen.
+pub struct PanicSafeBufWriter<W: Write> {
+    inner: Option<io::BufWriter<W>>,
+}
+
+impl<W: Write> PanicSafeBufWriter<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            inner: Some(io::BufWriter::new(writer)),
+        }
+    }
+
+    fn inner_mut(&mut self) -> &mut io::BufWriter<W> {
+        self.inner
+            .as_mut()
+            .expect("buffered writer is present until drop")
+    }
+}
+
+impl<W: Write> Write for PanicSafeBufWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner_mut().flush()
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.inner_mut().write_vectored(bufs)
+    }
+}
+
+impl<W: Write> Drop for PanicSafeBufWriter<W> {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(buffered) = self.inner.take()
+        {
+            let (_writer, pending) = buffered.into_parts();
+            drop(pending);
+        }
+    }
+}
+
+/// The app's terminal: a buffered [`CrosstermBackend`] wrapped in the OSC 66 text-zoom layer.
+/// Ratatui's terminal flush remains the frame boundary while the reusable buffer coalesces the
+/// backend's many small writes. At zoom 1 the zoom wrapper is a transparent pass-through.
+pub type AppTerminal = Terminal<ZoomBackend<PanicSafeBufWriter<io::Stdout>>>;
 
 /// Outcome of the low-cost terminal-owned IME preedit scrub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +95,7 @@ pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<AppTerminal> {
     // in `restore()` — exactly as they were.
     drop(ratatui::try_init()?);
     let terminal = Terminal::new(ZoomBackend::new(
-        CrosstermBackend::new(io::stdout()),
+        CrosstermBackend::new(PanicSafeBufWriter::new(io::stdout())),
         zoom.clone(),
     ))?;
     if mouse {
@@ -323,12 +371,13 @@ mod tests {
     use ratatui::backend::{Backend, ClearType, CrosstermBackend, TestBackend, WindowSize};
     use ratatui::buffer::Cell;
     use ratatui::layout::{Position, Rect, Size};
+    use ratatui::style::{Color, Modifier};
     use ratatui::widgets::Paragraph;
     use ratatui::{Terminal, TerminalOptions, Viewport};
 
     use super::{
-        ImeScrubResult, draw_frame_after_explicit_clear, draw_frame_inner, draw_frame_with_output,
-        scrub_ime_preedit_with_output, scrub_unchanged_terminal,
+        ImeScrubResult, PanicSafeBufWriter, draw_frame_after_explicit_clear, draw_frame_inner,
+        draw_frame_with_output, scrub_ime_preedit_with_output, scrub_unchanged_terminal,
     };
     use crate::zoom::{ZoomBackend, ZoomHandle, ZoomMode};
 
@@ -356,6 +405,213 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct WriteStats {
+        bytes: Vec<u8>,
+        write_calls: usize,
+        flush_calls: usize,
+    }
+
+    /// Models the writer directly underneath `BufWriter` and records only non-empty writes. In
+    /// production these are entries into stdout's shared writer; any further syscall batching is
+    /// an implementation detail of `Stdout` rather than an invariant asserted by these tests.
+    #[derive(Clone, Default)]
+    struct CountingWriter(Arc<Mutex<WriteStats>>);
+
+    impl CountingWriter {
+        fn snapshot(&self) -> WriteStats {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if !buf.is_empty() {
+                let mut stats = self.0.lock().unwrap();
+                stats.bytes.extend_from_slice(buf);
+                stats.write_calls += 1;
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.lock().unwrap().flush_calls += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn panic_safe_buffered_writer_flushes_pending_bytes_on_normal_drop() {
+        let sink = CountingWriter::default();
+        {
+            let mut writer = PanicSafeBufWriter::new(sink.clone());
+            writer.write_all(b"normal remainder").unwrap();
+            assert_eq!(sink.snapshot(), WriteStats::default());
+        }
+
+        let stats = sink.snapshot();
+        assert_eq!(stats.bytes, b"normal remainder");
+        assert_eq!(stats.write_calls, 1);
+    }
+
+    #[test]
+    fn panic_safe_buffered_writer_discards_pending_bytes_during_unwind() {
+        let sink = CountingWriter::default();
+        let panic_sink = sink.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let mut writer = PanicSafeBufWriter::new(panic_sink.clone());
+            writer.write_all(b"panic remainder").unwrap();
+            assert_eq!(panic_sink.snapshot(), WriteStats::default());
+            panic!("exercise panic-safe writer drop");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(sink.snapshot(), WriteStats::default());
+    }
+
+    fn normal_scale_backend<W: Write>(writer: W) -> ZoomBackend<W> {
+        ZoomBackend::new(CrosstermBackend::new(writer), ZoomHandle::default())
+    }
+
+    fn representative_cells() -> Vec<(u16, u16, Cell)> {
+        let symbols = [
+            "A",
+            "한",
+            "b",
+            "界",
+            "\x1b_Gi=7,a=q\x1b\\",
+            "c",
+            "🙂",
+            "d",
+            "é",
+            "Z",
+        ];
+        symbols
+            .into_iter()
+            .enumerate()
+            .map(|(index, symbol)| {
+                let mut cell = Cell::default();
+                cell.set_symbol(symbol);
+                cell.fg = if index % 2 == 0 {
+                    Color::Rgb(220, 80, 120)
+                } else {
+                    Color::Cyan
+                };
+                cell.bg = if index % 3 == 0 {
+                    Color::Rgb(10, 20, 30)
+                } else {
+                    Color::Reset
+                };
+                cell.underline_color = if index % 4 == 0 {
+                    Color::Yellow
+                } else {
+                    Color::Reset
+                };
+                cell.modifier = match index % 4 {
+                    0 => Modifier::BOLD,
+                    1 => Modifier::ITALIC,
+                    2 => Modifier::UNDERLINED | Modifier::REVERSED,
+                    _ => Modifier::empty(),
+                };
+                (index as u16 * 2, (index / 5) as u16, cell)
+            })
+            .collect()
+    }
+
+    fn draw_representative_cells<W: Write>(backend: &mut ZoomBackend<W>) {
+        let cells = representative_cells();
+        backend
+            .draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))
+            .unwrap();
+    }
+
+    #[test]
+    fn buffered_normal_scale_output_matches_unbuffered_bytes() {
+        let direct_sink = CountingWriter::default();
+        let mut direct = normal_scale_backend(direct_sink.clone());
+        draw_representative_cells(&mut direct);
+        direct.flush().unwrap();
+
+        let buffered_sink = CountingWriter::default();
+        let mut buffered = normal_scale_backend(PanicSafeBufWriter::new(buffered_sink.clone()));
+        draw_representative_cells(&mut buffered);
+        buffered.flush().unwrap();
+
+        let direct = direct_sink.snapshot();
+        let buffered = buffered_sink.snapshot();
+        assert_eq!(buffered.bytes, direct.bytes);
+        let output = String::from_utf8(buffered.bytes).unwrap();
+        assert!(output.contains("한"), "wide glyph must reach the writer");
+        assert!(
+            output.contains("\x1b_Gi=7,a=q\x1b\\"),
+            "raw image escape must reach the writer verbatim"
+        );
+        assert!(
+            output.contains("\x1b["),
+            "styled cells must emit terminal style escapes"
+        );
+    }
+
+    #[test]
+    fn buffered_normal_scale_coalesces_writes_until_backend_flush() {
+        let direct_sink = CountingWriter::default();
+        let mut direct = normal_scale_backend(direct_sink.clone());
+        draw_representative_cells(&mut direct);
+        direct.flush().unwrap();
+        let direct = direct_sink.snapshot();
+
+        let buffered_sink = CountingWriter::default();
+        let mut buffered = normal_scale_backend(PanicSafeBufWriter::new(buffered_sink.clone()));
+        draw_representative_cells(&mut buffered);
+        assert_eq!(
+            buffered_sink.snapshot(),
+            WriteStats::default(),
+            "a sub-capacity frame must remain pending until ratatui's backend flush boundary"
+        );
+        buffered.flush().unwrap();
+        let buffered = buffered_sink.snapshot();
+
+        assert_eq!(buffered.bytes, direct.bytes);
+        assert_eq!(buffered.flush_calls, 1);
+        assert_eq!(direct.flush_calls, 1);
+        assert_eq!(
+            buffered.write_calls, 1,
+            "the representative frame fits in one BufWriter batch"
+        );
+        assert!(
+            buffered.write_calls * 4 <= direct.write_calls,
+            "expected at least a 4x reduction: buffered={}, direct={}",
+            buffered.write_calls,
+            direct.write_calls
+        );
+    }
+
+    #[test]
+    fn terminal_draw_drains_the_reusable_buffer_at_each_frame_boundary() {
+        let sink = CountingWriter::default();
+        let backend = normal_scale_backend(PanicSafeBufWriter::new(sink.clone()));
+        let mut terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 8, 1)),
+            },
+        )
+        .unwrap();
+
+        let initialized = sink.snapshot();
+        terminal.draw(|frame| render_text(frame, "first")).unwrap();
+        let first = sink.snapshot();
+        assert!(first.flush_calls > initialized.flush_calls);
+        assert_eq!(first.write_calls, initialized.write_calls + 1);
+        assert!(first.bytes.len() > initialized.bytes.len());
+
+        terminal.draw(|frame| render_text(frame, "second")).unwrap();
+        let second = sink.snapshot();
+        assert!(second.flush_calls > first.flush_calls);
+        assert_eq!(second.write_calls, first.write_calls + 1);
+        assert!(second.bytes.len() > first.bytes.len());
     }
 
     struct IoTestBackend {

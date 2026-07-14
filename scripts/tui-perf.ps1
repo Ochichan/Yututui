@@ -353,7 +353,10 @@ function Run-ProcessScenario(
             ) "failed to materialize fixture playlist for $Label" | Out-Null
         }
 
-        if ($null -ne $script:ScenarioData.setting_leaf_overrides) {
+        if (
+            $null -ne $script:ScenarioData.setting_leaf_overrides -or
+            $null -ne $script:ScenarioData.animation_profile
+        ) {
             Invoke-PythonChecked @(
                 "apply-setting-overrides", "--scenarios", $Scenarios,
                 "--scenario", $Scenario, "--role", $Role,

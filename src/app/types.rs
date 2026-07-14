@@ -566,20 +566,20 @@ pub enum MouseTarget {
     /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
     /// targets fail closed instead of seeking a newly loaded track.
     LyricsLine {
-        video_id: String,
+        video_id: Arc<str>,
         line_index: usize,
     },
     /// The collapsed `[±]` handle. Carries its rendered track ID for the same stale-frame guard.
     LyricsDelayHandle {
-        video_id: String,
+        video_id: Arc<str>,
     },
     /// Expanded lyric-delay buttons. Keeping the rendered track ID prevents an old frame's OSD
     /// from adjusting a newly loaded song before the next frame replaces the hit map.
     LyricsDelayEarlier {
-        video_id: String,
+        video_id: Arc<str>,
     },
     LyricsDelayLater {
-        video_id: String,
+        video_id: Arc<str>,
     },
     /// Inert coverage for the expanded lyric-delay OSD's value and spacing. Action buttons are
     /// registered after it and win hit-testing; everything else is deliberately consumed.
@@ -952,7 +952,7 @@ pub enum Mode {
 
 /// Synced lyrics for one track (held while it's the current track).
 pub struct TrackLyrics {
-    pub video_id: String,
+    pub video_id: Arc<str>,
     pub lines: std::sync::Arc<[LyricLine]>,
 }
 

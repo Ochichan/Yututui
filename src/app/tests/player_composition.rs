@@ -16,7 +16,13 @@ fn bottom_player_with_art_and_lyrics() -> App {
     app.playback.time_pos_at = None;
     app.lyrics.visible = true;
     app.lyrics.track = Some(TrackLyrics {
-        video_id: app.queue.current().expect("current track").video_id.clone(),
+        video_id: app
+            .queue
+            .current()
+            .expect("current track")
+            .video_id
+            .clone()
+            .into(),
         lines: vec![crate::lyrics::LyricLine {
             time: 0.0,
             text: LYRIC_MARKER.to_owned(),

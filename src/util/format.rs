@@ -1,14 +1,22 @@
 //! Display formatting helpers.
 
-/// Format a number of seconds as `M:SS` (or `H:MM:SS` past an hour).
-pub fn time(secs: f64) -> String {
+use std::fmt::Write as _;
+
+fn push_time(out: &mut String, secs: f64) {
     let total = secs.max(0.0) as u64;
     let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
     if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
+        write!(out, "{h}:{m:02}:{s:02}").expect("writing to String cannot fail");
     } else {
-        format!("{m}:{s:02}")
+        write!(out, "{m}:{s:02}").expect("writing to String cannot fail");
     }
+}
+
+/// Format a number of seconds as `M:SS` (or `H:MM:SS` past an hour).
+pub fn time(secs: f64) -> String {
+    let mut out = String::with_capacity(8);
+    push_time(&mut out, secs);
+    out
 }
 
 /// Filled fraction (`0.0..=1.0`) of the seekbar gauge for `pos`/`dur` seconds. An absent or
@@ -28,11 +36,14 @@ pub fn seekbar_ratio(pos: Option<f64>, dur: Option<f64>) -> f64 {
 /// known (mpv reports position before length on a fresh load), matching the gauge's empty
 /// bar from [`seekbar_ratio`].
 pub fn seekbar_label(pos: Option<f64>, dur: Option<f64>) -> String {
-    let right = match dur {
-        Some(d) if d > 0.0 => time(d),
-        _ => "--:--".to_owned(),
-    };
-    format!("{} / {right}", time(pos.unwrap_or(0.0)))
+    let mut out = String::with_capacity(20);
+    push_time(&mut out, pos.unwrap_or(0.0));
+    out.push_str(" / ");
+    match dur {
+        Some(d) if d > 0.0 => push_time(&mut out, d),
+        _ => out.push_str("--:--"),
+    }
+    out
 }
 
 /// The nominal timeshift depth one full seekbar width represents on a live radio stream.
@@ -46,16 +57,23 @@ const RADIO_RENDER_WINDOW_SECS: f64 = 600.0;
 /// behind it sits and labels the gap (`-Ns`). With no position at all this falls back to
 /// the ordinary unknown-duration label so a connecting stream looks like today.
 pub fn radio_seekbar(pos: Option<f64>, behind: Option<f64>, synced: Option<bool>) -> (f64, String) {
-    let elapsed = time(pos.unwrap_or(0.0));
     match (pos, behind, synced) {
         (_, Some(b), Some(false)) => {
             // Coalesce a non-finite `behind` (mirrors the app's other ratio paths) so a NaN
             // can't reach the Gauge ratio and panic ratatui — here it was only safe by accident.
             let b = crate::util::finite_or(b, 0.0);
             let ratio = (1.0 - b / RADIO_RENDER_WINDOW_SECS).clamp(0.05, 1.0);
-            (ratio, format!("{elapsed} · -{}s", b as i64))
+            let mut label = String::with_capacity(24);
+            push_time(&mut label, pos.unwrap_or(0.0));
+            write!(label, " · -{}s", b as i64).expect("writing to String cannot fail");
+            (ratio, label)
         }
-        (_, Some(_), _) | (Some(_), None, _) => (1.0, format!("{elapsed} · LIVE")),
+        (_, Some(_), _) | (Some(_), None, _) => {
+            let mut label = String::with_capacity(16);
+            push_time(&mut label, pos.unwrap_or(0.0));
+            label.push_str(" · LIVE");
+            (1.0, label)
+        }
         (None, None, _) => (0.0, seekbar_label(pos, None)),
     }
 }

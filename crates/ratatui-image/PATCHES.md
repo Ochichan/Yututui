@@ -18,8 +18,10 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
 - Kitty rows damaged by overlay redraws can be marked for retransmission.
 - Sixel and iTerm2 encodes stamp the anchor cell with a monotonic redraw tag so freshly rebuilt
   protocols are not skipped by ratatui's diffing.
-- Konsole versions before 26.08 keep Kitty and Sixel capability queries disabled; 26.08 and newer
-  may select Sixel only after DA1 advertises it and the cell-size query returns usable dimensions.
+- KonsolePart versions before 26.04 keep Kitty and Sixel capability queries disabled. Konsole and
+  Yakuake on 26.04 and newer may select Sixel only after DA1 advertises it and the cell-size query
+  returns usable dimensions. This is best-effort on 26.04-26.07 because the upstream placement
+  cleanup landed for 26.08; users can force `YTM_TUI_IMAGE_PROTOCOL=halfblocks` if fragments linger.
 
 All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version

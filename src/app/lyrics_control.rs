@@ -28,7 +28,7 @@ impl App {
             return None;
         }
         let track = self.lyrics.track.as_ref()?;
-        (track.video_id.as_str() == song.video_id.as_str() && !track.lines.is_empty())
+        (track.video_id.as_ref() == song.video_id.as_str() && !track.lines.is_empty())
             .then_some(track)
     }
 
@@ -203,7 +203,7 @@ impl App {
             return None;
         }
         let track = self.current_loaded_lyrics()?;
-        if track.video_id.as_str() != video_id {
+        if track.video_id.as_ref() != video_id {
             return None;
         }
         let timestamp = track.lines.get(line_index)?.time;

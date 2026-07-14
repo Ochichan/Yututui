@@ -274,28 +274,57 @@ async fn ime_scrub_clock_retains_the_permanent_origin_period() {
 }
 
 #[test]
-fn ime_scrub_gate_fails_closed_for_state_and_wall_clock_rendering() {
+fn ime_scrub_gate_fails_closed_for_state_and_radio_wall_clock_rendering() {
     assert!(!ime_scrub_state_requires_full_draw(
-        false, false, false, false, false
+        false, false, false, false
     ));
     assert!(ime_scrub_state_requires_full_draw(
-        true, false, false, false, false
+        true, false, false, false
     ));
     assert!(ime_scrub_state_requires_full_draw(
-        false, true, false, false, false
+        false, true, false, false
     ));
     assert!(
-        ime_scrub_state_requires_full_draw(false, false, true, false, false),
+        ime_scrub_state_requires_full_draw(false, false, true, false),
         "a pending native-image clear must go through the consuming full-draw path"
     );
     assert!(
-        ime_scrub_state_requires_full_draw(false, false, false, true, false),
-        "animation-active views retain origin's wall-clock full draws"
-    );
-    assert!(
-        ime_scrub_state_requires_full_draw(false, false, false, false, true),
+        ime_scrub_state_requires_full_draw(false, false, false, true),
         "live-radio stale-edge rendering retains origin's wall-clock full draws"
     );
+}
+
+#[test]
+fn skipped_capped_animation_tick_does_not_arm_an_ime_full_draw() {
+    let mut app = ambient_animation_app();
+    assert!(app.animation_active());
+    assert_eq!(app.animation_draw_fps(), 12);
+    app.dirty = false;
+    let mut reducer_turn_unrendered = false;
+
+    let msg = Msg::AnimTick;
+    arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
+    app.update(msg);
+
+    assert!(
+        !app.dirty,
+        "the first 12/30-credit tick is intentionally skipped"
+    );
+    assert!(!reducer_turn_unrendered);
+    assert!(
+        !ime_scrub_requires_full_draw(&app, reducer_turn_unrendered),
+        "the IME clock must not add a full draw outside the animation cadence"
+    );
+
+    // An animation tick may not erase a meaningful earlier reducer turn that has not rendered.
+    reducer_turn_unrendered = true;
+    app.dirty = false;
+    let msg = Msg::AnimTick;
+    arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
+    app.update(msg);
+    assert!(!app.dirty, "the second 12/30-credit tick is also skipped");
+    assert!(reducer_turn_unrendered);
+    assert!(ime_scrub_requires_full_draw(&app, reducer_turn_unrendered));
 }
 
 #[test]
@@ -310,14 +339,18 @@ fn reducer_turn_gate_catches_visible_updates_that_do_not_set_dirty() {
         method: crate::update::InstallMethod::Cargo,
     };
 
-    let _ = app.update(Msg::UpdateChecked(status));
+    let msg = Msg::UpdateChecked(status);
+    let mut reducer_turn_unrendered = false;
+    arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
+    let _ = app.update(msg);
 
     assert!(
         !app.dirty,
         "this persistent surface update intentionally skips dirty"
     );
     assert!(app.overlays.update_status.is_some());
-    assert!(ime_scrub_requires_full_draw(&app, true));
+    assert!(reducer_turn_unrendered);
+    assert!(ime_scrub_requires_full_draw(&app, reducer_turn_unrendered));
     assert!(
         !ime_scrub_requires_full_draw(&app, false),
         "after a successful full draw the same stable non-Local state may use the fast path"

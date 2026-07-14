@@ -302,14 +302,49 @@ fn read_only_transfer_views_and_missing_tools_args_do_not_create_persistence_roo
             ][..],
             1,
         ),
+        (
+            "organize-consumed-apply-value",
+            &[
+                "transfer",
+                "organize",
+                "missing-session",
+                "--root",
+                "--apply",
+                "--dry-run",
+            ][..],
+            1,
+        ),
+        (
+            "review-filter-ignores-action-looking-suffix",
+            &[
+                "transfer",
+                "review",
+                "missing-session",
+                "--all",
+                "accept",
+                "1",
+            ][..],
+            1,
+        ),
         ("tools-use-missing", &["tools", "use"][..], 2),
         ("tools-reset-missing", &["tools", "reset"][..], 2),
         ("spotify-help", &["auth", "spotify", "--help"][..], 0),
+        (
+            "spotify-help-after-client-id",
+            &["auth", "spotify", "--client-id", "client", "--help"][..],
+            0,
+        ),
         (
             "spotify-client-id-missing",
             &["auth", "spotify", "--client-id"][..],
             2,
         ),
+        (
+            "doctor-privacy-help",
+            &["doctor", "privacy", "--help"][..],
+            0,
+        ),
+        ("update-help", &["update", "--help"][..], 0),
     ] {
         let root = isolated_root(name);
         let _ = std::fs::remove_dir_all(&root);
@@ -400,6 +435,63 @@ fn organize_dry_run_with_existing_state_preserves_config_and_session_tree() {
     assert_eq!(snapshot_tree(&data), data_before);
     assert!(!cache.exists(), "dry-run created cache state");
     assert!(!library_root.exists(), "dry-run created the target root");
+
+    let consumed_apply = isolated_command(
+        &root,
+        &[
+            "transfer",
+            "organize",
+            session_id,
+            "--template",
+            "--apply",
+            "--root",
+            &library_arg,
+            "--dry-run",
+        ],
+    )
+    .env("YTM_DATA_DIR", &data)
+    .output()
+    .expect("organize dry-run with a flag-looking template should run");
+    assert!(
+        consumed_apply.status.success(),
+        "stdout={}, stderr={}",
+        stdout(&consumed_apply),
+        stderr(&consumed_apply)
+    );
+    assert!(
+        stdout(&consumed_apply).contains("Template: --apply"),
+        "stdout={}",
+        stdout(&consumed_apply)
+    );
+    assert!(
+        !stdout(&consumed_apply).contains("Applied:"),
+        "flag-looking template was parsed as apply mode: stdout={}",
+        stdout(&consumed_apply)
+    );
+    assert_eq!(snapshot_tree(&config), config_before);
+    assert_eq!(snapshot_tree(&data), data_before);
+    assert!(!cache.exists(), "consumed --apply created cache state");
+    assert!(
+        !library_root.exists(),
+        "consumed --apply created the target root"
+    );
+
+    let review_filter = isolated_command(
+        &root,
+        &["transfer", "review", session_id, "--all", "accept", "1"],
+    )
+    .env("YTM_DATA_DIR", &data)
+    .output()
+    .expect("review filter with an action-looking suffix should run");
+    assert!(
+        review_filter.status.success(),
+        "stdout={}, stderr={}",
+        stdout(&review_filter),
+        stderr(&review_filter)
+    );
+    assert_eq!(snapshot_tree(&config), config_before);
+    assert_eq!(snapshot_tree(&data), data_before);
+    assert!(!cache.exists(), "review filter created cache state");
 }
 
 #[test]
@@ -658,7 +750,11 @@ fn doctor_terminal_json_reports_capabilities_without_config_or_runtime_startup()
             .output()
             .expect("Konsole doctor terminal JSON")
     };
-    for (version, expected) in [("260799", "halfblocks"), ("260800", "sixel_versioned")] {
+    for (version, expected) in [
+        ("260399", "halfblocks"),
+        ("260400", "sixel_versioned"),
+        ("260401", "sixel_versioned"),
+    ] {
         let output = run_konsole_doctor(version);
         assert!(output.status.success(), "stderr: {}", stderr(&output));
         let json: serde_json::Value =
