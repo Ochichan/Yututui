@@ -557,6 +557,46 @@
         "render.local_max120x30.hit_map_digest": { "comparison": "exact" },
         "render.local_filter_ko90x24.buffer_style_digest": { "comparison": "exact" },
         "render.local_filter_ko90x24.hit_map_digest": { "comparison": "exact" },
+        "render.animation_control100x30.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control100x30.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control100x30.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control100x30.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_control100x30.hit_map_digest": { "comparison": "exact" },
+        "render.animation_control100x30.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_control100x30.update_path": { "comparison": "exact" },
+        "render.animation_control_art_lyrics160x50.p95_draw_ns": {
+          "comparison": "latency",
+          "max_ratio": 1.1,
+          "max_delta": 10000000,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control_art_lyrics160x50.allocations_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control_art_lyrics160x50.allocated_bytes_per_draw": {
+          "comparison": "ratio",
+          "max_ratio": 1.0,
+          "min_improved_pairs": 0
+        },
+        "render.animation_control_art_lyrics160x50.buffer_style_digest": { "comparison": "exact" },
+        "render.animation_control_art_lyrics160x50.hit_map_digest": { "comparison": "exact" },
+        "render.animation_control_art_lyrics160x50.checkpoint_digest": { "comparison": "exact" },
+        "render.animation_control_art_lyrics160x50.update_path": { "comparison": "exact" },
         "render.animation_half100x30.p95_draw_ns": {
           "comparison": "latency",
           "max_ratio": 1.1,
@@ -773,6 +813,7 @@
       "requires_mpv": true,
       "fixture_profile": "wav-18m",
       "animation_profile": "balanced_half",
+      "rate_factor_policy": "not_applicable",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -827,6 +868,7 @@
       "requires_mpv": true,
       "fixture_profile": "wav-18m",
       "animation_profile": "heavy_half",
+      "rate_factor_policy": "not_applicable",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"
@@ -881,6 +923,7 @@
       "requires_mpv": true,
       "fixture_profile": "wav-2h",
       "animation_profile": "balanced_half",
+      "rate_factor_policy": "not_applicable",
       "expected_effective_mpv_cache_args": {
         "--demuxer-max-bytes": "32MiB",
         "--demuxer-max-back-bytes": "8MiB"

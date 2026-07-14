@@ -465,6 +465,10 @@ fn focal_placements(
     cube_on: bool,
     donut_on: bool,
 ) -> FocalPlacement {
+    if !cube_on && !donut_on {
+        return (None, None);
+    }
+
     let key = FocalPlacementKey {
         player_rect,
         art_mask,
@@ -1310,6 +1314,30 @@ mod tests {
             .with(Cell::get)
             .expect("last cache entry");
         assert_eq!(cached.0.player_rect, cases[2].0);
+    }
+
+    #[test]
+    fn disabled_focal_effects_bypass_the_thread_local_cache() {
+        let key = FocalPlacementKey {
+            player_rect: Rect::new(1, 2, 30, 10),
+            art_mask: Some(Rect::new(3, 4, 8, 5)),
+            lyrics_rect: None,
+            cube_on: true,
+            donut_on: false,
+        };
+        let placement = (Some(Rect::new(1, 2, 12, 6)), None);
+        let previous = FOCAL_PLACEMENT_CACHE.with(|cache| cache.replace(Some((key, placement))));
+
+        let result = focal_placements(Rect::new(9, 8, 70, 20), None, None, false, false);
+        let cached = FOCAL_PLACEMENT_CACHE.with(Cell::get);
+        FOCAL_PLACEMENT_CACHE.with(|cache| cache.set(previous));
+
+        assert_eq!(result, (None, None));
+        assert_eq!(
+            cached,
+            Some((key, placement)),
+            "the disabled fast path must not enter or evict the TLS cache"
+        );
     }
 
     /// Every canvas effect must (a) never write a cell outside the zone it was given, and

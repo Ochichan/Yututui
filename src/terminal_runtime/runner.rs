@@ -362,6 +362,16 @@ fn ime_scrub_requires_full_draw(app: &App, reducer_turn_unrendered: bool) -> boo
     ) || !app.ime_scrub_local_projection_fresh()
 }
 
+/// Remember reducer turns whose state has not reached a successful full draw yet. Animation ticks
+/// are the exception: their draw credit deliberately leaves some ticks unrendered, and `dirty`
+/// already sends due ticks through [`draw_full_app_frame`]. Preserve an older pending turn, but do
+/// not let a skipped animation tick make the independent IME scrub clock bypass that cadence.
+fn arm_unrendered_reducer_turn(reducer_turn_unrendered: &mut bool, msg: &Msg) {
+    if !matches!(msg, Msg::AnimTick) {
+        *reducer_turn_unrendered = true;
+    }
+}
+
 #[cfg(windows)]
 fn is_transient_terminal_draw_error(error: &std::io::Error) -> bool {
     // Windows Terminal can briefly reject console writes while its taskbar/window state is
@@ -1377,7 +1387,7 @@ pub async fn run(
         // facet: OS media and remote clients interpolate elapsed independently, while seeks bump
         // `position_epoch` through a different message. Skip both hashes on this high-rate path.
         let media_before = observer_plan.project_state.then(|| app.media_fingerprint());
-        reducer_turn_unrendered = true;
+        arm_unrendered_reducer_turn(&mut reducer_turn_unrendered, &msg);
         for msg in std::iter::once(msg).chain(paired_progress) {
             if shutdown.is_triggered() {
                 handles.begin_player_shutdown(&mut app);

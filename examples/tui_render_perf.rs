@@ -193,8 +193,10 @@ fn usage() -> &'static str {
      Cases: player, search50, library999, ai_long, reducer_input, retro160x50, normal80x24, \
      local_empty60x16, local_scroll72x18, local_max120x30, local_filter_ko90x24, \
      canvas_art100x30, canvas_art160x50, canvas_art_lyrics100x30, \
-     canvas_art_lyrics160x50, animation_half100x30, animation_half_art_lyrics160x50, \
-     animation_heavy_half100x30, animation_heavy_half_art_lyrics160x50"
+     canvas_art_lyrics160x50, animation_control100x30, \
+     animation_control_art_lyrics160x50, animation_half100x30, \
+     animation_half_art_lyrics160x50, animation_heavy_half100x30, \
+     animation_heavy_half_art_lyrics160x50"
 }
 
 #[derive(Serialize)]
@@ -474,6 +476,24 @@ fn case_specs() -> Vec<CaseSpec> {
             height: 50,
             language: Language::English,
             build: canvas_art_lyrics_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "animation_control100x30",
+            update_path: "app_update_msg_anim_tick",
+            width: 100,
+            height: 30,
+            language: Language::English,
+            build: animation_control_app,
+            update: canvas_interaction,
+        },
+        CaseSpec {
+            name: "animation_control_art_lyrics160x50",
+            update_path: "app_update_msg_anim_tick",
+            width: 160,
+            height: 50,
+            language: Language::English,
+            build: animation_control_art_lyrics_app,
             update: canvas_interaction,
         },
         CaseSpec {
@@ -819,7 +839,6 @@ fn configure_animation_half(app: &mut App) {
     a.starfield = true;
     a.visualizer = true;
     a.rain = true;
-    app.playback.paused = false;
 }
 
 fn configure_animation_heavy_half(app: &mut App) {
@@ -847,41 +866,48 @@ fn configure_animation_heavy_half(app: &mut App) {
     a.life = true;
     a.pipes = true;
     a.plasma = true;
-    app.playback.paused = false;
 }
 
-fn animation_half_app() -> App {
+fn animation_control_app() -> App {
     let mut app = player_app();
     // The fixture mutates queue/volume directly. Let the ordinary reducer observe that
     // steady state while animations are still disabled so the first measured AnimTick does
     // not synthesize track-intro/volume-flash effects that real runtime setup already saw.
     let _ = app.update(Msg::Noop);
+    app.playback.paused = false;
+    app
+}
+
+fn animation_control_art_lyrics_app() -> App {
+    let mut app = animation_control_app();
+    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
+    app.config.album_art = Some(true);
+    attach_art(&mut app);
+    attach_lyrics(&mut app);
+    app
+}
+
+fn animation_half_app() -> App {
+    let mut app = animation_control_app();
     configure_animation_half(&mut app);
     app
 }
 
 fn animation_half_art_lyrics_app() -> App {
-    let mut app = animation_half_app();
-    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
-    app.config.album_art = Some(true);
-    attach_art(&mut app);
-    attach_lyrics(&mut app);
+    let mut app = animation_control_art_lyrics_app();
+    configure_animation_half(&mut app);
     app
 }
 
 fn animation_heavy_half_app() -> App {
-    let mut app = player_app();
-    let _ = app.update(Msg::Noop);
+    let mut app = animation_control_app();
     configure_animation_heavy_half(&mut app);
     app
 }
 
 fn animation_heavy_half_art_lyrics_app() -> App {
-    let mut app = animation_heavy_half_app();
-    app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
-    app.config.album_art = Some(true);
-    attach_art(&mut app);
-    attach_lyrics(&mut app);
+    let mut app = animation_control_art_lyrics_app();
+    configure_animation_heavy_half(&mut app);
     app
 }
 
@@ -1095,10 +1121,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, animation_half_app,
-        animation_heavy_half_app, case_specs, checkpoint_digest, local_empty_app,
-        local_filter_korean_app, local_max_app, local_scroll_app,
-        measure_update_to_draw_with_clock, percentile, reducer_input, search_app,
+        LOCAL_FILTER_STRIDE, LOCAL_LARGE_TRACKS, LOCAL_SCROLL_TRACKS, animation_control_app,
+        animation_control_art_lyrics_app, animation_half_app, animation_half_art_lyrics_app,
+        animation_heavy_half_app, animation_heavy_half_art_lyrics_app, case_specs,
+        checkpoint_digest, local_empty_app, local_filter_korean_app, local_max_app,
+        local_scroll_app, measure_update_to_draw_with_clock, percentile, reducer_input, search_app,
     };
     use yututui::app::App;
 
@@ -1149,6 +1176,31 @@ mod tests {
         .into_iter()
         .filter_map(|(name, enabled)| enabled.then_some(name))
         .collect()
+    }
+
+    fn assert_matching_art_lyrics_state(control: &App, animated: &App) {
+        assert_eq!(
+            animated.config.player_bar_position,
+            control.config.player_bar_position
+        );
+        assert_eq!(animated.config.album_art, control.config.album_art);
+        assert_eq!(animated.art.dims, control.art.dims);
+        assert_eq!(animated.art.picker.is_some(), control.art.picker.is_some());
+        assert_eq!(
+            animated.art.protocol.borrow().is_some(),
+            control.art.protocol.borrow().is_some()
+        );
+        assert_eq!(animated.lyrics.visible, control.lyrics.visible);
+
+        let control_track = control.lyrics.track.as_ref().expect("control lyrics");
+        let animated_track = animated.lyrics.track.as_ref().expect("animated lyrics");
+        assert_eq!(animated_track.video_id, control_track.video_id);
+        assert_eq!(animated_track.lines.len(), control_track.lines.len());
+        for (animated_line, control_line) in animated_track.lines.iter().zip(&*control_track.lines)
+        {
+            assert_eq!(animated_line.time.to_bits(), control_line.time.to_bits());
+            assert_eq!(animated_line.text, control_line.text);
+        }
     }
 
     #[test]
@@ -1255,9 +1307,11 @@ mod tests {
     }
 
     #[test]
-    fn half_animation_cases_and_profiles_are_exact_and_checkpoint_repeatable() {
+    fn animation_control_and_half_cases_are_state_matched_and_checkpoint_repeatable() {
         let cases = case_specs();
         for (name, width, height) in [
+            ("animation_control100x30", 100, 30),
+            ("animation_control_art_lyrics160x50", 160, 50),
             ("animation_half100x30", 100, 30),
             ("animation_half_art_lyrics160x50", 160, 50),
             ("animation_heavy_half100x30", 100, 30),
@@ -1270,6 +1324,26 @@ mod tests {
             assert_eq!((case.width, case.height), (width, height));
             assert_eq!(case.update_path, "app_update_msg_anim_tick");
         }
+
+        let control = animation_control_app();
+        assert!(!control.config.animations.master);
+        assert_eq!(control.config.animations.fps, 30);
+        assert!(control.config.animations.pause_unfocused);
+        assert!(enabled_animation_effects(&control).is_empty());
+        assert!(!control.playback.paused);
+
+        let art_lyrics_control = animation_control_art_lyrics_app();
+        assert!(!art_lyrics_control.config.animations.master);
+        assert!(enabled_animation_effects(&art_lyrics_control).is_empty());
+        assert_eq!(
+            art_lyrics_control.config.player_bar_position,
+            Some(yututui::config::PlayerBarPosition::Bottom)
+        );
+        assert_eq!(art_lyrics_control.config.album_art, Some(true));
+        assert!(art_lyrics_control.art.picker.is_some());
+        assert!(art_lyrics_control.art.protocol.borrow().is_some());
+        assert!(art_lyrics_control.lyrics.visible);
+        assert!(art_lyrics_control.lyrics.track.is_some());
 
         let balanced = animation_half_app();
         assert!(balanced.config.animations.master);
@@ -1300,6 +1374,7 @@ mod tests {
                 "bounce",
             ]
         );
+        assert_eq!(balanced.playback.paused, control.playback.paused);
 
         let heavy = animation_heavy_half_app();
         assert!(heavy.config.animations.master);
@@ -1329,6 +1404,13 @@ mod tests {
                 "pipes",
                 "plasma",
             ]
+        );
+        assert_eq!(heavy.playback.paused, control.playback.paused);
+
+        assert_matching_art_lyrics_state(&art_lyrics_control, &animation_half_art_lyrics_app());
+        assert_matching_art_lyrics_state(
+            &art_lyrics_control,
+            &animation_heavy_half_art_lyrics_app(),
         );
 
         let case = *cases
