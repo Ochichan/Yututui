@@ -119,7 +119,7 @@ impl EndpointLease {
         #[cfg(unix)]
         {
             let current_identity = super::socket_file_identity(&self.socket).ok();
-            match remove_socket_file_if_matches(&self.socket, current_identity) {
+            match remove_socket_file_if_matches(&self.socket, current_identity.as_ref()) {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(
                     %error,
@@ -168,7 +168,7 @@ impl EndpointLease {
         }
         #[cfg(unix)]
         if !self.accept_owner_failed() {
-            match remove_socket_file_if_matches(&self.socket, self.socket_identity) {
+            match remove_socket_file_if_matches(&self.socket, self.socket_identity.as_ref()) {
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(%error, "remote: failed to release owned socket endpoint")
