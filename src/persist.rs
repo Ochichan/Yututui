@@ -48,6 +48,8 @@ mod writer_lease;
 #[cfg(test)]
 use durable::allocate_process_epoch_at;
 use durable::{AcceptedJournalOrder, JournalGeneration, JournalOrder, JournalOrderSource};
+#[cfg(test)]
+pub(crate) use locking::with_intent_lock_contention_observer;
 use locking::{acquire_intent_lock, acquire_intent_lock_with_budget, acquire_private_lock};
 pub use ordered_fallback::PersistenceFallbackError;
 use owned_snapshot::OwnedSnapshot;
@@ -61,16 +63,17 @@ use panic_shadow::{PanicShadow, PanicShadowSealed};
 use recovery::load_with_journal_recovery_then;
 #[cfg(test)]
 use recovery::replay_journaled_snapshot;
+pub(crate) use recovery::{
+    ConfigRecoveryGuard, ConfigRecoveryTransaction, begin_config_recovery,
+    ensure_persistence_writes_allowed, load_with_journal_recovery, preflight_journal_recovery,
+    remove_store_file, write_config_json, write_store_json,
+};
 pub use recovery::{
     StartupRecoveryError, StartupRecoveryFailure, ensure_startup_recovery_coherent,
 };
 #[cfg(test)]
 pub(crate) use recovery::{
     clear_startup_recovery_error_for_test, latch_startup_recovery_error_for_test,
-};
-pub(crate) use recovery::{
-    ensure_persistence_writes_allowed, load_with_journal_recovery, preflight_journal_recovery,
-    remove_store_file, replay_config_journaled_value_with_status, write_store_json,
 };
 pub use startup::{
     StartupStoreSet, load_startup_store_set, load_verified_startup_state,
@@ -844,11 +847,15 @@ where
 
     let write_result = writer(&journal_path, desired.as_bytes());
     let observed = read_journal_state(kind, path);
-    if let Ok(state) = &observed {
-        // On a pre-rename failure this removes the just-prepared unreferenced sidecar. If rename
-        // became visible but parent sync failed, it preserves the single referenced generation;
-        // retry reuses the same immutable path and cannot grow artifacts.
-        cleanup_journal_sidecars_locked(path, state);
+    if let Ok(observed_state) = &observed {
+        if write_result.is_ok() {
+            cleanup_journal_sidecars_locked(path, observed_state);
+        } else {
+            // A failed atomic write may be pre-rename, or the rename may be visible while its
+            // directory sync remains uncertain. Preserve the payloads referenced by both the old
+            // durable possibility and the newly observed state until a later confirmed write.
+            cleanup_journal_sidecars_after_ambiguous_write_locked(path, &current, observed_state);
+        }
     }
     write_result?;
     observed
@@ -868,14 +875,34 @@ fn compacted_journal_text(kind: StoreKind, state: &JournalState) -> String {
 }
 
 fn cleanup_journal_sidecars_locked(path: &Path, state: &JournalState) {
-    let retained = state.candidate.as_ref().and_then(|candidate| {
+    let retained = candidate_sidecar(state);
+    cleanup_orphan_sidecars_locked(path, retained);
+}
+
+fn cleanup_journal_sidecars_after_ambiguous_write_locked(
+    path: &Path,
+    previous: &JournalState,
+    observed: &JournalState,
+) {
+    match (candidate_sidecar(previous), candidate_sidecar(observed)) {
+        (Some(previous), Some(observed)) if previous != observed => {
+            cleanup_orphan_sidecars_locked_retaining(path, &[previous, observed]);
+        }
+        (Some(retained), _) | (_, Some(retained)) => {
+            cleanup_orphan_sidecars_locked(path, Some(retained));
+        }
+        (None, None) => cleanup_orphan_sidecars_locked(path, None),
+    }
+}
+
+fn candidate_sidecar(state: &JournalState) -> Option<&str> {
+    state.candidate.as_ref().and_then(|candidate| {
         if let JournalOperation::Replace { sidecar, .. } = &candidate.operation {
             Some(sidecar.as_str())
         } else {
             None
         }
-    });
-    cleanup_orphan_sidecars_locked(path, retained);
+    })
 }
 
 #[cfg(test)]
@@ -928,40 +955,12 @@ fn clear_store_journal(path: &Path) {
     clear_store_journal_locked(path);
 }
 
+#[cfg(test)]
 fn clear_store_journal_locked(path: &Path) {
     if let Some(journal_path) = intent_journal_path(path) {
         remove_file_if_exists(&journal_path, "failed to remove persistence intent");
     }
     cleanup_orphan_sidecars_locked(path, None);
-}
-
-/// Mark an installed config replay complete without discarding PR40's durable ordering frontier.
-/// Ordered candidates advance to a commit record; a legacy generation-less candidate is removed
-/// only while the same advisory lock is held.
-pub(crate) fn clear_journaled_snapshot(path: &Path) {
-    if let Err(error) = ensure_persistence_writes_allowed() {
-        tracing::warn!(%error, "could not settle installed config recovery intent");
-        return;
-    }
-    let Ok(_lock) = acquire_intent_lock(path) else {
-        tracing::warn!("could not lock installed config recovery intent");
-        return;
-    };
-    let state = match read_journal_state(StoreKind::Config, path) {
-        Ok(state) => state,
-        Err(error) => {
-            tracing::warn!(%error, "could not read installed config recovery intent");
-            return;
-        }
-    };
-    match state.candidate.and_then(|candidate| candidate.order) {
-        Some(order) => {
-            if let Err(error) = commit_journal_generation_locked(StoreKind::Config, path, order) {
-                tracing::warn!(%error, "could not commit installed config recovery intent");
-            }
-        }
-        None => clear_store_journal_locked(path),
-    }
 }
 
 #[cfg(test)]
@@ -1182,6 +1181,13 @@ fn read_journal_state(kind: StoreKind, path: &Path) -> std::io::Result<JournalSt
 }
 
 fn cleanup_orphan_sidecars_locked(path: &Path, retained: Option<&str>) {
+    match retained {
+        Some(retained) => cleanup_orphan_sidecars_locked_retaining(path, &[retained]),
+        None => cleanup_orphan_sidecars_locked_retaining(path, &[]),
+    }
+}
+
+fn cleanup_orphan_sidecars_locked_retaining(path: &Path, retained: &[&str]) {
     let (Some(parent), Some(name)) = (
         path.parent(),
         path.file_name().and_then(|value| value.to_str()),
@@ -1205,7 +1211,7 @@ fn cleanup_orphan_sidecars_locked(path: &Path, retained: Option<&str>) {
         if inspected > INTENT_ORPHAN_SCAN_LIMIT {
             break;
         }
-        if retained == Some(file_name) {
+        if retained.contains(&file_name) {
             continue;
         }
         remove_file_if_exists(

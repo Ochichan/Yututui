@@ -1,15 +1,62 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
-    INTENT_SNAPSHOT_MAX_BYTES, JournalOperation, StoreKind, acquire_intent_lock_with_budget,
-    read_journal_state, sha256_hex, sibling_path_from_record,
+    INTENT_SNAPSHOT_MAX_BYTES, JournalCandidate, JournalOperation, JournalOrder, StoreKind,
+    acquire_intent_lock_with_budget, read_journal_state, sha256_hex, sibling_path_from_record,
 };
 
 const COHERENT_LOAD_LOCK_TOTAL_BUDGET: Duration = Duration::from_secs(15);
 const COHERENT_LOAD_LOCK_ATTEMPT_BUDGET: Duration = Duration::from_secs(5);
+
+/// Coherent ownership for one config load, acquired before the base file is inspected.
+///
+/// Config recovery can back up an invalid base, import a legacy file, migrate raw JSON, and write
+/// the resulting snapshot. Keeping this guard alive across that entire sequence prevents a base
+/// value read before a concurrent writer's commit from being installed after that newer commit.
+pub(crate) struct ConfigRecoveryGuard {
+    state: ConfigRecoveryGuardState,
+}
+
+enum ConfigRecoveryGuardState {
+    Coherent {
+        path: PathBuf,
+        lock: crate::util::safe_fs::AdvisoryFileLock,
+    },
+    ReadOnly {
+        path: PathBuf,
+    },
+}
+
+enum ConfigRecoveryReceipt {
+    Ordered {
+        order: JournalOrder,
+        raw_line: String,
+    },
+    Legacy {
+        raw_line: String,
+    },
+}
+
+/// Raw config plus the exact journal candidate that produced it, while coherent ownership is
+/// still held. Installation consumes the transaction so settlement cannot be performed twice.
+pub(crate) struct ConfigRecoveryTransaction {
+    state: ConfigRecoveryTransactionState,
+}
+
+enum ConfigRecoveryTransactionState {
+    Coherent {
+        path: PathBuf,
+        lock: crate::util::safe_fs::AdvisoryFileLock,
+        value: serde_json::Value,
+        receipt: Option<ConfigRecoveryReceipt>,
+    },
+    ReadOnly {
+        value: serde_json::Value,
+    },
+}
 
 #[derive(Debug)]
 enum RecoveryLockError {
@@ -216,6 +263,15 @@ pub(crate) fn ensure_persistence_writes_allowed() -> std::io::Result<()> {
 pub(crate) fn write_store_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     ensure_persistence_writes_allowed()?;
     crate::util::safe_fs::write_private_atomic_json(path, value)
+}
+
+/// Serialize a direct config save with the same intent lock used by journaled actor writes and
+/// config recovery. Actor-owned snapshots call [`write_store_json`] only after their outer
+/// journal transaction has already acquired this lock.
+pub(crate) fn write_config_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let _lock = super::acquire_intent_lock(path)?;
+    write_store_json(path, value)
 }
 
 pub(crate) fn remove_store_file(path: &Path) -> std::io::Result<bool> {
@@ -470,6 +526,7 @@ where
 /// Replay a pending snapshot while holding the same coherent advisory lock used by PR40's
 /// startup loaders. `serde_json::Value` callers retain unknown config keys and can migrate the
 /// raw object before typed recovery; the status remains false on any lock/artifact failure.
+#[cfg(test)]
 pub(crate) fn replay_journaled_snapshot_with_status<T>(
     kind: StoreKind,
     path: &Path,
@@ -502,24 +559,289 @@ where
     }
 }
 
-/// Config-specific raw replay. Invalid scalar/array roots are left pending for a future reader and
-/// never replace a valid base object. The returned `replayed` flag may be used to settle the
-/// ordered intent with [`super::clear_journaled_snapshot`] only after an atomic migrated install
-/// succeeds.
-pub(crate) fn replay_config_journaled_value_with_status(
-    path: &Path,
-    current: serde_json::Value,
-    max_bytes: u64,
-) -> (serde_json::Value, bool) {
-    let base = current.clone();
-    let (candidate, replayed) =
-        replay_journaled_snapshot_with_status(StoreKind::Config, path, current, max_bytes);
-    if replayed && !candidate.is_object() {
-        tracing::warn!("refusing non-object pending config snapshot");
-        (base, false)
-    } else {
-        (candidate, replayed)
+/// Begin a config load before inspecting its base file.
+///
+/// Reader processes and processes that already lost coherent recovery ownership retain the
+/// existing strict read-only behavior and therefore carry no lock. A fresh lock failure is
+/// latched before the caller can run a mutating backup or migration path.
+pub(crate) fn begin_config_recovery(path: &Path) -> ConfigRecoveryGuard {
+    if super::persistence_access().is_read_only() || ensure_startup_recovery_coherent().is_err() {
+        return ConfigRecoveryGuard {
+            state: ConfigRecoveryGuardState::ReadOnly {
+                path: path.to_owned(),
+            },
+        };
     }
+    match acquire_coherent_load_lock(StoreKind::Config, path) {
+        Ok(lock) => ConfigRecoveryGuard {
+            state: ConfigRecoveryGuardState::Coherent {
+                path: path.to_owned(),
+                lock,
+            },
+        },
+        Err(error) => {
+            latch_startup_recovery_error(error.startup_error());
+            ConfigRecoveryGuard {
+                state: ConfigRecoveryGuardState::ReadOnly {
+                    path: path.to_owned(),
+                },
+            }
+        }
+    }
+}
+
+impl ConfigRecoveryGuard {
+    fn path(&self) -> &Path {
+        match &self.state {
+            ConfigRecoveryGuardState::Coherent { path, .. }
+            | ConfigRecoveryGuardState::ReadOnly { path } => path,
+        }
+    }
+
+    /// Read the config base through the guard so production callers cannot inspect a stale base
+    /// before coherent ownership has been resolved.
+    pub(crate) fn read_base(&self, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+        crate::util::safe_fs::read_no_symlink_limited(self.path(), max_bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_base_with(
+        &self,
+        max_bytes: u64,
+        read: impl FnOnce(&Path, u64) -> std::io::Result<Vec<u8>>,
+    ) -> std::io::Result<Vec<u8>> {
+        read(self.path(), max_bytes)
+    }
+
+    /// Replay a pending raw config object without releasing coherent ownership. Invalid
+    /// scalar/array roots remain pending for a future compatible reader and never replace the
+    /// valid base object supplied by the caller.
+    pub(crate) fn replay(
+        self,
+        current: serde_json::Value,
+        max_bytes: u64,
+    ) -> ConfigRecoveryTransaction {
+        match self.state {
+            ConfigRecoveryGuardState::ReadOnly { .. } => ConfigRecoveryTransaction {
+                state: ConfigRecoveryTransactionState::ReadOnly { value: current },
+            },
+            ConfigRecoveryGuardState::Coherent { path, lock } => {
+                let base = current.clone();
+                match replay_config_locked(&path, max_bytes) {
+                    Ok(Some((candidate, _receipt))) if !candidate.is_object() => {
+                        tracing::warn!("refusing non-object pending config snapshot");
+                        ConfigRecoveryTransaction {
+                            state: ConfigRecoveryTransactionState::Coherent {
+                                path,
+                                lock,
+                                value: base,
+                                receipt: None,
+                            },
+                        }
+                    }
+                    Ok(Some((value, receipt))) => ConfigRecoveryTransaction {
+                        state: ConfigRecoveryTransactionState::Coherent {
+                            path,
+                            lock,
+                            value,
+                            receipt: Some(receipt),
+                        },
+                    },
+                    Ok(None) => ConfigRecoveryTransaction {
+                        state: ConfigRecoveryTransactionState::Coherent {
+                            path,
+                            lock,
+                            value: current,
+                            receipt: None,
+                        },
+                    },
+                    Err(error) => {
+                        latch_startup_recovery_error(StartupRecoveryError::artifact(
+                            StoreKind::Config,
+                            error,
+                        ));
+                        drop(lock);
+                        ConfigRecoveryTransaction {
+                            state: ConfigRecoveryTransactionState::ReadOnly { value: current },
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ConfigRecoveryTransaction {
+    pub(crate) fn value_mut(&mut self) -> &mut serde_json::Value {
+        match &mut self.state {
+            ConfigRecoveryTransactionState::Coherent { value, .. }
+            | ConfigRecoveryTransactionState::ReadOnly { value } => value,
+        }
+    }
+
+    pub(crate) fn has_replayed_candidate(&self) -> bool {
+        matches!(
+            &self.state,
+            ConfigRecoveryTransactionState::Coherent {
+                receipt: Some(_),
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn into_value(self) -> serde_json::Value {
+        match self.state {
+            ConfigRecoveryTransactionState::Coherent { lock, value, .. } => {
+                drop(lock);
+                value
+            }
+            ConfigRecoveryTransactionState::ReadOnly { value } => value,
+        }
+    }
+
+    /// Atomically install the raw config and settle only the exact candidate that was replayed.
+    /// Any write or settlement error drops coherent ownership without advancing the journal, so
+    /// a later load can retry from the same durable receipt.
+    pub(crate) fn install_and_settle(self) -> (serde_json::Value, std::io::Result<()>) {
+        self.install_and_settle_using(|path, value| {
+            crate::util::safe_fs::write_private_atomic_json(path, value)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_and_settle_with(
+        self,
+        write: impl FnOnce(&Path, &serde_json::Value) -> std::io::Result<()>,
+    ) -> (serde_json::Value, std::io::Result<()>) {
+        self.install_and_settle_using(write)
+    }
+
+    fn install_and_settle_using(
+        self,
+        write: impl FnOnce(&Path, &serde_json::Value) -> std::io::Result<()>,
+    ) -> (serde_json::Value, std::io::Result<()>) {
+        match self.state {
+            ConfigRecoveryTransactionState::Coherent {
+                path,
+                lock,
+                value,
+                receipt,
+            } => {
+                let result = ensure_persistence_writes_allowed()
+                    .and_then(|()| write(&path, &value))
+                    .and_then(|()| match receipt {
+                        Some(receipt) => settle_config_recovery_locked(&path, &receipt),
+                        None => Ok(()),
+                    });
+                drop(lock);
+                (value, result)
+            }
+            ConfigRecoveryTransactionState::ReadOnly { value } => {
+                let result = ensure_persistence_writes_allowed().and_then(|()| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "config recovery has no coherent writer ownership",
+                    ))
+                });
+                (value, result)
+            }
+        }
+    }
+}
+
+fn replay_config_locked(
+    path: &Path,
+    max_bytes: u64,
+) -> std::io::Result<Option<(serde_json::Value, ConfigRecoveryReceipt)>> {
+    let state = read_journal_state(StoreKind::Config, path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("could not read config recovery journal: {error}"),
+        )
+    })?;
+    let Some(candidate) = state.candidate.as_ref() else {
+        return Ok(None);
+    };
+    let receipt = match candidate.order {
+        Some(order) => ConfigRecoveryReceipt::Ordered {
+            order,
+            raw_line: candidate.raw_line.clone(),
+        },
+        None => ConfigRecoveryReceipt::Legacy {
+            raw_line: candidate.raw_line.clone(),
+        },
+    };
+    replay_candidate(StoreKind::Config, path, max_bytes, Some(candidate))
+        .map(|value| value.map(|value| (value, receipt)))
+}
+
+fn settle_config_recovery_locked(
+    path: &Path,
+    receipt: &ConfigRecoveryReceipt,
+) -> std::io::Result<()> {
+    settle_config_recovery_locked_using(
+        path,
+        receipt,
+        |path, order| super::commit_journal_generation_locked(StoreKind::Config, path, order),
+        clear_legacy_config_recovery_locked,
+    )
+}
+
+fn settle_config_recovery_locked_using(
+    path: &Path,
+    receipt: &ConfigRecoveryReceipt,
+    commit_ordered: impl FnOnce(&Path, JournalOrder) -> std::io::Result<()>,
+    clear_legacy: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let state = read_journal_state(StoreKind::Config, path)?;
+    let Some(candidate) = state.candidate.as_ref() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "installed config recovery candidate is no longer current",
+        ));
+    };
+    match receipt {
+        ConfigRecoveryReceipt::Ordered { order, raw_line }
+            if candidate.order == Some(*order) && candidate.raw_line == *raw_line =>
+        {
+            commit_ordered(path, *order)
+        }
+        ConfigRecoveryReceipt::Legacy { raw_line }
+            if candidate.order.is_none() && candidate.raw_line == *raw_line =>
+        {
+            clear_legacy(path)
+        }
+        ConfigRecoveryReceipt::Ordered { .. } | ConfigRecoveryReceipt::Legacy { .. } => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "installed config recovery receipt no longer matches the journal candidate",
+            ))
+        }
+    }
+}
+
+fn clear_legacy_config_recovery_locked(path: &Path) -> std::io::Result<()> {
+    clear_legacy_config_recovery_locked_with(path, |journal_path| {
+        crate::util::safe_fs::remove_private_file_durable(journal_path)
+    })
+}
+
+fn clear_legacy_config_recovery_locked_with(
+    path: &Path,
+    remove_journal: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let journal_path = super::intent_journal_path(path)
+        .ok_or_else(|| std::io::Error::other("invalid config recovery journal path"))?;
+    // The sidecar is the only replay payload for a generation-less record. Remove and sync the
+    // journal name first; on any unlink/sync failure the sidecar must remain available for retry.
+    remove_journal(&journal_path)?;
+    // Unix establishes a durable name-removal boundary with the parent-directory sync above.
+    // Windows has no documented directory-fsync API for an unlink, so retain the one bounded
+    // legacy sidecar there; the next confirmed ordered journal write will reclaim it safely.
+    #[cfg(unix)]
+    super::cleanup_orphan_sidecars_locked(path, None);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -545,16 +867,28 @@ where
             format!("could not read {} recovery journal: {error}", kind.label()),
         )
     })?;
-    let Some(candidate) = state.candidate else {
+    replay_candidate(kind, path, max_bytes, state.candidate.as_ref())
+}
+
+fn replay_candidate<T>(
+    kind: StoreKind,
+    path: &Path,
+    max_bytes: u64,
+    candidate: Option<&JournalCandidate>,
+) -> std::io::Result<Option<T>>
+where
+    T: DeserializeOwned + Serialize + Default,
+{
+    let Some(candidate) = candidate else {
         return Ok(None);
     };
-    match candidate.operation {
+    match &candidate.operation {
         JournalOperation::Delete if kind == StoreKind::RomanizedTitles => {
             tracing::info!(store = kind.label(), "replayed pending deletion intent");
             Ok(Some(T::default()))
         }
         JournalOperation::Replace { sidecar, sha256 } => {
-            let sidecar_path = sibling_path_from_record(path, &sidecar).ok_or_else(|| {
+            let sidecar_path = sibling_path_from_record(path, sidecar).ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("{} recovery journal names an invalid sidecar", kind.label()),
@@ -572,7 +906,7 @@ where
                         ),
                     )
                 })?;
-            if sha256_hex(&snapshot_bytes) != sha256 {
+            if sha256_hex(&snapshot_bytes) != *sha256 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("{} recovery sidecar checksum mismatch", kind.label()),
@@ -874,6 +1208,45 @@ mod tests {
         directory
     }
 
+    #[test]
+    fn failed_legacy_journal_removal_keeps_the_only_replay_sidecar() {
+        let directory = artifact_test_dir("legacy-clear-failure");
+        let path = directory.join("config.json");
+        let journal = intent_journal_path(&path).unwrap();
+        let sidecar = path.with_file_name("config.json.intent.latest.json");
+        crate::util::safe_fs::write_private_atomic(&journal, b"legacy record\n").unwrap();
+        crate::util::safe_fs::write_private_atomic(&sidecar, b"replay payload").unwrap();
+
+        let error = clear_legacy_config_recovery_locked_with(&path, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected journal unlink failure",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&journal).unwrap(), b"legacy record\n");
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"replay payload");
+
+        let error = clear_legacy_config_recovery_locked_with(&path, |journal| {
+            crate::util::safe_fs::remove_private_file_durable(journal)?;
+            Err(std::io::Error::other(
+                "injected failure after durable journal unlink",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert!(!journal.exists());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"replay payload");
+
+        clear_legacy_config_recovery_locked(&path).unwrap();
+        #[cfg(unix)]
+        assert!(!sidecar.exists());
+        #[cfg(not(unix))]
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"replay payload");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn seed_artifact_intent(
         path: &Path,
         bytes: Vec<u8>,
@@ -889,6 +1262,78 @@ mod tests {
         .unwrap();
         let sidecar = unique_intent_sidecar_path(path, accepted.order).unwrap();
         (accepted.order, sidecar)
+    }
+
+    fn seed_ordered_config_receipt(
+        label: &str,
+        epoch: u64,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        JournalOrder,
+        std::path::PathBuf,
+        ConfigRecoveryReceipt,
+    ) {
+        let directory = artifact_test_dir(label);
+        let path = directory.join("config.json");
+        let bytes = serde_json::to_vec(&ArtifactState {
+            preserved: 7,
+            drifted: 9,
+        })
+        .unwrap();
+        let (order, sidecar) = seed_artifact_intent(&path, bytes, epoch);
+        let (_, receipt) = replay_config_locked(&path, 1024).unwrap().unwrap();
+        (directory, path, order, sidecar, receipt)
+    }
+
+    #[test]
+    fn ordered_settlement_faults_preserve_retry_or_recognize_commit() {
+        clear_startup_recovery_error_for_test();
+        let (directory, path, order, sidecar, receipt) =
+            seed_ordered_config_receipt("ordered-commit-pre-visible", 81);
+        let journal = intent_journal_path(&path).unwrap();
+        let original_journal = std::fs::read(&journal).unwrap();
+        let original_sidecar = std::fs::read(&sidecar).unwrap();
+
+        let error = settle_config_recovery_locked_using(
+            &path,
+            &receipt,
+            |_, _| Err(std::io::Error::other("injected pre-visible commit failure")),
+            |_| unreachable!("ordered receipt must not take the legacy settlement path"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(std::fs::read(&journal).unwrap(), original_journal);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), original_sidecar);
+
+        settle_config_recovery_locked(&path, &receipt).unwrap();
+        let state = read_journal_state(StoreKind::Config, &path).unwrap();
+        assert_eq!(state.committed_through, Some(order));
+        assert!(state.candidate.is_none());
+        assert!(!sidecar.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+
+        let (directory, path, order, sidecar, receipt) =
+            seed_ordered_config_receipt("ordered-commit-post-visible", 82);
+        let error = settle_config_recovery_locked_using(
+            &path,
+            &receipt,
+            |path, order| {
+                super::super::commit_journal_generation_locked(StoreKind::Config, path, order)?;
+                Err(std::io::Error::other(
+                    "injected failure after visible commit",
+                ))
+            },
+            |_| unreachable!("ordered receipt must not take the legacy settlement path"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        let state = read_journal_state(StoreKind::Config, &path).unwrap();
+        assert_eq!(state.committed_through, Some(order));
+        assert!(state.candidate.is_none());
+        assert!(!sidecar.exists());
+        assert!(replay_config_locked(&path, 1024).unwrap().is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn assert_unverifiable_artifact_latches_without_supersession<F>(

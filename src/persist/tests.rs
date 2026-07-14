@@ -777,7 +777,7 @@ fn sidecar_artifact_limit_is_a_hard_creation_bound() {
 }
 
 #[test]
-fn rename_visible_journal_failure_keeps_only_the_referenced_sidecar() {
+fn rename_visible_journal_failure_keeps_both_durable_possibilities() {
     #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
     struct Tiny {
         value: u8,
@@ -786,13 +786,17 @@ fn rename_visible_journal_failure_keeps_only_the_referenced_sidecar() {
     let dir = temp_dir("visible-failure-cleanup");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("tiny.json");
+    let old_order = journal_order(1, 1);
     write_journal_intent(&JournalIntent::Replace {
-        order: journal_order(1, 1),
+        order: old_order,
         kind: StoreKind::Config,
         path: path.clone(),
         bytes: serde_json::to_vec_pretty(&Tiny { value: 1 }).unwrap(),
     })
     .unwrap();
+    let journal_path = intent_journal_path(&path).unwrap();
+    let old_journal = std::fs::read(&journal_path).unwrap();
+    let old_sidecar = unique_intent_sidecar_path(&path, old_order).unwrap();
     let new_order = journal_order(2, 2);
     let new_intent = JournalIntent::Replace {
         order: new_order,
@@ -801,7 +805,7 @@ fn rename_visible_journal_failure_keeps_only_the_referenced_sidecar() {
         bytes: serde_json::to_vec_pretty(&Tiny { value: 2 }).unwrap(),
     };
 
-    for _ in 0..3 {
+    {
         let _lock = acquire_intent_lock(&path).unwrap();
         let record = prepare_journal_record(&new_intent).unwrap();
         let error = replace_journal_with_record_locked_by(
@@ -818,15 +822,31 @@ fn rename_visible_journal_failure_keeps_only_the_referenced_sidecar() {
         .err()
         .expect("the visible rename failure is returned");
         assert!(error.to_string().contains("parent sync"));
-        assert_eq!(intent_sidecar_count(&dir, "tiny.json"), 1);
+        assert_eq!(intent_sidecar_count(&dir, "tiny.json"), 2);
+        assert!(old_sidecar.exists());
         assert!(
             unique_intent_sidecar_path(&path, new_order)
                 .unwrap()
                 .exists()
         );
-        let journal = std::fs::read_to_string(intent_journal_path(&path).unwrap()).unwrap();
+        let journal = std::fs::read_to_string(&journal_path).unwrap();
         assert!(journal.lines().count() <= 2);
     }
+    assert_eq!(
+        replay_journaled_snapshot(StoreKind::Config, &path, Tiny::default(), 1024),
+        Tiny { value: 2 }
+    );
+
+    crate::util::safe_fs::write_private_atomic(&journal_path, &old_journal).unwrap();
+    assert_eq!(
+        replay_journaled_snapshot(StoreKind::Config, &path, Tiny::default(), 1024),
+        Tiny { value: 1 },
+        "a crash rollback to the previous journal must retain its payload"
+    );
+
+    write_journal_intent(&new_intent).unwrap();
+    assert_eq!(intent_sidecar_count(&dir, "tiny.json"), 1);
+    assert!(!old_sidecar.exists());
     assert_eq!(
         replay_journaled_snapshot(StoreKind::Config, &path, Tiny::default(), 1024),
         Tiny { value: 2 }

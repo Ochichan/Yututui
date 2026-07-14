@@ -73,7 +73,10 @@ impl OwnedSnapshot {
             Self::Library(value) => value.save(),
             Self::Signals(value) => value.save(),
             Self::Downloads(value) => value.save(),
-            Self::Config(value) => value.save(),
+            Self::Config(value) => match crate::config::config_path() {
+                Some(path) => crate::persist::write_store_json(&path, value.as_ref()),
+                None => Ok(()),
+            },
             Self::Playlists(value) => value.save(),
             Self::Station(value) => value.save(),
             Self::RomanizedTitles(value) => value.save(),
