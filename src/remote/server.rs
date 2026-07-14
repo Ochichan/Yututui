@@ -272,6 +272,7 @@ fn socket_file_identity(path: &str) -> io::Result<SocketFileIdentity> {
     #[cfg(target_os = "linux")]
     let (metadata, generation_guard) = {
         let generation_guard = std::fs::OpenOptions::new()
+            .read(true)
             .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         let metadata = generation_guard.metadata()?;
