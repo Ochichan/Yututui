@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
@@ -228,7 +230,7 @@ impl Drop for RemoteServer {
         // path used when writer-lease or recovery preflight fails after single-instance binding.
         drop(listener);
         #[cfg(unix)]
-        if let Err(error) = remove_socket_file_if_matches(&self.endpoint, identity) {
+        if let Err(error) = remove_socket_file_if_matches(&self.endpoint, identity.as_ref()) {
             tracing::warn!(%error, "remote: failed to release unstarted socket endpoint");
         }
     }
@@ -240,16 +242,42 @@ struct PublishedInstance {
 }
 
 #[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 struct SocketFileIdentity {
     device: u64,
     inode: u64,
     change_seconds: i64,
     change_nanoseconds: i64,
+    // Keep the old inode allocated after its listener closes so Linux cannot immediately reuse
+    // the same identity for a rebound successor before this lease finishes cleanup.
+    #[cfg(target_os = "linux")]
+    _generation_guard: std::fs::File,
 }
 
 #[cfg(unix)]
+impl PartialEq for SocketFileIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.device == other.device
+            && self.inode == other.inode
+            && self.change_seconds == other.change_seconds
+            && self.change_nanoseconds == other.change_nanoseconds
+    }
+}
+
+#[cfg(unix)]
+impl Eq for SocketFileIdentity {}
+
+#[cfg(unix)]
 fn socket_file_identity(path: &str) -> io::Result<SocketFileIdentity> {
+    #[cfg(target_os = "linux")]
+    let (metadata, generation_guard) = {
+        let generation_guard = std::fs::OpenOptions::new()
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = generation_guard.metadata()?;
+        (metadata, generation_guard)
+    };
+    #[cfg(not(target_os = "linux"))]
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_socket() {
         return Err(io::Error::new(
@@ -265,13 +293,15 @@ fn socket_file_identity(path: &str) -> io::Result<SocketFileIdentity> {
         // own (an ABA collision on device + inode alone).
         change_seconds: metadata.ctime(),
         change_nanoseconds: metadata.ctime_nsec(),
+        #[cfg(target_os = "linux")]
+        _generation_guard: generation_guard,
     })
 }
 
 #[cfg(unix)]
 fn remove_socket_file_if_matches(
     path: &str,
-    expected: Option<SocketFileIdentity>,
+    expected: Option<&SocketFileIdentity>,
 ) -> io::Result<bool> {
     let Some(expected) = expected else {
         return Ok(false);
@@ -281,7 +311,7 @@ fn remove_socket_file_if_matches(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
-    if current != expected {
+    if &current != expected {
         return Ok(false);
     }
     match std::fs::remove_file(path) {
