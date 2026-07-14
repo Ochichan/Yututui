@@ -1239,9 +1239,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn write_operation_durable(operation: &PendingOperation) -> std::io::Result<()> {
+    write_operation_durable_using(operation, || operation.write())
+}
+
+fn write_operation_durable_using(
+    operation: &PendingOperation,
+    write: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     ensure_persistence_writes_allowed()?;
     let Some(path) = operation.storage_path() else {
-        return operation.write();
+        return write();
     };
     operation.ensure_ordering()?;
     let kind = operation.kind();
@@ -1267,7 +1274,7 @@ fn write_operation_durable(operation: &PendingOperation) -> std::io::Result<()> 
             return Ok(());
         }
     }
-    operation.write()?;
+    write()?;
     if journaled {
         commit_journal_generation_locked(kind, &path, operation.order)?;
     }

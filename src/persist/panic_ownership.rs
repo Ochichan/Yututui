@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(test)]
+type PanicReplaceWriter = Arc<dyn Fn(&Path, &[u8]) -> std::io::Result<()> + Send + Sync>;
+#[cfg(test)]
+type PanicDeleteRemover = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
+
 impl PendingOperation {
     pub(super) fn panic_operation(&self) -> std::io::Result<PanicOperation> {
         self.ensure_ordering()?;
@@ -51,8 +56,19 @@ enum PanicAction {
         path: PathBuf,
         bytes: Vec<u8>,
     },
+    #[cfg(test)]
+    ReplaceWithWriter {
+        path: PathBuf,
+        bytes: Vec<u8>,
+        writer: PanicReplaceWriter,
+    },
     Delete {
         path: PathBuf,
+    },
+    #[cfg(test)]
+    DeleteWithRemover {
+        path: PathBuf,
+        remover: PanicDeleteRemover,
     },
     #[cfg(test)]
     Direct(Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>),
@@ -65,6 +81,41 @@ pub(super) struct PanicOperation {
     kind: StoreKind,
     label: &'static str,
     action: PanicAction,
+}
+
+#[cfg(test)]
+impl PanicOperation {
+    pub(super) fn replace_with_writer_for_test(
+        order: JournalOrder,
+        kind: StoreKind,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        writer: PanicReplaceWriter,
+    ) -> Self {
+        Self {
+            order,
+            kind,
+            label: "fault-injected panic replace",
+            action: PanicAction::ReplaceWithWriter {
+                path,
+                bytes,
+                writer,
+            },
+        }
+    }
+
+    pub(super) fn delete_with_remover_for_test(
+        order: JournalOrder,
+        path: PathBuf,
+        remover: PanicDeleteRemover,
+    ) -> Self {
+        Self {
+            order,
+            kind: StoreKind::RomanizedTitles,
+            label: "fault-injected panic delete",
+            action: PanicAction::DeleteWithRemover { path, remover },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -142,42 +193,72 @@ pub(super) fn retain_newest_inflight(inflight: &SharedInflight, operation: Panic
     }
 }
 
+fn write_panic_replace(
+    operation: &PanicOperation,
+    path: &Path,
+    bytes: &[u8],
+    writer: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let _lock = acquire_intent_lock(path)?;
+    let intent = JournalIntent::Replace {
+        order: operation.order,
+        kind: operation.kind,
+        path: path.to_path_buf(),
+        bytes: bytes.to_vec(),
+    };
+    let record = prepare_journal_record(&intent)?;
+    let state = replace_journal_with_record_locked(operation.kind, path, &record)?;
+    if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
+        return Ok(());
+    }
+    writer(path, bytes)?;
+    commit_journal_generation_locked(operation.kind, path, operation.order)
+}
+
+fn write_panic_delete(
+    operation: &PanicOperation,
+    path: &Path,
+    remover: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    ensure_persistence_writes_allowed()?;
+    let _lock = acquire_intent_lock(path)?;
+    let intent = JournalIntent::Delete {
+        order: operation.order,
+        kind: operation.kind,
+        path: path.to_path_buf(),
+    };
+    let record = prepare_journal_record(&intent)?;
+    let state = replace_journal_with_record_locked(operation.kind, path, &record)?;
+    if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
+        return Ok(());
+    }
+    remover(path)?;
+    commit_journal_generation_locked(operation.kind, path, operation.order)
+}
+
 pub(super) fn write_panic_operation(operation: &PanicOperation) -> std::io::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &operation.action {
-        PanicAction::Replace { path, bytes } => {
-            ensure_persistence_writes_allowed()?;
-            let _lock = acquire_intent_lock(path)?;
-            let intent = JournalIntent::Replace {
-                order: operation.order,
-                kind: operation.kind,
-                path: path.clone(),
-                bytes: bytes.clone(),
-            };
-            let record = prepare_journal_record(&intent)?;
-            let state = replace_journal_with_record_locked(operation.kind, path, &record)?;
-            if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
-                return Ok(());
-            }
-            crate::util::safe_fs::write_private_atomic(path, bytes)?;
-            commit_journal_generation_locked(operation.kind, path, operation.order)
-        }
-        PanicAction::Delete { path } => {
-            ensure_persistence_writes_allowed()?;
-            let _lock = acquire_intent_lock(path)?;
-            let intent = JournalIntent::Delete {
-                order: operation.order,
-                kind: operation.kind,
-                path: path.clone(),
-            };
-            let record = prepare_journal_record(&intent)?;
-            let state = replace_journal_with_record_locked(operation.kind, path, &record)?;
-            if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
-                return Ok(());
-            }
+        PanicAction::Replace { path, bytes } => write_panic_replace(
+            operation,
+            path,
+            bytes,
+            crate::util::safe_fs::write_private_atomic,
+        ),
+        #[cfg(test)]
+        PanicAction::ReplaceWithWriter {
+            path,
+            bytes,
+            writer,
+        } => write_panic_replace(operation, path, bytes, |path, bytes| writer(path, bytes)),
+        PanicAction::Delete { path } => write_panic_delete(operation, path, |path| {
             // Do not publish a committed delete frontier until the parent directory has crossed
             // the same durability boundary as an ordinary actor deletion.
-            let _existed = super::remove_store_file(path)?;
-            commit_journal_generation_locked(operation.kind, path, operation.order)
+            super::remove_store_file(path).map(|_| ())
+        }),
+        #[cfg(test)]
+        PanicAction::DeleteWithRemover { path, remover } => {
+            write_panic_delete(operation, path, |path| remover(path))
         }
         #[cfg(test)]
         PanicAction::Direct(writer) => {

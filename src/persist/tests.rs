@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 mod handle;
 #[path = "tests/panic_shadow_seal.rs"]
 mod panic_shadow_seal;
+#[path = "tests/protocol_model.rs"]
+mod protocol_model;
 #[path = "tests/races.rs"]
 mod races;
 #[path = "tests/removal.rs"]
