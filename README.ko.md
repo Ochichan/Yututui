@@ -100,6 +100,8 @@ ytt
 
 끝. 음악 나옵니다.
 
+**터미널이 낯설다면?** 설정 → 일반에서 **비기너 모드**를 켜면 다음 실행에 대화형 단계별 안내가 더해집니다 — [친절한 사용 설명서](MANUAL.ko.md)로도 모든 모드를 내 속도로 익힐 수 있어요.
+
 ## 둘러보기
 
 아래 모든 기능은 **[기능 둘러보기 페이지](https://ochichan.github.io/Yututui/)** 에서 라이브로, 자세히 볼 수 있어요.
@@ -107,14 +109,14 @@ ytt
 <!-- 📸 미디어 넣으실 분께: docs/media/ 폴더에 아래 이름 그대로 파일을 넣어주세요:
 hero.gif · player.png · lyrics.gif · search.gif · sources.png · djgem.gif · assistant.gif ·
 video.gif · radio.png · radio-id.gif · library.png · queue.png · downloads.png ·
-localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · eq.png ·
-retro.png · transfer.gif · help.png
+localdeck.png · everywhere.png · tray.png · themes.gif · animations.gif · showpiece.gif · eq.png ·
+audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · context-menu.png
 같은 파일이 README.md / README.ko.md / README.ja.md 세 곳에 함께 쓰입니다. 아래 각 슬롯마다
 한 줄 안내가 있고, 더 넣고 싶으면 슬롯 블록을 복사해서 추가하면 됩니다. -->
 
 ### 플레이어 — 진짜 앨범 아트 & 싱크 가사
 
-실제 커버 이미지가 터미널에 그대로 그려집니다(Kitty/Sixel/iTerm2 자동 감지). **`Shift+L`** 로 그 아래에 시간 싱크 가사가 흐릅니다. 보이는 가사 행을 클릭하면 해당 시점으로 탐색하고, **`z`** / **`Z`** 로 가사를 0.1초씩 앞당기거나 늦출 수 있습니다. 가사가 로드되면 **`[ − 0.0s + ]`** 가 3초 동안 보이며, **`[±]`** 로 접힌 뒤에는 핸들을 눌러 다시 3초간 펼치고 **`−/+`** 로 미세 조정합니다. 플레이어 컨트롤은 모든 화면 하단에 도킹되고(**`B`** 로 접기, 클래식 상단 배치는 설정 하나로 복귀), 앨범 아트는 남은 공간 가운데에 자리잡으며, 창을 약 32×11 미만으로 줄이면 앱 전체가 작은 미니플레이어로 변했다가 창이 커지면 원래대로 돌아옵니다.
+실제 커버 이미지가 터미널에 그대로 그려집니다(Kitty/Sixel/iTerm2 자동 감지, 화질은 설정에서 Standard/High/Original 중 선택). **`Shift+L`** 로 그 아래에 시간 싱크 가사가 흐릅니다. 보이는 가사 행을 클릭하면 해당 시점으로 탐색하고, **`z`** / **`Z`** 로 가사를 0.1초씩 앞당기거나 늦출 수 있습니다. 가사가 로드되면 **`[ − 0.0s + ]`** 가 3초 동안 보이며, **`[±]`** 로 접힌 뒤에는 핸들을 눌러 다시 3초간 펼치고 **`−/+`** 로 미세 조정합니다. 플레이어 컨트롤은 모든 화면 하단에 도킹되고(**`B`** 로 접기, 클래식 상단 배치는 설정 하나로 복귀), 앨범 아트는 남은 공간 가운데에 자리잡으며, 창을 약 32×14 미만으로 줄이면 앱 전체가 작은 미니플레이어로 변했다가 창이 커지면 원래대로 돌아옵니다.
 
 > 🖼️ *스크린샷 준비 중!*
 <!-- 📸 채우는 법: docs/media/player.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -122,6 +124,9 @@ retro.png · transfer.gif · help.png
 -->
 <!-- 📸 채우는 법: docs/media/lyrics.gif 를 추가하고 주석 해제:
 ![플레이어 아래로 흐르는 시간 싱크 가사](docs/media/lyrics.gif)
+-->
+<!-- 📸 채우는 법: docs/media/audio-output.png 를 추가하고 주석 해제:
+![설정에서 오디오 출력 장치를 고르는 모습](docs/media/audio-output.png)
 -->
 
 ### 카탈로그 여섯, 검색창 하나
@@ -213,7 +218,7 @@ retro.png · transfer.gif · help.png
 
 ### 내 마음대로
 
-테마 13종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별부터 플라즈마 필드까지 — 그리고 프리셋 있는 10밴드 EQ + 라우드니스 노멀라이즈.
+테마 14종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지.
 
 > 🖼️ *움짤 준비 중!*
 <!-- 📸 채우는 법: docs/media/themes.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -221,6 +226,9 @@ retro.png · transfer.gif · help.png
 -->
 <!-- 📸 채우는 법: docs/media/animations.gif 를 추가하고 주석 해제:
 ![도는 ASCII 도넛을 포함한 애니메이션들](docs/media/animations.gif)
+-->
+<!-- 📸 채우는 법: docs/media/showpiece.gif 를 추가하고 주석 해제:
+![풀캔버스 쇼피스 애니메이션 — 불꽃놀이, 라이프 게임, 파이프, 플라즈마](docs/media/showpiece.gif)
 -->
 <!-- 📸 채우는 법: docs/media/eq.png 를 추가하고 주석 해제:
 ![프리셋이 있는 10밴드 EQ](docs/media/eq.png)
@@ -252,6 +260,12 @@ retro.png · transfer.gif · help.png
 <!-- 📸 채우는 법: docs/media/help.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
 ![라이브 단축키 치트시트](docs/media/help.png)
 -->
+<!-- 📸 채우는 법: docs/media/onboarding.gif 를 추가하고 주석 해제:
+![첫 실행 시 비기너 모드의 대화형 안내](docs/media/onboarding.gif)
+-->
+<!-- 📸 채우는 법: docs/media/context-menu.png 를 추가하고 주석 해제:
+![트랙 행의 우클릭 컨텍스트 메뉴](docs/media/context-menu.png)
+-->
 
 ## 필수 키
 
@@ -270,12 +284,13 @@ retro.png · transfer.gif · help.png
 | `Shift+L` | 싱크 가사; 보이는 행 클릭으로 해당 시점 탐색 |
 | `z` / `Z` | 가사를 0.1초 앞당김 / 늦춤 (`[±]` 로 `−/+` 를 3초간 다시 열기) |
 | `v` | 뮤직비디오 오버레이 |
+| `B` | 도킹된 컨트롤 박스 접기 / 펼치기 |
 | `Ctrl+R` | DJ Gem 스트리밍 |
 | `g` | DJ Gem 어시스턴트 |
 | `o` | 설정 |
 | `Ctrl+Q` | 종료 |
 
-> **한글 자판이세요?** 단축키가 두벌식 자모를 알아듣습니다(`ㅂ` 은 `q` 처럼) — 입력기를 바꿀 필요가 없어요. 마우스가 편하면 화면의 모든 것이 클릭되고, 휠은 볼륨을 탑니다. 행을 드래그하면 범위 선택이 되고(검색 결과에서도 라이브러리와 똑같이), `Ctrl`+클릭(macOS는 `⌘`+클릭)으로 떨어져 있는 행을 하나씩 선택/해제할 수 있어요. 전체 목록은 하단 **mouse** 버튼의 마우스 치트시트에서 볼 수 있습니다.
+> **한글 자판이세요?** 단축키가 두벌식 자모를 알아듣습니다(`ㅂ` 은 `q` 처럼) — 입력기를 바꿀 필요가 없어요. 마우스가 편하면 화면의 모든 것이 클릭되고, 휠은 볼륨을 탑니다. 행을 드래그하면 범위 선택이 되고(검색 결과에서도 라이브러리와 똑같이), `Ctrl`+클릭(macOS는 `⌘`+클릭)으로 떨어져 있는 행을 하나씩 선택/해제할 수 있어요. 행을 우클릭하면 컨텍스트 메뉴가 열리고, 제스처는 `config.json`의 `mouse_bindings`에서 재설정할 수 있습니다. 전체 목록은 하단 **mouse** 버튼의 마우스 치트시트에서 볼 수 있습니다.
 
 ## 문제 해결
 
@@ -286,6 +301,7 @@ retro.png · transfer.gif · help.png
 | 증상 | 해결 |
 | --- | --- |
 | 아무것도 재생되지 않거나 재생 시 오류 | mpv 또는 yt-dlp가 없습니다 — `ytt doctor` 실행. |
+| 소리가 엉뚱한 장치로 나감 | 설정 → 재생 → **오디오 출력** 에서 감지된 로컬 출력 중 선택; **오디오 백엔드** 는 mpv 옵션을 노출합니다. |
 | 어제는 됐는데 오늘은 안 됨 | YouTube가 뭔가 바꿨어요 — `ytt tools update` 후 `ytt tools status --why`; 관리형 업데이트가 문제면 `ytt tools use system`. |
 | 여러 곡이 403/429 또는 "YouTube rejected the stream"으로 실패 | `ytt doctor --verbose`를 실행하고, [참고 자료](#참고-자료)의 쿠키 항목을 확인하고, 지원되는 JS 런타임이 있는지 보세요; 활성 yt-dlp는 `ytt tools status --why`로 확인. |
 | 특정 곡만 재생 안 됨 | 로그인이 필요할 수 있어요 — [참고 자료](#참고-자료)의 쿠키 항목 참고. |
