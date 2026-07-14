@@ -97,6 +97,10 @@ pub(super) fn reconcile_file_pair(
             .is_some_and(|stage_object| stage_object == destination.generation.identity());
         if destination_is_owned_stage {
             apply_publish_mode(&mut destination.generation, policy.publish_mode)?;
+            // Windows reopens the already-published generation read-only for recovery. The
+            // original write handle durably flushed it before the transaction advanced, while a
+            // second `FlushFileBuffers` through this recovery handle fails with ACCESS_DENIED.
+            #[cfg(not(windows))]
             destination.generation.sync_durable()?;
         } else if policy.verify_legacy_existing_mode {
             verify_publish_mode(&destination.generation, policy.publish_mode)?;
