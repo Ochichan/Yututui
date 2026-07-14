@@ -160,7 +160,9 @@ struct FireflyScratch {
 }
 
 thread_local! {
-    static FIREFLY_SCRATCH: RefCell<FireflyScratch> = RefCell::new(FireflyScratch::default());
+    // Keep the large descriptor array off every native thread's static TLS block. The box is
+    // created only on the render thread, and only after an eligible firefly surface is active.
+    static FIREFLY_SCRATCH: RefCell<Option<Box<FireflyScratch>>> = const { RefCell::new(None) };
 }
 
 /// Fireflies wandering on smooth per-fly Lissajous paths, each breathing between the subtle
@@ -180,8 +182,9 @@ pub(super) fn fireflies(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
         ('●', '·')
     };
     let breath_wave = wave_110_table();
-    FIREFLY_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
+    FIREFLY_SCRATCH.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let scratch = slot.get_or_insert_with(|| Box::new(FireflyScratch::default()));
         if scratch.width != zone.width || scratch.height != zone.height || scratch.count != count {
             scratch.width = zone.width;
             scratch.height = zone.height;
@@ -482,8 +485,20 @@ mod tests {
     }
 
     #[test]
+    fn firefly_cache_is_lazy_until_the_first_eligible_surface() {
+        FIREFLY_SCRATCH.with(|slot| *slot.borrow_mut() = None);
+        let app = App::new(100);
+
+        render_fireflies(&app, Rect::new(3, 2, 7, 3), 47);
+        FIREFLY_SCRATCH.with(|slot| assert!(slot.borrow().is_none()));
+
+        render_fireflies(&app, Rect::new(3, 2, 8, 3), 47);
+        FIREFLY_SCRATCH.with(|slot| assert!(slot.borrow().is_some()));
+    }
+
+    #[test]
     fn firefly_cache_reuses_identical_output_and_rekeys_on_resize() {
-        FIREFLY_SCRATCH.with(|scratch| *scratch.borrow_mut() = FireflyScratch::default());
+        FIREFLY_SCRATCH.with(|slot| *slot.borrow_mut() = None);
         let app = App::new(100);
         let first_zone = Rect::new(3, 2, 60, 20);
         let first = render_fireflies(&app, first_zone, 47);
@@ -492,8 +507,9 @@ mod tests {
 
         let second_zone = Rect::new(3, 2, 30, 10);
         render_fireflies(&app, second_zone, 48);
-        FIREFLY_SCRATCH.with(|scratch| {
-            let scratch = scratch.borrow();
+        FIREFLY_SCRATCH.with(|slot| {
+            let slot = slot.borrow();
+            let scratch = slot.as_deref().expect("eligible surface creates cache");
             assert_eq!(scratch.width, second_zone.width);
             assert_eq!(scratch.height, second_zone.height);
             assert_eq!(scratch.count, 6);

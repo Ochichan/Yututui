@@ -60,7 +60,9 @@ struct FireworkScratch {
 }
 
 thread_local! {
-    static FIREWORK_SCRATCH: RefCell<FireworkScratch> = RefCell::new(FireworkScratch::default());
+    // Keep both particle descriptor arrays off every native thread's static TLS block. The box is
+    // created only on the render thread, and only after an eligible fireworks surface is active.
+    static FIREWORK_SCRATCH: RefCell<Option<Box<FireworkScratch>>> = const { RefCell::new(None) };
 }
 
 /// One launcher's state within its cycle, all derived from `f`: a rocket climbs from the
@@ -74,8 +76,9 @@ pub(super) fn fireworks(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
     }
     let retro = app.retro_mode();
     let period = 130u64;
-    FIREWORK_SCRATCH.with(|scratch| {
-        let mut scratch = scratch.borrow_mut();
+    FIREWORK_SCRATCH.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let scratch = slot.get_or_insert_with(|| Box::new(FireworkScratch::default()));
         for launcher in 0..2u64 {
             let lf = f + launcher * (period / 2); // half-cycle offset between the two
             let cycle = lf / period;
@@ -614,22 +617,36 @@ mod tests {
     }
 
     #[test]
+    fn firework_cache_is_lazy_until_the_first_eligible_surface() {
+        FIREWORK_SCRATCH.with(|slot| *slot.borrow_mut() = None);
+        let app = App::new(100);
+
+        render_effect(&app, Rect::new(4, 2, 15, 6), None, 35, fireworks);
+        FIREWORK_SCRATCH.with(|slot| assert!(slot.borrow().is_none()));
+
+        render_effect(&app, Rect::new(4, 2, 16, 6), None, 35, fireworks);
+        FIREWORK_SCRATCH.with(|slot| assert!(slot.borrow().is_some()));
+    }
+
+    #[test]
     fn firework_cache_reuses_identical_output_and_rekeys_by_cycle() {
-        FIREWORK_SCRATCH.with(|scratch| *scratch.borrow_mut() = FireworkScratch::default());
+        FIREWORK_SCRATCH.with(|slot| *slot.borrow_mut() = None);
         let app = App::new(100);
         let zone = Rect::new(4, 2, 40, 14);
         let first = render_effect(&app, zone, None, 35, fireworks);
         let warm = render_effect(&app, zone, None, 35, fireworks);
         assert_eq!(warm, first);
-        let old_seeds = FIREWORK_SCRATCH.with(|scratch| {
-            let scratch = scratch.borrow();
+        let old_seeds = FIREWORK_SCRATCH.with(|slot| {
+            let slot = slot.borrow();
+            let scratch = slot.as_deref().expect("eligible surface creates cache");
             assert!(scratch.launchers.iter().all(|cache| cache.valid));
             [scratch.launchers[0].seed, scratch.launchers[1].seed]
         });
 
         render_effect(&app, zone, None, 165, fireworks);
-        FIREWORK_SCRATCH.with(|scratch| {
-            let scratch = scratch.borrow();
+        FIREWORK_SCRATCH.with(|slot| {
+            let slot = slot.borrow();
+            let scratch = slot.as_deref().expect("cache remains available");
             assert_ne!(scratch.launchers[0].seed, old_seeds[0]);
             assert_ne!(scratch.launchers[1].seed, old_seeds[1]);
         });
