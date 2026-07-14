@@ -354,21 +354,27 @@ fn log_numeric_perf(state: &mut DispatchState, force: bool) {
 
 include!("ipc/incoming.rs");
 
-/// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
+const MPV_IPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MPV_IPC_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(15);
+
+/// Connect to the mpv IPC endpoint while mpv finishes starting up.
+///
+/// Cold Intel Macs can take longer than three seconds to initialize a Homebrew mpv after a
+/// resource-heavy build. Keep the retry bounded, but leave enough headroom for that first launch.
 pub async fn connect_retry(path: &str) -> io::Result<Stream> {
-    let mut last_err: Option<io::Error> = None;
-    for _ in 0..200 {
+    let deadline = Instant::now() + MPV_IPC_CONNECT_TIMEOUT;
+    loop {
         let name = path.to_fs_name::<GenericFilePath>()?;
         match Stream::connect(name).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {
-                last_err = Some(e);
-                sleep(Duration::from_millis(15)).await;
+                if Instant::now() >= deadline {
+                    return Err(e);
+                }
+                sleep(MPV_IPC_CONNECT_RETRY_DELAY).await;
             }
         }
     }
-    Err(last_err
-        .unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "mpv IPC connect timed out")))
 }
 
 /// Drive one mpv connection: subscribe to progress properties, then loop forwarding

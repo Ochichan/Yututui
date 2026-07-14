@@ -84,6 +84,11 @@ cleanup() {
       tail -200 "$log_path" >&2
       echo "--- end $(basename "$log_path") ---" >&2
     fi
+    if [[ -f "$work_root/mpv.log" ]]; then
+      echo "--- mpv.log ---" >&2
+      tail -200 "$work_root/mpv.log" >&2
+      echo "--- end mpv.log ---" >&2
+    fi
   fi
   "$ytt" daemon stop >/dev/null 2>&1
   export HOME="$old_home"
@@ -104,7 +109,7 @@ export XDG_RUNTIME_DIR="$work_root/runtime"
 export XDG_CONFIG_HOME="$work_root/xdg-config"
 export XDG_DATA_HOME="$work_root/xdg-data"
 export XDG_CACHE_HOME="$work_root/xdg-cache"
-export YTM_MPV_EXTRA="--ao=null --volume=0"
+export YTM_MPV_EXTRA="--ao=null --volume=0 --log-file=$work_root/mpv.log"
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 chmod 700 "$XDG_RUNTIME_DIR"
 
