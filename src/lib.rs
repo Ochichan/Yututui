@@ -9,6 +9,7 @@ pub mod api;
 pub mod app;
 pub mod artwork;
 pub mod auth_cli;
+pub mod cli_capability;
 pub mod config;
 pub mod daemon;
 pub mod data_export;
