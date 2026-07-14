@@ -98,7 +98,7 @@ fn record_resume_outcome(
     resume: Option<&super::recovery::LoadWithResume>,
     outcome: super::diagnostics::SourceRecoveryOutcome,
 ) {
-    if resume.is_some_and(|resume| resume.episode_id.get() != 0) {
+    if resume.is_some_and(super::recovery::LoadWithResume::is_source_recovery) {
         super::diagnostics::source_recovery_outcome(outcome);
     }
 }
@@ -175,7 +175,7 @@ fn install_resume_telemetry(
         buffered_near_target: None,
         latest_seek_position: None,
         terminal_deadline: None,
-        source_recovery: request.episode_id.get() != 0,
+        source_recovery: request.is_source_recovery(),
     });
 }
 
@@ -186,7 +186,7 @@ fn cancel_resume_post_load_if_superseded(state: &mut DispatchState, command: &Pl
     let source_recovery = state
         .pending_resume
         .as_ref()
-        .is_some_and(|pending| pending.request.episode_id.get() != 0)
+        .is_some_and(|pending| pending.request.is_source_recovery())
         || state
             .resume_telemetry
             .as_ref()

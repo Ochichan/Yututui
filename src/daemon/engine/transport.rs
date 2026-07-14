@@ -10,8 +10,66 @@ pub(super) struct TransportRecovery {
     pub(super) attempts: u8,
 }
 
+/// Owner-loop lifecycle for automatic player replacement.
+///
+/// The former `Option<TransportRecovery>` plus `transport_auto_recovery_armed` boolean allowed
+/// tests and future call sites to construct contradictory combinations.  Keeping the payload in
+/// the state which owns it makes every gate transition exhaustive and keeps shutdown absorbing.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum TransportRecoveryState {
+    Armed,
+    Recovering(TransportRecovery),
+    Disarmed,
+    Shutdown,
+}
+
+impl TransportRecoveryState {
+    /// Consume the one-shot arm when a loaded item exists. A close from a replacement lifetime
+    /// retires any pending payload and remains disarmed; shutdown is permanently absorbing.
+    fn begin(&mut self, recovery: Option<TransportRecovery>) -> bool {
+        let previous = std::mem::replace(self, Self::Disarmed);
+        let (next, started) = match previous {
+            Self::Armed => match recovery {
+                Some(recovery) => (Self::Recovering(recovery), true),
+                None => (Self::Armed, false),
+            },
+            Self::Recovering(_) => (Self::Disarmed, false),
+            Self::Disarmed => (Self::Disarmed, false),
+            Self::Shutdown => (Self::Shutdown, false),
+        };
+        *self = next;
+        started
+    }
+
+    fn finish_recovery(&mut self) {
+        *self = match self {
+            Self::Armed => Self::Armed,
+            Self::Recovering(_) => Self::Disarmed,
+            Self::Disarmed => Self::Disarmed,
+            Self::Shutdown => Self::Shutdown,
+        };
+    }
+
+    pub(super) fn rearm_after_normal_load_or_stop(&mut self) {
+        *self = match self {
+            Self::Armed | Self::Recovering(_) | Self::Disarmed => Self::Armed,
+            Self::Shutdown => Self::Shutdown,
+        };
+    }
+
+    fn suppress_for_shutdown(&mut self) {
+        *self = Self::Shutdown;
+    }
+}
+
 const TRANSPORT_RECOVERY_MAX_ATTEMPTS: u8 = 2;
 const TRANSPORT_RECOVERY_RETRY_DELAY: Duration = Duration::from_millis(75);
+
+#[derive(Clone, Copy)]
+enum LoadCurrentIntent {
+    Ordinary,
+    TransportRecovery,
+}
 
 impl DaemonEngine {
     fn begin_source_logical_item(&mut self) {
@@ -47,39 +105,36 @@ impl DaemonEngine {
         };
         let logical_generation = self.source_logical_generation;
         let origin_file_generation = self.source_file_generation;
-        let Some((episode_id, transport_epoch)) =
+        let Some(ticket) =
             self.source_recovery
-                .begin_episode(error, logical_generation, origin_file_generation)
+                .begin_ticket(error, logical_generation, origin_file_generation)
         else {
             return false;
         };
         crate::player::diagnostics::source_recovery_attempt(failure.id());
-        let request = crate::player::recovery::LoadWithResume {
+        let request = crate::player::recovery::LoadWithResume::source_recovery(
             url,
             position_secs,
-            paused: self.playback.paused,
-            source_context: crate::player::MediaSourceContext::OnDemand,
-            episode_id,
-            transport_epoch,
-            force_ram_only: false,
-        };
+            self.playback.paused,
+            crate::player::MediaSourceContext::OnDemand,
+            ticket,
+        );
         if let Err(delivery) =
             self.send_active_player_command("source_recovery", PlayerCmd::LoadWithResume(request))
         {
-            self.source_recovery.cancel_unadmitted_episode(episode_id);
+            self.source_recovery.cancel_unadmitted_ticket(ticket);
             crate::player::diagnostics::source_recovery_outcome(
                 crate::player::diagnostics::SourceRecoveryOutcome::AdmissionRejected,
             );
             self.last_error = Some(delivery.to_string());
             return false;
         }
-        assert!(self.source_recovery.accepts_resolved_source(
-            episode_id,
+        assert!(self.source_recovery.accepts_ticket(
+            ticket,
             logical_generation,
             origin_file_generation,
-            transport_epoch,
         ));
-        assert!(self.source_recovery.finish_episode(episode_id));
+        assert!(self.source_recovery.finish_ticket(ticket));
         crate::player::diagnostics::source_recovery_outcome(
             crate::player::diagnostics::SourceRecoveryOutcome::AdmissionAccepted,
         );
@@ -95,8 +150,7 @@ impl DaemonEngine {
     /// External signal handling calls this from the owner loop after the out-of-band latch wins,
     /// so a TransportClosed already waiting in the bounded event lane cannot recreate mpv.
     pub(crate) fn suppress_transport_recovery_for_shutdown(&mut self) {
-        self.transport_recovery = None;
-        self.transport_auto_recovery_armed = false;
+        self.transport_recovery.suppress_for_shutdown();
         if let Some(player) = self.player.take() {
             let PlayerRuntime { handle, _guard } = player;
             drop(handle);
@@ -126,26 +180,23 @@ impl DaemonEngine {
         let loaded_video_id = self.loaded_video_id.take();
         self.transport_recovery_generation = self.transport_recovery_generation.wrapping_add(1);
         let generation = self.transport_recovery_generation;
-        let should_recover = loaded_video_id.is_some() && self.transport_auto_recovery_armed;
-        self.transport_recovery = if should_recover {
-            self.transport_auto_recovery_armed = false;
-            loaded_video_id.map(|video_id| TransportRecovery {
+        let had_loaded_video = loaded_video_id.is_some();
+        let should_recover = self
+            .transport_recovery
+            .begin(loaded_video_id.map(|video_id| TransportRecovery {
                 video_id,
                 paused,
                 position_secs: None,
                 force_ram_only: false,
                 generation,
                 attempts: 0,
-            })
-        } else {
-            if loaded_video_id.is_some() && !self.transport_auto_recovery_armed {
-                tracing::error!(
-                    generation,
-                    "suppressed repeated daemon player restart before playback became stable"
-                );
-            }
-            None
-        };
+            }));
+        if had_loaded_video && !should_recover {
+            tracing::error!(
+                generation,
+                "suppressed repeated daemon player restart before playback became stable"
+            );
+        }
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
         self.playback.duration = None;
@@ -196,20 +247,16 @@ impl DaemonEngine {
         let loaded_video_id = self.loaded_video_id.take();
         self.transport_recovery_generation = self.transport_recovery_generation.wrapping_add(1);
         let generation = self.transport_recovery_generation;
-        let should_recover = loaded_video_id.is_some() && self.transport_auto_recovery_armed;
-        self.transport_recovery = if should_recover {
-            self.transport_auto_recovery_armed = false;
-            loaded_video_id.map(|video_id| TransportRecovery {
+        let should_recover = self
+            .transport_recovery
+            .begin(loaded_video_id.map(|video_id| TransportRecovery {
                 video_id,
                 paused,
                 position_secs,
                 force_ram_only: true,
                 generation,
                 attempts: 0,
-            })
-        } else {
-            None
-        };
+            }));
         self.playback.time_pos = position_secs;
         self.playback.time_pos_at = None;
         self.bump_position_epoch(PositionEpochReason::TransportRecovery);
@@ -228,19 +275,22 @@ impl DaemonEngine {
         &mut self,
         generation: u64,
     ) -> Vec<EngineEffect> {
-        let attempt = match self.transport_recovery.as_mut() {
-            Some(recovery)
+        let attempt = match &mut self.transport_recovery {
+            TransportRecoveryState::Recovering(recovery)
                 if recovery.generation == generation
                     && recovery.attempts < TRANSPORT_RECOVERY_MAX_ATTEMPTS =>
             {
                 recovery.attempts += 1;
                 recovery.attempts
             }
-            _ => return Vec::new(),
+            TransportRecoveryState::Recovering(_)
+            | TransportRecoveryState::Armed
+            | TransportRecoveryState::Disarmed
+            | TransportRecoveryState::Shutdown => return Vec::new(),
         };
 
         let result = match self.ensure_player().await {
-            Ok(()) => self.load_current_loaded(),
+            Ok(()) => self.load_current_loaded_for(LoadCurrentIntent::TransportRecovery),
             Err(error) => Err(error),
         };
         if result.is_ok() {
@@ -251,9 +301,15 @@ impl DaemonEngine {
         let error = result.expect_err("failed recovery result was checked");
         let detail = sanitize::sanitize_error_text(error.to_string());
         self.last_error = Some(format!("mpv transport recovery failed: {detail}"));
-        let retry = self.transport_recovery.as_ref().is_some_and(|recovery| {
-            recovery.generation == generation && recovery.attempts < TRANSPORT_RECOVERY_MAX_ATTEMPTS
-        });
+        let retry = match &self.transport_recovery {
+            TransportRecoveryState::Recovering(recovery) => {
+                recovery.generation == generation
+                    && recovery.attempts < TRANSPORT_RECOVERY_MAX_ATTEMPTS
+            }
+            TransportRecoveryState::Armed
+            | TransportRecoveryState::Disarmed
+            | TransportRecoveryState::Shutdown => false,
+        };
         if retry {
             tracing::warn!(
                 generation,
@@ -277,9 +333,14 @@ impl DaemonEngine {
         }
     }
 
-    /// Load the queue cursor into an already-created player. A same-track transport
-    /// recovery restores pause after `loadfile` and deliberately skips history/signals.
+    /// Admit an ordinary queue load into an already-created player and rearm transport recovery.
+    /// Automatic replacement uses the typed recovery intent below so it cannot replay a
+    /// different queue item or duplicate history/signals.
     pub(super) fn load_current_loaded(&mut self) -> Result<(), EngineError> {
+        self.load_current_loaded_for(LoadCurrentIntent::Ordinary)
+    }
+
+    fn load_current_loaded_for(&mut self, intent: LoadCurrentIntent) -> Result<(), EngineError> {
         let Some(song) = self.queue.current().cloned() else {
             self.stop_playback();
             return Ok(());
@@ -300,64 +361,82 @@ impl DaemonEngine {
             }
         };
 
-        let recovery = self
-            .transport_recovery
-            .as_ref()
-            .filter(|recovery| recovery.video_id == song.video_id)
-            .cloned();
+        let recovery = match (&self.transport_recovery, intent) {
+            (
+                TransportRecoveryState::Recovering(recovery),
+                LoadCurrentIntent::TransportRecovery,
+            ) => Some(recovery.clone()),
+            (
+                TransportRecoveryState::Armed
+                | TransportRecoveryState::Disarmed
+                | TransportRecoveryState::Shutdown,
+                LoadCurrentIntent::TransportRecovery,
+            )
+            | (_, LoadCurrentIntent::Ordinary) => None,
+        };
         let recovery_paused = recovery.as_ref().map(|recovery| recovery.paused);
         let recovery_position = recovery
             .as_ref()
             .and_then(|recovery| recovery.position_secs);
-        let is_transport_recovery = recovery.is_some();
-        let force_ram_only = recovery
-            .as_ref()
-            .is_some_and(|recovery| recovery.force_ram_only);
-        let mut commands = if force_ram_only {
-            vec![PlayerCmd::LoadWithResume(
-                crate::player::recovery::LoadWithResume::emergency(
-                    target,
-                    recovery_position.unwrap_or(0.0),
-                    recovery_paused.unwrap_or(true),
-                    crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-                ),
-            )]
-        } else {
-            vec![PlayerCmd::load(
-                target,
-                crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-            )]
+        let planned_loaded_video_id = match intent {
+            LoadCurrentIntent::TransportRecovery => {
+                recovery.as_ref().map(|recovery| recovery.video_id.as_str())
+            }
+            LoadCurrentIntent::Ordinary => match &self.transport_recovery {
+                TransportRecoveryState::Shutdown => None,
+                TransportRecoveryState::Armed
+                | TransportRecoveryState::Recovering(_)
+                | TransportRecoveryState::Disarmed => Some(song.video_id.as_str()),
+            },
         };
-        if recovery_paused == Some(true)
-            && !recovery
-                .as_ref()
-                .is_some_and(|recovery| recovery.force_ram_only)
+        let source_context = crate::player::MediaSourceContext::from_live(song.is_radio_station());
+        let restore = if recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.force_ram_only)
         {
-            commands.push(PlayerCmd::CyclePause);
-        }
-        self.send_active_player_batch("load_current", commands)?;
+            crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
+                planned_loaded_video_id,
+                &song.video_id,
+                target,
+                recovery_position.unwrap_or(0.0),
+                recovery_paused.unwrap_or(true),
+                source_context,
+            )
+        } else {
+            crate::player::recovery::TransportRestorePlan::reload_if_loaded(
+                planned_loaded_video_id,
+                &song.video_id,
+                target,
+                recovery_paused.unwrap_or(false),
+                source_context,
+            )
+        };
+        self.send_active_player_batch("load_current", restore.into_commands(None))?;
 
         self.playback.paused = recovery_paused.unwrap_or(false);
         self.playback.time_pos = recovery_position;
         self.playback.time_pos_at = None;
-        if !is_transport_recovery {
+        if matches!(intent, LoadCurrentIntent::Ordinary) {
             self.bump_position_epoch(PositionEpochReason::TrackRestart);
         }
         self.playback.duration = None;
         self.loaded_video_id = Some(song.video_id.clone());
-        self.transport_recovery = None;
 
-        if recovery_paused.is_none() {
-            self.begin_source_logical_item();
-            self.transport_auto_recovery_armed = true;
-            self.library.record_play(&song);
-            self.save_library("daemon library history");
-            // History changed: a subscribed GUI's paged library view is stale.
-            self.library_invalidations = self.library_invalidations.wrapping_add(1);
-        } else {
-            self.source_file_generation = self.source_file_generation.wrapping_add(1);
-            self.source_recovery.supersede_transport();
-            self.last_error = None;
+        match intent {
+            LoadCurrentIntent::Ordinary => {
+                self.transport_recovery.rearm_after_normal_load_or_stop();
+                self.begin_source_logical_item();
+                self.library.record_play(&song);
+                self.save_library("daemon library history");
+                // History changed: a subscribed GUI's paged library view is stale.
+                self.library_invalidations = self.library_invalidations.wrapping_add(1);
+            }
+            LoadCurrentIntent::TransportRecovery => {
+                self.transport_recovery.finish_recovery();
+                self.source_file_generation = self.source_file_generation.wrapping_add(1);
+                self.source_recovery.supersede_transport();
+                self.last_error = None;
+            }
         }
         self.save_session();
         Ok(())

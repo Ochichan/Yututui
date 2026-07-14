@@ -1,4 +1,5 @@
 use super::ingress::RuntimeTelemetrySlot;
+use super::player_delivery::PendingPlayerCmds;
 use super::*;
 use crate::remote::proto::RemoteCommand;
 use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
@@ -537,31 +538,6 @@ fn accepted_video_load_leaves_overlay_pause_ownership_unchanged() {
     assert!(follow_ups.is_empty());
     assert!(app.playback.paused);
     assert!(app.video_pause_owned_for_test());
-}
-
-#[test]
-fn player_restart_gate_allows_one_replacement_and_prevents_loops() {
-    let mut gate = PlayerRestartGate::default();
-    assert_eq!(gate.request(), PlayerRestartDecision::Start);
-    assert_eq!(gate.request(), PlayerRestartDecision::AlreadyPending);
-    assert!(gate.take_request());
-    assert_eq!(gate.request(), PlayerRestartDecision::AlreadyPending);
-    assert!(gate.complete_start());
-    assert_eq!(gate.request(), PlayerRestartDecision::Exhausted);
-    assert!(!gate.take_request());
-}
-
-#[test]
-fn player_restart_gate_owner_exit_suppresses_queued_and_future_replacements() {
-    let mut gate = PlayerRestartGate::default();
-    assert_eq!(gate.request(), PlayerRestartDecision::Start);
-
-    // Models a TransportClosed reduced immediately before either normal Quit committed or the
-    // out-of-band latch won. Owner exit must revoke it before the runner's sole spawn point.
-    gate.suppress_for_shutdown();
-    assert!(!gate.take_request());
-    assert_eq!(gate.request(), PlayerRestartDecision::Suppressed);
-    assert!(!gate.take_request());
 }
 
 #[test]

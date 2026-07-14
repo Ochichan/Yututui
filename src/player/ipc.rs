@@ -1052,7 +1052,7 @@ async fn dispatch_validated_load(
     if load
         .resume
         .as_ref()
-        .is_some_and(|resume| resume.force_ram_only)
+        .is_some_and(super::recovery::LoadWithResume::forces_ram_only)
         && let Some(cache) = state.cache.as_mut()
     {
         cache.force_next_media_ram_only();

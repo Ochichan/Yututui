@@ -206,7 +206,7 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
         pending
             .resume
             .as_ref()
-            .is_some_and(|resume| resume.force_ram_only)
+            .is_some_and(super::super::super::recovery::LoadWithResume::forces_ram_only)
     );
     assert!(pending.resume.as_ref().is_some_and(|resume| {
         (resume.position_secs - 120.0).abs() < f64::EPSILON && !resume.paused

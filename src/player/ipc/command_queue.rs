@@ -171,7 +171,7 @@ fn accept_actor_command(
             && validation
                 .resume
                 .as_ref()
-                .is_some_and(|resume| resume.episode_id.get() != 0)
+                .is_some_and(super::recovery::LoadWithResume::is_source_recovery)
             && state.active_file_generation == Some(state.issued_file_generation)
             && state.file_loaded_generation == Some(state.issued_file_generation)
             && state.playback_ready_generation == Some(state.issued_file_generation);

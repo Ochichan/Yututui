@@ -7,18 +7,16 @@ mod seek_dispatch;
 
 fn recovery_request(position_secs: f64, paused: bool) -> super::super::recovery::LoadWithResume {
     let mut planner = super::super::recovery::RecoveryPlanner::default();
-    let (episode_id, transport_epoch) = planner
-        .begin_episode("HTTP error 403 Forbidden", 11, 7)
+    let ticket = planner
+        .begin_ticket("HTTP error 403 Forbidden", 11, 7)
         .expect("fixture error is conservatively recoverable");
-    super::super::recovery::LoadWithResume {
-        url: "https://example.invalid/fresh-source".to_owned(),
+    super::super::recovery::LoadWithResume::source_recovery(
+        "https://example.invalid/fresh-source".to_owned(),
         position_secs,
         paused,
-        source_context: super::super::MediaSourceContext::OnDemand,
-        episode_id,
-        transport_epoch,
-        force_ram_only: false,
-    }
+        super::super::MediaSourceContext::OnDemand,
+        ticket,
+    )
 }
 
 fn emergency_request(position_secs: f64, paused: bool) -> super::super::recovery::LoadWithResume {
