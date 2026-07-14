@@ -2,8 +2,10 @@
 //!
 //! The sampler must itself run in an interactive terminal (tmux on Unix, a local
 //! ConPTY/console on Windows). It launches exactly one `ytt`, follows only that PID's
-//! descendants, and writes NDJSON outside the measured terminal. No process-name-wide
-//! cleanup is ever performed.
+//! descendants, and writes NDJSON outside the measured terminal. On Unix the measured owner
+//! keeps its dedicated cleanup process group, but temporarily owns the terminal foreground so
+//! its raw-mode and capability probes cannot be job-control stopped. No process-name-wide cleanup
+//! is ever performed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -22,6 +24,222 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind}
 const SCHEMA: &str = "ytt.tui-perf.samples.v1";
 const RESOURCE_SCHEMA: &str = "ytt.tui-perf.resources.v2";
 const CLEANUP_SCOPE: &str = "dedicated_owner_process_group_and_observed_exact_descendants";
+
+#[cfg(unix)]
+fn tcsetpgrp_blocking_sigttou(fd: libc::c_int, group: libc::pid_t) -> std::io::Result<()> {
+    let mut blocked = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+    // SAFETY: `blocked` points to writable storage for one sigset_t.
+    if unsafe { libc::sigemptyset(blocked.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: sigemptyset initialized the complete value above.
+    let mut blocked = unsafe { blocked.assume_init() };
+    // SAFETY: `blocked` is initialized and SIGTTOU is a valid signal number.
+    if unsafe { libc::sigaddset(&mut blocked, libc::SIGTTOU) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut previous = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+    // SAFETY: both mask pointers are valid; pthread_sigmask initializes `previous` on success.
+    let block_error =
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, previous.as_mut_ptr()) };
+    if block_error != 0 {
+        return Err(std::io::Error::from_raw_os_error(block_error));
+    }
+    // SAFETY: the successful pthread_sigmask call initialized the complete previous mask.
+    let previous = unsafe { previous.assume_init() };
+    // SAFETY: the caller supplies a controlling-terminal fd and a positive process group.
+    let foreground_result = unsafe { libc::tcsetpgrp(fd, group) };
+    let foreground_error = (foreground_result != 0).then(std::io::Error::last_os_error);
+    // SAFETY: `previous` is the exact initialized mask returned above.
+    let restore_error =
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut()) };
+    if let Some(error) = foreground_error {
+        return Err(error);
+    }
+    if restore_error != 0 {
+        return Err(std::io::Error::from_raw_os_error(restore_error));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn child_claim_terminal_foreground(fd: libc::c_int) -> std::io::Result<()> {
+    // Only async-signal-safe libc calls run here: this function is called from `pre_exec` after
+    // fork and before exec, while the parent may have other threads.
+    // SAFETY: zero selects the calling child for both PID and process group.
+    if unsafe { libc::setpgid(0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: getpgrp has no preconditions and cannot fail.
+    let owner_group = unsafe { libc::getpgrp() };
+    tcsetpgrp_blocking_sigttou(fd, owner_group)
+}
+
+#[cfg(unix)]
+fn validate_sampler_foreground(
+    producer_group: libc::pid_t,
+    foreground_group: libc::pid_t,
+) -> Result<(), String> {
+    if producer_group <= 0 || foreground_group <= 0 {
+        return Err("terminal process-group identities must be positive".to_string());
+    }
+    if foreground_group != producer_group {
+        return Err(format!(
+            "sampler process group {producer_group} is not the terminal foreground group \
+             {foreground_group}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+struct TerminalForegroundGuard {
+    fd: libc::c_int,
+    producer_group: libc::pid_t,
+    owner_group: Option<libc::pid_t>,
+    armed: bool,
+    restored: bool,
+}
+
+#[cfg(unix)]
+impl TerminalForegroundGuard {
+    fn prepare() -> Result<Self, String> {
+        let fd = libc::STDIN_FILENO;
+        // SAFETY: getpgrp has no preconditions and cannot fail.
+        let producer_group = unsafe { libc::getpgrp() };
+        // SAFETY: fd names inherited stdin, required by this sampler to be a controlling terminal.
+        let foreground_group = unsafe { libc::tcgetpgrp(fd) };
+        if foreground_group < 0 {
+            return Err(format!(
+                "inspect sampler terminal foreground group: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        validate_sampler_foreground(producer_group, foreground_group)?;
+        Ok(Self {
+            fd,
+            producer_group,
+            owner_group: None,
+            armed: false,
+            restored: false,
+        })
+    }
+
+    fn fd(&self) -> libc::c_int {
+        self.fd
+    }
+
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    fn confirm_owner(&mut self, owner_pid: u32) -> Result<(), String> {
+        let owner_group = libc::pid_t::try_from(owner_pid)
+            .map_err(|_| format!("owner PID {owner_pid} does not fit pid_t"))?;
+        self.owner_group = Some(owner_group);
+        // SAFETY: owner_group is the live child PID returned by Command::spawn.
+        let observed_owner_group = unsafe { libc::getpgid(owner_group) };
+        if observed_owner_group < 0 {
+            return Err(format!(
+                "inspect owner PID {owner_pid} process group: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: fd remains the inherited controlling-terminal descriptor.
+        let foreground_group = unsafe { libc::tcgetpgrp(self.fd) };
+        if foreground_group < 0 {
+            return Err(format!(
+                "inspect owner terminal foreground group: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if owner_group == self.producer_group
+            || observed_owner_group != owner_group
+            || foreground_group != owner_group
+        {
+            return Err(format!(
+                "owner foreground handoff mismatch: producer={}, owner={}, observed owner \
+                 group={}, foreground={foreground_group}",
+                self.producer_group, owner_group, observed_owner_group
+            ));
+        }
+        // A defensive SIGCONT closes any platform race that stopped the exact group before the
+        // child-side pre-exec handoff. Both the PGID and terminal foreground were verified above.
+        // SAFETY: a negative PID targets only the verified dedicated owner process group.
+        if unsafe { libc::kill(-owner_group, libc::SIGCONT) } != 0 {
+            return Err(format!(
+                "resume foreground owner process group {owner_group}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if self.restored || !self.armed {
+            return Ok(());
+        }
+        // SAFETY: fd remains the inherited controlling-terminal descriptor.
+        let foreground_group = unsafe { libc::tcgetpgrp(self.fd) };
+        if foreground_group < 0 {
+            return Err(format!(
+                "inspect terminal before restoring sampler foreground: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if foreground_group == self.producer_group {
+            self.restored = true;
+            return Ok(());
+        }
+        if self
+            .owner_group
+            .is_some_and(|owner_group| foreground_group != owner_group)
+        {
+            return Err(format!(
+                "refusing to replace unexpected terminal foreground group {foreground_group}; \
+                 expected owner {:?} or sampler {}",
+                self.owner_group, self.producer_group
+            ));
+        }
+        tcsetpgrp_blocking_sigttou(self.fd, self.producer_group).map_err(|error| {
+            format!(
+                "restore sampler terminal foreground group {}: {error}",
+                self.producer_group
+            )
+        })?;
+        // SAFETY: fd remains the same controlling-terminal descriptor just updated above.
+        let restored_group = unsafe { libc::tcgetpgrp(self.fd) };
+        if restored_group != self.producer_group {
+            return Err(format!(
+                "sampler terminal foreground restore did not stick: expected {}, observed \
+                 {restored_group}",
+                self.producer_group
+            ));
+        }
+        self.restored = true;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalForegroundGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+#[cfg(unix)]
+fn merge_terminal_restore_error(
+    foreground: &mut TerminalForegroundGuard,
+    original: String,
+) -> String {
+    match foreground.restore() {
+        Ok(()) => original,
+        Err(restore) => {
+            format!("{original}; restoring sampler terminal foreground also failed: {restore}")
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Args {
@@ -463,6 +681,8 @@ fn run(args: Args) -> Result<(), String> {
         &last_descendant_identities,
         false,
     )?;
+    #[cfg(unix)]
+    let mut terminal_foreground = TerminalForegroundGuard::prepare()?;
     let mut owner_command = Command::new(&args.binary);
     owner_command
         .args(&args.child_args)
@@ -471,21 +691,50 @@ fn run(args: Args) -> Result<(), String> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     #[cfg(unix)]
-    owner_command.process_group(0);
-    let mut child = owner_command
-        .spawn()
-        .map_err(|e| format!("launch {}: {e}", args.binary.display()))?;
+    {
+        let terminal_fd = terminal_foreground.fd();
+        // SAFETY: the closure calls only async-signal-safe libc operations and constructs no
+        // heap-backed state between fork and exec.
+        unsafe {
+            owner_command.pre_exec(move || child_claim_terminal_foreground(terminal_fd));
+        }
+        terminal_foreground.arm();
+    }
+    let mut child = match owner_command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let error = format!("launch {}: {error}", args.binary.display());
+            #[cfg(unix)]
+            let error = merge_terminal_restore_error(&mut terminal_foreground, error);
+            return Err(error);
+        }
+    };
     let root_pid = child.id();
+    macro_rules! fail_after_startup_cleanup {
+        ($partial:expr, $error:expr) => {{
+            let error = cleanup_after_startup_error(
+                &args,
+                &producer_identity,
+                $partial,
+                &mut child,
+                $error,
+            );
+            #[cfg(unix)]
+            let error = merge_terminal_restore_error(&mut terminal_foreground, error);
+            return Err(error);
+        }};
+    }
+    #[cfg(unix)]
+    match terminal_foreground.confirm_owner(root_pid) {
+        Ok(()) => {}
+        Err(error) => {
+            fail_after_startup_cleanup!(None, error);
+        }
+    };
     let partial_owner = match wait_for_partial_process_identity(root_pid, &mut child) {
         Ok(identity) => identity,
         Err(error) => {
-            return Err(cleanup_after_startup_error(
-                &args,
-                &producer_identity,
-                None,
-                &mut child,
-                error,
-            ));
+            fail_after_startup_cleanup!(None, error);
         }
     };
     if let Err(error) = write_live_identity(
@@ -498,24 +747,12 @@ fn run(args: Args) -> Result<(), String> {
         &last_descendant_identities,
         false,
     ) {
-        return Err(cleanup_after_startup_error(
-            &args,
-            &producer_identity,
-            Some(&partial_owner),
-            &mut child,
-            error,
-        ));
+        fail_after_startup_cleanup!(Some(&partial_owner), error);
     }
     let owner_identity = match wait_for_process_identity(root_pid, &binary_hash, &mut child) {
         Ok(identity) => identity,
         Err(error) => {
-            return Err(cleanup_after_startup_error(
-                &args,
-                &producer_identity,
-                Some(&partial_owner),
-                &mut child,
-                error,
-            ));
+            fail_after_startup_cleanup!(Some(&partial_owner), error);
         }
     };
     if let Err(error) = write_live_identity(
@@ -528,25 +765,13 @@ fn run(args: Args) -> Result<(), String> {
         &last_descendant_identities,
         false,
     ) {
-        return Err(cleanup_after_startup_error(
-            &args,
-            &producer_identity,
-            Some(&partial_owner),
-            &mut child,
-            error,
-        ));
+        fail_after_startup_cleanup!(Some(&partial_owner), error);
     }
 
     if let Some(path) = &args.pid_file
         && let Err(error) = write_pid_file(path, root_pid)
     {
-        return Err(cleanup_after_startup_error(
-            &args,
-            &producer_identity,
-            Some(&partial_owner),
-            &mut child,
-            error,
-        ));
+        fail_after_startup_cleanup!(Some(&partial_owner), error);
     }
     let barrier_result = if let Some(path) = &args.controller_ready_file {
         wait_for_controller_ready(
@@ -631,6 +856,17 @@ fn run(args: Args) -> Result<(), String> {
             Err(error) => format!(
                 "{error}; publishing completed cleanup proof also failed: {cleanup_proof_error}"
             ),
+        });
+    }
+    #[cfg(unix)]
+    if let Err(foreground_error) = terminal_foreground.restore() {
+        result = Err(match result {
+            Ok(()) => foreground_error,
+            Err(error) => {
+                format!(
+                    "{error}; restoring sampler terminal foreground also failed: {foreground_error}"
+                )
+            }
         });
     }
     if let Err(message) = &result {
@@ -2724,6 +2960,8 @@ mod tests {
     use std::process::Child;
     use std::sync::mpsc;
 
+    #[cfg(unix)]
+    use super::validate_sampler_foreground;
     use super::{
         Aggregate, Args, LiveProcessIdentity, MeasuredMpvProof, MpvIdentity, RoleSample,
         controller_ready_matches_exact_identity, cpu_interval_overlap,
@@ -2762,6 +3000,14 @@ mod tests {
                 let _ = child.wait();
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_handoff_requires_the_sampler_to_start_in_foreground() {
+        assert!(validate_sampler_foreground(10, 10).is_ok());
+        assert!(validate_sampler_foreground(10, 12).is_err());
+        assert!(validate_sampler_foreground(0, 10).is_err());
     }
 
     #[test]
