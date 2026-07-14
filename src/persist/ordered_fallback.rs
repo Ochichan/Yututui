@@ -97,15 +97,14 @@ impl PersistHandle {
         let operation = PendingOperation::save(snapshot, self.order_source.accept());
         let kind = operation.kind();
         let order = operation.order;
-        if let Err(PanicShadowSealed) = self
-            .panic_shadow
-            .publish(PanicOwnedOperation::Pending(Arc::new(operation.clone())))
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "panic-time persistence frontier is sealed",
-            ));
-        }
+        let operation = publish_pending_operation(&self.panic_shadow, operation).map_err(
+            |PanicShadowSealed| {
+                std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "panic-time persistence frontier is sealed",
+                )
+            },
+        )?;
         let prepared = match operation.panic_operation() {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -135,7 +134,7 @@ impl PersistHandle {
                     "ordered persistence fallback was superseded before admission",
                 ));
             }
-            pending.insert(kind, operation);
+            pending.insert_owned(operation);
         }
 
         if !retain_newest_inflight(&self.inflight, prepared.clone()) {
@@ -182,7 +181,7 @@ impl PersistHandle {
         }
     }
 
-    fn retain_ordered_operation(&self, operation: PendingOperation) {
+    fn retain_ordered_operation(&self, operation: ShadowCoveredOperation) {
         let kind = operation.kind();
         let order = operation.order;
         let mut pending = lock(&self.pending);
@@ -190,7 +189,7 @@ impl PersistHandle {
             .get(&kind)
             .is_none_or(|current| current.order <= order)
         {
-            pending.insert(kind, operation);
+            pending.insert_owned(operation);
         }
         drop(pending);
         self.dirty.notify_one();

@@ -103,7 +103,7 @@ fn debounce_windows_match_store_durability_policy() {
 
 #[test]
 fn pending_lock_recovers_from_poisoned_mutex() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
 
     let _ = std::panic::catch_unwind(AssertUnwindSafe({
         let pending = Arc::clone(&pending);
@@ -388,7 +388,7 @@ fn stale_journal_completion_cannot_replace_newer_delete_or_save() {
     let dir = temp_dir("stale-journal-completion");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("tiny.json");
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
 
     let old_save_order = journal_order(10, 1);
     lock(&pending).insert(
@@ -892,7 +892,7 @@ fn delayed_old_cross_instance_writer_cannot_overtake_newer_frontier() {
             Ok(())
         }),
     );
-    delayed_old.journaled = true;
+    delayed_old.resolve_journal_for_test();
     write_operation_durable(&delayed_old).unwrap();
     assert_eq!(writes.load(Ordering::SeqCst), 0);
 
@@ -1006,7 +1006,7 @@ fn process_epoch_and_acceptance_sequence_exhaustion_fail_explicitly() {
 
 #[tokio::test]
 async fn write_stores_clears_stale_due_entries_when_snapshot_is_missing() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let mut due = HashMap::from([(StoreKind::Library, tokio::time::Instant::now())]);
     let mut retries = HashMap::new();
     let events = Arc::new(Mutex::new(None));
@@ -1019,7 +1019,7 @@ async fn write_stores_clears_stale_due_entries_when_snapshot_is_missing() {
 
 #[test]
 fn queued_saves_are_latest_wins_without_extending_deadline() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let mut due = HashMap::new();
     let mut created = crate::playlists::Playlists::default();
     created.create("Focus").expect("playlist created");
@@ -1040,7 +1040,7 @@ fn queued_saves_are_latest_wins_without_extending_deadline() {
     let guard = lock(&pending);
     let Some(OwnedSnapshot::Playlists(playlists)) = guard
         .get(&StoreKind::Playlists)
-        .and_then(PendingOperation::snapshot)
+        .and_then(|operation| operation.snapshot())
     else {
         panic!("expected playlists snapshot");
     };
@@ -1051,7 +1051,7 @@ fn queued_saves_are_latest_wins_without_extending_deadline() {
 
 #[tokio::test]
 async fn write_stores_requeues_failed_snapshot_and_retries_until_success() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let mut due = HashMap::from([(StoreKind::Config, tokio::time::Instant::now())]);
     let mut retries = HashMap::new();
     let events = Arc::new(Mutex::new(None));
@@ -1090,7 +1090,7 @@ async fn write_stores_requeues_failed_snapshot_and_retries_until_success() {
 
 #[tokio::test]
 async fn panicking_blocking_writer_is_requeued_and_can_succeed_on_retry() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let mut due = HashMap::from([(StoreKind::Config, tokio::time::Instant::now())]);
     let mut retries = HashMap::new();
     let events = Arc::new(Mutex::new(None));
@@ -1122,7 +1122,7 @@ async fn panicking_blocking_writer_is_requeued_and_can_succeed_on_retry() {
 
 #[tokio::test]
 async fn disk_full_during_write_preserves_a_newer_coalesced_snapshot() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let captured_events = Arc::new(Mutex::new(Vec::new()));
     let event_log = Arc::clone(&captured_events);
     let events: EventSinkSlot = Arc::new(Mutex::new(Some(Arc::new(move |event| {
@@ -1189,7 +1189,7 @@ async fn disk_full_during_write_preserves_a_newer_coalesced_snapshot() {
         let guard = lock(&pending);
         let Some(OwnedSnapshot::Test { label, .. }) = guard
             .get(&StoreKind::Config)
-            .and_then(PendingOperation::snapshot)
+            .and_then(|operation| operation.snapshot())
         else {
             panic!("expected injected config snapshot");
         };
@@ -1215,7 +1215,7 @@ async fn disk_full_during_write_preserves_a_newer_coalesced_snapshot() {
 
 #[test]
 fn failed_snapshot_does_not_overwrite_newer_pending_snapshot() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let mut due = HashMap::new();
     let mut retries = HashMap::new();
     let events = Arc::new(Mutex::new(None));
@@ -1234,19 +1234,19 @@ fn failed_snapshot_does_not_overwrite_newer_pending_snapshot() {
         &mut due,
         &mut retries,
         &events,
-        pending_save(Snapshot::Test {
+        ShadowCoveredOperation::for_test(pending_save(Snapshot::Test {
             kind: StoreKind::Config,
             label: "older",
             storage_path: None,
             writer: Arc::new(|| Ok(())),
-        }),
+        })),
         "transient".to_owned(),
     );
 
     let guard = lock(&pending);
     let Some(OwnedSnapshot::Test { label, .. }) = guard
         .get(&StoreKind::Config)
-        .and_then(PendingOperation::snapshot)
+        .and_then(|operation| operation.snapshot())
     else {
         panic!("expected test snapshot");
     };
@@ -1301,7 +1301,7 @@ async fn delete_is_latest_wins_with_save_in_both_orders() {
     let (tx, _rx) = crate::util::backpressure::bounded_channel(
         crate::util::backpressure::PERSIST_CONTROL_QUEUE,
     );
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let handle = PersistHandle {
         tx,
         pending: Arc::clone(&pending),
@@ -1309,7 +1309,6 @@ async fn delete_is_latest_wins_with_save_in_both_orders() {
         dirty: Arc::new(Notify::new()),
         events: Arc::new(Mutex::new(None)),
         order_source: test_order_source(),
-        admission_open: Arc::new(AtomicBool::new(true)),
         panic_shadow: Arc::new(PanicShadow::new()),
     };
     let saves = Arc::new(AtomicUsize::new(0));
@@ -1363,7 +1362,7 @@ async fn delete_is_latest_wins_with_save_in_both_orders() {
 
 #[tokio::test]
 async fn delete_queued_during_an_older_save_runs_after_that_save() {
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let events = Arc::new(Mutex::new(None));
     let order = Arc::new(Mutex::new(Vec::new()));
     let save_order = Arc::clone(&order);
@@ -1416,7 +1415,6 @@ async fn delete_queued_during_an_older_save_runs_after_that_save() {
         dirty: Arc::new(Notify::new()),
         events: Arc::clone(&events),
         order_source: test_order_source(),
-        admission_open: Arc::new(AtomicBool::new(true)),
         panic_shadow: Arc::new(PanicShadow::new()),
     };
     let delete_order = Arc::clone(&order);
@@ -1475,7 +1473,7 @@ async fn saturated_control_queue_cannot_lose_delete_before_immediate_flush() {
         tx.try_send(PersistMsg::Flush(ack))
             .expect("prefill persist control queue");
     }
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
     let dirty = Arc::new(Notify::new());
     let events = Arc::new(Mutex::new(None));
@@ -1486,7 +1484,6 @@ async fn saturated_control_queue_cannot_lose_delete_before_immediate_flush() {
         dirty: Arc::clone(&dirty),
         events: Arc::clone(&events),
         order_source: test_order_source(),
-        admission_open: Arc::new(AtomicBool::new(true)),
         panic_shadow: Arc::new(PanicShadow::new()),
     };
     let deletes = Arc::new(AtomicUsize::new(0));

@@ -41,6 +41,8 @@ mod panic_ownership;
 mod panic_shadow;
 #[path = "persist/recovery.rs"]
 mod recovery;
+#[path = "persist/snapshot_state.rs"]
+mod snapshot_state;
 #[path = "persist/startup.rs"]
 mod startup;
 #[path = "persist/writer_lease.rs"]
@@ -74,6 +76,12 @@ pub use recovery::{
 #[cfg(test)]
 pub(crate) use recovery::{
     clear_startup_recovery_error_for_test, latch_startup_recovery_error_for_test,
+};
+#[cfg(test)]
+use snapshot_state::SnapshotPublication;
+use snapshot_state::{
+    JournalCompletion, PendingAction, PendingOperation, PendingQueue, ShadowCoveredOperation,
+    SnapshotAdmission, publish_pending_batch, publish_pending_operation,
 };
 pub use startup::{
     StartupStoreSet, load_startup_store_set, load_verified_startup_state,
@@ -147,6 +155,7 @@ pub enum Snapshot {
     },
 }
 
+#[cfg(test)]
 impl Snapshot {
     fn kind(&self) -> StoreKind {
         match self {
@@ -181,140 +190,7 @@ fn debounce(kind: StoreKind) -> Duration {
     }
 }
 
-enum PendingAction {
-    Save(Arc<OwnedSnapshot>),
-    DeleteRomanizedTitles,
-    #[cfg(test)]
-    TestDeleteRomanizedTitles {
-        deleter: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
-    },
-}
-
-#[derive(Clone)]
-struct PendingOperation {
-    order: JournalOrder,
-    kind: StoreKind,
-    ordering_error: Option<Arc<str>>,
-    journaled: bool,
-    action: Arc<PendingAction>,
-}
-
-impl PendingOperation {
-    fn save(snapshot: Snapshot, accepted: AcceptedJournalOrder) -> Self {
-        let snapshot = OwnedSnapshot::from(snapshot);
-        let kind = snapshot.kind();
-        Self {
-            order: accepted.order,
-            kind,
-            ordering_error: accepted.error,
-            journaled: false,
-            action: Arc::new(PendingAction::Save(Arc::new(snapshot))),
-        }
-    }
-
-    fn new(action: PendingAction, accepted: AcceptedJournalOrder) -> Self {
-        Self {
-            order: accepted.order,
-            kind: StoreKind::RomanizedTitles,
-            ordering_error: accepted.error,
-            journaled: false,
-            action: Arc::new(action),
-        }
-    }
-
-    fn kind(&self) -> StoreKind {
-        self.kind
-    }
-
-    fn label(&self) -> &'static str {
-        match self.action.as_ref() {
-            PendingAction::Save(snapshot) => snapshot.label(),
-            PendingAction::DeleteRomanizedTitles => StoreKind::RomanizedTitles.label(),
-            #[cfg(test)]
-            PendingAction::TestDeleteRomanizedTitles { .. } => "romanized title cache delete",
-        }
-    }
-
-    fn storage_path(&self) -> Option<PathBuf> {
-        match self.action.as_ref() {
-            PendingAction::Save(snapshot) => snapshot.storage_path(),
-            PendingAction::DeleteRomanizedTitles => crate::romanize::cache_path(),
-            #[cfg(test)]
-            PendingAction::TestDeleteRomanizedTitles { .. } => None,
-        }
-    }
-
-    fn write(&self) -> std::io::Result<()> {
-        match self.action.as_ref() {
-            PendingAction::Save(snapshot) => snapshot.write(),
-            PendingAction::DeleteRomanizedTitles => crate::romanize::RomanizeCache::delete_saved(),
-            #[cfg(test)]
-            PendingAction::TestDeleteRomanizedTitles { deleter } => deleter(),
-        }
-    }
-
-    fn ensure_ordering(&self) -> std::io::Result<()> {
-        match &self.ordering_error {
-            Some(error) => Err(std::io::Error::other(error.to_string())),
-            None => Ok(()),
-        }
-    }
-
-    fn debounce(&self) -> Duration {
-        match self.action.as_ref() {
-            PendingAction::Save(_) => debounce(self.kind),
-            PendingAction::DeleteRomanizedTitles => Duration::ZERO,
-            #[cfg(test)]
-            PendingAction::TestDeleteRomanizedTitles { .. } => Duration::ZERO,
-        }
-    }
-
-    fn journal_intent(&self) -> Option<JournalIntent> {
-        if self.ordering_error.is_some() {
-            return None;
-        }
-        match self.action.as_ref() {
-            PendingAction::Save(snapshot) => {
-                let path = snapshot.storage_path()?;
-                let bytes = match snapshot.to_json_bytes() {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        tracing::warn!(
-                            store = snapshot.kind().label(),
-                            error = %error,
-                            "failed to encode persistence intent"
-                        );
-                        return None;
-                    }
-                };
-                Some(JournalIntent::Replace {
-                    order: self.order,
-                    kind: snapshot.kind(),
-                    path,
-                    bytes,
-                })
-            }
-            PendingAction::DeleteRomanizedTitles => Some(JournalIntent::Delete {
-                order: self.order,
-                kind: StoreKind::RomanizedTitles,
-                path: crate::romanize::cache_path()?,
-            }),
-            #[cfg(test)]
-            PendingAction::TestDeleteRomanizedTitles { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    fn snapshot(&self) -> Option<&OwnedSnapshot> {
-        match self.action.as_ref() {
-            PendingAction::Save(snapshot) => Some(snapshot),
-            PendingAction::DeleteRomanizedTitles
-            | PendingAction::TestDeleteRomanizedTitles { .. } => None,
-        }
-    }
-}
-
-type SharedPending = Arc<Mutex<HashMap<StoreKind, PendingOperation>>>;
+type SharedPending = Arc<Mutex<PendingQueue>>;
 type SharedInflight = Arc<Mutex<HashMap<StoreKind, PanicOperation>>>;
 
 const INTENT_JOURNAL_MAX_BYTES: u64 = 1024 * 1024;
@@ -356,7 +232,6 @@ pub struct PersistHandle {
     dirty: Arc<Notify>,
     events: EventSinkSlot,
     order_source: Arc<JournalOrderSource>,
-    admission_open: Arc<std::sync::atomic::AtomicBool>,
     panic_shadow: Arc<PanicShadow>,
 }
 
@@ -378,7 +253,7 @@ pub fn spawn() -> PersistHandle {
     let (tx, rx) = crate::util::backpressure::bounded_channel(
         crate::util::backpressure::PERSIST_CONTROL_QUEUE,
     );
-    let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
     let dirty = Arc::new(Notify::new());
     let events: EventSinkSlot = Arc::new(Mutex::new(None));
@@ -398,7 +273,6 @@ pub fn spawn() -> PersistHandle {
         dirty,
         events,
         order_source,
-        admission_open: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         panic_shadow,
     }
 }
@@ -461,9 +335,7 @@ async fn run_actor(
     }
 }
 
-fn lock(
-    pending: &SharedPending,
-) -> std::sync::MutexGuard<'_, HashMap<StoreKind, PendingOperation>> {
+fn lock(pending: &SharedPending) -> std::sync::MutexGuard<'_, PendingQueue> {
     // A panicking writer can't leave the map half-mutated in a harmful way (it's a
     // plain insert/remove), so recover from poisoning instead of propagating it.
     pending.lock().unwrap_or_else(PoisonError::into_inner)
@@ -522,8 +394,8 @@ async fn journal_pending_operations(pending: &SharedPending) {
         let guard = lock(pending);
         guard
             .values()
-            .filter(|operation| !operation.journaled)
-            .filter_map(PendingOperation::journal_intent)
+            .filter(|operation| operation.publication().needs_journal())
+            .filter_map(|operation| operation.journal_intent())
             .collect()
     };
     if intents.is_empty() {
@@ -534,8 +406,8 @@ async fn journal_pending_operations(pending: &SharedPending) {
         let mut written = Vec::new();
         for intent in intents {
             match write_journal_intent_if_current(&intent, &io_pending) {
-                Ok(JournalAppend::Written(order) | JournalAppend::Superseded(order)) => {
-                    written.push((intent.kind(), order));
+                Ok(JournalAppend::Written(completion) | JournalAppend::Superseded(completion)) => {
+                    written.push(completion);
                 }
                 Ok(JournalAppend::Stale) => {}
                 Err(error) => {
@@ -553,12 +425,8 @@ async fn journal_pending_operations(pending: &SharedPending) {
     match result {
         Ok(written) => {
             let mut guard = lock(pending);
-            for (kind, order) in written {
-                if let Some(operation) = guard.get_mut(&kind)
-                    && operation.order == order
-                {
-                    operation.journaled = true;
-                }
+            for completion in written {
+                guard.resolve_journal(completion);
             }
         }
         Err(error) => tracing::warn!(error = %error, "persistence intent task failed"),
@@ -574,8 +442,8 @@ impl JournalIntent {
 }
 
 enum JournalAppend {
-    Written(JournalOrder),
-    Superseded(JournalOrder),
+    Written(JournalCompletion),
+    Superseded(JournalCompletion),
     Stale,
 }
 
@@ -645,8 +513,14 @@ fn write_journal_intent_if_current(
     }
     let state = replace_journal_with_record_locked(kind, path, &record)?;
     match verify_intent_state(&state, intent.order())? {
-        IntentState::Current => Ok(JournalAppend::Written(intent.order())),
-        IntentState::Superseded => Ok(JournalAppend::Superseded(intent.order())),
+        IntentState::Current => Ok(JournalAppend::Written(JournalCompletion::confirmed(
+            kind,
+            intent.order(),
+        ))),
+        IntentState::Superseded => Ok(JournalAppend::Superseded(JournalCompletion::confirmed(
+            kind,
+            intent.order(),
+        ))),
     }
 }
 
@@ -1250,11 +1124,10 @@ fn write_operation_durable_using(
     let Some(path) = operation.storage_path() else {
         return write();
     };
-    operation.ensure_ordering()?;
+    operation.publication().ensure_ordering()?;
     let kind = operation.kind();
     let _lock = acquire_intent_lock(&path)?;
-    let mut journaled = operation.journaled;
-    if !journaled {
+    if operation.publication().needs_journal() {
         let intent = operation
             .journal_intent()
             .ok_or_else(|| std::io::Error::other("failed to prepare persistence journal intent"))?;
@@ -1263,21 +1136,16 @@ fn write_operation_durable_using(
         if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
             return Ok(());
         }
-        journaled = true;
     }
-    if journaled {
-        let state = read_journal_state(kind, &path)?;
-        if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
-            // A newer accepted operation (possibly from another process) superseded this one.
-            // Treat it as settled without touching the store; its unique sidecar was discarded
-            // by compaction only after the newer record became durable.
-            return Ok(());
-        }
+    let state = read_journal_state(kind, &path)?;
+    if verify_intent_state(&state, operation.order)? == IntentState::Superseded {
+        // A newer accepted operation (possibly from another process) superseded this one.
+        // Treat it as settled without touching the store; its unique sidecar was discarded
+        // by compaction only after the newer record became durable.
+        return Ok(());
     }
     write()?;
-    if journaled {
-        commit_journal_generation_locked(kind, &path, operation.order)?;
-    }
+    commit_journal_generation_locked(kind, &path, operation.order)?;
     Ok(())
 }
 
@@ -1302,7 +1170,7 @@ fn requeue_failed_operation(
     due: &mut HashMap<StoreKind, tokio::time::Instant>,
     retries: &mut RetryMap,
     events: &EventSinkSlot,
-    operation: PendingOperation,
+    operation: ShadowCoveredOperation,
     error: String,
 ) {
     let kind = operation.kind();
@@ -1332,27 +1200,24 @@ fn requeue_failed_operation(
         .unwrap_or(0);
 
     let mut guard = lock(pending);
-    match guard.entry(kind) {
-        std::collections::hash_map::Entry::Occupied(_) => {
-            tracing::warn!(
-                error = %last_error,
-                retry_count,
-                retry_in_ms,
-                failure_age_ms,
-                "failed to save {label}; newer snapshot is already pending"
-            );
-        }
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(operation);
-            due.insert(kind, retry_at);
-            tracing::warn!(
-                error = %last_error,
-                retry_count,
-                retry_in_ms,
-                failure_age_ms,
-                "failed to save {label}; retry scheduled"
-            );
-        }
+    if guard.contains_key(&kind) {
+        tracing::warn!(
+            error = %last_error,
+            retry_count,
+            retry_in_ms,
+            failure_age_ms,
+            "failed to save {label}; newer snapshot is already pending"
+        );
+    } else {
+        guard.insert_owned(operation);
+        due.insert(kind, retry_at);
+        tracing::warn!(
+            error = %last_error,
+            retry_count,
+            retry_in_ms,
+            failure_age_ms,
+            "failed to save {label}; retry scheduled"
+        );
     }
     drop(guard);
 
