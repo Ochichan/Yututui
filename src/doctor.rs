@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_800;
+const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_400;
 
 #[path = "doctor/directory_probe.rs"]
 mod directory_probe;
@@ -1312,11 +1312,15 @@ mod tests {
                 "halfblocks"
             );
             assert_eq!(
-                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260799")),
+                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260399")),
                 "halfblocks"
             );
             assert_eq!(
-                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260800")),
+                terminal_image_protocol(Some("konsole-256color"), None, false, Some("260400")),
+                "sixel_versioned"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), None, false, Some("260401")),
                 "sixel_versioned"
             );
             assert_eq!(
@@ -1401,7 +1405,7 @@ mod tests {
             );
         });
 
-        with_terminal_env(&[("KONSOLE_VERSION", Some("260800"))], || {
+        with_terminal_env(&[("KONSOLE_VERSION", Some("260400"))], || {
             assert!(terminal_native_image_hint(None, None, false));
             assert_eq!(
                 terminal_image_override_suggestions(None, None, false),
