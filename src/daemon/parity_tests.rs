@@ -25,6 +25,7 @@ use crate::api::Song;
 use crate::app::{App, Cmd, Msg, PlayerControl, PlayerMsg};
 use crate::config::Config;
 use crate::library::Library;
+use crate::media::MediaCommand;
 use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::remote::proto::{
     GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RateChange, RemoteCommand,
@@ -751,6 +752,105 @@ async fn daemon_conflict_disables_remain_allowed() {
         assert!(effects.is_empty());
         assert!(status.streaming);
         assert_eq!(status.repeat, Repeat::Off);
+    }
+}
+
+#[tokio::test]
+async fn media_option_commands_keep_both_owners_in_lockstep() {
+    let (mut app, mut engine) = hermetic_pair();
+    for (step, command) in [
+        ("media shuffle on", MediaCommand::SetShuffle(true)),
+        ("media shuffle same-value", MediaCommand::SetShuffle(true)),
+        ("media shuffle off", MediaCommand::SetShuffle(false)),
+        ("media repeat all", MediaCommand::SetRepeat(Repeat::All)),
+        ("media repeat one", MediaCommand::SetRepeat(Repeat::One)),
+        ("media repeat off", MediaCommand::SetRepeat(Repeat::Off)),
+        ("media volume fractional", MediaCommand::SetVolume(0.37)),
+        ("media volume upper clamp", MediaCommand::SetVolume(9.0)),
+        ("media volume lower clamp", MediaCommand::SetVolume(-3.0)),
+        ("media volume NaN", MediaCommand::SetVolume(f64::NAN)),
+        (
+            "media volume infinity",
+            MediaCommand::SetVolume(f64::INFINITY),
+        ),
+    ] {
+        let app_commands = app.update(Msg::Media(command.clone()));
+        admit_app_player_intents(&mut app, app_commands);
+        let (shutdown, effects) = engine.handle_media(command).await;
+        assert!(!shutdown, "{step} requested shutdown");
+        assert!(effects.is_empty(), "{step} emitted daemon effects");
+        assert_parity(step, &app, &engine);
+    }
+}
+
+#[tokio::test]
+async fn media_repeat_streaming_conflict_rejects_in_lockstep() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    app.status.text = "before".to_owned();
+    app.dirty = false;
+    let (response, shutdown, _) = engine
+        .handle_remote(RemoteCommand::Streaming {
+            state: ToggleState::On,
+        })
+        .await;
+    assert!(response.ok && !shutdown, "test setup must enable streaming");
+    assert_parity("media repeat streaming setup", &app, &engine);
+
+    let app_commands = app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::All)));
+    let (shutdown, effects) = engine
+        .handle_media(MediaCommand::SetRepeat(Repeat::All))
+        .await;
+
+    assert!(app_commands.is_empty(), "App rejection emitted effects");
+    assert!(!shutdown);
+    assert!(effects.is_empty(), "daemon rejection emitted effects");
+    assert!(matches!(
+        app.status.text.as_str(),
+        "Can't use repeat while autoplay is on" | "자동재생 중에는 반복을 켤 수 없어요"
+    ));
+    assert!(app.dirty, "the App rejection toast must redraw");
+    assert_parity("media repeat streaming rejection", &app, &engine);
+
+    // Legacy sessions may restore both modes enabled; turning repeat off must recover
+    // the invariant in both owners without disabling streaming.
+    let (mut app, _) = hermetic_pair();
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    app.queue.repeat = Repeat::One;
+    let mut engine = engine_with_modes(Repeat::One, true).await;
+    let _ = app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::Off)));
+    let (shutdown, effects) = engine
+        .handle_media(MediaCommand::SetRepeat(Repeat::Off))
+        .await;
+    assert!(!shutdown && effects.is_empty());
+    assert!(app.autoplay_streaming && app.queue.repeat == Repeat::Off);
+    assert_parity("media repeat legacy disable", &app, &engine);
+}
+
+#[tokio::test]
+async fn media_shuffle_and_repeat_are_radio_noops_in_lockstep() {
+    let (mut app, mut engine) = hermetic_pair();
+    let mut station = Song::remote("radio", "Radio", "", "");
+    station.playable = Some(crate::api::PlayableRef::RadioStream {
+        url: "https://radio.example/stream".to_owned(),
+    });
+    let mut queue = Queue::default();
+    queue.set(vec![station], 0);
+    let snapshot = queue.snapshot();
+    app.queue.restore_snapshot(snapshot.clone());
+    engine.restore_queue_snapshot(snapshot, RNG_SEED);
+
+    for (step, command) in [
+        ("radio media shuffle", MediaCommand::SetShuffle(true)),
+        ("radio media repeat", MediaCommand::SetRepeat(Repeat::All)),
+    ] {
+        assert!(app.update(Msg::Media(command.clone())).is_empty());
+        let (shutdown, effects) = engine.handle_media(command).await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_parity(step, &app, &engine);
     }
 }
 

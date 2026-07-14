@@ -190,10 +190,14 @@ impl App {
                 // Same radio guard as SetShuffle — and never remote-trigger a re-sync. Also
                 // enforce the music-mode invariant: an OS widget can't enable repeat while
                 // autoplay streaming is on.
-                if self.current_is_radio_stream()
-                    || self.queue.repeat == mode
-                    || mode.set_blocked_by_streaming(self.autoplay_streaming)
-                {
+                if self.current_is_radio_stream() {
+                    return Vec::new();
+                }
+                if mode.set_blocked_by_streaming(self.autoplay_streaming) {
+                    self.show_repeat_streaming_conflict();
+                    return Vec::new();
+                }
+                if self.queue.repeat == mode {
                     return Vec::new();
                 }
                 self.queue.repeat = mode;
@@ -805,6 +809,56 @@ mod tests {
         assert!(cmds.iter().any(
             |c| matches!(c, Cmd::Persist(PersistCmd::Config(cfg)) if cfg.repeat == Repeat::One)
         ));
+        assert!(
+            app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::One)))
+                .is_empty(),
+            "same repeat value must not churn persisted config"
+        );
+    }
+
+    #[test]
+    fn repeat_from_media_session_rejects_streaming_conflict_with_toast() {
+        let mut app = app_with_queue(3);
+        app.autoplay_streaming = true;
+        app.config.autoplay_streaming = Some(true);
+        app.status.text = "before".to_owned();
+        app.dirty = false;
+
+        let cmds = app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::All)));
+
+        assert!(
+            cmds.is_empty(),
+            "a rejection must not persist or emit effects"
+        );
+        assert_eq!(app.queue.repeat, Repeat::Off);
+        assert_eq!(app.config.repeat, Repeat::Off);
+        assert!(app.autoplay_streaming);
+        assert_eq!(app.config.autoplay_streaming, Some(true));
+        assert!(matches!(
+            app.status.text.as_str(),
+            "Can't use repeat while autoplay is on" | "자동재생 중에는 반복을 켤 수 없어요"
+        ));
+        assert!(app.dirty, "the localized rejection notice must redraw");
+
+        // A legacy/inconsistent state may already contain both modes. Even an
+        // idempotent MPRIS write must explain why repeat is incompatible instead of
+        // silently disappearing behind the same-value no-op.
+        app.queue.repeat = Repeat::All;
+        app.config.repeat = Repeat::All;
+        app.status.text = "before same-value conflict".to_owned();
+        app.dirty = false;
+
+        let cmds = app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::All)));
+
+        assert!(cmds.is_empty());
+        assert_eq!(app.queue.repeat, Repeat::All);
+        assert_eq!(app.config.repeat, Repeat::All);
+        assert!(app.autoplay_streaming);
+        assert!(matches!(
+            app.status.text.as_str(),
+            "Can't use repeat while autoplay is on" | "자동재생 중에는 반복을 켤 수 없어요"
+        ));
+        assert!(app.dirty, "same-value conflict notice must redraw");
     }
 
     #[test]

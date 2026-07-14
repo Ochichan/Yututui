@@ -96,6 +96,17 @@ pub(in crate::app) struct YidMemo {
 }
 
 impl App {
+    /// Show the shared music-mode rejection used when a local or media-session
+    /// control tries to enable repeat while autoplay streaming is active.
+    pub(in crate::app) fn show_repeat_streaming_conflict(&mut self) {
+        self.status.text = t!(
+            "Can't use repeat while autoplay is on",
+            "자동재생 중에는 반복을 켤 수 없어요"
+        )
+        .to_owned();
+        self.dirty = true;
+    }
+
     /// Handle an mpv playback error: self-heal a stale-yt-dlp extraction failure
     /// once, otherwise skip the bad track (with a circuit breaker after too many in a
     /// row). Extracted verbatim from the `PlayerMsg::Error` dispatch arm; the
@@ -710,12 +721,7 @@ impl App {
                     .repeat
                     .cycle_blocked_by_streaming(self.autoplay_streaming)
                 {
-                    self.status.text = t!(
-                        "Can't use repeat while autoplay is on",
-                        "자동재생 중에는 반복을 켤 수 없어요"
-                    )
-                    .to_owned();
-                    self.dirty = true;
+                    self.show_repeat_streaming_conflict();
                     return Vec::new();
                 }
                 self.queue.cycle_repeat();
