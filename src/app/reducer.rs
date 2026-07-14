@@ -16,6 +16,7 @@ impl App {
         // without a terminal resize). Apply the bridged tier before routing this event so a
         // hidden Search/DJ input cannot consume the first global key after entering Mini.
         self.sync_ui_tier();
+        let beginner_before = self.onboarding_observation();
         let admitted_seek = matches!(
             &msg,
             Msg::Player(PlayerMsg::IntentAdmitted(commit)) if commit.is_seek()
@@ -31,7 +32,8 @@ impl App {
         // an error set by one of the ~40 plain `self.status.text = …` sites can never inherit a
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
-        let cmds = self.dispatch(msg);
+        let mut cmds = self.dispatch(msg);
+        cmds.extend(self.observe_beginner_tutorial(beginner_before));
         if self.status.text.is_empty()
             && let Some(warning) = self.recorder.health_warning.as_ref()
         {
@@ -61,6 +63,13 @@ impl App {
         if self.playback.paused != paused_before {
             self.playback.time_pos_at = Some(Instant::now());
         }
+        // Reconcile after admission and navigation, but before animation diffing so the renderer
+        // and lyric flash observe the same stored row. This is also the first point where a real
+        // resize can synchronously promote Mini back to the full Player surface.
+        self.sync_ui_tier();
+        if self.reconcile_lyrics_surface_at(Instant::now()) {
+            self.dirty = true;
+        }
         // One-shot animation feedback, detected centrally for the same reason as the status
         // TTL above: every input path (key, mouse, remote, DJ Gem) changes the same state, so
         // diffing it here means no call site can forget to trigger the matching effect.
@@ -68,9 +77,9 @@ impl App {
         if animations_were_on && !self.animations().master {
             self.fx.cancel();
         }
+        self.cancel_stale_seekbar_scrub();
         self.sync_art_overlay_state();
         self.sync_art_geometry();
-        self.sync_ui_tier();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
     }
@@ -89,6 +98,33 @@ impl App {
         {
             return Vec::new();
         }
+        // A picker-opening/applying press owns its paired double-click. Check this before the
+        // open-modal route: the second press of a swatch double-click arrives after the first has
+        // opened the picker and must not be reinterpreted against the newly rendered popup.
+        if let Msg::MouseDoubleClick { col, row } = &msg
+            && self.interaction.color_picker_click.take() == Some((*col, *row))
+        {
+            self.dirty = true;
+            return Vec::new();
+        }
+        // The Settings-owned picker captures every pointer event at the dispatcher boundary so
+        // none of the many screen-specific mouse routes can see through the modal.
+        if self.settings_color_picker_is_open() {
+            match &msg {
+                Msg::MouseClick { col, row, .. } | Msg::MouseDoubleClick { col, row } => {
+                    return self.settings_color_picker_mouse_click(*col, *row);
+                }
+                Msg::MouseScroll { up, .. } => {
+                    self.settings_color_picker_scroll(*up, MOUSE_SCROLL_LINES);
+                    return Vec::new();
+                }
+                Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseLeftUp => return Vec::new(),
+                _ => {}
+            }
+        }
         match msg {
             Msg::Noop => return Vec::new(),
             Msg::Key(k) => return self.on_key(k),
@@ -106,6 +142,17 @@ impl App {
             Msg::Resize => {
                 // A centered art band moves with the grid height; ratatui's diff can't
                 // repaint parked native-image bytes, so resync with one full clear.
+                if self.native_art_active() {
+                    self.request_native_image_clear();
+                }
+                self.dirty = true;
+            }
+            Msg::TerminalResize { width, height } => {
+                self.bridges
+                    .ui_tier
+                    .set(crate::ui::layout::tier(ratatui::layout::Rect::new(
+                        0, 0, width, height,
+                    )));
                 if self.native_art_active() {
                     self.request_native_image_clear();
                 }
@@ -176,7 +223,15 @@ impl App {
                         self.dirty = true;
                     }
                 }
-                return self.tick_search_onboarding(Instant::now());
+                if self.expire_lyrics_delay_osd(Instant::now()) {
+                    self.dirty = true;
+                }
+                return Vec::new();
+            }
+            Msg::LyricsTick => {
+                if self.lyrics_tick_at(Instant::now()) {
+                    self.dirty = true;
+                }
             }
             Msg::AnimTick => {
                 // Advance the logical animation phase on every configured tick, but only request
@@ -197,8 +252,9 @@ impl App {
                     // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
                     // reach the interpolation clock, the OS media session, or the seekbar gauge.
                     let t = crate::playback_policy::norm_position(t);
+                    let now = Instant::now();
                     self.playback.time_pos = Some(t);
-                    self.playback.time_pos_at = Some(Instant::now());
+                    self.playback.time_pos_at = Some(now);
                     // Real progress means the current track opened and is playing, so the
                     // auto-skip streak is broken — clear it.
                     if t > 0.0 {
@@ -241,6 +297,25 @@ impl App {
                 }
                 PlayerMsg::FileFormat(format) => {
                     self.playback.file_format = format;
+                }
+                PlayerMsg::AudioDeviceList(devices) => {
+                    return self.on_audio_device_list(devices);
+                }
+                PlayerMsg::AudioDeviceRefreshFailed(error) => {
+                    return self.on_audio_device_refresh_failed(error);
+                }
+                PlayerMsg::AudioDeviceChanged(device) => {
+                    return self.on_audio_device_changed(device);
+                }
+                PlayerMsg::CurrentAudioOutput(output) => {
+                    return self.on_current_audio_output(output);
+                }
+                PlayerMsg::AudioDeviceSelectionResult {
+                    correlation_id,
+                    device,
+                    result,
+                } => {
+                    return self.finish_audio_device_selection(correlation_id, device, result);
                 }
                 PlayerMsg::Paused(p) => {
                     self.playback.paused = p;
@@ -287,7 +362,18 @@ impl App {
                 }
                 PlayerMsg::Error(e) => return self.on_player_error(e),
                 PlayerMsg::TransportClosed(reason) => {
+                    self.audio_output_transport_closed(&reason);
                     return self.recover_player_transport(reason);
+                }
+                PlayerMsg::CacheEmergency {
+                    position_secs,
+                    paused,
+                    reason,
+                } => {
+                    return self.recover_cache_emergency(position_secs, paused, reason);
+                }
+                PlayerMsg::CacheReplacementEmergency { reason } => {
+                    return self.recover_cache_replacement_emergency(reason);
                 }
                 PlayerMsg::IntentAdmitted(commit) => {
                     return self.commit_player_intent(commit);
@@ -469,17 +555,28 @@ impl App {
             }
             Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
-                self.lyrics.loading = false;
                 // Ignore stale results for a track we've already skipped past.
                 if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                    self.lyrics.loading = false;
+                    self.lyrics.initial_osd_pending = !lines.is_empty();
+                    if lines.is_empty() {
+                        self.lyrics.delay_osd_until = None;
+                    }
                     self.lyrics.track = Some(TrackLyrics { video_id, lines });
                     self.dirty = true;
                 }
             }
-            Msg::ArtworkResult { video_id, image } => {
-                self.art.loading = false;
-                // Drop results for a track we've already skipped past.
-                if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+            Msg::ArtworkResult {
+                video_id,
+                quality,
+                image,
+            } => {
+                // Drop results for a track we've already skipped past, and remote results that
+                // belong to the same track's previous quality selection.
+                let current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+                let current_quality = quality.is_none_or(|q| q == self.config.album_art_quality);
+                if current && current_quality {
+                    self.art.loading = false;
                     self.set_artwork(video_id, image);
                     self.dirty = true;
                 }

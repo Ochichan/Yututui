@@ -355,6 +355,14 @@ fn defaults_resolve_to_actions() {
         Some(Action::ToggleLyrics)
     );
     assert_eq!(
+        km.action(KeyContext::Player, parse_chord("z").unwrap()),
+        Some(Action::LyricsDelayEarlier)
+    );
+    assert_eq!(
+        km.action(KeyContext::Player, parse_chord("Z").unwrap()),
+        Some(Action::LyricsDelayLater)
+    );
+    assert_eq!(
         km.action(KeyContext::Player, parse_chord("delete").unwrap()),
         Some(Action::QueueRemove)
     );
@@ -1065,6 +1073,154 @@ fn overrides_round_trip() {
     );
     assert_eq!(
         restored.action(KeyContext::Player, parse_chord("space").unwrap()),
+        None
+    );
+}
+
+#[test]
+fn lyric_delay_bindings_are_editable_and_exposed_on_the_wire() {
+    let km = KeyMap::default();
+    for (action, id, chord) in [
+        (Action::LyricsDelayEarlier, "lyrics_delay_earlier", "z"),
+        (Action::LyricsDelayLater, "lyrics_delay_later", "Z"),
+    ] {
+        assert_eq!(Action::from_id(id), Some(action));
+        assert_ne!(action.human_label(), "?");
+        assert!(editable_entries().contains(&(KeyContext::Player, action)));
+        assert_eq!(km.chord(KeyContext::Player, action), parse_chord(chord));
+        assert_eq!(
+            km.wire_bindings()
+                .get(&format!("player.{id}"))
+                .map(String::as_str),
+            Some(chord)
+        );
+
+        let wire = wire_actions()
+            .into_iter()
+            .find(|entry| entry.context == "player" && entry.id == id)
+            .expect("lyric delay action should be in the wire catalog");
+        assert_eq!(wire.default_chord, chord);
+        assert_ne!(wire.label, "?");
+    }
+}
+
+#[test]
+fn legacy_z_bindings_win_in_player_common_and_global_contexts() {
+    for (override_key, context, existing_action) in [
+        (
+            "player.open_library",
+            KeyContext::Player,
+            Action::OpenLibrary,
+        ),
+        ("common.back", KeyContext::Common, Action::Back),
+        ("global.toggle_help", KeyContext::Global, Action::ToggleHelp),
+    ] {
+        for (chord, delay_action, other_delay, other_chord) in [
+            (
+                "z",
+                Action::LyricsDelayEarlier,
+                Action::LyricsDelayLater,
+                "Z",
+            ),
+            (
+                "Z",
+                Action::LyricsDelayLater,
+                Action::LyricsDelayEarlier,
+                "z",
+            ),
+        ] {
+            let mut overrides = BTreeMap::new();
+            overrides.insert(override_key.to_owned(), chord.to_owned());
+            let km = KeyMap::from_overrides(&overrides);
+            let claimed = match context {
+                KeyContext::Global => km.global_action(parse_chord(chord).unwrap()),
+                _ => km.context_action(context, parse_chord(chord).unwrap()),
+            };
+
+            assert_eq!(claimed, Some(existing_action), "{override_key} on {chord}");
+            assert_eq!(km.chord(KeyContext::Player, delay_action), None);
+            assert_eq!(
+                km.chord(KeyContext::Player, other_delay),
+                parse_chord(other_chord)
+            );
+
+            let saved = km.to_overrides();
+            assert_eq!(
+                saved
+                    .get(&format!("player.{}", delay_action.id()))
+                    .map(String::as_str),
+                Some("")
+            );
+            assert_eq!(saved.get(override_key).map(String::as_str), Some(chord));
+            let restored = KeyMap::from_overrides(&saved);
+            assert_eq!(restored.chord(KeyContext::Player, delay_action), None);
+        }
+    }
+}
+
+#[test]
+fn explicit_lyric_delay_override_bypasses_legacy_default_migration() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert("player.open_library".to_owned(), "z".to_owned());
+    overrides.insert("player.lyrics_delay_earlier".to_owned(), "f8".to_owned());
+    let km = KeyMap::from_overrides(&overrides);
+
+    assert_eq!(
+        km.context_action(KeyContext::Player, parse_chord("z").unwrap()),
+        Some(Action::OpenLibrary)
+    );
+    assert_eq!(
+        km.context_action(KeyContext::Player, parse_chord("f8").unwrap()),
+        Some(Action::LyricsDelayEarlier)
+    );
+    assert_eq!(
+        km.chord(KeyContext::Player, Action::LyricsDelayLater),
+        parse_chord("Z")
+    );
+
+    let saved = km.to_overrides();
+    assert_eq!(
+        saved.get("player.lyrics_delay_earlier").map(String::as_str),
+        Some("f8")
+    );
+    let restored = KeyMap::from_overrides(&saved);
+    assert_eq!(
+        restored.context_action(KeyContext::Player, parse_chord("f8").unwrap()),
+        Some(Action::LyricsDelayEarlier)
+    );
+}
+
+#[test]
+fn lyric_delay_remaps_save_and_restore() {
+    let mut km = KeyMap::default();
+    km.rebind(
+        KeyContext::Player,
+        Action::LyricsDelayEarlier,
+        parse_chord("f8").unwrap(),
+    )
+    .unwrap();
+    km.rebind(
+        KeyContext::Player,
+        Action::LyricsDelayLater,
+        parse_chord("f9").unwrap(),
+    )
+    .unwrap();
+
+    let restored = KeyMap::from_overrides(&km.to_overrides());
+    assert_eq!(
+        restored.context_action(KeyContext::Player, parse_chord("f8").unwrap()),
+        Some(Action::LyricsDelayEarlier)
+    );
+    assert_eq!(
+        restored.context_action(KeyContext::Player, parse_chord("f9").unwrap()),
+        Some(Action::LyricsDelayLater)
+    );
+    assert_eq!(
+        restored.context_action(KeyContext::Player, parse_chord("z").unwrap()),
+        None
+    );
+    assert_eq!(
+        restored.context_action(KeyContext::Player, parse_chord("Z").unwrap()),
         None
     );
 }

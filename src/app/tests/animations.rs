@@ -7,6 +7,8 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
     // Master + one effect on → animations are logically running.
     app.config.animations.master = true;
     app.config.animations.rain = true;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
     assert!(
         app.config.animations.pause_unfocused,
         "pause_unfocused defaults on"
@@ -36,6 +38,8 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
     app.playback.paused = false;
     app.config.animations.master = true;
     app.config.animations.rain = true;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
 
     assert!(app.animation_active());
 
@@ -536,6 +540,27 @@ fn opening_a_popup_arms_the_fade_in_once() {
 }
 
 #[test]
+fn switching_search_source_to_audio_output_rearms_popup_fade() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.popup_fade = true;
+    app.update(Msg::Resize);
+
+    app.dropdowns.search_source_open = true;
+    app.update(Msg::Resize);
+    assert!(app.fx.popup.is_some());
+
+    app.fx.popup = None;
+    app.dropdowns.search_source_open = false;
+    let _ = app.open_audio_output_picker();
+    app.update(Msg::Resize);
+    assert!(
+        app.fx.popup.is_some(),
+        "search-source and audio-output overlays need distinct popup bits"
+    );
+}
+
+#[test]
 fn caret_and_ambient_effects_wake_the_clock_off_the_player() {
     let mut app = App::new(100);
     app.config.animations.master = true;
@@ -590,6 +615,8 @@ fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
     app.config.animations.master = true;
     app.config.animations.rain = true;
     app.config.animations.fps = 30;
+    app.bridges.canvas_active.set(true);
+    app.bridges.canvas_heavy_active.set(true);
 
     assert_eq!(app.animation_tick_fps(), 30);
     assert_eq!(app.animation_draw_fps(), 20);
@@ -719,6 +746,8 @@ async fn delayed_interval_skip_matches_one_tick_oracle_for_canvas_marquee_and_fx
         app.config.animations.master = true;
         app.config.animations.rain = true;
         app.config.animations.fps = 30;
+        app.bridges.canvas_active.set(true);
+        app.bridges.canvas_heavy_active.set(true);
         assert_eq!(app.animation_draw_fps(), 20);
         app
     }

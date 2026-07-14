@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT,
-    SpotifyImportMode, default_cookies_file, default_download_dir,
+    AlbumArtQuality, AnimationsConfig, BeginnerTutorialProgress, Config, LocalRootConfig,
+    LongFormSeekOptimization, MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT, SpotifyImportMode,
+    default_cookies_file, default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -24,8 +25,13 @@ use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
 mod actions;
+mod color_picker;
 mod field_meta;
 pub use actions::{FieldKind, PersonalDataExportStatus};
+pub use color_picker::{
+    COLOR_PICKER_CHOICE_COUNT, ColorPickerChoice, ColorPickerSelection, ColorPickerState,
+    color_picker_choice,
+};
 
 #[cfg(test)]
 mod spotify_tests;
@@ -99,6 +105,7 @@ impl SettingsTab {
     pub fn fields(self) -> Vec<Field> {
         match self {
             SettingsTab::General => vec![
+                Field::BeginnerMode,
                 Field::Language,
                 Field::SearchSource,
                 Field::StreamingSource,
@@ -136,15 +143,14 @@ impl SettingsTab {
                     Field::MediaControls,
                     Field::AutoContinueVideos,
                     Field::VideoLayout,
+                    Field::AlbumArtQuality,
                     // Radio-only entry (the recording popup); filtered out by
                     // `SettingsState::fields` when not in radio mode. Keep it last in the
                     // "Now Playing" section so the static count below stays partition-correct.
                     Field::RadioRecording,
                     Field::AudioBackend,
-                    Field::AudioMpvOutput,
-                    Field::AudioMpvDevice,
-                    Field::AudioMpvCacheForward,
-                    Field::AudioMpvCacheBack,
+                    Field::AudioOutput,
+                    Field::LongFormSeekOptimization,
                     Field::EqPreset,
                 ];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -239,11 +245,11 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                // 8 = the 7 Now-Playing controls + the radio-only recording entry. When not
-                // in radio mode, `SettingsState::sections` decrements this back to 7 in
+                // 9 = the 8 Now-Playing controls + the radio-only recording entry. When not
+                // in radio mode, `SettingsState::sections` decrements this back to 8 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
-                (t!("Now Playing", "현재 재생"), 8),
-                (t!("Audio backend", "오디오 백엔드"), 5),
+                (t!("Now Playing", "현재 재생"), 9),
+                (t!("Audio backend", "오디오 백엔드"), 3),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             // Animation sections and the fields within each are ordered by average resource
@@ -279,6 +285,8 @@ impl SettingsTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     // General
+    /// Explanatory labels plus the interactive walkthrough on the next writable launch.
+    BeginnerMode,
     /// The UI language (English / 한국어), cycled like any other Select field.
     Language,
     /// Default source selected in the search box.
@@ -330,13 +338,21 @@ pub enum Field {
     /// Which layout the `v` video overlay opens in by default (Compact / Large / Fullscreen);
     /// a Select field cycled like the others. `Shift+V` still cycles the live window.
     VideoLayout,
+    /// Detail level for remote album art rendered inside the terminal.
+    AlbumArtQuality,
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
     RadioRecording,
     /// The selected audio backend. v1 exposes mpv as the only backend.
     AudioBackend,
+    /// Opens the automatically populated local audio-output picker.
+    AudioOutput,
+    // Kept as internal draft/edit compatibility fields; no longer rendered as raw rows.
     AudioMpvOutput,
     AudioMpvDevice,
+    /// Managed long-form seek policy. Auto remains explicitly experimental.
+    LongFormSeekOptimization,
+    /// Hidden legacy advanced fields retained for config and old remote compatibility.
     AudioMpvCacheForward,
     AudioMpvCacheBack,
     // EQ
@@ -572,6 +588,10 @@ pub fn freq_label(i: usize) -> String {
 // No `Debug`: holds the plaintext `gemini_api_key`, so it must not be `{:?}`-printable (see `Config`).
 #[derive(Clone)]
 pub struct SettingsDraft {
+    pub beginner_mode: bool,
+    /// Internal save intent: re-enabling Beginner Mode and Reset All restart the walkthrough at
+    /// Welcome on the next launch. This is projected into `Config`, but is not itself persisted.
+    pub restart_beginner_tutorial: bool,
     pub cookies_file: String,
     pub download_dir: String,
     pub local_include_download_dir: bool,
@@ -580,6 +600,7 @@ pub struct SettingsDraft {
     pub search: SearchConfig,
     pub mouse: bool,
     pub album_art: bool,
+    pub album_art_quality: AlbumArtQuality,
     /// Where the player control block sits (previewed live while Settings is open).
     pub player_bar_position: crate::config::PlayerBarPosition,
     pub autoplay_on_start: bool,
@@ -606,6 +627,7 @@ pub struct SettingsDraft {
     pub audio_backend: crate::config::AudioBackend,
     pub audio_mpv_output: String,
     pub audio_mpv_device: String,
+    pub long_form_seek_optimization: LongFormSeekOptimization,
     pub audio_mpv_cache_forward: String,
     pub audio_mpv_cache_back: String,
     pub autoplay_streaming: bool,
@@ -679,6 +701,7 @@ impl SettingsDraft {
     /// Render the current value of `field` for display.
     pub fn value_display(&self, field: Field) -> String {
         match field {
+            Field::BeginnerMode => toggle_str(self.beginner_mode),
             Field::RadioRecording => self.recording_mode.label(),
             // Each language names itself, so this value is the same regardless of the active
             // UI language (English / 한국어).
@@ -736,6 +759,7 @@ impl SettingsDraft {
             Field::LocalMusicRootRecursive => toggle_str(self.local_music_root_recursive),
             Field::Mouse => toggle_str(self.mouse),
             Field::AlbumArt => toggle_str(self.album_art),
+            Field::AlbumArtQuality => self.album_art_quality.label().to_owned(),
             Field::PlayerBarPosition => self.player_bar_position.label().to_owned(),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::EnqueueNext => toggle_str(self.enqueue_next),
@@ -754,8 +778,16 @@ impl SettingsDraft {
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
             Field::VideoLayout => self.video_layout.label().to_owned(),
             Field::AudioBackend => self.audio_backend.id().to_owned(),
+            Field::AudioOutput => audio_optional_display(&self.audio_mpv_device),
             Field::AudioMpvOutput => audio_optional_display(&self.audio_mpv_output),
             Field::AudioMpvDevice => audio_optional_display(&self.audio_mpv_device),
+            Field::LongFormSeekOptimization => match self.long_form_seek_optimization {
+                LongFormSeekOptimization::Auto => {
+                    t!("Auto (experimental)", "자동 (실험적)").to_owned()
+                }
+                LongFormSeekOptimization::Off => t!("Off", "끔").to_owned(),
+                LongFormSeekOptimization::On => t!("On", "켬").to_owned(),
+            },
             Field::AudioMpvCacheForward => {
                 cache_display(&self.audio_mpv_cache_forward, MPV_CACHE_FORWARD_DEFAULT)
             }
@@ -935,7 +967,11 @@ impl SettingsDraft {
             Field::ListenBrainzToken => Some(&self.listenbrainz_token),
             Field::SpotifyClientId => Some(&self.spotify_client_id),
             Field::SpotifyRedirectPort => Some(&self.spotify_redirect_port),
-            Field::ThemeColor(role) => self.theme.overrides.get(role.id()).map(String::as_str),
+            Field::ThemeColor(role) => self
+                .theme
+                .active_overrides()
+                .get(role.id())
+                .map(String::as_str),
             _ => None,
         }
     }
@@ -943,6 +979,10 @@ impl SettingsDraft {
     /// Merge the draft's persisted fields into `cfg` (called on save). Live audio fields
     /// are also written so they survive a restart.
     pub fn apply_to(&self, cfg: &mut Config) {
+        cfg.beginner_mode = self.beginner_mode;
+        if self.beginner_mode && self.restart_beginner_tutorial {
+            cfg.beginner_tutorial = BeginnerTutorialProgress::welcome();
+        }
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);
         cfg.local.include_download_dir = Some(self.local_include_download_dir);
@@ -950,6 +990,7 @@ impl SettingsDraft {
         cfg.search = self.search.clone().normalized();
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
+        cfg.album_art_quality = self.album_art_quality;
         cfg.player_bar_position = Some(self.player_bar_position);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.enqueue_next = Some(self.enqueue_next);
@@ -974,6 +1015,7 @@ impl SettingsDraft {
         cfg.audio.backend = self.audio_backend;
         cfg.audio.mpv.output = blank_to_none(&self.audio_mpv_output);
         cfg.audio.mpv.device = blank_to_none(&self.audio_mpv_device);
+        cfg.audio.mpv.long_form_seek_optimization = self.long_form_seek_optimization;
         cfg.audio.mpv.cache_forward = blank_to_none(&self.audio_mpv_cache_forward)
             .unwrap_or_else(|| MPV_CACHE_FORWARD_DEFAULT.to_owned());
         cfg.audio.mpv.cache_back = blank_to_none(&self.audio_mpv_cache_back)
@@ -1054,6 +1096,9 @@ pub struct SettingsState {
     pub draft: SettingsDraft,
     /// Whether the focused text field is in character-entry mode.
     pub editing_text: bool,
+    /// Open color picker for the focused theme role. Owned here (rather than the global overlay
+    /// mask) so closing Settings always drops it and does not consume an album-art mask bit.
+    pub color_picker: Option<ColorPickerState>,
     /// The masked secret's value captured when its editor opened. The buffer is cleared
     /// on edit-start (blind-paste of a whole new key), so this lets a commit that typed
     /// nothing restore the prior key instead of wiping it. `None` outside a secret edit.

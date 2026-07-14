@@ -97,26 +97,35 @@ impl App {
         self.hits.region_at(col, row)
     }
 
-    /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
-    /// seekbar seeks to the matching fraction of the track. Hit rects are published by
-    /// views each render. `multi` (Ctrl/Cmd held) only changes what a Library/Search
-    /// list-row hit does — toggle the row in/out of the selection — and is ignored by
-    /// every other surface, so a modifier click still presses buttons and closes modals.
+    fn beginner_coach_hit(&self, col: u16, row: u16) -> bool {
+        matches!(
+            self.mouse_target_at(col, row),
+            Some(MouseTarget::Onboarding(_))
+        )
+    }
+
+    /// Dispatch a hit-tested left click; `multi` only modifies Search/Library list rows.
     pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16, multi: bool) -> Vec<Cmd> {
         if self.tool_setup.is_some() {
             return self
                 .mouse_target_at(col, row)
                 .map_or_else(Vec::new, |target| self.activate_tool_setup(target));
         }
-        // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
-        // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
-        // below if this click grabs a track.
-        self.interaction.seekbar_drag = None;
-        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        if !self.beginner_higher_overlay_open()
+            && let Some(MouseTarget::Onboarding(action)) = self.mouse_target_at(col, row)
+        {
+            return self.activate_onboarding(action);
+        }
+        // Every fresh press cancels a prior scrub whose button-up was lost.
+        self.cancel_seekbar_scrub();
         self.interaction.recording_drag = None;
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
+        self.interaction.color_picker_click = None;
         self.interaction.pending_double_click_selection = None;
+        if let Some(cmds) = self.audio_output_picker_mouse_click(col, row) {
+            return cmds;
+        }
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
         if self.overlays.context_menu.is_some() {
@@ -440,6 +449,9 @@ impl App {
             if let MouseTarget::Scrollbar(surface) = region.target {
                 return self.on_scrollbar_press(surface, region.rect, row);
             }
+            if matches!(region.target, MouseTarget::SettingsColorSwatch(_)) {
+                self.interaction.color_picker_click = Some((col, row));
+            }
             // Ctrl/Cmd+click on a list row toggles it in/out of the multi-selection.
             if multi && let MouseTarget::ListRow(i) = region.target {
                 match self.mode {
@@ -474,24 +486,13 @@ impl App {
         }
         if let Some(area) = self.hits.seekbar_rect()
             && let Some(dur) = self.playback.duration
+            && dur.is_finite()
             && dur > 0.0
             && area.width > 0
             && rect_contains(area, col, row)
         {
-            let frac = f64::from(col - area.x) / f64::from(area.width);
-            let target = (frac * dur).clamp(0.0, dur);
-            tracing::info!(secs = target, "click seek");
-            // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
-            self.interaction.seekbar_drag = Some(col);
-            self.interaction.seekbar_admission = SeekbarAdmission::Pending;
-            self.dirty = true;
-            return self.player_intent(
-                "seek_absolute",
-                PlayerCmd::SeekAbsolute(target),
-                PlayerCommit::Seek {
-                    optimistic_position: Some(target),
-                },
-            );
+            self.begin_seekbar_scrub(col, area, dur);
+            return Vec::new();
         }
         Vec::new()
     }
@@ -499,7 +500,7 @@ impl App {
     /// Whether the player transport/status controls are on screen and may take input:
     /// always on the Player screen, and on every screen showing the docked control box.
     /// A control that isn't rendered must never take clicks — and vice versa.
-    fn player_controls_live(&self) -> bool {
+    pub(in crate::app) fn player_controls_live(&self) -> bool {
         self.mode == Mode::Player
             || self.control_box_active()
             || self.bridges.ui_tier.get() == crate::ui::layout::UiTier::Mini
@@ -507,11 +508,17 @@ impl App {
 
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
+            target @ (MouseTarget::LyricsLine { .. }
+            | MouseTarget::LyricsDelayHandle { .. }
+            | MouseTarget::LyricsDelayEarlier { .. }
+            | MouseTarget::LyricsDelayLater { .. }
+            | MouseTarget::LyricsDelayBlock) => self.on_lyrics_mouse_target(target),
             MouseTarget::ContextMenuItem(_) => Vec::new(),
             target @ (MouseTarget::ToolSetupCopy
             | MouseTarget::ToolSetupGuide
             | MouseTarget::ToolSetupRetry
             | MouseTarget::ToolSetupLater) => self.activate_tool_setup(target),
+            MouseTarget::Onboarding(action) => self.activate_onboarding(action),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;
@@ -690,6 +697,10 @@ impl App {
                 self.settings_activate()
             }
             MouseTarget::SettingsActivate(_) => Vec::new(),
+            MouseTarget::SettingsColorSwatch(row) => self.settings_color_swatch_click(row),
+            MouseTarget::SettingsColorPickerSurface
+            | MouseTarget::SettingsColorPickerCurrent
+            | MouseTarget::SettingsColorPickerChoice(_) => Vec::new(),
             MouseTarget::SettingsSpotifyImportModeMenu if self.mode == Mode::Settings => {
                 if self
                     .settings
@@ -926,13 +937,18 @@ impl App {
             | MouseTarget::RecordingChange { .. }
             | MouseTarget::RecordingSlider(_)
             | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
+            MouseTarget::AudioOutputRow(_) => Vec::new(),
         }
     }
 
-    /// A left double-click: play a song/queue row (vs. single-click, which selects). Falls
-    /// back to single-click behavior anywhere else so buttons, tabs, and the seekbar still
-    /// respond to the first press of a double-click.
+    /// Double-click activates a list row; other targets retain single-click behavior.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.beginner_coach_hit(col, row) {
+            return Vec::new();
+        }
+        if self.overlays.audio_output_picker.is_some() {
+            return self.audio_output_picker_mouse_double_click(col, row);
+        }
         // The first press may have activated a menu command that opened a confirmation/picker.
         // Consume its paired double-click press before that new modal can see and act on it.
         if self.interaction.context_menu_click.take() == Some((col, row)) {
@@ -1015,9 +1031,11 @@ impl App {
         }
     }
 
-    /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
-    /// stays fixed). Works in the queue window and, identically, in the Library list.
+    /// Extend the active pointer gesture while preserving its original surface.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.beginner_coach_hit(col, row) {
+            return Vec::new();
+        }
         if self.interaction.context_menu_press {
             return Vec::new();
         }
@@ -1032,43 +1050,9 @@ impl App {
             self.interaction.recording_drag = None;
             return Vec::new();
         }
-        // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
-        // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
-        if self.interaction.seekbar_drag.is_some()
-            && self.player_controls_live()
-            && !self.queue_popup.open
-        {
-            if let Some(area) = self.hits.seekbar_rect()
-                && let Some(dur) = self.playback.duration
-                && dur > 0.0
-                && area.width > 0
-            {
-                // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
-                // can't underflow u16).
-                let c = col.clamp(area.x, area.right().saturating_sub(1));
-                if self.interaction.seekbar_drag != Some(c)
-                    || self.interaction.seekbar_admission == SeekbarAdmission::Retry
-                {
-                    // Intra-cell dedupe is valid only after admission. A rejected request keeps
-                    // the scrub active but must allow the same cell to be retried.
-                    self.interaction.seekbar_drag = Some(c);
-                    self.interaction.seekbar_admission = SeekbarAdmission::Pending;
-                    let frac = f64::from(c - area.x) / f64::from(area.width);
-                    let target = (frac * dur).clamp(0.0, dur);
-                    self.dirty = true;
-                    return self.player_intent(
-                        "seek_absolute",
-                        PlayerCmd::SeekAbsolute(target),
-                        PlayerCommit::Seek {
-                            optimistic_position: Some(target),
-                        },
-                    );
-                }
-                return Vec::new();
-            }
-            // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
-            self.interaction.seekbar_drag = None;
-            self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        // Seekbar movement is preview-only; mouse-up commits the final target once.
+        if self.interaction.seekbar_scrub.is_some() {
+            self.update_seekbar_scrub(col);
             return Vec::new();
         }
         if self.queue_popup.open {
@@ -1163,8 +1147,7 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
-        self.interaction.seekbar_drag = None;
-        self.interaction.seekbar_admission = SeekbarAdmission::Settled;
+        let seek_cmds = self.commit_seekbar_scrub();
 
         if let Some(drag) = self.interaction.ai_transcript_drag.take() {
             if drag.moved {
@@ -1197,22 +1180,7 @@ impl App {
             }
         }
 
-        Vec::new()
-    }
-
-    /// Settle only a seek issued by the active mouse scrub. Runtime calls this for every seek
-    /// admission result, but unrelated keyboard/remote seeks find no `Pending` mouse request and
-    /// therefore cannot leave a stale retry bypass behind.
-    pub(crate) fn settle_mouse_seek_admission(&mut self, accepted: bool) {
-        if self.interaction.seekbar_admission != SeekbarAdmission::Pending {
-            return;
-        }
-        self.interaction.seekbar_admission = if accepted || self.interaction.seekbar_drag.is_none()
-        {
-            SeekbarAdmission::Settled
-        } else {
-            SeekbarAdmission::Retry
-        };
+        seek_cmds
     }
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
@@ -1231,12 +1199,7 @@ impl App {
         }
     }
 
-    /// Wheel scroll nudges volume when the pointer is over the player's volume cluster.
-    /// Everywhere else it moves the *viewport* of whichever list is on top by
-    /// [`MOUSE_SCROLL_LINES`] rows — decoupled from the selection, which stays put (it may
-    /// scroll out of view; the render pass keeps it visible only for keyboard nav). An open
-    /// overlay (the queue window) wins over the active screen. Ctrl+wheel bypasses all of
-    /// that and steps the text zoom, browser-style, wherever the pointer is.
+    /// Scroll the topmost pointer surface; Ctrl+wheel retains its text-zoom override.
     pub(in crate::app) fn on_mouse_scroll(
         &mut self,
         up: bool,
@@ -1244,8 +1207,14 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
+        if self.audio_output_picker_scroll(up, MOUSE_SCROLL_LINES) {
+            return Vec::new();
+        }
         if self.overlays.context_menu.is_some() {
             self.move_context_menu_selection(up);
+            return Vec::new();
+        }
+        if self.beginner_coach_hit(col, row) {
             return Vec::new();
         }
         // While the wheel-zoom lock is on, Ctrl+wheel degrades to a plain wheel scroll

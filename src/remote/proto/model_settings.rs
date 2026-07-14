@@ -15,6 +15,69 @@ use crate::search_source::SearchSource;
 
 use super::model_player::EqModel;
 
+/// Runtime state of the managed long-form seek controller. This is deliberately separate from
+/// the persisted requested mode in [`crate::config::LongFormSeekOptimization`].
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LongFormSeekEffective {
+    NoMedia,
+    RamOnly,
+    Probing,
+    EnablePending,
+    DiskActive,
+    DisablePending,
+    LatchedUntilClose,
+    EmergencyClosePending,
+    Overridden,
+    Unavailable,
+}
+
+/// Closed, machine-readable reason vocabulary for long-form seek decisions and fallbacks.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LongFormSeekReason {
+    RequestedOff,
+    NoMedia,
+    AwaitingMediaFacts,
+    ShortMedia,
+    SequentialPlayback,
+    SeekBelowThreshold,
+    SeekWithinCachedRange,
+    LocalSource,
+    LiveSource,
+    UnseekableSource,
+    PartiallySeekableUnproven,
+    ReadOnlyInstance,
+    UnsupportedMpv,
+    CustomMpvOverride,
+    CacheRootUnavailable,
+    InsufficientFreeSpace,
+    UnsafeRateBound,
+    InvalidRangeState,
+    ProbeFailed,
+    AutoUncachedSeek,
+    OnEligibleMedia,
+    UserRequestedOff,
+    SoftCapReached,
+    FreeSpaceFloor,
+    WriteBudgetExhausted,
+    PropertyRejected,
+    PropertyTimeout,
+    PropertyVerificationFailed,
+    DisableFailed,
+    MediaClosed,
+}
+
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts-export",
@@ -127,12 +190,24 @@ pub struct StorageSettingsModel {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioSettingsModel {
-    /// v1 supports only `mpv`; exposed so the GUI can name the backend explicitly.
+    // Deliberately not field docs: ts-rs otherwise emits trailing whitespace before the JSDoc.
+    // v1 supports only `mpv`; exposed so the GUI can name the backend explicitly.
     pub backend: String,
     pub mpv_output: Option<String>,
     pub mpv_device: Option<String>,
     pub mpv_cache_forward: String,
     pub mpv_cache_back: String,
+    // Present only when the owner advertises `long-form-seek-optimization-v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub long_form_seek_optimization: Option<crate::config::LongFormSeekOptimization>,
+    // Read-only runtime state; capability presence makes all three long-form fields mandatory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub long_form_seek_effective: Option<LongFormSeekEffective>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub long_form_seek_reason: Option<LongFormSeekReason>,
 }
 
 /// Mirrors [`crate::config::AnimationsConfig`] field-for-field (minus the TUI-only

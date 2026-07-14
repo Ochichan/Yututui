@@ -238,6 +238,38 @@ impl DownloadStore {
         self.tracks.truncate(STORE_MAX);
     }
 
+    /// Re-key imported download records after their inbox artifacts are organized. The
+    /// destination scan remains authoritative, but the manifest must not persist a path that was
+    /// removed by the same reducer turn.
+    pub(crate) fn relocate_import_paths(
+        &mut self,
+        session_id: &str,
+        paths: &HashMap<u32, PathBuf>,
+    ) -> bool {
+        let mut changed = false;
+        for song in &mut self.tracks {
+            if song.import_session_id.as_deref() != Some(session_id) {
+                continue;
+            }
+            let Some(path) = song
+                .import_source_order
+                .and_then(|source_order| paths.get(&source_order))
+            else {
+                continue;
+            };
+            if song.local_path.as_ref() != Some(path) {
+                *song = song.with_local_path(path.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            let mut seen = HashSet::new();
+            self.tracks
+                .retain(|song| seen.insert(song.video_id.clone()));
+        }
+        changed
+    }
+
     /// Drop records whose on-disk file is among `paths` (after a confirmed delete).
     pub fn remove_paths(&mut self, paths: &[PathBuf]) {
         let doomed: HashSet<&PathBuf> = paths.iter().collect();
@@ -775,6 +807,14 @@ where
         drop(original_file);
 
         rewrite_and_validate(&mut stage_file, &stage)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            stage_file.set_permissions(fs::Permissions::from_mode(
+                initial.permissions().mode() & 0o777,
+            ))?;
+        }
         stage_file.flush()?;
         stage_file.sync_all()?;
 
@@ -1279,6 +1319,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let audio = dir.join("Track.wav");
         fs::write(&audio, wav_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&audio, fs::Permissions::from_mode(0o640)).unwrap();
+        }
         let original = safe_fs::open_regular_no_symlink(&audio).unwrap();
         let original_object = safe_fs::file_object_id(&original).unwrap();
         drop(original);
@@ -1295,6 +1340,11 @@ mod tests {
         assert!(validate_tagged_audio_path(&song, &audio).unwrap());
         assert!(!staged_audio_backup_path(&audio).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(fs::metadata(&audio).unwrap().mode() & 0o777, 0o640);
+        }
         let _ = fs::remove_dir_all(dir);
     }
 

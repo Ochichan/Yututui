@@ -40,6 +40,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The selected-row marquee flag is a per-frame output too: a list view sets it while it
     // renders a scrolling cursor row; `animation_active` reads the latest frame's verdict.
     app.bridges.marquee_ran.set(false);
+    // Canvas activity is geometry-dependent (art/lyrics masks and focal safe regions can hide
+    // configured effects), so stale Player state must never keep Mini or another view awake.
+    app.bridges.canvas_active.set(false);
+    app.bridges.canvas_heavy_active.set(false);
     // The responsive tier is decided from the real cell grid each frame and bridged back
     // to the reducer (text zoom rescales the grid without a resize event, so only the
     // render pass knows it). Below the mini thresholds the whole UI is the miniplayer;
@@ -70,7 +74,9 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
         }
     }
-    views::onboarding::render_search_hint(frame, app, area);
+    // The Beginner coach floats over the live surface. Its visibility gate yields to every
+    // established popup below, so those existing modal layers keep their input and z-order.
+    views::onboarding::render_beginner_coach(frame, app, area);
     // The `?` cheat-sheet draws on top of whatever screen is active.
     if app.overlays.help_visible {
         views::help::render(frame, app, area);
@@ -117,9 +123,21 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(confirm) = app.overlays.pending_settings_confirm {
         views::settings::render_confirm(frame, app, area, confirm);
     }
+    // The Settings-owned color picker is rendered at the top level so it stays visible and
+    // operable when the responsive layout has replaced Settings with the miniplayer.
+    if app
+        .settings
+        .as_ref()
+        .is_some_and(|state| state.color_picker.is_some())
+    {
+        views::color_picker::render(frame, app, area);
+    }
     // The Spotify playlist picker (Import from Spotify…) is modal over Settings.
     if app.overlays.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);
+    }
+    if app.overlays.audio_output_picker.is_some() {
+        views::audio_output_picker::render(frame, app, area);
     }
     // The radio-recording settings popup is modal over the Playback tab.
     if app.overlays.recording_settings.is_some() {

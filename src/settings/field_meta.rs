@@ -24,7 +24,8 @@ impl Field {
             | Field::SpotifyClientId
             | Field::SpotifyRedirectPort
             | Field::ThemeColor(_) => FieldKind::Text,
-            Field::Mouse
+            Field::BeginnerMode
+            | Field::Mouse
             | Field::AlbumArt
             | Field::LocalIncludeDownloadDir
             | Field::LocalMusicRootRecursive
@@ -103,7 +104,9 @@ impl Field {
             | Field::CuratingMode
             | Field::DjGemLanguage
             | Field::AudioBackend
+            | Field::LongFormSeekOptimization
             | Field::VideoLayout
+            | Field::AlbumArtQuality
             | Field::PlayerBarPosition
             | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
@@ -115,6 +118,7 @@ impl Field {
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
             | Field::RadioRecording
+            | Field::AudioOutput
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => FieldKind::Button,
@@ -175,6 +179,7 @@ impl Field {
 
     pub fn label(self) -> String {
         match self {
+            Field::BeginnerMode => t!("Beginner Mode", "비기너 모드").to_owned(),
             Field::Language => t!("Language", "언어").to_owned(),
             Field::SearchSource => t!("Search source", "검색 소스").to_owned(),
             Field::StreamingSource => t!("Streaming source", "추천 소스").to_owned(),
@@ -201,6 +206,7 @@ impl Field {
             }
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
             Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
+            Field::AlbumArtQuality => t!("Album art quality", "앨범 아트 화질").to_owned(),
             Field::PlayerBarPosition => t!("Player bar position", "플레이어 바 위치").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
@@ -222,12 +228,14 @@ impl Field {
             Field::VideoLayout => t!("Video window", "영상 창").to_owned(),
             Field::RadioRecording => t!("Radio recording", "라디오 녹음").to_owned(),
             Field::AudioBackend => t!("Backend (mpv)", "백엔드 (mpv)").to_owned(),
+            Field::AudioOutput => t!("Audio output", "오디오 출력").to_owned(),
             Field::AudioMpvOutput => {
                 t!("mpv output (next launch)", "mpv 출력 (재시작 후 적용)").to_owned()
             }
             Field::AudioMpvDevice => {
                 t!("mpv device (next launch)", "mpv 장치 (재시작 후 적용)").to_owned()
             }
+            Field::LongFormSeekOptimization => t!("Long-form seek", "긴 미디어 탐색").to_owned(),
             Field::AudioMpvCacheForward => {
                 t!("Cache forward (next launch)", "앞쪽 캐시 (재시작 후 적용)").to_owned()
             }

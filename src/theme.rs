@@ -29,6 +29,10 @@ pub struct ThemeConfig {
     pub preset: String,
     /// Same caveat as `preset`: go through `set_override`/`reset_role`/`override_value_mut`.
     pub overrides: BTreeMap<String, String>,
+    /// Persistent overrides for the Custom preset. Unlike built-in preset overrides, these
+    /// survive switching to another preset and back.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_overrides: BTreeMap<String, String>,
     /// Lazily resolved palette; every mutating method resets it.
     #[serde(skip)]
     palette: OnceLock<Box<ResolvedPalette>>,
@@ -40,6 +44,7 @@ impl Clone for ThemeConfig {
         Self {
             preset: self.preset.clone(),
             overrides: self.overrides.clone(),
+            custom_overrides: self.custom_overrides.clone(),
             palette: OnceLock::new(),
         }
     }
@@ -47,7 +52,9 @@ impl Clone for ThemeConfig {
 
 impl PartialEq for ThemeConfig {
     fn eq(&self, other: &Self) -> bool {
-        self.preset == other.preset && self.overrides == other.overrides
+        self.preset == other.preset
+            && self.overrides == other.overrides
+            && self.custom_overrides == other.custom_overrides
     }
 }
 
@@ -58,6 +65,7 @@ impl Default for ThemeConfig {
         Self {
             preset: ThemePreset::Default.id().to_owned(),
             overrides: BTreeMap::new(),
+            custom_overrides: BTreeMap::new(),
             palette: OnceLock::new(),
         }
     }
@@ -68,6 +76,7 @@ impl ThemeConfig {
         Self {
             preset: ThemePreset::Radio.id().to_owned(),
             overrides: BTreeMap::new(),
+            custom_overrides: BTreeMap::new(),
             palette: OnceLock::new(),
         }
     }
@@ -77,12 +86,36 @@ impl ThemeConfig {
     }
 
     pub fn set_preset(&mut self, preset: ThemePreset) {
+        if self.preset == preset.id() {
+            return;
+        }
+        let changes_effective_preset = self.preset_enum() != preset;
         self.palette = OnceLock::new();
+        if changes_effective_preset {
+            self.overrides.clear();
+        }
         self.preset = preset.id().to_owned();
     }
 
+    /// Overrides that apply to the currently selected preset.
+    pub fn active_overrides(&self) -> &BTreeMap<String, String> {
+        if self.preset_enum() == ThemePreset::Custom {
+            &self.custom_overrides
+        } else {
+            &self.overrides
+        }
+    }
+
+    fn active_overrides_mut(&mut self) -> &mut BTreeMap<String, String> {
+        if self.preset_enum() == ThemePreset::Custom {
+            &mut self.custom_overrides
+        } else {
+            &mut self.overrides
+        }
+    }
+
     pub fn effective_hex(&self, role: ThemeRole) -> String {
-        self.overrides
+        self.active_overrides()
             .get(role.id())
             .and_then(|s| normalize_value(s))
             .unwrap_or_else(|| role.default_hex(self.preset_enum()).to_owned())
@@ -109,7 +142,9 @@ impl ThemeConfig {
 
     /// The old per-call `color()` body, now only run when (re)building the palette.
     fn resolve_color(&self, role: ThemeRole) -> Color {
-        if self.preset_enum() == ThemePreset::Retro && !self.overrides.contains_key(role.id()) {
+        if self.preset_enum() == ThemePreset::Retro
+            && !self.active_overrides().contains_key(role.id())
+        {
             return role.retro_color();
         }
         let value = self.effective_hex(role);
@@ -142,51 +177,68 @@ impl ThemeConfig {
                 format!("Invalid color for {}: use #RRGGBB or none", role.label())
             });
         };
-        if canonical.eq_ignore_ascii_case(role.default_hex(self.preset_enum())) {
-            self.overrides.remove(role.id());
+        let preset = self.preset_enum();
+        if canonical.eq_ignore_ascii_case(role.default_hex(preset)) {
+            self.active_overrides_mut().remove(role.id());
         } else {
-            self.overrides.insert(role.id().to_owned(), canonical);
+            self.active_overrides_mut()
+                .insert(role.id().to_owned(), canonical);
         }
         Ok(())
     }
 
     pub fn reset_role(&mut self, role: ThemeRole) {
         self.palette = OnceLock::new();
-        self.overrides.remove(role.id());
+        self.active_overrides_mut().remove(role.id());
     }
 
     pub fn ensure_override_for_edit(&mut self, role: ThemeRole) {
         self.palette = OnceLock::new();
         let value = self.effective_hex(role);
-        self.overrides.entry(role.id().to_owned()).or_insert(value);
+        self.active_overrides_mut()
+            .entry(role.id().to_owned())
+            .or_insert(value);
     }
 
     /// Mutable access to an existing override's raw value (live hex editing in Settings).
     /// Routed through a method so handing out the `&mut` invalidates the palette first.
     pub fn override_value_mut(&mut self, role: ThemeRole) -> Option<&mut String> {
         self.palette = OnceLock::new();
-        self.overrides.get_mut(role.id())
+        self.active_overrides_mut().get_mut(role.id())
     }
 
     pub fn normalized(&self) -> Self {
         let preset = self.preset_enum();
-        let mut overrides = BTreeMap::new();
-        for role in ThemeRole::ALL {
-            if let Some(value) = self
-                .overrides
-                .get(role.id())
-                .and_then(|value| normalize_value(value))
-                && !value.eq_ignore_ascii_case(role.default_hex(preset))
-            {
-                overrides.insert(role.id().to_owned(), value);
-            }
-        }
+        let overrides = if preset == ThemePreset::Custom {
+            BTreeMap::new()
+        } else {
+            normalized_overrides(&self.overrides, preset)
+        };
+        let custom_overrides = normalized_overrides(&self.custom_overrides, ThemePreset::Custom);
         Self {
             preset: preset.id().to_owned(),
             overrides,
+            custom_overrides,
             palette: OnceLock::new(),
         }
     }
+}
+
+fn normalized_overrides(
+    source: &BTreeMap<String, String>,
+    preset: ThemePreset,
+) -> BTreeMap<String, String> {
+    let mut normalized = BTreeMap::new();
+    for role in ThemeRole::ALL {
+        if let Some(value) = source
+            .get(role.id())
+            .and_then(|value| normalize_value(value))
+            && !value.eq_ignore_ascii_case(role.default_hex(preset))
+        {
+            normalized.insert(role.id().to_owned(), value);
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,10 +257,11 @@ pub enum ThemePreset {
     TokyoNight,
     Solarized,
     RosePine,
+    Custom,
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 14] = [
+    pub const ALL: [ThemePreset; 15] = [
         ThemePreset::Default,
         ThemePreset::Midnight,
         ThemePreset::LocalLaunch,
@@ -223,6 +276,7 @@ impl ThemePreset {
         ThemePreset::RosePine,
         ThemePreset::Radio,
         ThemePreset::Retro,
+        ThemePreset::Custom,
     ];
 
     pub fn id(self) -> &'static str {
@@ -241,6 +295,7 @@ impl ThemePreset {
             ThemePreset::TokyoNight => "tokyo_night",
             ThemePreset::Solarized => "solarized_dark",
             ThemePreset::RosePine => "rose_pine",
+            ThemePreset::Custom => "custom",
         }
     }
 
@@ -260,6 +315,7 @@ impl ThemePreset {
             ThemePreset::TokyoNight => "Tokyo Night",
             ThemePreset::Solarized => "Solarized Dark",
             ThemePreset::RosePine => "Rosé Pine",
+            ThemePreset::Custom => "Custom",
         }
     }
 
@@ -533,6 +589,7 @@ impl ThemeRole {
             ThemePreset::TokyoNight => self.tokyo_night(),
             ThemePreset::Solarized => self.solarized(),
             ThemePreset::RosePine => self.rose_pine(),
+            ThemePreset::Custom => self.default_dark(),
         }
     }
 
@@ -1093,6 +1150,88 @@ mod tests {
     }
 
     #[test]
+    fn built_in_overrides_survive_restart_until_the_preset_changes() {
+        let mut cfg = ThemeConfig::default();
+        cfg.set_override(ThemeRole::Accent, "#123456").unwrap();
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let mut restored: ThemeConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.effective_hex(ThemeRole::Accent), "#123456");
+
+        restored.set_preset(ThemePreset::Default);
+        assert_eq!(restored.effective_hex(ThemeRole::Accent), "#123456");
+        restored.set_preset(ThemePreset::Midnight);
+        assert!(restored.overrides.is_empty());
+        assert_eq!(
+            restored.effective_hex(ThemeRole::Accent),
+            ThemeRole::Accent.default_hex(ThemePreset::Midnight)
+        );
+        restored.set_preset(ThemePreset::Default);
+        assert_eq!(
+            restored.effective_hex(ThemeRole::Accent),
+            ThemeRole::Accent.default_hex(ThemePreset::Default)
+        );
+    }
+
+    #[test]
+    fn custom_overrides_survive_restart_and_preset_round_trips() {
+        assert_eq!(ThemePreset::ALL.last(), Some(&ThemePreset::Custom));
+        assert_eq!(ThemePreset::from_id("custom"), Some(ThemePreset::Custom));
+        assert_eq!(ThemePreset::Custom.label(), "Custom");
+
+        let mut cfg = ThemeConfig::default();
+        cfg.set_preset(ThemePreset::Custom);
+        assert_eq!(
+            cfg.effective_hex(ThemeRole::Accent),
+            ThemeRole::Accent.default_hex(ThemePreset::Default)
+        );
+        cfg.set_override(ThemeRole::Accent, "#123456").unwrap();
+        assert!(cfg.overrides.is_empty());
+        assert_eq!(
+            cfg.active_overrides().get("accent").map(String::as_str),
+            Some("#123456")
+        );
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let mut restored: ThemeConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, cfg);
+        assert_eq!(restored.effective_hex(ThemeRole::Accent), "#123456");
+
+        restored.set_preset(ThemePreset::Midnight);
+        assert!(restored.active_overrides().is_empty());
+        assert_eq!(
+            restored.custom_overrides.get("accent").map(String::as_str),
+            Some("#123456")
+        );
+        restored.set_preset(ThemePreset::Custom);
+        assert_eq!(restored.effective_hex(ThemeRole::Accent), "#123456");
+        restored.reset_role(ThemeRole::Accent);
+        assert!(restored.custom_overrides.is_empty());
+    }
+
+    #[test]
+    fn legacy_theme_json_loads_without_custom_overrides() {
+        let cfg: ThemeConfig =
+            serde_json::from_str(r##"{"preset":"midnight","overrides":{"accent":"#123456"}}"##)
+                .unwrap();
+        assert!(cfg.custom_overrides.is_empty());
+        assert_eq!(cfg.effective_hex(ThemeRole::Accent), "#123456");
+    }
+
+    #[test]
+    fn selecting_the_effective_preset_canonicalizes_a_malformed_id_without_losing_edits() {
+        let mut cfg: ThemeConfig =
+            serde_json::from_str(r##"{"preset":"bogus","overrides":{"accent":"#123456"}}"##)
+                .unwrap();
+        assert_eq!(cfg.preset_enum(), ThemePreset::Default);
+
+        cfg.set_preset(ThemePreset::Default);
+
+        assert_eq!(cfg.preset, "default");
+        assert_eq!(cfg.effective_hex(ThemeRole::Accent), "#123456");
+    }
+
+    #[test]
     fn every_preset_role_has_a_valid_value() {
         for preset in ThemePreset::ALL {
             for role in ThemeRole::ALL {
@@ -1227,11 +1366,23 @@ mod tests {
             .insert("border_primary".to_owned(), "not-a-color".to_owned());
         cfg.overrides
             .insert("text_primary".to_owned(), "#eeeeee".to_owned());
+        cfg.custom_overrides
+            .insert("accent".to_owned(), "not-a-color".to_owned());
+        cfg.custom_overrides
+            .insert("text_primary".to_owned(), "#123456".to_owned());
         let normalized = cfg.normalized();
         assert_eq!(normalized.overrides.get("border_primary"), None);
         assert_eq!(
             normalized.overrides.get("text_primary").map(String::as_str),
             Some("#EEEEEE")
+        );
+        assert_eq!(normalized.custom_overrides.get("accent"), None);
+        assert_eq!(
+            normalized
+                .custom_overrides
+                .get("text_primary")
+                .map(String::as_str),
+            Some("#123456")
         );
     }
 }

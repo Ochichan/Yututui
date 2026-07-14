@@ -22,7 +22,11 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
         "x".repeat(1024 * 1024)
     );
     std::fs::write(&path, &big).unwrap();
-    let _ = Config::load_from(&path);
+    let recovered = Config::load_from(&path);
+    assert!(
+        !recovered.beginner_mode,
+        "recovering an existing oversized config must not look like a fresh install"
+    );
     let too_large = path.with_extension("too-large.bak");
     assert!(
         too_large.exists(),
@@ -39,7 +43,11 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
 
     // (2) Invalid UTF-8 → moved to *.corrupt.bak, original bytes preserved.
     std::fs::write(&path, [0xff, 0xfe, 0xfd, 0xfc]).unwrap();
-    let _ = Config::load_from(&path);
+    let recovered = Config::load_from(&path);
+    assert!(
+        !recovered.beginner_mode,
+        "recovering an existing corrupt config must not opt into onboarding"
+    );
     let corrupt = path.with_extension("corrupt.bak");
     assert!(corrupt.exists(), "invalid-UTF-8 config must be preserved");
     assert_eq!(
@@ -50,8 +58,13 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
 
     // (3) First run (missing) → defaults written, no backup created.
     std::fs::remove_file(&path).unwrap();
-    let _ = Config::load_from(&path);
+    let fresh = recovery::load_from_path_with_legacy(&path, None);
+    assert!(fresh.beginner_mode);
+    assert_eq!(fresh.beginner_tutorial, BeginnerTutorialProgress::welcome());
     assert!(path.exists());
+    let installed: Config = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(installed.beginner_mode);
+    assert_eq!(installed.beginner_tutorial, fresh.beginner_tutorial);
     assert!(!path.with_extension("too-large.bak").exists());
     assert!(!path.with_extension("corrupt.bak").exists());
 
@@ -114,7 +127,7 @@ fn recording_config_round_trips_and_forward_migrates() {
 }
 
 #[test]
-fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
+fn drifted_enums_recover_instead_of_wiping_the_whole_config() {
     // A config written by a previous build whose `video_layout` value this build no
     // longer understands. Under the old strict load this reset the ENTIRE file (and
     // overwrote it) — the "settings reset after every install" bug. Now only the drifted
@@ -131,6 +144,7 @@ fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
 
     let mut value = serde_json::to_value(&original).unwrap();
     value["video_layout"] = serde_json::Value::String("hologram".into());
+    value["album_art_quality"] = serde_json::Value::String("future_ultra".into());
 
     // Strict parse fails outright (the behaviour that caused the reset)...
     assert!(
@@ -153,6 +167,72 @@ fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
         VideoOverlay::default(),
         "only the drifted field falls back to default",
     );
+    assert_eq!(
+        recovered.album_art_quality,
+        AlbumArtQuality::High,
+        "the new drifted field also falls back without losing siblings",
+    );
+}
+
+#[test]
+fn unknown_long_form_seek_leaf_recovers_off_without_rewriting_audio_siblings() {
+    let dir = std::env::temp_dir().join(format!(
+        "ytm-long-form-seek-config-recovery-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    let original = serde_json::to_vec_pretty(&serde_json::json!({
+        "volume": 42,
+        "audio": {
+            "backend": "mpv",
+            "future_audio_sibling": {"keep": true},
+            "mpv": {
+                "output": "pipewire",
+                "device": "alsa/custom",
+                "cache_forward": "64MiB",
+                "cache_back": "12MiB",
+                "long_form_seek_optimization": "future-adaptive",
+                "extra_args": ["--audio-exclusive=no"],
+                "future_mpv_sibling": [1, 2, 3]
+            }
+        }
+    }))
+    .unwrap();
+    std::fs::write(&path, &original).unwrap();
+
+    let recovered = Config::load_from(&path);
+
+    assert_eq!(
+        recovered.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::Off
+    );
+    assert_eq!(recovered.audio.mpv.output.as_deref(), Some("pipewire"));
+    assert_eq!(recovered.audio.mpv.device.as_deref(), Some("alsa/custom"));
+    assert_eq!(recovered.audio.mpv.cache_forward, "64MiB");
+    assert_eq!(recovered.audio.mpv.cache_back, "12MiB");
+    assert_eq!(recovered.audio.mpv.extra_args, ["--audio-exclusive=no"]);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "loading an unknown leaf must not rewrite or discard raw sibling fields"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn missing_long_form_seek_leaf_defaults_off() {
+    let config: Config = serde_json::from_value(serde_json::json!({
+        "audio": {"mpv": {"cache_forward": "32MiB", "cache_back": "8MiB"}}
+    }))
+    .unwrap();
+
+    assert_eq!(
+        config.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::Off
+    );
 }
 
 #[test]
@@ -165,7 +245,11 @@ fn json_round_trips() {
     let mut radio_theme = ThemeConfig::default();
     radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
     let c = Config {
-        search_onboarding_seen: true,
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: BEGINNER_TUTORIAL_VERSION,
+            next_step: "settings".to_owned(),
+        },
         cookie: Some("SID=abc".to_owned()),
         cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
         volume: 70,
@@ -182,6 +266,7 @@ fn json_round_trips() {
         download_concurrency: Some(2),
         mouse: Some(false),
         album_art: Some(true),
+        album_art_quality: AlbumArtQuality::Original,
         player_bar_position: Some(PlayerBarPosition::Bottom),
         control_box_collapsed: Some(true),
         eq_preset: EqPreset::BassBoost,
@@ -254,8 +339,10 @@ fn json_round_trips() {
                 cache_defaults_revision: MPV_CACHE_DEFAULTS_REVISION,
                 output: Some("pipewire".to_owned()),
                 device: Some("alsa/default".to_owned()),
+                device_detected: false,
                 cache_forward: "64MiB".to_owned(),
                 cache_back: "16MiB".to_owned(),
+                long_form_seek_optimization: LongFormSeekOptimization::On,
                 extra_args: vec!["--audio-exclusive=no".to_owned()],
             },
         },
@@ -271,6 +358,8 @@ fn json_round_trips() {
     };
     let s = serde_json::to_string(&c).unwrap();
     let back: Config = serde_json::from_str(&s).unwrap();
+    assert!(back.beginner_mode);
+    assert_eq!(back.beginner_tutorial.next_step, "settings");
     assert!(!back.update_check_enabled);
     assert_eq!(back.recording.mode, crate::recorder::RecordingMode::Decide);
     assert_eq!(back.recording.min_duration_secs, 20);
@@ -290,6 +379,7 @@ fn json_round_trips() {
     assert_eq!(back.local.import_path_template(), "{artist}/{title}");
     assert_eq!(back.mouse, Some(false));
     assert_eq!(back.album_art, Some(true));
+    assert_eq!(back.album_art_quality, AlbumArtQuality::Original);
     assert_eq!(back.player_bar_position, Some(PlayerBarPosition::Bottom));
     assert_eq!(back.control_box_collapsed, Some(true));
     assert_eq!(back.eq_preset, EqPreset::BassBoost);
@@ -340,6 +430,10 @@ fn json_round_trips() {
     assert_eq!(back.audio.mpv.device.as_deref(), Some("alsa/default"));
     assert_eq!(back.audio.mpv.cache_forward, "64MiB");
     assert_eq!(back.audio.mpv.cache_back, "16MiB");
+    assert_eq!(
+        back.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::On
+    );
     assert_eq!(back.audio.mpv.extra_args, ["--audio-exclusive=no"]);
     assert_eq!(back.theme.preset, "midnight");
     assert_eq!(
@@ -362,10 +456,98 @@ fn json_round_trips() {
 }
 
 #[test]
-fn search_onboarding_is_fresh_only_for_new_profiles() {
-    assert!(!Config::default().search_onboarding_seen);
-    let legacy: Config = serde_json::from_str("{\"volume\": 42}").unwrap();
-    assert!(legacy.search_onboarding_seen);
+fn custom_theme_palettes_round_trip_independently() {
+    let mut config = Config::default();
+    config.theme.set_preset(crate::theme::ThemePreset::Custom);
+    config
+        .theme
+        .set_override(crate::theme::ThemeRole::Accent, "#123456")
+        .unwrap();
+
+    let mut radio_theme = ThemeConfig::radio();
+    radio_theme.set_preset(crate::theme::ThemePreset::Custom);
+    radio_theme
+        .set_override(crate::theme::ThemeRole::Accent, "#654321")
+        .unwrap();
+    config.radio_theme = Some(radio_theme);
+
+    let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        back.theme.effective_hex(crate::theme::ThemeRole::Accent),
+        "#123456"
+    );
+    assert_eq!(
+        back.effective_radio_theme()
+            .unwrap()
+            .effective_hex(crate::theme::ThemeRole::Accent),
+        "#654321"
+    );
+}
+
+#[test]
+fn beginner_mode_is_opt_in_only_for_genuinely_fresh_profiles() {
+    let defaults = Config::default();
+    assert!(!defaults.beginner_mode);
+    assert_eq!(
+        defaults.beginner_tutorial,
+        BeginnerTutorialProgress::welcome()
+    );
+
+    for marker in [None, Some(true), Some(false)] {
+        let mut value = serde_json::json!({"volume": 42});
+        if let Some(seen) = marker {
+            value["search_onboarding_seen"] = serde_json::json!(seen);
+        }
+        let legacy: Config = serde_json::from_value(value).unwrap();
+        assert!(
+            !legacy.beginner_mode,
+            "an existing config must stay off for legacy marker {marker:?}"
+        );
+        let rewritten = serde_json::to_value(&legacy).unwrap();
+        assert!(rewritten.get("search_onboarding_seen").is_none());
+    }
+
+    assert!(config_for_missing_profile(None).beginner_mode);
+
+    let dir = std::env::temp_dir().join(format!(
+        "ytm-existing-legacy-beginner-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let legacy_path = dir.join("config.json");
+    fs::write(&legacy_path, "{}").unwrap();
+    assert!(
+        !config_for_missing_profile(Some(&legacy_path)).beginner_mode,
+        "a present legacy profile keeps onboarding off"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn beginner_progress_round_trips_unknown_future_step_without_resetting_it() {
+    let original = Config {
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: BEGINNER_TUTORIAL_VERSION + 1,
+            next_step: "future_spatial_mixer".to_owned(),
+        },
+        ..Config::default()
+    };
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: Config = serde_json::from_str(&json).unwrap();
+    assert!(decoded.beginner_mode);
+    assert_eq!(decoded.beginner_tutorial, original.beginner_tutorial);
+
+    let partial: Config = serde_json::from_str(
+        r#"{"beginner_mode":true,"beginner_tutorial":{"next_step":"library"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        partial.beginner_tutorial.content_version,
+        BEGINNER_TUTORIAL_VERSION
+    );
+    assert_eq!(partial.beginner_tutorial.next_step, "library");
 }
 
 #[test]
@@ -605,6 +787,32 @@ fn album_art_off_by_default_and_overridable() {
         ..Config::default()
     };
     assert!(on.effective_album_art());
+}
+
+#[test]
+fn album_art_quality_defaults_to_legacy_high_and_cycles() {
+    let legacy: Config = serde_json::from_str("{}").unwrap();
+    assert_eq!(legacy.album_art_quality, AlbumArtQuality::High);
+    assert_eq!(
+        AlbumArtQuality::Standard.cycled(true),
+        AlbumArtQuality::High
+    );
+    assert_eq!(
+        AlbumArtQuality::High.cycled(true),
+        AlbumArtQuality::Original
+    );
+    assert_eq!(
+        AlbumArtQuality::Original.cycled(true),
+        AlbumArtQuality::Standard
+    );
+    assert_eq!(
+        AlbumArtQuality::Standard.cycled(false),
+        AlbumArtQuality::Original
+    );
+    assert_eq!(
+        serde_json::to_string(&AlbumArtQuality::Original).unwrap(),
+        "\"original\""
+    );
 }
 
 #[test]

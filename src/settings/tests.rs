@@ -4,6 +4,8 @@ use crate::search_source::SearchSource;
 /// A neutral draft the value/apply tests can tweak one field at a time.
 fn base_draft() -> SettingsDraft {
     SettingsDraft {
+        beginner_mode: false,
+        restart_beginner_tutorial: false,
         cookies_file: String::new(),
         download_dir: String::new(),
         local_include_download_dir: true,
@@ -12,6 +14,7 @@ fn base_draft() -> SettingsDraft {
         search: SearchConfig::default(),
         mouse: true,
         album_art: false,
+        album_art_quality: crate::config::AlbumArtQuality::High,
         player_bar_position: crate::config::PlayerBarPosition::Bottom,
         autoplay_on_start: false,
         enqueue_next: false,
@@ -28,6 +31,7 @@ fn base_draft() -> SettingsDraft {
         audio_backend: crate::config::AudioBackend::Mpv,
         audio_mpv_output: String::new(),
         audio_mpv_device: String::new(),
+        long_form_seek_optimization: LongFormSeekOptimization::Off,
         audio_mpv_cache_forward: MPV_CACHE_FORWARD_DEFAULT.to_owned(),
         audio_mpv_cache_back: MPV_CACHE_BACK_DEFAULT.to_owned(),
         autoplay_streaming: false,
@@ -76,6 +80,7 @@ fn state_on(tab: SettingsTab, radio_mode: bool, retro: bool) -> SettingsState {
         row: 0,
         draft,
         editing_text: false,
+        color_picker: None,
         secret_restore: None,
         keymap: KeyMap::default(),
         mousemap: MouseMap::default(),
@@ -243,10 +248,12 @@ fn background_none_toggle_tracks_transparency() {
 
 #[test]
 fn playback_tab_groups_now_playing_and_eq() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
     let f = SettingsTab::Playback.fields();
     // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-    // VideoLayout + RadioRecording (radio-only), then audio backend, then EQ.
-    assert_eq!(f.len(), 8 + 5 + 1 + eq::BANDS + 1);
+    // VideoLayout + AlbumArtQuality + RadioRecording (radio-only), then audio controls and EQ.
+    assert_eq!(f.len(), 9 + 3 + eq::BANDS + 2);
     assert_eq!(f[0], Field::Speed);
     assert_eq!(f[1], Field::SeekInterval);
     assert_eq!(f[2], Field::MouseWheelVolume);
@@ -254,21 +261,47 @@ fn playback_tab_groups_now_playing_and_eq() {
     assert_eq!(f[4], Field::MediaControls);
     assert_eq!(f[5], Field::AutoContinueVideos);
     assert_eq!(f[6], Field::VideoLayout);
-    assert_eq!(f[7], Field::RadioRecording);
-    assert_eq!(f[8], Field::AudioBackend);
-    assert_eq!(f[9], Field::AudioMpvOutput);
-    assert_eq!(f[12], Field::AudioMpvCacheBack);
-    assert_eq!(f[13], Field::EqPreset);
-    assert_eq!(f[13 + eq::BANDS + 1], Field::Normalize);
+    assert_eq!(f[7], Field::AlbumArtQuality);
+    assert_eq!(f[8], Field::RadioRecording);
+    assert_eq!(f[9], Field::AudioBackend);
+    assert_eq!(f[10], Field::AudioOutput);
+    assert_eq!(f[11], Field::LongFormSeekOptimization);
+    assert!(!f.contains(&Field::AudioMpvOutput));
+    assert!(!f.contains(&Field::AudioMpvDevice));
+    assert!(!f.contains(&Field::AudioMpvCacheForward));
+    assert!(!f.contains(&Field::AudioMpvCacheBack));
+    assert_eq!(f[12], Field::EqPreset);
+    assert_eq!(f[12 + eq::BANDS + 1], Field::Normalize);
     assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
+    assert_eq!(Field::AlbumArtQuality.kind(), FieldKind::Select);
     assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
+    assert_eq!(
+        base_draft().value_display(Field::AlbumArtQuality),
+        "High · up to 768 px"
+    );
     assert_eq!(base_draft().value_display(Field::AudioBackend), "mpv");
-    let total: usize = SettingsTab::Playback
-        .sections()
-        .iter()
-        .map(|(_, n)| n)
-        .sum();
+    assert_eq!(
+        base_draft().value_display(Field::LongFormSeekOptimization),
+        "Off"
+    );
+    assert_eq!(Field::LongFormSeekOptimization.kind(), FieldKind::Select);
+    let sections = SettingsTab::Playback.sections();
+    assert_eq!(sections[0].1, 9);
+    assert_eq!(sections[1].1, 3);
+    let total: usize = sections.iter().map(|(_, n)| n).sum();
     assert_eq!(total, f.len());
+}
+
+#[test]
+fn album_art_quality_has_localized_labels() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::Korean);
+    assert_eq!(Field::AlbumArtQuality.label(), "앨범 아트 화질");
+    assert_eq!(
+        base_draft().value_display(Field::AlbumArtQuality),
+        "고화질 · 최대 768 px"
+    );
+    crate::i18n::set_language(crate::i18n::Language::English);
 }
 
 #[test]
@@ -278,6 +311,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(
         f,
         vec![
+            Field::BeginnerMode,
             Field::Language,
             Field::SearchSource,
             Field::StreamingSource,
@@ -308,6 +342,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     );
     assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
     assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
+    assert_eq!(Field::BeginnerMode.kind(), FieldKind::Toggle);
     assert_eq!(Field::SearchSource.kind(), FieldKind::Select);
     assert_eq!(Field::StreamingSource.kind(), FieldKind::Select);
     assert_eq!(Field::SearchSoundCloud.kind(), FieldKind::Toggle);
@@ -320,6 +355,7 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
     // Off by default, and the toggle renders as an empty checkbox.
     let draft = base_draft();
+    assert_eq!(draft.value_display(Field::BeginnerMode), "[ ]");
     assert_eq!(
         draft.value_display(Field::ResetKeybindings),
         "↵ press Enter"
@@ -335,6 +371,27 @@ fn general_tab_has_search_options_and_autoplay_toggle() {
     assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     assert!(!draft.enqueue_next);
     assert_eq!(draft.value_display(Field::EnqueueNext), "[ ]");
+}
+
+#[test]
+fn beginner_mode_projection_restarts_only_when_requested() {
+    let mut cfg = Config {
+        beginner_mode: true,
+        beginner_tutorial: BeginnerTutorialProgress {
+            content_version: crate::config::BEGINNER_TUTORIAL_VERSION,
+            next_step: "finish".to_owned(),
+        },
+        ..Config::default()
+    };
+
+    let mut draft = base_draft();
+    draft.beginner_mode = true;
+    draft.apply_to(&mut cfg);
+    assert_eq!(cfg.beginner_tutorial.next_step, "finish");
+
+    draft.restart_beginner_tutorial = true;
+    draft.apply_to(&mut cfg);
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
 }
 
 #[test]
@@ -458,6 +515,8 @@ fn apply_to_persists_every_settings_field() {
         .unwrap();
 
     let draft = SettingsDraft {
+        beginner_mode: true,
+        restart_beginner_tutorial: true,
         cookies_file: "/tmp/cookies.txt".to_owned(),
         download_dir: "/tmp/downloads".to_owned(),
         local_include_download_dir: false,
@@ -471,6 +530,7 @@ fn apply_to_persists_every_settings_field() {
         },
         mouse: false,
         album_art: true,
+        album_art_quality: crate::config::AlbumArtQuality::Original,
         player_bar_position: crate::config::PlayerBarPosition::Top,
         autoplay_on_start: true,
         enqueue_next: true,
@@ -487,6 +547,7 @@ fn apply_to_persists_every_settings_field() {
         audio_backend: crate::config::AudioBackend::Mpv,
         audio_mpv_output: "pipewire".to_owned(),
         audio_mpv_device: "alsa/default".to_owned(),
+        long_form_seek_optimization: LongFormSeekOptimization::On,
         audio_mpv_cache_forward: "64MiB".to_owned(),
         audio_mpv_cache_back: "16MiB".to_owned(),
         autoplay_streaming: true,
@@ -532,7 +593,10 @@ fn apply_to_persists_every_settings_field() {
     };
 
     let mut cfg = Config::default();
+    cfg.beginner_tutorial.next_step = "finish".to_owned();
     draft.apply_to(&mut cfg);
+    assert!(cfg.beginner_mode);
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
     assert_eq!(cfg.recording.mode, crate::recorder::RecordingMode::Decide);
     assert_eq!(cfg.recording.min_duration_secs, 20);
     assert_eq!(cfg.recording.max_duration_secs, 1200);
@@ -568,6 +632,10 @@ fn apply_to_persists_every_settings_field() {
     assert_eq!(cfg.mouse, Some(false));
     assert_eq!(cfg.album_art, Some(true));
     assert_eq!(
+        cfg.album_art_quality,
+        crate::config::AlbumArtQuality::Original
+    );
+    assert_eq!(
         cfg.player_bar_position,
         Some(crate::config::PlayerBarPosition::Top)
     );
@@ -586,6 +654,10 @@ fn apply_to_persists_every_settings_field() {
     assert_eq!(cfg.audio.mpv.device.as_deref(), Some("alsa/default"));
     assert_eq!(cfg.audio.mpv.cache_forward, "64MiB");
     assert_eq!(cfg.audio.mpv.cache_back, "16MiB");
+    assert_eq!(
+        cfg.audio.mpv.long_form_seek_optimization,
+        LongFormSeekOptimization::On
+    );
     assert_eq!(cfg.autoplay_streaming, Some(true));
     assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
     // Curating mode = YT Native → the AI rerank flag persists as false.

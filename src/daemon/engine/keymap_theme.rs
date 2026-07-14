@@ -88,7 +88,7 @@ impl DaemonEngine {
         else {
             return RemoteResponse::err("unknown_setting");
         };
-        self.config.theme.overrides.remove(role.id());
+        self.config.theme.reset_role(role);
         self.save_config("daemon theme clear override");
         RemoteResponse::ok("theme override cleared".to_owned())
     }
@@ -177,9 +177,43 @@ mod tests {
 
         let (set, _) = engine.gui_theme_set_override("accent".to_owned(), "#aabbcc".to_owned());
         assert!(set.ok, "{set:?}");
-        assert!(engine.config.theme.overrides.contains_key("accent"));
+        assert!(
+            engine
+                .config
+                .theme
+                .active_overrides()
+                .contains_key("accent")
+        );
         assert!(engine.gui_theme_clear_override("accent").ok);
-        assert!(!engine.config.theme.overrides.contains_key("accent"));
+        assert!(
+            !engine
+                .config
+                .theme
+                .active_overrides()
+                .contains_key("accent")
+        );
+
+        engine
+            .config
+            .theme
+            .set_preset(crate::theme::ThemePreset::Custom);
+        let (set, _) = engine.gui_theme_set_override("accent".to_owned(), "#ccbbaa".to_owned());
+        assert!(set.ok, "{set:?}");
+        assert!(
+            engine
+                .config
+                .theme
+                .active_overrides()
+                .contains_key("accent")
+        );
+        assert!(engine.gui_theme_clear_override("accent").ok);
+        assert!(
+            !engine
+                .config
+                .theme
+                .active_overrides()
+                .contains_key("accent")
+        );
         assert!(!engine.gui_theme_clear_override("nonsense").ok);
     }
 }

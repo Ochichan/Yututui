@@ -22,12 +22,14 @@ use super::startup::StartupTrace;
 
 mod buffered_events;
 mod perf_stats;
+mod recorder_status;
 mod runtime_paths;
 mod teardown;
 #[cfg(test)]
 mod teardown_tests;
 use buffered_events::BufferedWorkerEvents;
 use perf_stats::PerfStats;
+use recorder_status::recorder_capacity_blocked_status;
 use runtime_paths::{TerminalRuntimePaths, resolve as terminal_runtime_paths};
 use teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
 
@@ -54,6 +56,15 @@ fn anim_interval_at(first_tick: tokio::time::Instant, fps: u16) -> tokio::time::
 
 fn owner_exit_requested(app: &App, shutdown: &player::lifetime::ShutdownLatch) -> bool {
     app.should_quit || shutdown.is_triggered()
+}
+
+/// The walkthrough changes persisted config on every transition, so a writer lease alone is not
+/// sufficient: platforms without a resolvable config destination must keep it dormant too.
+fn beginner_profile_persistable(
+    persistence_read_only: bool,
+    config_destination_available: bool,
+) -> bool {
+    !persistence_read_only && config_destination_available
 }
 
 type PlayerReadyResult = Result<(PlayerHandle, player::Mpv), String>;
@@ -194,6 +205,12 @@ fn ime_scrub_interval() -> tokio::time::Interval {
     interval
 }
 
+fn lyrics_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    interval
+}
+
 /// Take only an immediately-adjacent time/cache pair. Both messages still pass through
 /// `App::update` in their original order; sharing the post-update draw/observer work is safe while
 /// skipping over any intervening message would not be.
@@ -259,7 +276,9 @@ impl ObserverPlan {
         };
         if progress(first) && paired.is_none_or(progress) {
             Self::PROGRESS
-        } else if paired.is_none() && matches!(first, Msg::AnimTick | Msg::StatusTick) {
+        } else if paired.is_none()
+            && matches!(first, Msg::AnimTick | Msg::StatusTick | Msg::LyricsTick)
+        {
             Self::INERT
         } else {
             Self::PROJECTED
@@ -272,6 +291,9 @@ fn draw_app_frame(
     app: &mut App,
     perf: &mut PerfStats,
 ) -> std::io::Result<bool> {
+    let size = terminal.size()?;
+    let tier = crate::ui::layout::tier(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+    app.prepare_ui_tier_for_render(tier);
     let start = perf.enabled.then(Instant::now);
     let clear_before = app.take_clear_before_draw();
     let synchronized = clear_before || app.synchronized_draw_active();
@@ -823,7 +845,10 @@ pub async fn run(
     if !missing.is_empty() {
         app.show_tool_setup(app::ToolSetupContext::Startup, missing);
     }
-    app.prepare_search_onboarding(!persistence_read_only);
+    app.prepare_beginner_onboarding(beginner_profile_persistable(
+        persistence_read_only,
+        config::config_path().is_some(),
+    ));
     startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
@@ -974,6 +999,10 @@ pub async fn run(
         persist.clone(),
     );
 
+    if let Some(cmd) = app.take_beginner_startup_persist() {
+        handles.dispatch(&mut app, cmd);
+    }
+
     // An explicit Save is journaled in the stable recorder cache before its copy worker is
     // admitted. Recover those intents off the owner task and wait for the tracked job before
     // deleting ordinary incomplete/Decide temps or admitting any live recorder command. The
@@ -1080,10 +1109,11 @@ pub async fn run(
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
     let mut ime_scrub = ime_scrub_interval();
-    // Only polled while a transient status is covering the song title; lets the reducer
-    // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
+    // Polled only while transient status or the lyric-delay OSD has a deadline; lets the reducer
+    // restore the title and collapse the control after their respective TTLs. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut lyrics_tick = lyrics_interval();
 
     // 1 Hz while a radio recording is in progress; parked otherwise (like the other guarded
     // ticks). Drives the max-duration force-split.
@@ -1179,7 +1209,7 @@ pub async fn run(
                     // while the UI is scaled.
                     Some(Ok(ev)) => {
                         let (cs, rs) = zoom.mouse_scale();
-                        match input.translate(ev, cs, rs) {
+                        match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
@@ -1277,7 +1307,8 @@ pub async fn run(
                     perf.maybe_log(&app);
                     continue;
                 },
-                _ = status_tick.tick(), if app.status_visible() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
+                _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
                 _ = recording_tick.tick(), if app.recorder_active() => OwnerTurnInput::Local(Msg::RecordingTick),
                 _ = scrobble_retry_tick.tick(), if handles.scrobble_retry_needed() => {
@@ -1308,7 +1339,6 @@ pub async fn run(
 
         let msg = match input {
             OwnerTurnInput::Local(msg) => msg,
-            OwnerTurnInput::BufferedWorker(event) => event.into(),
             // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
             // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
             // latch check preserves the correlated request if shutdown wins this turn.
@@ -1333,7 +1363,12 @@ pub async fn run(
                 }
                 continue;
             }
-            OwnerTurnInput::Worker(event) => event.into(),
+            OwnerTurnInput::BufferedWorker(mut event) | OwnerTurnInput::Worker(mut event) => {
+                if let RuntimeEvent::Player(player_event) = &mut event {
+                    handles.reconcile_cache_safety_event(player_event);
+                }
+                event.into()
+            }
         };
 
         let paired_progress =
@@ -1475,31 +1510,6 @@ pub async fn run(
         worker_rx: &mut worker_rx,
     };
     complete_owner_teardown(&mut teardown, owner_error).await
-}
-
-fn recorder_capacity_blocked_status(report: &crate::recorder::job::RecoveryReport) -> String {
-    if report.admission_uncertain {
-        let detail = report
-            .warnings
-            .first()
-            .map(String::as_str)
-            .unwrap_or("recovery inventory could not be verified");
-        if crate::i18n::is_korean() {
-            format!("자동 녹음 일시 중지: 복구 저장 목록을 확인할 수 없음 — {detail}")
-        } else {
-            format!("Automatic recording paused: recovery inventory is uncertain — {detail}")
-        }
-    } else if crate::i18n::is_korean() {
-        format!(
-            "자동 녹음 일시 중지: 저장 대기 {}개 / {}바이트",
-            report.pending, report.pending_bytes
-        )
-    } else {
-        format!(
-            "Automatic recording paused: {} pending / {} bytes",
-            report.pending, report.pending_bytes
-        )
-    }
 }
 
 #[cfg(test)]

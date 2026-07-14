@@ -33,6 +33,7 @@ impl App {
             anim: Animation::default(),
             fx: FxState::new(volume.clamp(0, VOLUME_MAX)),
             audio: AudioEq::default(),
+            audio_devices: AudioDeviceRuntime::default(),
             autoplay_streaming: false,
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
@@ -194,6 +195,21 @@ impl App {
             || self.config.effective_retro_mode(),
             |s| s.draft.retro_mode,
         )
+    }
+
+    /// Live Beginner Mode flag. Settings previews the explanatory labels immediately, while the
+    /// persisted value controls whether a walkthrough is eligible on the next writable launch.
+    pub fn beginner_mode(&self) -> bool {
+        self.settings
+            .as_ref()
+            .map_or(self.config.beginner_mode, |settings| {
+                settings.draft.beginner_mode
+            })
+    }
+
+    /// Whether expanded, explanatory control labels should render on the current frame.
+    pub fn beginner_labels_enabled(&self) -> bool {
+        self.beginner_mode()
     }
 
     /// Live player-bar position. Same draft-first rule as [`Self::retro_mode`]: while

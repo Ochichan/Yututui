@@ -7,13 +7,31 @@ use crate::runtime::player_delivery::{
 
 fn seek_intent(position: f64, remote_reply: Option<PendingRemoteReply>) -> Box<PlayerIntent> {
     Box::new(PlayerIntent {
-        commands: vec![PlayerCmd::SeekAbsolute(position)],
+        commands: vec![PlayerCmd::interactive_seek(position)],
         commit: PlayerCommit::Seek {
             optimistic_position: Some(position),
         },
         label: "seek_absolute",
         remote_reply,
     })
+}
+
+#[test]
+fn shutdown_retires_events_from_the_ended_player_generation() {
+    for event in [
+        RuntimeEvent::Player(crate::player::PlayerEvent::Eof),
+        RuntimeEvent::Player(crate::player::PlayerEvent::TransportClosed(
+            "late close".to_owned(),
+        )),
+    ] {
+        assert!(shutdown_event_is_retired(&event));
+    }
+    assert!(!shutdown_event_is_retired(&RuntimeEvent::Download(
+        crate::download::DownloadEvent::Error {
+            video_id: "id".to_owned(),
+            error: "late failure".to_owned(),
+        },
+    )));
 }
 
 #[test]
@@ -69,7 +87,10 @@ async fn ready_player_admission_commits_and_replies_once() {
 
     assert!(matches!(
         rx.recv().await,
-        Some(PlayerCmd::SeekAbsolute(position))
+        Some(PlayerCmd::SeekAbsolute {
+            seconds: position,
+            precision: crate::player::SeekPrecision::InteractiveFast,
+        })
             if (position - 42.0).abs() < f64::EPSILON
     ));
     assert_eq!(app.playback.time_pos, Some(42.0));
@@ -210,7 +231,8 @@ fn pending_intent_slot_rejects_a_second_snapshot_without_evicting_the_first() {
     assert_eq!(error, DeliveryError::Busy);
     assert!(matches!(
         rejected.commands.as_slice(),
-        [PlayerCmd::SeekAbsolute(position)] if (*position - 2.0).abs() < f64::EPSILON
+        [PlayerCmd::SeekAbsolute { seconds: position, .. }]
+            if (*position - 2.0).abs() < f64::EPSILON
     ));
     assert_eq!(pending.len(), 1);
     assert_eq!(pending.command_count(), 1);
@@ -225,7 +247,7 @@ fn pending_intent_slot_rejects_a_second_snapshot_without_evicting_the_first() {
     assert!(matches!(
         admitted.as_slice(),
         [intent]
-            if matches!(intent.commands.as_slice(), [PlayerCmd::SeekAbsolute(position)]
+            if matches!(intent.commands.as_slice(), [PlayerCmd::SeekAbsolute { seconds: position, .. }]
                 if (*position - 1.0).abs() < f64::EPSILON)
     ));
 }
@@ -328,7 +350,10 @@ async fn recovery_restore_batch_reaches_player_before_deferred_user_intent() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let player = PlayerHandle::test_handle(tx);
     let restore = vec![
-        PlayerCmd::Load("https://example.invalid/recovered".to_owned()),
+        PlayerCmd::load(
+            "https://example.invalid/recovered",
+            crate::player::MediaSourceContext::OnDemand,
+        ),
         PlayerCmd::SetAudioFilter("lavfi=[volume=1]".to_owned()),
     ];
     assert!(player.send_batch(restore).is_ok());
@@ -346,7 +371,8 @@ async fn recovery_restore_batch_reaches_player_before_deferred_user_intent() {
     ));
     assert!(matches!(
         rx.recv().await,
-        Some(PlayerCmd::SeekAbsolute(position)) if (position - 15.0).abs() < f64::EPSILON
+        Some(PlayerCmd::SeekAbsolute { seconds: position, .. })
+            if (position - 15.0).abs() < f64::EPSILON
     ));
 }
 

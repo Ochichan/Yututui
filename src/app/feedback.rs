@@ -8,7 +8,7 @@ impl App {
     /// Whether a transient status is currently covering the title (drives the main loop's
     /// expiry tick - see [`Msg::StatusTick`]).
     pub fn status_visible(&self) -> bool {
-        self.status.set_at.is_some() || self.onboarding.visible()
+        self.status.set_at.is_some()
     }
 
     pub(crate) fn set_status_info(&mut self, text: impl Into<String>) {
@@ -70,6 +70,16 @@ impl App {
         self.local_mode.ui.filter_editing = false;
         if let Some(s) = self.settings.as_mut() {
             s.editing_text = false;
+        }
+    }
+
+    /// Apply the backend's actual logical grid tier before drawing. Text zoom can cross the Mini
+    /// boundary without a terminal resize event, so waiting for the render bridge's next reducer
+    /// turn would show one stale paused-lyric frame and start a pending OSD late.
+    pub(crate) fn prepare_ui_tier_for_render(&mut self, tier: crate::ui::layout::UiTier) {
+        if self.bridges.ui_tier.replace(tier) != tier {
+            let commands = self.update(Msg::Noop);
+            debug_assert!(commands.is_empty());
         }
     }
 

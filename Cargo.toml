@@ -1,6 +1,6 @@
 [package]
 name = "yututui"
-version = "1.6.30"
+version = "1.6.31"
 edition = "2024"
 description = "A fast terminal UI for YouTube Music — search, radio, synced lyrics, album art, and downloads, driven by mpv and yt-dlp."
 license = "MIT"
@@ -45,6 +45,10 @@ desktop-tray = ["desktop"]
 # them to gui/src/generated/protocol/. Never enabled in a release binary — `desktop` does
 # NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`yututray`.
 ts-export = ["dep:ts-rs"]
+# Build-only escape used by the controlled performance harness. It allows the candidate binary
+# to trust the harness's authenticated loopback source-rate ceiling; ordinary/default builds
+# compile that environment-variable path out and remain fail-closed.
+perf-harness = []
 
 [dependencies]
 anyhow = "1.0.103"
@@ -84,12 +88,9 @@ ratatui = "0.30.2"
 # `image` directly with just the formats we need). The Kitty/Sixel/iTerm2/halfblocks
 # protocol encoders are pure Rust and compiled unconditionally — no feature gates them —
 # so `crossterm` alone is enough. Opt-in feature; nothing renders unless the user enables it.
-# Patched to a local fork (see `[patch.crates-io]` below + `crates/ratatui-image`): (1) its Kitty
-# renderer emits explicit per-cell coordinates so a popup drawn over the album art (the
-# `eq:`/`radio:` dropdowns) can't blank the image to the right of it; (2) its Sixel + iTerm2
-# renderers stamp a per-encode tag into the image's anchor cell so a rebuilt protocol
-# (`App::refresh_art` on a popup toggle) re-transmits once and the art doesn't ghost on Windows
-# Terminal — see `crate::protocol::next_redraw_tag`. Same 11.0.6 otherwise.
+# Patched to a local fork (see `[patch.crates-io]` below +
+# `crates/ratatui-image/PATCHES.md`) for popup-safe Kitty rendering, reliable Sixel/iTerm2
+# retransmission, and conservative Konsole protocol detection. Same public crate version.
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "tokio"] }
 # Synced-lyrics fetch (lrclib) + raw browse. `native-tls` uses the OS TLS stack —
 # Security.framework on macOS, SChannel on Windows — so there's no bundled C crypto
@@ -213,10 +214,10 @@ wry = { version = "0.55.1", default-features = false, features = ["transparent"]
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 
-# Local fork of ratatui-image 11.0.6 with the Kitty explicit-coordinate + Sixel/iTerm2 anchor
-# redraw-tag patches (see the dep note above). A vendored path patch — not a git/crates.io fork —
-# so the source travels with the repo and `cargo install --path .` / the CI build need nothing
-# extra. Re-apply the patches on any bump (grep the fork for `yututui patch`).
+# Local fork of ratatui-image 11.0.6 with the rendering and terminal-detection patches documented
+# in `crates/ratatui-image/PATCHES.md`. A vendored path patch — not a git/crates.io fork — so the
+# source travels with the repo and `cargo install --path .` / the CI build need nothing extra.
+# Re-apply the patches on any bump (grep the fork for `yututui patch`).
 [patch.crates-io]
 ratatui-image = { path = "crates/ratatui-image" }
 

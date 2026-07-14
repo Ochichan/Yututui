@@ -45,6 +45,10 @@ const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
 /// unknown command to an older running instance.
 pub const PERSONAL_EXPORT_CAPABILITY: &str = "personal-export-v1";
 
+/// Daemon/demo capability for the managed long-form seek preference and truthful runtime status.
+/// The standalone TUI owner intentionally does not advertise daemon-only GUI mutation support.
+pub const LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY: &str = "long-form-seek-optimization-v1";
+
 /// An owner reply first crosses an internal oneshot (or a bounded session queue), then a socket
 /// task serializes and flushes it. Hub shutdown cancels those tasks, so hosts which settled
 /// pre-close requests wait this bounded handoff window before latching the hub.

@@ -918,6 +918,64 @@ pub(crate) fn metadata_no_symlink(path: &Path) -> io::Result<fs::Metadata> {
     open_regular_no_symlink(path)?.metadata()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VolumeSpace {
+    pub available_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// User-available and total bytes on the volume containing `path`.
+#[cfg(unix)]
+pub fn volume_space(path: &Path) -> io::Result<VolumeSpace> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stat` points to writable storage of the required
+    // size. A successful return initializes the complete `statvfs` value.
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the zero return above guarantees initialization.
+    let stat = unsafe { stat.assume_init() };
+    let block = if stat.f_frsize == 0 {
+        stat.f_bsize
+    } else {
+        stat.f_frsize
+    } as u128;
+    Ok(VolumeSpace {
+        available_bytes: u64::try_from(u128::from(stat.f_bavail) * block).unwrap_or(u64::MAX),
+        total_bytes: u64::try_from(u128::from(stat.f_blocks) * block).unwrap_or(u64::MAX),
+    })
+}
+
+#[cfg(windows)]
+pub fn volume_space(path: &Path) -> io::Result<VolumeSpace> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let path = wide_path(path)?;
+    let (mut available, mut total) = (0u64, 0u64);
+    // SAFETY: `path` is NUL-terminated and the two output pointers are live `u64` storage;
+    // the unused third result is explicitly null.
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            path.as_ptr(),
+            &mut available,
+            &mut total,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(VolumeSpace {
+        available_bytes: available,
+        total_bytes: total,
+    })
+}
+
 #[cfg(all(windows, test))]
 pub(crate) fn open_regular_for_sync_no_symlink(path: &Path) -> io::Result<File> {
     use windows_sys::Win32::Storage::FileSystem::{

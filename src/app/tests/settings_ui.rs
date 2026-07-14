@@ -613,9 +613,7 @@ fn streaming_source_cycles_on_general_tab_and_persists() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
-    // Fields: Language(0), SearchSource(1), StreamingSource(2).
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Down)));
+    focus_current_settings_field(&mut app, Field::StreamingSource);
     app.update(Msg::Key(key(KeyCode::Right))); // YouTube -> SoundCloud
     assert_eq!(
         app.settings.as_ref().unwrap().draft.search.streaming_source,
@@ -1034,6 +1032,7 @@ fn reset_all_button_confirms_then_restores_defaults() {
         d.speed = 1.8;
         d.seek_seconds = 45.0;
         d.gemini_api_key = "AIzaSecret".to_owned();
+        d.album_art_quality = crate::config::AlbumArtQuality::Original;
     }
     // Enter opens the confirmation modal (does not reset yet).
     app.update(Msg::Key(key(KeyCode::Enter)));
@@ -1049,6 +1048,9 @@ fn reset_all_button_confirms_then_restores_defaults() {
     assert!((d.speed - 1.0).abs() < 1e-9);
     assert!((d.seek_seconds - 10.0).abs() < 1e-9);
     assert!(d.gemini_api_key.is_empty());
+    assert_eq!(d.album_art_quality, crate::config::AlbumArtQuality::High);
+    assert!(d.beginner_mode);
+    assert!(d.restart_beginner_tutorial);
 }
 
 #[test]
@@ -1233,7 +1235,7 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
 #[test]
 fn settings_text_field_edits_path_buffer() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General); row 0 = language
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General)
     let cookies_row = SettingsTab::General
         .fields()
         .iter()

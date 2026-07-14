@@ -347,6 +347,18 @@ impl OwnedGeneration {
         self.identity
     }
 
+    /// Set Unix permission bits on this exact owned generation, without resolving its name.
+    #[cfg(unix)]
+    pub(crate) fn set_mode(&mut self, mode: u32) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        ensure_process_mutation_allowed()?;
+        self.verify()?;
+        self.file
+            .set_permissions(std::fs::Permissions::from_mode(mode & 0o777))?;
+        self.verify()
+    }
+
     /// Whether dropping this handle before promotion leaves a named recovery generation.
     pub(crate) fn retains_name_on_drop(&self) -> bool {
         match self.residence {

@@ -13,9 +13,9 @@ use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, REMOTE_MAX_GEMINI_KEY_BYTES,
-    REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteResponse,
-    RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
+    ArtworkRef, InstanceMode, LongFormSeekRuntimeSnapshot, QueueItemSnapshot,
+    REMOTE_MAX_GEMINI_KEY_BYTES, REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand,
+    RemoteResponse, RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
@@ -136,6 +136,12 @@ pub struct DaemonEngine {
     /// One-shot crash-loop gate. Only a normal (non-recovery) load rearms it; merely
     /// recreating mpv or receiving late telemetry from the dead actor does not.
     transport_auto_recovery_armed: bool,
+    /// Shared one-shot arbiter for same-item stale-source replacement. Its logical generation
+    /// advances only on ordinary loads; a recovery replacement advances the file generation
+    /// without rearming the item latch.
+    source_recovery: crate::player::recovery::RecoveryPlanner,
+    source_logical_generation: u64,
+    source_file_generation: u64,
     /// Deterministic player starts for transport-recovery tests. Production always takes
     /// the real `player::spawn` path.
     #[cfg(test)]
@@ -208,6 +214,7 @@ struct DaemonPlayback {
 enum PositionEpochReason {
     Seek,
     TrackRestart,
+    SourceRecovery,
     TransportRecovery,
     IdleReset,
 }
@@ -327,6 +334,9 @@ impl DaemonEngine {
             transport_recovery: None,
             transport_recovery_generation: 0,
             transport_auto_recovery_armed: true,
+            source_recovery: crate::player::recovery::RecoveryPlanner::default(),
+            source_logical_generation: 0,
+            source_file_generation: 0,
             #[cfg(test)]
             test_player_starts: VecDeque::new(),
             streaming_pending: false,
@@ -368,6 +378,29 @@ impl DaemonEngine {
     ) {
         self.queue.restore_snapshot(snapshot);
         self.queue.seed_rng(rng_seed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_seek_parity_player(
+        &mut self,
+        video_id: &str,
+        position: f64,
+        duration: f64,
+    ) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        self.player = Some(PlayerRuntime {
+            handle: PlayerHandle::test_handle(tx),
+            _guard: None,
+        });
+        self.loaded_video_id = Some(video_id.to_owned());
+        self.playback.time_pos = Some(position);
+        self.playback.duration = Some(duration);
+        rx
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seek_parity_projection(&self) -> (Option<f64>, u64) {
+        (self.playback.time_pos, self.playback.position_epoch)
     }
 
     pub fn api_cookie(&self) -> Option<String> {
@@ -590,7 +623,16 @@ impl DaemonEngine {
             RemoteCommand::ResetAllSettings => {
                 // Danger zone (GUI double-confirms). Keep playback rolling; the fresh
                 // defaults apply live where cheap and at next launch elsewhere.
-                self.config = Config::default();
+                let defaults = Config::default();
+                if let Err(error) = self.send_player_command_if_active(
+                    "reset_long_form_seek_optimization",
+                    PlayerCmd::SetLongFormSeekOptimization(
+                        defaults.audio.mpv.long_form_seek_optimization,
+                    ),
+                ) {
+                    return (self.reject_player_command(error), false, effects);
+                }
+                self.config = defaults;
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())
             }
@@ -819,11 +861,28 @@ impl DaemonEngine {
             },
             ("audio", "mpv_device") => match as_optional_str() {
                 Some(value) => {
-                    self.config.audio.mpv.device = value;
+                    self.config.audio.mpv.set_manual_device(value);
                     self.save_config("daemon mpv device setting");
                     ok(self)
                 }
                 None => bad(),
+            },
+            ("audio", "long_form_seek_optimization") => match as_str()
+                .as_deref()
+                .and_then(crate::config::LongFormSeekOptimization::from_id)
+            {
+                Some(mode) => {
+                    if let Err(error) = self.send_player_command_if_active(
+                        "set_long_form_seek_optimization",
+                        PlayerCmd::SetLongFormSeekOptimization(mode),
+                    ) {
+                        return (self.reject_player_command(error), Vec::new());
+                    }
+                    self.config.audio.mpv.long_form_seek_optimization = mode;
+                    self.save_config("daemon long-form seek optimization setting");
+                    ok(self)
+                }
+                None => (RemoteResponse::err("bad_setting_value"), Vec::new()),
             },
             ("audio", "mpv_cache_forward") => match as_str() {
                 Some(value) => {
@@ -1030,11 +1089,12 @@ impl DaemonEngine {
             },
             ("theme", "preset") => match as_str() {
                 Some(name) => {
-                    // Clone-then-normalize: a fresh ThemeConfig cache (Clone resets it)
-                    // so the direct preset write can't leave a stale resolved palette.
-                    let mut theme = self.config.theme.clone();
-                    theme.preset = name;
-                    self.config.theme = theme.normalized();
+                    // Preserve the existing wire behavior for unknown names (fall back to
+                    // Default), but route recognized presets through the shared transition
+                    // path so built-in overrides are discarded and Custom stays durable.
+                    let preset = crate::theme::ThemePreset::from_id(&name)
+                        .unwrap_or(crate::theme::ThemePreset::Default);
+                    self.config.theme.set_preset(preset);
                     self.save_config("daemon theme preset");
                     ok(self)
                 }
@@ -1219,6 +1279,7 @@ impl DaemonEngine {
                 .send_active_player_command("cycle_pause", PlayerCmd::CyclePause)
                 .is_ok()
         {
+            self.source_recovery.supersede_transport();
             self.playback.paused = true;
         }
         RemoteResponse::ok("video overlay started".to_string())
@@ -1389,6 +1450,12 @@ impl DaemonEngine {
             PlayerEvent::CacheTime(_) => Vec::new(),
             // Recording is a TUI-only feature; the headless engine ignores container hints.
             PlayerEvent::AudioCodec(_) | PlayerEvent::FileFormat(_) => Vec::new(),
+            // Audio-output discovery and picker acknowledgements belong to the interactive TUI.
+            PlayerEvent::AudioDeviceList(_)
+            | PlayerEvent::AudioDeviceRefreshFailed(_)
+            | PlayerEvent::AudioDeviceChanged(_)
+            | PlayerEvent::CurrentAudioOutput(_)
+            | PlayerEvent::AudioDeviceSelectionResult { .. } => Vec::new(),
             PlayerEvent::Eof => {
                 self.record_outgoing(true);
                 self.advance_after_end().await
@@ -1396,6 +1463,41 @@ impl DaemonEngine {
             PlayerEvent::Error(error) => self.handle_playback_error(error).await,
             PlayerEvent::TransportClosed(reason) => {
                 let Some(generation) = self.handle_transport_closed(reason) else {
+                    return Vec::new();
+                };
+                self.attempt_transport_recovery(generation).await
+            }
+            PlayerEvent::CacheEmergency {
+                file_generation,
+                position_secs,
+                paused: _,
+                reason,
+            } => {
+                let replacement = self
+                    .player
+                    .as_ref()
+                    .map(|player| player.handle.current_file_generation())
+                    != Some(file_generation);
+                let generation = if replacement {
+                    self.handle_cache_replacement_emergency(reason)
+                } else {
+                    // Cache actions outrank the actor command backlog, so this snapshot can be
+                    // older than a seek/pause the daemon has already admitted. For the same file
+                    // generation, preserve the authoritative owner projection and use the actor
+                    // position only before the owner has observed one.
+                    self.handle_cache_emergency(
+                        self.playback.time_pos.unwrap_or(position_secs),
+                        self.playback.paused,
+                        reason,
+                    )
+                };
+                let Some(generation) = generation else {
+                    return Vec::new();
+                };
+                self.attempt_transport_recovery(generation).await
+            }
+            PlayerEvent::CacheReplacementEmergency { reason } => {
+                let Some(generation) = self.handle_cache_replacement_emergency(reason) else {
                     return Vec::new();
                 };
                 self.attempt_transport_recovery(generation).await
@@ -1467,6 +1569,19 @@ impl DaemonEngine {
         let current = self.queue.current();
         let mut settings = SettingsSnapshot::from_config(&self.config, false);
         settings.autoplay_streaming = self.streaming;
+        settings.long_form_seek = self.player.as_ref().map(|player| {
+            let runtime = player.handle.long_form_seek_runtime_status();
+            LongFormSeekRuntimeSnapshot {
+                effective: crate::remote::publish::long_form_seek_effective(
+                    runtime.status.effective,
+                ),
+                reason: crate::remote::publish::long_form_seek_reason(runtime.status.reason),
+                last_failure: runtime
+                    .last_failure
+                    .map(crate::remote::publish::long_form_seek_reason),
+                last_cleanup_ms: runtime.last_cleanup_ms,
+            }
+        });
         StatusSnapshot {
             title: current.map(|song| crate::api::sanitize_title(&song.title)),
             artist: current.map(|song| crate::api::sanitize_artist(&song.artist)),
@@ -1804,6 +1919,10 @@ impl DaemonEngine {
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
             config: &self.config,
+            long_form_seek_status: self
+                .player
+                .as_ref()
+                .map(|player| player.handle.long_form_seek_status()),
             library: &self.library,
             signals: &self.signals,
             // Same current-track gate as status()/media_snapshot: stale art from the
@@ -2027,6 +2146,7 @@ impl DaemonEngine {
         if let Err(error) = self.send_active_player_command("cycle_pause", PlayerCmd::CyclePause) {
             return self.reject_player_command(error);
         }
+        self.source_recovery.supersede_transport();
         self.playback.paused = !self.playback.paused;
         RemoteResponse::status(self.status())
     }
@@ -2156,7 +2276,7 @@ impl DaemonEngine {
         }
         let target = crate::playback_policy::clamp_seek_target(pos, self.playback.duration);
         if let Err(error) =
-            self.send_active_player_command("seek_absolute", PlayerCmd::SeekAbsolute(target))
+            self.send_active_player_command("seek_absolute", PlayerCmd::interactive_seek(target))
         {
             return self.reject_player_command(error);
         }
@@ -2166,6 +2286,7 @@ impl DaemonEngine {
 
     /// Record a position discontinuity at `pos` (seek applied / track restarted).
     fn note_seek(&mut self, pos: f64) {
+        self.source_recovery.supersede_transport();
         self.playback.time_pos = Some(pos);
         self.playback.time_pos_at = Some(Instant::now());
         self.bump_position_epoch(PositionEpochReason::Seek);
@@ -2280,14 +2401,19 @@ impl DaemonEngine {
                 self.stop_playback();
             }
         } else {
-            self.reset_idle_playback();
-            self.loaded_video_id = None;
+            // mpv may retain an EOF'd media (and its unlinked disk-cache allocation) under
+            // keep-open. Use the same owner close boundary as an explicit queue-end Stop while
+            // leaving the queue cursor/metadata intact for the idle projection.
+            self.stop_playback();
         }
         effects.extend(self.maybe_autoplay_extend());
         effects
     }
 
     async fn handle_playback_error(&mut self, error: String) -> Vec<EngineEffect> {
+        if self.try_source_recovery(&error) {
+            return Vec::new();
+        }
         let failure_class = crate::tools::classify_playback_failure(&error);
         // Self-heal (mirrors the TUI reducer): an extraction-shaped failure on a
         // yt-dlp-resolved track is the stale-yt-dlp signature — update in the
@@ -2378,6 +2504,7 @@ impl DaemonEngine {
     }
 
     fn stop_playback(&mut self) {
+        self.source_recovery.supersede_transport();
         if let Some(player) = self.player.take() {
             record_player_delivery("stop", player.handle.send(PlayerCmd::Stop));
         }

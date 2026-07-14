@@ -36,6 +36,18 @@ fn normal_quit_requests_owner_exit_without_an_external_signal() {
     assert!(owner_exit_requested(&app, &shutdown));
 }
 
+#[test]
+fn beginner_tour_requires_both_a_writer_lease_and_a_config_destination() {
+    assert!(beginner_profile_persistable(false, true));
+    assert!(!beginner_profile_persistable(true, true));
+    assert!(!beginner_profile_persistable(false, false));
+
+    let mut app = App::new(50);
+    app.config.beginner_mode = true;
+    app.prepare_beginner_onboarding(beginner_profile_persistable(false, false));
+    assert!(!app.onboarding.active());
+}
+
 #[tokio::test]
 async fn quit_during_player_startup_aborts_and_reaps_the_producer() {
     struct DropFlag(Arc<AtomicBool>);
@@ -134,6 +146,13 @@ async fn animation_interval_uses_the_legacy_period_and_skip_policy() {
             .is_err(),
         "Skip must drop the overdue backlog instead of replaying a second tick"
     );
+}
+
+#[tokio::test]
+async fn lyrics_interval_uses_100ms_and_drops_missed_boundaries() {
+    let interval = lyrics_interval();
+    assert_eq!(interval.period(), Duration::from_millis(100));
+    assert_eq!(interval.missed_tick_behavior(), MissedTickBehavior::Skip);
 }
 
 #[tokio::test]
@@ -364,6 +383,10 @@ fn progress_turns_skip_media_and_remote_projection_but_keep_scrobble_heartbeat()
 
     assert_eq!(
         ObserverPlan::for_messages(&Msg::StatusTick, None),
+        ObserverPlan::INERT
+    );
+    assert_eq!(
+        ObserverPlan::for_messages(&Msg::LyricsTick, None),
         ObserverPlan::INERT
     );
     assert_eq!(

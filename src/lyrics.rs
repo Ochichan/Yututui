@@ -2,11 +2,12 @@
 //!
 //! Lyrics come from [lrclib.net](https://lrclib.net) (`/api/search`), which returns
 //! candidates carrying `syncedLyrics` in LRC format (`[mm:ss.xx] text`). We parse that
-//! into time-stamped [`LyricLine`]s; the player view binary-searches the current line by
-//! playback position each frame. The actor caches by `video_id` so re-opening the panel
-//! (or replaying) costs no network.
+//! into time-stamped [`LyricLine`]s; the TUI's 100 ms lyric clock binary-searches the current
+//! line from interpolated playback position and stores it for rendering. The actor caches by
+//! `video_id` so re-opening the panel (or replaying) costs no network.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -141,6 +142,72 @@ fn lyrics_payload_bytes(lines: &[LyricLine]) -> usize {
     )
 }
 
+/// A session-only lyric timing offset, stored as exact signed 100 ms steps.
+///
+/// Positive values delay the displayed lyrics: line selection observes
+/// `playback_position - delay`, while clicking a lyric seeks to
+/// `line_timestamp + delay`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LyricDelay(i32);
+
+impl LyricDelay {
+    pub const ZERO: Self = Self(0);
+    pub const STEP_SECONDS: f64 = 0.1;
+
+    #[must_use]
+    pub const fn from_steps(steps: i32) -> Self {
+        Self(steps)
+    }
+
+    #[must_use]
+    pub const fn steps(self) -> i32 {
+        self.0
+    }
+
+    /// Move the displayed lyrics 100 ms earlier.
+    #[must_use]
+    pub fn earlier(self) -> Self {
+        Self(self.0.saturating_sub(1))
+    }
+
+    /// Move the displayed lyrics 100 ms later.
+    #[must_use]
+    pub fn later(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    #[must_use]
+    pub fn seconds(self) -> f64 {
+        f64::from(self.0) * Self::STEP_SECONDS
+    }
+
+    /// Playback position used to select the highlighted lyric line.
+    #[must_use]
+    pub fn active_position(self, playback_position: f64) -> f64 {
+        playback_position - self.seconds()
+    }
+
+    /// Seek position for a clicked lyric line, clamped to the finite track duration.
+    #[must_use]
+    pub fn seek_position(self, line_timestamp: f64, duration: f64) -> Option<f64> {
+        if !line_timestamp.is_finite() || !duration.is_finite() || duration < 0.0 {
+            return None;
+        }
+        Some((line_timestamp + self.seconds()).clamp(0.0, duration))
+    }
+}
+
+impl fmt::Display for LyricDelay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == 0 {
+            return f.write_str("0.0s");
+        }
+        let magnitude = self.0.unsigned_abs();
+        let sign = if self.0 > 0 { '+' } else { '-' };
+        write!(f, "{sign}{}.{:01}s", magnitude / 10, magnitude % 10)
+    }
+}
+
 /// One timed lyric line.
 #[derive(Debug, Clone)]
 pub struct LyricLine {
@@ -198,6 +265,15 @@ fn parse_timestamp(tag: &str) -> Option<f64> {
 pub fn current_index(lines: &[LyricLine], pos: f64) -> Option<usize> {
     let pp = lines.partition_point(|l| l.time <= pos);
     (pp > 0).then(|| pp - 1)
+}
+
+/// Highlighted line at `playback_position` after applying the session lyric delay.
+pub fn current_index_with_delay(
+    lines: &[LyricLine],
+    playback_position: f64,
+    delay: LyricDelay,
+) -> Option<usize> {
+    current_index(lines, delay.active_position(playback_position))
 }
 
 // --- Actor ------------------------------------------------------------------
@@ -410,6 +486,58 @@ mod tests {
         assert_eq!(current_index(&lines, 5.0), Some(1));
         assert_eq!(current_index(&lines, 9.9), Some(1));
         assert_eq!(current_index(&lines, 100.0), Some(2));
+    }
+
+    #[test]
+    fn lyric_delay_moves_in_exact_saturating_steps() {
+        let mut delay = LyricDelay::ZERO;
+        for _ in 0..10_000 {
+            delay = delay.later();
+        }
+        assert_eq!(delay.steps(), 10_000);
+        assert_eq!(delay.seconds(), 1_000.0);
+        assert_eq!(LyricDelay::ZERO.earlier().steps(), -1);
+        assert_eq!(LyricDelay::ZERO.later().steps(), 1);
+        assert_eq!(LyricDelay::from_steps(i32::MAX).later().steps(), i32::MAX);
+        assert_eq!(LyricDelay::from_steps(i32::MIN).earlier().steps(), i32::MIN);
+    }
+
+    #[test]
+    fn lyric_delay_active_position_uses_display_sign() {
+        let lines = parse_lrc("[00:00.00]a\n[00:05.00]b");
+        let later = LyricDelay::from_steps(1);
+        let earlier = LyricDelay::from_steps(-1);
+
+        assert_eq!(later.active_position(5.0), 4.9);
+        assert_eq!(current_index_with_delay(&lines, 5.0, later), Some(0));
+        assert_eq!(earlier.active_position(5.0), 5.1);
+        assert_eq!(current_index_with_delay(&lines, 5.0, earlier), Some(1));
+    }
+
+    #[test]
+    fn lyric_delay_seek_position_uses_opposite_sign_and_clamps() {
+        let later = LyricDelay::from_steps(2);
+        let earlier = LyricDelay::from_steps(-2);
+
+        assert_eq!(later.seek_position(5.0, 10.0), Some(5.2));
+        assert_eq!(earlier.seek_position(5.0, 10.0), Some(4.8));
+        assert_eq!(earlier.seek_position(0.1, 10.0), Some(0.0));
+        assert_eq!(later.seek_position(9.9, 10.0), Some(10.0));
+        assert_eq!(later.seek_position(f64::NAN, 10.0), None);
+        assert_eq!(later.seek_position(5.0, f64::INFINITY), None);
+        assert_eq!(later.seek_position(5.0, -1.0), None);
+    }
+
+    #[test]
+    fn lyric_delay_display_is_exact_to_one_tenth() {
+        assert_eq!(LyricDelay::ZERO.to_string(), "0.0s");
+        assert_eq!(LyricDelay::from_steps(1).to_string(), "+0.1s");
+        assert_eq!(LyricDelay::from_steps(-1).to_string(), "-0.1s");
+        assert_eq!(LyricDelay::from_steps(123).to_string(), "+12.3s");
+        assert_eq!(
+            LyricDelay::from_steps(i32::MIN).to_string(),
+            "-214748364.8s"
+        );
     }
 
     #[test]

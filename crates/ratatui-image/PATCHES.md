@@ -18,6 +18,8 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
 - Kitty rows damaged by overlay redraws can be marked for retransmission.
 - Sixel and iTerm2 encodes stamp the anchor cell with a monotonic redraw tag so freshly rebuilt
   protocols are not skipped by ratatui's diffing.
+- Konsole versions before 26.08 keep Kitty and Sixel capability queries disabled; 26.08 and newer
+  may select Sixel only after DA1 advertises it and the cell-size query returns usable dimensions.
 
 All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version
@@ -26,7 +28,7 @@ drift, or missing patch markers.
 ## Upgrade Checklist
 
 1. Replace this directory with the desired upstream `ratatui-image` release.
-2. Reapply the four local patch groups above.
+2. Reapply the five local patch groups above.
 3. Keep `yututui patch` comments next to each local behavior change.
 4. Update the upstream base version in this file and in `scripts/check-ratatui-image-patch.sh`.
 5. Run:

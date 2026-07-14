@@ -26,6 +26,20 @@ pub enum PlayerMsg {
     AudioCodec(Option<String>),
     /// mpv `file-format` (container) for the active stream (radio recorder container hint).
     FileFormat(Option<String>),
+    /// Latest cross-platform audio endpoint inventory reported by mpv.
+    AudioDeviceList(Vec<crate::player::AudioDevice>),
+    /// A manual device-list refresh failed without affecting playback.
+    AudioDeviceRefreshFailed(String),
+    /// The configured mpv `audio-device` value (`None` means system/default auto routing).
+    AudioDeviceChanged(Option<String>),
+    /// The active audio output driver, or `None` while no real output is open.
+    CurrentAudioOutput(Option<String>),
+    /// Correlated acknowledgement for a Settings audio-output selection request.
+    AudioDeviceSelectionResult {
+        correlation_id: u64,
+        device: Option<String>,
+        result: Result<(), String>,
+    },
     /// The current track reached its end.
     Eof,
     /// mpv reported a playback error.
@@ -33,6 +47,16 @@ pub enum PlayerMsg {
     /// The mpv IPC transport ended unexpectedly. This is a runtime-lifetime failure, not
     /// a bad track, so recovery must not advance the queue or record skip/play signals.
     TransportClosed(String),
+    /// Managed disk-cache safety recycle with an exact, one-shot RAM-only resume contract.
+    CacheEmergency {
+        position_secs: f64,
+        paused: bool,
+        reason: crate::player::long_form_seek::CacheReason,
+    },
+    /// Cache safety recycle for an already-admitted replacement destination.
+    CacheReplacementEmergency {
+        reason: crate::player::long_form_seek::CacheReason,
+    },
     /// The runtime accepted an admission-sensitive command batch; apply its projected state.
     IntentAdmitted(PlayerCommit),
     /// An event from the video-overlay mpv's IPC client, tagged with the spawn
@@ -77,6 +101,12 @@ impl App {
     /// row). Extracted verbatim from the `PlayerMsg::Error` dispatch arm; the
     /// `position_epoch` bump stays in `App::update`.
     pub(in crate::app) fn on_player_error(&mut self, e: String) -> Vec<Cmd> {
+        let recoverable_source = crate::player::recovery::classify_source_failure(&e);
+        let midtrack_recoverable = recoverable_source.is_some()
+            && self
+                .playback
+                .time_pos
+                .is_some_and(|position| position.is_finite() && position > 0.0);
         // Log *which* track failed and whether it came from a (possibly stale)
         // prefetched URL. `e` already carries mpv's own reason (its `file_error`
         // end-file field — the closest thing to a "why": HTTP 403, unsupported, …).
@@ -84,15 +114,30 @@ impl App {
             .queue
             .current()
             .map(|s| format!("{} — {}", s.title, s.artist));
-        tracing::warn!(
-            error = %e,
-            track = failed.as_deref().unwrap_or("?"),
-            prefetched = self.prefetch.last_load_prefetched,
-            "playback error"
-        );
+        if let Some(failure) = recoverable_source {
+            // Source errors can contain the full signed URL. The typed family is enough to
+            // diagnose the bounded recovery decision without disclosing either source URL.
+            tracing::warn!(
+                ?failure,
+                track = failed.as_deref().unwrap_or("?"),
+                prefetched = self.prefetch.last_load_prefetched,
+                "playback source error"
+            );
+        } else {
+            tracing::warn!(
+                error = %crate::util::sanitize::sanitize_error_text(&e),
+                track = failed.as_deref().unwrap_or("?"),
+                prefetched = self.prefetch.last_load_prefetched,
+                "playback error"
+            );
+        }
+        if midtrack_recoverable && let Some(commands) = self.source_recovery_intent(&e) {
+            return commands;
+        }
         let failure_class = crate::tools::classify_playback_failure(&e);
         let extraction = failure_class == PlaybackFailureClass::Extraction;
-        if self.prefetch.last_load_prefetched
+        if !midtrack_recoverable
+            && self.prefetch.last_load_prefetched
             && let Some(song) = self.queue.current()
             && let Some(watch_url) = song.prefetch_target()
             && !self.prefetch.watch_retry_attempted.contains(&song.video_id)
@@ -615,6 +660,18 @@ impl App {
                     self.remove_queue_range(self.queue.cursor_pos(), self.queue.cursor_pos())
                 }
             }
+            Action::LyricsDelayEarlier => {
+                if self.adjust_lyrics_delay(LyricsDelayDirection::Earlier, Instant::now()) {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            Action::LyricsDelayLater => {
+                if self.adjust_lyrics_delay(LyricsDelayDirection::Later, Instant::now()) {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             // Toggle the lyrics panel; fetch on first open for the current track.
             Action::ToggleLyrics => {
                 self.lyrics.visible = !self.lyrics.visible;
@@ -696,7 +753,6 @@ impl App {
                 Vec::new()
             }
             Action::OpenSearch => {
-                let cmds = self.complete_search_onboarding();
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
                 let search = self.search_config_for_mode();
@@ -705,7 +761,7 @@ impl App {
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
-                cmds
+                Vec::new()
             }
             // `P` opens the add-to-playlist picker for the track that's playing.
             Action::AddToPlaylist => {

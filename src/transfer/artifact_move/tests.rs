@@ -7,7 +7,11 @@ use crate::transfer::session::{ImportSessionRow, ImportSessionRowStatus};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
+#[path = "permission_boundary_tests.rs"]
+mod permission_boundary_tests;
+
 struct MoveFixture {
+    kind: ArtifactMoveKind,
     root: PathBuf,
     session_id: String,
     row_id: String,
@@ -31,17 +35,29 @@ impl MoveFixture {
                 .expect("clock after epoch")
                 .as_nanos()
         ));
-        let source_dir = root.join("incoming");
+        let organize = matches!(kind, ArtifactMoveKind::Organize);
         let destination_root = root.join("complete");
-        std::fs::create_dir_all(&source_dir).expect("create source directory");
         std::fs::create_dir_all(&destination_root).expect("create destination directory");
+        let source_dir = if organize {
+            let private_root = root.join(".yututui-inbox");
+            let session = private_root.join(&session_id);
+            let complete = session.join("complete");
+            for directory in [&private_root, &session, &complete] {
+                crate::util::safe_fs::ensure_private_dir(directory)
+                    .expect("create private organize source directory");
+            }
+            complete
+        } else {
+            let incoming = root.join("incoming");
+            std::fs::create_dir_all(&incoming).expect("create source directory");
+            incoming
+        };
         let source = source_dir.join("Track [abc123def45].m4a");
         let destination = destination_root.join("Track [abc123def45].m4a");
         std::fs::write(&source, b"fixture audio").expect("write source audio");
         std::fs::write(crate::downloads::sidecar_path(&source), b"fixture sidecar")
             .expect("write source sidecar");
 
-        let organize = matches!(kind, ArtifactMoveKind::Organize);
         let claim = crate::transfer::artifact_identity::test_import_claim(
             &session_id,
             &row_id,
@@ -87,6 +103,7 @@ impl MoveFixture {
             ),
         };
         Self {
+            kind,
             root,
             session_id,
             row_id,
@@ -127,7 +144,12 @@ impl MoveFixture {
     }
 
     fn assert_committed_once(&self) {
-        assert!(self.source.is_file(), "retained source audio is missing");
+        let source_is_private = matches!(self.kind, ArtifactMoveKind::Organize);
+        assert_eq!(
+            self.source.is_file(),
+            !source_is_private,
+            "source audio retention did not match its namespace"
+        );
         assert!(self.destination.is_file(), "destination audio is missing");
         assert_eq!(
             std::fs::read(&self.destination).expect("read committed audio"),
@@ -135,24 +157,30 @@ impl MoveFixture {
         );
         let source_sidecar = crate::downloads::sidecar_path(&self.source);
         let destination_sidecar = crate::downloads::sidecar_path(&self.destination);
-        assert!(
+        assert_eq!(
             source_sidecar.is_file(),
-            "retained source sidecar is missing"
+            !source_is_private,
+            "source sidecar retention did not match its namespace"
         );
         assert!(destination_sidecar.is_file(), "destination sidecar missing");
         assert_eq!(
             std::fs::read(destination_sidecar).expect("read committed sidecar"),
             b"fixture sidecar"
         );
-        assert_eq!(regular_file_count(self.source.parent().unwrap()), 2);
-        assert_eq!(regular_file_count(self.destination.parent().unwrap()), 2);
-        let source_file = safe_fs::open_regular_no_symlink(&self.source).unwrap();
-        let destination_file = safe_fs::open_regular_no_symlink(&self.destination).unwrap();
-        assert_ne!(
-            safe_fs::file_object_id(&source_file).unwrap(),
-            safe_fs::file_object_id(&destination_file).unwrap(),
-            "destination must not alias the mutable retained source"
+        assert_eq!(
+            regular_file_count(self.source.parent().unwrap()),
+            if source_is_private { 0 } else { 2 }
         );
+        assert_eq!(regular_file_count(self.destination.parent().unwrap()), 2);
+        let destination_file = safe_fs::open_regular_no_symlink(&self.destination).unwrap();
+        if !source_is_private {
+            let source_file = safe_fs::open_regular_no_symlink(&self.source).unwrap();
+            assert_ne!(
+                safe_fs::file_object_id(&source_file).unwrap(),
+                safe_fs::file_object_id(&destination_file).unwrap(),
+                "destination must not alias the mutable retained source"
+            );
+        }
 
         let saved = ImportSession::load(&self.session_id).expect("load committed session");
         let row = &saved.rows[0];
@@ -290,40 +318,323 @@ fn every_durable_phase_rolls_forward_to_exactly_one_pair_and_row() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn legacy_transaction_schema_is_refused_without_mutating_artifacts() {
-    let fixture = MoveFixture::new("legacy-schema", ArtifactMoveKind::ImportDownload);
-    // Keep startup reconciliation from observing the transaction as current-schema in the
-    // interval between its creation and the deliberate legacy-schema rewrite below.
-    let record_guard =
-        ImportRecordGuard::try_acquire(&fixture.session_id).expect("own legacy fixture session");
-    let fault = |point| {
-        if point == ArtifactMoveFaultPoint::BeforeAudioPublish {
-            Err(std::io::Error::other("legacy fixture fault injection"))
-        } else {
-            Ok(())
+fn organize_publication_derives_library_modes_from_the_root() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    for (root_mode, directory_mode, audio_mode) in [
+        (0o755, 0o755, 0o644),
+        (0o750, 0o750, 0o640),
+        (0o700, 0o700, 0o600),
+    ] {
+        let mut fixture = MoveFixture::new("public-modes", ArtifactMoveKind::Organize);
+        let library_root = fixture.request.destination_root.clone();
+        std::fs::set_permissions(&library_root, std::fs::Permissions::from_mode(root_mode))
+            .unwrap();
+        fixture.destination = library_root
+            .join("Artist")
+            .join("Album")
+            .join("Track [abc123def45].m4a");
+        fixture.request.audio_to = fixture.destination.clone();
+
+        commit(fixture.request.clone()).expect("publish organized library artifact");
+
+        assert_eq!(
+            std::fs::metadata(&library_root).unwrap().mode() & 0o777,
+            root_mode
+        );
+        for directory in [
+            library_root.join("Artist"),
+            library_root.join("Artist/Album"),
+        ] {
+            assert_eq!(
+                std::fs::metadata(directory).unwrap().mode() & 0o777,
+                directory_mode
+            );
         }
-    };
-    commit_locked_with_hook(fixture.request.clone(), Some(&fault))
-        .expect_err("fault must retain a prepared transaction");
-    let transaction = fixture.transaction_path();
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&transaction).unwrap()).unwrap();
-    value["schema_version"] = serde_json::Value::from(TXN_SCHEMA_VERSION - 1);
-    {
-        // Production transaction rewrites hold this lock so inventory cannot mistake their
-        // live atomic-write temp for a stale crash remnant. Mirror that contract here.
-        let _registry = acquire_registry_lock().expect("own transaction registry");
-        safe_fs::write_private_atomic_json(&transaction, &value).unwrap();
+        assert_eq!(
+            std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+            audio_mode
+        );
+        assert_eq!(
+            std::fs::metadata(crate::downloads::sidecar_path(&fixture.destination))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        fixture.cleanup();
     }
-    drop(record_guard);
+}
+
+#[cfg(unix)]
+#[test]
+fn organized_mode_is_durable_before_recovery_boundary() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let fixture = MoveFixture::new("mode-recovery", ArtifactMoveKind::Organize);
+    std::fs::set_permissions(
+        &fixture.request.destination_root,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    commit_with_fault(
+        fixture.request.clone(),
+        ArtifactMoveFaultPoint::AfterAudioPublishBeforeSourceUnlink,
+    )
+    .expect_err("fault must retain the public-mode transaction");
+
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o644
+    );
+    assert!(fixture.source.exists());
+    assert!(fixture.transaction_path().exists());
+
+    reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
+        .expect("recover organized publication")
+        .expect("recovered row is committed");
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o644
+    );
+    assert_eq!(
+        std::fs::metadata(crate::downloads::sidecar_path(&fixture.destination))
+            .unwrap()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn matching_existing_organized_files_and_directories_are_never_chmodded() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let mut fixture = MoveFixture::new("existing-modes", ArtifactMoveKind::Organize);
+    let library_root = fixture.request.destination_root.clone();
+    std::fs::set_permissions(&library_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let album = library_root.join("Artist/Album");
+    std::fs::create_dir_all(&album).unwrap();
+    std::fs::set_permissions(
+        library_root.join("Artist"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::set_permissions(&album, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.destination = album.join("Track [abc123def45].m4a");
+    fixture.request.audio_to = fixture.destination.clone();
+    std::fs::copy(&fixture.source, &fixture.destination).unwrap();
+    std::fs::copy(
+        crate::downloads::sidecar_path(&fixture.source),
+        crate::downloads::sidecar_path(&fixture.destination),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fixture.destination, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let destination_sidecar = crate::downloads::sidecar_path(&fixture.destination);
+    std::fs::set_permissions(&destination_sidecar, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    commit(fixture.request.clone()).expect("accept matching organized destination");
+
+    assert_eq!(std::fs::metadata(&album).unwrap().mode() & 0o777, 0o755);
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(destination_sidecar).unwrap().mode() & 0o777,
+        0o640
+    );
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn organize_publish_race_does_not_chmod_the_foreign_destination() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let fixture = MoveFixture::new("mode-publish-race", ArtifactMoveKind::Organize);
+    std::fs::set_permissions(
+        &fixture.request.destination_root,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let destination = fixture.destination.clone();
+    let hook = |point| {
+        if point == ArtifactMoveFaultPoint::BeforeAudioPublish {
+            std::fs::write(&destination, b"foreign destination")?;
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o620))?;
+        }
+        Ok(())
+    };
+    let _guard = ImportRecordGuard::try_acquire(&fixture.session_id).unwrap();
+
+    commit_locked_with_hook(fixture.request.clone(), Some(&hook))
+        .expect_err("foreign destination must win no-replace publication");
+
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o620
+    );
+    assert_eq!(
+        std::fs::read(&fixture.destination).unwrap(),
+        b"foreign destination"
+    );
+    assert!(fixture.source.exists());
+    drop(_guard);
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_v3_prepared_transaction_backfills_private_stage_and_public_modes() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let fixture = MoveFixture::new("legacy-stage-location", ArtifactMoveKind::Organize);
+    std::fs::set_permissions(
+        &fixture.request.destination_root,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_with_fault(
+        fixture.request.clone(),
+        ArtifactMoveFaultPoint::BeforeAudioPublish,
+    )
+    .expect_err("fault must retain a staged transaction");
+    let transaction = fixture.transaction_path();
+    let mut txn = load_transaction(&transaction).unwrap();
+    let source_stage = fixture.source.parent().unwrap().join(&txn.audio_stage_name);
+    let _ = std::fs::remove_file(source_stage);
+    txn.audio_stage_object_id = None;
+    txn.sidecar_stage_object_id = None;
+    txn.audio_publish_mode = None;
+    txn.sidecar_publish_mode = None;
+    txn.audio_source_private_stage = false;
+    txn.sidecar_source_private_stage = false;
+    txn.verify_legacy_existing_modes = false;
+    persist_transaction(&transaction, &txn).unwrap();
+
+    reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
+        .expect("recover legacy prepared transaction")
+        .expect("legacy row is committed");
+
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o644
+    );
+    assert_eq!(
+        std::fs::metadata(crate::downloads::sidecar_path(&fixture.destination))
+            .unwrap()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_v3_mixed_audio_and_sidecar_stages_recover_independently() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let fixture = MoveFixture::new("legacy-mixed-stages", ArtifactMoveKind::Organize);
+    std::fs::set_permissions(
+        &fixture.request.destination_root,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_with_fault(
+        fixture.request.clone(),
+        ArtifactMoveFaultPoint::BeforeSidecarPublish,
+    )
+    .expect_err("fault must leave audio published and sidecar staged");
+    let transaction = fixture.transaction_path();
+    let mut txn = load_transaction(&transaction).unwrap();
+    assert!(txn.audio_stage_object_id.is_some());
+    assert!(txn.sidecar_stage_object_id.is_some());
+    assert!(fixture.destination.exists());
+    let _ = std::fs::remove_file(
+        fixture
+            .source
+            .parent()
+            .unwrap()
+            .join(&txn.sidecar_stage_name),
+    );
+    txn.sidecar_stage_object_id = None;
+    txn.audio_publish_mode = None;
+    txn.sidecar_publish_mode = None;
+    txn.audio_source_private_stage = false;
+    txn.sidecar_source_private_stage = false;
+    txn.verify_legacy_existing_modes = false;
+    persist_transaction(&transaction, &txn).unwrap();
+    std::fs::set_permissions(&fixture.destination, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
+        .expect("recover mixed legacy publication stages")
+        .expect("mixed legacy row is committed");
+
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o644
+    );
+    assert_eq!(
+        std::fs::metadata(crate::downloads::sidecar_path(&fixture.destination))
+            .unwrap()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert!(!fixture.source.exists());
+    assert!(!transaction.exists());
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_v3_final_without_owned_mode_proof_fails_without_chmod() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let fixture = MoveFixture::new("legacy-final-mode", ArtifactMoveKind::Organize);
+    std::fs::set_permissions(
+        &fixture.request.destination_root,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_with_fault(
+        fixture.request.clone(),
+        ArtifactMoveFaultPoint::BeforeAudioPublish,
+    )
+    .expect_err("fault must retain a prepared transaction");
+    let transaction = fixture.transaction_path();
+    let mut txn = load_transaction(&transaction).unwrap();
+    let _ = std::fs::remove_file(fixture.source.parent().unwrap().join(&txn.audio_stage_name));
+    txn.audio_stage_object_id = None;
+    txn.sidecar_stage_object_id = None;
+    txn.audio_publish_mode = None;
+    txn.sidecar_publish_mode = None;
+    txn.audio_source_private_stage = false;
+    txn.sidecar_source_private_stage = false;
+    txn.verify_legacy_existing_modes = false;
+    persist_transaction(&transaction, &txn).unwrap();
+    std::fs::copy(&fixture.source, &fixture.destination).unwrap();
+    std::fs::set_permissions(&fixture.destination, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     let error = reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
-        .expect_err("legacy transaction must not infer missing object identities");
+        .expect_err("unowned legacy final must not be chmodded");
 
-    assert!(format!("{error:#}").contains("unsupported artifact move schema"));
-    assert_eq!(std::fs::read(&fixture.source).unwrap(), b"fixture audio");
-    assert!(!fixture.destination.exists());
+    assert!(
+        format!("{error:#}").contains("lacks transaction-owned chmod proof"),
+        "unexpected recovery error: {error:#}"
+    );
+    assert_eq!(
+        std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+        0o600
+    );
+    assert!(fixture.source.exists());
     assert!(transaction.exists());
     fixture.cleanup();
 }
@@ -474,6 +785,7 @@ fn matching_final_with_a_journal_owned_named_stage_is_not_forgotten() {
             source_parent: &source_parent,
             source_name: std::ffi::OsStr::new("source.audio"),
             expected_source_object: source.identity(),
+            stage_parent: &destination_parent,
             destination_parent: &destination_parent,
             destination_stage_name: std::ffi::OsStr::new("owned.stage"),
             expected_stage_object: Some(stage.identity()),
@@ -487,6 +799,8 @@ fn matching_final_with_a_journal_owned_named_stage_is_not_forgotten() {
             after_publish: ArtifactMoveFaultPoint::AfterAudioPublishBeforeSourceUnlink,
             retained_source_boundary: ArtifactMoveFaultPoint::BeforeAudioSourceUnlinkValidation,
             max_bytes: ARTIFACT_AUDIO_MAX_BYTES,
+            publish_mode: None,
+            verify_legacy_existing_mode: false,
         },
     )
     .expect_err("a retained named stage requires explicit recovery");
@@ -531,6 +845,7 @@ fn journal_owned_partial_stage_is_repaired_and_promoted() {
             source_parent: &source_parent,
             source_name: std::ffi::OsStr::new("source.audio"),
             expected_source_object: source.identity(),
+            stage_parent: &destination_parent,
             destination_parent: &destination_parent,
             destination_stage_name: std::ffi::OsStr::new("owned.stage"),
             expected_stage_object: Some(stage.identity()),
@@ -544,6 +859,8 @@ fn journal_owned_partial_stage_is_repaired_and_promoted() {
             after_publish: ArtifactMoveFaultPoint::AfterAudioPublishBeforeSourceUnlink,
             retained_source_boundary: ArtifactMoveFaultPoint::BeforeAudioSourceUnlinkValidation,
             max_bytes: ARTIFACT_AUDIO_MAX_BYTES,
+            publish_mode: None,
+            verify_legacy_existing_mode: false,
         },
     )
     .expect("repair and promote journal-owned stage");
@@ -615,6 +932,22 @@ fn successful_private_inbox_commit_reclaims_sources_and_leaves_no_stage() {
         std::fs::read(&fixture.destination).unwrap(),
         b"fixture audio"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        assert_eq!(
+            std::fs::metadata(&fixture.destination).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(crate::downloads::sidecar_path(&fixture.destination))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
     assert!(!fixture.transaction_path().exists());
     fixture.cleanup();
 }

@@ -120,7 +120,7 @@ same one-line instruction; extra shots are welcome — just copy a slot block. -
 
 ### The player — real album art & time-synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×11 turns the whole app into a tiny miniplayer that springs back when the window grows.
+Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×11 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
@@ -273,7 +273,8 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | hold `↑`/`↓` · `Shift`+`↑`/`↓` | Fast-scroll a list (accelerates) · extend the selection |
 | `f` / `d` | Favorite / download (select rows with `Shift`+`↑`/`↓` or drag, then `d`, to grab many) |
 | `Shift+D` | Download the whole list / playlist |
-| `Shift+L` | Synced lyrics |
+| `Shift+L` | Synced lyrics; click a visible line to seek there |
+| `z` / `Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |

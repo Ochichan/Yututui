@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Performance evidence must describe the normal product. Never inherit the optional hot-path
 # instrumentation switch into the sampler, controller, or measured ytt process.
-unset YTM_PERF
+unset YTM_PERF YTM_PERF_SOURCE_RATE_BOUND_BPS
 
 # Native Unix launcher for paired ytt TUI performance runs. Real TUI binaries always run inside
 # a unique tmux server with a fake home and null audio, matching the repository verify contract.
@@ -20,6 +20,8 @@ output=""
 seed_home=""
 baseline_seed_home=""
 candidate_seed_home=""
+mpv_selection_manifest=""
+selected_mpv=""
 
 usage() {
   cat <<'EOF'
@@ -35,6 +37,8 @@ Playback scenarios:
                                Resumed Song.local_path must be {{TUI_PERF_PLAYLIST}}.
   --baseline-seed-home DIR     Baseline template; must hash-identically to candidate.
   --candidate-seed-home DIR    Candidate template; must hash-identically to baseline.
+  --mpv-selection-manifest PATH
+                               Required target-local current/0.32 selection manifest.
 
 Harness options:
   --scenarios PATH             Override scenario JSON
@@ -53,6 +57,7 @@ while (($#)); do
     --seed-home) seed_home=${2:?}; shift 2 ;;
     --baseline-seed-home) baseline_seed_home=${2:?}; shift 2 ;;
     --candidate-seed-home) candidate_seed_home=${2:?}; shift 2 ;;
+    --mpv-selection-manifest) mpv_selection_manifest=${2:?}; shift 2 ;;
     --scenarios) scenarios=${2:?}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'tui-perf.sh: unknown argument %q\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -81,9 +86,18 @@ pairs=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario
 candidate_repeats=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field candidate_repeats)
 geometry_count=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field geometry.length)
 requires_mpv=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field requires_mpv)
+has_setting_overrides=false
+if python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" \
+  --field setting_leaf_overrides >/dev/null 2>&1; then
+  has_setting_overrides=true
+fi
 traffic_profile=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field traffic_profile)
-fixture_seconds=$(python3 "$python_tool" setting --scenarios "$scenarios" --field fixture.duration_s)
-fixture_sample_rate=$(python3 "$python_tool" setting --scenarios "$scenarios" --field fixture.sample_rate_hz)
+source_rate_bound_bps=$(python3 "$python_tool" traffic \
+  --scenarios "$scenarios" --name "$traffic_profile" --field maximum_source_rate_bps)
+fixture_profile=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field fixture_profile)
+fixture_seconds=$(python3 "$python_tool" setting --scenarios "$scenarios" --field "fixture_profiles.$fixture_profile.duration_s")
+fixture_sample_rate=$(python3 "$python_tool" setting --scenarios "$scenarios" --field "fixture_profiles.$fixture_profile.sample_rate_hz")
+fixture_container=$(python3 "$python_tool" setting --scenarios "$scenarios" --field "fixture_profiles.$fixture_profile.container")
 is_render=false
 [[ "$scenario" == "render_and_interaction" ]] && is_render=true
 baseline_seed_home=${baseline_seed_home:-$seed_home}
@@ -96,6 +110,20 @@ if [[ "$requires_mpv" == true ]]; then
     --output-root "$output" \
     --protected-root "$baseline_seed_home" \
     --protected-root "$candidate_seed_home" >/dev/null
+  [[ -f "$mpv_selection_manifest" ]] || {
+    echo "tui-perf.sh: --mpv-selection-manifest is required for playback" >&2
+    exit 2
+  }
+  selected_mpv=$(python3 "$python_tool" mpv-selection \
+    --manifest "$mpv_selection_manifest" --field binary.path)
+  mpv_target_root=$(python3 "$python_tool" mpv-selection \
+    --manifest "$mpv_selection_manifest" --field target_root)
+  python3 "$python_tool" path-preflight \
+    --output-root "$output" \
+    --protected-root "$mpv_target_root" >/dev/null
+elif [[ -n "$mpv_selection_manifest" ]]; then
+  echo "tui-perf.sh: non-playback scenarios reject --mpv-selection-manifest" >&2
+  exit 2
 fi
 if ! $is_render; then
   command -v tmux >/dev/null || { echo "tui-perf.sh: tmux is required for real TUI runs" >&2; exit 2; }
@@ -147,6 +175,8 @@ active_identity=""
 active_server_pid=""
 active_server_identity=""
 active_server_run_id=""
+active_server_token=""
+active_runtime_home=""
 socket_root=$(mktemp -d "${TMPDIR:-/tmp}/ytt-perf-tmux.XXXXXX")
 socket_counter=0
 
@@ -178,13 +208,14 @@ cleanup_active_run() {
 
 cleanup_server() {
   [[ -n "$active_server_pid" ]] || return 0
-  if [[ -z "$active_server_identity" || -z "$active_server_run_id" ]]; then
+  if [[ -z "$active_server_identity" || -z "$active_server_run_id" || -z "$active_server_token" ]]; then
     echo "tui-perf.sh: fixture server has no exact shutdown identity; refusing to signal its numeric PID" >&2
     return 1
   fi
   if ! python3 "$python_tool" stop-server \
     --identity "$active_server_identity" \
     --expected-run-id "$active_server_run_id" \
+    "--shutdown-token=$active_server_token" \
     --timeout-secs 10 >/dev/null; then
     echo "tui-perf.sh: exact authenticated fixture server shutdown failed; no PID signal was sent" >&2
     return 1
@@ -196,6 +227,7 @@ cleanup_server() {
   active_server_pid=""
   active_server_identity=""
   active_server_run_id=""
+  active_server_token=""
 }
 
 server_child_is_running() {
@@ -217,6 +249,11 @@ cleanup_on_exit() {
   if ! cleanup_server; then
     cleanup_status=1
   fi
+  if [[ -n "$active_runtime_home" && -d "$active_runtime_home" ]]; then
+    if ! python3 "$python_tool" sanitize-runtime-evidence --root "$active_runtime_home" >/dev/null; then
+      cleanup_status=1
+    fi
+  fi
   if ((cleanup_status == 0)); then
     rm -rf -- "$socket_root"
   elif ((exit_status == 0)); then
@@ -229,15 +266,15 @@ trap cleanup_on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-fixture_file="$output/fixture/silence-${fixture_seconds}s.wav"
+fixture_file="$output/fixture/silence-${fixture_seconds}s.${fixture_container}"
 if [[ "$requires_mpv" == true ]]; then
   mkdir -p "$(dirname "$fixture_file")"
   if [[ ! -f "$fixture_file" ]]; then
     python3 "$python_tool" fixture \
       --output "$fixture_file" \
       --manifest "$output/fixture/manifest.json" \
-      --seconds "$fixture_seconds" \
-      --sample-rate "$fixture_sample_rate" >/dev/null
+      --profile "$fixture_profile" \
+      --scenarios "$scenarios" >/dev/null
   fi
 fi
 
@@ -248,6 +285,9 @@ manifest_args=(
   --output "$output/host-manifest.json"
   --build-receipt "$build_receipt"
 )
+if [[ "$requires_mpv" == true ]]; then
+  manifest_args+=(--mpv-selection-manifest "$mpv_selection_manifest")
+fi
 python3 "$python_tool" "${manifest_args[@]}" >/dev/null
 
 json_array_to_csv() {
@@ -275,6 +315,7 @@ run_process() {
     run_dir="$run_root/geometry-${width}x${height}"
   fi
   local home="$run_dir/home"
+  active_runtime_home=$home
   local runtime="$run_dir/runtime"
   local tmp="$run_dir/tmp"
   local config_store="$home/stores/config"
@@ -284,6 +325,7 @@ run_process() {
   local pid_file="$run_dir/ytt.pid"
   local identity_file="$run_dir/process-identity.json"
   local controller_ready_file="$run_dir/controller-ready.json"
+  local enforced_source_rate_bound_bps=0
   ((socket_counter += 1))
   local socket="$socket_root/s${socket_counter}.sock"
   mkdir -p "$home" "$runtime" "$tmp" "$config_store" "$data_store" "$cache_store"
@@ -293,15 +335,20 @@ run_process() {
   fi
   if [[ "$requires_mpv" == true ]]; then
     local ready_file="$run_dir/http-ready.json"
-    local throttle outage_every outage_ms disconnect_every fixture_url shutdown_token
+    local throttle outage_every outage_ms disconnect_every header_delay range_delay range_behavior fault_profile fixture_port fixture_url shutdown_token
     rm -f -- "$ready_file"
     throttle=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field throttle_bps)
     outage_every=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field outage_every_bytes)
     outage_ms=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field outage_ms)
     disconnect_every=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field disconnect_every_bytes)
+    header_delay=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field header_delay_ms)
+    range_delay=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field range_response_delay_ms)
+    range_behavior=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field range_behavior)
+    fault_profile=$(python3 "$python_tool" traffic --scenarios "$scenarios" --name "$traffic_profile" --field fault_profile)
     shutdown_token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
     active_server_identity=$ready_file
     active_server_run_id=$run_id
+    active_server_token=$shutdown_token
     python3 "$python_tool" serve \
       --file "$fixture_file" \
       --ready-file "$ready_file" \
@@ -309,9 +356,14 @@ run_process() {
       --run-id "$run_id" \
       "--shutdown-token=$shutdown_token" \
       --throttle-bps "$throttle" \
+      --maximum-source-rate-bps "$source_rate_bound_bps" \
       --outage-every-bytes "$outage_every" \
       --outage-ms "$outage_ms" \
       --disconnect-every-bytes "$disconnect_every" \
+      --header-delay-ms "$header_delay" \
+      --range-response-delay-ms "$range_delay" \
+      --range-behavior "$range_behavior" \
+      --fault-profile "$fault_profile" \
       >"$run_dir/http-server.log" 2>&1 &
     active_server_pid=$!
     local server_deadline=$((SECONDS + 10))
@@ -322,13 +374,22 @@ run_process() {
           active_server_pid=""
           active_server_identity=""
           active_server_run_id=""
+          active_server_token=""
         fi
         echo "tui-perf.sh: fixture server failed for $label" >&2
         return 1
       fi
       sleep 0.05
     done
-    fixture_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$ready_file")
+    fixture_port=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$ready_file")
+    fixture_url="http://127.0.0.1:${fixture_port}/fixture.wav"
+    enforced_source_rate_bound_bps=$(python3 -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["maximum_source_rate_bps"])' \
+      "$ready_file")
+    [[ "$enforced_source_rate_bound_bps" == "$source_rate_bound_bps" ]] || {
+      echo "tui-perf.sh: fixture server source-rate ceiling disagrees with the selected profile" >&2
+      return 1
+    }
     python3 "$python_tool" materialize \
       --root "$home" \
       --home "$home" \
@@ -336,6 +397,14 @@ run_process() {
       --seed-label "$role" \
       --input-snapshot "$run_dir/materialized-inputs" \
       --manifest "$run_dir/materialize.json" >/dev/null
+  fi
+  if $has_setting_overrides; then
+    python3 "$python_tool" apply-setting-overrides \
+      --scenarios "$scenarios" \
+      --scenario "$scenario" \
+      --role "$role" \
+      --root "$home" \
+      --output "$run_dir/setting-overrides.json" >/dev/null
   fi
   python3 "$python_tool" launch-policy \
     --root "$home" \
@@ -366,6 +435,10 @@ run_process() {
     "TUI_PERF_SCENARIO_SHA256=$scenario_hash"
     "TUI_PERF_RUN_ID=$run_id"
   )
+  [[ "$requires_mpv" == true ]] && isolated_env+=("YTM_MPV=$selected_mpv")
+  if [[ "$requires_mpv" == true ]] && ((enforced_source_rate_bound_bps > 0)); then
+    isolated_env+=("YTM_PERF_SOURCE_RATE_BOUND_BPS=$enforced_source_rate_bound_bps")
+  fi
   [[ -n "${LANG:-}" ]] && isolated_env+=("LANG=$LANG")
   [[ -n "${LC_ALL:-}" ]] && isolated_env+=("LC_ALL=$LC_ALL")
   [[ -n "${LC_CTYPE:-}" ]] && isolated_env+=("LC_CTYPE=$LC_CTYPE")
@@ -376,6 +449,7 @@ run_process() {
     --output "$samples"
     --pid-file "$pid_file"
     --identity-file "$identity_file"
+    --cache-root "$cache_store"
     --binary "$binary"
     --warmup-secs "$warmup"
     --duration-secs "$sample"
@@ -409,10 +483,12 @@ run_process() {
   done
 
   if [[ "$controller_enabled" == true ]]; then
-    local load seeks_json seeks_csv pause_policy pause_hold_ms
+    local load seeks_json seeks_csv actions_json pause_policy pause_hold_ms
     load=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field controller_load)
     seeks_json=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field seeks_s)
     seeks_csv=$(json_array_to_csv "$seeks_json")
+    actions_json=$(python3 "$python_tool" scenario \
+      --scenarios "$scenarios" --id "$scenario" --field actions 2>/dev/null || true)
     pause_policy=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field pause_policy)
     pause_hold_ms=$(python3 "$python_tool" scenario --scenarios "$scenarios" --id "$scenario" --field pause_hold_ms)
     local -a control_cmd=(
@@ -424,7 +500,11 @@ run_process() {
       --close-grace-secs 15
       --load "$load"
     )
-    [[ -n "$seeks_csv" ]] && control_cmd+=(--seeks "$seeks_csv")
+    if [[ -n "$actions_json" ]]; then
+      control_cmd+=(--actions-json "$actions_json")
+    elif [[ -n "$seeks_csv" ]]; then
+      control_cmd+=(--seeks "$seeks_csv")
+    fi
     if [[ "$pause_policy" == pause-resume ]]; then
       control_cmd+=(--pause-hold-ms "$pause_hold_ms")
     else
@@ -455,6 +535,8 @@ run_process() {
   if [[ -n "$active_server_pid" ]]; then
     cleanup_server
   fi
+  python3 "$python_tool" sanitize-runtime-evidence --root "$home" >/dev/null
+  active_runtime_home=""
 }
 
 run_process_geometries() {
@@ -573,7 +655,9 @@ compare_args+=(
   --output-markdown "$output/report.md"
 )
 compare_status=0
+python3 "$python_tool" privacy-check --root "$output" >/dev/null
 python3 "$python_tool" "${compare_args[@]}" || compare_status=$?
+python3 "$python_tool" privacy-check --root "$output" >/dev/null
 python3 "$python_tool" create-checksums \
   --root "$output" \
   --output "$output/SHA256SUMS" >/dev/null

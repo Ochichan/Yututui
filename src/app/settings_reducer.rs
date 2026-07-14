@@ -44,30 +44,6 @@ fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) ->
     }
 }
 
-fn local_accept_write_done_status(
-    report: &crate::transfer::checkpoint::TransferReport,
-    accepted_count: u32,
-) -> String {
-    let review_left = report.ambiguous.len() as u32;
-    let missing_left = report.not_found.len() as u32;
-    if crate::i18n::is_korean() {
-        format!(
-            "임포트 세션 작성 완료: 후보 {}개 수락 · 준비 행 {}개 작성 · 검토 {}개 남음 · 누락 {}개 남음 · Library > Playlists",
-            accepted_count, report.written, review_left, missing_left
-        )
-    } else {
-        format!(
-            "Import session written: {} candidate{} accepted · {} ready row{} written · {} review left · {} missing left · Library > Playlists",
-            accepted_count,
-            if accepted_count == 1 { "" } else { "s" },
-            report.written,
-            if report.written == 1 { "" } else { "s" },
-            review_left,
-            missing_left
-        )
-    }
-}
-
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -105,6 +81,8 @@ impl App {
             &cfg_spotify_client_id,
         );
         let draft = SettingsDraft {
+            beginner_mode: self.config.beginner_mode,
+            restart_beginner_tutorial: false,
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
             local_include_download_dir: self.config.local.include_download_dir(),
@@ -117,6 +95,7 @@ impl App {
             search: self.config.effective_search(),
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
+            album_art_quality: self.config.album_art_quality,
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             enqueue_next: self.config.effective_enqueue_next(),
             update_check_enabled: self.config.update_check_enabled,
@@ -133,6 +112,7 @@ impl App {
             audio_backend: self.config.audio.backend,
             audio_mpv_output: self.config.audio.mpv.output.clone().unwrap_or_default(),
             audio_mpv_device: self.config.audio.mpv.device.clone().unwrap_or_default(),
+            long_form_seek_optimization: self.config.audio.mpv.long_form_seek_optimization,
             audio_mpv_cache_forward: self.config.audio.mpv.cache_forward.clone(),
             audio_mpv_cache_back: self.config.audio.mpv.cache_back.clone(),
             autoplay_streaming: self.autoplay_streaming,
@@ -208,6 +188,7 @@ impl App {
             row: 0,
             draft,
             editing_text: false,
+            color_picker: None,
             secret_restore: None,
             keymap: self.keymap.clone(),
             mousemap: self.mousemap.clone(),
@@ -261,6 +242,10 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| matches!(s.current_field(), Some(Field::ThemeColor(_))));
+        if on_color_field && k.code == KeyCode::Char(' ') && k.modifiers == KeyModifiers::NONE {
+            self.settings_open_color_picker();
+            return Vec::new();
+        }
         // The editor must stay operable no matter how keys are remapped, so the literal
         // arrows / Enter / Esc / Backspace are always honored here, on top of the configured
         // ones. Tab switching deliberately comes only from the keymap's FocusNext/FocusPrev
@@ -505,6 +490,15 @@ impl App {
         };
         self.dirty = true;
         match field {
+            Field::BeginnerMode => {
+                let s = self.settings_mut();
+                let was_enabled = s.draft.beginner_mode;
+                s.draft.beginner_mode = !was_enabled;
+                if !was_enabled {
+                    s.draft.restart_beginner_tutorial = true;
+                }
+                Vec::new()
+            }
             Field::Mouse => {
                 let s = self.settings_mut();
                 s.draft.mouse = !s.draft.mouse;
@@ -682,6 +676,17 @@ impl App {
                 self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
                 Vec::new()
             }
+            Field::AlbumArtQuality => {
+                let s = self.settings_mut();
+                let next = s.draft.album_art_quality.cycled(dir >= 0);
+                s.draft.album_art_quality = next;
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Album art quality", "앨범 아트 화질"),
+                    next.label()
+                );
+                Vec::new()
+            }
             Field::PlayerBarPosition => {
                 let s = self.settings_mut();
                 // Two states, so both cycle directions agree. The draft previews live
@@ -702,6 +707,12 @@ impl App {
             }
             Field::AudioBackend => {
                 self.status.text = t!("Audio backend: mpv", "오디오 백엔드: mpv").to_owned();
+                Vec::new()
+            }
+            Field::LongFormSeekOptimization => {
+                let s = self.settings_mut();
+                s.draft.long_form_seek_optimization =
+                    s.draft.long_form_seek_optimization.cycled(dir >= 0);
                 Vec::new()
             }
             Field::Language => {
@@ -916,6 +927,7 @@ impl App {
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
             | Field::RadioRecording
+            | Field::AudioOutput
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => Vec::new(),
@@ -966,7 +978,11 @@ impl App {
                 self.settings_open_spotify_import_mode_dropdown();
                 Vec::new()
             }
+            FieldKind::Select if field == Field::LongFormSeekOptimization => {
+                self.settings_change(1)
+            }
             FieldKind::Button => match field {
+                Field::AudioOutput => self.open_audio_output_picker(),
                 Field::ExportPersonalData => self.start_personal_export_to_downloads(),
                 Field::ResetKeybindings => {
                     self.settings_request_confirm(SettingsConfirm::ResetKeybindings);
@@ -1523,24 +1539,12 @@ impl App {
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
-                if let Some(accepted_count) = self
-                    .local_mode
-                    .pending_accept_write_summaries
-                    .remove(&report.job_id)
-                {
-                    self.status.text = local_accept_write_done_status(&report, accepted_count);
-                } else {
-                    self.status.text = transfer_done_status(&report);
-                }
+                self.status.text = transfer_done_status(&report);
                 self.status.kind = StatusKind::Info;
             }
-            TransferEvent::JobRejected { job_id, error } => {
-                // The actor still owns a different active job. Clear only bookkeeping for the
-                // rejected attempt; its terminal will never arrive, while the active job's guard
-                // must remain set until that job emits JobDone/JobFailed.
-                self.local_mode
-                    .pending_accept_write_summaries
-                    .remove(&job_id);
+            TransferEvent::JobRejected { error, .. } => {
+                // The actor still owns a different active job, so its running guard remains set
+                // until that job emits JobDone/JobFailed.
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = format!(
                     "{}: {error}",
@@ -1554,9 +1558,6 @@ impl App {
                 resumable,
             } => {
                 self.transfer_running = false;
-                self.local_mode
-                    .pending_accept_write_summaries
-                    .remove(&job_id);
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = if resumable && !job_id.is_empty() {
                     format!(
@@ -1814,6 +1815,7 @@ impl App {
         self.overlays.recording_settings = None;
         self.overlays.recordings_browser = None;
         self.overlays.spotify_picker = None;
+        self.overlays.audio_output_picker = None;
         self.settings = None;
         self.mode = Mode::Player;
         self.dirty = true;
@@ -1827,8 +1829,10 @@ impl App {
         let model_changed = self.ai.model != d.gemini_model;
         self.ai.model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
+        let old_beginner_mode = self.config.beginner_mode;
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_romanized_titles = self.config.effective_romanized_titles();
+        let old_album_art_quality = self.config.album_art_quality;
         let old_download_dir = self.config.effective_download_dir();
         let old_local_roots = self.local_scan_roots();
         let normal_theme = if self.radio_dedicated_mode {
@@ -1843,6 +1847,7 @@ impl App {
         };
         let old_zoom = self.zoom.percent();
         d.apply_to(&mut self.config);
+        let album_art_quality_changed = self.config.album_art_quality != old_album_art_quality;
         // Push the resolved DJ Gem reply language to the AI actor. The UI language was set live
         // as the user cycled it; this global isn't, so it's resolved and applied here on save
         // (retro → English, `Auto` → the UI language, else the concrete pick).
@@ -1890,6 +1895,12 @@ impl App {
             )
             .to_owned();
         }
+        // The transition owns tutorial completion/restart and its user-facing toast. Keep it
+        // after the generic save message but before cloning the one persisted Config snapshot.
+        self.apply_beginner_mode_settings_transition(
+            old_beginner_mode,
+            d.restart_beginner_tutorial,
+        );
         let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
         )))];
@@ -1927,21 +1938,27 @@ impl App {
         cmds.push(Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
             self.config.scrobble_settings(),
         ))));
-        // React to an album-art toggle. Turning it off drops the held image (frees RAM).
-        // Turning it on fetches the current track's art live: the graphics protocol is probed
-        // unconditionally at startup, so the picker is always present and `artwork_source`
-        // resolves as soon as the flag flips — no relaunch needed.
+        // React to an album-art toggle or quality change. Turning it off drops the held image
+        // (frees RAM). Turning it on or selecting a different quality fetches the current track's
+        // art live: the graphics protocol is probed unconditionally at startup, so the picker is
+        // always present and `artwork_source` resolves without a relaunch.
         if !self.config.effective_album_art() {
             self.clear_artwork();
-        } else if let Some(song) = self.queue.current().cloned()
-            && self.art.video_id.as_deref() != Some(song.video_id.as_str())
-            && let Some(source) = self.artwork_source(&song)
-        {
-            self.art.loading = true;
-            cmds.push(Cmd::FetchArtwork {
-                video_id: song.video_id.clone(),
-                source,
-            });
+        } else if let Some(song) = self.queue.current().cloned() {
+            // Local embedded covers keep the legacy 768px cap, so a remote-quality change must
+            // not re-read and decode the same local file.
+            if album_art_quality_changed && song.local_path.is_none() {
+                self.clear_artwork();
+            }
+            if self.art.video_id.as_deref() != Some(song.video_id.as_str())
+                && let Some(source) = self.artwork_source(&song)
+            {
+                self.art.loading = true;
+                cmds.push(Cmd::FetchArtwork {
+                    video_id: song.video_id.clone(),
+                    source,
+                });
+            }
         }
         cmds
     }

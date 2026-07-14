@@ -12,6 +12,9 @@
 // in-page demo core answers (gui/WIRING.md).
 
 import type { EqModel } from '../../generated/protocol/EqModel';
+import type { LongFormSeekEffective } from '../../generated/protocol/LongFormSeekEffective';
+import type { LongFormSeekOptimization } from '../../generated/protocol/LongFormSeekOptimization';
+import type { LongFormSeekReason } from '../../generated/protocol/LongFormSeekReason';
 import type { Repeat } from '../../generated/protocol/Repeat';
 import type { SearchSource } from '../../generated/protocol/SearchSource';
 import type { Client } from '../ipc/client';
@@ -83,6 +86,87 @@ export interface AudioSettings {
   mpv_device: string | null;
   mpv_cache_forward: string;
   mpv_cache_back: string;
+  /** Optional until the owner advertises long-form-seek-optimization-v1. */
+  long_form_seek_optimization?: LongFormSeekOptimization | null;
+  /** Read-only runtime projection; capability presence makes all three fields mandatory. */
+  long_form_seek_effective?: LongFormSeekEffective | null;
+  long_form_seek_reason?: LongFormSeekReason | null;
+}
+
+export const LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY = 'long-form-seek-optimization-v1';
+
+export const LONG_FORM_SEEK_MODES = [
+  'auto',
+  'off',
+  'on',
+] as const satisfies readonly LongFormSeekOptimization[];
+
+const LONG_FORM_SEEK_EFFECTIVE = [
+  'no_media',
+  'ram_only',
+  'probing',
+  'enable_pending',
+  'disk_active',
+  'disable_pending',
+  'latched_until_close',
+  'emergency_close_pending',
+  'overridden',
+  'unavailable',
+] as const satisfies readonly LongFormSeekEffective[];
+
+const LONG_FORM_SEEK_REASONS = [
+  'requested_off',
+  'no_media',
+  'awaiting_media_facts',
+  'short_media',
+  'sequential_playback',
+  'seek_below_threshold',
+  'seek_within_cached_range',
+  'local_source',
+  'live_source',
+  'unseekable_source',
+  'partially_seekable_unproven',
+  'read_only_instance',
+  'unsupported_mpv',
+  'custom_mpv_override',
+  'cache_root_unavailable',
+  'insufficient_free_space',
+  'unsafe_rate_bound',
+  'invalid_range_state',
+  'probe_failed',
+  'auto_uncached_seek',
+  'on_eligible_media',
+  'user_requested_off',
+  'soft_cap_reached',
+  'free_space_floor',
+  'write_budget_exhausted',
+  'property_rejected',
+  'property_timeout',
+  'property_verification_failed',
+  'disable_failed',
+  'media_closed',
+] as const satisfies readonly LongFormSeekReason[];
+
+export type LongFormSeekState =
+  | { kind: 'unsupported' }
+  | { kind: 'mismatch' }
+  | {
+      kind: 'ready';
+      requested: LongFormSeekOptimization;
+      effective: LongFormSeekEffective;
+      reason: LongFormSeekReason;
+    };
+
+export function isLongFormSeekOptimization(value: unknown): value is LongFormSeekOptimization {
+  return typeof value === 'string' && LONG_FORM_SEEK_MODES.some((mode) => mode === value);
+}
+
+function isLongFormSeekEffective(value: unknown): value is LongFormSeekEffective {
+  return typeof value === 'string' && LONG_FORM_SEEK_EFFECTIVE.some((state) => state === value);
+}
+
+function isLongFormSeekReason(value: unknown): value is LongFormSeekReason {
+  return typeof value === 'string' && LONG_FORM_SEEK_REASONS.some((reason) => reason === value);
 }
 
 export interface SettingsModelV8 {
@@ -130,6 +214,7 @@ export class SettingsStore {
    * settings push that arrives after that acknowledgement. */
   readonly #acknowledgedGeneration = new Map<string, number>();
   #nextGeneration = 1;
+  #longFormSeekCapability = $state(false);
   readonly #client: Client;
   readonly #onError?: (message: string) => void;
 
@@ -137,6 +222,11 @@ export class SettingsStore {
     this.#client = client;
     this.#onError = onError;
     this.#client.on('settings', (payload) => this.#onPush(payload as SettingsSnapshot));
+    this.#client.onConn((info) => {
+      this.#longFormSeekCapability = info.capabilities.includes(
+        LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY,
+      );
+    });
   }
 
   // ── merged per-group views (pending ?? model) ────────────────────────────────────────
@@ -165,6 +255,31 @@ export class SettingsStore {
     return this.model ? this.#merge('animations', this.model.animations) : null;
   }
 
+  /** Mixed-version boundary for the additive long-form seek settings fields. */
+  get longFormSeek(): LongFormSeekState {
+    if (!this.#longFormSeekCapability) return { kind: 'unsupported' };
+
+    const raw = this.model?.audio;
+    if (
+      !raw ||
+      !isLongFormSeekOptimization(raw.long_form_seek_optimization) ||
+      !isLongFormSeekEffective(raw.long_form_seek_effective) ||
+      !isLongFormSeekReason(raw.long_form_seek_reason)
+    ) {
+      return { kind: 'mismatch' };
+    }
+
+    const mergedRequested = this.audio?.long_form_seek_optimization;
+    return {
+      kind: 'ready',
+      requested: isLongFormSeekOptimization(mergedRequested)
+        ? mergedRequested
+        : raw.long_form_seek_optimization,
+      effective: raw.long_form_seek_effective,
+      reason: raw.long_form_seek_reason,
+    };
+  }
+
   /** True while any optimistic edit is still awaiting the confirming push. */
   get dirty(): boolean {
     return Object.keys(this.#pending).length > 0;
@@ -174,6 +289,11 @@ export class SettingsStore {
 
   /** Live-apply a field: overlay it optimistically, then send a correlated request. */
   apply(group: SettingGroup, field: string, value: unknown): void {
+    if (group === 'audio' && field === 'long_form_seek_optimization') {
+      // Never manufacture support for an older v8 owner, and fail closed when an owner
+      // advertises the capability but omits or malforms any of its three status fields.
+      if (this.longFormSeek.kind !== 'ready' || !isLongFormSeekOptimization(value)) return;
+    }
     const key = `${group}.${field}`;
     const generation = this.#nextGeneration++;
     this.#pendingGeneration.set(key, generation);

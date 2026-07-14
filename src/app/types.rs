@@ -106,6 +106,12 @@ pub enum Msg {
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
+    /// A real terminal resize with its zoom-adjusted logical grid. Unlike the test/internal
+    /// redraw hint above, this lets the reducer leave Mini synchronously before the next frame.
+    TerminalResize {
+        width: u16,
+        height: u16,
+    },
     /// Terminal focus changed (DECSET ?1004). `false` while the window is unfocused
     /// (minimized / behind another window); the main loop then parks the ~30 fps animation
     /// tick (see [`App::animation_active`]). Unsupported terminals never send this, so the
@@ -121,9 +127,12 @@ pub enum Msg {
         mode: crate::api::ApiMode,
         had_cookie: bool,
     },
-    /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
-    /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
+    /// Periodic wake-up while transient status or lyric-sync OSD state is showing. Lets the
+    /// reducer expire the status after [`STATUS_TTL`] and collapse the OSD after three seconds.
     StatusTick,
+    /// 100 ms synced-lyrics clock. The runtime arms it only while the full Player lyric panel is
+    /// visible and actively playing; the reducer redraws only when the stored active row changes.
+    LyricsTick,
     /// Animation frame tick (~30 fps), driven by the main loop **only** while
     /// [`App::animation_active`] holds — i.e. on the player view, master on, a track playing,
     /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
@@ -175,6 +184,7 @@ pub enum Msg {
     /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
     ArtworkResult {
         video_id: String,
+        quality: Option<crate::config::AlbumArtQuality>,
         image: Option<DynamicImage>,
     },
     /// Album-art protocol resize/encode finished off the UI thread.
@@ -528,6 +538,17 @@ pub enum ImportReviewAction {
     Skip,
 }
 
+/// A button or blocker on the interactive Beginner Mode coach card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingAction {
+    Noop,
+    Primary,
+    Back,
+    Skip,
+    ConfirmSkip,
+    CancelSkip,
+}
+
 /// A clickable terminal region's semantic target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseTarget {
@@ -537,8 +558,32 @@ pub enum MouseTarget {
     ToolSetupGuide,
     ToolSetupRetry,
     ToolSetupLater,
+    /// A control on the Beginner Mode coach card. `Noop` seals the card body against
+    /// click-through; the remaining actions are rendered as explicit buttons on top.
+    Onboarding(OnboardingAction),
     Global(Action),
     Player(Action),
+    /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
+    /// targets fail closed instead of seeking a newly loaded track.
+    LyricsLine {
+        video_id: String,
+        line_index: usize,
+    },
+    /// The collapsed `[±]` handle. Carries its rendered track ID for the same stale-frame guard.
+    LyricsDelayHandle {
+        video_id: String,
+    },
+    /// Expanded lyric-delay buttons. Keeping the rendered track ID prevents an old frame's OSD
+    /// from adjusting a newly loaded song before the next frame replaces the hit map.
+    LyricsDelayEarlier {
+        video_id: String,
+    },
+    LyricsDelayLater {
+        video_id: String,
+    },
+    /// Inert coverage for the expanded lyric-delay OSD's value and spacing. Action buttons are
+    /// registered after it and win hit-testing; everything else is deliberately consumed.
+    LyricsDelayBlock,
     /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
     EqMenu,
     /// Pick an EQ preset from the open dropdown.
@@ -588,10 +633,20 @@ pub enum MouseTarget {
     /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
     /// or fires the action (button); the mouse equivalent of Enter on that row.
     SettingsActivate(usize),
+    /// The two-cell color swatch on a Settings theme row — opens the full color picker.
+    SettingsColorSwatch(usize),
+    /// Modal picker backdrop/chrome. It captures clicks inside the popup that are not choices.
+    SettingsColorPickerSurface,
+    /// The lossless current-value row in the modal color picker.
+    SettingsColorPickerCurrent,
+    /// A picker-grid choice: transparent at zero, then the 240 xterm colors.
+    SettingsColorPickerChoice(usize),
     /// Open/close the Settings Spotify import-mode dropdown.
     SettingsSpotifyImportModeMenu,
     /// Pick a Settings Spotify import-mode dropdown option.
     SettingsSpotifyImportModeSelect(crate::config::SpotifyImportMode),
+    /// A row in the Settings audio-output picker.
+    AudioOutputRow(usize),
     /// A list row, by absolute item index (interpreted per the active screen). Single-click
     /// selects; double-click plays.
     ListRow(usize),
@@ -1083,34 +1138,34 @@ impl LocalOrganizeConfirm {
     }
 }
 
-/// Pending confirmation before accepting every reviewable candidate in an import session.
+/// Pending confirmation before marking every safely reviewable candidate Ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalImportAcceptAllConfirm {
     pub session_id: String,
     pub candidate_count: u32,
     pub ready_count: u32,
+    pub total_count: u32,
+    pub local_count: u32,
     pub review_left: u32,
     pub missing_left: u32,
 }
 
 impl LocalImportAcceptAllConfirm {
     pub fn title(&self) -> &'static str {
-        t!(" Accept & write import ", " 임포트 수락 및 작성 ")
+        t!(" Mark all Ready ", " 전체 준비 완료 표시 ")
     }
 
     pub fn prompt(&self) -> String {
         if crate::i18n::is_korean() {
             format!(
-                "후보 {}개를 수락하고 준비된 {}행을 Library 플레이리스트에 쓸까요?",
-                self.candidate_count, self.ready_count
+                "안전한 후보 {}개를 준비 완료로 표시할까요?",
+                self.candidate_count
             )
         } else {
             format!(
-                "Accept {} candidate{} and write {} ready row{} to the Library playlist?",
+                "Mark {} safe candidate{} Ready for this playlist?",
                 self.candidate_count,
                 if self.candidate_count == 1 { "" } else { "s" },
-                self.ready_count,
-                if self.ready_count == 1 { "" } else { "s" }
             )
         }
     }
@@ -1118,13 +1173,23 @@ impl LocalImportAcceptAllConfirm {
     pub fn detail(&self) -> String {
         if crate::i18n::is_korean() {
             format!(
-                "세션: {} · 남을 검토 {} · 누락 {}",
-                self.session_id, self.review_left, self.missing_left
+                "준비 {}/{} · 로컬 {}/{} · 남을 검토 {} · 누락 {}",
+                self.ready_count,
+                self.total_count,
+                self.local_count,
+                self.total_count,
+                self.review_left,
+                self.missing_left
             )
         } else {
             format!(
-                "Session: {} · review left {} · missing {}",
-                self.session_id, self.review_left, self.missing_left
+                "Ready {}/{} · Local {}/{} · review left {} · missing {}",
+                self.ready_count,
+                self.total_count,
+                self.local_count,
+                self.total_count,
+                self.review_left,
+                self.missing_left
             )
         }
     }

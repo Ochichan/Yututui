@@ -43,8 +43,9 @@ pub use model::{
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
     ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
-    PlaybackSettingsModel, SearchSettingsModel, SettingsModelV8, StorageSettingsModel,
-    StreamingSettingsModel, ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
+    LongFormSeekEffective, LongFormSeekReason, PlaybackSettingsModel, SearchSettingsModel,
+    SettingsModelV8, StorageSettingsModel, StreamingSettingsModel, ThemePresetModel,
+    ThemeSettingsModel, UiSettingsModel,
 };
 pub use session::{
     ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, SearchGroup, ServerFrame,
@@ -316,6 +317,19 @@ pub struct SettingsSnapshot {
     pub gapless: bool,
     pub ai_enabled: bool,
     pub radio_mode: bool,
+    /// Privacy-safe runtime diagnostics from a daemon owner. Standalone and older owners omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_form_seek: Option<LongFormSeekRuntimeSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LongFormSeekRuntimeSnapshot {
+    pub effective: LongFormSeekEffective,
+    pub reason: LongFormSeekReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<LongFormSeekReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cleanup_ms: Option<u64>,
 }
 
 impl SettingsSnapshot {
@@ -331,6 +345,7 @@ impl SettingsSnapshot {
             gapless: config.effective_gapless(),
             ai_enabled: config.effective_ai_enabled(),
             radio_mode,
+            long_form_seek: None,
         }
     }
 }
@@ -599,6 +614,33 @@ mod tests {
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");
+    }
+
+    #[test]
+    fn compact_settings_runtime_diagnostics_are_additive_and_privacy_safe() {
+        let mut legacy = serde_json::to_value(SettingsSnapshot::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("long_form_seek");
+        let old: SettingsSnapshot = serde_json::from_value(legacy).unwrap();
+        assert!(old.long_form_seek.is_none());
+        let old_line = serde_json::to_string(&old).unwrap();
+        assert!(!old_line.contains("long_form_seek"));
+
+        let mut current = old;
+        current.long_form_seek = Some(LongFormSeekRuntimeSnapshot {
+            effective: LongFormSeekEffective::DiskActive,
+            reason: LongFormSeekReason::AutoUncachedSeek,
+            last_failure: Some(LongFormSeekReason::ProbeFailed),
+            last_cleanup_ms: Some(275),
+        });
+        let line = serde_json::to_string(&current).unwrap();
+        assert!(line.contains(r#""effective":"disk_active""#));
+        assert!(line.contains(r#""last_failure":"probe_failed""#));
+        for sensitive in ["url", "token", "path", "media_id"] {
+            assert!(!line.contains(sensitive), "unexpected {sensitive}: {line}");
+        }
     }
 
     #[test]

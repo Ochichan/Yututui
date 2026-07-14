@@ -528,6 +528,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "autoplay_on_start": config.autoplay_on_start,
             "auto_continue_videos": config.auto_continue_videos,
             "video_layout": config.video_layout,
+            "album_art_quality": config.album_art_quality,
             "media_controls": config.media_controls,
         }),
         search: project_search(&config.search),
@@ -543,10 +544,12 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "theme": {
                 "preset": theme.preset,
                 "overrides": theme.overrides,
+                "custom_overrides": theme.custom_overrides,
             },
             "radio_theme": radio_theme.map(|theme| json!({
                 "preset": theme.preset,
                 "overrides": theme.overrides,
+                "custom_overrides": theme.custom_overrides,
             })),
         }),
         bindings: json!({
@@ -579,6 +582,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
             "mpv": {
                 "cache_forward": audio.mpv.cache_forward,
                 "cache_back": audio.mpv.cache_back,
+                "long_form_seek_optimization": audio.mpv.long_form_seek_optimization,
             },
         }),
         recording: json!({

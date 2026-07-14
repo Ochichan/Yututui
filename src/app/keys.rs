@@ -4,6 +4,15 @@ use super::*;
 
 impl App {
     pub(in crate::app) fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // Character repeat is opt-in. The translator forwards only lyric-delay mappings, but
+        // tests and alternate event sources can call the reducer directly; reject those repeats
+        // before they dirty the frame or dismiss a modal that currently owns keyboard input.
+        if k.kind == crossterm::event::KeyEventKind::Repeat
+            && !crate::event::is_autorepeat_nav_key(k.code)
+            && !self.lyrics_repeat_has_keyboard(k)
+        {
+            return Vec::new();
+        }
         // Some terminals render IME preedit text even in raw alternate-screen apps. Always
         // redraw after a key press so committed Korean jamo used as shortcuts are covered.
         self.dirty = true;
@@ -15,6 +24,19 @@ impl App {
         }
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
+        }
+        // Beginner Mode's F6 focus bridge runs before ordinary surface routing, while every
+        // established overlay keeps precedence. Unowned keys continue through unchanged.
+        if !self.beginner_higher_overlay_open()
+            && let Some(cmds) = self.on_key_beginner(k)
+        {
+            return cmds;
+        }
+
+        // The Settings color picker is a mode-owned modal (also rendered in Mini). Capture every
+        // key before global shortcuts or the hidden Settings form can act on it.
+        if self.settings_color_picker_is_open() {
+            return self.settings_color_picker_key(k);
         }
 
         // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
@@ -310,6 +332,10 @@ impl App {
             return self.recordings_browser_key(k);
         }
 
+        if self.overlays.audio_output_picker.is_some() {
+            return self.audio_output_picker_key(k);
+        }
+
         // The recording-settings popup renders as a top-level overlay (`ui::mod`), so it must
         // capture input here too — not only inside Settings-mode dispatch. Otherwise a global
         // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the
@@ -473,14 +499,29 @@ impl App {
         match self.mode {
             Mode::Settings => {
                 self.overlays.spotify_picker.is_some()
-                    || self
-                        .settings
-                        .as_ref()
-                        .is_some_and(|s| s.spotify_import_mode_dropdown.is_some())
+                    || self.settings.as_ref().is_some_and(|s| {
+                        s.spotify_import_mode_dropdown.is_some() || s.color_picker.is_some()
+                    })
             }
             Mode::Library => !self.local_dedicated_mode && self.library_ui.create_input.is_some(),
             _ => false,
         }
+    }
+
+    fn lyrics_repeat_has_keyboard(&self, key: KeyEvent) -> bool {
+        self.mode == Mode::Player
+            && self.bridges.ui_tier.get() != crate::ui::layout::UiTier::Mini
+            && self.art_overlay_mask() == 0
+            && self.local_mode.pending_confirm.is_none()
+            && self.overlays.spotify_picker.is_none()
+            && self.overlays.now_playing_overlay.is_none()
+            && self.overlays.recording_settings.is_none()
+            && self.overlays.recordings_browser.is_none()
+            && matches!(
+                self.keymap
+                    .context_action(KeyContext::Player, Chord::from(key)),
+                Some(Action::LyricsDelayEarlier | Action::LyricsDelayLater)
+            )
     }
 
     /// Scroll the open help / mouse cheat-sheet with the shared navigation chords. Returns

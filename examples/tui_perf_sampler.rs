@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 
 const SCHEMA: &str = "ytt.tui-perf.samples.v1";
+const RESOURCE_SCHEMA: &str = "ytt.tui-perf.resources.v2";
 const CLEANUP_SCOPE: &str = "dedicated_owner_process_group_and_observed_exact_descendants";
 
 #[derive(Debug)]
@@ -28,6 +29,7 @@ struct Args {
     pid_file: Option<PathBuf>,
     identity_file: PathBuf,
     controller_ready_file: Option<PathBuf>,
+    cache_root: Option<PathBuf>,
     binary: PathBuf,
     child_args: Vec<String>,
     warmup: Duration,
@@ -42,6 +44,7 @@ impl Args {
         let mut pid_file = None;
         let mut identity_file = None;
         let mut controller_ready_file = None;
+        let mut cache_root = None;
         let mut binary = None;
         let mut warmup_secs = 0.0;
         let mut duration_secs = 60.0;
@@ -69,6 +72,9 @@ impl Args {
                 "--controller-ready-file" => {
                     controller_ready_file =
                         Some(PathBuf::from(value("--controller-ready-file", &mut raw)?))
+                }
+                "--cache-root" => {
+                    cache_root = Some(PathBuf::from(value("--cache-root", &mut raw)?))
                 }
                 "--binary" => binary = Some(PathBuf::from(value("--binary", &mut raw)?)),
                 "--warmup-secs" => {
@@ -100,6 +106,7 @@ impl Args {
             identity_file: identity_file
                 .ok_or_else(|| "--identity-file is required".to_string())?,
             controller_ready_file,
+            cache_root,
             binary: binary.ok_or_else(|| "--binary is required".to_string())?,
             child_args,
             warmup: Duration::from_secs_f64(warmup_secs),
@@ -117,6 +124,7 @@ fn usage() -> &'static str {
        --identity-file FILE     Atomically maintain exact owner/mpv cleanup identity\n\
        --controller-ready-file FILE\n\
                                 Wait for confirmed mpv subscriptions before sampling\n\
+       --cache-root DIR         Sample its volume and visible regular-file inventory\n\
        --warmup-secs N          Warm-up samples excluded from the summary (default 0)\n\
        --duration-secs N        Measured duration (default 60)\n\
        --interval-ms N          Sampling interval, at least 100 ms (default 1000)\n\
@@ -158,6 +166,98 @@ struct ProcessSample {
     executable: Option<PathBuf>,
     executable_bytes: Option<u64>,
     executable_sha256: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct RoleIoSample {
+    processes: usize,
+    read_bytes: u64,
+    written_bytes: u64,
+    total_read_bytes: u64,
+    total_written_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ProcessIoSample {
+    pid: u32,
+    start_time_unix_s: u64,
+    role: &'static str,
+    read_bytes: u64,
+    written_bytes: u64,
+    total_read_bytes: u64,
+    total_written_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct IoAggregate {
+    samples: u64,
+    read_bytes: u64,
+    written_bytes: u64,
+    peak_read_bytes_per_s: f64,
+    peak_write_bytes_per_s: f64,
+}
+
+impl IoAggregate {
+    fn push(&mut self, value: RoleIoSample, interval: Duration) {
+        self.samples += 1;
+        self.read_bytes = self.read_bytes.saturating_add(value.read_bytes);
+        self.written_bytes = self.written_bytes.saturating_add(value.written_bytes);
+        if !interval.is_zero() {
+            let seconds = interval.as_secs_f64();
+            self.peak_read_bytes_per_s = self
+                .peak_read_bytes_per_s
+                .max(value.read_bytes as f64 / seconds);
+            self.peak_write_bytes_per_s = self
+                .peak_write_bytes_per_s
+                .max(value.written_bytes as f64 / seconds);
+        }
+    }
+
+    fn json(self) -> serde_json::Value {
+        serde_json::json!({
+            "samples": self.samples,
+            "total_read_bytes": self.read_bytes,
+            "total_written_bytes": self.written_bytes,
+            "peak_read_bytes_per_s": self.peak_read_bytes_per_s,
+            "peak_write_bytes_per_s": self.peak_write_bytes_per_s,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct VolumeSample {
+    available_bytes: u64,
+    total_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct VisibleCacheInventory {
+    regular_files: u64,
+    regular_file_bytes: u64,
+    directories: u64,
+    non_regular_entries: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct VolumeAggregate {
+    start_available_bytes: Option<u64>,
+    minimum_available_bytes: Option<u64>,
+    end_available_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+}
+
+impl VolumeAggregate {
+    fn push(&mut self, sample: VolumeSample) {
+        self.start_available_bytes
+            .get_or_insert(sample.available_bytes);
+        self.minimum_available_bytes = Some(
+            self.minimum_available_bytes
+                .unwrap_or(sample.available_bytes)
+                .min(sample.available_bytes),
+        );
+        self.end_available_bytes = Some(sample.available_bytes);
+        self.total_bytes = Some(sample.total_bytes);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -268,6 +368,48 @@ impl Aggregate {
             "peak_rss_bytes": self.rss_peak,
         })
     }
+}
+
+fn visible_cache_inventory(root: &Path) -> Result<VisibleCacheInventory, String> {
+    let mut inventory = VisibleCacheInventory::default();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| format!("read cache directory {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "read cache directory entry {}: {error}",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| format!("stat cache entry {}: {error}", path.display()))?;
+            if metadata.is_dir() {
+                inventory.directories = inventory.directories.saturating_add(1);
+                pending.push(path);
+            } else if metadata.is_file() {
+                inventory.regular_files = inventory.regular_files.saturating_add(1);
+                inventory.regular_file_bytes =
+                    inventory.regular_file_bytes.saturating_add(metadata.len());
+            } else {
+                // Do not follow symlinks, junctions, devices, or sockets. The count makes the
+                // limitation visible without leaking cache filenames into evidence.
+                inventory.non_regular_entries = inventory.non_regular_entries.saturating_add(1);
+            }
+        }
+    }
+    Ok(inventory)
+}
+
+fn cache_volume_sample(root: &Path) -> Result<VolumeSample, String> {
+    let space = yututui::util::safe_fs::volume_space(root)
+        .map_err(|error| format!("inspect cache volume {}: {error}", root.display()))?;
+    Ok(VolumeSample {
+        available_bytes: space.available_bytes,
+        total_bytes: space.total_bytes,
+    })
 }
 
 fn cpu_interval_overlap(
@@ -532,6 +674,7 @@ fn sample_process_tree(
     let refresh = ProcessRefreshKind::nothing()
         .with_memory()
         .with_cpu()
+        .with_disk_usage()
         .with_cmd(UpdateKind::OnlyIfNotSet)
         .with_exe(UpdateKind::OnlyIfNotSet)
         .without_tasks();
@@ -539,6 +682,9 @@ fn sample_process_tree(
     let mut cpu_points: HashMap<u32, CpuPoint> = HashMap::new();
     let mut executable_identities: HashMap<(u32, u64), (PathBuf, u64, String)> = HashMap::new();
     let mut measured: BTreeMap<&'static str, Aggregate> = BTreeMap::new();
+    let mut measured_io: BTreeMap<&'static str, IoAggregate> = BTreeMap::new();
+    let mut measured_volume = VolumeAggregate::default();
+    let mut last_visible_cache = None;
     let mut measured_mpv_proof = MeasuredMpvProof::default();
     let mut previous_observed_elapsed = None;
 
@@ -566,6 +712,7 @@ fn sample_process_tree(
         }
 
         system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
+        system.refresh_memory();
         let root_sys = sysinfo::Pid::from_u32(root_pid);
         let root = system
             .process(root_sys)
@@ -588,7 +735,9 @@ fn sample_process_tree(
             deadline,
         );
         let mut process_samples = Vec::with_capacity(tree.len());
+        let mut process_io_samples = Vec::with_capacity(tree.len());
         let mut roles: BTreeMap<&'static str, RoleSample> = BTreeMap::new();
+        let mut io_roles: BTreeMap<&'static str, RoleIoSample> = BTreeMap::new();
         let mut observed_mpv_identities = Vec::new();
         let mut mpv_silence = Vec::new();
 
@@ -690,6 +839,28 @@ fn sample_process_tree(
             sample.processes += 1;
             sample.cpu_percent += cpu_percent;
             sample.rss_bytes = sample.rss_bytes.saturating_add(process.memory());
+            let disk_usage = process.disk_usage();
+            let io_sample = io_roles.entry(role).or_default();
+            io_sample.processes += 1;
+            io_sample.read_bytes = io_sample.read_bytes.saturating_add(disk_usage.read_bytes);
+            io_sample.written_bytes = io_sample
+                .written_bytes
+                .saturating_add(disk_usage.written_bytes);
+            io_sample.total_read_bytes = io_sample
+                .total_read_bytes
+                .saturating_add(disk_usage.total_read_bytes);
+            io_sample.total_written_bytes = io_sample
+                .total_written_bytes
+                .saturating_add(disk_usage.total_written_bytes);
+            process_io_samples.push(ProcessIoSample {
+                pid,
+                start_time_unix_s: start_time,
+                role,
+                read_bytes: disk_usage.read_bytes,
+                written_bytes: disk_usage.written_bytes,
+                total_read_bytes: disk_usage.total_read_bytes,
+                total_written_bytes: disk_usage.total_written_bytes,
+            });
             process_samples.push(ProcessSample {
                 pid,
                 parent_pid: process.parent().map(sysinfo::Pid::as_u32),
@@ -718,6 +889,30 @@ fn sample_process_tree(
                 sum
             });
         roles.insert("tree", total);
+        let total_io = io_roles
+            .values()
+            .copied()
+            .fold(RoleIoSample::default(), |mut sum, item| {
+                sum.processes += item.processes;
+                sum.read_bytes = sum.read_bytes.saturating_add(item.read_bytes);
+                sum.written_bytes = sum.written_bytes.saturating_add(item.written_bytes);
+                sum.total_read_bytes = sum.total_read_bytes.saturating_add(item.total_read_bytes);
+                sum.total_written_bytes = sum
+                    .total_written_bytes
+                    .saturating_add(item.total_written_bytes);
+                sum
+            });
+        io_roles.insert("tree", total_io);
+        let sample_interval = previous_observed_elapsed
+            .map(|previous| observed_elapsed.saturating_sub(previous))
+            .unwrap_or(Duration::ZERO);
+        let (cache_volume, visible_cache) = if let Some(cache_root) = &args.cache_root {
+            let volume = cache_volume_sample(cache_root)?;
+            let inventory = visible_cache_inventory(cache_root)?;
+            (Some(volume), Some(inventory))
+        } else {
+            (None, None)
+        };
         let phase = if observed_elapsed < args.warmup {
             "warmup"
         } else {
@@ -725,6 +920,16 @@ fn sample_process_tree(
             for (role, sample) in &roles {
                 measured.entry(role).or_default().push(*sample, cpu_overlap);
             }
+            for (role, sample) in &io_roles {
+                measured_io
+                    .entry(role)
+                    .or_default()
+                    .push(*sample, sample_interval);
+            }
+            if let Some(volume) = cache_volume {
+                measured_volume.push(volume);
+            }
+            last_visible_cache = visible_cache;
             "measure"
         };
         let observed_descendant_identities = process_samples
@@ -785,6 +990,21 @@ fn sample_process_tree(
                     && mpv_silence.iter().all(|silent| *silent),
                 "roles": roles,
                 "processes": process_samples,
+                "resource_telemetry": {
+                    "schema": RESOURCE_SCHEMA,
+                    "process_io": process_io_samples,
+                    "roles": io_roles,
+                    "system_memory": {
+                        "available_memory_bytes": system.available_memory(),
+                        "free_memory_bytes": system.free_memory(),
+                        "total_swap_bytes": system.total_swap(),
+                        "free_swap_bytes": system.free_swap(),
+                        "used_swap_bytes": system.used_swap(),
+                    },
+                    "cache_volume": cache_volume,
+                    "visible_cache_inventory": visible_cache,
+                    "visible_inventory_is_disk_accounting": false,
+                },
             }),
         )?;
         out.flush().map_err(|e| format!("flush samples: {e}"))?;
@@ -823,6 +1043,10 @@ fn sample_process_tree(
         .iter()
         .map(|(role, aggregate)| ((*role).to_string(), aggregate.json(args.duration)))
         .collect::<serde_json::Map<_, _>>();
+    let io_summary = measured_io
+        .iter()
+        .map(|(role, aggregate)| ((*role).to_string(), aggregate.json()))
+        .collect::<serde_json::Map<_, _>>();
     write_ndjson(
         out,
         &serde_json::json!({
@@ -842,6 +1066,14 @@ fn sample_process_tree(
                 .map_err(|e| format!("system clock before Unix epoch: {e}"))?
                 .as_nanos(),
             "roles": summary,
+            "resource_telemetry": {
+                "schema": RESOURCE_SCHEMA,
+                "io_accounting": "sysinfo_process_counter_deltas_per_refresh_interval",
+                "roles": io_summary,
+                "cache_volume": measured_volume,
+                "final_visible_cache_inventory": last_visible_cache,
+                "visible_inventory_is_disk_accounting": false,
+            },
         }),
     )?;
     Ok(())
@@ -1523,6 +1755,14 @@ fn producer_binary_sha256() -> Result<String, String> {
     sha256_file(&executable)
 }
 
+fn source_rate_bound_bps() -> Option<u64> {
+    std::env::var("YTM_PERF_SOURCE_RATE_BOUND_BPS")
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
 fn header_record(
     args: &Args,
     root_pid: u32,
@@ -1544,6 +1784,7 @@ fn header_record(
         "terminal_geometry": [terminal_geometry.0, terminal_geometry.1],
         "controller_barrier_required": args.controller_ready_file.is_some(),
         "child_ytm_perf_enabled": false,
+        "source_rate_bound_bps": source_rate_bound_bps(),
         "scenario_sha256": std::env::var("TUI_PERF_SCENARIO_SHA256").ok(),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
@@ -1554,6 +1795,15 @@ fn header_record(
         "cpu_window_end_ns": (args.warmup + args.duration).as_nanos(),
         "interval_ms": args.interval.as_millis(),
         "require_silent_mpv": args.require_silent_mpv,
+        "resource_telemetry": {
+            "schema": RESOURCE_SCHEMA,
+            "process_scope": "ytt_and_recursive_descendants",
+            "process_io_unit": "bytes",
+            "volume_free_space_unit": "bytes",
+            "cache_root_provided": args.cache_root.is_some(),
+            "visible_cache_inventory_scope": "regular_files_without_following_links",
+            "visible_inventory_is_disk_accounting": false,
+        },
     })
 }
 
@@ -2726,6 +2976,7 @@ mod tests {
             pid_file: None,
             identity_file: PathBuf::from("process-identity.json"),
             controller_ready_file: None,
+            cache_root: None,
             binary: PathBuf::from("ytt"),
             child_args: Vec::new(),
             warmup: std::time::Duration::from_secs(1),

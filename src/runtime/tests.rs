@@ -20,6 +20,10 @@ fn song(video_id: &str) -> crate::api::Song {
     )
 }
 
+fn on_demand_load(url: &str) -> PlayerCmd {
+    PlayerCmd::load(url, crate::player::MediaSourceContext::OnDemand)
+}
+
 fn transfer_progress(job_id: &str) -> crate::transfer::TransferProgress {
     crate::transfer::TransferProgress {
         job_id: job_id.to_owned(),
@@ -46,24 +50,6 @@ fn update_status() -> crate::update::UpdateStatus {
 }
 
 #[test]
-fn shutdown_retires_events_from_the_ended_player_generation() {
-    for event in [
-        RuntimeEvent::Player(crate::player::PlayerEvent::Eof),
-        RuntimeEvent::Player(crate::player::PlayerEvent::TransportClosed(
-            "late close".to_owned(),
-        )),
-    ] {
-        assert!(shutdown_event_is_retired(&event));
-    }
-    assert!(!shutdown_event_is_retired(&RuntimeEvent::Download(
-        crate::download::DownloadEvent::Error {
-            video_id: "id".to_owned(),
-            error: "late failure".to_owned(),
-        },
-    )));
-}
-
-#[test]
 fn pending_player_cmds_preserve_active_player_barriers_and_order() {
     let mut pending = PendingPlayerCmds::default();
     assert_eq!(
@@ -82,7 +68,7 @@ fn pending_player_cmds_preserve_active_player_barriers_and_order() {
         Ok(DeliveryReceipt::Deferred)
     );
     assert_eq!(
-        pending.push(PlayerCmd::Load("https://example.invalid/old".to_owned())),
+        pending.push(on_demand_load("https://example.invalid/old")),
         Ok(DeliveryReceipt::Deferred)
     );
     assert_eq!(
@@ -90,7 +76,7 @@ fn pending_player_cmds_preserve_active_player_barriers_and_order() {
         Ok(DeliveryReceipt::Deferred)
     );
     assert_eq!(
-        pending.push(PlayerCmd::Load("https://example.invalid/new".to_owned())),
+        pending.push(on_demand_load("https://example.invalid/new")),
         Ok(DeliveryReceipt::Deferred)
     );
     assert_eq!(
@@ -105,7 +91,7 @@ fn pending_player_cmds_preserve_active_player_barriers_and_order() {
         })
     ));
     assert!(matches!(
-        pending.push(PlayerCmd::SeekAbsolute(12.0)),
+        pending.push(PlayerCmd::interactive_seek(12.0)),
         Ok(DeliveryReceipt::Coalesced { .. })
     ));
     assert_eq!(
@@ -138,7 +124,10 @@ fn pending_player_cmds_preserve_active_player_barriers_and_order() {
     ));
     assert!(matches!(
         drained[6],
-        PlayerCmd::SeekAbsolute(value) if (value - 12.0).abs() < f64::EPSILON
+        PlayerCmd::SeekAbsolute {
+            seconds: value,
+            precision: crate::player::SeekPrecision::InteractiveFast,
+        } if (value - 12.0).abs() < f64::EPSILON
     ));
 }
 
@@ -146,9 +135,7 @@ fn pending_player_cmds_preserve_active_player_barriers_and_order() {
 fn pending_player_cmds_cap_rejects_without_evicting_admitted_commands() {
     let mut pending = PendingPlayerCmds::default();
     assert_eq!(
-        pending.push(PlayerCmd::Load(
-            "https://example.invalid/current".to_owned(),
-        )),
+        pending.push(on_demand_load("https://example.invalid/current")),
         Ok(DeliveryReceipt::Deferred)
     );
     for _ in 0..(PENDING_PLAYER_CMDS_MAX - 1) {
@@ -198,10 +185,10 @@ fn pending_player_batch_rejection_rolls_back_earlier_staged_coalescing() {
     for _ in 0..(PENDING_PLAYER_CMDS_MAX - 1) {
         assert!(pending.push(PlayerCmd::Stop).is_ok());
     }
-    assert!(pending.push(PlayerCmd::Load("old".to_owned())).is_ok());
+    assert!(pending.push(on_demand_load("old")).is_ok());
 
     assert_eq!(
-        pending.push_batch(vec![PlayerCmd::Load("new".to_owned()), PlayerCmd::Stop,]),
+        pending.push_batch(vec![on_demand_load("new"), PlayerCmd::Stop]),
         Err(DeliveryError::Saturated)
     );
 
@@ -247,7 +234,7 @@ fn empty_pending_player_batch_is_not_an_admitted_intent() {
 fn transport_restore_batch_is_ordered_and_rejected_without_a_visible_prefix() {
     let restore = || {
         vec![
-            PlayerCmd::Load("https://example.invalid/recovered".to_owned()),
+            on_demand_load("https://example.invalid/recovered"),
             PlayerCmd::SetAudioFilter("lavfi=[volume=1]".to_owned()),
             PlayerCmd::CyclePause,
         ]
@@ -270,9 +257,7 @@ fn transport_restore_batch_is_ordered_and_rejected_without_a_visible_prefix() {
     }
     assert!(
         pending
-            .push(PlayerCmd::Load(
-                "https://example.invalid/original".to_owned()
-            ))
+            .push(on_demand_load("https://example.invalid/original"))
             .is_ok()
     );
     assert_eq!(pending.push_batch(restore()), Err(DeliveryError::Saturated));
@@ -290,7 +275,7 @@ fn rejected_player_intent_keeps_state_and_replies_with_correlated_busy() {
     let epoch = app.playback.position_epoch;
     let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
     let intent = crate::app::PlayerIntent {
-        commands: vec![PlayerCmd::SeekAbsolute(42.0)],
+        commands: vec![PlayerCmd::interactive_seek(42.0)],
         commit: crate::app::PlayerCommit::Seek {
             optimistic_position: Some(42.0),
         },
@@ -454,7 +439,7 @@ fn rejected_remote_audio_settings_do_not_commit_or_persist_and_reply_with_error(
 }
 
 #[test]
-fn rejected_mouse_seek_intent_retries_the_same_cell() {
+fn rejected_mouse_seek_intent_clears_preview_without_committing_position() {
     let mut app = App::new(50);
     app.mode = crate::app::Mode::Player;
     app.playback.duration = Some(200.0);
@@ -464,11 +449,13 @@ fn rejected_mouse_seek_intent_retries_the_same_cell() {
         width: 100,
         height: 1,
     });
-    let mut cmds = app.update(crate::app::Msg::MouseClick {
+    let press = app.update(crate::app::Msg::MouseClick {
         col: 25,
         row: 5,
         multi: false,
     });
+    assert!(press.is_empty());
+    let mut cmds = app.update(crate::app::Msg::MouseLeftUp);
     let crate::app::Cmd::PlayerControl(crate::app::PlayerControl::Intent(intent)) =
         cmds.pop().expect("mouse seek intent")
     else {
@@ -476,11 +463,12 @@ fn rejected_mouse_seek_intent_retries_the_same_cell() {
     };
 
     assert!(settle_player_intent(&mut app, *intent, Err(DeliveryError::Busy)).is_empty());
-    let retry = app.update(crate::app::Msg::MouseDrag { col: 25, row: 9 });
-    assert!(matches!(
-        retry.as_slice(),
-        [cmd] if matches!(cmd.player_command(), Some(PlayerCmd::SeekAbsolute(t)) if (*t - 50.0).abs() < 1.0)
-    ));
+    assert_eq!(app.playback.time_pos, None);
+    assert_eq!(app.seekbar_preview_target(), None);
+    assert!(
+        app.update(crate::app::Msg::MouseDrag { col: 25, row: 9 })
+            .is_empty()
+    );
 }
 
 #[test]
@@ -488,7 +476,7 @@ fn accepted_player_intent_commits_position_through_central_epoch_path() {
     let mut app = App::new(50);
     let epoch = app.playback.position_epoch;
     let intent = crate::app::PlayerIntent {
-        commands: vec![PlayerCmd::SeekAbsolute(42.0)],
+        commands: vec![PlayerCmd::interactive_seek(42.0)],
         commit: crate::app::PlayerCommit::Seek {
             optimistic_position: Some(42.0),
         },
@@ -1175,6 +1163,29 @@ fn runtime_event_to_msg_preserves_ai_payload_variants() {
             keys,
             entries,
         }) if keys == ["k1"] && entries[0].title == "Title"
+    ));
+}
+
+#[test]
+fn cache_safety_terminal_reconciles_against_latest_admitted_generation() {
+    let mut current = crate::player::PlayerEvent::CacheEmergency {
+        file_generation: 7,
+        position_secs: 3_600.25,
+        paused: true,
+        reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+    };
+    super::player_delivery::reconcile_cache_safety_event(&mut current, Some(7));
+    assert!(matches!(
+        current,
+        crate::player::PlayerEvent::CacheEmergency { .. }
+    ));
+
+    super::player_delivery::reconcile_cache_safety_event(&mut current, Some(8));
+    assert!(matches!(
+        current,
+        crate::player::PlayerEvent::CacheReplacementEmergency {
+            reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+        }
     ));
 }
 

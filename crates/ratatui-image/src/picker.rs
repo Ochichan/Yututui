@@ -45,6 +45,9 @@ pub enum Capability {
 
 const STDIN_READ_TIMEOUT_MILLIS: u64 = 2000;
 
+// yututui patch: Konsole's 26.08 line includes the Sixel placement cleanup needed for TUI redraws.
+const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_800;
+
 #[derive(Clone, Debug)]
 pub struct Picker {
     font_size: FontSize,
@@ -120,20 +123,36 @@ impl Picker {
         };
 
         let mut options_with_blacklist = options;
-        let is_wezterm = env::var("WEZTERM_EXECUTABLE").is_ok_and(|s| !s.is_empty());
-        let is_konsole = env::var("KONSOLE_VERSION").is_ok_and(|s| !s.is_empty());
-        if is_wezterm || is_konsole {
-            // WezTerm could use Sixel, but iTerm2 (detected later is better).
-            // Konsole's Sixel implementation is buggy: https://github.com/ratatui/ratatui-image?tab=readme-ov-file#compatibility-matrix
-            // Neither implement the placeholder part of kitty correctly.
-            options_with_blacklist.blacklist_protocols =
-                vec![ProtocolType::Kitty, ProtocolType::Sixel];
+        let wezterm_executable = env::var("WEZTERM_EXECUTABLE").ok();
+        let konsole_version = env::var("KONSOLE_VERSION").ok();
+        let term = env::var("TERM").ok();
+        let require_reported_cell_size_for_konsole_sixel = konsole_supports_sixel_tui_redraws(
+            wezterm_executable.as_deref(),
+            konsole_version.as_deref(),
+            term.as_deref(),
+        );
+        for protocol in terminal_protocol_blacklist(
+            wezterm_executable.as_deref(),
+            konsole_version.as_deref(),
+            term.as_deref(),
+        ) {
+            if !options_with_blacklist
+                .blacklist_protocols
+                .contains(&protocol)
+            {
+                options_with_blacklist.blacklist_protocols.push(protocol);
+            }
         }
 
         // Write and read to stdin to query protocol capabilities and font-size.
         match query_with_timeout(is_tmux, options_with_blacklist) {
             Ok((capability_proto, font_size, caps)) => {
                 let iterm2_proto = iterm2_from_env();
+                let capability_proto = require_reported_cell_size_for_sixel(
+                    capability_proto,
+                    &caps,
+                    require_reported_cell_size_for_konsole_sixel,
+                );
 
                 // IO-based detection is authoritative; env-based hints are fallbacks
                 // (env vars like KITTY_WINDOW_ID can be stale in tmux sessions).
@@ -318,6 +337,67 @@ impl Picker {
             }),
         };
         StatefulProtocol::new_shared(image, self.font_size, self.background_color, protocol_type)
+    }
+}
+
+// yututui patch: keep older/unknown Konsole versions conservative, and capability-gate 26.08+.
+fn terminal_protocol_blacklist(
+    wezterm_executable: Option<&str>,
+    konsole_version: Option<&str>,
+    term: Option<&str>,
+) -> Vec<ProtocolType> {
+    let is_wezterm = wezterm_executable.is_some_and(|value| !value.is_empty());
+    if is_wezterm {
+        // WezTerm could use Sixel, but iTerm2 (detected later) is better. It also does not
+        // implement the placeholder part of Kitty correctly.
+        return vec![ProtocolType::Kitty, ProtocolType::Sixel];
+    }
+
+    let is_konsole = konsole_version.is_some_and(|value| !value.is_empty())
+        || term.is_some_and(|value| value.to_ascii_lowercase().contains("konsole"));
+    if !is_konsole {
+        return Vec::new();
+    }
+
+    if konsole_supports_sixel_tui_redraws(wezterm_executable, konsole_version, term) {
+        // Konsole's Kitty implementation still lacks Unicode placeholders. Sixel remains subject
+        // to the normal DA1 capability and cell-size response checks below.
+        vec![ProtocolType::Kitty]
+    } else {
+        vec![ProtocolType::Kitty, ProtocolType::Sixel]
+    }
+}
+
+fn konsole_supports_sixel_tui_redraws(
+    wezterm_executable: Option<&str>,
+    konsole_version: Option<&str>,
+    term: Option<&str>,
+) -> bool {
+    let is_wezterm = wezterm_executable.is_some_and(|value| !value.is_empty());
+    let is_konsole = konsole_version.is_some_and(|value| !value.is_empty())
+        || term.is_some_and(|value| value.to_ascii_lowercase().contains("konsole"));
+
+    !is_wezterm
+        && is_konsole
+        && konsole_version
+            .and_then(|version| version.trim().parse::<u32>().ok())
+            .is_some_and(|version| version >= KONSOLE_SIXEL_TUI_MIN_VERSION)
+}
+
+fn require_reported_cell_size_for_sixel(
+    protocol_type: Option<ProtocolType>,
+    capabilities: &[Capability],
+    required: bool,
+) -> Option<ProtocolType> {
+    if required
+        && protocol_type == Some(ProtocolType::Sixel)
+        && !capabilities
+            .iter()
+            .any(|capability| matches!(capability, Capability::CellSize(Some(_))))
+    {
+        None
+    } else {
+        protocol_type
     }
 }
 
@@ -666,7 +746,11 @@ mod tests {
 
     use crate::picker::{Capability, Picker, ProtocolType};
 
-    use super::{cap_parser::Response, interpret_parser_responses};
+    use super::{
+        cap_parser::{Parser, QueryStdioOptions, Response},
+        interpret_parser_responses, require_reported_cell_size_for_sixel,
+        terminal_protocol_blacklist,
+    };
 
     #[test]
     fn test_cycle_protocol() {
@@ -684,6 +768,176 @@ mod tests {
     #[test]
     fn test_from_query_stdio_no_hang() {
         let _ = Picker::from_query_stdio();
+    }
+
+    #[test]
+    fn test_terminal_protocol_blacklist() {
+        struct Case {
+            name: &'static str,
+            wezterm_executable: Option<&'static str>,
+            konsole_version: Option<&'static str>,
+            term: Option<&'static str>,
+            expected: Vec<ProtocolType>,
+        }
+
+        let cases = [
+            Case {
+                name: "unrelated terminal",
+                wezterm_executable: None,
+                konsole_version: None,
+                term: Some("xterm-256color"),
+                expected: vec![],
+            },
+            Case {
+                name: "WezTerm keeps Kitty and Sixel blacklisted",
+                wezterm_executable: Some("/Applications/WezTerm.app/Contents/MacOS/wezterm-gui"),
+                konsole_version: None,
+                term: Some("xterm-256color"),
+                expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
+            },
+            Case {
+                name: "Konsole detected from TERM without a version",
+                wezterm_executable: None,
+                konsole_version: None,
+                term: Some("konsole-256color"),
+                expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
+            },
+            Case {
+                name: "empty Konsole version is not a hint",
+                wezterm_executable: None,
+                konsole_version: Some(""),
+                term: Some("xterm-256color"),
+                expected: vec![],
+            },
+            Case {
+                name: "invalid Konsole version stays conservative",
+                wezterm_executable: None,
+                konsole_version: Some("26.08"),
+                term: Some("xterm-256color"),
+                expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
+            },
+            Case {
+                name: "Konsole before 26.08 stays conservative",
+                wezterm_executable: None,
+                konsole_version: Some("260799"),
+                term: Some("xterm-256color"),
+                expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
+            },
+            Case {
+                name: "Konsole 26.08 allows Sixel capability queries",
+                wezterm_executable: None,
+                konsole_version: Some("260800"),
+                term: Some("xterm-256color"),
+                expected: vec![ProtocolType::Kitty],
+            },
+            Case {
+                name: "newer Konsole allows Sixel capability queries",
+                wezterm_executable: None,
+                konsole_version: Some("260801"),
+                term: Some("xterm-256color"),
+                expected: vec![ProtocolType::Kitty],
+            },
+            Case {
+                name: "WezTerm policy wins over a new Konsole hint",
+                wezterm_executable: Some("wezterm-gui"),
+                konsole_version: Some("260800"),
+                term: Some("konsole-256color"),
+                expected: vec![ProtocolType::Kitty, ProtocolType::Sixel],
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                terminal_protocol_blacklist(
+                    case.wezterm_executable,
+                    case.konsole_version,
+                    case.term,
+                ),
+                case.expected,
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_konsole_sixel_query_is_version_gated() {
+        let query_for = |konsole_version| {
+            let options = QueryStdioOptions {
+                blacklist_protocols: terminal_protocol_blacklist(
+                    None,
+                    Some(konsole_version),
+                    Some("konsole-256color"),
+                ),
+                ..QueryStdioOptions::default()
+            };
+            Parser::query(false, options)
+        };
+
+        let old_konsole_query = query_for("260799");
+        assert!(!old_konsole_query.contains("_Gi="));
+        assert!(!old_konsole_query.contains("\x1b[c"));
+
+        let new_konsole_query = query_for("260800");
+        assert!(!new_konsole_query.contains("_Gi="));
+        assert!(new_konsole_query.contains("\x1b[c"));
+    }
+
+    #[test]
+    fn test_terminal_blacklist_preserves_caller_entries() {
+        let mut blacklist = vec![ProtocolType::Iterm2];
+        for protocol in terminal_protocol_blacklist(None, Some("260799"), None) {
+            if !blacklist.contains(&protocol) {
+                blacklist.push(protocol);
+            }
+        }
+
+        assert_eq!(
+            blacklist,
+            vec![
+                ProtocolType::Iterm2,
+                ProtocolType::Kitty,
+                ProtocolType::Sixel
+            ]
+        );
+    }
+
+    #[test]
+    fn test_konsole_sixel_requires_reported_cell_size() {
+        let (sixel_without_cell_size, _, capabilities) =
+            interpret_parser_responses(vec![Response::Sixel]).unwrap();
+
+        assert_eq!(
+            require_reported_cell_size_for_sixel(sixel_without_cell_size, &capabilities, true),
+            None
+        );
+
+        let (sixel_without_valid_cell_size, _, capabilities) =
+            interpret_parser_responses(vec![Response::Sixel, Response::CellSize(None)]).unwrap();
+        assert_eq!(
+            require_reported_cell_size_for_sixel(
+                sixel_without_valid_cell_size,
+                &capabilities,
+                true
+            ),
+            None
+        );
+
+        let (sixel_with_cell_size, _, capabilities) =
+            interpret_parser_responses(vec![Response::Sixel, Response::CellSize(Some((10, 20)))])
+                .unwrap();
+        assert_eq!(
+            require_reported_cell_size_for_sixel(sixel_with_cell_size, &capabilities, true),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            require_reported_cell_size_for_sixel(sixel_without_cell_size, &[], false),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            require_reported_cell_size_for_sixel(Some(ProtocolType::Kitty), &[], true),
+            Some(ProtocolType::Kitty)
+        );
     }
 
     #[test]

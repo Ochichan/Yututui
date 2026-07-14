@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn track_load_carries_owner_known_live_context_without_duration_inference() {
+    let mut app = App::new(50);
+    app.queue.set(vec![radio_station("finite-dvr")], 0);
+    let radio = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        load_source_context(&radio),
+        Some(crate::player::MediaSourceContext::Live)
+    );
+
+    app.queue.set(songs(1), 0);
+    let on_demand = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        load_source_context(&on_demand),
+        Some(crate::player::MediaSourceContext::OnDemand)
+    );
+}
+
 fn apply_radio_mode_and_admit(app: &mut App, confirm: RadioModeConfirm) -> Vec<Cmd> {
     let mut cmds = app.apply_radio_mode_confirm(confirm);
     admit_player_transition(app, &mut cmds);
@@ -577,7 +595,7 @@ fn radio_art_hidden_when_album_art_disabled() {
 }
 
 #[test]
-fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
+fn radio_mode_field_canvas_spans_player_behind_the_set_piece() {
     let mut app = App::new(100);
     app.config.album_art = Some(true);
     apply_radio_mode_and_admit(&mut app, RadioModeConfirm::Enter);
@@ -592,24 +610,23 @@ fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
         .find(|&y| buffer_row(&first, y).contains("ılılı"))
         .expect("one-line art row");
 
-    // Two luxury rows sit between the set piece's bottom edge and the one-line art
-    // (the art's own blank-braille pad row is ⠀ glyphs, not spaces, so a collapsed gap
-    // would show up here).
-    for dy in 1..=2u16 {
-        let interior: String = buffer_row(&first, sep_y - dy)
-            .chars()
-            .skip(1)
-            .take(97)
-            .collect();
-        assert!(
-            interior.trim().is_empty(),
-            "row {dy} above the one-line art should be blank, got: {interior:?}"
-        );
-    }
+    // Rain is a Player-interior field effect now. It occupies the structural gap behind the
+    // foreground set piece instead of being dispatched into a second below-art canvas.
+    let gap_before = buffer_row(&first, sep_y - 1);
+    assert!(
+        !gap_before.trim().is_empty(),
+        "the full-player field should be visible in the radio-art gap"
+    );
+    assert!(app.bridges.canvas_active.get());
+    assert!(app.bridges.canvas_heavy_active.get());
 
-    // The music-mode canvas (rain) animates in the blank band below the one-line art.
     app.anim.anim_frame = 40;
     let later = render_app_buffer(&app, 100, 36);
+    assert_ne!(
+        gap_before,
+        buffer_row(&later, sep_y - 1),
+        "the field behind the radio set piece should animate"
+    );
     let below = |buf: &ratatui::buffer::Buffer| -> String {
         (sep_y + 1..34).map(|y| buffer_row(buf, y)).collect()
     };

@@ -102,6 +102,63 @@ async fn late_recovery_failure_rejects_every_mutating_remote_command_before_muta
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn long_form_seek_apply_reaches_no_player_before_persistence_admission() {
+    let _guard = fail_recovery_for_test(recovery_error());
+    let mut engine = engine_with_queue(&["seed"]);
+    let mut player_rx = install_accepting_player(&mut engine);
+
+    let (response, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::Apply {
+            change: crate::remote::proto::GuiSettingChange {
+                group: "audio".to_owned(),
+                field: "long_form_seek_optimization".to_owned(),
+                value: serde_json::json!("on"),
+            },
+        })
+        .await;
+
+    assert_eq!(response.reason.as_deref(), Some("persistence_unavailable"));
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert!(player_rx.try_recv().is_err());
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::Off
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn long_form_seek_apply_reports_unconfirmed_durability_after_live_admission() {
+    let _guard = fail_store_saves_for_test(StoreKind::Config);
+    let mut engine = engine_with_queue(&["seed"]);
+    let mut player_rx = install_accepting_player(&mut engine);
+
+    let (response, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::Apply {
+            change: crate::remote::proto::GuiSettingChange {
+                group: "audio".to_owned(),
+                field: "long_form_seek_optimization".to_owned(),
+                value: serde_json::json!("on"),
+            },
+        })
+        .await;
+
+    assert_eq!(response.reason.as_deref(), Some("durability_unconfirmed"));
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    assert_eq!(
+        engine.config.audio.mpv.long_form_seek_optimization,
+        crate::config::LongFormSeekOptimization::On
+    );
+    assert!(matches!(
+        player_rx.try_recv(),
+        Ok(PlayerCmd::SetLongFormSeekOptimization(
+            crate::config::LongFormSeekOptimization::On
+        ))
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn read_only_whitelist_continues_while_recovery_is_unavailable() {
     let _guard = fail_recovery_for_test(recovery_error());
     let _save_guard = fail_store_saves_for_test(StoreKind::Session);

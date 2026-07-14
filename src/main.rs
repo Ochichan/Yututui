@@ -11,6 +11,9 @@ use std::time::Duration;
 /// grace only prevents a timed-out `spawn_blocking` closure from making `Runtime::drop` wait
 /// without a bound; normal shutdown should have no work left by the time it starts.
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+const ALREADY_RUNNING_NOTICE: &str = "ytt is already running.\n  \
+                                      Control it:  ytt -r <command>   (e.g. `ytt -r pp`, `ytt -r next`)\n  \
+                                      Stop it:     ytt -r quit";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CliPersistence {
@@ -423,12 +426,7 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // socket; a bind failure degrades to running without remote control rather than refusing.
     let remote = match remote::bind_or_detect(new_instance).await {
         remote::BindOutcome::AlreadyRunning => {
-            eprintln!(
-                "ytt is already running.\n  \
-                 Control it:  ytt -r <command>   (e.g. `ytt -r pp`, `ytt -r next`)\n  \
-                 Stop it:     ytt -r quit\n  \
-                 New player:  ytt --new-instance"
-            );
+            eprintln!("{ALREADY_RUNNING_NOTICE}");
             return Ok(());
         }
         remote::BindOutcome::Bound(server) => Some(*server),
@@ -501,6 +499,15 @@ mod tests {
     #[test]
     fn ordinary_interactive_owner_requests_the_writer_capability() {
         assert_eq!(interactive_persistence_mode(false), CliPersistence::Writer);
+    }
+
+    #[test]
+    fn already_running_notice_keeps_controls_without_advertising_new_instance() {
+        assert!(ALREADY_RUNNING_NOTICE.contains("Control it:"));
+        assert!(ALREADY_RUNNING_NOTICE.contains("ytt -r <command>"));
+        assert!(ALREADY_RUNNING_NOTICE.contains("Stop it:"));
+        assert!(ALREADY_RUNNING_NOTICE.contains("ytt -r quit"));
+        assert!(!ALREADY_RUNNING_NOTICE.contains("--new-instance"));
     }
 
     #[test]

@@ -81,3 +81,129 @@ fn transport_recovery_without_a_current_track_restarts_with_an_empty_restore_bat
     ));
     assert_no_load(&cmds);
 }
+
+#[test]
+fn cache_emergency_preserves_position_once_and_requests_a_forced_ram_resume() {
+    let mut app = app_playing(1, 0);
+    app.playback.paused = true;
+    app.playback.time_pos = Some(3_600.25);
+    app.playback.duration = Some(7_200.0);
+    let epoch = app.playback.position_epoch;
+    let history_len = app.library.history.len();
+
+    let cmds = app.update(PlayerMsg::CacheEmergency {
+        position_secs: 3_600.25,
+        paused: true,
+        reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+    });
+
+    let request = cmds
+        .iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => {
+                restore.iter().find_map(|command| match command {
+                    PlayerCmd::LoadWithResume(request) => Some(request),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("cache emergency restart must carry a correlated resume");
+    assert!((request.position_secs - 3_600.25).abs() < f64::EPSILON);
+    assert!(request.paused);
+    assert!(request.force_ram_only);
+    assert_eq!(
+        request.source_context,
+        crate::player::MediaSourceContext::OnDemand
+    );
+    assert_eq!(app.playback.time_pos, Some(3_600.25));
+    assert_eq!(app.playback.position_epoch, epoch + 1);
+    assert_eq!(app.library.history.len(), history_len);
+    assert!(!cmds.iter().any(|cmd| matches!(cmd, Cmd::Persist(_))));
+}
+
+#[test]
+fn cache_emergency_cannot_overwrite_a_newer_same_generation_seek_or_pause() {
+    let mut app = app_playing(1, 0);
+    // Model an intent which the runtime admitted and committed while the actor's cache
+    // emergency was already queued ahead of that command.
+    let original_epoch = app.playback.position_epoch;
+    app.playback.time_pos = Some(3_630.0);
+    app.playback.paused = true;
+    app.bump_position_epoch(PositionEpochReason::Seek);
+    let admitted_epoch = app.playback.position_epoch;
+    assert_eq!(admitted_epoch, original_epoch + 1);
+
+    let cmds = app.update(PlayerMsg::CacheEmergency {
+        position_secs: 3_600.0,
+        paused: false,
+        reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+    });
+
+    let request = cmds
+        .iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => {
+                restore.iter().find_map(|command| match command {
+                    PlayerCmd::LoadWithResume(request) => Some(request),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("cache emergency restart must retain the newest owner transport");
+    assert!((request.position_secs - 3_630.0).abs() < f64::EPSILON);
+    assert!(request.paused);
+    assert!(request.force_ram_only);
+    assert_eq!(app.playback.time_pos, Some(3_630.0));
+    assert!(app.playback.paused);
+    assert_eq!(app.playback.position_epoch, admitted_epoch + 1);
+    assert_eq!(app.playback.position_epoch, original_epoch + 2);
+}
+
+#[test]
+fn replacement_cache_emergency_replays_new_item_ram_only_without_old_position() {
+    let mut app = app_playing(2, 1);
+    app.playback.time_pos = None;
+    app.playback.paused = false;
+
+    let cmds = app.update(PlayerMsg::CacheReplacementEmergency {
+        reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+    });
+
+    let request = cmds
+        .iter()
+        .find_map(|cmd| match cmd {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => {
+                restore.iter().find_map(|command| match command {
+                    PlayerCmd::LoadWithResume(request) => Some(request),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("replacement cache emergency must replay the admitted destination");
+    assert_eq!(current(&app), "id1");
+    assert_eq!(request.position_secs, 0.0);
+    assert!(!request.paused);
+    assert!(request.force_ram_only);
+    assert!(request.url.contains("id1"), "must replay the new item");
+}
+
+#[test]
+fn stop_cache_emergency_retires_actor_without_replaying_queue_current() {
+    let mut app = app_playing(1, 0);
+    app.commit_playback_cleared();
+
+    let cmds = app.update(PlayerMsg::CacheReplacementEmergency {
+        reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+    });
+
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::PlayerControl(PlayerControl::Restart { restore })] if restore.is_empty()
+    ));
+    assert_no_load(&cmds);
+    assert_eq!(app.playback.time_pos, None);
+    assert_eq!(app.prefetch.loaded_video_id, None);
+}

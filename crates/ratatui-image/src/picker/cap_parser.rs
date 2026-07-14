@@ -41,9 +41,9 @@ pub struct QueryStdioOptions {
     ///
     /// This can be useful for sixels which have binary transparency instead of an alpha channel.
     pub terminal_background_color_osc: bool,
-    /// Blacklist protocols from the detection query. Currently only kitty can be detected, so that
-    /// is the only ProtocolType that can have any effect here.
-    /// [`crate::picker::Picker`] currently sets ProtocolType::Kitty for WezTerm and Konsole.
+    /// Blacklist graphics protocols from the detection query. Kitty suppresses the graphics query;
+    /// Sixel suppresses the Device Attributes query.
+    /// [`crate::picker::Picker`] applies terminal-specific defaults for WezTerm and Konsole.
     pub blacklist_protocols: Vec<ProtocolType>,
 }
 

@@ -193,6 +193,16 @@ fn status_facades_set_kind_text_and_clear() {
 fn art_overlay_mask_bits_are_unique_and_fit_u32() {
     use super::artwork::ART_OVERLAY_BITS;
 
+    assert_eq!(
+        super::artwork::ART_OVERLAY_BEGINNER_BIT,
+        1 << 19,
+        "Beginner Mode owns the reserved bit 19"
+    );
+    assert_eq!(
+        super::artwork::ART_OVERLAY_AUDIO_OUTPUT_BIT,
+        1 << 20,
+        "audio output picker owns bit 20"
+    );
     let mut seen = 0u32;
     for (name, bit) in ART_OVERLAY_BITS {
         assert_ne!(*bit, 0, "{name} bit must be non-zero");
@@ -205,10 +215,18 @@ fn art_overlay_mask_bits_are_unique_and_fit_u32() {
     }
     assert_eq!(
         ART_OVERLAY_BITS.len(),
-        18,
+        20,
         "all assigned u32 overlay bits are inventoried"
     );
-    assert!(seen & (1 << 17) != 0, "highest allocated bit is tracked");
+    assert!(
+        seen & super::artwork::ART_OVERLAY_AUDIO_OUTPUT_BIT != 0,
+        "highest allocated bit is tracked"
+    );
+    assert_eq!(
+        seen & (1 << 18),
+        0,
+        "bit 18 stays reserved for the search-source popup mask"
+    );
     assert_eq!(seen.count_ones(), ART_OVERLAY_BITS.len() as u32);
 }
 

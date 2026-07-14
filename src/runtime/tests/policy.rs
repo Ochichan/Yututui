@@ -215,6 +215,7 @@ fn runtime_event_policy_covers_leaf_event_classes() {
     assert_policy(
         RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result {
             video_id: "v".to_owned(),
+            quality: Some(crate::config::AlbumArtQuality::High),
             image: None,
         }),
         EventPolicy::DropIfStale {

@@ -55,6 +55,10 @@ pub(super) fn retained_import_inventory(root: &Path) -> Result<RetainedImportInv
             let entry = entry?;
             let path = entry.path();
             let metadata = std::fs::symlink_metadata(&path)?;
+            if depth == 0 && entry.file_name() == ".ignore" {
+                validate_ignore_file(&path, &metadata)?;
+                continue;
+            }
             if metadata.is_dir() && !is_link_or_reparse(&metadata) {
                 if depth >= RETAINED_SCAN_DEPTH_CAP {
                     bail!(
@@ -138,6 +142,7 @@ pub(super) fn prepare_import_inbox_dirs(root: &Path, session_id: &str) -> Result
     let private_base = root.join(".yututui-inbox");
     crate::util::safe_fs::ensure_private_dir_durable(&private_base)
         .with_context(|| format!("create private import root {}", private_base.display()))?;
+    ensure_private_ignore_file(&private_base)?;
     let session_dir = dirs
         .incoming
         .parent()
@@ -150,6 +155,57 @@ pub(super) fn prepare_import_inbox_dirs(root: &Path, session_id: &str) -> Result
     }
     validate_import_inbox_dirs(root, &dirs)?;
     Ok(dirs)
+}
+
+fn ensure_private_ignore_file(private_base: &Path) -> Result<()> {
+    let pinned =
+        crate::util::safe_fs::PinnedDir::open_private_existing(private_base, Path::new(""))
+            .with_context(|| format!("pin private import root {}", private_base.display()))?;
+    let name = std::ffi::OsStr::new(".ignore");
+    match pinned.open_child_readonly(name) {
+        Ok(existing) => {
+            validate_ignore_file(&private_base.join(name), &existing.file()?.metadata()?)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut created = match pinned.create_new(name) {
+                Ok(created) => created,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = pinned.open_child_readonly(name)?;
+                    validate_ignore_file(&private_base.join(name), &existing.file()?.metadata()?)?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            #[cfg(unix)]
+            created.set_mode(0o600)?;
+            created.sync_durable()?;
+            validate_ignore_file(&private_base.join(name), &created.file()?.metadata()?)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn validate_ignore_file(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
+    if !metadata.is_file() || metadata.len() != 0 {
+        bail!(
+            "private import ignore marker must be an empty regular file: {}",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        if !crate::util::safe_fs::is_owned_by_current_user(metadata)
+            || metadata.mode() & 0o777 != 0o600
+        {
+            bail!(
+                "private import ignore marker must be owned by the current user with mode 0600: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_real_directory_chain(root: &Path, target: &Path) -> Result<()> {
@@ -348,6 +404,35 @@ mod retained_tests {
                 directory.display()
             );
         }
+        let ignore = root.join(".yututui-inbox/.ignore");
+        let metadata = std::fs::metadata(&ignore).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+        assert_eq!(retained_import_inventory(&root).unwrap().files, 0);
+
+        prepare_import_inbox_dirs(&root, "session-a").unwrap();
+        assert_eq!(std::fs::metadata(ignore).unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_rejects_a_foreign_ignore_marker_without_replacing_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = temp_root("hostile-ignore");
+        std::fs::create_dir_all(&root).unwrap();
+        let private = root.join(".yututui-inbox");
+        crate::util::safe_fs::ensure_private_dir(&private).unwrap();
+        let ignore = private.join(".ignore");
+        std::fs::write(&ignore, b"foreign policy").unwrap();
+        std::fs::set_permissions(&ignore, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let error = prepare_import_inbox_dirs(&root, "session-a").unwrap_err();
+
+        assert!(format!("{error:#}").contains("must be an empty regular file"));
+        assert_eq!(std::fs::read(&ignore).unwrap(), b"foreign policy");
+        assert!(!private.join("session-a").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

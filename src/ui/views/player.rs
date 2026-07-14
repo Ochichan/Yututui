@@ -11,10 +11,11 @@ use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, MouseTarget, RadioModeConfirm, ScrollSurface};
-use crate::lyrics;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
+
+use super::player_layout::calculate_player_filler_layout;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -53,7 +54,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1), // help
         ])
         .split(inner);
-        render_filler(frame, app, rows[1]);
+        render_filler(frame, app, inner, rows[1]);
         crate::ui::control_box::render_docked(frame, app, rows[2]);
         buttons::render_help_button(frame, app, rows[3]);
     } else {
@@ -73,11 +74,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         // Title / seekbar / transport strip / status line — the shared control block
         // (see `ui::control_box`); the rects are this view's legacy rows, so bytes are unchanged.
+        // The canvas composes before every foreground player surface. With animations off this
+        // reordering is cell-identical; with a field effect on, the control widgets cover it in
+        // one deterministic foreground pass.
+        render_filler(frame, app, inner, rows[8]);
         crate::ui::control_box::render_at(frame, app, rows[1], rows[3], rows[5], rows[7]);
-
-        // Central filler: album art (top) and/or the lyrics panel (below). With album art off
-        // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
-        render_filler(frame, app, rows[8]);
 
         // The full key list lives in the `?` cheat-sheet now; the footer just points to it
         // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
@@ -255,126 +256,43 @@ const RADIO_ART_SEP_GAP: u16 = 2;
 /// Smallest lyrics window (rows) we keep below the art when both are shown.
 const MIN_LYRICS_ROWS: u16 = 3;
 
-/// The central area below the transport strip. Album art (when enabled and ready) sits at
-/// the top, just under the status line; the lyrics panel (when toggled) starts right below
-/// the art's real bottom edge. When album art is off the layout is unchanged — lyrics get
-/// the whole area, and an empty area draws nothing.
-fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
+/// Compose the central Player stage once, then draw its artwork and lyrics foreground. The
+/// responsive geometry helper preserves the classic Top stack and prefers a side-by-side Bottom
+/// layout; when artwork is unavailable, lyrics receive the whole filler.
+fn render_filler(frame: &mut Frame, app: &App, player_area: Rect, area: Rect) {
     app.art.rect.set(None);
     // The radio set piece rides the album-art toggle: with it off, radio mode falls
     // through to the plain music-mode arms below (`art_active()` is hard-false in radio
     // mode, so those resolve to the no-art layout — lyrics, or the bare animation canvas).
     if app.radio_dedicated_mode && app.config.effective_album_art() {
+        crate::ui::anim::render_canvas_composite(
+            frame,
+            app,
+            player_area,
+            area,
+            None,
+            app.lyrics.visible.then_some(area),
+            false,
+        );
         render_radio_filler(frame, app, area);
         return;
     }
-    let centered = app.player_bar_position() == crate::config::PlayerBarPosition::Bottom;
-    match (app.art_active(), app.lyrics.visible) {
-        // Art with lyrics right under it. The art is capped so a readable lyrics window
-        // always remains, then lyrics start one row below the art's actual bottom (not at a
-        // fixed split), so there's no dead gap between them. Top mode anchors the pair to
-        // the top of the filler; Bottom mode centers the [art, gap, lyrics] group.
-        (true, true) => {
-            let after_gap = area.height.saturating_sub(ART_TOP_GAP);
-            // ~50% of the filler, but never so tall that lyrics drop below MIN_LYRICS_ROWS.
-            let cap = (after_gap / 2).min(after_gap.saturating_sub(MIN_LYRICS_ROWS));
-            let (band, centered_lyrics_h) = if centered {
-                // Probe the art's real height first (`art_fit_rect` is a pure query), so
-                // the group's total height is known before anything is drawn. The lyrics
-                // window is capped at 12 rows (~5 lines of context either side of the
-                // current one) so the centered group stays compact and the centering reads.
-                let art_h = app.art_fit_rect(art_band(area, 0, cap)).height;
-                let lyrics_h = area
-                    .height
-                    .saturating_sub(art_h + ART_LYRICS_GAP)
-                    .clamp(MIN_LYRICS_ROWS, 12);
-                let group_h = art_h + ART_LYRICS_GAP + lyrics_h;
-                (
-                    Rect {
-                        x: area.x,
-                        y: area.y + area.height.saturating_sub(group_h) / 2,
-                        width: area.width,
-                        height: art_h.min(area.height),
-                    },
-                    lyrics_h,
-                )
-            } else {
-                (art_band(area, ART_TOP_GAP, cap), 0)
-            };
-            match draw_art(frame, app, band) {
-                Some(art) => {
-                    let lyrics_y = art.bottom().saturating_add(ART_LYRICS_GAP);
-                    let lyrics_bottom = if centered {
-                        // Keep the group's computed window so the centering holds; the
-                        // canvas gets the residual bands.
-                        area.bottom()
-                            .min(lyrics_y.saturating_add(centered_lyrics_h))
-                    } else {
-                        area.bottom()
-                    };
-                    let lyrics_area = Rect {
-                        x: area.x,
-                        y: lyrics_y,
-                        width: area.width,
-                        height: lyrics_bottom.saturating_sub(lyrics_y),
-                    };
-                    render_lyrics(frame, app, lyrics_area);
-                }
-                None => render_lyrics(frame, app, area),
-            }
-        }
-        // Art only: medium size, capped to ~55% of the filler height. Top mode anchors it
-        // under the status line; Bottom mode centers it in the filler. Canvas animations
-        // fill the blank region around the art's real edges (never over the art).
-        (true, false) => {
-            let cap = (u32::from(area.height) * 11 / 20) as u16;
-            let band = if centered {
-                // Probe the art's real height (`art_fit_rect` is a pure query) so the band
-                // is sized to it exactly — `draw_art`'s top re-anchor then lands centered.
-                let art_h = app.art_fit_rect(art_band(area, 0, cap)).height;
-                Rect {
-                    x: area.x,
-                    y: area.y + area.height.saturating_sub(art_h) / 2,
-                    width: area.width,
-                    height: art_h.min(area.height),
-                }
-            } else {
-                art_band(area, ART_TOP_GAP, cap)
-            };
-            let art = draw_art(frame, app, band);
-            if centered && let Some(art) = art {
-                // Band above the centered art.
-                let above_h = art.y.saturating_sub(area.y).saturating_sub(ART_LYRICS_GAP);
-                if above_h > 0 {
-                    crate::ui::anim::render_canvas(
-                        frame,
-                        app,
-                        Rect {
-                            x: area.x,
-                            y: area.y,
-                            width: area.width,
-                            height: above_h,
-                        },
-                    );
-                }
-            }
-            let below = art
-                .map_or(area.y, |r| r.bottom())
-                .saturating_add(ART_LYRICS_GAP);
-            if below < area.bottom() {
-                let zone = Rect {
-                    x: area.x,
-                    y: below,
-                    width: area.width,
-                    height: area.bottom() - below,
-                };
-                crate::ui::anim::render_canvas(frame, app, zone);
-            }
-        }
-        (false, true) => render_lyrics(frame, app, area),
-        // No art, no lyrics: the whole filler is blank — the maximum canvas. With every animation
-        // off this stays empty (drawing nothing), exactly as before.
-        (false, false) => crate::ui::anim::render_canvas(frame, app, area),
+    let layout = calculate_player_filler_layout(app, area, app.art_active(), app.lyrics.visible);
+    crate::ui::anim::render_canvas_composite(
+        frame,
+        app,
+        player_area,
+        area,
+        layout.art,
+        layout.lyrics,
+        app.player_bar_position() == crate::config::PlayerBarPosition::Bottom
+            && layout.art.is_some(),
+    );
+    if let Some(art) = layout.art {
+        draw_art(frame, app, art);
+    }
+    if let Some(lyrics) = layout.lyrics {
+        super::player_lyrics::render(frame, app, lyrics);
     }
 }
 
@@ -477,22 +395,6 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
                 );
             }
             if !app.lyrics.visible {
-                // Music-mode filler animations run in radio mode too: the canvas gets
-                // the blank band below the one-line art, mirroring the album-art arm
-                // of `render_filler`.
-                let below = separator_y.saturating_add(ART_LYRICS_GAP);
-                if below < area.bottom() {
-                    crate::ui::anim::render_canvas(
-                        frame,
-                        app,
-                        Rect {
-                            x: area.x,
-                            y: below,
-                            width: area.width,
-                            height: area.bottom() - below,
-                        },
-                    );
-                }
                 return;
             }
             let lyrics_y = separator_y.saturating_add(ART_LYRICS_GAP);
@@ -502,12 +404,10 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
                 width: area.width,
                 height: area.bottom().saturating_sub(lyrics_y),
             };
-            render_lyrics(frame, app, lyrics_area);
+            super::player_lyrics::render(frame, app, lyrics_area);
         }
-        None if app.lyrics.visible => render_lyrics(frame, app, area),
-        // Too small for the set piece and no lyrics: the whole filler is canvas, like
-        // the music-mode no-art arm.
-        None => crate::ui::anim::render_canvas(frame, app, area),
+        None if app.lyrics.visible => super::player_lyrics::render(frame, app, area),
+        None => {}
     }
 }
 
@@ -675,21 +575,10 @@ fn art_band(area: Rect, gap: u16, max_h: u16) -> Rect {
     }
 }
 
-/// Draw the current track's album art / thumbnail top-anchored within `band` and centered
-/// horizontally by its true aspect ratio (square covers stay square, 16:9 thumbnails stay
-/// wide — the picker knows the terminal's font cell size). Returns the rect the art
-/// actually occupies so the caller can start the lyrics right below it, or `None` when the
-/// band is too small to render anything legible. Only called when `app.art_active()`, so
-/// the protocol is present; with no graphics protocol this renders as unicode half-blocks.
-/// `Resize::Scale` lets a small source thumbnail grow to fill the rect (the default `Fit`
-/// never upscales).
-fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
-    // Below a few cells there's nothing but mush; skip so a tiny terminal stays clean.
-    if band.width < 6 || band.height < 3 {
-        return None;
-    }
-    let mut rect = app.art_fit_rect(band);
-    rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
+/// Draw the current track's album art into the already aspect-fitted final rectangle. The layout
+/// and the canvas hard mask share this exact value, so native protocols never expose animation
+/// glyphs through placeholder cells.
+fn draw_art(frame: &mut Frame, app: &App, rect: Rect) {
     app.art.rect.set(Some(rect));
     // Retro mode draws the cover itself as luminance-ramp ASCII art: a basic console has no
     // graphics protocol, and the half-block fallback needs truecolor cells the scrubber
@@ -704,7 +593,7 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
                 rect,
             );
         }
-        return Some(rect);
+        return;
     }
     if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
         frame.render_stateful_widget(
@@ -713,77 +602,6 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
             proto,
         );
     }
-    Some(rect)
-}
-
-/// The synced-lyrics panel: a window of lines centered on the current one, which is
-/// highlighted. Auto-scrolls as `time-pos` advances.
-fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
-    let centered = |s: &str, style: Style| {
-        Line::from(s.to_owned())
-            .style(style)
-            .alignment(Alignment::Center)
-    };
-    let dim = app.theme.style(R::LyricsDim);
-
-    let lines = match &app.lyrics.track {
-        Some(t) if !t.lines.is_empty() => &t.lines,
-        _ => {
-            let base = if app.lyrics.loading {
-                t!("Searching lyrics", "가사 검색 중")
-            } else if app.lyrics.track.is_some() {
-                t!("No synced lyrics found.", "동기화된 가사가 없어요.")
-            } else {
-                t!("Fetching lyrics", "가사 가져오는 중")
-            };
-            // In-flight messages carry animated dots when the activity flag is on; the
-            // static ellipsis otherwise (and always for the terminal "not found" state).
-            let msg = if app.lyrics.track.is_some() && !app.lyrics.loading {
-                base.to_owned()
-            } else if let Some(dots) = crate::ui::anim::activity_dots(app) {
-                format!("{base}{dots}")
-            } else {
-                format!("{base}…")
-            };
-            frame.render_widget(Paragraph::new(centered(&msg, dim)), area);
-            return;
-        }
-    };
-
-    let height = area.height as usize;
-    if height == 0 {
-        return;
-    }
-    let pos = app.playback.time_pos.unwrap_or(0.0);
-    let cur = lyrics::current_index(lines, pos);
-    // Keep the current line vertically centered.
-    let start = cur.unwrap_or(0).saturating_sub(height / 2);
-
-    // With the lyrics animation on, the current line breathes toward the accent (flashing as
-    // it first becomes current) and far lines fade slightly with distance; identity when off.
-    let current_style = crate::ui::anim::lyrics_current_style(
-        app,
-        app.theme
-            .style(R::LyricsCurrent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let rendered: Vec<Line> = lines
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(height)
-        .map(|(i, l)| {
-            let style = if Some(i) == cur {
-                current_style
-            } else {
-                // No current line yet (intro silence) → no distance fade, plain dim.
-                let distance = cur.map_or(0, |c| c.abs_diff(i));
-                crate::ui::anim::lyrics_dim_style(app, dim, distance)
-            };
-            centered(&l.text, style)
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(rendered), area);
 }
 
 /// A modal confirmation for entering/leaving dedicated Radio mode. It intentionally mirrors the

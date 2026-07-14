@@ -22,6 +22,10 @@ pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u32 = 1 << 14;
 pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u32 = 1 << 15;
 pub(in crate::app) const ART_OVERLAY_CONTEXT_MENU_BIT: u32 = 1 << 16;
 pub(in crate::app) const ART_OVERLAY_TOOL_SETUP_BIT: u32 = 1 << 17;
+// Bit 18 belongs to the search-source popup in `fx_popup_mask`; keep it free here so the two
+// masks can be ORed without making an onboarding transition indistinguishable from that popup.
+pub(in crate::app) const ART_OVERLAY_BEGINNER_BIT: u32 = 1 << 19;
+pub(in crate::app) const ART_OVERLAY_AUDIO_OUTPUT_BIT: u32 = 1 << 20;
 
 // INVARIANT(ART-MASK-001): every art-covering surface owns a unique u32 bit; check the risk
 // map before replacing, sharing, or widening any allocation.
@@ -45,6 +49,8 @@ pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u32)] = &[
     ("search_filter", ART_OVERLAY_SEARCH_FILTER_BIT),
     ("context_menu", ART_OVERLAY_CONTEXT_MENU_BIT),
     ("tool_setup", ART_OVERLAY_TOOL_SETUP_BIT),
+    ("beginner", ART_OVERLAY_BEGINNER_BIT),
+    ("audio_output", ART_OVERLAY_AUDIO_OUTPUT_BIT),
 ];
 
 const fn flag(on: bool, bit: u32) -> u32 {
@@ -154,7 +160,7 @@ impl App {
                 || a.time_glow
                 || a.progress_sparkle
                 || a.border_chase
-                || (!self.lyrics.visible && a.any_canvas()))
+                || self.bridges.canvas_active.get())
     }
 
     /// Whether an enabled one-shot feedback effect is still inside its window. While true the clock
@@ -275,7 +281,7 @@ impl App {
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
-        if player_running && a.master && !self.lyrics.visible && a.any_canvas_heavy() {
+        if player_running && a.master && self.bridges.canvas_heavy_active.get() {
             return fps.min(20);
         }
         if player_running
@@ -499,16 +505,10 @@ impl App {
         }
 
         // The synced-lyric line advanced → flash the newly-current line. Only tracked while
-        // the panel is visible on the player, so the index scan never runs anywhere else.
+        // the panel is visible on the player. Rendering and flash share the same index written by
+        // the 100 ms lyric clock, so interpolation cannot make their frames disagree.
         if matches!(self.mode, Mode::Player) && self.lyrics.visible && on(a.lyrics) {
-            let idx = self
-                .lyrics
-                .track
-                .as_ref()
-                .filter(|t| !t.lines.is_empty())
-                .and_then(|t| {
-                    crate::lyrics::current_index(&t.lines, self.playback.time_pos.unwrap_or(0.0))
-                });
+            let idx = self.current_loaded_lyrics().and(self.lyrics.active_index);
             if idx != self.fx.last_lyric_index {
                 self.fx.last_lyric_index = idx;
                 if idx.is_some() {
@@ -522,8 +522,8 @@ impl App {
     /// status redraws avoid the extra escape traffic; album art and canvas animation keep the
     /// atomic swap that prevents tearing/ghosting on terminals that support it.
     pub fn synchronized_draw_active(&self) -> bool {
-        let a = self.animations();
-        self.art_active() || (matches!(self.mode, Mode::Player) && a.master && a.any_canvas_heavy())
+        self.art_active()
+            || (matches!(self.mode, Mode::Player) && self.bridges.canvas_heavy_active.get())
     }
 
     /// Whether the "Gemini-tan" mascot on the DJ Gem start screen should be dancing right now. True
@@ -649,6 +649,11 @@ impl App {
                 ART_OVERLAY_CONTEXT_MENU_BIT,
             )
             | flag(self.tool_setup.is_some(), ART_OVERLAY_TOOL_SETUP_BIT)
+            | flag(self.onboarding.visible(), ART_OVERLAY_BEGINNER_BIT)
+            | flag(
+                self.overlays.audio_output_picker.is_some(),
+                ART_OVERLAY_AUDIO_OUTPUT_BIT,
+            )
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal
@@ -788,6 +793,7 @@ impl App {
             Some(path) => ArtSource::Local(path.clone()),
             None => ArtSource::Remote {
                 video_id: song.youtube_id()?.to_owned(),
+                quality: self.config.album_art_quality,
             },
         })
     }

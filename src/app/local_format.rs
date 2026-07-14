@@ -38,6 +38,20 @@ pub(in crate::app) fn local_song_text(app: &App, song: &Song) -> String {
 
 pub(in crate::app) fn local_import_session_text(session_id: &str, track_count: usize) -> String {
     if let Ok(session) = crate::transfer::session::ImportSession::load(session_id) {
+        let ready_plan = crate::transfer::review_action::plan_ready_candidates(session_id).ok();
+        let ready = ready_plan
+            .as_ref()
+            .map(|plan| plan.ready_count.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let total = ready_plan
+            .as_ref()
+            .map_or(session.counts.total, |plan| plan.total_count);
+        let review = ready_plan
+            .as_ref()
+            .map_or(session.counts.ambiguous, |plan| plan.review_left);
+        let missing = ready_plan
+            .as_ref()
+            .map_or(session.counts.not_found, |plan| plan.missing_left);
         let local_files = session
             .rows
             .iter()
@@ -48,15 +62,17 @@ pub(in crate::app) fn local_import_session_text(session_id: &str, track_count: u
             .iter()
             .filter(|row| !row.errors.is_empty())
             .count();
-        return format!(
-            "{session_id}  ({} written, {}/{} local, {failed} failed, {} review, {} missing, {} pending)",
-            session.counts.written,
-            local_files,
-            session.counts.total,
-            session.counts.ambiguous,
-            session.counts.not_found,
-            session.counts.pending
-        );
+        return if crate::i18n::is_korean() {
+            format!(
+                "{session_id}  (준비 {ready}/{total} · 로컬 {local_files}/{total} · 실패 {failed} · 검토 {review} · 누락 {missing} · 대기 {})",
+                session.counts.pending
+            )
+        } else {
+            format!(
+                "{session_id}  (Ready {ready}/{total} · Local {local_files}/{total} · {failed} failed · {review} review · {missing} missing · {} pending)",
+                session.counts.pending
+            )
+        };
     }
     format!("{session_id}  ({track_count} {})", t!("tracks", "곡"))
 }
@@ -83,26 +99,32 @@ pub(in crate::app) fn push_import_session_summary_details(
         t!("Rows", "행"),
         format!("{} {}", session.counts.total, t!("rows", "행")),
     );
-    push_detail_line(
-        lines,
-        t!("Written", "작성됨"),
-        session.counts.written.to_string(),
-    );
-    push_detail_line(
-        lines,
-        t!("Local files", "로컬 파일"),
-        format!("{local_files}/{}", session.counts.total),
-    );
+    let ready_plan = crate::transfer::review_action::plan_ready_candidates(session_id).ok();
+    let ready = ready_plan
+        .as_ref()
+        .map(|plan| plan.ready_count.to_string())
+        .unwrap_or_else(|| "?".to_owned());
+    let total = ready_plan
+        .as_ref()
+        .map_or(session.counts.total, |plan| plan.total_count);
+    push_detail_line(lines, t!("Ready", "준비"), format!("{ready}/{total}"));
+    push_detail_line(lines, t!("Local", "로컬"), format!("{local_files}/{total}"));
     push_detail_line(lines, t!("Failed", "실패"), failed.to_string());
     push_detail_line(
         lines,
         t!("Review", "검토"),
-        session.counts.ambiguous.to_string(),
+        ready_plan
+            .as_ref()
+            .map_or(session.counts.ambiguous, |plan| plan.review_left)
+            .to_string(),
     );
     push_detail_line(
         lines,
         t!("Missing", "누락"),
-        session.counts.not_found.to_string(),
+        ready_plan
+            .as_ref()
+            .map_or(session.counts.not_found, |plan| plan.missing_left)
+            .to_string(),
     );
     push_detail_line(
         lines,

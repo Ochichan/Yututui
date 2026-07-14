@@ -68,6 +68,7 @@ impl App {
         self.prefetch.last_load_prefetched = prefetched_url.is_some();
         tracing::info!(url = %url, prefetched = self.prefetch.last_load_prefetched, "load track");
 
+        self.begin_source_logical_item();
         self.reset_progress();
         if let Some(warning) = self.recorder.health_warning.as_ref() {
             // Startup autoplay and ordinary track changes may refresh transient playback status,
@@ -81,8 +82,8 @@ impl App {
         if !song.is_radio_station() {
             self.note_session_activity();
         }
+        self.associate_lyrics_with_track(&song.video_id);
         self.prefetch.loaded_video_id = Some(song.video_id.clone());
-        self.lyrics.track = None;
         self.clear_artwork();
 
         effects.push(Cmd::Persist(PersistCmd::Library));
@@ -116,6 +117,7 @@ impl App {
     }
 
     pub(in crate::app) fn commit_playback_cleared(&mut self) -> Vec<Cmd> {
+        self.supersede_source_recovery();
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
         self.bump_position_epoch(PositionEpochReason::PlaybackCleared);

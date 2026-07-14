@@ -2,16 +2,20 @@
 //!
 //! Key *release* events (which Windows and the enhanced keyboard protocol deliver in
 //! addition to presses) are filtered out here. Key *repeat* events — held keys on
-//! enhanced terminals — are dropped too, except for the navigation keys, which are
-//! forwarded so holding an arrow keeps scrolling (see [`is_autorepeat_nav_key`]).
+//! enhanced terminals — are dropped too, except for navigation keys and the currently
+//! configured Player lyric-delay chords.
 
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton,
+    MouseEventKind,
 };
 
-use crate::app::Msg;
+use crate::{
+    app::Msg,
+    keymap::{Action, Chord, KeyContext, KeyMap},
+};
 
 /// Two same-button presses within this window at the same cell count as a double-click.
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
@@ -54,6 +58,34 @@ impl Translator {
     /// must compare virtual cells too. The two axes can differ: DECDHL doubles the row while
     /// keeping the column logical, so a single scalar would land clicks half a screen left.
     pub fn translate(&mut self, ev: Event, col_scale: u8, row_scale: u8) -> Option<Msg> {
+        self.translate_with_repeat(ev, col_scale, row_scale, |_| false)
+    }
+
+    /// Translate events while also forwarding Repeat events for the effective Player lyric
+    /// delay bindings. The caller supplies the current committed keymap so remaps take effect
+    /// immediately; reducer routing still decides whether lyrics controls are currently live.
+    pub fn translate_with_keymap(
+        &mut self,
+        ev: Event,
+        col_scale: u8,
+        row_scale: u8,
+        keymap: &KeyMap,
+    ) -> Option<Msg> {
+        self.translate_with_repeat(ev, col_scale, row_scale, |key| {
+            matches!(
+                keymap.context_action(KeyContext::Player, Chord::new(key.code, key.modifiers)),
+                Some(Action::LyricsDelayEarlier | Action::LyricsDelayLater)
+            )
+        })
+    }
+
+    fn translate_with_repeat(
+        &mut self,
+        ev: Event,
+        col_scale: u8,
+        row_scale: u8,
+        allow_repeat: impl FnOnce(&KeyEvent) -> bool,
+    ) -> Option<Msg> {
         let cs = u16::from(col_scale.max(1));
         let rs = u16::from(row_scale.max(1));
         match ev {
@@ -65,15 +97,17 @@ impl Translator {
                 if k.kind == KeyEventKind::Release {
                     return None;
                 }
+                k.modifiers |= self.held_modifiers;
                 // Held keys stream as `Repeat` on enhanced terminals (plain terminals
-                // re-send `Press`). Forward `Repeat` only for the navigation keys — nav /
-                // seek / volume / value-change, all repeatable — so holding one keeps going;
-                // `Repeat` for chars, Enter, Space, etc. stays dropped so text entry and
-                // one-shot commands are never auto-spammed.
-                if k.kind == KeyEventKind::Repeat && !is_autorepeat_nav_key(k.code) {
+                // re-send `Press`). Navigation keys always repeat; a configured Player lyric
+                // delay chord may opt in after held modifiers have been merged. Everything
+                // else stays one-shot so text entry and commands are never auto-spammed.
+                if k.kind == KeyEventKind::Repeat
+                    && !is_autorepeat_nav_key(k.code)
+                    && !allow_repeat(&k)
+                {
                     return None;
                 }
-                k.modifiers |= self.held_modifiers;
                 Some(Msg::Key(k))
             }
             // A left-button press may hit a UI button or the player's seekbar. A second
@@ -136,7 +170,16 @@ impl Translator {
                 row: m.row / rs,
                 ctrl: (m.modifiers | self.held_modifiers).contains(KeyModifiers::CONTROL),
             }),
-            Event::Resize(_, _) => Some(Msg::Resize),
+            Event::Resize(width, height) => {
+                // Mouse columns stay logical under DECDHL, but the ratatui backend still reports
+                // a uniformly coarsened grid. The larger axis divisor is the backend's cell
+                // scale in every supported zoom mode.
+                let layout_scale = cs.max(rs);
+                Some(Msg::TerminalResize {
+                    width: width / layout_scale,
+                    height: height / layout_scale,
+                })
+            }
             // Terminal focus in/out (DECSET ?1004, enabled in `tui::init`). Lets the reducer
             // park animations while the window is hidden/behind another. A spurious startup
             // `FocusGained` (some multiplexers emit one) is harmless — `focused` is already true.
@@ -217,7 +260,7 @@ impl Translator {
 /// Keys whose held-repeat we forward: arrows, Page, Home, End. Everywhere they resolve to
 /// repeatable semantics (list nav, seek, volume, settings value change), so auto-repeating
 /// them is always safe — unlike typed characters or one-shot commands.
-fn is_autorepeat_nav_key(code: KeyCode) -> bool {
+pub(crate) fn is_autorepeat_nav_key(code: KeyCode) -> bool {
     matches!(
         code,
         KeyCode::Up
@@ -311,6 +354,147 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn keymap_translation_forwards_only_lyric_delay_character_repeats() {
+        let mut input = Translator::default();
+        let mut keymap = KeyMap::default();
+
+        for character in ['z', 'Z'] {
+            assert!(matches!(
+                input.translate_with_keymap(
+                    key(
+                        KeyCode::Char(character),
+                        KeyModifiers::NONE,
+                        KeyEventKind::Repeat,
+                    ),
+                    1,
+                    1,
+                    &keymap,
+                ),
+                Some(Msg::Key(k)) if k.code == KeyCode::Char(character)
+            ));
+        }
+        assert!(
+            input
+                .translate_with_keymap(
+                    key(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Repeat,),
+                    1,
+                    1,
+                    &keymap,
+                )
+                .is_none()
+        );
+
+        keymap
+            .rebind(
+                KeyContext::Player,
+                Action::LyricsDelayEarlier,
+                Chord::new(KeyCode::F(8), KeyModifiers::NONE),
+            )
+            .unwrap();
+        assert!(
+            input
+                .translate_with_keymap(
+                    key(KeyCode::Char('z'), KeyModifiers::NONE, KeyEventKind::Repeat,),
+                    1,
+                    1,
+                    &keymap,
+                )
+                .is_none()
+        );
+        assert!(matches!(
+            input.translate_with_keymap(
+                key(KeyCode::F(8), KeyModifiers::NONE, KeyEventKind::Repeat),
+                1,
+                1,
+                &keymap,
+            ),
+            Some(Msg::Key(k)) if k.code == KeyCode::F(8)
+        ));
+    }
+
+    #[test]
+    fn held_modifiers_are_merged_before_repeat_keymap_matching() {
+        let mut input = Translator::default();
+        let keymap = KeyMap::default();
+        assert!(
+            input
+                .translate_with_keymap(
+                    key(
+                        KeyCode::Modifier(ModifierKeyCode::LeftShift),
+                        KeyModifiers::NONE,
+                        KeyEventKind::Press,
+                    ),
+                    1,
+                    1,
+                    &keymap,
+                )
+                .is_none()
+        );
+
+        assert!(matches!(
+            input.translate_with_keymap(
+                key(
+                    KeyCode::Char('z'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                ),
+                1,
+                1,
+                &keymap,
+            ),
+            Some(Msg::Key(k))
+                if k.code == KeyCode::Char('z')
+                    && k.modifiers.contains(KeyModifiers::SHIFT)
+        ));
+    }
+
+    #[test]
+    fn keymap_translation_still_drops_releases_for_lyric_delay_keys() {
+        let mut input = Translator::default();
+        let keymap = KeyMap::default();
+        assert!(
+            input
+                .translate_with_keymap(
+                    key(
+                        KeyCode::Char('z'),
+                        KeyModifiers::NONE,
+                        KeyEventKind::Release,
+                    ),
+                    1,
+                    1,
+                    &keymap,
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resize_reports_the_zoom_adjusted_logical_grid() {
+        let mut input = Translator::default();
+        assert!(matches!(
+            input.translate(Event::Resize(80, 24), 2, 2),
+            Some(Msg::TerminalResize {
+                width: 40,
+                height: 12
+            })
+        ));
+        assert!(matches!(
+            input.translate(Event::Resize(80, 24), 1, 2),
+            Some(Msg::TerminalResize {
+                width: 40,
+                height: 12
+            })
+        ));
+        assert!(matches!(
+            input.translate(Event::Resize(50, 28), 1, 2),
+            Some(Msg::TerminalResize {
+                width: 25,
+                height: 14
+            })
+        ));
     }
 
     #[test]

@@ -21,6 +21,9 @@ use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
 use crate::util::format;
 
+mod beginner;
+use beginner::{StatusLabelTier, control_label as beginner_control_label, pad_display_state};
+
 /// Render the control block into four caller-provided single-height rows — the Player
 /// view's legacy top layout passes its own `rows[1]/[3]/[5]/[7]`, so the output is
 /// byte-identical to the pre-extraction rendering.
@@ -212,15 +215,17 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
             app.radio_live_synced(),
         )
     } else {
-        let raw = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
-        let ratio = if animated {
+        let preview = app.seekbar_preview_target();
+        let shown_position = preview.or(app.playback.time_pos);
+        let raw = format::seekbar_ratio(shown_position, app.playback.duration);
+        let ratio = if animated && preview.is_none() {
             crate::ui::anim::smooth_seek_ratio(app, raw)
         } else {
             raw
         };
         (
             ratio,
-            format::seekbar_label(app.playback.time_pos, app.playback.duration),
+            format::seekbar_label(shown_position, app.playback.duration),
         )
     };
     // With the time-glow animation on, the gauge and its label pulse toward the accent for
@@ -334,25 +339,7 @@ pub(in crate::ui) fn render_status_line(frame: &mut Frame, app: &App, area: Rect
     // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
     // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
     // the `eq:` / `R:` toggles at the tail must stay visible and clickable.
-    let fits = |parts: &Vec<(Option<MouseTarget>, Cow<'static, str>)>| {
-        parts
-            .iter()
-            .map(|(_, text)| buttons::text_width(text))
-            .sum::<u16>()
-            <= area.width
-    };
-    // The last tier also sheds the non-clickable decorations (state word, speed, VU,
-    // download tag), keeping every *control* reachable on even the tiniest grid.
-    let (gap_w, parts) = [("    ", false), ("  ", false), (" ", false), (" ", true)]
-        .iter()
-        .map(|(gap, minimal)| {
-            (
-                buttons::text_width(gap),
-                status_line_parts(app, gap, *minimal, animated),
-            )
-        })
-        .find(|(_, parts)| fits(parts))
-        .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)));
+    let (gap_w, parts) = fitted_status_line_parts(app, area.width, animated);
     // The identify chip (`ID?` / `지듣노`) is the smallest control on the line, and its
     // trailing `?` sits right on its rect's edge — fold up to two cells of the flanking
     // gaps into its hit rect (never more than the gap itself, so it can't annex a
@@ -368,9 +355,68 @@ pub(in crate::ui) fn render_status_line(frame: &mut Frame, app: &App, area: Rect
             None => Seg::label(text.as_ref()),
         })
         .collect();
-    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
-    let style = app.theme.style(R::PlayerLabel);
-    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+    let label_style = app.theme.style(R::PlayerLabel);
+    let button_style = if app.beginner_labels_enabled() {
+        app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+    } else {
+        // Beginner mode off preserves the legacy status-line styling exactly.
+        label_style
+    };
+    buttons::render_segments(
+        frame,
+        app,
+        area,
+        &segments,
+        button_style,
+        label_style,
+        Alignment::Center,
+    );
+}
+
+type StatusLinePart = (Option<MouseTarget>, Cow<'static, str>);
+type StatusLineParts = Vec<StatusLinePart>;
+
+fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, StatusLineParts) {
+    let fits = |parts: &[StatusLinePart]| {
+        parts
+            .iter()
+            .map(|(_, text)| buttons::text_width(text))
+            .sum::<u16>()
+            <= width
+    };
+    if app.beginner_labels_enabled() {
+        // Shed keycaps and decoration before names, then use compact labels only when necessary.
+        [
+            ("    ", false, StatusLabelTier::BeginnerKeys),
+            ("  ", false, StatusLabelTier::BeginnerKeys),
+            (" ", false, StatusLabelTier::BeginnerKeys),
+            (" ", true, StatusLabelTier::BeginnerKeys),
+            ("  ", false, StatusLabelTier::BeginnerNames),
+            (" ", false, StatusLabelTier::BeginnerNames),
+            (" ", true, StatusLabelTier::BeginnerNames),
+            (" ", true, StatusLabelTier::Compact),
+        ]
+        .into_iter()
+        .map(|(gap, minimal, labels)| {
+            (
+                buttons::text_width(gap),
+                status_line_parts_with_labels(app, gap, minimal, animated, labels),
+            )
+        })
+        .find(|(_, parts)| fits(parts))
+        .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+    } else {
+        [("    ", false), ("  ", false), (" ", false), (" ", true)]
+            .into_iter()
+            .map(|(gap, minimal)| {
+                (
+                    buttons::text_width(gap),
+                    status_line_parts(app, gap, minimal, animated),
+                )
+            })
+            .find(|(_, parts)| fits(parts))
+            .unwrap_or_else(|| (1, status_line_parts(app, " ", true, animated)))
+    }
 }
 
 /// Build the transport status-line as `(target, text)` segments from app state — split out
@@ -388,33 +434,64 @@ fn status_line_parts(
     gap: &'static str,
     minimal: bool,
     animated: bool,
-) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
+) -> StatusLineParts {
+    status_line_parts_with_labels(app, gap, minimal, animated, StatusLabelTier::Compact)
+}
+
+fn status_line_parts_with_labels(
+    app: &App,
+    gap: &'static str,
+    minimal: bool,
+    animated: bool,
+    labels: StatusLabelTier,
+) -> StatusLineParts {
     let retro = app.retro_mode();
-    let mut parts: Vec<(Option<MouseTarget>, Cow<'static, str>)> = Vec::with_capacity(16);
+    let mut parts = StatusLineParts::with_capacity(16);
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
-    if animated && let Some(spin) = crate::ui::anim::spinner_prefix(app) {
+    if (!minimal || !labels.beginner())
+        && animated
+        && let Some(spin) = crate::ui::anim::spinner_prefix(app)
+    {
         parts.push((None, Cow::Owned(format!("{spin} "))));
     }
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
-    let state = match (minimal, app.playback.paused) {
-        (true, true) => "‖",
-        (true, false) => "▸",
-        (false, true) => t!("‖ paused", "‖ 일시정지"),
-        (false, false) => t!("▸ playing", "▸ 재생 중"),
-    };
-    parts.push((None, Cow::Borrowed(state)));
+    if !(minimal && labels.beginner()) {
+        let state = match (minimal, app.playback.paused, labels.beginner() && retro) {
+            (true, true, _) => "‖",
+            (true, false, _) => "▸",
+            (false, true, true) => "‖ paused",
+            (false, false, true) => "▸ playing",
+            (false, true, false) => t!("‖ paused", "‖ 일시정지"),
+            (false, false, false) => t!("▸ playing", "▸ 재생 중"),
+        };
+        parts.push((None, Cow::Borrowed(state)));
+    }
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
         // Clickable (opens the queue window) but styled exactly like the labels around it,
         // so the line looks unchanged — same as the `S:`/`R:` toggles next to it.
         parts.push((None, Cow::Borrowed(gap)));
-        parts.push((
-            Some(MouseTarget::QueuePos),
-            Cow::Owned(format!("{pos}/{}", app.queue.len())),
-        ));
+        let value = format!("{pos}/{}", app.queue.len());
+        let text = if labels.beginner() {
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::OpenQueue,
+                if retro {
+                    "Queue"
+                } else {
+                    t!("Queue", "대기열")
+                },
+                Some(value),
+            )
+        } else {
+            value
+        };
+        parts.push((Some(MouseTarget::QueuePos), Cow::Owned(text)));
     }
     // The current track's rating: one tri-state glyph (🤔/👍/👎) that replaces the old separate
     // ♥ favorite + ✗ dislike columns. Same `PlayerLabel` style and 4-space gap as `S:`/`R:` next
@@ -423,9 +500,52 @@ fn status_line_parts(
         let liked = app.library.is_favorite(&cur.video_id);
         let disliked = app.signals.is_disliked(&cur.video_id);
         parts.push((None, Cow::Borrowed(gap)));
+        let text = if labels.beginner() {
+            let (state, states) = if retro {
+                (
+                    if liked {
+                        "Like"
+                    } else if disliked {
+                        "Dislike"
+                    } else {
+                        "None"
+                    },
+                    ["Like", "Dislike", "None"],
+                )
+            } else {
+                (
+                    if liked {
+                        t!("Like", "좋아요")
+                    } else if disliked {
+                        t!("Dislike", "싫어요")
+                    } else {
+                        t!("None", "없음")
+                    },
+                    [
+                        t!("Like", "좋아요"),
+                        t!("Dislike", "싫어요"),
+                        t!("None", "없음"),
+                    ],
+                )
+            };
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::CycleRating,
+                if retro {
+                    "Rating"
+                } else {
+                    t!("Rating", "평가")
+                },
+                Some(pad_display_state(state, &states)),
+            )
+        } else {
+            rating_glyph(liked, disliked, retro).to_owned()
+        };
         parts.push((
             Some(MouseTarget::Player(Action::CycleRating)),
-            Cow::Borrowed(rating_glyph(liked, disliked, retro)),
+            Cow::Owned(text),
         ));
     }
     // Shuffle and repeat are both always shown as click toggles, and every state of each keeps
@@ -436,56 +556,220 @@ fn status_line_parts(
     // read as the live transport instead: `LIVE:` sync verdict, `SYNC:` re-sync.
     if app.current_is_radio_stream() {
         parts.push((None, Cow::Borrowed(gap)));
+        let live = if labels.beginner() {
+            let synced = app.radio_live_synced();
+            let (state, states) = if retro {
+                (
+                    match synced {
+                        Some(true) => "Synced",
+                        Some(false) => "Behind",
+                        None => "Unknown",
+                    },
+                    ["Synced", "Behind", "Unknown"],
+                )
+            } else {
+                (
+                    match synced {
+                        Some(true) => t!("Synced", "동기화"),
+                        Some(false) => t!("Behind", "뒤처짐"),
+                        None => t!("Unknown", "알 수 없음"),
+                    },
+                    [
+                        t!("Synced", "동기화"),
+                        t!("Behind", "뒤처짐"),
+                        t!("Unknown", "알 수 없음"),
+                    ],
+                )
+            };
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::ToggleShuffle,
+                if retro {
+                    "Live"
+                } else {
+                    t!("Live", "라이브")
+                },
+                Some(pad_display_state(state, &states)),
+            )
+        } else {
+            format!("LIVE:{}", live_sync_glyph(app.radio_live_synced(), retro))
+        };
         parts.push((
             Some(MouseTarget::Player(Action::ToggleShuffle)),
-            Cow::Owned(format!(
-                "LIVE:{}",
-                live_sync_glyph(app.radio_live_synced(), retro)
-            )),
+            Cow::Owned(live),
         ));
         parts.push((None, Cow::Borrowed(gap)));
+        let resync = if labels.beginner() {
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::CycleRepeat,
+                if retro {
+                    "Resync"
+                } else {
+                    t!("Resync", "다시 동기화")
+                },
+                None,
+            )
+        } else {
+            format!("SYNC:{}", resync_glyph(retro))
+        };
         parts.push((
             Some(MouseTarget::Player(Action::CycleRepeat)),
-            Cow::Owned(format!("SYNC:{}", resync_glyph(retro))),
+            Cow::Owned(resync),
         ));
         // The "what's playing" card — now ICY-metadata-backed, so always offered on a live
         // radio stream, DJ Gem or not. A text label, not a glyph: EAW-ambiguous symbols
         // (♪ …) render wide on some CJK terminals and would drift every later hit rect.
         parts.push((None, Cow::Borrowed(gap)));
+        let identify = if labels.beginner() {
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::IdentifyNowPlaying,
+                if retro {
+                    "Identify"
+                } else {
+                    t!("Identify", "곡 찾기")
+                },
+                None,
+            )
+        } else {
+            t!("ID?", "지듣노").to_owned()
+        };
         parts.push((
             Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
-            Cow::Borrowed(t!("ID?", "지듣노")),
+            Cow::Owned(identify),
         ));
         // While the radio recorder is writing a track, a click-to-open `REC` chip. A plain
         // text label (not a glyph) for the same EAW-neutral reason as `ID?` above — an
         // ambiguous-width mark would drift later hit rects on some CJK terminals.
         if app.recorder.is_recording() {
             parts.push((None, Cow::Borrowed(gap)));
+            let recordings = if labels.beginner() {
+                beginner_control_label(
+                    app,
+                    labels,
+                    KeyContext::Player,
+                    Action::ToggleRecordings,
+                    if retro {
+                        "Recordings"
+                    } else {
+                        t!("Recordings", "녹음 목록")
+                    },
+                    None,
+                )
+            } else {
+                t!("REC", "녹음").to_owned()
+            };
             parts.push((
                 Some(MouseTarget::Player(Action::ToggleRecordings)),
-                Cow::Borrowed(t!("REC", "녹음")),
+                Cow::Owned(recordings),
             ));
         }
     } else {
         parts.push((None, Cow::Borrowed(gap)));
+        let shuffle = if labels.beginner() {
+            let (state, states) = if retro {
+                (if app.queue.shuffle { "On" } else { "Off" }, ["On", "Off"])
+            } else {
+                (
+                    if app.queue.shuffle {
+                        t!("On", "켬")
+                    } else {
+                        t!("Off", "끔")
+                    },
+                    [t!("On", "켬"), t!("Off", "끔")],
+                )
+            };
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::ToggleShuffle,
+                if retro {
+                    "Shuffle"
+                } else {
+                    t!("Shuffle", "셔플")
+                },
+                Some(pad_display_state(state, &states)),
+            )
+        } else {
+            format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))
+        };
         parts.push((
             Some(MouseTarget::Player(Action::ToggleShuffle)),
-            Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
+            Cow::Owned(shuffle),
         ));
         parts.push((None, Cow::Borrowed(gap)));
+        let repeat = if labels.beginner() {
+            let (state, states) = if retro {
+                (
+                    match app.queue.repeat {
+                        Repeat::Off => "Off",
+                        Repeat::All => "All",
+                        Repeat::One => "One",
+                    },
+                    ["Off", "All", "One"],
+                )
+            } else {
+                (
+                    match app.queue.repeat {
+                        Repeat::Off => t!("Off", "끔"),
+                        Repeat::All => t!("All", "전체"),
+                        Repeat::One => t!("One", "한 곡"),
+                    },
+                    [t!("Off", "끔"), t!("All", "전체"), t!("One", "한 곡")],
+                )
+            };
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Player,
+                Action::CycleRepeat,
+                if retro {
+                    "Repeat"
+                } else {
+                    t!("Repeat", "반복")
+                },
+                Some(pad_display_state(state, &states)),
+            )
+        } else {
+            format!("R:{}", repeat_glyph(app.queue.repeat, retro))
+        };
         parts.push((
             Some(MouseTarget::Player(Action::CycleRepeat)),
-            Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
+            Cow::Owned(repeat),
         ));
     }
     if !minimal && (app.playback.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, Cow::Owned(format!("{gap}{:.1}x", app.playback.speed))));
     }
     parts.push((None, Cow::Borrowed(gap)));
-    parts.push((
-        Some(MouseTarget::EqMenu),
-        Cow::Owned(format!("eq:{}", app.audio.preset.label())),
-    ));
+    let eq = if labels.beginner() {
+        beginner_control_label(
+            app,
+            labels,
+            KeyContext::Player,
+            Action::CycleEq,
+            if retro {
+                "Equalizer"
+            } else {
+                t!("Equalizer", "이퀄라이저")
+            },
+            Some(pad_display_state(
+                app.audio.preset.label(),
+                &["Flat", "Bass", "Treble", "Vocal", "Rock", "Jazz", "Custom"],
+            )),
+        )
+    } else {
+        format!("eq:{}", app.audio.preset.label())
+    };
+    parts.push((Some(MouseTarget::EqMenu), Cow::Owned(eq)));
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if !minimal
         && animated
@@ -497,13 +781,44 @@ fn status_line_parts(
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
         // mode dropdown — same affordance as the `eq:` label next to it.
         parts.push((None, Cow::Borrowed(gap)));
-        parts.push((
-            Some(MouseTarget::StreamingMenu),
-            Cow::Owned(format!(
+        let streaming = if labels.beginner() {
+            let states = if retro {
+                ["Focused", "Balanced", "Discovery"]
+            } else {
+                crate::streaming::StreamingMode::CYCLE.map(|mode| mode.label())
+            };
+            let mode = if retro {
+                match app.config.streaming.mode {
+                    crate::streaming::StreamingMode::Focused => "Focused",
+                    crate::streaming::StreamingMode::Balanced => "Balanced",
+                    crate::streaming::StreamingMode::Discovery => "Discovery",
+                }
+            } else {
+                app.config.streaming.mode.label()
+            };
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Global,
+                Action::ToggleStreaming,
+                if retro {
+                    "Streaming autoplay"
+                } else {
+                    t!("Streaming autoplay", "스트리밍 자동재생")
+                },
+                Some(format!(
+                    "{} · {}",
+                    if retro { "On" } else { t!("On", "켬") },
+                    pad_display_state(mode, &states)
+                )),
+            )
+        } else {
+            format!(
                 "streaming:{}",
                 app.config.streaming.mode.label().to_lowercase()
-            )),
-        ));
+            )
+        };
+        parts.push((Some(MouseTarget::StreamingMenu), Cow::Owned(streaming)));
     }
     // Download indicator for the current track, if one is in flight or finished. While one is
     // actually running and the activity animation is on, a spinner stands in for the `⬇` so
@@ -552,16 +867,47 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
         format!("{}%", app.playback.volume)
     };
     // Roomy gaps normally; tighter ones when the strip wouldn't fit (a narrow terminal or
-    // text zoom shrinking the virtual grid). Buttons keep their one-cell inner padding, so
-    // hit targets stay comfortable — only the dead space between them compresses.
-    let full: u16 = 3 * 3
-        + 3
-        + 3
-        + 6
-        + buttons::text_width(t!("vol ", "볼륨 "))
-        + 3
-        + 3
-        + buttons::text_width(&vol);
+    // text zoom shrinking the virtual grid). Beginner mode first shortens Volume to `vol`,
+    // then sheds its keycaps, while the legacy path retains exactly the old segment bytes.
+    let compact_volume_label = t!("vol ", "볼륨 ");
+    let beginner_volume_label = if app.retro_mode() {
+        "Volume "
+    } else {
+        t!("Volume ", "볼륨 ")
+    };
+    let plain_down = " - ";
+    let plain_up = " + ";
+    let (beginner_down, beginner_up) = beginner::volume_buttons(app);
+    let tight_transport_width = 13u16;
+    let cluster_width = |label: &str, down: &str, up: &str| {
+        buttons::text_width(label)
+            .saturating_add(buttons::text_width(down))
+            .saturating_add(buttons::text_width(&vol))
+            .saturating_add(buttons::text_width(up))
+    };
+    let fits_tight = |label: &str, down: &str, up: &str| {
+        tight_transport_width.saturating_add(cluster_width(label, down, up)) <= area.width
+    };
+    let (volume_label, volume_down, volume_up) = if app.beginner_labels_enabled()
+        && fits_tight(beginner_volume_label, &beginner_down, &beginner_up)
+    {
+        (
+            beginner_volume_label,
+            beginner_down.as_str(),
+            beginner_up.as_str(),
+        )
+    } else if app.beginner_labels_enabled()
+        && fits_tight(compact_volume_label, &beginner_down, &beginner_up)
+    {
+        (
+            compact_volume_label,
+            beginner_down.as_str(),
+            beginner_up.as_str(),
+        )
+    } else {
+        (compact_volume_label, plain_down, plain_up)
+    };
+    let full = 21u16.saturating_add(cluster_width(volume_label, volume_down, volume_up));
     let (gap, vol_gap) = if full <= area.width {
         ("   ", "      ")
     } else {
@@ -574,10 +920,10 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
         Seg::label(gap),
         Seg::button(MouseTarget::Player(Action::NextTrack), " ⇥ "),
         Seg::label(vol_gap),
-        Seg::label(t!("vol ", "볼륨 ")),
-        Seg::button(MouseTarget::Player(Action::VolDown), " - "),
+        Seg::label(volume_label),
+        Seg::button(MouseTarget::Player(Action::VolDown), volume_down),
         Seg::label(&vol),
-        Seg::button(MouseTarget::Player(Action::VolUp), " + "),
+        Seg::button(MouseTarget::Player(Action::VolUp), volume_up),
     ];
     let widths: Vec<u16> = segments
         .iter()
@@ -903,6 +1249,7 @@ mod tests {
 
     #[test]
     fn radio_stream_swaps_shuffle_repeat_for_live_transport_controls() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = App::new(100);
         app.queue.set(vec![radio_song()], 0);
         let parts = status_line_parts(&app, "    ", false, true);
@@ -933,6 +1280,20 @@ mod tests {
             t,
             MouseTarget::Player(Action::CycleRepeat)
         )));
+
+        let beginner =
+            status_line_parts_with_labels(&app, " ", true, false, StatusLabelTier::BeginnerNames);
+        assert!(
+            text_for(&beginner, &MouseTarget::Player(Action::ToggleShuffle)).starts_with("Live: ")
+        );
+        assert_eq!(
+            text_for(&beginner, &MouseTarget::Player(Action::CycleRepeat)),
+            "Resync"
+        );
+        assert_eq!(
+            text_for(&beginner, &MouseTarget::Player(Action::IdentifyNowPlaying)),
+            "Identify"
+        );
     }
 
     #[test]
@@ -1050,5 +1411,94 @@ mod tests {
             t,
             MouseTarget::Player(Action::CycleRating)
         )));
+    }
+
+    fn text_for<'a>(parts: &'a [StatusLinePart], target: &MouseTarget) -> &'a str {
+        parts
+            .iter()
+            .find(|(candidate, _)| candidate.as_ref() == Some(target))
+            .map(|(_, text)| text.as_ref())
+            .unwrap_or_else(|| panic!("missing {target:?}"))
+    }
+
+    #[test]
+    fn beginner_status_labels_expand_then_fall_back_by_width() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.beginner_mode = true;
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+
+        let (_, roomy) = fitted_status_line_parts(&app, 100, false);
+        assert_eq!(
+            text_for(&roomy, &MouseTarget::Player(Action::ToggleShuffle)).trim_end(),
+            "[S] Shuffle: Off"
+        );
+        assert_eq!(
+            text_for(&roomy, &MouseTarget::Player(Action::CycleRepeat)).trim_end(),
+            "[r] Repeat: Off"
+        );
+        assert_eq!(
+            text_for(&roomy, &MouseTarget::EqMenu).trim_end(),
+            "[e] Equalizer: Flat"
+        );
+
+        let (_, standard) = fitted_status_line_parts(&app, 80, false);
+        let shuffle = text_for(&standard, &MouseTarget::Player(Action::ToggleShuffle));
+        assert!(shuffle.starts_with("Shuffle: "), "got {shuffle:?}");
+        assert!(!shuffle.contains('['), "keycaps should shed before names");
+
+        let (_, narrow) = fitted_status_line_parts(&app, 32, false);
+        assert!(text_for(&narrow, &MouseTarget::Player(Action::ToggleShuffle)).starts_with("S:"));
+        assert!(text_for(&narrow, &MouseTarget::EqMenu).starts_with("eq:"));
+    }
+
+    #[test]
+    fn beginner_off_keeps_legacy_status_segment_bytes() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        let parts = status_line_parts(&app, "    ", false, false);
+
+        assert_eq!(text_for(&parts, &MouseTarget::QueuePos), "1/1");
+        assert_eq!(
+            text_for(&parts, &MouseTarget::Player(Action::CycleRating)),
+            "🤔"
+        );
+        assert_eq!(
+            text_for(&parts, &MouseTarget::Player(Action::ToggleShuffle)),
+            "S:✗ "
+        );
+        assert_eq!(
+            text_for(&parts, &MouseTarget::Player(Action::CycleRepeat)),
+            "R:✗ "
+        );
+        assert_eq!(text_for(&parts, &MouseTarget::EqMenu), "eq:Flat");
+    }
+
+    #[test]
+    fn beginner_toggle_states_keep_the_status_line_width_stable() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        let mut widths = Vec::new();
+        for shuffle in [false, true] {
+            for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+                app.queue.shuffle = shuffle;
+                app.queue.repeat = repeat;
+                widths.push(
+                    status_line_parts_with_labels(
+                        &app,
+                        " ",
+                        true,
+                        false,
+                        StatusLabelTier::BeginnerNames,
+                    )
+                    .iter()
+                    .map(|(_, text)| UnicodeWidthStr::width(text.as_ref()))
+                    .sum::<usize>(),
+                );
+            }
+        }
+        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }

@@ -547,6 +547,7 @@ fn slider_str(bar: &str, num: &str) -> String {
 fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
     match (field, field.kind()) {
         (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
+        (Field::AudioOutput, _) => app.audio_output_display_label(&st.draft.audio_mpv_device),
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
         (f, _) if f.is_secret() && focused && st.editing_text => {
@@ -751,9 +752,10 @@ fn register_field_controls(
         let focused = i == focused_field;
 
         if let Field::ThemeColor(_) = field {
-            // The swatch + hex value opens the inline hex editor.
+            // The swatch opens the palette; the hex value retains the inline editor.
             let vx = area.x + gutter + color_lw + 1; // gutter + label + leading space
-            put(vx, 2 + 2 + 9, y, MouseTarget::SettingsActivate(i)); // swatch + gap + hex
+            put(vx, 2, y, MouseTarget::SettingsColorSwatch(i));
+            put(vx + 4, 9, y, MouseTarget::SettingsActivate(i));
             continue;
         }
 

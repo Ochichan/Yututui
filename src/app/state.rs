@@ -5,6 +5,7 @@
 //! Behaviour-preserving: the fields are the same, just nested (`app.search.input`).
 
 use super::*;
+use crate::lyrics::LyricDelay;
 
 /// Live audio-processing settings: the active EQ preset and its per-band gains, loudness
 /// normalization, and the seek step. The in-session working copy mpv's filter chain is built
@@ -75,6 +76,12 @@ pub struct RenderBridges {
     pub marquee_origin: Cell<u64>,
     pub marquee_ran: Cell<bool>,
     pub marquee_cache: RefCell<crate::ui::marquee::MarqueeCache>,
+    /// Whether the last render actually placed at least one canvas effect. Unlike raw config,
+    /// this excludes effects hidden by the responsive layout or focal safe-area constraints.
+    pub canvas_active: Cell<bool>,
+    /// Whether any actually placed canvas effect uses the heavy redraw cadence. This keeps the
+    /// 20 fps cap and synchronized terminal updates active even when lyrics are in the foreground.
+    pub canvas_heavy_active: Cell<bool>,
 }
 
 impl RenderBridges {
@@ -317,6 +324,12 @@ pub struct Prefetch {
     /// When set to a future instant, ordinary skip-ahead prefetch is paused. Self-heal resolves
     /// still run because they are not latency prefetches.
     pub disabled_until: Option<Instant>,
+    /// One-shot, same-item stale-source recovery. The logical generation advances only for an
+    /// ordinary admitted load; its replacement advances the file generation without rearming
+    /// the per-item attempt latch.
+    pub source_recovery: crate::player::recovery::RecoveryPlanner,
+    pub source_logical_generation: u64,
+    pub source_file_generation: u64,
 }
 
 /// Playback self-heal driven by extraction-shaped errors (the stale-yt-dlp signature):
@@ -350,6 +363,10 @@ pub struct Downloads {
     /// Downloads handed to the actor but not yet done/failed. Gates `pump_downloads` under the
     /// channel bound; decremented as each `DownloadDone`/`DownloadError` arrives.
     pub(in crate::app) dispatched: usize,
+    /// Import rows admitted during the current runtime batch, grouped by session. The terminal
+    /// reducer consumes a group only after that session has no queued or running work, then uses
+    /// it to keep automatic organization from sweeping up unrelated, pre-existing inbox files.
+    pub(in crate::app) auto_organize_rows: HashMap<String, HashSet<u32>>,
 }
 
 /// The Spotify playlist picker overlay (Settings › Accounts › Import from Spotify…):
@@ -387,8 +404,7 @@ pub struct RecordingsBrowser {
 /// notify · browse.
 pub const RECORDING_POPUP_ROWS: usize = 7;
 
-/// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
-/// lyrics for the current track.
+/// Lyrics-panel state: fetched lines plus session-only sync controls for the current track.
 #[derive(Default)]
 pub struct Lyrics {
     /// Whether the lyrics panel is shown in the player view.
@@ -397,6 +413,18 @@ pub struct Lyrics {
     pub loading: bool,
     /// Lyrics for the current track, if fetched.
     pub track: Option<TrackLyrics>,
+    /// Session-only timing adjustment. Positive values display lyrics later.
+    pub delay: LyricDelay,
+    /// Video id the timing adjustment belongs to, retained across same-track reloads.
+    pub delay_video_id: Option<String>,
+    /// Current line shared by the lyric renderer and lyric-transition animation.
+    pub active_index: Option<usize>,
+    /// A fresh non-empty payload is waiting for its first visible full-Player frame. Keeping this
+    /// separate from the wall-clock deadline prevents an off-screen load from spending the OSD's
+    /// three-second exposure before the user can see it.
+    pub initial_osd_pending: bool,
+    /// Wall-clock deadline while the expanded delay control is visible.
+    pub delay_osd_until: Option<Instant>,
 }
 
 /// Search-screen state: the query, its results, selection, focus, and in-flight flag.
@@ -771,6 +799,10 @@ pub struct Interaction {
     /// paired `MouseDoubleClick` can be swallowed instead of leaking into a modal opened by the
     /// first press; the next ordinary single click resets it.
     pub(in crate::app) context_menu_click: Option<(u16, u16)>,
+    /// Coordinates of a picker-opening or picker-owned press, retained until a paired
+    /// double-click arrives so the second press cannot be reinterpreted by a newly opened popup
+    /// or click through after the first press closes it.
+    pub(in crate::app) color_picker_click: Option<(u16, u16)>,
     /// Multi-selection hidden by the latest plain Search/Library row press while the input
     /// translator waits to learn whether that press is the first half of a double-click.
     pub(in crate::app) pending_double_click_selection: Option<PendingDoubleClickSelection>,
@@ -784,30 +816,27 @@ pub struct Interaction {
     /// not message indexes, so wrapping and copy behavior line up exactly. `pub(crate)` (not
     /// `pub`) to match [`AiTranscriptDrag`]'s visibility — still reachable from the `ui` render.
     pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
-    /// Active seekbar (progress-bar) scrub: the last requested column, used for intra-cell
-    /// dedupe only after its player intent was admitted. `None` = not scrubbing. Set on a
-    /// seekbar press, cleared on the next press or on mouse-up (so a dropped terminal `Up`
-    /// can't strand it).
-    pub(in crate::app) seekbar_drag: Option<u16>,
-    /// Admission state for the active scrub request. A rejected request transitions to `Retry`,
-    /// allowing the same cell to be emitted again instead of being mistaken for a duplicate.
-    pub(in crate::app) seekbar_admission: SeekbarAdmission,
+    /// Preview-only seekbar scrub. Authoritative playback state changes only after its single
+    /// release command is admitted by the player lane.
+    pub(in crate::app) seekbar_scrub: Option<SeekbarScrub>,
     /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
     /// the track rect captured at press, so pointer-x maps to a value even after the pointer
-    /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
+    /// leaves the track. `None` = not dragging; cleared on the next press like the seekbar scrub.
     pub(in crate::app) recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
 }
 
-/// Admission lifecycle for the most recent seekbar request. Keeping this inside
-/// [`Interaction`] prevents unrelated keyboard or remote seeks from arming a mouse retry.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::app) enum SeekbarAdmission {
-    #[default]
-    Settled,
-    Pending,
-    Retry,
+#[derive(Clone)]
+pub(in crate::app) struct SeekbarScrub {
+    pub(in crate::app) queue_revision: u64,
+    pub(in crate::app) track_id: Option<String>,
+    pub(in crate::app) position_epoch: u64,
+    pub(in crate::app) duration: f64,
+    pub(in crate::app) area: Rect,
+    pub(in crate::app) column: u16,
+    pub(in crate::app) target: f64,
+    pub(in crate::app) awaiting_admission: bool,
 }
 
 /// Dedicated-Radio-mode stash: the normal- and radio-mode themes and queues that swap in and
@@ -857,6 +886,9 @@ pub struct LocalIndexRuntime {
     pub loaded: bool,
     pub loading: bool,
     pub scanning: bool,
+    /// A scan requested while another scan owns the worker. `Some(true)` upgrades the queued
+    /// follow-up to a full rebuild; otherwise one incremental pass runs after settlement.
+    pub(in crate::app) pending_rescan: Option<bool>,
     pub progress: Option<crate::local::LocalScanProgress>,
     pub last_summary: Option<crate::local::LocalScanSummary>,
     pub load_errors: Vec<crate::local::ScanError>,
@@ -905,7 +937,6 @@ pub struct LocalMode {
     pub pending_accept_all_confirm: Option<LocalImportAcceptAllConfirm>,
     /// Import-history artifact selected for confirmed deletion. Imported songs are retained.
     pub pending_import_record_delete: Option<String>,
-    pub(in crate::app) pending_accept_write_summaries: HashMap<String, u32>,
     pub(in crate::app) pending_import_reviews: HashMap<String, u64>,
     pub(in crate::app) next_import_review_op_id: u64,
 }
@@ -967,6 +998,8 @@ pub struct Overlays {
     /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
     /// select, Enter imports, Esc closes.
     pub spotify_picker: Option<SpotifyPicker>,
+    /// Hotplug-aware local audio-output chooser opened from Settings › Playback.
+    pub audio_output_picker: Option<AudioOutputPicker>,
     /// The radio-recording settings popup (over the Playback settings tab).
     pub recording_settings: Option<RecordingSettingsPopup>,
     /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.

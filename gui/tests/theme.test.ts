@@ -112,14 +112,15 @@ describe('ThemeStore push → paint', () => {
 });
 
 describe('ThemeStore against the demo core', () => {
-  it('seeds all 13 presets and 34 roles, and switches preset live', async () => {
+  it('seeds all 14 presets and 34 roles, and switches preset live', async () => {
     const client = new Client(new DemoCoreTransport());
     const store = new ThemeStore(client);
     client.sub(['settings']);
     await settle();
 
     expect(store.model?.preset).toBe('Default');
-    expect(store.model?.presets.length).toBe(13);
+    expect(store.model?.presets.length).toBe(14);
+    expect(store.model?.presets.at(-1)?.name).toBe('Custom');
     expect(Object.keys(store.model?.roles ?? {}).length).toBe(34);
 
     store.setPreset('Nord', client);
@@ -127,6 +128,60 @@ describe('ThemeStore against the demo core', () => {
     expect(store.model?.preset).toBe('Nord');
     expect(store.model?.roles.accent).toBe('#88c0d0');
     expect(cssVar('--role-accent')).toBe('#88c0d0');
+  });
+
+  it('keeps a built-in edit only until a real preset transition', async () => {
+    const client = new Client(new DemoCoreTransport());
+    const store = new ThemeStore(client);
+    client.sub(['settings']);
+    await settle();
+
+    store.setOverride('accent', '#123456', client);
+    await settle();
+    store.setPreset('Default', client);
+    await settle();
+    expect(store.model?.overrides.accent).toBe('#123456');
+
+    store.setPreset('not-a-theme', client);
+    await settle();
+    expect(store.model?.preset).toBe('Default');
+    expect(store.model?.overrides.accent).toBe('#123456');
+
+    store.setPreset('Nord', client);
+    await settle();
+    expect(store.model?.overrides).toEqual({});
+    expect(store.model?.roles.accent).toBe('#88c0d0');
+
+    store.setPreset('Default', client);
+    await settle();
+    expect(store.model?.roles.accent).toBe('#5b8cff');
+    expect(store.model?.overrides).toEqual({});
+  });
+
+  it('starts Custom from Default and restores its edits after a preset round trip', async () => {
+    const client = new Client(new DemoCoreTransport());
+    const store = new ThemeStore(client);
+    client.sub(['settings']);
+    await settle();
+
+    store.setOverride('accent', '#112233', client);
+    await settle();
+    store.setPreset('Custom', client);
+    await settle();
+    expect(store.model?.roles.accent).toBe('#5b8cff');
+    expect(store.model?.overrides).toEqual({});
+
+    store.setOverride('accent', '#abcdef', client);
+    await settle();
+    store.setPreset('Nord', client);
+    await settle();
+    expect(store.model?.roles.accent).toBe('#88c0d0');
+    expect(store.model?.overrides).toEqual({});
+
+    store.setPreset('Custom', client);
+    await settle();
+    expect(store.model?.roles.accent).toBe('#abcdef');
+    expect(store.model?.overrides.accent).toBe('#abcdef');
   });
 
   it('applies an override after acknowledgement and reconciles it on the push', async () => {

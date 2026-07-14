@@ -26,6 +26,12 @@ grep -Rqs 'mark_rows_for_redraw' crates/ratatui-image/src/protocol/kitty.rs crat
 grep -Rqs 'new_with_z_index' crates/ratatui-image/src/protocol/kitty.rs crates/ratatui-image/src/picker.rs \
   || fail "Kitty z-index patch marker is missing"
 
+grep -Fq 'KONSOLE_SIXEL_TUI_MIN_VERSION' crates/ratatui-image/src/picker.rs \
+  || fail "Konsole Sixel version-gate patch marker is missing"
+
+grep -Fq 'require_reported_cell_size_for_sixel' crates/ratatui-image/src/picker.rs \
+  || fail "Konsole Sixel cell-size guard is missing"
+
 test -f crates/ratatui-image/PATCHES.md \
   || fail "crates/ratatui-image/PATCHES.md is missing"
 

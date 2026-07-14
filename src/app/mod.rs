@@ -57,8 +57,9 @@ pub(in crate::app) use helpers::{
 mod mode_switch;
 mod navigation;
 mod onboarding;
-pub use onboarding::OnboardingState;
+pub use onboarding::{BeginnerStep, OnboardingState};
 mod reducer;
+mod scrub;
 mod session_restore;
 
 mod state;
@@ -66,6 +67,9 @@ pub use state::*;
 
 mod ai_reducer;
 pub use ai_reducer::AiMsg;
+mod audio_output;
+mod audio_output_picker;
+pub use audio_output_picker::*;
 mod artwork;
 mod clipboard;
 mod context_menu;
@@ -78,6 +82,9 @@ mod local;
 mod local_format;
 mod local_import;
 mod local_import_helpers;
+mod lyrics_control;
+pub(in crate::app) use lyrics_control::LyricsDelayDirection;
+mod lyrics_mouse;
 mod media_reducer;
 mod mode_transition;
 mod mouse;
@@ -110,6 +117,7 @@ mod romanize;
 mod scrobble_reducer;
 mod search;
 mod settings_audio;
+mod settings_color_picker;
 mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;
@@ -131,6 +139,7 @@ pub(in crate::app) enum PositionEpochReason {
     RestoreSession,
     Seek,
     TrackRestart,
+    SourceRecovery,
     TransportRecovery,
     PlaybackCleared,
     Stop,
@@ -262,6 +271,8 @@ pub struct App {
     /// the seek step) — the in-session working copy mpv's filter chain is built from, mirrored
     /// from the persisted `config` (see [`AudioEq`]).
     pub audio: AudioEq,
+    /// Hotplug-aware local output inventory and correlated selection state from mpv.
+    pub audio_devices: AudioDeviceRuntime,
     /// Auto-extend the queue with related tracks when it runs low (streaming mode).
     pub autoplay_streaming: bool,
     /// The two mutually-exclusive player status-line dropdowns (EQ preset + streaming mode); both
@@ -361,7 +372,6 @@ pub struct App {
     /// yt-dlp self-heal bookkeeping: the in-flight healed track, per-track one-shot
     /// guard, and the update-check cooldown clock (see [`YtdlpHeal`]).
     heal: YtdlpHeal,
-
     /// Render→reducer bridges: the active list viewport height and the per-list wheel-scroll
     /// offsets — all written by render (`&App`) for the reducer to read on the next event
     /// (see [`RenderBridges`]).

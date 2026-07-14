@@ -782,6 +782,7 @@ fn settings_formatter_includes_only_summary_fields() {
         gapless: false,
         ai_enabled: true,
         radio_mode: false,
+        long_form_seek: None,
     };
 
     assert_eq!(
