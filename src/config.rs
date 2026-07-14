@@ -1054,7 +1054,7 @@ impl Config {
     }
 
     fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
-        crate::persist::write_store_json(path, self)
+        crate::persist::write_config_json(path, self)
     }
 
     pub fn player_runtime(&self, cookies_file: Option<PathBuf>) -> PlayerRuntimeConfig {
