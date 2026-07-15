@@ -182,14 +182,19 @@ fi
 stable_open_line=$(grep -nF -m1 \
   'open_stable_process(record.mpv_pid)' src/player/lifetime.rs | cut -d: -f1 || true)
 target_refresh_line=$(grep -nF -m1 \
-  'sys.refresh_processes(ProcessesToUpdate::Some(&[mpv_pid]), true);' \
+  'sys.refresh_processes_specifics(' \
+  src/player/lifetime.rs | cut -d: -f1 || true)
+target_cmd_line=$(grep -nF -m1 \
+  '.with_cmd(UpdateKind::Always)' \
   src/player/lifetime.rs | cut -d: -f1 || true)
 stable_kill_line=$(grep -nF -m1 \
   'target.terminate_media()' src/player/lifetime.rs | cut -d: -f1 || true)
-if [[ -z "$stable_open_line" || -z "$target_refresh_line" || -z "$stable_kill_line" || \
+if [[ -z "$stable_open_line" || -z "$target_refresh_line" || -z "$target_cmd_line" || \
+      -z "$stable_kill_line" || \
       "$stable_open_line" -ge "$target_refresh_line" || \
-      "$target_refresh_line" -ge "$stable_kill_line" ]]; then
-  echo "error: orphan recovery must pin the process before argv refresh and terminate via that handle" >&2
+      "$target_refresh_line" -ge "$target_cmd_line" || \
+      "$target_cmd_line" -ge "$stable_kill_line" ]]; then
+  echo "error: orphan recovery must pin the process, explicitly refresh argv, and terminate via that handle" >&2
   fail=1
 fi
 

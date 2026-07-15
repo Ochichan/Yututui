@@ -1,10 +1,10 @@
-2617	src/daemon/engine.rs
+2643	src/daemon/engine.rs
 2382	src/api/ytmusic.rs
 2295	src/config.rs
 2106	src/app/settings_reducer.rs
 1784	src/keymap.rs
 1691	src/ui/views/player.rs
-1610	src/app/local.rs
+1638	src/app/local.rs
 1600	src/ui/anim.rs
 1596	src/ui/views/settings.rs
 1573	src/ui/anim/canvas.rs

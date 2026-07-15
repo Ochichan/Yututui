@@ -71,7 +71,33 @@ fn narrow_search_keeps_whole_wide_graphemes_next_to_the_caret() {
 }
 
 #[test]
+fn local_find_renders_the_caret_at_a_middle_cursor() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = App::new(100);
+    app.local_dedicated_mode = true;
+    app.mode = Mode::Search;
+    app.local_mode.find.focus = LocalFindFocus::Input;
+    app.local_mode.find.query = "alpha beta".to_owned();
+    app.local_mode.find.input_cursor = TextCursor::from_byte_index("alpha".len());
+
+    let buffer = render_app_buffer(&app, 80, 24);
+
+    assert!(
+        buffer_contains(&buffer, "alpha█ beta"),
+        "Local Find must render the caret at its model cursor"
+    );
+}
+
+#[test]
 fn every_overlay_and_local_text_editor_activates_the_caret_clock() {
+    let mut find = App::new(100);
+    enable_caret_animation(&mut find);
+    find.local_dedicated_mode = true;
+    find.mode = Mode::Search;
+    find.local_mode.find.focus = LocalFindFocus::Input;
+    assert_live_text_caret(&find, "Local Find");
+
     let mut local = App::new(100);
     enable_caret_animation(&mut local);
     local.mode = Mode::Library;

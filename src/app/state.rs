@@ -981,6 +981,7 @@ impl Default for LocalFindRefine {
 /// a Local query/source/result from leaking into normal or dedicated Radio mode.
 pub struct LocalFindState {
     pub query: String,
+    pub input_cursor: TextCursor,
     pub select_all: bool,
     pub focus: LocalFindFocus,
     pub scope: crate::local::find::LocalFindScope,
@@ -1009,6 +1010,7 @@ impl Default for LocalFindState {
     fn default() -> Self {
         Self {
             query: String::new(),
+            input_cursor: TextCursor::default(),
             select_all: false,
             focus: LocalFindFocus::Input,
             scope: crate::local::find::LocalFindScope::All,

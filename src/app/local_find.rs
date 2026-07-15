@@ -8,7 +8,7 @@ use crate::local::find::{
     LocalFindHitId, LocalFindPlaylistEntryInput, LocalFindPlaylistInput, LocalFindQuery,
     LocalFindScope, LocalFindSort,
 };
-use crate::util::query::{MAX_SEARCH_QUERY_BYTES, try_push_query_char};
+use crate::util::query::{MAX_SEARCH_QUERY_BYTES, try_insert_query_char};
 
 const FIND_SCOPES: [LocalFindScope; 7] = [
     LocalFindScope::All,
@@ -38,6 +38,7 @@ impl App {
         self.search_filter.close();
         self.dropdowns.search_source_open = false;
         self.local_mode.find.focus = LocalFindFocus::Input;
+        self.local_mode.find.input_cursor = TextCursor::at_end(&self.local_mode.find.query);
         self.local_mode.find.select_all = false;
         self.local_mode.find.refine_popup.open = false;
         self.local_mode.find.pending_bulk_confirm = None;
@@ -726,6 +727,7 @@ impl App {
         // Enter cannot repeatedly execute the same command and the requested scope opens on its
         // launchpad immediately.
         self.local_mode.find.query.clear();
+        self.local_mode.find.input_cursor = TextCursor::default();
         self.local_mode.find.select_all = false;
         self.local_mode.find.focus = LocalFindFocus::Input;
         self.local_mode.find.selected = 0;
@@ -978,6 +980,7 @@ impl App {
         }
         if !self.local_mode.find.query.trim().is_empty() {
             self.local_mode.find.query.clear();
+            self.local_mode.find.input_cursor = TextCursor::default();
             self.local_mode.find.focus = LocalFindFocus::Input;
             self.local_mode.find.selected = 0;
             self.bridges.local_find_scroll.reset();
@@ -1020,6 +1023,7 @@ impl App {
             LOCAL_FIND_RESCAN => return self.request_local_scan(false),
             LOCAL_FIND_CLEAR_QUERY => {
                 self.local_mode.find.query.clear();
+                self.local_mode.find.input_cursor = TextCursor::default();
                 self.local_mode.find.focus = LocalFindFocus::Input;
                 self.local_mode.find.selected = 0;
                 self.bridges.local_find_scroll.reset();
@@ -1049,6 +1053,7 @@ impl App {
         // ordinary blank-query browsing, but normalize these actions to their track semantics.
         self.local_mode.find.scope = LocalFindScope::Tracks;
         self.local_mode.find.query = query.to_owned();
+        self.local_mode.find.input_cursor = TextCursor::at_end(&self.local_mode.find.query);
         self.local_mode.find.select_all = false;
         self.local_mode.find.focus = LocalFindFocus::Results;
         self.submit_local_find_query()
@@ -1140,10 +1145,44 @@ impl App {
         }
         if self.local_mode.find.focus == LocalFindFocus::Input {
             let chord = Chord::from(key);
-            let delete_word = matches!(
-                self.keymap.text_edit_action(chord),
-                Some(Action::DeleteWord)
-            );
+            if let Some(action) = self.keymap.text_edit_action(chord) {
+                if std::mem::take(&mut self.local_mode.find.select_all) {
+                    match action {
+                        Action::DeleteChar | Action::DeleteWord => {
+                            self.local_mode.find.query.clear();
+                            self.local_mode.find.input_cursor = TextCursor::default();
+                            return self.submit_local_find_query();
+                        }
+                        Action::MoveCursorLeft | Action::MoveCursorWordLeft => {
+                            self.local_mode.find.input_cursor.move_to_start();
+                        }
+                        Action::MoveCursorRight | Action::MoveCursorWordRight => {
+                            self.local_mode
+                                .find
+                                .input_cursor
+                                .move_to_end(&self.local_mode.find.query);
+                        }
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                match apply_text_edit_action(
+                    action,
+                    &mut self.local_mode.find.input_cursor,
+                    &mut self.local_mode.find.query,
+                ) {
+                    Some(TextEditResult::BufferChanged(true)) => {
+                        return self.submit_local_find_query();
+                    }
+                    Some(TextEditResult::CursorMoved(true)) => self.dirty = true,
+                    Some(
+                        TextEditResult::BufferChanged(false) | TextEditResult::CursorMoved(false),
+                    )
+                    | None => {}
+                }
+                return Vec::new();
+            }
             if matches!(
                 self.keymap.action(KeyContext::SearchInput, chord),
                 Some(Action::SelectAll)
@@ -1153,12 +1192,15 @@ impl App {
                 return Vec::new();
             }
             if std::mem::take(&mut self.local_mode.find.select_all) {
+                self.dirty = true;
                 if chord.is_typeable()
                     && let KeyCode::Char(ch) = key.code
                 {
                     self.local_mode.find.query.clear();
-                    if let Err(reason) = try_push_query_char(
+                    self.local_mode.find.input_cursor = TextCursor::default();
+                    if let Err(reason) = try_insert_query_char(
                         &mut self.local_mode.find.query,
+                        &mut self.local_mode.find.input_cursor,
                         ch,
                         MAX_SEARCH_QUERY_BYTES,
                     ) {
@@ -1167,16 +1209,6 @@ impl App {
                     }
                     return self.submit_local_find_query();
                 }
-                if delete_word || key.code == KeyCode::Backspace {
-                    self.local_mode.find.query.clear();
-                    return self.submit_local_find_query();
-                }
-            }
-            if delete_word {
-                if crate::util::text_edit::delete_previous_word(&mut self.local_mode.find.query) {
-                    return self.submit_local_find_query();
-                }
-                return Vec::new();
             }
             match key.code {
                 KeyCode::Enter => return self.commit_local_find_query(),
@@ -1192,15 +1224,10 @@ impl App {
                     return Vec::new();
                 }
                 KeyCode::Esc => return self.local_find_back(),
-                KeyCode::Backspace => {
-                    if self.local_mode.find.query.pop().is_some() {
-                        return self.submit_local_find_query();
-                    }
-                    return Vec::new();
-                }
                 KeyCode::Char(ch) if chord.is_typeable() => {
-                    if let Err(reason) = try_push_query_char(
+                    if let Err(reason) = try_insert_query_char(
                         &mut self.local_mode.find.query,
+                        &mut self.local_mode.find.input_cursor,
                         ch,
                         MAX_SEARCH_QUERY_BYTES,
                     ) {

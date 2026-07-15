@@ -8,6 +8,7 @@ use crate::config::PlayerBarPosition;
 use crate::local::find::{
     LocalFindCommand, LocalFindCorpusRevision, LocalFindGroup, LocalFindQuery, LocalFindSnapshot,
 };
+use crate::util::text_edit::TextCursor;
 
 fn result_app() -> App {
     let mut app = App::new(100);
@@ -117,9 +118,10 @@ fn narrow_input_keeps_the_query_tail_and_caret_visible() {
     let mut app = result_app();
     app.local_mode.find.focus = LocalFindFocus::Input;
     app.local_mode.find.query = "a very long structured query with VISIBLETAIL".to_owned();
+    app.local_mode.find.input_cursor = TextCursor::at_end(&app.local_mode.find.query);
     let text = draw(&app, 32, 14);
-    assert!(text.contains("…"), "missing tail ellipsis: {text:?}");
     assert!(text.contains("VISIBLETAIL"), "missing query tail: {text:?}");
+    assert!(text.contains('█'), "missing input caret: {text:?}");
 }
 
 #[test]

@@ -30,6 +30,8 @@ fn search_cmd_count(cmds: &[Cmd]) -> usize {
 #[test]
 fn local_deck_import_row_s_searches_once_only_after_accepted_exit() {
     let mut app = app_on_manual_search_import_row("sp2yt-local-manual-search");
+    app.search.input = "stale online query".to_owned();
+    app.search.input_cursor = TextCursor::from_byte_index(2);
     let hint = app.local_import_action_hint().expect("review action hint");
     for expected in [
         "A mark all ready",
@@ -61,6 +63,11 @@ fn local_deck_import_row_s_searches_once_only_after_accepted_exit() {
     assert_eq!(app.search.focus, SearchFocus::Input);
     assert_eq!(app.search.kind, SearchKind::Songs);
     assert_eq!(app.search.input, "Maybe Artist");
+    assert_eq!(
+        app.search.input_cursor.byte_index(&app.search.input),
+        app.search.input.len(),
+        "the confirmed handoff must place the online search cursor after its replacement query"
+    );
     assert_eq!(search_cmd_count(&exit), 1);
     let Some(Cmd::Search {
         query,

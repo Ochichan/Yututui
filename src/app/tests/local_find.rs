@@ -205,6 +205,44 @@ fn local_find_open_action_is_remappable_and_ctrl_f_is_only_the_default() {
 }
 
 #[test]
+fn local_find_supports_grapheme_safe_middle_cursor_edits() {
+    let mut app = local_app_before_find();
+    open_and_install_corpus(&mut app);
+
+    for ch in "ab🙂c".chars() {
+        assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Char(ch)))));
+    }
+    assert_eq!(app.local_mode.find.query, "ab🙂c");
+
+    assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Left))));
+    assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Left))));
+    assert_eq!(
+        app.local_mode
+            .find
+            .input_cursor
+            .byte_index(&app.local_mode.find.query),
+        2
+    );
+
+    assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Char('X')))));
+    assert_eq!(app.local_mode.find.query, "abX🙂c");
+    assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Backspace))));
+    assert_eq!(app.local_mode.find.query, "ab🙂c");
+
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteChar,
+            Chord::new(KeyCode::Char(';'), KeyModifiers::empty()),
+        )
+        .unwrap();
+    assert_no_remote_search(&app.update(Msg::Key(ctrl(KeyCode::Char('a')))));
+    assert_no_remote_search(&app.update(Msg::Key(key(KeyCode::Char(';')))));
+    assert!(app.local_mode.find.query.is_empty());
+    assert_eq!(app.local_mode.find.input_cursor, TextCursor::default());
+}
+
+#[test]
 fn printable_open_find_remap_yields_to_local_find_text_entry() {
     let mut app = local_app_before_find();
     open_and_install_corpus(&mut app);

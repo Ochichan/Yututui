@@ -107,6 +107,7 @@ impl App {
             }
             MouseTarget::LocalFindInput if live => {
                 self.local_mode.find.focus = LocalFindFocus::Input;
+                self.local_mode.find.input_cursor = TextCursor::at_end(&self.local_mode.find.query);
                 self.local_mode.find.select_all = false;
                 self.dirty = true;
                 Vec::new()

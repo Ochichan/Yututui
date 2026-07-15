@@ -232,14 +232,16 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
         let visible = crate::ui::text::tail_to_width(input, content_width);
         Paragraph::new(Line::from(Span::styled(visible, selected)))
     } else if focused {
-        let visible = crate::ui::text::tail_to_width(input, content_width.saturating_sub(1));
+        let cursor = app.local_mode.find.input_cursor.byte_index(input);
+        let window = crate::ui::text::editable_window(input, cursor, content_width);
         Paragraph::new(Line::from(vec![
-            Span::styled(visible, app.theme.style(R::TextPrimary)),
+            Span::styled(window.before, app.theme.style(R::TextPrimary)),
             crate::ui::anim::caret_span(
                 app,
                 app.theme.style(R::TextPrimary),
                 app.theme.color(R::Background),
             ),
+            Span::styled(window.after, app.theme.style(R::TextPrimary)),
         ]))
     } else {
         Paragraph::new(crate::ui::text::tail_to_width(input, content_width))

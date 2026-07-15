@@ -772,7 +772,7 @@ pub fn reap_orphans(dir: &Path) {
         return;
     };
 
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     let pids = records
         .iter()
@@ -809,7 +809,13 @@ pub fn reap_orphans(dir: &Path) {
         // reused, this snapshot belongs to the pinned replacement and cannot pass the random
         // marker check. Unsupported platforms use the same snapshot only to decide retention.
         let mpv_pid = Pid::from_u32(record.mpv_pid);
-        sys.refresh_processes(ProcessesToUpdate::Some(&[mpv_pid]), true);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[mpv_pid]),
+            true,
+            ProcessRefreshKind::nothing()
+                .with_cmd(UpdateKind::Always)
+                .without_tasks(),
+        );
         match sys
             .process(mpv_pid)
             .map(|process| exact_identity(process, &record))
@@ -1213,6 +1219,22 @@ mod tests {
     fn exact_marker_reaper_pins_kills_and_retains_until_gone() {
         use std::process::Stdio;
         use std::time::{Duration, Instant};
+        use sysinfo::{
+            Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind,
+        };
+
+        struct ExactMarkerFixture {
+            candidate: std::process::Child,
+            dir: std::path::PathBuf,
+        }
+
+        impl Drop for ExactMarkerFixture {
+            fn drop(&mut self) {
+                let _ = self.candidate.kill();
+                let _ = self.candidate.wait();
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
 
         let dir = temp_dir("exact-reaper");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1220,40 +1242,72 @@ mod tests {
         let marker = "0123456789abcdef0123456789abcdef";
         let marker_arg = format!("--script-opts-append=yututui-lifeline={marker}");
 
-        // bash's exec -a gives a single-process fixture whose argv contains the exact marker while
-        // it sleeps. There is no helper child for a failed assertion to leak from the test itself.
+        // bash's exec -a gives a single-process fixture whose argv contains the exact marker. The
+        // replacement shell stops itself with a builtin, avoiding a helper process and avoiding
+        // coreutils implementations which dispatch on argv[0] and reject the marker as a name.
         let mut command =
             crate::util::process::std_command("bash", crate::util::process::ProcessProfile::Media);
         command
             .arg("-c")
-            .arg("exec -a \"$0\" sleep 30")
+            .arg("exec -a \"$0\" bash -c 'kill -STOP $$'")
             .arg(&marker_arg)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut candidate = command.spawn().expect("spawn exact-marker candidate");
-        append_lifeline(
-            path.clone(),
-            Lifeline {
-                app_pid: u32::MAX,
-                app_started_at: 1,
-                mpv_pid: candidate.id(),
-                mpv_socket: String::new(),
-                identity_marker: marker.to_owned(),
-                written_at: unix_now(),
-            },
-        )
-        .unwrap();
+        let candidate = command.spawn().expect("spawn exact-marker candidate");
+        let mut fixture = ExactMarkerFixture { candidate, dir };
+        let record = Lifeline {
+            app_pid: u32::MAX,
+            app_started_at: 1,
+            mpv_pid: fixture.candidate.id(),
+            mpv_socket: String::new(),
+            identity_marker: marker.to_owned(),
+            written_at: unix_now(),
+        };
 
-        reap_orphans(&dir);
+        // Bash can expose the final marker before it reaches the stopping builtin. A recovery pass
+        // in that window can conservatively retain a transiently unavailable argv, so wait until
+        // procfs reports both the exact marker and the final stopped state.
+        let identity_deadline = Instant::now() + Duration::from_secs(2);
+        let pid = Pid::from_u32(record.mpv_pid);
+        let mut system = System::new();
+        let identity_ready = loop {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing()
+                    .with_cmd(UpdateKind::Always)
+                    .without_tasks(),
+            );
+            if system.process(pid).is_some_and(|process| {
+                matches!(
+                    process.status(),
+                    ProcessStatus::Stop | ProcessStatus::Tracing
+                ) && exact_identity(process, &record) == ExactIdentity::Match
+            }) {
+                break true;
+            }
+            if Instant::now() >= identity_deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            identity_ready,
+            "the exact-marker fixture must expose its final stopped argv before recovery"
+        );
+
+        append_lifeline(path.clone(), record).unwrap();
+
+        reap_orphans(&fixture.dir);
         assert!(
             path.exists(),
             "a signalled process stays recorded until a later observation proves it gone"
         );
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let exited = loop {
-            match candidate.try_wait() {
+            match fixture.candidate.try_wait() {
                 Ok(Some(_)) => break true,
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
@@ -1261,18 +1315,13 @@ mod tests {
                 Ok(None) | Err(_) => break false,
             }
         };
-        if !exited {
-            let _ = candidate.kill();
-            let _ = candidate.wait();
-        }
         assert!(exited, "the pinned exact-marker target must be terminated");
 
-        reap_orphans(&dir);
+        reap_orphans(&fixture.dir);
         assert!(
             !path.exists(),
             "the next recovery pass removes a record after the target is gone"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

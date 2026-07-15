@@ -1,0 +1,167 @@
+name: release preflight 1.6.32
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: release-preflight-1.6.32-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PREFLIGHT_VERSION: 1.6.32
+
+permissions:
+  contents: read
+
+jobs:
+  verify-version:
+    name: Verify 1.6.32 source version
+    if: >-
+      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Verify locked package version
+        shell: bash
+        run: |
+          actual="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "yututui") | .version')"
+          if [ "$actual" != "$PREFLIGHT_VERSION" ]; then
+            echo "::error::preflight expects yututui $PREFLIGHT_VERSION, found $actual"
+            exit 1
+          fi
+
+  release-build:
+    name: Native release build and package
+    if: >-
+      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: verify-version
+    uses: ./.github/workflows/native-release-build.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  aggregate:
+    name: Aggregate 1.6.32 preflight artifacts
+    if: >-
+      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: release-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: yututui-*
+          merge-multiple: true
+      - name: Verify artifact set and package contents
+        shell: bash
+        run: |
+          expected="$RUNNER_TEMP/expected-artifacts.txt"
+          actual="$RUNNER_TEMP/actual-artifacts.txt"
+          printf '%s\n' \
+            yututui-linux-arm64.tar.gz \
+            yututui-linux-x64.tar.gz \
+            yututui-macos-arm64.tar.gz \
+            yututui-macos-x64.tar.gz \
+            yututui-windows-x64.zip \
+            > "$expected"
+          find . -maxdepth 1 \( -name 'yututui-*.tar.gz' -o -name 'yututui-*.zip' \) \
+            -exec basename {} \; | sort > "$actual"
+          sort -o "$expected" "$expected"
+          if ! diff -u "$expected" "$actual"; then
+            echo "::error::unexpected preflight artifact set"
+            exit 1
+          fi
+
+          while IFS= read -r archive; do
+            if [ ! -s "$archive.sha256" ]; then
+              echo "::error::$archive.sha256 is missing or empty"
+              exit 1
+            fi
+          done < "$expected"
+
+          for archive in yututui-linux-*.tar.gz; do
+            listing="$(tar -tzf "$archive")"
+            for entry in ytt yututui.desktop yututui.png; do
+              grep -qx "$entry" <<<"$listing" || { echo "::error::$archive is missing $entry"; exit 1; }
+            done
+            if grep -Eq 'yututray|YuTuTray!\.app|YuTuTui!\.app' <<<"$listing"; then
+              echo "::error::$archive must ship Linux TUI only"
+              exit 1
+            fi
+          done
+
+          for archive in yututui-macos-*.tar.gz; do
+            listing="$(tar -tzf "$archive")"
+            for entry in ytt yututray YuTuTui!.app/Contents/MacOS/ytt YuTuTray!.app/Contents/MacOS/yututray YuTuTray!.app/Contents/MacOS/ytt; do
+              grep -qx "$entry" <<<"$listing" || { echo "::error::$archive is missing $entry"; exit 1; }
+            done
+          done
+
+          unzip -Z1 yututui-windows-x64.zip | sort > "$RUNNER_TEMP/windows-zip.txt"
+          for entry in ytt.exe yututray.exe yututui.ico; do
+            grep -qx "$entry" "$RUNNER_TEMP/windows-zip.txt" || { echo "::error::Windows archive is missing $entry"; exit 1; }
+          done
+      - name: Assemble and verify checksums
+        shell: bash
+        run: |
+          cat ./*.sha256 | sed 's/ \*/  /' | sort -k2 > checksums.txt
+          sha256sum --check checksums.txt
+
+          expected="$RUNNER_TEMP/expected-checksum-files.txt"
+          actual="$RUNNER_TEMP/actual-checksum-files.txt"
+          find . -maxdepth 1 \( -name 'yututui-*.tar.gz' -o -name 'yututui-*.zip' \) \
+            -exec basename {} \; | sort > "$expected"
+          awk '{print $2}' checksums.txt | sed 's/^\*//' | sort > "$actual"
+          if ! diff -u "$expected" "$actual"; then
+            echo "::error::checksums.txt does not cover the exact preflight artifact set"
+            exit 1
+          fi
+          test -s install.sh
+          test -s install.ps1
+      - name: Upload complete preflight bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: yututui-1.6.32-preflight
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            yututui-*.tar.gz
+            yututui-*.zip
+            yututui-*.sha256
+            install.sh
+            install.ps1
+            checksums.txt
+
+  preflight-result:
+    name: Release preflight 1.6.32 result
+    if: >-
+      always() &&
+      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: [verify-version, release-build, aggregate]
+    runs-on: ubuntu-latest
+    env:
+      VERSION_RESULT: ${{ needs.verify-version.result }}
+      BUILD_RESULT: ${{ needs.release-build.result }}
+      AGGREGATE_RESULT: ${{ needs.aggregate.result }}
+    steps:
+      - name: Require every preflight stage to pass
+        shell: bash
+        run: |
+          for result in "$VERSION_RESULT" "$BUILD_RESULT" "$AGGREGATE_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "::error::release preflight stage result: $result"
+              exit 1
+            fi
+          done
