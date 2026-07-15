@@ -281,10 +281,45 @@ for e in PlayerMsg AiMsg StreamingMsg PersistCmd; do
   grep -q "enum $e" src/app/*.rs || { echo "error: sub-enum $e missing (M3 regressed)" >&2; fail=1; }
 done
 
+# Recovery transport ownership crosses asynchronous load, correlation, and seek boundaries.
+# Keep the known multi-field encodings collapsed into the typed state machines audited by the
+# recovery-state budget; reintroducing one of these fields recreates unreachable combinations.
+if matches=$(grep -nE \
+  '^[[:space:]]*(restore_transport|force_ram_only|exact_completed|latest_seek_position|source_recovery)[[:space:]]*:[[:space:]]*(bool|Option<)' \
+  src/player/ipc.rs src/player/ipc/*.rs src/daemon/engine/transport.rs 2>/dev/null); then
+  echo "error: recovery control state must stay in typed variants, not bool/Option flags:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+
+if matches=$(grep -nE \
+  '^[[:space:]]*resume[[:space:]]*:[[:space:]]*Option<.*LoadWithResume' \
+  src/player/ipc/command_queue.rs 2>/dev/null); then
+  echo "error: staged load resume ownership must use ResumeLoad:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+
+grep -Fq 'resume: ResumeCoordinator' src/player/ipc.rs || {
+  echo "error: player IPC resume lifecycle must use ResumeCoordinator" >&2
+  fail=1
+}
+
+grep -Fq 'resume: resume::ResumeLoad' src/player/ipc/command_queue.rs || {
+  echo "error: validated load resume ownership must use ResumeLoad" >&2
+  fail=1
+}
+
+grep -Fq 'mode: TransportRecoveryMode' src/daemon/engine/transport.rs || {
+  echo "error: daemon transport recovery must use TransportRecoveryMode" >&2
+  fail=1
+}
+
 if [ "$fail" -ne 0 ]; then
   exit "$fail"
 fi
 
+bash scripts/check-recovery-state-budget.sh
 bash scripts/check-app-boundaries.sh
 
 echo "architecture invariants ok"

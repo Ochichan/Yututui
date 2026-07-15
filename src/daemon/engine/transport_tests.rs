@@ -459,6 +459,76 @@ async fn cache_emergency_freeze_bumps_epoch_even_when_recovery_delivery_exhausts
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn cache_emergency_retry_preserves_ram_only_position_and_pause() {
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = true;
+    engine.playback.time_pos = Some(3_600.25);
+    let epoch = engine.playback.position_epoch;
+    let _old_rx = install_test_player(&mut engine);
+
+    let (tx, mut replacement_rx) = tokio::sync::mpsc::channel(1);
+    let handle = PlayerHandle::test_handle(tx);
+    assert!(handle.send(PlayerCmd::Stop).is_ok(), "fill actor lane");
+    for _ in 0..crate::player::pending::PLAYER_PENDING_MAX - 2 {
+        assert!(
+            handle.send(PlayerCmd::Stop).is_ok(),
+            "leave only the two setup slots"
+        );
+    }
+    engine.test_player_starts.push_back(PlayerRuntime {
+        handle,
+        _guard: None,
+    });
+
+    let effects = engine
+        .handle_player_event(PlayerEvent::CacheEmergency {
+            file_generation: 0,
+            position_secs: 3_600.25,
+            paused: true,
+            reason: crate::player::long_form_seek::CacheReason::DisableFailed,
+        })
+        .await;
+    let generation = match effects.as_slice() {
+        [EngineEffect::TransportRecoveryRetry { generation, .. }] => *generation,
+        _ => panic!("saturated RAM-only recovery must schedule one retry"),
+    };
+    assert_eq!(engine.playback.position_epoch, epoch + 1);
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 1
+    ));
+
+    loop {
+        let command = recv_player_command(&mut replacement_rx).await;
+        assert!(
+            !matches!(command, PlayerCmd::LoadWithResume(_)),
+            "failed attempt must not publish the recovery load"
+        );
+        if matches!(command, PlayerCmd::SetAudioFilter(_)) {
+            break;
+        }
+    }
+
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    let request = match recv_player_command(&mut replacement_rx).await {
+        PlayerCmd::LoadWithResume(request) => request,
+        _ => panic!("retry must retain the RAM-only resume request"),
+    };
+    assert_eq!(request.position_secs, 3_600.25);
+    assert!(request.paused);
+    assert!(request.forces_ram_only());
+    assert_eq!(engine.playback.position_epoch, epoch + 1);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
+}
+
 #[tokio::test]
 async fn replacement_cache_emergency_replays_new_item_without_old_position() {
     let mut engine = super::tests::engine_with_queue(&["old", "new"]);
@@ -496,6 +566,7 @@ async fn replacement_cache_emergency_replays_new_item_without_old_position() {
     assert!(effects.is_empty());
     assert!(old_rx.is_closed());
     assert_eq!(engine.loaded_video_id.as_deref(), Some("new"));
+    assert_eq!(engine.playback.time_pos, None);
     assert!(matches!(
         recv_player_command(&mut replacement_rx).await,
         PlayerCmd::SetVolume(50)
@@ -710,14 +781,12 @@ async fn saturated_recovery_batch_is_retried_atomically_after_capacity_returns()
     assert_eq!(engine.playback.position_epoch, epoch + 1);
     assert_eq!(
         engine.transport_recovery,
-        TransportRecoveryState::Recovering(TransportRecovery {
-            video_id: "seed".to_owned(),
-            paused: true,
-            position_secs: None,
-            force_ram_only: false,
+        TransportRecoveryState::Recovering(TransportRecovery::reload_for_test(
+            "seed".to_owned(),
+            true,
             generation,
-            attempts: 1,
-        })
+            1,
+        ))
     );
 
     // Drain the admitted setup/backlog. No Load may appear: the failed two-command batch
