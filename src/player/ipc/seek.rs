@@ -105,9 +105,7 @@ impl SeekFlight {
                     self.seeking_finished = true;
                 }
             }
-            SeekObservation::PlaybackRestart
-                if active_generation == Some(self.file_generation) =>
-            {
+            SeekObservation::PlaybackRestart if active_generation == Some(self.file_generation) => {
                 self.restart_seen = true;
             }
             _ => {}
@@ -140,9 +138,7 @@ impl SeekFlight {
     fn settled(&self, now: Instant) -> bool {
         self.reply_accepted
             && self.seeking_finished
-            && self
-                .settle_deadline
-                .is_some_and(|deadline| now >= deadline)
+            && self.settle_deadline.is_some_and(|deadline| now >= deadline)
     }
 
     fn mark_superseded(&mut self) {
@@ -179,37 +175,35 @@ fn observe_seek_flight(
     flight
         .as_mut()
         .is_some_and(|flight| flight.observe(observation, active_generation))
-        .then(|| flight.take().expect("completed seek flight remains installed"))
+        .then(|| {
+            flight
+                .take()
+                .expect("completed seek flight remains installed")
+        })
 }
 
-fn take_settled_seek_flight(
-    flight: &mut Option<SeekFlight>,
-    now: Instant,
-) -> Option<SeekFlight> {
+fn take_settled_seek_flight(flight: &mut Option<SeekFlight>, now: Instant) -> Option<SeekFlight> {
     flight
         .as_ref()
         .is_some_and(|flight| flight.settled(now))
-        .then(|| flight.take().expect("settled seek flight remains installed"))
+        .then(|| {
+            flight
+                .take()
+                .expect("settled seek flight remains installed")
+        })
 }
 
 fn finish_seek_flight(emit: &EventSink, state: &mut DispatchState, completed: SeekFlight) {
     if completed.reply_accepted {
-        complete_resume_telemetry(
-            emit,
-            state,
-            completed.file_generation,
-            completed.request_id,
-        );
-    } else if let Some(gate) = state
-        .resume_telemetry
-        .take()
-        .filter(|gate| gate.file_generation == completed.file_generation)
+        complete_resume_telemetry(emit, state, completed.file_generation, completed.request_id);
+    } else if let Some(purpose) = state
+        .resume
+        .take_telemetry_for_generation(completed.file_generation)
     {
-        if state.resume_post_load_generation == Some(completed.file_generation) {
-            state.resume_post_load_generation = None;
-            state.post_load_commands.clear();
-        }
-        if gate.source_recovery {
+        state
+            .resume
+            .clear_dispatch_for_generation(completed.file_generation);
+        if purpose.is_source_recovery() {
             super::diagnostics::source_recovery_outcome(
                 super::diagnostics::SourceRecoveryOutcome::ResumeRejected,
             );
@@ -257,8 +251,7 @@ impl InteractiveBurstGate {
     }
 
     fn command_ready(&self, command: &PlayerCmd, now: Instant) -> bool {
-        !command.is_interactive_seek()
-            || self.quiet_deadline.is_none_or(|deadline| now >= deadline)
+        !command.is_interactive_seek() || self.quiet_deadline.is_none_or(|deadline| now >= deadline)
     }
 
     fn dispatched(&mut self, command: &PlayerCmd, now: Instant) {

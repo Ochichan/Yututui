@@ -155,23 +155,18 @@ fn rejected_recovery_exact_clears_quarantine_and_owned_pause() {
     let mut state = DispatchState {
         issued_file_generation: 9,
         active_file_generation: Some(9),
-        resume_telemetry: Some(ResumeTelemetryGate {
-            file_generation: 9,
-            target_secs: 3_600.25,
-            expected_request_id: Some(304),
-            exact_completed: false,
-            buffered_near_target: None,
-            latest_seek_position: None,
-            terminal_deadline: None,
-            source_recovery: true,
-        }),
-        resume_post_load_generation: Some(9),
-        post_load_commands: VecDeque::from([PlayerCmd::SetProperty {
+        ..DispatchState::default()
+    };
+    state.resume.install_dispatching_for_test(
+        9,
+        VecDeque::from([PlayerCmd::SetProperty {
             name: "pause".to_owned(),
             value: serde_json::Value::Bool(true),
         }]),
-        ..DispatchState::default()
-    };
+    );
+    let request = recovery_request(3_600.25, true);
+    install_resume_telemetry(&mut state, 9, &request);
+    begin_resume_seek_observation(&mut state, 9, 304);
     let mut flight = SeekFlight::new(1, 304, 9, SeekPurpose::CompletionBarrier, false);
     assert!(flight.observe(
         SeekObservation::CommandReply {
@@ -183,9 +178,9 @@ fn rejected_recovery_exact_clears_quarantine_and_owned_pause() {
 
     finish_seek_flight(&emit, &mut state, flight);
 
-    assert!(state.resume_telemetry.is_none());
-    assert!(state.resume_post_load_generation.is_none());
-    assert!(state.post_load_commands.is_empty());
+    assert!(!state.resume.telemetry_is_some());
+    assert!(state.resume.dispatch_generation().is_none());
+    assert!(state.resume.commands_is_empty());
     dispatch_incoming(
         r#"{"event":"property-change","name":"time-pos","data":10.0}"#,
         &emit,
@@ -197,19 +192,55 @@ fn rejected_recovery_exact_clears_quarantine_and_owned_pause() {
 }
 
 #[test]
+fn rejected_old_seek_drops_mismatched_telemetry_without_clearing_new_dispatch() {
+    let emit: EventSink = std::sync::Arc::new(|_| {});
+    let mut state = DispatchState::default();
+    state.resume.install_dispatching_for_test(
+        10,
+        VecDeque::from([PlayerCmd::SetProperty {
+            name: "pause".to_owned(),
+            value: serde_json::Value::Bool(true),
+        }]),
+    );
+    let request = recovery_request(3_600.25, true);
+    install_resume_telemetry(&mut state, 10, &request);
+    begin_resume_seek_observation(&mut state, 10, 400);
+    let mut completed = SeekFlight::new(1, 304, 9, SeekPurpose::CompletionBarrier, false);
+    assert!(completed.observe(
+        SeekObservation::CommandReply {
+            request_id: 304,
+            accepted: false,
+        },
+        Some(9),
+    ));
+
+    finish_seek_flight(&emit, &mut state, completed);
+
+    assert!(!state.resume.telemetry_is_some());
+    assert_eq!(state.resume.dispatch_generation(), Some(10));
+    assert!(matches!(
+        state.resume.front_command(),
+        Some(PlayerCmd::SetProperty { name, value })
+            if name == "pause" && value == &serde_json::Value::Bool(true)
+    ));
+}
+
+#[test]
 fn rejected_recovery_exact_is_terminal_before_pause_restore_can_dispatch() {
     let emit: EventSink = std::sync::Arc::new(|_| {});
     let exact = PlayerCmd::exact_seek(3_600.25);
     let mut state = DispatchState {
         issued_file_generation: 9,
         active_file_generation: Some(9),
-        resume_post_load_generation: Some(9),
-        post_load_commands: VecDeque::from([PlayerCmd::SetProperty {
+        ..DispatchState::default()
+    };
+    state.resume.install_dispatching_for_test(
+        9,
+        VecDeque::from([PlayerCmd::SetProperty {
             name: "pause".to_owned(),
             value: serde_json::Value::Bool(false),
         }]),
-        ..DispatchState::default()
-    };
+    );
     assert_eq!(
         recovery_terminal_operation(&state, &exact),
         Some("recovery exact seek")
@@ -241,9 +272,9 @@ fn rejected_recovery_exact_is_terminal_before_pause_restore_can_dispatch() {
             rejected: true,
         })
     ));
-    assert_eq!(state.resume_post_load_generation, Some(9));
+    assert_eq!(state.resume.dispatch_generation(), Some(9));
     assert!(matches!(
-        state.post_load_commands.front(),
+        state.resume.front_command(),
         Some(PlayerCmd::SetProperty { name, value })
             if name == "pause" && value == &serde_json::Value::Bool(false)
     ));
@@ -601,19 +632,19 @@ fn relative_seek_uses_the_same_completion_ownership() {
 fn zero_position_emergency_resume_does_not_create_a_noop_seek_flight() {
     let mut state = DispatchState {
         active_file_generation: Some(9),
-        pending_resume: Some(PendingResume {
-            file_generation: 9,
-            request: recovery_request(0.0, false),
-            file_loaded: true,
-        }),
+        last_confirmed_time: 91.0,
         ..DispatchState::default()
     };
+    install_resume_state(&mut state, 9, recovery_request(0.0, false));
+    state.resume.mark_file_loaded(Some(9), true, Some(9));
 
     release_pending_resume_if_ready(&mut state);
 
+    assert_eq!(state.last_confirmed_time, 0.0);
+    assert_eq!(state.resume.command_count(), 1);
     assert!(matches!(
-        state.post_load_commands.as_slices().0,
-        [PlayerCmd::SetProperty { name, value }]
+        state.resume.front_command(),
+        Some(PlayerCmd::SetProperty { name, value })
             if name == "pause" && value == &serde_json::Value::Bool(false)
     ));
 }
@@ -659,7 +690,7 @@ fn recovery_quarantines_initial_zero_until_exact_completion_releases_near_target
     let (generation, event) = recv_file_event(&mut rx);
     assert_eq!(generation, 9);
     assert!(matches!(event, PlayerEvent::TimePos(position) if position == 3_599.0));
-    assert!(state.resume_telemetry.is_none());
+    assert!(!state.resume.telemetry_is_some());
 }
 
 #[test]
@@ -694,7 +725,7 @@ fn short_recovery_target_never_accepts_transient_zero_as_resume_proof() {
     let (generation, event) = recv_file_event(&mut rx);
     assert_eq!(generation, 9);
     assert!(matches!(event, PlayerEvent::TimePos(1.0)));
-    assert!(state.resume_telemetry.is_none());
+    assert!(!state.resume.telemetry_is_some());
 }
 
 #[test]
@@ -707,13 +738,15 @@ fn newly_merged_target_rejects_old_position_overshoot_as_resume_proof() {
     let mut state = DispatchState {
         issued_file_generation: 9,
         active_file_generation: Some(9),
-        resume_post_load_generation: Some(9),
-        post_load_commands: VecDeque::from([PlayerCmd::SetProperty {
+        ..DispatchState::default()
+    };
+    state.resume.install_dispatching_for_test(
+        9,
+        VecDeque::from([PlayerCmd::SetProperty {
             name: "pause".to_owned(),
             value: serde_json::Value::Bool(false),
         }]),
-        ..DispatchState::default()
-    };
+    );
     install_resume_telemetry(&mut state, 9, &request);
     begin_resume_seek_observation(&mut state, 9, 78);
     assert!(merge_post_load_resume_command(
@@ -742,7 +775,7 @@ fn newly_merged_target_rejects_old_position_overshoot_as_resume_proof() {
     let (generation, event) = recv_file_event(&mut rx);
     assert_eq!(generation, 9);
     assert!(matches!(event, PlayerEvent::TimePos(120.0)));
-    assert!(state.resume_telemetry.is_none());
+    assert!(!state.resume.telemetry_is_some());
 }
 
 #[test]
@@ -754,14 +787,9 @@ fn dispatched_recovery_keeps_zero_quarantine_across_real_start_file_sequence() {
     let request = recovery_request(3_600.25, true);
     let mut state = DispatchState {
         issued_file_generation: 9,
-        pending_resume: Some(PendingResume {
-            file_generation: 9,
-            request: request.clone(),
-            file_loaded: false,
-        }),
         ..DispatchState::default()
     };
-    install_resume_telemetry(&mut state, 9, &request);
+    install_resume_state(&mut state, 9, request.clone());
     state.pending.insert(
         55,
         PendingCommand {
@@ -851,7 +879,7 @@ fn dispatched_recovery_keeps_zero_quarantine_across_real_start_file_sequence() {
     finish_seek_flight(&emit, &mut state, completed);
 
     assert!(
-        state.resume_telemetry.is_none(),
+        !state.resume.telemetry_is_some(),
         "pre-completion target proof releases at completion"
     );
 
@@ -860,7 +888,7 @@ fn dispatched_recovery_keeps_zero_quarantine_across_real_start_file_sequence() {
     assert!(matches!(event, PlayerEvent::TimePos(position) if position == 3_599.0));
     assert!(rx.try_recv().is_err());
     assert!(matches!(
-        state.post_load_commands.front(),
+        state.resume.front_command(),
         Some(PlayerCmd::SetProperty { name, value })
             if name == "pause" && value == &serde_json::Value::Bool(true)
     ));
@@ -877,24 +905,19 @@ fn replaced_old_end_file_cannot_clear_new_recovery_quarantine() {
         issued_file_generation: 9,
         active_file_generation: Some(8),
         active_playlist_entry_id: Some(42),
-        pending_resume: Some(PendingResume {
-            file_generation: 9,
-            request: request.clone(),
-            file_loaded: false,
-        }),
         ..DispatchState::default()
     };
+    install_resume_state(&mut state, 9, request.clone());
     state.entry_generations.insert(42, 8);
     state.entry_generations.insert(43, 9);
-    install_resume_telemetry(&mut state, 9, &request);
 
     dispatch_incoming(
         r#"{"event":"end-file","reason":"stop","playlist_entry_id":42}"#,
         &emit,
         &mut state,
     );
-    assert!(state.resume_telemetry.is_some());
-    assert!(state.pending_resume.is_some());
+    assert!(state.resume.telemetry_is_some());
+    assert!(state.resume.pending_request().is_some());
     dispatch_incoming(
         r#"{"event":"start-file","playlist_entry_id":43}"#,
         &emit,
@@ -909,7 +932,7 @@ fn replaced_old_end_file_cannot_clear_new_recovery_quarantine() {
     assert!(rx.try_recv().is_err());
     assert_eq!(state.active_file_generation, Some(9));
     assert_eq!(state.last_confirmed_time, 3_600.25);
-    assert!(state.resume_telemetry.is_some());
+    assert!(state.resume.telemetry_is_some());
 }
 
 #[test]
@@ -928,10 +951,11 @@ fn paused_recovery_exact_holds_under_target_position_until_bounded_failure() {
         active_file_generation: Some(9),
         file_loaded_generation: Some(9),
         playback_ready_generation: Some(9),
-        resume_post_load_generation: Some(9),
-        post_load_commands: VecDeque::from([pause_restore]),
         ..DispatchState::default()
     };
+    state
+        .resume
+        .install_dispatching_for_test(9, VecDeque::from([pause_restore]));
     install_resume_telemetry(&mut state, 9, &request);
     begin_resume_seek_observation(&mut state, 9, 90);
     dispatch_incoming(
@@ -956,10 +980,7 @@ fn paused_recovery_exact_holds_under_target_position_until_bounded_failure() {
     assert!(resume_position_terminal_deadline(&state).is_some());
     assert!(!command_ready_for_dispatch(
         &state,
-        state
-            .post_load_commands
-            .front()
-            .expect("pause restore remains")
+        state.resume.front_command().expect("pause restore remains")
     ));
     dispatch_incoming(
         r#"{"event":"property-change","name":"time-pos","data":3500.0}"#,
@@ -979,13 +1000,15 @@ fn accepted_recovery_exact_without_position_arms_bounded_terminal_and_holds_paus
         active_file_generation: Some(9),
         file_loaded_generation: Some(9),
         playback_ready_generation: Some(9),
-        resume_post_load_generation: Some(9),
-        post_load_commands: VecDeque::from([PlayerCmd::SetProperty {
+        ..DispatchState::default()
+    };
+    state.resume.install_dispatching_for_test(
+        9,
+        VecDeque::from([PlayerCmd::SetProperty {
             name: "pause".to_owned(),
             value: serde_json::Value::Bool(true),
         }]),
-        ..DispatchState::default()
-    };
+    );
     install_resume_telemetry(&mut state, 9, &request);
     begin_resume_seek_observation(&mut state, 9, 91);
     let mut flight = SeekFlight::new(1, 91, 9, SeekPurpose::CompletionBarrier, false);
@@ -1003,8 +1026,40 @@ fn accepted_recovery_exact_without_position_arms_bounded_terminal_and_holds_paus
     assert!(!command_ready_for_dispatch(
         &state,
         state
-            .post_load_commands
-            .front()
+            .resume
+            .front_command()
             .expect("pause restore remains held")
+    ));
+}
+
+#[test]
+fn pause_restore_is_not_held_by_another_generations_position_wait() {
+    let emit: EventSink = std::sync::Arc::new(|_| {});
+    let pause_restore = PlayerCmd::SetProperty {
+        name: "pause".to_owned(),
+        value: serde_json::Value::Bool(true),
+    };
+    let mut state = DispatchState {
+        issued_file_generation: 9,
+        active_file_generation: Some(9),
+        file_loaded_generation: Some(9),
+        playback_ready_generation: Some(9),
+        ..DispatchState::default()
+    };
+    state
+        .resume
+        .install_dispatching_for_test(9, VecDeque::from([pause_restore]));
+    let newer_request = recovery_request(3_600.25, true);
+    install_resume_telemetry(&mut state, 10, &newer_request);
+    begin_resume_seek_observation(&mut state, 10, 92);
+    complete_resume_telemetry(&emit, &mut state, 10, 92);
+
+    assert!(resume_position_terminal_deadline(&state).is_some());
+    assert!(command_ready_for_dispatch(
+        &state,
+        state
+            .resume
+            .front_command()
+            .expect("older pause restore remains dispatchable")
     ));
 }

@@ -10,8 +10,7 @@ async fn stop_cancels_a_hung_load_validation_without_reordering_prior_commands()
         request_id: 11,
         file_generation: 1,
         task,
-        resume: None,
-        restore_transport: false,
+        resume: resume::ResumeLoad::None,
         source_context: super::super::super::MediaSourceContext::OnDemand,
     });
     let mut backlog = VecDeque::new();
@@ -38,8 +37,7 @@ async fn state_free_staging_does_not_guess_that_recovery_can_alias() {
         request_id: 11,
         file_generation: 8,
         task,
-        resume: Some(recovery_request(3_600.25, true)),
-        restore_transport: true,
+        resume: resume::ResumeLoad::RestoreOwned(recovery_request(3_600.25, true)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
     });
     let mut backlog = VecDeque::new();
@@ -101,8 +99,7 @@ async fn superseding_seek_during_recovery_validation_keeps_current_generation_di
         request_id: 12,
         file_generation: candidate,
         task,
-        resume: Some(recovery_request(3_600.25, false)),
-        restore_transport: true,
+        resume: resume::ResumeLoad::RestoreOwned(recovery_request(3_600.25, false)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
     });
     let mut backlog = VecDeque::new();
@@ -176,8 +173,7 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
         request_id: 12,
         file_generation: candidate,
         task,
-        resume: Some(emergency_request(900.0, true)),
-        restore_transport: true,
+        resume: resume::ResumeLoad::RestoreOwned(emergency_request(900.0, true)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
     });
     let mut backlog = VecDeque::new();
@@ -201,14 +197,17 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
     let pending = validation
         .as_ref()
         .expect("emergency physical load boundary is retained");
-    assert!(!pending.restore_transport);
+    assert!(matches!(
+        &pending.resume,
+        resume::ResumeLoad::UserTransportMerged(_)
+    ));
     assert!(
         pending
             .resume
-            .as_ref()
+            .request()
             .is_some_and(super::super::super::recovery::LoadWithResume::forces_ram_only)
     );
-    assert!(pending.resume.as_ref().is_some_and(|resume| {
+    assert!(pending.resume.request().is_some_and(|resume| {
         (resume.position_secs - 120.0).abs() < f64::EPSILON && !resume.paused
     }));
     assert_eq!(state.issued_file_generation, 0);
@@ -227,8 +226,7 @@ async fn validated_recovery_wait_keeps_physical_load_and_strips_only_resume_tran
         request_id: 21,
         file_generation: 8,
         url: "https://example.invalid/fresh-source".to_owned(),
-        resume: Some(recovery_request(900.0, true)),
-        restore_transport: true,
+        resume: resume::ResumeLoad::RestoreOwned(recovery_request(900.0, true)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
         wait_for_cache_reset: true,
     }));
@@ -244,11 +242,13 @@ async fn validated_recovery_wait_keeps_physical_load_and_strips_only_resume_tran
     let Some(PendingLoadBoundary::Validated(load)) = boundary.as_ref() else {
         panic!("validated physical load boundary must remain")
     };
-    assert!(load.resume.is_some());
-    assert!(!load.restore_transport);
+    assert!(matches!(
+        &load.resume,
+        resume::ResumeLoad::UserTransportMerged(_)
+    ));
     assert!(load.wait_for_cache_reset);
     assert_eq!(load.file_generation, 8);
-    assert!(load.resume.as_ref().is_some_and(|resume| {
+    assert!(load.resume.request().is_some_and(|resume| {
         (resume.position_secs - 120.0).abs() < f64::EPSILON && !resume.paused
     }));
 }
@@ -260,13 +260,9 @@ fn issued_recovery_merges_seek_and_play_pause_until_file_loaded() {
         active_file_generation: None,
         file_loaded_generation: None,
         playback_ready_generation: None,
-        pending_resume: Some(PendingResume {
-            file_generation: 8,
-            request: recovery_request(900.0, true),
-            file_loaded: false,
-        }),
         ..DispatchState::default()
     };
+    state.resume.install(8, recovery_request(900.0, true));
     let mut validation = None;
     let mut backlog = VecDeque::new();
     let mut flight = None;
@@ -291,31 +287,27 @@ fn issued_recovery_merges_seek_and_play_pause_until_file_loaded() {
 
     assert!(backlog.is_empty(), "issued recovery owns transport intent");
     let pending = state
-        .pending_resume
-        .as_ref()
+        .resume
+        .pending_request()
         .expect("recovery remains owned");
-    assert!((pending.request.position_secs - 150.0).abs() < f64::EPSILON);
-    assert!(pending.request.paused);
+    assert!((pending.position_secs - 150.0).abs() < f64::EPSILON);
+    assert!(pending.paused);
 
     state.active_file_generation = Some(8);
     state.file_loaded_generation = Some(8);
     state.playback_ready_generation = Some(8);
-    state
-        .pending_resume
-        .as_mut()
-        .expect("recovery remains installed")
-        .file_loaded = true;
+    state.resume.mark_file_loaded(Some(8), true, Some(8));
     release_pending_resume_if_ready(&mut state);
 
     assert!(matches!(
-        state.post_load_commands.pop_front(),
+        state.resume.pop_command(),
         Some(PlayerCmd::SeekAbsolute {
             seconds,
             precision: super::super::super::SeekPrecision::Exact,
         }) if (seconds - 150.0).abs() < f64::EPSILON
     ));
     assert!(matches!(
-        state.post_load_commands.pop_front(),
+        state.resume.pop_command(),
         Some(PlayerCmd::SetProperty { name, value })
             if name == "pause" && value == serde_json::Value::Bool(true)
     ));
@@ -333,14 +325,11 @@ fn released_recovery_merges_desired_transport_before_and_during_exact_flight() {
                 active_file_generation: Some(8),
                 file_loaded_generation: Some(8),
                 playback_ready_generation: Some(8),
-                pending_resume: Some(PendingResume {
-                    file_generation: 8,
-                    request: request.clone(),
-                    file_loaded: true,
-                }),
                 ..DispatchState::default()
             };
-            install_resume_telemetry(&mut state, 8, &request);
+            state.last_confirmed_time = request.position_secs;
+            state.resume.install(8, request.clone());
+            state.resume.mark_file_loaded(Some(8), true, Some(8));
             release_pending_resume_if_ready(&mut state);
             let mut flight = if exact_in_flight {
                 let exact = pop_next_actor_command(&mut state, &mut VecDeque::new())
@@ -376,23 +365,19 @@ fn released_recovery_merges_desired_transport_before_and_during_exact_flight() {
             );
             assert_eq!(flight.is_some(), exact_in_flight);
             assert!(matches!(
-                state.post_load_commands.front(),
+                state.resume.front_command(),
                 Some(PlayerCmd::SeekAbsolute {
                     seconds,
                     precision: super::super::super::SeekPrecision::Exact,
                 }) if (*seconds - 930.0).abs() < f64::EPSILON
             ));
             assert!(matches!(
-                state.post_load_commands.back(),
+                state.resume.back_command(),
                 Some(PlayerCmd::SetProperty { name, value })
                     if name == "pause"
                         && value == &serde_json::Value::Bool(!saved_paused)
             ));
-            assert!(state.resume_telemetry.as_ref().is_some_and(|gate| {
-                (gate.target_secs - 930.0).abs() < f64::EPSILON
-                    && gate.terminal_deadline.is_none()
-                    && gate.expected_request_id.is_none()
-            }));
+            assert!(state.resume.telemetry_is_prepared_for(8, 930.0));
 
             if exact_in_flight {
                 let mut old_exact = flight.take().expect("old exact remains in flight");
@@ -405,12 +390,7 @@ fn released_recovery_merges_desired_transport_before_and_during_exact_flight() {
                 ));
                 assert!(old_exact.observe(SeekObservation::PlaybackRestart, Some(8)));
                 finish_seek_flight(&emit, &mut state, old_exact);
-                assert!(state.resume_telemetry.as_ref().is_some_and(|gate| {
-                    (gate.target_secs - 930.0).abs() < f64::EPSILON
-                        && gate.expected_request_id.is_none()
-                        && !gate.exact_completed
-                        && gate.terminal_deadline.is_none()
-                }));
+                assert!(state.resume.telemetry_is_prepared_for(8, 930.0));
             }
 
             accept_actor_command(
@@ -421,16 +401,11 @@ fn released_recovery_merges_desired_transport_before_and_during_exact_flight() {
                 &mut flight,
             );
             assert!(matches!(
-                state.post_load_commands.front(),
+                state.resume.front_command(),
                 Some(PlayerCmd::SeekAbsolute { seconds, .. })
                     if (*seconds - 120.0).abs() < f64::EPSILON
             ));
-            assert!(
-                state
-                    .resume_telemetry
-                    .as_ref()
-                    .is_some_and(|gate| { (gate.target_secs - 120.0).abs() < f64::EPSILON })
-            );
+            assert!(state.resume.telemetry_is_prepared_for(8, 120.0));
         }
     }
 }
@@ -446,8 +421,7 @@ async fn rejected_load_commits_exact_generation_stop_before_newer_load() {
         request_id: 18,
         file_generation: 8,
         task,
-        resume: None,
-        restore_transport: false,
+        resume: resume::ResumeLoad::None,
         source_context: super::super::super::MediaSourceContext::OnDemand,
     };
     let mut state = DispatchState {
@@ -521,24 +495,21 @@ fn end_file_atomically_drops_recovery_post_load_lane_before_new_stop() {
         active_playlist_entry_id: Some(42),
         file_loaded_generation: Some(9),
         playback_ready_generation: Some(9),
-        pending_resume: Some(PendingResume {
-            file_generation: 9,
-            request: recovery_request(3_600.25, true),
-            file_loaded: true,
-        }),
         ..DispatchState::default()
     };
+    state.resume.install(9, recovery_request(3_600.25, true));
+    state.resume.mark_file_loaded(Some(9), true, Some(9));
     state.entry_generations.insert(42, 9);
     release_pending_resume_if_ready(&mut state);
-    assert_eq!(state.post_load_commands.len(), 2);
+    assert_eq!(state.resume.command_count(), 2);
 
     dispatch_incoming(
         r#"{"event":"end-file","reason":"stop","playlist_entry_id":42}"#,
         &emit,
         &mut state,
     );
-    assert!(state.post_load_commands.is_empty());
-    assert!(state.resume_post_load_generation.is_none());
+    assert!(state.resume.commands_is_empty());
+    assert!(state.resume.dispatch_generation().is_none());
 
     let stop = PlayerCmd::Stop;
     cancel_resume_post_load_if_superseded(&mut state, &stop);
@@ -577,24 +548,20 @@ fn recovery_waits_for_correlated_file_loaded_before_exact_seek_and_pause_restore
         issued_file_generation: 8,
         active_file_generation: Some(8),
         active_playlist_entry_id: Some(42),
-        pending_resume: Some(PendingResume {
-            file_generation: 8,
-            request: recovery_request(3_600.25, true),
-            file_loaded: false,
-        }),
         ..DispatchState::default()
     };
+    state.resume.install(8, recovery_request(3_600.25, true));
     state.entry_generations.insert(42, 8);
 
     release_pending_resume_if_ready(&mut state);
-    assert!(state.post_load_commands.is_empty());
+    assert!(state.resume.commands_is_empty());
 
     dispatch_incoming(
         r#"{"event":"file-loaded","playlist_entry_id":41}"#,
         &emit,
         &mut state,
     );
-    assert!(state.post_load_commands.is_empty());
+    assert!(state.resume.commands_is_empty());
 
     dispatch_incoming(
         r#"{"event":"file-loaded","playlist_entry_id":42}"#,
@@ -602,16 +569,16 @@ fn recovery_waits_for_correlated_file_loaded_before_exact_seek_and_pause_restore
         &mut state,
     );
 
-    assert!(state.pending_resume.is_none());
+    assert!(state.resume.pending_request().is_none());
     assert!(matches!(
-        state.post_load_commands.pop_front(),
+        state.resume.pop_command(),
         Some(PlayerCmd::SeekAbsolute {
             seconds,
             precision: super::super::super::SeekPrecision::Exact,
         }) if (seconds - 3_600.25).abs() < f64::EPSILON
     ));
     assert!(matches!(
-        state.post_load_commands.pop_front(),
+        state.resume.pop_command(),
         Some(PlayerCmd::SetProperty { name, value })
             if name == "pause" && value == serde_json::Value::Bool(true)
     ));
@@ -621,16 +588,13 @@ fn recovery_waits_for_correlated_file_loaded_before_exact_seek_and_pause_restore
 fn newer_transport_intent_drops_deferred_recovery_commands() {
     let mut state = DispatchState {
         active_file_generation: Some(8),
-        pending_resume: Some(PendingResume {
-            file_generation: 8,
-            request: recovery_request(3_600.25, false),
-            file_loaded: true,
-        }),
         ..DispatchState::default()
     };
+    state.resume.install(8, recovery_request(3_600.25, false));
+    state.resume.mark_file_loaded(Some(8), true, Some(8));
     release_pending_resume_if_ready(&mut state);
-    assert_eq!(state.post_load_commands.len(), 2);
-    assert_eq!(state.resume_post_load_generation, Some(8));
+    assert_eq!(state.resume.command_count(), 2);
+    assert_eq!(state.resume.dispatch_generation(), Some(8));
     let mut validation = None;
     let mut backlog = VecDeque::new();
     let mut interactive_seek = None;
@@ -645,32 +609,25 @@ fn newer_transport_intent_drops_deferred_recovery_commands() {
         &mut interactive_seek,
     );
 
-    assert!(state.pending_resume.is_none());
-    assert!(state.post_load_commands.is_empty());
-    assert!(state.resume_post_load_generation.is_none());
+    assert!(state.resume.pending_request().is_none());
+    assert!(state.resume.commands_is_empty());
+    assert!(state.resume.dispatch_generation().is_none());
     assert!(matches!(backlog.pop_front(), Some(PlayerCmd::Stop)));
 }
 
 #[test]
 fn newer_seek_supersedes_in_flight_recovery_exact_and_drops_pause_restore() {
-    let mut state = DispatchState {
-        resume_telemetry: Some(ResumeTelemetryGate {
-            file_generation: 8,
-            target_secs: 3_600.25,
-            expected_request_id: Some(44),
-            exact_completed: false,
-            buffered_near_target: None,
-            latest_seek_position: None,
-            terminal_deadline: None,
-            source_recovery: false,
-        }),
-        resume_post_load_generation: Some(8),
-        post_load_commands: VecDeque::from([PlayerCmd::SetProperty {
+    let mut state = DispatchState::default();
+    state.resume.install_dispatching_for_test(
+        8,
+        VecDeque::from([PlayerCmd::SetProperty {
             name: "pause".to_owned(),
             value: serde_json::Value::Bool(true),
         }]),
-        ..DispatchState::default()
-    };
+    );
+    let request = emergency_request(3_600.25, true);
+    install_resume_telemetry(&mut state, 8, &request);
+    begin_resume_seek_observation(&mut state, 8, 44);
     let mut flight = Some(SeekFlight::new(
         1,
         44,
@@ -685,9 +642,9 @@ fn newer_seek_supersedes_in_flight_recovery_exact_and_drops_pause_restore() {
     cancel_resume_post_load_if_superseded(&mut state, &seek);
     accept_actor_command(&mut state, seek, &mut validation, &mut backlog, &mut flight);
 
-    assert!(state.post_load_commands.is_empty());
-    assert!(state.resume_post_load_generation.is_none());
-    assert!(state.resume_telemetry.is_none());
+    assert!(state.resume.commands_is_empty());
+    assert!(state.resume.dispatch_generation().is_none());
+    assert!(!state.resume.telemetry_is_some());
     assert!(flight.as_ref().is_some_and(|flight| flight.superseded));
     assert!(matches!(
         backlog.front(),

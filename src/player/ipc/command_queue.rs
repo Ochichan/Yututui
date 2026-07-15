@@ -2,9 +2,7 @@ struct PendingLoadValidation {
     request_id: u64,
     file_generation: u64,
     task: tokio::task::JoinHandle<LoadValidationOutcome>,
-    resume: Option<super::recovery::LoadWithResume>,
-    /// True until the first user transport intent is merged into the pending physical load.
-    restore_transport: bool,
+    resume: resume::ResumeLoad,
     source_context: MediaSourceContext,
 }
 
@@ -12,8 +10,7 @@ struct ValidatedLoad {
     request_id: u64,
     file_generation: u64,
     url: String,
-    resume: Option<super::recovery::LoadWithResume>,
-    restore_transport: bool,
+    resume: resume::ResumeLoad,
     source_context: MediaSourceContext,
     wait_for_cache_reset: bool,
 }
@@ -54,22 +51,13 @@ impl PendingLoadBoundary {
     }
 
     fn record_resume_superseded(&self) {
-        if let Self::Validated(load) = self
-            && load.restore_transport
-        {
+        if let Self::Validated(load) = self {
             record_resume_outcome(
-                load.resume.as_ref(),
+                load.resume.owned_request(),
                 super::diagnostics::SourceRecoveryOutcome::Superseded,
             );
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct PendingResume {
-    file_generation: u64,
-    request: super::recovery::LoadWithResume,
-    file_loaded: bool,
 }
 
 enum LoadValidationOutcome {
@@ -152,10 +140,7 @@ fn accept_actor_command(
     }
     if let Some(validation) = take_superseded_validation(&cmd, validating_load) {
         record_resume_outcome(
-            validation
-                .restore_transport
-                .then_some(validation.resume.as_ref())
-                .flatten(),
+            validation.resume.owned_request(),
             super::diagnostics::SourceRecoveryOutcome::Superseded,
         );
         validation.task.abort();
@@ -167,10 +152,10 @@ fn accept_actor_command(
         && validation.resume.is_some()
         && supersedes_pending_resume(&cmd)
     {
-        let can_alias = validation.restore_transport
+        let can_alias = validation.resume.is_restore_owned()
             && validation
                 .resume
-                .as_ref()
+                .request()
                 .is_some_and(super::recovery::LoadWithResume::is_source_recovery)
             && state.active_file_generation == Some(state.issued_file_generation)
             && state.file_loaded_generation == Some(state.issued_file_generation)
@@ -181,21 +166,19 @@ fn accept_actor_command(
                 .expect("aliasable recovery validation remains installed");
             rebase_cancelled_recovery(state, validation.file_generation, validation.source_context);
             record_resume_outcome(
-                validation.resume.as_ref(),
+                validation.resume.owned_request(),
                 super::diagnostics::SourceRecoveryOutcome::Superseded,
             );
             validation.task.abort();
-        } else if let Some(resume) = validation.resume.as_mut()
-            && merge_pending_resume_command(resume, &cmd)
-        {
-            if validation.restore_transport {
-                record_resume_outcome(
-                    Some(resume),
+        } else {
+            let merged = validation.resume.merge_transport(&cmd);
+            if let resume::ResumeMerge::MergedOwned(purpose) = merged {
+                record_resume_purpose(
+                    purpose,
                     super::diagnostics::SourceRecoveryOutcome::Superseded,
                 );
-                validation.restore_transport = false;
             }
-            consumed_by_pending_resume = true;
+            consumed_by_pending_resume = merged.is_merged();
         }
     }
     if !consumed_by_pending_resume {
@@ -251,23 +234,7 @@ fn rebase_cancelled_recovery(
     if state.failed_load_generations.remove(&previous) {
         state.failed_load_generations.insert(generation);
     }
-    if let Some(pending) = state
-        .pending_resume
-        .as_mut()
-        .filter(|pending| pending.file_generation == previous)
-    {
-        pending.file_generation = generation;
-    }
-    if let Some(gate) = state
-        .resume_telemetry
-        .as_mut()
-        .filter(|gate| gate.file_generation == previous)
-    {
-        gate.file_generation = generation;
-    }
-    if state.resume_post_load_generation == Some(previous) {
-        state.resume_post_load_generation = Some(generation);
-    }
+    state.resume.rebase_file_generation(previous, generation);
     state.media_source_contexts.remove(&previous);
     state
         .media_source_contexts
@@ -293,144 +260,15 @@ fn supersedes_pending_resume(cmd: &PlayerCmd) -> bool {
     ) || matches!(cmd, PlayerCmd::SetProperty { name, .. } if name == "pause")
 }
 
-fn merge_pending_resume_command(
-    resume: &mut super::recovery::LoadWithResume,
-    command: &PlayerCmd,
-) -> bool {
-    match command {
-        PlayerCmd::SeekAbsolute { seconds, .. } => {
-            resume.position_secs = crate::playback_policy::norm_position(*seconds);
-            true
-        }
-        PlayerCmd::SeekRelative(delta) => {
-            resume.position_secs =
-                crate::playback_policy::norm_position(resume.position_secs + delta);
-            true
-        }
-        PlayerCmd::CyclePause => {
-            resume.paused = !resume.paused;
-            true
-        }
-        PlayerCmd::SetProperty { name, value } if name == "pause" => {
-            value.as_bool().is_some_and(|paused| {
-                resume.paused = paused;
-                true
-            })
-        }
-        _ => false,
-    }
-}
-
 fn merge_issued_pending_resume_command(state: &mut DispatchState, command: &PlayerCmd) -> bool {
-    state
-        .pending_resume
-        .as_mut()
-        .is_some_and(|pending| merge_pending_resume_command(&mut pending.request, command))
+    state.resume.merge_pending_command(command)
 }
 
 fn merge_post_load_resume_command(state: &mut DispatchState, command: &PlayerCmd) -> bool {
-    let Some(file_generation) = state.resume_post_load_generation else {
-        return false;
-    };
-    match command {
-        PlayerCmd::CyclePause | PlayerCmd::SetProperty { .. } => {
-            let explicit = match command {
-                PlayerCmd::CyclePause => None,
-                PlayerCmd::SetProperty { name, value } if name == "pause" => {
-                    let Some(paused) = value.as_bool() else {
-                        return false;
-                    };
-                    Some(paused)
-                }
-                _ => return false,
-            };
-            state.post_load_commands.iter_mut().any(|queued| {
-                let PlayerCmd::SetProperty { name, value } = queued else {
-                    return false;
-                };
-                if name != "pause" {
-                    return false;
-                }
-                let Some(paused) = value.as_bool() else {
-                    return false;
-                };
-                *value = serde_json::Value::Bool(explicit.unwrap_or(!paused));
-                true
-            })
-        }
-        PlayerCmd::SeekAbsolute { .. } | PlayerCmd::SeekRelative(_) => {
-            let queued_target = state
-                .post_load_commands
-                .iter()
-                .find_map(|queued| match queued {
-                    PlayerCmd::SeekAbsolute { seconds, .. } => Some(*seconds),
-                    _ => None,
-                });
-            let current_target = queued_target
-                .or_else(|| {
-                    state
-                        .resume_telemetry
-                        .as_ref()
-                        .filter(|gate| gate.file_generation == file_generation)
-                        .map(|gate| gate.target_secs)
-                })
-                .unwrap_or(state.last_confirmed_time);
-            let target = match command {
-                PlayerCmd::SeekAbsolute { seconds, .. } => {
-                    crate::playback_policy::norm_position(*seconds)
-                }
-                PlayerCmd::SeekRelative(delta) => {
-                    crate::playback_policy::norm_position(current_target + delta)
-                }
-                _ => unreachable!("post-load seek match is exhaustive"),
-            };
-            let mut replaced_queued = false;
-            for queued in &mut state.post_load_commands {
-                if let PlayerCmd::SeekAbsolute { seconds, .. } = queued {
-                    *seconds = target;
-                    replaced_queued = true;
-                    break;
-                }
-            }
-            if !replaced_queued {
-                let before_pause = state
-                    .post_load_commands
-                    .iter()
-                    .position(|queued| {
-                        matches!(queued, PlayerCmd::SetProperty { name, .. } if name == "pause")
-                    })
-                    .unwrap_or(state.post_load_commands.len());
-                state
-                    .post_load_commands
-                    .insert(before_pause, PlayerCmd::exact_seek(target));
-            }
-            if let Some(gate) = state
-                .resume_telemetry
-                .as_mut()
-                .filter(|gate| gate.file_generation == file_generation)
-            {
-                gate.target_secs = target;
-                gate.expected_request_id = None;
-                gate.exact_completed = false;
-                gate.buffered_near_target = None;
-                gate.latest_seek_position = None;
-                gate.terminal_deadline = None;
-            } else {
-                state.resume_telemetry = Some(ResumeTelemetryGate {
-                    file_generation,
-                    target_secs: target,
-                    expected_request_id: None,
-                    exact_completed: false,
-                    buffered_near_target: None,
-                    latest_seek_position: None,
-                    terminal_deadline: None,
-                    source_recovery: false,
-                });
-            }
-            true
-        }
-        _ => false,
-    }
+    let last_confirmed_time = state.last_confirmed_time;
+    state
+        .resume
+        .merge_dispatching_command(command, last_confirmed_time)
 }
 
 fn supersede_pending_load_boundary(
@@ -454,19 +292,13 @@ fn supersede_pending_load_boundary(
         return false;
     }
     if load.resume.is_some() && supersedes_pending_resume(cmd) {
-        let merged = load
-            .resume
-            .as_mut()
-            .is_some_and(|resume| merge_pending_resume_command(resume, cmd));
-        if !merged {
-            return false;
-        }
-        if load.restore_transport {
-            record_resume_outcome(
-                load.resume.as_ref(),
+        match load.resume.merge_transport(cmd) {
+            resume::ResumeMerge::NotMerged => return false,
+            resume::ResumeMerge::MergedOwned(purpose) => record_resume_purpose(
+                purpose,
                 super::diagnostics::SourceRecoveryOutcome::Superseded,
-            );
-            load.restore_transport = false;
+            ),
+            resume::ResumeMerge::Merged => {}
         }
         tracing::debug!(
             file_generation = load.file_generation,

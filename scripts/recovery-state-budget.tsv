@@ -1,0 +1,53 @@
+# Recovery control variant surface. Columns are:
+# group<TAB>exact variants<TAB>source path<TAB>enum name
+#
+# `core` is state retained across recovery steps. `transition` is an intent, plan, result, or
+# projection consumed at a boundary. `support` is a recovery error/diagnostic classification and
+# is tracked separately so it cannot inflate the core-lifecycle total.
+#
+# Counts are exact: reductions lower this file, while increases require an intentional review.
+# Every enum anywhere under src/ whose name contains `Recover` or starts with `Resume`, `Reconnect`,
+# or `Restore` must have a row. In a file already represented here, control/result suffixes are
+# also discovered so helper names cannot evade the budget; add new IPC types and their projections
+# as individual rows.
+# This is a typed-enum ratchet, not a generic bool/Option detector. `check-architecture.sh` guards
+# known typed boundaries, but there is currently no general implicit-control-debt scanner.
+
+# Long-lived/core recovery state.
+core	3	src/persist/writer_lease.rs	ProcessWriterState
+core	3	src/persist/snapshot_state.rs	SnapshotPublication
+core	2	src/persist/snapshot_state.rs	SnapshotAdmission
+core	2	src/persist/panic_shadow.rs	PanicShadowPhase
+core	2	src/persist/panic_ownership.rs	PanicOwnedOperation
+core	2	src/persist/recovery.rs	ConfigRecoveryGuardState
+core	2	src/persist/recovery.rs	ConfigRecoveryTransactionState
+core	3	src/player/recovery.rs	RecoveryEpisodeState
+core	8	src/runtime/player_delivery.rs	RuntimePlayerLifecycle
+core	4	src/daemon/engine/transport.rs	TransportRecoveryState
+
+# Typed transition, plan, mode, and result projections.
+transition	2	src/persist/writer_lease.rs	InitializedWriterState
+transition	2	src/player/recovery.rs	ResumeOrigin
+transition	3	src/player/recovery.rs	TransportRestorePlan
+transition	2	src/daemon/engine/transport.rs	LoadCurrentIntent
+transition	2	src/daemon/engine/transport.rs	TransportRecoveryMode
+transition	4	src/runtime/player_delivery.rs	PlayerRestartDecision
+transition	3	src/runtime/player_delivery.rs	PlayerAdmission
+transition	2	src/runtime/player_delivery.rs	PlayerStartupKind
+transition	3	src/runtime/player_delivery.rs	PlayerStartupCompletion
+transition	2	src/player/ipc/resume.rs	ResumePurpose
+transition	2	src/player/ipc/resume.rs	ResumeCancellation
+transition	3	src/player/ipc/resume.rs	ResumeMerge
+core	3	src/player/ipc/resume.rs	ResumeLoad
+core	3	src/player/ipc/resume.rs	ResumeTelemetryPhase
+core	4	src/player/ipc/resume.rs	ResumeStage
+transition	3	src/player/ipc/resume.rs	TelemetryCompletion
+transition	3	src/player/ipc/resume.rs	PositionDisposition
+
+# Recovery classifications which are not retained lifecycle state.
+support	7	src/runtime/delivery_reporting.rs	ActorRejectionRecovery
+support	7	src/player/diagnostics.rs	SourceRecoveryOutcome
+support	2	src/persist/recovery.rs	ConfigRecoveryReceipt
+support	2	src/persist/recovery.rs	RecoveryLockError
+support	3	src/persist/recovery.rs	StartupRecoveryFailure
+support	6	src/player/recovery.rs	RecoverableSourceFailure
