@@ -5,7 +5,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, AudioOutputRowKind, MouseTarget};
 use crate::t;
@@ -225,42 +225,20 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
 
 fn manual_editor_label(app: &App, picker: &crate::app::AudioOutputPicker, width: usize) -> String {
     let caret = crate::ui::anim::caret_char(app);
-    if width <= UnicodeWidthChar::width(caret).unwrap_or(1) {
-        return caret.to_string();
-    }
     let prefix = format!("{} ", t!("Device ID:", "장치 ID:"));
     let prefix_width = UnicodeWidthStr::width(prefix.as_str());
     if prefix_width < width {
-        let input_width = width.saturating_sub(prefix_width + 1);
-        return format!(
-            "{prefix}{}{caret}",
-            tail_to_width(&picker.manual_input, input_width)
+        let cursor = picker.manual_cursor.byte_index(&picker.manual_input);
+        let window = crate::ui::text::editable_window(
+            &picker.manual_input,
+            cursor,
+            width.saturating_sub(prefix_width),
         );
+        return format!("{prefix}{}{caret}{}", window.before, window.after);
     }
-    tail_to_width(&format!("{}{caret}", picker.manual_input), width)
-}
-
-/// Keep the right edge of an editable ID visible; the changing tail and caret matter more than
-/// its backend prefix once the value is wider than the modal.
-fn tail_to_width(value: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(value) <= max {
-        return value.to_owned();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut tail = Vec::new();
-    let mut width = 0usize;
-    for ch in value.chars().rev() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > max.saturating_sub(1) {
-            break;
-        }
-        tail.push(ch);
-        width += ch_width;
-    }
-    tail.reverse();
-    format!("…{}", tail.into_iter().collect::<String>())
+    let cursor = picker.manual_cursor.byte_index(&picker.manual_input);
+    let window = crate::ui::text::editable_window(&picker.manual_input, cursor, width);
+    format!("{}{caret}{}", window.before, window.after)
 }
 
 fn finish_popup(frame: &mut Frame, app: &App, popup: Rect) {

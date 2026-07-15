@@ -833,8 +833,8 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
-    // Ctrl+A selects the whole prompt: paint it with the selection colors. Otherwise show a
-    // trailing block cursor while focused, or plain text when not.
+    // Ctrl+A selects the whole prompt. Otherwise keep the visible text centered on the caret.
+    let content_width = block.inner(input_area).width as usize;
     let para = if focused && app.ai.select_all && !app.ai.input.is_empty() {
         let hl = Style::default()
             .fg(app.theme.color(R::SelectionFg))
@@ -842,16 +842,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(Span::styled(app.ai.input.clone(), hl)))
     } else {
         if focused {
-            // The caret is its own span so the caret animation can blink it (the plain solid
-            // block in the text's own style when that flag is off, exactly as before).
+            let cursor = app.ai.input_cursor.byte_index(&app.ai.input);
+            let window = crate::ui::text::editable_window(&app.ai.input, cursor, content_width);
             let caret = crate::ui::anim::caret_span(
                 app,
                 app.theme.style(R::TextPrimary),
                 app.theme.color(R::Background),
             );
             Paragraph::new(Line::from(vec![
-                Span::styled(app.ai.input.clone(), app.theme.style(R::TextPrimary)),
+                Span::styled(window.before, app.theme.style(R::TextPrimary)),
                 caret,
+                Span::styled(window.after, app.theme.style(R::TextPrimary)),
             ]))
         } else {
             Paragraph::new(app.ai.input.clone()).style(app.theme.style(R::TextPrimary))

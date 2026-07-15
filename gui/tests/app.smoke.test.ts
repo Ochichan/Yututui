@@ -2,8 +2,8 @@
 // the wired tier actually renders — the strongest cheap proof that the frame, stores,
 // and demo core agree end to end.
 
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/svelte';
 import App from '../src/App.svelte';
 import { Client } from '../src/lib/ipc/client';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
@@ -74,6 +74,7 @@ function assemble(): AppCtx {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 250));
+afterEach(cleanup);
 
 describe('App against the demo core', () => {
   it('boots online and renders the wired tier', async () => {
@@ -147,6 +148,66 @@ describe('App against the demo core', () => {
     expect(ctx.ui.helpOpen).toBe(true);
   });
 
+  it('routes text editing through live remaps and suppresses unbound factory keys', async () => {
+    const ctx = assemble();
+    const { container } = render(App, { props: { ctx } });
+    await settle();
+
+    ctx.ui.view = 'search';
+    await settle();
+    const field = container.querySelector<HTMLInputElement>('#search-query')!;
+    const value = 'a👨‍👩‍👧‍👦 beta';
+    await fireEvent.input(field, { target: { value } });
+    const familyEnd = 'a👨‍👩‍👧‍👦'.length;
+
+    field.setSelectionRange(familyEnd, familyEnd);
+    const factoryLeft = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      code: 'ArrowLeft',
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(factoryLeft);
+    expect(factoryLeft.defaultPrevented).toBe(true);
+    expect(field.selectionStart).toBe(1);
+
+    await ctx.keymap.rebind('common', 'move_cursor_left', 'f8');
+    field.setSelectionRange(familyEnd, familyEnd);
+    const movedFactoryLeft = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      code: 'ArrowLeft',
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(movedFactoryLeft);
+    expect(movedFactoryLeft.defaultPrevented).toBe(true);
+    expect(field.selectionStart).toBe(familyEnd);
+
+    const remappedLeft = new KeyboardEvent('keydown', {
+      key: 'F8',
+      code: 'F8',
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(remappedLeft);
+    expect(remappedLeft.defaultPrevented).toBe(true);
+    expect(field.selectionStart).toBe(1);
+
+    ctx.keymap.unbind('common', 'move_cursor_word_right');
+    await settle();
+    field.setSelectionRange(0, 0);
+    const unboundWordRight = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(unboundWordRight);
+    expect(unboundWordRight.defaultPrevented).toBe(true);
+    expect(field.selectionStart).toBe(0);
+  });
+
   it('flushes pending volume when the WebView is hidden', async () => {
     const ctx = assemble();
     const flush = vi.spyOn(ctx.playback, 'flushVolume');
@@ -159,7 +220,7 @@ describe('App against the demo core', () => {
 
   it('the help overlay renders the live keymap cheat sheet and filters it', async () => {
     const ctx = assemble();
-    // Scope to this render's subtree — the suite has no auto-cleanup, so prior renders linger.
+    // Scope to this render's subtree so repeated labels elsewhere in the frame stay unambiguous.
     const { container } = render(App, { props: { ctx } });
     const q = within(container);
     await settle(); // seed the keymap model

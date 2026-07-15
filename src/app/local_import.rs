@@ -670,6 +670,7 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.search_filter.close();
         self.search.input = query;
+        self.search.input_cursor = TextCursor::at_end(&self.search.input);
         self.search.focus = SearchFocus::Input;
         self.search.kind = SearchKind::Songs;
         self.search.source = crate::search_source::SearchSource::Youtube;

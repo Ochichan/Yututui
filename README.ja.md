@@ -284,6 +284,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `z` / `Shift+Z` | 歌詞を 0.1 秒早く / 遅く（`[±]` で `−/+` を 3 秒間再表示） |
 | `v` | MV オーバーレイ |
 | `Shift+B` | ドッキングされたコントロールボックスの折りたたみ / 展開 |
+| `←` / `→` · `Ctrl+←` / `Ctrl+→` | テキスト欄で一文字ずつ · 単語単位でカーソル移動 |
 | `Backspace` / `Ctrl+Backspace` | テキスト欄で一文字 / 前の単語を削除 |
 | `Ctrl+R` | DJ Gem ストリーミング |
 | `g` | DJ Gem アシスタント |

@@ -290,6 +290,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `z` / `Shift+Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
 | `Shift+B` | Collapse / expand the docked control box |
+| `←` / `→` · `Ctrl+←` / `Ctrl+→` | Move by one character · one word in a text field |
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |

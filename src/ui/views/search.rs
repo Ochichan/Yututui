@@ -146,8 +146,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
 
-    // Ctrl+A selects the whole query: paint it with the selection colors. Otherwise show a
-    // trailing block cursor while focused, or plain text when not.
+    // Ctrl+A selects the whole query. Otherwise keep the editable window centered around the
+    // grapheme-safe caret so both sides remain reachable even when the query is wider than the box.
+    let content_width = block.inner(input_area).width as usize;
     let para = if focused && app.search.select_all && !app.search.input.is_empty() {
         let hl = Style::default()
             .fg(app.theme.color(R::SelectionFg))
@@ -155,16 +156,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(Span::styled(app.search.input.clone(), hl)))
     } else {
         if focused {
-            // The caret is its own span so the caret animation can blink it (the plain solid
-            // block in the text's own style when that flag is off, exactly as before).
+            let cursor = app.search.input_cursor.byte_index(&app.search.input);
+            let window = crate::ui::text::editable_window(&app.search.input, cursor, content_width);
             let caret = crate::ui::anim::caret_span(
                 app,
                 app.theme.style(R::TextPrimary),
                 app.theme.color(R::Background),
             );
             Paragraph::new(Line::from(vec![
-                Span::styled(app.search.input.clone(), app.theme.style(R::TextPrimary)),
+                Span::styled(window.before, app.theme.style(R::TextPrimary)),
                 caret,
+                Span::styled(window.after, app.theme.style(R::TextPrimary)),
             ]))
         } else {
             Paragraph::new(app.search.input.clone()).style(app.theme.style(R::TextPrimary))
@@ -588,22 +590,24 @@ fn render_filter_popup(
     } else {
         format!("  [{}/{total}]", rows_all.len())
     };
-    let query_shown = crate::ui::text::truncate_owned_to_width(
-        app.search_filter.query.clone(),
-        (sections[0].width as usize)
-            .saturating_sub(10 + UnicodeWidthStr::width(count_hint.as_str())),
+    let label = t!("  filter: ", "  필터: ");
+    let input_width = (sections[0].width as usize).saturating_sub(
+        UnicodeWidthStr::width(label) + UnicodeWidthStr::width(count_hint.as_str()),
     );
+    let cursor = app
+        .search_filter
+        .input_cursor
+        .byte_index(&app.search_filter.query);
+    let query = crate::ui::text::editable_window(&app.search_filter.query, cursor, input_width);
     let input = Line::from(vec![
-        Span::styled(
-            t!("  filter: ", "  필터: "),
-            crate::ui::popup_style(app, R::TextMuted),
-        ),
-        Span::styled(query_shown, crate::ui::popup_style(app, R::TextPrimary)),
+        Span::styled(label, crate::ui::popup_style(app, R::TextMuted)),
+        Span::styled(query.before, crate::ui::popup_style(app, R::TextPrimary)),
         crate::ui::anim::caret_span(
             app,
             crate::ui::popup_style(app, R::Accent),
             crate::ui::popup_bg(app),
         ),
+        Span::styled(query.after, crate::ui::popup_style(app, R::TextPrimary)),
         Span::styled(count_hint, crate::ui::popup_style(app, R::TextMuted)),
     ]);
     frame.render_widget(Paragraph::new(input), sections[0]);

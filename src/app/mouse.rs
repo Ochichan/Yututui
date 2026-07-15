@@ -572,6 +572,7 @@ impl App {
             MouseTarget::SearchInput if self.mode == Mode::Search => {
                 self.search.focus = SearchFocus::Input;
                 self.search.select_all = false;
+                self.search.input_cursor = TextCursor::at_end(&self.search.input);
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
@@ -605,6 +606,7 @@ impl App {
             MouseTarget::AiInput if self.mode == Mode::Ai => {
                 self.ai.focus = AiFocus::Input;
                 self.ai.select_all = false;
+                self.ai.input_cursor = TextCursor::at_end(&self.ai.input);
                 self.dirty = true;
                 Vec::new()
             }

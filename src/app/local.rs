@@ -9,7 +9,7 @@ mod import_fingerprint;
 mod rows_cache;
 
 use super::*;
-use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
+use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_insert_query_char};
 pub(in crate::app) use import_fingerprint::LocalImportFilesFingerprintCache;
 #[cfg(test)]
 pub(in crate::app) use import_fingerprint::{
@@ -77,6 +77,9 @@ impl App {
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
         let chord = crate::keymap::Chord::from(k);
+        if self.local_mode.ui.filter_editing && self.keymap.text_edit_action(chord).is_some() {
+            return self.on_key_local_filter(k);
+        }
         // Keep the remappable Local Deck toggle available for non-text keys while the
         // Local Deck filter is focused. Typeable remaps still belong to the filter input.
         if self.local_mode.ui.filter_editing
@@ -179,6 +182,8 @@ impl App {
             Some(Action::ToggleLocalMode) => self.request_local_mode_switch(),
             Some(Action::LibraryFilter) => {
                 self.local_mode.ui.filter_editing = true;
+                self.local_mode.ui.filter_cursor =
+                    TextCursor::at_end(&self.local_mode.ui.filter_query);
                 self.dirty = true;
                 Vec::new()
             }
@@ -1499,6 +1504,7 @@ impl App {
 
     fn clear_local_filter(&mut self) {
         self.local_mode.ui.filter_query.clear();
+        self.local_mode.ui.filter_cursor = TextCursor::default();
         self.local_mode.ui.filter_editing = false;
         self.local_mode.ui.selected = 0;
         self.local_mode.ui.anchor = 0;
@@ -1513,12 +1519,17 @@ impl App {
     }
 
     fn on_key_local_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if crate::util::text_edit::delete_previous_word(&mut self.local_mode.ui.filter_query) {
-                self.after_local_filter_change();
+        if let Some(result) = self.keymap.text_edit_action(k.into()).and_then(|action| {
+            apply_text_edit_action(
+                action,
+                &mut self.local_mode.ui.filter_cursor,
+                &mut self.local_mode.ui.filter_query,
+            )
+        }) {
+            match result {
+                TextEditResult::BufferChanged(true) => self.after_local_filter_change(),
+                TextEditResult::CursorMoved(true) => self.dirty = true,
+                TextEditResult::BufferChanged(false) | TextEditResult::CursorMoved(false) => {}
             }
             return Vec::new();
         }
@@ -1530,10 +1541,6 @@ impl App {
             KeyCode::Enter => {
                 self.local_mode.ui.filter_editing = false;
                 self.dirty = true;
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                self.local_mode.ui.filter_query.pop();
-                self.after_local_filter_change();
             }
             KeyCode::Up => {
                 self.local_mode.ui.selected = self.local_mode.ui.selected.saturating_sub(1);
@@ -1553,8 +1560,9 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                match try_push_query_char(
+                match try_insert_query_char(
                     &mut self.local_mode.ui.filter_query,
+                    &mut self.local_mode.ui.filter_cursor,
                     c,
                     MAX_FILTER_QUERY_BYTES,
                 ) {

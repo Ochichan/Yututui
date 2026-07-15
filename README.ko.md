@@ -284,6 +284,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `z` / `Shift+Z` | 가사를 0.1초 앞당김 / 늦춤 (`[±]` 로 `−/+` 를 3초간 다시 열기) |
 | `v` | 뮤직비디오 오버레이 |
 | `Shift+B` | 도킹된 컨트롤 박스 접기 / 펼치기 |
+| `←` / `→` · `Ctrl+←` / `Ctrl+→` | 텍스트 입력칸에서 한 글자씩 · 단어씩 커서 이동 |
 | `Backspace` / `Ctrl+Backspace` | 텍스트 입력칸에서 한 글자 / 이전 단어 삭제 |
 | `Ctrl+R` | DJ Gem 스트리밍 |
 | `g` | DJ Gem 어시스턴트 |

@@ -541,36 +541,26 @@ fn slider_str(bar: &str, num: &str) -> String {
     format!("‹ {bar}  {num} ›")
 }
 
-/// The value text drawn to the right of a (non-color) field's label, exactly as [`field_row`]
-/// renders it. Shared so the click-target math never drifts from the on-screen glyphs (the
-/// blinking edit caret swaps `▏`↔space — both one cell, so the math holds mid-blink too).
-fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
+/// Value text shared by rendering and click-target measurement.
+fn field_value_text(
+    app: &App,
+    st: &SettingsState,
+    field: Field,
+    focused: bool,
+    width: usize,
+) -> String {
     match (field, field.kind()) {
         (Field::ExportPersonalData, _) => st.personal_data_export.value_display(),
         (Field::AudioOutput, _) => app.audio_output_display_label(&st.draft.audio_mpv_device),
-        // Secret fields (API key) are never shown in clear text; while editing, render a
-        // masked buffer of *that field's* typed length so keystrokes still register visibly.
-        (f, _) if f.is_secret() && focused && st.editing_text => {
-            let len = st.draft.text_value(field).map_or(0, |s| s.chars().count());
-            format!("{}{}", "•".repeat(len), crate::ui::anim::caret_char(app))
-        }
-        // Show the live edit buffer with a caret for the focused path field.
-        (
-            Field::CookiesFile
-            | Field::DownloadDir
-            | Field::LocalMusicRoot
-            | Field::AudioMpvOutput
-            | Field::AudioMpvDevice
-            | Field::AudioMpvCacheForward
-            | Field::AudioMpvCacheBack
-            | Field::AudiusAppName
-            | Field::JamendoClientId,
-            _,
-        ) if focused && st.editing_text => {
-            format!(
-                "{}{}",
-                st.draft.text_value(field).unwrap_or_default(),
-                crate::ui::anim::caret_char(app)
+        (f, FieldKind::Text) if focused && st.editing_text => {
+            let value = st.draft.text_value(field).unwrap_or_default();
+            let cursor = st.text_cursor.byte_index(value);
+            crate::ui::text::editable_value(
+                value,
+                cursor,
+                width,
+                crate::ui::anim::caret_char(app),
+                f.is_secret(),
             )
         }
         (Field::Speed, _) => slider_str(
@@ -606,14 +596,12 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let sections = st.sections();
     let focused_field = st.row.min(fields.len().saturating_sub(1));
 
-    // Build the display list. Sectioned tabs interleave a bold header (with a blank spacer
-    // before every header but the first) ahead of each section's fields; flat tabs list the
-    // fields directly. `display_to_field` maps each rendered row back to its field index, or
-    // `None` for header/blank rows — the same scheme the Keys tab uses, so headers stay
-    // unselectable and aren't mistaken for fields by clicks or the cursor.
+    // Build fields plus unselectable section headers/spacers and retain their index mapping.
     let mut items: Vec<ListItem> = Vec::new();
     let mut display_to_field: Vec<Option<usize>> = Vec::new();
     let mut selected = 0usize;
+    let value_width = (area.width as usize)
+        .saturating_sub(UnicodeWidthStr::width(HL_SYMBOL) + other_label_width(st.tab));
 
     if sections.is_empty() {
         for (i, &field) in fields.iter().enumerate() {
@@ -621,7 +609,14 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
                 selected = items.len();
             }
             let row = items.len();
-            items.push(field_row(app, st, field, i == focused_field, row));
+            items.push(field_row(
+                app,
+                st,
+                field,
+                i == focused_field,
+                row,
+                value_width,
+            ));
             display_to_field.push(Some(i));
         }
     } else {
@@ -646,7 +641,14 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
                     selected = items.len();
                 }
                 let row = items.len();
-                items.push(field_row(app, st, fields[i], i == focused_field, row));
+                items.push(field_row(
+                    app,
+                    st,
+                    fields[i],
+                    i == focused_field,
+                    row,
+                    value_width,
+                ));
                 display_to_field.push(Some(i));
                 i += 1;
             }
@@ -760,10 +762,8 @@ fn register_field_controls(
         }
 
         let vx = area.x + gutter + other_lw;
-        // Slider/Select widths don't depend on `focused` (no edit mode), so the ‹ › / < >
-        // arrow positions below are stable. Only Text/Button rows vary with `editing_text`, and
-        // those register a single whole-value activate rect where exact width is non-critical.
-        let value = field_value_text(app, st, field, focused);
+        // Text/Button rows use one whole-value target; slider arrow positions remain stable.
+        let value = field_value_text(app, st, field, focused, right.saturating_sub(vx) as usize);
         let w = buttons::text_width(&value);
         match field.kind() {
             FieldKind::Toggle => {
@@ -829,7 +829,13 @@ fn render_spotify_import_mode_dropdown(
     if available_width == 0 {
         return;
     }
-    let value = field_value_text(app, st, Field::SpotifyImportMode, field_index == st.row);
+    let value = field_value_text(
+        app,
+        st,
+        Field::SpotifyImportMode,
+        field_index == st.row,
+        available_width as usize,
+    );
     let label_width = buttons::text_width(&value)
         .max(
             crate::config::SpotifyImportMode::ALL
@@ -985,6 +991,7 @@ fn field_row<'a>(
     field: Field,
     focused: bool,
     display_row: usize,
+    value_width: usize,
 ) -> ListItem<'a> {
     let theme = &st.draft.theme;
     let fade =
@@ -992,7 +999,9 @@ fn field_row<'a>(
     if let Field::ThemeColor(role) = field {
         let label = pad_to_width(role.label(), color_label_width());
         let value = if focused && st.editing_text {
-            st.draft.text_value(field).unwrap_or_default().to_owned()
+            let raw = st.draft.text_value(field).unwrap_or_default();
+            let cursor = st.text_cursor.byte_index(raw);
+            crate::ui::text::editable_value(raw, cursor, 9, crate::ui::anim::caret_char(app), false)
         } else {
             st.draft.value_display(field)
         };
@@ -1013,7 +1022,7 @@ fn field_row<'a>(
             Span::raw(" "),
             swatch,
             Span::raw("  "),
-            Span::styled(format!("{:<9}", value), fade(theme.style(value_role))),
+            Span::styled(pad_to_width(&value, 9), fade(theme.style(value_role))),
             Span::styled(
                 role.description().to_owned(),
                 fade(theme.style(R::TextMuted)),
@@ -1038,7 +1047,7 @@ fn field_row<'a>(
     if field == Field::AnimFps {
         let fps = st.draft.animations.effective_fps();
         let track = bar(f64::from(fps), f64::from(FPS_MIN), f64::from(FPS_MAX));
-        // The cell where the 30-fps thumb sits; every cell past it is the red zone.
+        // Every track cell past the 30-fps thumb is the red zone.
         let width = track.chars().count().max(1);
         let mark = ((f64::from(FPS_DEFAULT - FPS_MIN) / f64::from(FPS_MAX - FPS_MIN))
             * (width - 1) as f64)
@@ -1046,11 +1055,7 @@ fn field_row<'a>(
         let normal: String = track.chars().take(mark + 1).collect();
         let hot: String = track.chars().skip(mark + 1).collect();
         let val_style = fade(theme.style(value_role));
-        // A literal red — the request is specifically "red", and theme roles like Warning are a
-        // muted gray in the monochrome presets. Keeps the value role's background so the red cells
-        // don't seam against the rest of the track. (On the *focused* row the List highlight
-        // repaints the whole row uniformly, flattening this like every other per-span colour;
-        // the zone reads red on the row at rest, which is the usual viewing state.)
+        // Keep a literal red foreground while preserving the value role's background.
         let hot_style = fade(theme.style(value_role).fg(Color::Red));
         let num = format!("{fps} fps");
         let num_style = if fps > FPS_DEFAULT {
@@ -1058,7 +1063,6 @@ fn field_row<'a>(
         } else {
             val_style
         };
-        // Reassembles `slider_str(track, num)` = "‹ {track}  {num} ›" span-by-span.
         return ListItem::new(Line::from(vec![
             Span::styled(label, fade(theme.style(R::SettingsLabel))),
             Span::styled("\u{2039} ".to_owned(), val_style),
@@ -1069,7 +1073,7 @@ fn field_row<'a>(
             Span::styled(" \u{203a}".to_owned(), val_style),
         ]));
     }
-    let value = field_value_text(app, st, field, focused);
+    let value = field_value_text(app, st, field, focused, value_width);
     ListItem::new(Line::from(vec![
         Span::styled(label, fade(theme.style(R::SettingsLabel))),
         Span::styled(value, fade(theme.style(value_role))),
@@ -1324,8 +1328,16 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup_rect);
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
 
+    let label_w = 16usize;
+    let value_w = usize::from(rows[0].width).saturating_sub(label_w + 2);
     let dir_display = if popup.editing_dir {
-        format!("{}\u{258f}", d.recording_dir) // trailing caret
+        crate::ui::text::editable_value(
+            &d.recording_dir,
+            popup.dir_cursor.byte_index(&d.recording_dir),
+            value_w,
+            crate::ui::anim::caret_char(app),
+            false,
+        )
     } else if d.recording_dir.trim().is_empty() {
         t!("(default)", "(기본값)").to_owned()
     } else {
@@ -1384,7 +1396,6 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ];
 
-    let label_w = 16usize;
     let lines: Vec<Line> = entries
         .iter()
         .enumerate()
@@ -1395,15 +1406,14 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 crate::ui::popup_style(app, R::TextMuted)
             };
-            Line::styled(format!("{marker}{label:<label_w$}{value}"), style)
+            Line::styled(
+                format!("{marker}{}{value}", pad_to_width(label, label_w)),
+                style,
+            )
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows[0]);
-    // Publish the popup rect (a click outside closes it) and, per row, a whole-row focus/
-    // activate rect plus finer control rects layered on top: the `‹`/`›` (or mode `< >`) arrows
-    // nudge the value both ways, and the 11-cell bar of a numeric row is a drag track. Because
-    // `mouse_region_at` scans in reverse, the later, finer rects win over the whole-row rect —
-    // so a bare row click only focuses (or activates folder/notify/browse), never fires a slider.
+    // Publish whole-row targets first; finer arrow/slider targets registered later win hit tests.
     popup.rect.set(Some(popup_rect));
     let right = rows[0].right();
     for (i, (label, value)) in entries.iter().enumerate() {
@@ -1420,13 +1430,11 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             },
             MouseTarget::RecordingRow(i),
         );
-        // Value column origin = display width of the rendered `"{marker}{label:<16}"` prefix, so
-        // the arrow/track rects line up with the glyphs even when a CJK label is wider than its
-        // char count.
+        // Measure the same display-width-padded prefix that was rendered above.
         let marker = if i == popup.row { "\u{25b8} " } else { "  " };
         let vx = rows[0].x
             + buttons::text_width(marker)
-            + buttons::text_width(&format!("{label:<label_w$}"));
+            + buttons::text_width(&pad_to_width(label, label_w));
         let vw = buttons::text_width(value);
         let put = |x: u16, w: u16, target: MouseTarget| {
             if w == 0 || x >= right {
@@ -1442,15 +1450,12 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
                 target,
             );
         };
-        // Rows 0 (mode) / 1 (min) / 2 (max) / 4 (keep) carry `‹ ›` arrows; the three numeric
-        // ones also expose their bar as a drag track. Folder / notify / browse activate on the
-        // whole-row rect above, so they get no finer rects here.
+        // The adjustable rows expose arrow targets; numeric rows also expose their bar.
         if matches!(i, 0 | 1 | 2 | 4) {
             put(vx, 1, MouseTarget::RecordingChange { row: i, delta: -1 });
             let last = vx.saturating_add(vw.saturating_sub(1));
             put(last, 1, MouseTarget::RecordingChange { row: i, delta: 1 });
             if i != 0 {
-                // The 11-cell bar sits just after the leading `‹ ` (2 cells).
                 put(vx + 2, 11, MouseTarget::RecordingSlider(i));
             }
         }

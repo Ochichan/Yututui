@@ -133,6 +133,9 @@ unicode-width = "0.2"
 # NFKC normalization for Spotify↔YTM track matching (fullwidth ASCII, compat forms —
 # endemic in K-pop/J-pop metadata). Pure Rust, shared unicode tables philosophy as above.
 unicode-normalization = "0.1"
+# Extended-grapheme boundaries for every TUI text editor. Cursor offsets remain UTF-8 byte
+# indices, but movement/deletion must never split combining sequences or emoji clusters.
+unicode-segmentation = "1.13"
 wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
 
 [build-dependencies]
