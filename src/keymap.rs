@@ -54,6 +54,8 @@ pub enum Action {
     OpenSettings,
     OpenAi,
     OpenSearch,
+    /// Open the collection-wide Local Find surface while dedicated Local Deck mode is active.
+    OpenLocalFind,
     Quit,
     Home,
     // Shared navigation (interpreted per context).
@@ -388,6 +390,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "검색: 곡 / 플레이리스트",
     ),
     (
+        Action::OpenLocalFind,
+        "open_local_find",
+        "Open Local Find",
+        "로컬 찾기 열기",
+    ),
+    (
         Action::QueueRemove,
         "queue_remove",
         "Remove from queue",
@@ -630,6 +638,9 @@ impl Action {
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
             (KeyContext::Library, Action::ToggleLocalMode) => {
                 t!("Enter / exit Local Deck", "로컬 덱 들어가기 / 나가기")
+            }
+            (KeyContext::LocalDeck, Action::OpenLocalFind) => {
+                t!("Find across Local Deck", "로컬 덱 전체에서 찾기")
             }
             (KeyContext::Playlists, Action::Confirm) => {
                 t!("Open / play selected", "열기 / 선택 재생")
@@ -1368,6 +1379,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
         (C::LocalDeck, A::AcceptAllImportReview, ch('A')),
+        (C::LocalDeck, A::OpenLocalFind, ctrl('f')),
         // Playlists tab (root list of playlists + opened-playlist drill-down).
         (C::Playlists, A::Confirm, key(KeyCode::Enter)),
         (C::Playlists, A::PlayAll, ch('a')),

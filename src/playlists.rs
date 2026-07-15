@@ -71,6 +71,10 @@ impl PlaylistRepairReport {
 #[serde(default)]
 pub struct Playlists {
     pub playlists: Vec<Playlist>,
+    /// In-process mutation generation used by Local Find projections. It is deliberately
+    /// absent from playlists.json; persisted playlist shape and compatibility stay unchanged.
+    #[serde(skip)]
+    pub(crate) revision: u64,
 }
 
 impl Playlists {
@@ -122,6 +126,18 @@ impl Playlists {
         &self.playlists
     }
 
+    /// Monotonic in-process generation for immutable Local Find projections.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Replace a live store after an external writer changed playlists.json while preserving a
+    /// monotonic in-process generation for Local Find corpus invalidation.
+    pub(crate) fn replace_reloaded(&mut self, mut reloaded: Self) {
+        reloaded.revision = self.revision.wrapping_add(1);
+        *self = reloaded;
+    }
+
     /// Repair a deserialized playlists file so it obeys the same bounded shape as create/add.
     pub fn repair_loaded(&mut self) -> PlaylistRepairReport {
         let mut report = PlaylistRepairReport::default();
@@ -162,6 +178,9 @@ impl Playlists {
                 }
             }
         }
+        if report.changed() {
+            self.bump_revision();
+        }
         report
     }
 
@@ -189,6 +208,7 @@ impl Playlists {
             name: name.to_owned(),
             songs: Vec::new(),
         });
+        self.bump_revision();
         Some(id)
     }
 
@@ -202,10 +222,14 @@ impl Playlists {
                 .iter()
                 .position(|p| p.name.eq_ignore_ascii_case(key))
         });
-        match idx {
+        let result = match idx {
             Some(i) => Self::push_song(&mut self.playlists[i], song),
             None => AddResult::NotFound,
+        };
+        if result == AddResult::Added {
+            self.bump_revision();
         }
+        result
     }
 
     /// Bulk append with one destination lookup and one de-duplication set. Results stay
@@ -238,6 +262,9 @@ impl Playlists {
                 results.push(AddResult::Added);
             }
         }
+        if results.contains(&AddResult::Added) {
+            self.bump_revision();
+        }
         results
     }
 
@@ -254,7 +281,9 @@ impl Playlists {
                     .iter()
                     .position(|p| p.name.eq_ignore_ascii_case(key))
             })?;
-        Some(self.playlists.remove(idx))
+        let removed = self.playlists.remove(idx);
+        self.bump_revision();
+        Some(removed)
     }
 
     /// Remove one track (by `video_id`) from the playlist matched by `key`. Returns
@@ -269,7 +298,11 @@ impl Playlists {
         let Some(i) = idx else { return false };
         let before = self.playlists[i].songs.len();
         self.playlists[i].songs.retain(|s| s.video_id != video_id);
-        self.playlists[i].songs.len() != before
+        let changed = self.playlists[i].songs.len() != before;
+        if changed {
+            self.bump_revision();
+        }
+        changed
     }
 
     fn push_song(p: &mut Playlist, song: Song) -> AddResult {
@@ -281,6 +314,10 @@ impl Playlists {
         }
         p.songs.push(song);
         AddResult::Added
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// A unique slug id derived from `name`, disambiguated with a numeric suffix.
@@ -388,9 +425,11 @@ mod tests {
     #[test]
     fn create_slugs_the_name() {
         let mut p = Playlists::default();
+        let revision = p.revision();
         let id = p.create("Chill Vibes!").unwrap();
         assert_eq!(id, "chill-vibes");
         assert_eq!(p.list().len(), 1);
+        assert_ne!(p.revision(), revision);
     }
 
     #[test]
@@ -421,9 +460,13 @@ mod tests {
     fn add_dedupes_and_reports_outcome() {
         let mut p = Playlists::default();
         p.create("Mix").unwrap();
+        let before_add = p.revision();
         assert_eq!(p.add("Mix", song("a")), AddResult::Added);
+        assert_ne!(p.revision(), before_add);
+        let after_add = p.revision();
         assert_eq!(p.add("mix", song("a")), AddResult::Duplicate); // same id, by name
         assert_eq!(p.add("missing", song("b")), AddResult::NotFound);
+        assert_eq!(p.revision(), after_add, "no-op mutations keep the revision");
         assert_eq!(p.find("mix").unwrap().songs.len(), 1);
     }
 
@@ -494,9 +537,13 @@ mod tests {
         let id = p.create("Mix").unwrap();
         p.add(&id, song("a"));
         p.add(&id, song("b"));
+        let before_remove = p.revision();
         assert!(p.remove_song(&id, "a"));
+        assert_ne!(p.revision(), before_remove);
+        let after_remove = p.revision();
         assert!(!p.remove_song(&id, "a")); // already removed
         assert!(!p.remove_song("missing", "b")); // unknown playlist
+        assert_eq!(p.revision(), after_remove);
         assert_eq!(p.find(&id).unwrap().songs.len(), 1);
         assert_eq!(p.find(&id).unwrap().songs[0].video_id, "b");
     }
@@ -533,6 +580,7 @@ mod tests {
                     },
                 })
                 .collect(),
+            revision: 0,
         };
 
         let report = playlists.repair_loaded();
@@ -565,6 +613,7 @@ mod tests {
                     songs: Vec::new(),
                 },
             ],
+            revision: 0,
         };
 
         let report = playlists.repair_loaded();
@@ -593,6 +642,7 @@ mod tests {
                 name: "Mix".to_owned(),
                 songs: vec![dirty],
             }],
+            revision: 0,
         };
 
         let report = playlists.repair_loaded();

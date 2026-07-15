@@ -48,6 +48,13 @@ impl App {
                     .normal_mode_theme
                     .clone()
                     .unwrap_or_else(|| self.config.effective_theme());
+            } else if self.local_dedicated_mode {
+                config.local_theme = Some(settings.draft.theme.normalized());
+                config.theme = self
+                    .local_mode
+                    .normal_mode_theme
+                    .clone()
+                    .unwrap_or_else(|| self.config.effective_theme());
             } else {
                 config.theme = settings.draft.theme.normalized();
             }
@@ -68,6 +75,13 @@ impl App {
             config.mouse_bindings = self.mousemap.to_overrides();
             if self.radio_dedicated_mode {
                 config.radio_theme = Some(self.theme.clone());
+            } else if self.local_dedicated_mode {
+                config.local_theme = Some(self.theme.clone());
+                config.theme = self
+                    .local_mode
+                    .normal_mode_theme
+                    .clone()
+                    .unwrap_or_else(|| self.config.effective_theme());
             } else {
                 config.theme = self.theme.clone();
             }
@@ -269,6 +283,48 @@ mod tests {
         app.settings.as_mut().unwrap().draft.autoplay_streaming = false;
 
         assert_eq!(app.personal_export_config().autoplay_streaming, Some(false));
+    }
+
+    #[test]
+    fn personal_export_config_separates_live_and_draft_local_themes() {
+        let mut app = App::new(100);
+        app.theme.set_preset(crate::theme::ThemePreset::Midnight);
+        app.config.theme = app.theme.clone();
+        app.local_mode.normal_mode_theme = Some(app.theme.clone());
+        app.local_dedicated_mode = true;
+        app.theme = ThemeConfig::local_launch();
+        app.theme
+            .set_override(crate::theme::ThemeRole::Accent, "#123456")
+            .unwrap();
+
+        let live = app.personal_export_config();
+        assert_eq!(live.theme.preset, "midnight");
+        assert_eq!(
+            live.local_theme
+                .as_ref()
+                .and_then(|theme| theme.overrides.get("accent"))
+                .map(String::as_str),
+            Some("#123456")
+        );
+
+        app.open_settings();
+        let draft = &mut app.settings.as_mut().unwrap().draft.theme;
+        draft.set_preset(crate::theme::ThemePreset::Custom);
+        draft
+            .set_override(crate::theme::ThemeRole::Accent, "#ABCDEF")
+            .unwrap();
+
+        let projected = app.personal_export_config();
+        assert_eq!(projected.theme.preset, "midnight");
+        assert_eq!(
+            projected
+                .local_theme
+                .unwrap()
+                .custom_overrides
+                .get("accent")
+                .map(String::as_str),
+            Some("#ABCDEF")
+        );
     }
 
     #[test]

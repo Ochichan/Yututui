@@ -67,6 +67,12 @@ fn secret_config() -> Config {
     config.audio.mpv.extra_args = vec![format!("--cookies={PRIVATE_PATH}")];
     config.audio.mpv.long_form_seek_optimization = crate::config::LongFormSeekOptimization::Auto;
     config.recording.track_directory = Some(PathBuf::from(PRIVATE_PATH));
+    let mut local_theme = crate::theme::ThemeConfig::local_launch();
+    local_theme.set_preset(crate::theme::ThemePreset::Custom);
+    local_theme
+        .set_override(crate::theme::ThemeRole::Accent, "#ABCDEF")
+        .unwrap();
+    config.local_theme = Some(local_theme);
     config
 }
 
@@ -86,6 +92,7 @@ fn fixture_snapshot() -> ExportSnapshot {
             name: "Portable list".to_owned(),
             songs: vec![remote, local.clone()],
         }],
+        revision: 0,
     };
     let mut signals = Signals::default();
     signals.record_play(&local.video_id, "safe artist", 1.0, 100);
@@ -177,6 +184,14 @@ fn projection_is_fail_closed_for_secrets_paths_urls_and_transfer_fields() {
     assert_eq!(snapshot.summary.omitted_signal_tracks, 1);
     assert_eq!(snapshot.summary.omitted_signal_events, 1);
     assert_eq!(snapshot.settings.playback["album_art_quality"], "high");
+    assert_eq!(
+        snapshot.settings.appearance["local_theme"]["preset"],
+        "custom"
+    );
+    assert_eq!(
+        snapshot.settings.appearance["local_theme"]["custom_overrides"]["accent"],
+        "#ABCDEF"
+    );
 }
 
 #[test]

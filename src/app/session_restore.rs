@@ -86,6 +86,9 @@ impl App {
         if cache.was_radio_mode() {
             self.activate_radio_dedicated_mode_ui();
         } else if cache.was_local_mode() {
+            if !self.local_dedicated_mode {
+                self.local_mode.normal_mode_theme = Some(self.theme.clone());
+            }
             self.activate_local_dedicated_mode_ui();
         }
 

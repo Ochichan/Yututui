@@ -151,11 +151,13 @@ There's also a recordings browser on **`Alt+Shift+E`**.
 
 ## 4. Local Deck — your own music, beautifully
 
-The Local Deck is a dedicated player for music that lives *on your computer*: your downloads and your own audio files. No internet needed at all.
+The Local Deck is a dedicated player for music that lives *on your computer*: your downloads and your own audio files. Browsing, Find and playback use those local files and never fall back to an online stream. Other features you have opted into — such as lyrics, scrobbling or update checks — may still use the network, so the Local Deck is not a whole-app airplane mode.
 
 ### In and out
 
 Open the Library (**`l`**), then press **`Alt+Shift+L`**. The app asks *"Switch to Local Player mode?"* — confirm, and you're in an immersive shell built just for browsing local music. Press **`Alt+Shift+L`** again to leave.
+
+The Local Deck has its own saved theme, separate from your normal and Radio themes. On a fresh install — or when upgrading a config that has no Local theme yet — it starts with **Local Launch**. Change and save the theme while you are in the Local Deck and it will remember that choice. Leaving restores your normal theme; returning, including after a restart, restores your saved Local theme.
 
 ### What you'll see
 
@@ -168,6 +170,21 @@ The Local Deck scans your download folder (it understands the *Artist / Album / 
 - **Smart Lists** — automatic collections.
 - **Scan Errors** — files the scanner couldn't read, so nothing fails silently.
 - **Import Sessions / Inbox** — where Spotify imports arrive for review (next chapter!).
+
+### Finding anything in the Local Deck
+
+Choose **Find** in the Local Deck navigation or press **`Ctrl+F`**. This is a separate, local-only search across **All, Tracks, Albums, Artists, Genres, Folders** and the locally playable part of **Playlists**. It never hands an empty result to YouTube or another provider. Pressing **`/`** outside Find still means something deliberately smaller: filter only the Local Deck section you are currently viewing.
+
+Type ordinary words to require all of them, or put a phrase in quotes. You can narrow a query with `t:` (title), `ar:` (track artist), `al:` (album), `aa:` (album artist), `g:` (genre), `path:`, `fmt:`, `year:`, `is:`, `missing:` and `sort:`. For example, `ar:bjork year:1995..2001 sort:recent` searches a year range and puts the newest matches first. A query beginning with **`>`** offers safe Local Deck commands such as rescan, rebuild, queue and section shortcuts — it never runs a shell command.
+
+Open **Refine** — or press **`/`** while the result list has focus — to choose the scope and the default sort without rewriting the query. (`/` typed in the Find input remains an ordinary path character.) Apply commits the change; Cancel or `Esc` throws the draft away. A `sort:` term in the query temporarily overrides Refine's default and removing it restores that default.
+
+- On a track, `Enter` or double-click plays it now. On an album, artist, genre, folder or playlist, it opens the matching local tracks.
+- **`a`** or **`\`** adds the selected track or collection to the queue; **`P`** plays it now.
+- **`A`** adds the whole result mix; **`s`** shuffles and plays the whole result mix. The order follows the selected sort, duplicates are removed, and an exact confirmation appears before the 999-item queue limit would omit anything.
+- Empty and no-result views offer local recovery actions such as Rescan, Add Music Folder and View Scan Errors — not an online fallback.
+
+One workflow crosses that boundary on purpose: from an **Import Sessions** row, you can explicitly request a manual online candidate search. YuTuTui! asks before leaving the Local Deck; only after you confirm and the mode switch succeeds does it submit that one search in normal mode. Cancelling or a stale/failed switch submits nothing.
 
 ### Getting music in
 

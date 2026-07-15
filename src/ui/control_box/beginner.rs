@@ -155,5 +155,12 @@ mod tests {
             text_for(&docked_parts, &MouseTarget::StreamingMenu).trim_end(),
             "[^r] Streaming autoplay: On · Balanced"
         );
+
+        app.local_dedicated_mode = true;
+        let (_, local_parts) = fitted_status_line_parts(&app, 240, false);
+        assert_eq!(
+            text_for(&local_parts, &MouseTarget::StreamingMenu).trim_end(),
+            "[^r] Streaming autoplay: Off (saved On)"
+        );
     }
 }

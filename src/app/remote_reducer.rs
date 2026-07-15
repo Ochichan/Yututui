@@ -309,6 +309,18 @@ impl App {
     /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
     /// an immediate top-up when enabling, so a low queue doesn't gap before the next track).
     fn remote_set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
+        if self.local_dedicated_mode {
+            self.status.text = t!(
+                "Autoplay stays off in Local Deck",
+                "로컬 덱에서는 자동재생이 꺼져 있어요"
+            )
+            .to_owned();
+            self.dirty = true;
+            return (
+                RemoteResponse::err("streaming_unavailable_in_local_mode"),
+                Vec::new(),
+            );
+        }
         let on = state.resolve(self.autoplay_streaming);
         // Music-mode invariant: reject the enable without changing playback/config state or
         // emitting effects. The TUI still surfaces the same localized notice as its key path.
@@ -508,7 +520,7 @@ impl App {
             volume: self.playback.volume,
             position: if total == 0 { 0 } else { position },
             total,
-            streaming: self.autoplay_streaming,
+            streaming: self.streaming_active(),
             owner_mode: InstanceMode::StandaloneTui,
             settings,
             queue: self
@@ -585,7 +597,7 @@ impl App {
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
             position_epoch: self.playback.position_epoch,
-            streaming: self.autoplay_streaming,
+            streaming: self.streaming_active(),
             radio_mode: self.radio_dedicated_mode,
             stream_now_playing: self
                 .playback

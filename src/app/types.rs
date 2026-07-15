@@ -496,6 +496,25 @@ pub enum LocalCmd {
         op_id: u64,
         session_id: String,
     },
+    /// Rebuild the immutable Local Find corpus after either owned source generation changes.
+    BuildFindCorpus {
+        generation: u64,
+        tracks: Vec<crate::local::LocalTrack>,
+        playlists: Vec<crate::local::find::LocalFindPlaylistInput>,
+        revision: crate::local::find::LocalFindCorpusRevision,
+        options: crate::local::find::LocalFindCorpusOptions,
+    },
+    /// Evaluate one parsed query against a shared immutable corpus off the UI thread.
+    EvaluateFind {
+        request_id: u64,
+        generation: u64,
+        corpus: Arc<crate::local::find::LocalFindCorpus>,
+        query: crate::local::find::LocalFindQuery,
+        scope: crate::local::find::LocalFindScope,
+        sort: crate::local::find::LocalFindSort,
+    },
+    /// Retire any in-flight Local Find evaluation after a blank or invalid live edit.
+    CancelFindEvaluations,
 }
 
 /// Local Deck worker results.
@@ -528,6 +547,15 @@ pub enum LocalMsg {
         result: Result<crate::transfer::review_action::ReviewBatchSummary, String>,
         elapsed_ms: u128,
     },
+    FindCorpusReady {
+        generation: u64,
+        corpus: Arc<crate::local::find::LocalFindCorpus>,
+    },
+    FindResultsReady {
+        request_id: u64,
+        generation: u64,
+        snapshot: crate::local::find::LocalFindSnapshot,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,6 +575,30 @@ pub enum OnboardingAction {
     Skip,
     ConfirmSkip,
     CancelSkip,
+}
+
+/// Exact Local Find view rendered into a pointer hit map. A result snapshot and its drill-down
+/// share the same query generation, so the drill owner is part of the identity rather than only
+/// relying on a numeric generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalFindPointerView {
+    Launchpad,
+    Recovery,
+    Results,
+    Drill(crate::local::find::LocalFindHitId),
+}
+
+/// Identity stamped onto Local Find targets whose meaning depends on the rendered row set.
+/// Both generations are required: a corpus rebuild can retain the query request, while a query
+/// edit can retain the corpus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFindPointerStamp {
+    pub corpus_generation: u64,
+    pub result_generation: u64,
+    pub view: LocalFindPointerView,
+    /// Recovery rows and refreshed drills can change length without changing their broad view
+    /// kind; include the exact rendered geometry so an old scrollbar drag cannot target it.
+    pub rows_len: usize,
 }
 
 /// A clickable terminal region's semantic target.
@@ -616,6 +668,28 @@ pub enum MouseTarget {
     LocalNav(usize),
     /// A row in the Local Deck list, by display index.
     LocalRow(usize),
+    /// A generation-stamped Local Find result/drill row. Old frames cannot redirect actions.
+    LocalFindRow {
+        index: usize,
+        stamp: LocalFindPointerStamp,
+    },
+    LocalFindInput,
+    LocalFindSubmit,
+    LocalFindRefineOpen,
+    LocalFindRefineRow(usize),
+    LocalFindLaunchpad {
+        index: usize,
+        stamp: LocalFindPointerStamp,
+    },
+    /// A Local Find scrollbar is separate from generic scrollbars so a delayed press or drag
+    /// cannot move a newer query, corpus, or drill view.
+    LocalFindScrollbar {
+        stamp: LocalFindPointerStamp,
+    },
+    ConfirmLocalFindBulk,
+    CancelLocalFindBulk,
+    ConfirmLocalFindRebuild,
+    CancelLocalFindRebuild,
     /// The trailing `✗` on a saved Local Deck import-session row. Carries the exact persisted
     /// job id so a re-sort between render and click can never redirect the destructive action.
     LocalImportDel(String),
@@ -769,6 +843,7 @@ pub struct MouseButtonRegion {
 pub enum ScrollSurface {
     Library,
     Search,
+    LocalFind,
     /// The search results-filter popup's list.
     SearchFilter,
     AiTranscript,
@@ -950,6 +1025,14 @@ pub enum Mode {
     Ai,
 }
 
+/// Contextual owner of the shared top-level Search/Find navigation slot.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ActiveSearchSurface {
+    Normal,
+    Radio,
+    Local,
+}
+
 /// Synced lyrics for one track (held while it's the current track).
 pub struct TrackLyrics {
     pub video_id: Arc<str>,
@@ -1051,6 +1134,20 @@ impl RadioModeConfirm {
 pub enum LocalModeConfirm {
     Enter,
     Exit,
+}
+
+/// Single-use handoff for the sole intentional online transition from Local Deck: a manually
+/// confirmed Import Sessions candidate search. The normal Search state is not touched until the
+/// dedicated-mode exit has committed and this stable origin has been revalidated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalImportSearchContinuation {
+    /// Local-exit confirmation that explicitly authorized this one online search.
+    pub confirmation_token: u64,
+    pub query: String,
+    pub session_id: String,
+    pub row_id: String,
+    pub source_order: u32,
+    pub source_revision: u64,
 }
 
 impl LocalModeConfirm {

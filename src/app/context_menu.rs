@@ -75,6 +75,12 @@ enum ContextTarget {
         song_ids: Vec<(String, Option<PathBuf>)>,
         download_ids: Vec<(String, Option<PathBuf>)>,
     },
+    LocalFind {
+        index: usize,
+        generation: u64,
+        id: crate::local::find::LocalFindHitId,
+        drill_source: Option<crate::local::find::LocalFindHitId>,
+    },
 }
 
 impl ContextTarget {
@@ -83,7 +89,7 @@ impl ContextTarget {
             Self::Search { .. } => MouseContext::Search,
             Self::LibrarySongs { .. } | Self::LibraryPlaylist { .. } => MouseContext::Library,
             Self::Queue { .. } => MouseContext::Queue,
-            Self::Local { .. } => MouseContext::Local,
+            Self::Local { .. } | Self::LocalFind { .. } => MouseContext::Local,
         }
     }
 }
@@ -186,6 +192,9 @@ impl App {
             || self.overlays.recording_settings.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
+            || self.local_mode.find.pending_bulk_confirm.is_some()
+            || self.local_mode.find.pending_rebuild_confirm
+            || self.local_mode.find.refine_popup.open
             || self.local_import_confirmation_open()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_download.is_some()
@@ -199,6 +208,9 @@ impl App {
 
     /// A right press either opens the in-TUI menu or runs the configured safe direct action.
     pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.context_menu_blocked() {
+            return Vec::new();
+        }
         if let Some(menu) = self.overlays.context_menu.as_ref()
             && menu.anchor_col == col
             && menu.anchor_row == row
@@ -216,9 +228,6 @@ impl App {
         }
         if self.overlays.context_menu.take().is_some() {
             self.dirty = true;
-        }
-        if self.context_menu_blocked() {
-            return Vec::new();
         }
         let Some(target) = self.context_target_at(col, row) else {
             return Vec::new();
@@ -239,6 +248,9 @@ impl App {
     /// now covering that cell. If single-click is configured as a direct action no menu exists,
     /// so the still-current underlying hit map supplies the snapshot instead.
     pub(in crate::app) fn on_mouse_right_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.context_menu_blocked() {
+            return Vec::new();
+        }
         if let Some(menu) = self.overlays.context_menu.as_ref()
             && menu.anchor_col == col
             && menu.anchor_row == row
@@ -288,6 +300,18 @@ impl App {
             MouseTarget::QueueRow(self.queue_popup.cursor)
         } else {
             match self.mode {
+                Mode::Search
+                    if self.active_search_surface() == ActiveSearchSurface::Local
+                        && self.local_mode.find.focus == LocalFindFocus::Results =>
+                {
+                    MouseTarget::LocalFindRow {
+                        index: self.local_mode.find.selected,
+                        stamp: self.local_find_pointer_stamp(),
+                    }
+                }
+                Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                    return Vec::new();
+                }
                 Mode::Search if self.search.focus == SearchFocus::Results => {
                     MouseTarget::ListRow(self.search.selected)
                 }
@@ -446,6 +470,24 @@ impl App {
 
         let target = self.mouse_target_at(col, row)?;
         match self.mode {
+            Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                let MouseTarget::LocalFindRow { index, stamp } = target else {
+                    return None;
+                };
+                if !self.local_find_pointer_stamp_is_live(&stamp)
+                    || !self.local_find_visible_revision_is_current()
+                {
+                    return None;
+                }
+                let generation = stamp.result_generation;
+                let (id, drill_source) = self.local_find_stable_id_at(index)?;
+                Some(ContextTarget::LocalFind {
+                    index,
+                    generation,
+                    id,
+                    drill_source,
+                })
+            }
             Mode::Search => {
                 let MouseTarget::ListRow(index) = target else {
                     return None;
@@ -598,6 +640,12 @@ impl App {
                 self.local_mode.ui.selected = *index;
                 self.local_mode.ui.anchor = *index;
             }
+            ContextTarget::LocalFind {
+                index, generation, ..
+            } => {
+                self.local_find_select(*index, *generation);
+                self.local_mode.find.focus = LocalFindFocus::Results;
+            }
         }
         self.dirty = true;
     }
@@ -664,6 +712,31 @@ impl App {
                 C::Remove,
             ],
             ContextTarget::Queue { .. } => vec![C::PlayFromHere, C::Remove],
+            ContextTarget::LocalFind {
+                index,
+                generation,
+                id,
+                drill_source,
+            } => {
+                let expected = Some((id.clone(), drill_source.clone()));
+                if *generation != self.local_find_action_generation()
+                    || !self.local_find_visible_revision_is_current()
+                    || self.local_find_stable_id_at(*index) != expected
+                {
+                    return Vec::new();
+                }
+                if matches!(id, crate::local::find::LocalFindHitId::Command(_)) {
+                    vec![C::Activate]
+                } else if drill_source.is_none()
+                    && self
+                        .local_find_hit_at(*index)
+                        .is_some_and(|hit| !hit.is_playable())
+                {
+                    Vec::new()
+                } else {
+                    vec![C::Activate, C::PlayNow, C::Enqueue]
+                }
+            }
             ContextTarget::Local {
                 row,
                 song_ids,
@@ -939,6 +1012,36 @@ impl App {
                     }
                     ContextCommand::Enqueue => self.local_enqueue_row_index(index),
                     ContextCommand::Download => self.local_download_selected(),
+                    _ => Vec::new(),
+                }
+            }
+            ContextTarget::LocalFind {
+                index,
+                generation,
+                id,
+                drill_source,
+            } => {
+                if self.mode != Mode::Search
+                    || self.active_search_surface() != ActiveSearchSurface::Local
+                    || generation != self.local_find_action_generation()
+                    || !self.local_find_visible_revision_is_current()
+                    || self.local_find_stable_id_at(index)
+                        != Some((id.clone(), drill_source.clone()))
+                {
+                    return self.context_target_stale();
+                }
+                self.local_find_select(index, generation);
+                self.local_mode.find.focus = LocalFindFocus::Results;
+                self.dirty = true;
+                let command_row = matches!(id, crate::local::find::LocalFindHitId::Command(_));
+                match command {
+                    ContextCommand::Activate => self.local_find_activate_index(index, generation),
+                    ContextCommand::PlayNow if !command_row => {
+                        self.local_find_play_index(index, generation)
+                    }
+                    ContextCommand::Enqueue if !command_row => {
+                        self.local_find_enqueue_index(index, generation)
+                    }
                     _ => Vec::new(),
                 }
             }

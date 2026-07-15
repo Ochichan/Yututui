@@ -149,6 +149,31 @@ pub fn truncate_to_width(s: &str, max: usize) -> String {
     out
 }
 
+/// Keep the right edge of editable text visible, reserving one leading cell for an ellipsis when
+/// truncation is necessary. This is CJK-aware and never splits a wide character.
+pub fn tail_to_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let available = max.saturating_sub(1);
+    let mut reversed = Vec::new();
+    let mut width = 0usize;
+    for ch in s.chars().rev() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > available {
+            break;
+        }
+        reversed.push(ch);
+        width += ch_width;
+    }
+    let mut out = String::from("…");
+    out.extend(reversed.into_iter().rev());
+    out
+}
+
 /// Word-wrap `text` to at most `width` display cells per line (CJK-aware). Splits on
 /// whitespace, collapses runs of whitespace to a single break, and hard-breaks a single
 /// word longer than `width` at the cell boundary so nothing ever overflows. `width` is
@@ -288,6 +313,17 @@ mod tests {
         assert_eq!(truncate_to_width("가나다", 6), "가나다");
         assert_eq!(truncate_to_width("abcdef", 3), "abc");
         assert_eq!(truncate_to_width("", 4), "");
+    }
+
+    #[test]
+    fn tail_window_keeps_the_editable_cjk_suffix_visible() {
+        assert_eq!(tail_to_width("abcdef", 4), "…def");
+        assert_eq!(tail_to_width("가나다라마", 5), "…라마");
+        assert_eq!(
+            UnicodeWidthStr::width(tail_to_width("가나다라마", 4).as_str()),
+            3
+        );
+        assert_eq!(tail_to_width("anything", 0), "");
     }
 
     #[test]

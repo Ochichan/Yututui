@@ -244,6 +244,10 @@ fn json_round_trips() {
         .unwrap();
     let mut radio_theme = ThemeConfig::default();
     radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
+    let mut local_theme = ThemeConfig::local_launch();
+    local_theme
+        .set_override(crate::theme::ThemeRole::Accent, "#ABCDEF")
+        .unwrap();
     let c = Config {
         beginner_mode: true,
         beginner_tutorial: BeginnerTutorialProgress {
@@ -299,6 +303,7 @@ fn json_round_trips() {
         dj_gem_language: DjGemLanguage::ChineseTraditional,
         theme,
         radio_theme: Some(radio_theme),
+        local_theme: Some(local_theme),
         retro_mode: true,
         language: Language::Korean,
         keybindings: std::collections::BTreeMap::new(),
@@ -453,6 +458,33 @@ fn json_round_trips() {
     );
     assert!(Config::default().radio_theme.is_none());
     assert!(Config::default().effective_radio_theme().is_none());
+    assert_eq!(
+        back.effective_local_theme().preset_enum(),
+        crate::theme::ThemePreset::LocalLaunch
+    );
+    assert_eq!(
+        back.effective_local_theme()
+            .effective_hex(crate::theme::ThemeRole::Accent),
+        "#ABCDEF"
+    );
+}
+
+#[test]
+fn missing_local_theme_uses_local_launch_without_rewriting_the_slot() {
+    let legacy: Config = serde_json::from_str(r#"{"theme":{"preset":"midnight"}}"#).unwrap();
+
+    assert!(legacy.local_theme.is_none());
+    assert_eq!(
+        legacy.effective_local_theme().preset_enum(),
+        crate::theme::ThemePreset::LocalLaunch
+    );
+    assert_eq!(
+        legacy
+            .effective_local_theme()
+            .effective_hex(crate::theme::ThemeRole::Background),
+        "none"
+    );
+    assert!(Config::default().local_theme.is_none());
 }
 
 #[test]
@@ -470,6 +502,12 @@ fn custom_theme_palettes_round_trip_independently() {
         .set_override(crate::theme::ThemeRole::Accent, "#654321")
         .unwrap();
     config.radio_theme = Some(radio_theme);
+    let mut local_theme = ThemeConfig::local_launch();
+    local_theme.set_preset(crate::theme::ThemePreset::Custom);
+    local_theme
+        .set_override(crate::theme::ThemeRole::Accent, "#ABCDEF")
+        .unwrap();
+    config.local_theme = Some(local_theme);
 
     let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
     assert_eq!(
@@ -481,6 +519,11 @@ fn custom_theme_palettes_round_trip_independently() {
             .unwrap()
             .effective_hex(crate::theme::ThemeRole::Accent),
         "#654321"
+    );
+    assert_eq!(
+        back.effective_local_theme()
+            .effective_hex(crate::theme::ThemeRole::Accent),
+        "#ABCDEF"
     );
 }
 

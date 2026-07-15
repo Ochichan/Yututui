@@ -769,6 +769,10 @@ pub struct Config {
     /// settings save deliberately keeps it that way), so the radio theme needs its own
     /// persisted slot or it dies with the process. `None` → Radio default on radio entry.
     pub radio_theme: Option<ThemeConfig>,
+    /// Dedicated-Local-Deck theme. Like `radio_theme`, this is separate so editing Local's
+    /// appearance cannot overwrite the normal theme. `None` → Local Launch on Local entry,
+    /// including for configs written before this field existed.
+    pub local_theme: Option<ThemeConfig>,
     /// Linux basic TTY compatibility mode: English UI, Retro theme, ASCII-safe rendering.
     pub retro_mode: bool,
 
@@ -981,6 +985,7 @@ impl Default for Config {
             dj_gem_language: DjGemLanguage::default(),
             theme: ThemeConfig::default(),
             radio_theme: None,
+            local_theme: None,
             retro_mode: false,
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
@@ -1453,6 +1458,15 @@ impl Config {
     /// never saved a theme inside radio mode.
     pub fn effective_radio_theme(&self) -> Option<ThemeConfig> {
         self.radio_theme.as_ref().map(ThemeConfig::normalized)
+    }
+
+    /// The normalized dedicated-Local-Deck theme. Unlike the persisted optional slot, the
+    /// runtime value always exists: fresh and legacy configs both enter Local with Local Launch.
+    pub fn effective_local_theme(&self) -> ThemeConfig {
+        self.local_theme
+            .as_ref()
+            .map(ThemeConfig::normalized)
+            .unwrap_or_else(ThemeConfig::local_launch)
     }
 
     /// The UI language to apply at runtime (default English).

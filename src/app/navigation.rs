@@ -3,6 +3,18 @@
 use super::*;
 
 impl App {
+    /// Resolve the contextual owner of the shared Search navigation slot once, so rendering and
+    /// every input path cannot drift into different Normal/Radio/Local interpretations.
+    pub fn active_search_surface(&self) -> ActiveSearchSurface {
+        if self.local_dedicated_mode {
+            ActiveSearchSurface::Local
+        } else if self.radio_dedicated_mode {
+            ActiveSearchSurface::Radio
+        } else {
+            ActiveSearchSurface::Normal
+        }
+    }
+
     /// The single footer hint shown across every view: just the live chord that opens the
     /// `?` cheat-sheet (which already lists every binding for every screen). Built from the
     /// keymap so remapping "toggle help" updates the hint in lock-step.
@@ -138,11 +150,17 @@ impl App {
         self.search.select_all = false;
         self.ai.select_all = false;
         if self.mode == mode {
+            if mode == Mode::Search && self.active_search_surface() == ActiveSearchSurface::Local {
+                return self.open_local_find();
+            }
             self.dirty = true;
             return Vec::new();
         }
         match mode {
             Mode::Player => self.mode = Mode::Player,
+            Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                return self.open_local_find();
+            }
             Mode::Search => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;

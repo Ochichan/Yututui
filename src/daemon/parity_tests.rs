@@ -37,7 +37,7 @@ use crate::signals::Signals;
 use crate::station::StationStore;
 use crate::util::delivery::DeliveryReceipt;
 
-use super::engine::{DaemonEngine, EngineState};
+use super::engine::{DaemonEngine, EngineEffect, EngineState};
 
 const RNG_SEED: u64 = 20260703;
 
@@ -81,19 +81,57 @@ fn hermetic_pair() -> (App, DaemonEngine) {
     (app, engine)
 }
 
+/// Construct both owners as a fresh process from one persisted config + queue snapshot.
+/// Unlike [`hermetic_pair`], this deliberately runs the App's startup config projection so
+/// tests can exercise raw-vs-effective settings restored from disk without first toggling them
+/// (which would itself start an autoplay request).
+fn hermetic_pair_from_config(config: Config, snap: QueueSnapshot) -> (App, DaemonEngine) {
+    let mut engine = DaemonEngine::with_state(
+        EngineState {
+            config: config.clone(),
+            station: StationStore::default(),
+            library: Library::default(),
+            playlists: crate::playlists::Playlists::default(),
+            signals: Signals::default(),
+        },
+        Arc::new(|_event| {}),
+    );
+    engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
+
+    let mut app = App::new(config.volume);
+    app.apply_config(&config);
+    app.queue.restore_snapshot(snap);
+    app.queue.seed_rng(RNG_SEED);
+    app.playback.paused = true;
+
+    (app, engine)
+}
+
 /// Admit every two-phase player intent emitted by a reducer turn, including intents emitted by
 /// an accepted commit. Other side effects remain outside this state-projection parity harness.
 fn admit_app_player_intents(app: &mut App, commands: Vec<Cmd>) {
+    let _ = admit_app_player_intents_collect(app, commands);
+}
+
+/// Admit a complete player-intent chain and retain every non-player effect emitted by its
+/// accepted commits. Mode-switch parity needs this projection because the effective autoplay
+/// check happens only after the target mode has committed.
+fn admit_app_player_intents_collect(app: &mut App, commands: Vec<Cmd>) -> Vec<Cmd> {
     let mut pending = std::collections::VecDeque::from(commands);
+    let mut effects = Vec::new();
     while let Some(command) = pending.pop_front() {
-        if let Cmd::PlayerControl(PlayerControl::Intent(intent)) = command {
-            pending.extend(crate::runtime::player_delivery::settle_player_intent(
-                app,
-                *intent,
-                Ok(DeliveryReceipt::Enqueued),
-            ));
+        match command {
+            Cmd::PlayerControl(PlayerControl::Intent(intent)) => {
+                pending.extend(crate::runtime::player_delivery::settle_player_intent(
+                    app,
+                    *intent,
+                    Ok(DeliveryReceipt::Enqueued),
+                ));
+            }
+            effect => effects.push(effect),
         }
     }
+    effects
 }
 
 /// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`) and
@@ -902,6 +940,225 @@ async fn daemon_conflict_disables_remain_allowed() {
         assert!(status.streaming);
         assert_eq!(status.repeat, Repeat::Off);
     }
+}
+
+#[tokio::test]
+async fn local_mode_streaming_is_effectively_off_and_all_toggles_reject_in_lockstep() {
+    for initially_enabled in [false, true] {
+        let (mut app, mut engine) = hermetic_pair();
+        if initially_enabled {
+            let command = RemoteCommand::Streaming {
+                state: ToggleState::On,
+            };
+            let app_response = app_apply(&mut app, command.clone());
+            let (engine_response, shutdown, _) = engine.handle_remote(command).await;
+            assert!(app_response.ok && engine_response.ok && !shutdown);
+        }
+
+        app.local_dedicated_mode = true;
+        engine.restore_last_mode_for_test(crate::session::LastMode::Local);
+
+        let app_status = app_apply(&mut app, RemoteCommand::Status)
+            .status
+            .expect("App status");
+        let (engine_response, shutdown, effects) =
+            engine.handle_remote(RemoteCommand::Status).await;
+        let engine_status = engine_response.status.expect("daemon status");
+        assert!(!shutdown && effects.is_empty());
+        assert!(!app_status.streaming && !engine_status.streaming);
+        assert_eq!(app_status.settings.autoplay_streaming, initially_enabled);
+        assert_eq!(engine_status.settings.autoplay_streaming, initially_enabled);
+        assert_parity("Local effective streaming projection", &app, &engine);
+
+        for command in [
+            RemoteCommand::Streaming {
+                state: ToggleState::On,
+            },
+            RemoteCommand::Streaming {
+                state: ToggleState::Off,
+            },
+            RemoteCommand::Streaming {
+                state: ToggleState::Toggle,
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::AutoplayStreaming { value: true },
+            },
+            RemoteCommand::SetSetting {
+                change: RemoteSettingChange::AutoplayStreaming { value: false },
+            },
+        ] {
+            let (app_response, app_cmds) = app_apply_with_cmds(&mut app, command.clone());
+            let (engine_response, shutdown, engine_effects) = engine.handle_remote(command).await;
+
+            assert!(!app_response.ok && !engine_response.ok && !shutdown);
+            assert_eq!(app_response.reason, engine_response.reason);
+            assert_eq!(
+                app_response.reason.as_deref(),
+                Some("streaming_unavailable_in_local_mode")
+            );
+            assert!(app_cmds.is_empty());
+            assert!(engine_effects.is_empty());
+            assert_eq!(app.autoplay_streaming, initially_enabled);
+            assert_eq!(
+                app.config.autoplay_streaming.unwrap_or(false),
+                initially_enabled
+            );
+            let status = engine.status();
+            assert!(!status.streaming);
+            assert_eq!(status.settings.autoplay_streaming, initially_enabled);
+            assert_parity("Local streaming toggle rejection", &app, &engine);
+        }
+    }
+}
+
+#[tokio::test]
+async fn restored_local_mode_suppresses_topups_and_exit_restores_them_in_lockstep() {
+    use crate::session::{LastMode, SessionCache};
+
+    let config = Config {
+        autoplay_streaming: Some(true),
+        repeat: Repeat::Off,
+        ..Config::default()
+    };
+    let snapshot = |ids: &[&str], cursor| {
+        let mut queue = Queue::default();
+        queue.set(ids.iter().map(|id| song(id)).collect(), cursor);
+        queue.snapshot()
+    };
+    let local_queue = snapshot(&["local-seed", "local-next"], 0);
+    let normal_queue = snapshot(&["normal-seed", "normal-next"], 0);
+    let mut cache = SessionCache::from_last_mode(LastMode::Local);
+    cache.local_queue = Some(local_queue.clone());
+    cache.normal_queue = Some(normal_queue.clone());
+
+    // Model a fresh App/daemon process restoring a persisted Local session with the user's raw
+    // normal-mode autoplay preference still on. Neither owner may start its initial refill.
+    let (mut app, mut engine) = hermetic_pair_from_config(config, local_queue.clone());
+    app.restore_last_session_from_cache(&cache);
+    app.queue.seed_rng(RNG_SEED);
+    engine.restore_queue_snapshot(local_queue, RNG_SEED);
+    engine.restore_last_mode_for_test(cache.last_mode);
+
+    assert!(app.local_dedicated_mode);
+    assert!(app.autoplay_streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(true));
+    assert_eq!(
+        engine.core_view().config.autoplay_streaming,
+        Some(true),
+        "daemon restart must retain the raw preference"
+    );
+    assert!(
+        engine.initial_effects().is_empty(),
+        "a Local daemon restart emitted an initial top-up"
+    );
+    assert_parity("restored Local session", &app, &engine);
+
+    // Removing the only upcoming row puts both queues at the lowest possible refill boundary.
+    // The ordinary maybe-top-up path still runs in both owners, but the effective Local policy
+    // must turn it into zero network effects.
+    let command = RemoteCommand::QueueRemove { position: 1 };
+    let (app_response, app_effects) = app_apply_with_cmds(&mut app, command.clone());
+    let (engine_response, shutdown, engine_effects) = engine.handle_remote(command).await;
+    assert!(app_response.ok && engine_response.ok && !shutdown);
+    assert_eq!(app_response.reason, engine_response.reason);
+    assert!(
+        app_effects
+            .iter()
+            .all(|effect| !matches!(effect, Cmd::StreamingFallback { .. })),
+        "App emitted a low-queue Local top-up"
+    );
+    assert!(engine_effects.is_empty(), "daemon emitted a Local top-up");
+    assert_parity("Local low-queue top-up suppression", &app, &engine);
+
+    // The forced path is reached by a live streaming-mode edit. Persistence is expected on the
+    // App side; only StreamingFallback/EngineEffect would violate the Local boundary.
+    let command = RemoteCommand::SetSetting {
+        change: RemoteSettingChange::StreamingMode {
+            value: crate::streaming::StreamingMode::Discovery,
+        },
+    };
+    let (app_response, app_effects) = app_apply_with_cmds(&mut app, command.clone());
+    let (engine_response, shutdown, engine_effects) = engine.handle_remote(command).await;
+    assert!(app_response.ok && engine_response.ok && !shutdown);
+    assert_eq!(app_response.reason, engine_response.reason);
+    assert!(
+        app_effects
+            .iter()
+            .all(|effect| !matches!(effect, Cmd::StreamingFallback { .. })),
+        "App emitted a forced Local top-up"
+    );
+    assert!(
+        engine_effects.is_empty(),
+        "daemon emitted a forced Local top-up"
+    );
+    assert_parity("Local forced top-up suppression", &app, &engine);
+
+    // Effective streaming is off, but the saved raw preference still owns the central
+    // streaming/repeat invariant. Both owners reject the conflict without rewriting either.
+    let (app_response, app_effects) = app_apply_with_cmds(&mut app, RemoteCommand::CycleRepeat);
+    let (engine_response, shutdown, engine_effects) =
+        engine.handle_remote(RemoteCommand::CycleRepeat).await;
+    assert!(!app_response.ok && !engine_response.ok && !shutdown);
+    assert_eq!(app_response.reason, engine_response.reason);
+    assert_eq!(
+        app_response.reason.as_deref(),
+        Some("incompatible_playback_modes")
+    );
+    assert!(app_effects.is_empty() && engine_effects.is_empty());
+    assert_eq!(app.queue.repeat, Repeat::Off);
+    assert!(app.autoplay_streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(true));
+    assert_eq!(engine.status().repeat, Repeat::Off);
+    assert!(engine.status().settings.autoplay_streaming);
+    assert_eq!(engine.core_view().config.autoplay_streaming, Some(true));
+    assert_parity("Local repeat conflict rejection", &app, &engine);
+
+    // Drive the App through its real admission-atomic Local exit. The target mode commits before
+    // the restored normal track's refill check, so autoplay must become effective immediately.
+    let request_exit = crossterm::event::KeyEvent {
+        code: crossterm::event::KeyCode::Char('l'),
+        modifiers: crossterm::event::KeyModifiers::ALT | crossterm::event::KeyModifiers::SHIFT,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    assert!(app.update(Msg::Key(request_exit)).is_empty());
+    let confirm_exit = crossterm::event::KeyEvent {
+        code: crossterm::event::KeyCode::Enter,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+        kind: crossterm::event::KeyEventKind::Press,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    let exit_intent = app.update(Msg::Key(confirm_exit));
+    let app_exit_effects = admit_app_player_intents_collect(&mut app, exit_intent);
+    assert!(!app.local_dedicated_mode);
+    assert!(app_exit_effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Cmd::StreamingFallback { seed_video_id, .. } if seed_video_id == "normal-seed"
+        )
+    }));
+
+    // The daemon restores the same persisted normal queue/mode at its owner boundary. Its next
+    // initial refill must now agree with the App exit commit.
+    engine.restore_queue_snapshot(normal_queue, RNG_SEED);
+    engine.restore_last_mode_for_test(LastMode::Normal);
+    let engine_exit_effects = engine.initial_effects();
+    assert!(engine_exit_effects.iter().any(|effect| {
+        matches!(
+            effect,
+            EngineEffect::StreamingFallback { seed_video_id, .. }
+                if seed_video_id == "normal-seed"
+        )
+    }));
+    assert!(app.streaming_active());
+    assert!(engine.status().streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(true));
+    assert_eq!(engine.core_view().config.autoplay_streaming, Some(true));
+    // The App's admitted mode switch actively resumes its restored queue, while this hermetic
+    // daemon restart projection deliberately has no player and remains paused. Align that known
+    // transport-only baseline after checking both owners' real exit effects above.
+    app.playback.paused = engine.status().paused;
+    assert_parity("Local exit restores effective streaming", &app, &engine);
 }
 
 #[tokio::test]

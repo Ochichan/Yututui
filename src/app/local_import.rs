@@ -643,40 +643,6 @@ impl App {
         Some(self.start_or_confirm_local_download(songs))
     }
 
-    pub(in crate::app) fn local_search_selected_import_row(&mut self) -> Option<Vec<Cmd>> {
-        let row = self
-            .local_visible_rows()
-            .get(self.local_mode.ui.selected)
-            .cloned()?;
-        let crate::local::LocalRowId::ImportSessionRow {
-            session_id,
-            source_order,
-        } = row
-        else {
-            return None;
-        };
-        let row = load_import_session_row(&session_id, source_order)?;
-        let Some(query) = import_session_manual_search_query(&row) else {
-            self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "Import row has no searchable metadata",
-                "검색할 임포트 메타데이터가 없음"
-            )
-            .to_owned();
-            self.dirty = true;
-            return Some(Vec::new());
-        };
-        self.mode = Mode::Search;
-        self.dropdowns.search_source_open = false;
-        self.search_filter.close();
-        self.search.input = query;
-        self.search.input_cursor = TextCursor::at_end(&self.search.input);
-        self.search.focus = SearchFocus::Input;
-        self.search.kind = SearchKind::Songs;
-        self.search.source = crate::search_source::SearchSource::Youtube;
-        Some(self.submit_search_query())
-    }
-
     pub(in crate::app) fn local_open_selected_import_candidate_url(&mut self) -> bool {
         let Some(row) = self
             .local_visible_rows()
@@ -1311,7 +1277,10 @@ fn load_import_session_recovering(session_id: &str) -> anyhow::Result<ImportSess
     }
 }
 
-fn load_import_session_row(session_id: &str, source_order: u32) -> Option<ImportSessionRow> {
+pub(in crate::app) fn load_import_session_row(
+    session_id: &str,
+    source_order: u32,
+) -> Option<ImportSessionRow> {
     load_import_session_recovering(session_id)
         .ok()?
         .rows

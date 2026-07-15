@@ -759,6 +759,9 @@ impl App {
                 Vec::new()
             }
             Action::OpenSearch => {
+                if self.active_search_surface() == ActiveSearchSurface::Local {
+                    return self.open_local_find();
+                }
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
                 self.search.input_cursor = TextCursor::at_end(&self.search.input);
@@ -1037,12 +1040,16 @@ impl App {
     }
 
     /// Whether autoplay streaming is *effectively* active right now. The stored
-    /// [`Self::autoplay_streaming`] preference is left untouched by radio; this getter reports
-    /// off whenever streaming would be meaningless — in dedicated Radio mode or while a live
-    /// station is the current track — so the engine skips top-ups and the status line hides the
-    /// `streaming:` indicator, yet the user's saved preference survives the radio round-trip.
+    /// [`Self::autoplay_streaming`] preference is left untouched by dedicated modes; this getter
+    /// reports off whenever streaming would be meaningless — in Radio or Local Deck mode, or
+    /// while a live station is the current track — so the engine skips top-ups and the status
+    /// line hides the `streaming:` indicator, yet the user's saved preference survives the
+    /// dedicated-mode round-trip.
     pub fn streaming_active(&self) -> bool {
-        self.autoplay_streaming && !self.radio_dedicated_mode && !self.current_is_radio_stream()
+        self.autoplay_streaming
+            && !self.radio_dedicated_mode
+            && !self.local_dedicated_mode
+            && !self.current_is_radio_stream()
     }
 
     /// Seconds the playhead sits behind the live edge (`demuxer-cache-time − time-pos`),

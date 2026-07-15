@@ -378,6 +378,12 @@ impl DaemonEngine {
         self.queue.seed_rng(rng_seed);
     }
 
+    /// Test-only mode seeding through the same persisted enum the daemon restores at startup.
+    #[cfg(test)]
+    pub(crate) fn restore_last_mode_for_test(&mut self, mode: LastMode) {
+        self.last_mode = mode;
+    }
+
     #[cfg(test)]
     pub(crate) fn install_seek_parity_player(
         &mut self,
@@ -1543,7 +1549,7 @@ impl DaemonEngine {
                 candidates,
             } => {
                 self.streaming_pending = false;
-                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                     let picks = self.plan_local_streaming(&seed_video_id, candidates);
                     self.extend_sanitized_streaming(&seed_video_id, picks, &[])
                         .await
@@ -1556,7 +1562,7 @@ impl DaemonEngine {
                 songs,
             } => {
                 self.streaming_pending = false;
-                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                     self.extend_queue_from_streaming(songs).await
                 } else {
                     Vec::new()
@@ -1567,7 +1573,7 @@ impl DaemonEngine {
                 error,
             } => {
                 self.streaming_pending = false;
-                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                     self.note_streaming_failure(format!("autoplay streaming failed: {error}"));
                 }
                 Vec::new()
@@ -1611,7 +1617,7 @@ impl DaemonEngine {
             volume: self.playback.volume,
             position,
             total,
-            streaming: self.streaming,
+            streaming: self.streaming_active(),
             owner_mode: InstanceMode::Daemon,
             settings,
             queue: self
@@ -1933,7 +1939,7 @@ impl DaemonEngine {
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
             position_epoch: self.playback.position_epoch,
-            streaming: self.streaming,
+            streaming: self.streaming_active(),
             radio_mode: self.last_mode == LastMode::Radio,
             stream_now_playing: None,
             owner_mode: crate::remote::proto::InstanceMode::Daemon,
@@ -2315,6 +2321,12 @@ impl DaemonEngine {
     }
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
+        if self.last_mode == LastMode::Local {
+            return (
+                RemoteResponse::err("streaming_unavailable_in_local_mode"),
+                Vec::new(),
+            );
+        }
         let on = state.resolve(self.streaming);
         // Mirror the App reducer exactly and preserve the caller's intent as a structured error.
         if on && self.queue.repeat.is_on() {
@@ -2621,6 +2633,8 @@ pub(in crate::daemon) fn test_engine() -> DaemonEngine {
 mod delivery_tests;
 #[cfg(test)]
 mod gui_search_tests;
+#[cfg(test)]
+mod local_mode_tests;
 #[cfg(test)]
 mod persistence_gate_tests;
 #[cfg(test)]

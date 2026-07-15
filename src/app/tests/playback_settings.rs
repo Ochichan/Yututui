@@ -120,6 +120,85 @@ fn streaming_active_false_in_radio_and_on_a_station() {
 }
 
 #[test]
+fn local_deck_suppresses_all_top_ups_without_changing_the_saved_preference() {
+    let mut app = app_playing(3, 0);
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    app.local_dedicated_mode = true;
+
+    assert!(
+        !app.streaming_active(),
+        "streaming is ineffective in Local Deck"
+    );
+    assert!(app.maybe_autoplay_extend().is_empty());
+    assert!(app.force_autoplay_extend().is_empty());
+    assert!(!app.streaming.pending, "no refill may start in Local Deck");
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
+    assert!(
+        cmds.is_empty(),
+        "the rejected toggle emits no persistence or network work"
+    );
+    assert!(
+        app.autoplay_streaming,
+        "the normal-mode preference is preserved"
+    );
+    assert_eq!(app.config.autoplay_streaming, Some(true));
+    assert!(matches!(
+        app.status.text.as_str(),
+        "Autoplay stays off in Local Deck" | "로컬 덱에서는 자동재생이 꺼져 있어요"
+    ));
+
+    let ai_cmds = app.update(Msg::Ai(AiMsg::SetAutoplay(false)));
+    assert!(
+        ai_cmds.is_empty(),
+        "DJ Gem cannot rewrite the preference in Local Deck"
+    );
+    assert!(app.autoplay_streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(true));
+
+    app.local_dedicated_mode = false;
+    assert!(
+        app.streaming_active(),
+        "the preference becomes effective again after exit"
+    );
+    assert!(
+        app.force_autoplay_extend()
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::StreamingFallback { .. }))
+    );
+}
+
+#[test]
+fn local_deck_settings_toggle_preserves_the_draft_preference() {
+    let mut app = app_playing(3, 0);
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    app.local_dedicated_mode = true;
+    app.open_settings();
+    {
+        let settings = app.settings.as_mut().unwrap();
+        settings.tab = crate::settings::SettingsTab::Ai;
+        settings.row = settings
+            .fields()
+            .iter()
+            .position(|field| *field == Field::AutoplayStreaming)
+            .expect("an AutoplayStreaming field");
+    }
+
+    assert!(app.settings.as_ref().unwrap().draft.autoplay_streaming);
+    assert!(app.settings_change(1).is_empty());
+    assert!(
+        app.settings.as_ref().unwrap().draft.autoplay_streaming,
+        "Local Settings must not rewrite the saved normal-mode preference"
+    );
+    assert!(matches!(
+        app.status.text.as_str(),
+        "Autoplay stays off in Local Deck" | "로컬 덱에서는 자동재생이 꺼져 있어요"
+    ));
+}
+
+#[test]
 fn settings_cannot_enable_autoplay_while_repeat_on() {
     let mut app = app_playing(3, 0);
     app.queue.repeat = crate::queue::Repeat::All;

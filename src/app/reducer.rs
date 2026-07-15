@@ -37,6 +37,16 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let mut cmds = self.dispatch(msg);
+        // Local Find owns derived data from the index, downloaded fallback, playlists and search
+        // options. Observe those revisions centrally so changes made while Find stays open
+        // cannot leave a stale corpus visible until the user happens to type another key.
+        if self.local_dedicated_mode
+            && self.mode == Mode::Search
+            && self.active_search_surface() == ActiveSearchSurface::Local
+            && !self.local_find_corpus_is_current()
+        {
+            cmds.extend(self.ensure_local_find_corpus());
+        }
         cmds.extend(self.observe_beginner_tutorial(beginner_before));
         if self.status.text.is_empty()
             && let Some(warning) = self.recorder.health_warning.as_ref()
@@ -681,7 +691,7 @@ impl App {
                     candidates,
                 } => {
                     self.streaming.pending = false;
-                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                         // With a key + reranker enabled, hand the model a diverse local shortlist to
                         // reorder (ids only); otherwise rank the pool purely locally. Either way the
                         // pool went through scoring + MMR + cooldown — never taken verbatim.
@@ -699,7 +709,7 @@ impl App {
                     songs,
                 } => {
                     self.streaming.pending = false;
-                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                         return self.extend_queue_from_streaming(songs);
                     }
                     self.dirty = true;
@@ -714,7 +724,7 @@ impl App {
                     error,
                 } => {
                     self.streaming.pending = false;
-                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                         return self.note_streaming_failure(format!(
                             "{}: {error}",
                             t!("Autoplay failed", "자동재생 실패")
@@ -768,6 +778,15 @@ impl App {
                     return cmds;
                 }
                 AiMsg::SetAutoplay(on) => {
+                    if self.local_dedicated_mode {
+                        self.status.text = t!(
+                            "Autoplay stays off in Local Deck",
+                            "로컬 덱에서는 자동재생이 꺼져 있어요"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                        return Vec::new();
+                    }
                     // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
                     let on = on && self.queue.repeat == crate::queue::Repeat::Off;
                     self.set_autoplay_streaming(on);

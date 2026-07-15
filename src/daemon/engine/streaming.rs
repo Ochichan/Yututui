@@ -17,6 +17,18 @@ use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode}
 use super::{DaemonEngine, DaemonOutcome, EngineEffect};
 
 impl DaemonEngine {
+    /// Effective autoplay state. `streaming` remains the user's saved normal-mode preference;
+    /// Local Deck (and the existing dedicated Radio boundary) suppresses network top-ups without
+    /// rewriting it.
+    pub(super) fn streaming_active(&self) -> bool {
+        self.streaming
+            && !matches!(
+                self.last_mode,
+                crate::session::LastMode::Radio | crate::session::LastMode::Local
+            )
+            && !self.current_is_radio_stream()
+    }
+
     pub(super) fn maybe_autoplay_extend(&mut self) -> Vec<EngineEffect> {
         self.autoplay_extend(false)
     }
@@ -26,7 +38,7 @@ impl DaemonEngine {
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
-        if !self.streaming || self.streaming_pending {
+        if !self.streaming_active() || self.streaming_pending {
             return Vec::new();
         }
         if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {

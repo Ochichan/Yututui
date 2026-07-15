@@ -18,10 +18,12 @@ use crate::t;
 
 /// The nav-bar label for a screen, in the active UI language. (`DJ Gem` is a proper noun, kept
 /// as-is in both languages.)
-fn nav_label(mode: Mode, radio_mode: bool) -> &'static str {
+fn nav_label(mode: Mode, radio_mode: bool, local_mode: bool) -> &'static str {
     match mode {
         Mode::Player if radio_mode => t!("Radio ", "라 디 오"),
         Mode::Player => t!("Player", "플레이어"),
+        // Keep the Search tab's display width stable while Local Deck swaps its meaning.
+        Mode::Search if local_mode => t!("Find  ", "찾기"),
         Mode::Search => t!("Search", "검색"),
         Mode::Library => t!("Library", "라이브러리"),
         Mode::Settings => t!("Settings", "설정"),
@@ -321,7 +323,13 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
         .sum::<u16>()
         + items
             .iter()
-            .map(|m| text_width(nav_label(*m, app.radio_dedicated_mode)) + 2)
+            .map(|m| {
+                text_width(nav_label(
+                    *m,
+                    app.radio_dedicated_mode,
+                    app.local_dedicated_mode,
+                )) + 2
+            })
             .sum::<u16>()
         + text_width(GAP) * (items.len() as u16 - 1);
     if full > area.width {
@@ -382,7 +390,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
             spans.push(Span::styled(GAP, muted));
             x = x.saturating_add(text_width(GAP));
         }
-        let label = nav_label(*mode, app.radio_dedicated_mode);
+        let label = nav_label(*mode, app.radio_dedicated_mode, app.local_dedicated_mode);
         let w = text_width(label).saturating_add(2);
         app.register_mouse_button(
             Rect {
@@ -436,7 +444,13 @@ fn render_nav_paged(
 
     // Grow the visible window outward from the active tab, right neighbor first (reading
     // direction), while everything — margins, both arrows, gaps — still fits.
-    let tab_w = |i: usize| text_width(nav_label(items[i], app.radio_dedicated_mode)) + 2;
+    let tab_w = |i: usize| {
+        text_width(nav_label(
+            items[i],
+            app.radio_dedicated_mode,
+            app.local_dedicated_mode,
+        )) + 2
+    };
     let chrome = text_width(MARGIN) * 2 + 2 + 2; // margins + "◀ " + " ▶"
     let budget = area.width.saturating_sub(chrome);
     let (mut lo, mut hi) = (active_idx, active_idx);
@@ -487,7 +501,7 @@ fn render_nav_paged(
         if i > lo {
             push(&mut spans, &mut x, " ", muted);
         }
-        let label = nav_label(*mode, app.radio_dedicated_mode);
+        let label = nav_label(*mode, app.radio_dedicated_mode, app.local_dedicated_mode);
         let w = text_width(label).saturating_add(2);
         app.register_mouse_button(
             Rect {
@@ -592,7 +606,14 @@ pub fn render_list_scrollbar(
         width: 1,
         height: track.height,
     };
-    app.register_mouse_button(bar, MouseTarget::Scrollbar(surface));
+    let target = if surface == ScrollSurface::LocalFind {
+        MouseTarget::LocalFindScrollbar {
+            stamp: app.local_find_pointer_stamp(),
+        }
+    } else {
+        MouseTarget::Scrollbar(surface)
+    };
+    app.register_mouse_button(bar, target);
 
     let thumb_start = thumb.start;
     let thumb_end = thumb.start.saturating_add(thumb.len);
@@ -739,19 +760,40 @@ mod tests {
     fn radio_nav_label_keeps_player_width() {
         let _guard = crate::i18n::lock_for_test();
 
-        assert_eq!(nav_label(Mode::Player, false), "Player");
-        assert_eq!(nav_label(Mode::Player, true), "Radio ");
+        assert_eq!(nav_label(Mode::Player, false, false), "Player");
+        assert_eq!(nav_label(Mode::Player, true, false), "Radio ");
         assert_eq!(
-            text_width(nav_label(Mode::Player, true)),
+            text_width(nav_label(Mode::Player, true, false)),
             text_width("Player")
         );
 
         crate::i18n::set_language(crate::i18n::Language::Korean);
-        assert_eq!(nav_label(Mode::Player, false), "플레이어");
-        assert_eq!(nav_label(Mode::Player, true), "라 디 오");
+        assert_eq!(nav_label(Mode::Player, false, false), "플레이어");
+        assert_eq!(nav_label(Mode::Player, true, false), "라 디 오");
         assert_eq!(
-            text_width(nav_label(Mode::Player, true)),
+            text_width(nav_label(Mode::Player, true, false)),
             text_width("플레이어")
+        );
+        crate::i18n::set_language(crate::i18n::Language::English);
+    }
+
+    #[test]
+    fn local_find_nav_label_keeps_search_width() {
+        let _guard = crate::i18n::lock_for_test();
+
+        assert_eq!(nav_label(Mode::Search, false, false), "Search");
+        assert_eq!(nav_label(Mode::Search, false, true), "Find  ");
+        assert_eq!(
+            text_width(nav_label(Mode::Search, false, true)),
+            text_width("Search")
+        );
+
+        crate::i18n::set_language(crate::i18n::Language::Korean);
+        assert_eq!(nav_label(Mode::Search, false, false), "검색");
+        assert_eq!(nav_label(Mode::Search, false, true), "찾기");
+        assert_eq!(
+            text_width(nav_label(Mode::Search, false, true)),
+            text_width("검색")
         );
         crate::i18n::set_language(crate::i18n::Language::English);
     }

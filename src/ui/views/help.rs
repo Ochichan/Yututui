@@ -8,7 +8,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::App;
+use crate::app::{ActiveSearchSurface, App, Mode};
 use crate::keymap::{self, Action, KeyContext, KeyMap};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -279,7 +279,35 @@ fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
         }
         out.push((ctx.title().to_owned(), rows));
     }
+    if app.mode == Mode::Search && app.active_search_surface() == ActiveSearchSurface::Local {
+        out.push((
+            t!("Local Find", "로컬 찾기").to_owned(),
+            vec![
+                fixed_help_row("Enter", "Search / open / play", "검색 / 열기 / 재생"),
+                fixed_help_row("Tab", "Next scope / focus", "다음 범위 / 포커스"),
+                fixed_help_row("Shift+Tab", "Previous focus", "이전 포커스"),
+                fixed_help_row("/", "Refine scope and sort", "범위와 정렬 상세 설정"),
+                fixed_help_row("a / \\", "Add selected", "선택 항목 큐에 추가"),
+                fixed_help_row("P", "Play selected", "선택 항목 재생"),
+                fixed_help_row("A", "Add all results", "모든 결과 큐에 추가"),
+                fixed_help_row("s", "Shuffle all results", "모든 결과 셔플 재생"),
+                fixed_help_row("Esc", "Back one level", "한 단계 뒤로"),
+                fixed_help_row("q", "Close Find", "찾기 닫기"),
+            ],
+        ));
+    }
     out
+}
+
+fn fixed_help_row(key: &str, english: &str, korean: &str) -> (String, String) {
+    (
+        key.to_owned(),
+        if crate::i18n::is_korean() {
+            korean.to_owned()
+        } else {
+            english.to_owned()
+        },
+    )
 }
 
 fn fixed_enter_row(label: &str) -> (String, String) {
@@ -868,6 +896,29 @@ mod tests {
             .find_map(|(title, rows)| (title == "Local Deck").then_some(rows))
             .expect("local deck group");
         assert!(local_deck.contains(&("⇧A".to_owned(), "Mark all import tracks Ready".to_owned())));
+    }
+
+    #[test]
+    fn active_local_find_help_lists_its_fixed_result_actions() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.local_dedicated_mode = true;
+        app.mode = Mode::Search;
+        let local_find = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Local Find").then_some(rows))
+            .expect("contextual Local Find group");
+        for row in [
+            ("Enter".to_owned(), "Search / open / play".to_owned()),
+            ("/".to_owned(), "Refine scope and sort".to_owned()),
+            ("A".to_owned(), "Add all results".to_owned()),
+            ("q".to_owned(), "Close Find".to_owned()),
+        ] {
+            assert!(
+                local_find.contains(&row),
+                "missing Local Find help row {row:?}"
+            );
+        }
     }
 
     #[test]
