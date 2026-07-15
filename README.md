@@ -87,7 +87,17 @@ YuTuTui! uses **mpv** for playback, **yt-dlp** for search/stream resolution, and
 download post-processing. Packaged installs include them. If a direct or source install is
 missing one, the app shows a friendly setup card with a copyable OS command, setup guide, and
 **Check again** button instead of exposing a process error. `ytt doctor` remains the detailed
-diagnostic command.
+diagnostic command. POSIX systems require **mpv 0.33 or newer** for the inherited lifetime lease.
+
+`ytt` routes mpv launches through a private guardian. The guardian uses an owner heartbeat; POSIX
+adds an inherited mpv `fd://` IPC lease, Linux also adds `PR_SET_PDEATHSIG`, and Windows instead
+uses kill-on-close Job Objects. These bind mpv to the `ytt` owner. The
+standalone Unix TUI also fails closed when it loses a recognized direct/conmon PTY or a supported
+tmux/screen/Zellij client; an inaccessible or ambiguous multiplexer query is treated as lost.
+Normal Windows console-control events are handled too. A retained ConPTY broker and repeated
+same-type Screen/Zellij nesting cannot be proven detached from inside the client; use `ytt daemon`
+or a host-side lifetime supervisor/lease for those cases. See
+[terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
 
 ## Quick start
 

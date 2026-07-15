@@ -80,7 +80,18 @@ YuTuTui!는 재생에 **mpv**, 검색·스트림 해석에 **yt-dlp**, 다운로
 **ffmpeg**를 씁니다. 패키지 설치에는 모두 포함됩니다. 직접 설치나 소스 빌드에서
 도구가 빠졌다면 무서운 프로세스 오류 대신, OS에 맞는 설치 명령 복사·설치 안내·
 **다시 확인** 버튼이 있는 카드가 나타납니다. 자세한 진단은 계속 `ytt doctor`가
-담당합니다.
+담당합니다. POSIX 환경에서는 상속된 수명 lease를 위해 **mpv 0.33 이상**이 필요합니다.
+
+`ytt`는 mpv 실행을 비공개 guardian으로 보냅니다. guardian은 owner heartbeat를 쓰고,
+POSIX는 상속 mpv `fd://` IPC lease를, Linux는 `PR_SET_PDEATHSIG`를 더하며, Windows는
+대신 닫히면 종료하는 Job Object를 사용합니다. 이 장치들이 mpv를 `ytt` owner의 수명에
+묶습니다. 단독 Unix TUI는 인식 가능한 직접/conmon PTY나 지원하는
+tmux/screen/Zellij 클라이언트를 잃어도 안전하게 종료하며, multiplexer 조회가
+불가능하거나 모호하면 클라이언트를 잃은 것으로 처리합니다. 일반적인 Windows console
+control event도 처리합니다. 그러나 유지된 ConPTY broker와 같은 종류로 반복 중첩된
+Screen/Zellij의 detach는 클라이언트 내부에서 확인할 수 없습니다. 이런 경우에는
+`ytt daemon`이나 호스트 측 수명 supervisor/lease를 사용하세요. 자세한 내용은
+[터미널 호환성](docs/terminal-compatibility.md#terminal-lifetime-detection)을 참고하세요.
 
 ## 빠른 시작
 

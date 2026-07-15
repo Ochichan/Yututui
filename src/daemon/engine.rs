@@ -429,6 +429,18 @@ impl DaemonEngine {
         self.maintainer.shutdown().await;
     }
 
+    /// Retire every daemon-owned media process at the start of owner shutdown.
+    ///
+    /// The remaining remote, effect, and durability barriers can legitimately take longer than
+    /// player teardown. Keeping audio or an overlay alive through those barriers would make a
+    /// normal daemon stop appear stuck and would leave later termination signals with nothing
+    /// useful to coordinate. Recovery is suppressed before this method is called, so closing the
+    /// IPC actor cannot start a replacement player.
+    pub(crate) fn shutdown_media_owners(&mut self) {
+        self.video_overlay = None;
+        self.player = None;
+    }
+
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
         self.maybe_autoplay_extend()
     }

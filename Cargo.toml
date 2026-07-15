@@ -54,7 +54,7 @@ perf-harness = []
 anyhow = "1.0.103"
 # Spotify OAuth PKCE: base64url-encode the SHA-256 code challenge. Pure Rust, tiny.
 base64 = "0.22"
-crossterm = { version = "0.29", features = ["event-stream"] }
+crossterm = "0.29"
 # Playlist file import/export (Exportify-compatible). Pure Rust; handles quoting/escaping
 # correctly, which hand-rolled CSV never does.
 csv = "1.3"
@@ -141,16 +141,17 @@ wry = { version = "0.55.1", default-features = false, features = ["os-webview", 
 [build-dependencies]
 embed-resource = "3.0.9"
 
-# `kill_mpv_now` sends SIGKILL straight from the panic hook / signal handler; one
-# async-signal-safe syscall, no allocation. Unix only — Windows uses the Job Object
-# (M9) plus a sysinfo backstop instead.
+# Unix process groups, Linux parent-death signals/pidfds, and non-reaping child observation power
+# the guardian lifetime boundary and collateral-safe recovery. Out-of-band teardown sends a
+# cooperative SIGTERM only to the still-owned guardian pid; next-start recovery never signals a
+# raw numeric PID.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# No-orphan on Windows: a Job Object with KILL_ON_JOB_CLOSE so the kernel terminates
-# mpv when our process dies for ANY reason (close button, logoff, Task-Manager kill) —
-# the hard kills signal handlers can't catch. Plus SetConsoleCtrlHandler for prompt
-# teardown. Version 0.61 is already in the tree (via tokio/sysinfo), so no extra copy.
+# No-orphan on Windows: an outer owner Job plus a guardian-only nested Job, both
+# KILL_ON_JOB_CLOSE, cover close, logoff, and hard owner death. Pinned process handles make
+# next-start identity-check/termination immune to PID reuse; SetConsoleCtrlHandler is the prompt
+# path. Version 0.61 is already in the tree (via tokio/sysinfo), so no extra copy.
 #
 # `windows` (WinRT) powers the SMTC media session (`src/media/smtc.rs`): the Media/
 # Storage_Streams/Foundation trio is the session + thumbnail surface, Win32_System_WinRT

@@ -212,7 +212,7 @@ impl RecoverableSourceFailure {
     }
 }
 
-/// URL-free error vocabulary used when mpv reports only `loading failed` (including mpv 0.32).
+/// URL-free error vocabulary used when mpv reports only `loading failed` (including legacy 0.32).
 pub const GENERIC_LOADING_FAILURE: &str = "mpv loading failed";
 
 /// Conservative v1 classifier. Authentication/provider denials outside these exact families keep

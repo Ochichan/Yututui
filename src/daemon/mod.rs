@@ -208,9 +208,6 @@ async fn await_owner_handler<T>(
 
 async fn serve(_from_tray: bool, resume: bool) -> i32 {
     crate::player::lifetime::install_panic_hook();
-    #[cfg(windows)]
-    crate::player::lifetime::install_console_ctrl_handler();
-
     // Own the public endpoint first, then the complete persistence root set, before any loader,
     // orphan reaper, logger, or actor can touch disk. An early lease/recovery failure drops the
     // unstarted server and removes its endpoint through RemoteServer's identity-safe cleanup.
@@ -239,18 +236,38 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     );
     let event_tx = DaemonEventSender::new(raw_event_tx);
     let player_event_tx = event_tx.clone();
-    let mut engine =
-        match engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
-            record_daemon_event(&player_event_tx, DaemonEvent::Player(event));
-        })
-        .await
-        {
-            Ok(engine) => engine,
-            Err(e) => {
-                eprintln!("ytt daemon: {e}");
+    // Arm external shutdown before `Engine::start`: `--resume` may spawn mpv while restoring
+    // the saved queue, so there must be no startup interval in which SIGTERM/SIGHUP can arrive
+    // before the out-of-band latch and guardian revocation path exist.
+    let shutdown = crate::player::lifetime::ShutdownLatch::new();
+    let signal_event_tx = event_tx.clone();
+    let mut signal_handlers =
+        match crate::player::lifetime::spawn_signal_handlers(shutdown.clone(), move |_| {
+            // Compatibility/observability event only: the owner loop waits on `shutdown`
+            // directly, so saturation here cannot delay teardown.
+            record_daemon_event(&signal_event_tx, DaemonEvent::Signal);
+        }) {
+            Ok(handlers) => handlers,
+            Err(error) => {
+                eprintln!("ytt daemon: failed to register termination signals: {error}");
                 return EXIT_TRANSPORT;
             }
         };
+    let mut engine = match await_owner_handler(
+        &shutdown,
+        engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
+            record_daemon_event(&player_event_tx, DaemonEvent::Player(event));
+        }),
+    )
+    .await
+    {
+        Some(Ok(engine)) => engine,
+        Some(Err(e)) => {
+            eprintln!("ytt daemon: {e}");
+            return EXIT_TRANSPORT;
+        }
+        None => return EXIT_OK,
+    };
     if resume && engine.status().title.is_none() {
         eprintln!("ytt daemon: resume rejected: session_empty");
         return EXIT_USAGE;
@@ -281,15 +298,6 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     transfer_host.publish(&mut publisher);
     let mut ai_host = ai_host::AiHost::new(event_tx.clone());
     ai_host.publish(&engine, &mut publisher);
-
-    let shutdown = crate::player::lifetime::ShutdownLatch::new();
-    let signal_event_tx = event_tx.clone();
-    let mut signal_handlers =
-        crate::player::lifetime::spawn_signal_handlers(shutdown.clone(), move |_| {
-            // Compatibility/observability event only: the owner loop waits on `shutdown` directly,
-            // so saturation here cannot delay teardown.
-            record_daemon_event(&signal_event_tx, DaemonEvent::Signal);
-        });
 
     // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
     // so media keys and OS widgets control background playback without a terminal.
@@ -804,6 +812,10 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // Reject callback producers before awaiting any task that may itself be inside a callback.
     // This breaks the owner-waits-producer / producer-waits-owner shutdown cycle under saturation.
     event_tx.close_admission();
+    // Audio and overlay ownership ends before any slower remote/durability barrier. Keep the OS
+    // signal consumer alive until later teardown, but do not make normal daemon stop latency part
+    // of an mpv lifetime.
+    engine.shutdown_media_owners();
     // Remove the OS media surface before the slower task barrier. Its callbacks now see a closed
     // ingress, and a fast successor must not compete with a stale Now Playing/MPRIS/SMTC target.
     let _ = media.set_enabled(false);

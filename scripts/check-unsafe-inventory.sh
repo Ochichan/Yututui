@@ -29,6 +29,7 @@ is_allowed() {
     src/media/identity.rs) return 0 ;;
     src/media/macos.rs) return 0 ;;
     src/media/smtc.rs) return 0 ;;
+    src/player/guardian.rs) return 0 ;;
     src/player/lifetime.rs) return 0 ;;
     src/test_util/env.rs) return 0 ;;
     src/util/process.rs) return 0 ;;

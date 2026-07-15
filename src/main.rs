@@ -1,7 +1,7 @@
 use yututui::{
     auth_cli,
     cli_capability::{OneShotCommand, collect_lossy_cli_args, interactive_persistence_capability},
-    daemon, doctor, i18n, media, persist, remote,
+    daemon, doctor, i18n, media, persist, player, remote,
     terminal_runtime::{self, StartupTrace},
     tools, transfer, tui, update, zoom,
 };
@@ -83,6 +83,13 @@ fn main() -> Result<()> {
 }
 
 fn run() -> Result<()> {
+    // The private mpv guardian must run before process identity, persistence, a Tokio runtime,
+    // or terminal setup. Its only authority comes from the one-shot protocol on inherited
+    // stdio; it is intentionally absent from help and is never a user-facing subcommand.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__mpv-guardian")) {
+        std::process::exit(player::guardian::run_cli());
+    }
+
     // Windows shell identity (media flyout, taskbar grouping). Before anything else:
     // the daemon path below inherits it, and it must precede any window/session.
     #[cfg(windows)]

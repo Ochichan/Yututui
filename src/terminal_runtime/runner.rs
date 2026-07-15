@@ -2,13 +2,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::EventStream;
-use futures::StreamExt;
 use ratatui_image::thread::ResizeRequest;
 use tokio::time::MissedTickBehavior;
 
 use crate::app::{self, App, Cmd, Msg};
-use crate::player::PlayerHandle;
 use crate::runtime::RuntimeEvent;
 use crate::{
     ai, api, artwork, config, deps, download, event, library, logging, lyrics, media, notify,
@@ -22,16 +19,22 @@ use super::startup::StartupTrace;
 
 mod buffered_events;
 mod perf_stats;
+mod player_startup;
 mod recorder_status;
 mod runtime_paths;
 mod teardown;
 #[cfg(test)]
 mod teardown_tests;
+mod terminal_events;
 use buffered_events::BufferedWorkerEvents;
 use perf_stats::PerfStats;
+#[cfg(test)]
+use player_startup::spawn_player_startup;
+use player_startup::{PlayerStartup, spawn_audio_player};
 use recorder_status::recorder_capacity_blocked_status;
 use runtime_paths::{TerminalRuntimePaths, resolve as terminal_runtime_paths};
 use teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
+use terminal_events::TerminalEventWorker;
 
 /// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
 /// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
@@ -65,115 +68,6 @@ fn beginner_profile_persistable(
     config_destination_available: bool,
 ) -> bool {
     !persistence_read_only && config_destination_available
-}
-
-type PlayerReadyResult = Result<(PlayerHandle, player::Mpv), String>;
-const PLAYER_START_TIMEOUT: Duration = Duration::from_secs(5);
-
-struct PlayerStartup {
-    ready_rx: Option<tokio::sync::oneshot::Receiver<PlayerReadyResult>>,
-    task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl PlayerStartup {
-    async fn recv(
-        &mut self,
-    ) -> std::result::Result<PlayerReadyResult, tokio::sync::oneshot::error::RecvError> {
-        let result = self
-            .ready_rx
-            .as_mut()
-            .expect("player startup receiver is consumed only once")
-            .await;
-        self.ready_rx = None;
-        result
-    }
-
-    async fn join_finished(&mut self) {
-        if let Some(task) = self.task.take()
-            && let Err(error) = task.await
-            && !error.is_cancelled()
-        {
-            tracing::warn!(%error, "player startup task failed unexpectedly");
-        }
-    }
-
-    /// Close the result slot first, then abort and reap the producer. A startup which has already
-    /// created mpv cannot leave its `(handle, guard)` buffered in an unpolled oneshot during the
-    /// slower actor and persistence shutdown which follows owner-loop exit.
-    async fn cancel_and_join(&mut self) {
-        if let Some(mut ready_rx) = self.ready_rx.take() {
-            ready_rx.close();
-            drop(ready_rx);
-        }
-        if let Some(task) = self.task.take() {
-            task.abort();
-            match task.await {
-                Ok(()) => {}
-                Err(error) if error.is_cancelled() => {}
-                Err(error) => tracing::warn!(%error, "player startup task failed during shutdown"),
-            }
-        }
-    }
-}
-
-impl Drop for PlayerStartup {
-    fn drop(&mut self) {
-        if let Some(ready_rx) = self.ready_rx.as_mut() {
-            ready_rx.close();
-        }
-        if let Some(task) = self.task.as_ref() {
-            task.abort();
-        }
-    }
-}
-
-fn spawn_player_startup<F>(future: F) -> PlayerStartup
-where
-    F: std::future::Future<Output = PlayerReadyResult> + Send + 'static,
-{
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let result = future.await;
-        if ready_tx.send(result).is_err() {
-            // Closing/replacing the result slot is the cancellation boundary for obsolete work.
-            // Dropping the rejected value also retires its handle/guard in the safe order.
-            tracing::debug!("player startup completed after its readiness slot was closed");
-        }
-    });
-    PlayerStartup {
-        ready_rx: Some(ready_rx),
-        task: Some(task),
-    }
-}
-
-fn spawn_audio_player(
-    worker_tx: runtime::RuntimeSender,
-    data_dir: Option<std::path::PathBuf>,
-    cfg: &config::PlayerRuntimeConfig,
-) -> PlayerStartup {
-    let cookies_file = cfg.cookies_file.clone();
-    let gapless = cfg.gapless;
-    let audio = cfg.audio.clone();
-    spawn_player_startup(async move {
-        match tokio::time::timeout(
-            PLAYER_START_TIMEOUT,
-            player::spawn(
-                runtime::sink(worker_tx, RuntimeEvent::Player),
-                data_dir,
-                cookies_file,
-                gapless,
-                audio,
-            ),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(|error| format!("{error:#}")),
-            Err(_) => Err(format!(
-                "player startup timed out after {} seconds",
-                PLAYER_START_TIMEOUT.as_secs()
-            )),
-        }
-    })
 }
 
 /// Rebuild the long-lived interval only when the configured logical FPS changes. Animation
@@ -403,6 +297,7 @@ fn capture_owner_io_result<T>(
 }
 
 struct TerminalBackgroundTasks {
+    terminal_events: TerminalEventWorker,
     art_resize: crate::util::background_task::BackgroundTask,
     signal_handlers: crate::util::background_task::BackgroundTask,
     ytdlp_maintainer: crate::util::background_task::BackgroundTask,
@@ -412,6 +307,7 @@ struct TerminalBackgroundTasks {
 impl TerminalBackgroundTasks {
     async fn shutdown(&mut self) {
         tokio::join!(
+            self.terminal_events.shutdown(),
             self.art_resize.shutdown(),
             self.signal_handlers.shutdown(),
             self.ytdlp_maintainer.shutdown(),
@@ -678,11 +574,6 @@ pub async fn run(
     // Wrap the terminal-restoring panic hook so a panic also kills mpv (matters under
     // `panic = "abort"`, where Drop never runs). Install after `tui::init`.
     player::lifetime::install_panic_hook();
-    // Windows: kill mpv promptly on the console close button / logoff / shutdown (the
-    // Job Object guarantees it regardless; this just makes teardown immediate).
-    #[cfg(windows)]
-    player::lifetime::install_console_ctrl_handler();
-
     // Config is loaded in `async_main` (so mouse capture can reflect it) and passed in.
     let cookie = cfg.effective_cookie();
     // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
@@ -816,11 +707,69 @@ pub async fn run(
         return Ok(());
     }
 
+    // Establish exclusive input ownership and prove that the interactive terminal client is
+    // still present before any mpv process (including capability probes) may be spawned. Terminal
+    // liveness has its own out-of-band latch so a full worker queue can never delay teardown.
+    let shutdown = player::lifetime::ShutdownLatch::new();
+    let (mut events, mut terminal_event_worker, terminal_output) =
+        match terminal_events::start(shutdown.clone()) {
+            Ok(source) => source,
+            Err(error) => {
+                let owner_error = anyhow::Error::from(error);
+                return match flush_owner_persistence(&app, &persist).await {
+                    Ok(()) => Err(owner_error),
+                    Err(persistence_error) => Err(owner_error.context(format!(
+                        "persistence shutdown also failed: {persistence_error:#}"
+                    ))),
+                };
+            }
+        };
+    startup.mark("terminal_liveness_ready");
+
+    // Build the owner lane and synchronously register every OS termination stream immediately
+    // after terminal readiness. No mpv capability probe may cross a failed signal-registration
+    // boundary. The latch remains authoritative even if the compatibility event lane is full.
+    let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
+    persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
+    let mut signal_handlers = match player::lifetime::spawn_signal_handlers(
+        shutdown.clone(),
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
+    ) {
+        Ok(handlers) => handlers,
+        Err(error) => {
+            terminal_event_worker.shutdown().await;
+            let owner_error = anyhow::Error::from(error)
+                .context("could not install termination handling before mpv probes");
+            return match flush_owner_persistence(&app, &persist).await {
+                Ok(()) => Err(owner_error),
+                Err(persistence_error) => Err(owner_error.context(format!(
+                    "persistence shutdown also failed: {persistence_error:#}"
+                ))),
+            };
+        }
+    };
+
     // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs.
     // After first draw (a cold probe spawns `yt-dlp --version`, several hundred ms),
     // but before the deps preflight and the mpv spawn below, which both consume it.
     tools::init(&cfg.tools).await;
     startup.mark("tools_selected");
+    if shutdown.is_triggered() {
+        // The terminal watchdog or an OS signal may win while tool discovery is awaiting. Close
+        // both startup workers and return before the first mpv capability probe is admitted.
+        player::lifetime::kill_mpv_now();
+        tokio::join!(terminal_event_worker.shutdown(), signal_handlers.shutdown());
+        let owner_error = events.take_failure().map_or_else(
+            || anyhow::anyhow!("terminal shutdown requested during tool discovery"),
+            anyhow::Error::from,
+        );
+        return match flush_owner_persistence(&app, &persist).await {
+            Ok(()) => Err(owner_error),
+            Err(persistence_error) => Err(owner_error.context(format!(
+                "persistence shutdown also failed: {persistence_error:#}"
+            ))),
+        };
+    }
 
     // Probe after `tools::init` so it hits the selected mpv. Recovery-aware temp cleanup is
     // deferred until the tracked runtime task set exists below.
@@ -855,13 +804,6 @@ pub async fn run(
     ));
     startup.mark("deps_checked");
 
-    // Worker -> UI channel. Actors hold clones; the original stays alive so the
-    // select! branch never resolves to `None`. Bounded to keep a burst of valid actor
-    // events from becoming unbounded memory growth; high-frequency producers coalesce
-    // before this boundary where possible.
-    let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
-    persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
-
     // Latest-only in behavior: the bounded inbox caps memory and the drain loop below
     // skips to the newest request whenever multiple resizes are already waiting.
     let (art_resize_tx, mut art_resize_rx) = crate::util::backpressure::bounded_channel::<
@@ -887,15 +829,6 @@ pub async fn run(
                 }
             }
         });
-
-    // External shutdown has an out-of-band latch because the bounded worker lane can be full.
-    // The compatibility RuntimeEvent is still emitted for observers, but loop termination and
-    // transport-restart suppression never depend on admitting it.
-    let shutdown = player::lifetime::ShutdownLatch::new();
-    let signal_handlers = player::lifetime::spawn_signal_handlers(
-        shutdown.clone(),
-        runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
-    );
 
     // Keep the managed yt-dlp present and fresh in the background (the fix for
     // distro-frozen yt-dlp breaking playback). Never blocks startup or playback;
@@ -924,11 +857,30 @@ pub async fn run(
         )
     };
     let mut terminal_background = TerminalBackgroundTasks {
+        terminal_events: terminal_event_worker,
         art_resize: art_resize_task,
         signal_handlers,
         ytdlp_maintainer,
         update_check,
     };
+
+    if shutdown.is_triggered() {
+        // Capability probes and dependency preflight are bounded, but shutdown may arrive during
+        // either. Re-check after all background ownership has been assembled and immediately
+        // before creating the long-lived player startup task.
+        player::lifetime::kill_mpv_now();
+        terminal_background.shutdown().await;
+        let owner_error = events.take_failure().map_or_else(
+            || anyhow::anyhow!("terminal shutdown requested during player preflight"),
+            anyhow::Error::from,
+        );
+        return match flush_owner_persistence(&app, &persist).await {
+            Ok(()) => Err(owner_error),
+            Err(persistence_error) => Err(owner_error.context(format!(
+                "persistence shutdown also failed: {persistence_error:#}"
+            ))),
+        };
+    }
 
     // The remote-control accept loop is started - and the instance descriptor published - just
     // before the reducer loop below (see `remote.map(..server.start..)`), NOT here. Publishing
@@ -942,6 +894,7 @@ pub async fn run(
         worker_tx.clone(),
         player_registry_dir.clone(),
         &player_runtime,
+        shutdown.clone(),
     );
     let mut player_ready_pending = true;
     startup.mark("mpv_spawned");
@@ -1110,7 +1063,6 @@ pub async fn run(
     let mut media_pump = tokio::time::interval(Duration::from_millis(100));
     media_pump.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let mut events = EventStream::new();
     let mut input = event::Translator::default();
     let mut ime_scrub = ime_scrub_interval();
     // Polled only while transient status or the lyric-delay OSD has a deadline; lets the reducer
@@ -1173,7 +1125,9 @@ pub async fn run(
         }
         if app.dirty {
             let Some(_drew) = capture_owner_io_result(
-                draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered),
+                terminal_output.run_io(|| {
+                    draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)
+                }),
                 &mut owner_error,
             ) else {
                 break 'owner;
@@ -1207,19 +1161,32 @@ pub async fn run(
                     media.publish(app.media_snapshot());
                     continue;
                 },
-                maybe = events.next() => match maybe {
+                maybe = events.recv() => match maybe {
                     // The translator maps physical mouse cells onto the zoom backend's
                     // virtual grid, so hit-testing (and double-click identity) stay correct
                     // while the UI is scaled.
-                    Some(Ok(ev)) => {
+                    Some(ev) => {
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
                             None => continue,
                         }
                     }
-                    Some(Err(_)) => continue,
-                    None => break,
+                    None => {
+                        let error = events.take_failure().unwrap_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "terminal input worker stopped unexpectedly",
+                            )
+                        });
+                        if owner_error.is_none() {
+                            owner_error = Some(error.into());
+                        }
+                        shutdown.trigger();
+                        player::lifetime::kill_mpv_now();
+                        handles.begin_player_shutdown(&mut app);
+                        break 'owner;
+                    }
                 },
                 Some(event) = worker_rx.recv() => {
                     if let RuntimeEvent::Player(player_event) = &event
@@ -1256,12 +1223,14 @@ pub async fn run(
                     reducer_turn_unrendered = true;
                     if app.dirty {
                         let Some(_drew) = capture_owner_io_result(
-                            draw_full_app_frame(
-                                terminal,
-                                &mut app,
-                                &mut perf,
-                                &mut reducer_turn_unrendered,
-                            ),
+                            terminal_output.run_io(|| {
+                                draw_full_app_frame(
+                                    terminal,
+                                    &mut app,
+                                    &mut perf,
+                                    &mut reducer_turn_unrendered,
+                                )
+                            }),
                             &mut owner_error,
                         ) else {
                             break 'owner;
@@ -1277,10 +1246,9 @@ pub async fn run(
                     ) {
                         false
                     } else {
-                        match tui::scrub_ime_preedit(
-                            terminal,
-                            app.synchronized_draw_active(),
-                        ) {
+                        match terminal_output.run_io(|| {
+                            tui::scrub_ime_preedit(terminal, app.synchronized_draw_active())
+                        }) {
                             Ok(tui::ImeScrubResult::Fast) => {
                                 perf.record_ime_fast_scrub();
                                 true
@@ -1297,12 +1265,14 @@ pub async fn run(
                     };
                     if !fast_succeeded {
                         let Some(_drew) = capture_owner_io_result(
-                            draw_full_app_frame(
-                                terminal,
-                                &mut app,
-                                &mut perf,
-                                &mut reducer_turn_unrendered,
-                            ),
+                            terminal_output.run_io(|| {
+                                draw_full_app_frame(
+                                    terminal,
+                                    &mut app,
+                                    &mut perf,
+                                    &mut reducer_turn_unrendered,
+                                )
+                            }),
                             &mut owner_error,
                         ) else {
                             break 'owner;
@@ -1409,7 +1379,15 @@ pub async fn run(
                 // OSC path writes to the terminal's stdout, which this scope owns; do it between
                 // frames (before the draw below) so it never interleaves with a partial frame.
                 if let Cmd::DesktopNotify { title, body } = cmd {
-                    notifier.emit(&title, &body);
+                    if capture_owner_io_result(
+                        terminal_output.run(|| notifier.emit(&title, &body)),
+                        &mut owner_error,
+                    )
+                    .is_none()
+                    {
+                        handles.begin_player_shutdown(&mut app);
+                        break 'owner;
+                    }
                     continue;
                 }
                 handles.dispatch(&mut app, cmd);
@@ -1430,6 +1408,7 @@ pub async fn run(
                 worker_tx.clone(),
                 player_registry_dir.clone(),
                 &player_runtime,
+                shutdown.clone(),
             );
             player_ready_pending = true;
         }
@@ -1449,7 +1428,9 @@ pub async fn run(
         // leaving the resting on-screen output identical.
         if app.dirty {
             let Some(_drew) = capture_owner_io_result(
-                draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered),
+                terminal_output.run_io(|| {
+                    draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)
+                }),
                 &mut owner_error,
             ) else {
                 break 'owner;
@@ -1495,6 +1476,14 @@ pub async fn run(
             publisher.observe(&app.core_view());
         }
         perf.maybe_log(&app);
+    }
+
+    // A terminal failure is stored before its out-of-band latch is triggered. Preserve that cause
+    // even when the biased shutdown branch won the select turn and no channel item was consumed.
+    if owner_error.is_none()
+        && let Some(error) = events.take_failure()
+    {
+        owner_error = Some(error.into());
     }
 
     // Every loop exit, including a fatal draw error, reaches the same ownership barrier before
