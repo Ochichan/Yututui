@@ -236,7 +236,7 @@ impl App {
         let expected = SettingsAudioSnapshot::from_draft(&current.draft);
         let expected_reset = SettingsResetGuard::capture(&self.config, current);
         let mut next = current.clone();
-        reset_settings_state(&mut next);
+        reset_settings_state(&mut next, self.local_dedicated_mode);
         let next_audio = SettingsAudioSnapshot::from_draft(&next.draft);
         self.settings_audio_batch_intent(
             "settings_reset_all_preview",
@@ -444,7 +444,7 @@ fn settings_projection(config: &Config, state: &SettingsState) -> Vec<u8> {
     serde_json::to_vec(&projected).expect("Settings config projection must serialize")
 }
 
-fn reset_settings_state(state: &mut SettingsState) {
+fn reset_settings_state(state: &mut SettingsState, local_dedicated_mode: bool) {
     let defaults = Config::default();
     let draft = &mut state.draft;
     // Reset All is a user-facing factory reset, unlike `Config::default()`'s conservative
@@ -474,7 +474,13 @@ fn reset_settings_state(state: &mut SettingsState) {
     draft.ai_enabled = defaults.effective_ai_enabled();
     draft.romanized_titles = defaults.effective_romanized_titles();
     draft.dj_gem_language = defaults.dj_gem_language;
-    draft.theme = defaults.effective_theme();
+    draft.theme = if local_dedicated_mode {
+        // Reset All is a factory reset for the active appearance slot. Local Deck's factory
+        // appearance is Local Launch, not the normal-mode Default preset.
+        defaults.effective_local_theme()
+    } else {
+        defaults.effective_theme()
+    };
     draft.retro_mode = defaults.effective_retro_mode();
     draft.language = defaults.effective_language();
     draft.animations = defaults.animations;

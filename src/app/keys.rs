@@ -68,8 +68,22 @@ impl App {
             if confirmed {
                 return self.apply_local_mode_confirm(confirm);
             }
-            self.local_mode.pending_confirm = None;
+            self.cancel_local_mode_switch();
             return Vec::new();
+        }
+
+        // A Local Find bulk action that would exceed the bounded queue is explicit: Enter/`y`
+        // accepts the displayed prefix, every other key cancels without a partial mutation.
+        if self.local_mode.find.pending_bulk_confirm.is_some() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.confirm_local_find_bulk()
+            } else {
+                self.local_mode.find.pending_bulk_confirm = None;
+                Vec::new()
+            };
         }
 
         // Local import organize is modal because it moves files on disk. Enter/`y` applies
@@ -189,7 +203,12 @@ impl App {
         // The search results-filter popup captures the keyboard while open (its query
         // input is always live, so every typeable key belongs to it) — before Search-Enter
         // and globals so nothing leaks into the list underneath.
-        if self.search_filter.open {
+        if self.local_mode.find.refine_popup.open
+            && self.active_search_surface() == ActiveSearchSurface::Local
+        {
+            return self.on_key_local_find_refine(k);
+        }
+        if self.search_filter.open && self.active_search_surface() != ActiveSearchSurface::Local {
             return self.on_key_search_filter(k);
         }
 
@@ -201,7 +220,11 @@ impl App {
             && !self.overlays.mouse_help_visible
             && k.code == KeyCode::Enter
         {
-            return self.on_key_search(k);
+            return if self.active_search_surface() == ActiveSearchSurface::Local {
+                self.on_key_local_find(k)
+            } else {
+                self.on_key_search(k)
+            };
         }
 
         // Home is intentionally a hard global action: it should work even while a text
@@ -418,6 +441,17 @@ impl App {
                 Action::ToggleControlBox => return self.toggle_control_box(),
                 Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
                 Action::ToggleStreaming => {
+                    // Local Deck is deliberately offline. Preserve the normal-mode preference so
+                    // it resumes on exit, but never let a Local key press rewrite that preference.
+                    if self.local_dedicated_mode {
+                        self.status.text = t!(
+                            "Autoplay stays off in Local Deck",
+                            "로컬 덱에서는 자동재생이 꺼져 있어요"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                        return Vec::new();
+                    }
                     // Radio mode: autoplay is meaningless — keep whatever the stored preference
                     // is (so it survives the round-trip) and just say why nothing changed.
                     if self.radio_dedicated_mode {
@@ -482,8 +516,23 @@ impl App {
             return self.on_key_player(k);
         }
 
+        // Dedicated Local Deck owns a separate, remappable collection-wide Find action. Higher
+        // overlays, key-capture sessions, and the miniplayer have already had first refusal.
+        if self.local_dedicated_mode
+            && !(self.in_text_entry() && chord.is_typeable())
+            && matches!(
+                self.keymap.action(KeyContext::LocalDeck, chord),
+                Some(Action::OpenLocalFind)
+            )
+        {
+            return self.navigate_to(Mode::Search);
+        }
+
         match self.mode {
             Mode::Player => self.on_key_player(k),
+            Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                self.on_key_local_find(k)
+            }
             Mode::Search => self.on_key_search(k),
             Mode::Library if self.local_dedicated_mode => self.on_key_local(k),
             Mode::Library => self.on_key_library(k),
@@ -574,6 +623,9 @@ impl App {
             return true;
         }
         match self.mode {
+            Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                self.local_mode.find.focus == LocalFindFocus::Input
+            }
             Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai.focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),

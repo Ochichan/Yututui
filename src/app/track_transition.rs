@@ -168,6 +168,27 @@ impl App {
                 .is_some_and(|recorder| self.recorder_transition_is_current(recorder))
     }
 
+    /// Release only the token-scoped Local intent/continuation owned by this rejected batch.
+    pub(crate) fn reject_track_transition(&mut self, plan: &TrackTransitionPlan) {
+        let Some(mode_switch) = plan.post_commit.mode_switch.as_ref() else {
+            return;
+        };
+        if let Some(token) = mode_switch.local_intent_token()
+            && self.local_mode.pending_intent_token == Some(token)
+        {
+            self.local_mode.pending_intent_token = None;
+        }
+        if let Some(token) = mode_switch.local_import_search_confirmation_token()
+            && self
+                .local_mode
+                .pending_import_search
+                .as_ref()
+                .is_some_and(|pending| pending.confirmation_token == token)
+        {
+            self.local_mode.pending_import_search = None;
+        }
+    }
+
     /// Move forward without recording an outgoing preference signal. Playback-error and
     /// late-streaming recovery paths use this: a track that failed to play is not a dislike.
     pub(in crate::app) fn advance(&mut self, auto: bool) -> Vec<Cmd> {

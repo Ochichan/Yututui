@@ -81,6 +81,15 @@ impl ThemeConfig {
         }
     }
 
+    pub fn local_launch() -> Self {
+        Self {
+            preset: ThemePreset::LocalLaunch.id().to_owned(),
+            overrides: BTreeMap::new(),
+            custom_overrides: BTreeMap::new(),
+            palette: OnceLock::new(),
+        }
+    }
+
     pub fn preset_enum(&self) -> ThemePreset {
         ThemePreset::from_id(&self.preset).unwrap_or(ThemePreset::Default)
     }
@@ -1283,6 +1292,12 @@ mod tests {
         assert!(cfg.is_role_transparent(ThemeRole::Background));
         assert_eq!(cfg.color(ThemeRole::Background), Color::Reset);
         assert_eq!(cfg.effective_hex(ThemeRole::Accent), "#5CC8FF");
+
+        let launch = ThemeConfig::local_launch();
+        assert_eq!(launch.preset_enum(), ThemePreset::LocalLaunch);
+        assert!(launch.overrides.is_empty());
+        assert!(launch.custom_overrides.is_empty());
+        assert_eq!(launch.effective_hex(ThemeRole::Background), "none");
     }
 
     #[test]

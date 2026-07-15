@@ -498,6 +498,7 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
     let streaming_defaults = StreamingConfig::default();
     let theme = config.theme.normalized();
     let radio_theme = config.radio_theme.as_ref().map(|theme| theme.normalized());
+    let local_theme = config.effective_local_theme();
     let audio = config.audio.runtime();
 
     PortableSettingsV1 {
@@ -551,6 +552,11 @@ fn project_settings(config: &Config) -> PortableSettingsV1 {
                 "overrides": theme.overrides,
                 "custom_overrides": theme.custom_overrides,
             })),
+            "local_theme": {
+                "preset": local_theme.preset,
+                "overrides": local_theme.overrides,
+                "custom_overrides": local_theme.custom_overrides,
+            },
         }),
         bindings: json!({
             "keybindings": safe_keybindings(&config.keybindings),

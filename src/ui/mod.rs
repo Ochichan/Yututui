@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Clear};
 
-use crate::app::{App, Mode};
+use crate::app::{ActiveSearchSurface, App, Mode};
 use crate::theme::ThemeRole as R;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -56,6 +56,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         match app.mode {
             Mode::Player => views::player::render(frame, app, area),
+            Mode::Search if app.active_search_surface() == ActiveSearchSurface::Local => {
+                views::local_find::render(frame, app, area)
+            }
             Mode::Search => views::search::render(frame, app, area),
             Mode::Library if app.local_dedicated_mode => views::local::render(frame, app, area),
             Mode::Library => views::library::render(frame, app, area),

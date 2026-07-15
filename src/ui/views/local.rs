@@ -521,8 +521,32 @@ pub fn render_local_mode_confirm(
     let popup = centered_fixed(area, 64, 11);
     crate::ui::render_popup_background(frame, app, popup);
 
+    let import_search =
+        matches!(confirm, LocalModeConfirm::Exit) && app.local_import_search_pending();
+    let title = if import_search {
+        t!(" Confirm online search ", " 온라인 검색 확인 ")
+    } else {
+        confirm.title()
+    };
+    let prompt = if import_search {
+        t!(
+            "Leave Local Deck and search YouTube?",
+            "로컬 덱을 나가 YouTube에서 검색할까요?"
+        )
+    } else {
+        confirm.prompt()
+    };
+    let detail = if import_search {
+        t!(
+            "This one search runs only after Local Deck exits successfully.",
+            "로컬 덱 종료가 성공한 뒤 이 검색을 한 번만 실행합니다."
+        )
+    } else {
+        confirm.detail()
+    };
+
     let block = Block::default()
-        .title(confirm.title())
+        .title(title)
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -539,13 +563,13 @@ pub fn render_local_mode_confirm(
     ])
     .split(inner);
     frame.render_widget(
-        Paragraph::new(confirm.prompt())
+        Paragraph::new(prompt)
             .alignment(Alignment::Center)
             .style(crate::ui::popup_style(app, R::TextPrimary)),
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new(confirm.detail())
+        Paragraph::new(detail)
             .alignment(Alignment::Center)
             .style(crate::ui::popup_style(app, R::TextMuted)),
         rows[2],

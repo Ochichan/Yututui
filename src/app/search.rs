@@ -535,10 +535,11 @@ impl App {
             KeyCode::Enter => {
                 return self.search_filter_activate(self.search_filter.cursor.min(clamp_last));
             }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if self.search_filter.query.pop().is_some() {
-                    self.after_search_filter_change();
-                }
+            KeyCode::Backspace
+                if k.modifiers == KeyModifiers::NONE
+                    && self.search_filter.query.pop().is_some() =>
+            {
+                self.after_search_filter_change();
             }
             KeyCode::Up => {
                 self.search_filter.cursor = self.search_filter.cursor.saturating_sub(1);

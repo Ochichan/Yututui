@@ -201,7 +201,9 @@ Build playlists in the Library (or let DJ Gem build them), pop the queue with **
 
 ### Local Deck — an offline player for everything on disk
 
-**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres, smart lists, no internet needed. The [manual](MANUAL.md) has the full tour.
+**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres and smart lists. Choose **Find** or press **`Ctrl+F`** to search tracks, albums, artists, genres, folders and locally playable playlist entries without an online fallback; **`/`** still filters only the section you're viewing. Refine the scope or sort, open a collection, or play/enqueue one result or the whole result mix.
+
+Local playback and Find use only files already on your computer. Other opt-in integrations may still use the network, and the manual online-candidate search in **Import Sessions** explicitly asks before leaving the Local Deck. The Local Deck also remembers its own theme separately from normal and Radio modes: a fresh or older installation starts it with **Local Launch**, then restores whichever Local theme you save there. The [manual](MANUAL.md) has the full tour.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/localdeck.png, delete the "coming soon" line above, then uncomment:

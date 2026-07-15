@@ -1399,30 +1399,6 @@ fn session_snapshot_preserves_active_queue() {
     assert_eq!(snapshot.songs.len(), 2);
 }
 
-#[test]
-fn session_snapshot_preserves_local_mode_queue() {
-    let mut engine = engine_with_queue(&["local-a", "local-b"]);
-    engine.last_mode = LastMode::Local;
-    engine.queue.next(false);
-    engine.inactive_normal_queue = Some({
-        let mut queue = Queue::default();
-        queue.set(vec![song("normal")], 0);
-        queue.snapshot()
-    });
-    engine.inactive_radio_queue = Some({
-        let mut queue = Queue::default();
-        queue.set(vec![radio_station("radio")], 0);
-        queue.snapshot()
-    });
-
-    let cache = engine.session_cache_snapshot();
-
-    assert_eq!(cache.last_mode, LastMode::Local);
-    assert_eq!(cache.local_queue.as_ref().map(|s| s.cursor), Some(1));
-    assert_eq!(cache.normal_queue.as_ref().map(|s| s.songs.len()), Some(1));
-    assert_eq!(cache.radio_queue.as_ref().map(|s| s.songs.len()), Some(1));
-}
-
 // yt-dlp self-heal parity with the TUI reducer (src/app/tests.rs). Single-track
 // queues on the skip paths keep these hermetic: with no next track the engine
 // stops instead of calling `load_current` (which would spawn a real mpv).

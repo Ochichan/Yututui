@@ -152,6 +152,9 @@ pub(crate) fn settle_player_intent(
             if let crate::app::PlayerCommit::SourceRecovery(plan) = &commit {
                 app.reject_source_recovery(plan);
             }
+            if let crate::app::PlayerCommit::Track(plan) = &commit {
+                app.reject_track_transition(plan);
+            }
             report_player_delivery(app, label, Err(error));
             if let Some(reply) = remote_reply {
                 let code = match error {

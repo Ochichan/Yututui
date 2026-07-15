@@ -126,6 +126,12 @@ impl App {
         if let Some(radio_theme) = cfg.effective_radio_theme() {
             self.radio_mode.radio_mode_theme = Some(radio_theme);
         }
+        // Seed the Local-Deck stash from its persisted slot. A missing slot is a real default
+        // (Local Launch), but do not overwrite a live in-process pick when a legacy config is
+        // reapplied while the stash already exists.
+        if cfg.local_theme.is_some() || self.local_mode.local_mode_theme.is_none() {
+            self.local_mode.local_mode_theme = Some(cfg.effective_local_theme());
+        }
         if self.radio_dedicated_mode {
             self.radio_mode.normal_mode_theme = Some(normal_theme);
             self.theme = self
@@ -133,6 +139,13 @@ impl App {
                 .radio_mode_theme
                 .clone()
                 .unwrap_or_else(ThemeConfig::radio);
+        } else if self.local_dedicated_mode {
+            self.local_mode.normal_mode_theme = Some(normal_theme);
+            self.theme = self
+                .local_mode
+                .local_mode_theme
+                .clone()
+                .unwrap_or_else(ThemeConfig::local_launch);
         } else {
             self.theme = normal_theme;
         }

@@ -798,14 +798,12 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     }
                 }
             }
-            "eof-reached" => {
-                if value.as_bool() == Some(true) && !state.eof_emitted {
-                    state.eof_emitted = true;
-                    if let Some(generation) = state.legacy_pending_end_generation.take() {
-                        emit(PlayerEvent::file_scoped(generation, PlayerEvent::Eof));
-                    } else {
-                        emit_file_event(emit, state, PlayerEvent::Eof);
-                    }
+            "eof-reached" if value.as_bool() == Some(true) && !state.eof_emitted => {
+                state.eof_emitted = true;
+                if let Some(generation) = state.legacy_pending_end_generation.take() {
+                    emit(PlayerEvent::file_scoped(generation, PlayerEvent::Eof));
+                } else {
+                    emit_file_event(emit, state, PlayerEvent::Eof);
                 }
             }
             "demuxer-cache-time" => match value.as_f64() {

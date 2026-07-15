@@ -75,7 +75,7 @@ impl App {
             .is_some_and(|p| p.seed_video_id == seed_video_id);
         if ours
             && let Some(pending) = self.streaming.pending_rerank.take()
-            && self.autoplay_streaming
+            && self.streaming_active()
             && self.queue.contains_video_id(&seed_video_id)
         {
             if let Some(conf) = conf {
@@ -155,8 +155,8 @@ impl App {
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
         // `streaming_active()` (not the raw preference) so a top-up never fires in dedicated
-        // Radio mode or while a live station plays — the station early-return below stays as a
-        // defensive backstop.
+        // Radio/Local Deck mode or while a live station plays — the station early-return below
+        // stays as a defensive backstop.
         if !self.streaming_active() {
             return Vec::new();
         }

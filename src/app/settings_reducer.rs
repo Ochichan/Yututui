@@ -621,6 +621,17 @@ impl App {
                 Vec::new()
             }
             Field::AutoplayStreaming => {
+                // Local Deck is offline. The draft carries the saved normal-mode preference, so
+                // leave it untouched and explain why this control is inactive in Local mode.
+                if self.local_dedicated_mode {
+                    self.status.text = t!(
+                        "Autoplay stays off in Local Deck",
+                        "로컬 덱에서는 자동재생이 꺼져 있어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 // Music-mode invariant: can't enable autoplay while repeat is on.
                 let repeat_on = self.queue.repeat.is_on();
                 if !self.settings_mut().draft.autoplay_streaming && repeat_on {
@@ -1544,7 +1555,8 @@ impl App {
                 // Library shows it now and a later in-app save can't clobber it. (The
                 // app persists its own mutations immediately, so disk is the union — which
                 // also means a just-deleted playlist reappears if the job re-created it.)
-                self.playlists = crate::playlists::Playlists::load();
+                self.playlists
+                    .replace_reloaded(crate::playlists::Playlists::load());
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
@@ -1862,6 +1874,13 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| self.config.effective_theme()),
             )
+        } else if self.local_dedicated_mode {
+            Some(
+                self.local_mode
+                    .normal_mode_theme
+                    .clone()
+                    .unwrap_or_else(|| self.config.effective_theme()),
+            )
         } else {
             None
         };
@@ -1892,6 +1911,15 @@ impl App {
             self.config.radio_theme = Some(self.theme.clone());
             if let Some(normal_theme) = normal_theme {
                 self.radio_mode.normal_mode_theme = Some(normal_theme.clone());
+                self.config.theme = normal_theme;
+            }
+        } else if self.local_dedicated_mode {
+            self.local_mode.local_mode_theme = Some(self.theme.clone());
+            // Persist the Local theme in its own slot. `SettingsDraft::apply_to` writes the
+            // visible draft into `config.theme`, so restore the stashed normal slot afterward.
+            self.config.local_theme = Some(self.theme.clone());
+            if let Some(normal_theme) = normal_theme {
+                self.local_mode.normal_mode_theme = Some(normal_theme.clone());
                 self.config.theme = normal_theme;
             }
         } else {

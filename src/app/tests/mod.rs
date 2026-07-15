@@ -26,10 +26,14 @@ mod library_drag;
 mod library_filter;
 mod library_queue_actions;
 mod local;
+mod local_find;
+mod local_find_stale_targets;
 mod local_import;
 mod local_import_rows_cache;
+mod local_import_search;
 #[cfg(test)]
 mod local_rows_cache;
+mod local_theme;
 mod lyrics_art_download;
 mod lyrics_sync_controls;
 mod mini_tier;
