@@ -614,44 +614,54 @@ fn with_ellipsis(text: &str, width: usize) -> String {
 fn place_coach(area: Rect, anchor: Option<Rect>, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
-    let max_x = area.right().saturating_sub(width);
     let max_y = area.bottom().saturating_sub(height);
-    let clamp_x = |x: u16| x.clamp(area.x, max_x.max(area.x));
-    let clamp_y = |y: u16| y.clamp(area.y, max_y.max(area.y));
-    if let Some(anchor) = anchor {
-        let centered_x = clamp_x(
-            anchor
-                .x
-                .saturating_add(anchor.width / 2)
-                .saturating_sub(width / 2),
-        );
-        let centered_y = clamp_y(
-            anchor
-                .y
-                .saturating_add(anchor.height / 2)
-                .saturating_sub(height / 2),
-        );
-        let below = anchor.bottom().saturating_add(1);
-        if below.saturating_add(height) <= area.bottom() {
-            return Rect::new(centered_x, below, width, height);
-        }
-        if anchor.y >= area.y.saturating_add(height).saturating_add(1) {
-            return Rect::new(centered_x, anchor.y - height - 1, width, height);
-        }
-        let right = anchor.right().saturating_add(1);
-        if right.saturating_add(width) <= area.right() {
-            return Rect::new(right, centered_y, width, height);
-        }
-        if anchor.x >= area.x.saturating_add(width).saturating_add(1) {
-            return Rect::new(anchor.x - width - 1, centered_y, width, height);
-        }
-    }
-    Rect::new(
-        clamp_x(area.x + area.width.saturating_sub(width) / 2),
-        clamp_y(area.bottom().saturating_sub(height).saturating_sub(1)),
+    let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+    let top = Rect::new(x, area.y.saturating_add(1).min(max_y), width, height);
+    let bottom = Rect::new(
+        x,
+        area.bottom()
+            .saturating_sub(height)
+            .saturating_sub(1)
+            .max(area.y),
         width,
         height,
+    );
+    let Some(anchor) = anchor else {
+        return bottom;
+    };
+    let exclusion = coach_anchor_exclusion(anchor, area);
+    let bottom_overlap = rect_overlap_area(bottom, exclusion);
+    if bottom_overlap == 0 {
+        return bottom;
+    }
+    let top_overlap = rect_overlap_area(top, exclusion);
+    if top_overlap < bottom_overlap {
+        top
+    } else {
+        bottom
+    }
+}
+
+fn coach_anchor_exclusion(anchor: Rect, area: Rect) -> Rect {
+    let anchor = anchor.intersection(area);
+    if anchor.is_empty() {
+        return anchor;
+    }
+    let left = anchor.x.saturating_sub(1).max(area.x);
+    let top = anchor.y.saturating_sub(1).max(area.y);
+    let right = anchor.right().saturating_add(1).min(area.right());
+    let bottom = anchor.bottom().saturating_add(1).min(area.bottom());
+    Rect::new(
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
     )
+}
+
+fn rect_overlap_area(a: Rect, b: Rect) -> u32 {
+    let overlap = a.intersection(b);
+    u32::from(overlap.width) * u32::from(overlap.height)
 }
 
 pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
@@ -778,26 +788,124 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
     use super::*;
 
+    fn beginner_app_on(step: BeginnerStep, mode: Mode) -> App {
+        let mut app = App::new(50);
+        app.mode = mode;
+        app.config.beginner_mode = true;
+        app.config.beginner_tutorial.next_step = step.id().to_owned();
+        app.prepare_beginner_onboarding(true);
+        app
+    }
+
+    fn render_coach_rect(app: &App, width: u16, height: u16) -> Rect {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, app))
+            .unwrap();
+        app.hits
+            .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Noop))
+            .expect("rendered Beginner coach")
+    }
+
     #[test]
-    fn coach_prefers_below_its_anchor() {
+    fn coach_uses_the_centered_bottom_lane_for_an_upper_anchor() {
         let area = Rect::new(4, 2, 100, 40);
         let anchor = Rect::new(40, 5, 12, 1);
         assert_eq!(
             place_coach(area, Some(anchor), 30, 10),
-            Rect::new(31, 7, 30, 10)
+            Rect::new(39, 31, 30, 10)
         );
     }
 
     #[test]
-    fn coach_uses_space_above_a_low_anchor() {
+    fn coach_uses_the_centered_top_lane_for_a_lower_anchor() {
         let area = Rect::new(0, 0, 80, 30);
         let anchor = Rect::new(35, 26, 10, 1);
         assert_eq!(
             place_coach(area, Some(anchor), 30, 10),
-            Rect::new(25, 15, 30, 10)
+            Rect::new(25, 1, 30, 10)
         );
+    }
+
+    #[test]
+    fn coach_does_not_follow_anchors_horizontally() {
+        let area = Rect::new(0, 0, 100, 30);
+        let left = place_coach(area, Some(Rect::new(2, 2, 8, 1)), 30, 10);
+        let right = place_coach(area, Some(Rect::new(90, 2, 8, 1)), 30, 10);
+        assert_eq!(left, Rect::new(35, 19, 30, 10));
+        assert_eq!(right, left);
+    }
+
+    #[test]
+    fn coach_chooses_the_smaller_overlap_when_both_lanes_are_constrained() {
+        let area = Rect::new(0, 0, 40, 12);
+        let anchor = Rect::new(5, 9, 30, 1);
+        assert_eq!(
+            place_coach(area, Some(anchor), 30, 8),
+            Rect::new(5, 1, 30, 8)
+        );
+    }
+
+    #[test]
+    fn coach_anchor_exclusion_keeps_a_one_cell_gap() {
+        let area = Rect::new(0, 0, 80, 30);
+        let anchor = Rect::new(25, 19, 30, 1);
+        let popup = place_coach(area, Some(anchor), 30, 10);
+        let exclusion = coach_anchor_exclusion(anchor, area);
+        assert!(popup.intersection(exclusion).is_empty());
+        assert_eq!(popup, Rect::new(25, 1, 30, 10));
+    }
+
+    #[test]
+    fn rendered_steps_stay_centered_and_use_only_the_two_coach_lanes() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let cases = [
+            (
+                BeginnerStep::Player,
+                Mode::Player,
+                MouseTarget::VolumeArea,
+                true,
+            ),
+            (
+                BeginnerStep::Search,
+                Mode::Search,
+                MouseTarget::SearchInput,
+                false,
+            ),
+            (
+                BeginnerStep::Library,
+                Mode::Library,
+                MouseTarget::LibraryTab(LibraryTab::All),
+                false,
+            ),
+            (BeginnerStep::DjGem, Mode::Ai, MouseTarget::AiInput, true),
+        ];
+
+        for (step, mode, target, top_lane) in cases {
+            let app = beginner_app_on(step, mode);
+            let popup = render_coach_rect(&app, 80, 24);
+            let anchor = app.hits.rect_of_target(target).expect("coach anchor");
+
+            assert_eq!(popup.x, (80 - popup.width) / 2, "{step:?}");
+            if top_lane {
+                assert_eq!(popup.y, 1, "{step:?}");
+            } else {
+                assert_eq!(popup.bottom(), 23, "{step:?}");
+            }
+            assert!(
+                popup
+                    .intersection(coach_anchor_exclusion(anchor, Rect::new(0, 0, 80, 24)))
+                    .is_empty(),
+                "{step:?} coach covered its anchor: popup={popup:?} anchor={anchor:?}"
+            );
+        }
     }
 
     #[test]
