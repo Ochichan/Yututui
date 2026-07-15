@@ -40,7 +40,7 @@ pub const SPEED_MAX: f64 = 2.0;
 /// Version of the interactive Beginner Mode walkthrough shipped by this build. Bump this only
 /// when the ordered steps or their completion contracts change; copy-only edits must not make a
 /// user repeat the tour.
-pub const BEGINNER_TUTORIAL_VERSION: u16 = 1;
+pub const BEGINNER_TUTORIAL_VERSION: u16 = 2;
 
 /// Persisted Beginner Mode walkthrough cursor. The step stays a string deliberately: a newer
 /// build may write a step this build does not know, and retaining that value lets the app decline

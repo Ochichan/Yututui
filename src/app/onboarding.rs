@@ -8,8 +8,8 @@ pub enum BeginnerStep {
     #[default]
     Welcome,
     NavigationHelp,
-    Search,
     Player,
+    Search,
     Library,
     DjGem,
     Settings,
@@ -17,7 +17,17 @@ pub enum BeginnerStep {
 }
 
 impl BeginnerStep {
-    pub const COUNT: usize = 8;
+    const ORDER: [Self; 8] = [
+        Self::Welcome,
+        Self::NavigationHelp,
+        Self::Player,
+        Self::Search,
+        Self::Library,
+        Self::DjGem,
+        Self::Settings,
+        Self::Finish,
+    ];
+    pub const COUNT: usize = Self::ORDER.len();
 
     pub fn id(self) -> &'static str {
         match self {
@@ -47,42 +57,25 @@ impl BeginnerStep {
     }
 
     pub fn number(self) -> usize {
-        match self {
-            Self::Welcome => 1,
-            Self::NavigationHelp => 2,
-            Self::Search => 3,
-            Self::Player => 4,
-            Self::Library => 5,
-            Self::DjGem => 6,
-            Self::Settings => 7,
-            Self::Finish => 8,
-        }
+        self.order_index() + 1
     }
 
     fn next(self) -> Option<Self> {
-        Some(match self {
-            Self::Welcome => Self::NavigationHelp,
-            Self::NavigationHelp => Self::Search,
-            Self::Search => Self::Player,
-            Self::Player => Self::Library,
-            Self::Library => Self::DjGem,
-            Self::DjGem => Self::Settings,
-            Self::Settings => Self::Finish,
-            Self::Finish => return None,
-        })
+        Self::ORDER.get(self.order_index() + 1).copied()
     }
 
     fn previous(self) -> Option<Self> {
-        Some(match self {
-            Self::Welcome => return None,
-            Self::NavigationHelp => Self::Welcome,
-            Self::Search => Self::NavigationHelp,
-            Self::Player => Self::Search,
-            Self::Library => Self::Player,
-            Self::DjGem => Self::Library,
-            Self::Settings => Self::DjGem,
-            Self::Finish => Self::Settings,
-        })
+        self.order_index()
+            .checked_sub(1)
+            .and_then(|index| Self::ORDER.get(index))
+            .copied()
+    }
+
+    fn order_index(self) -> usize {
+        Self::ORDER
+            .iter()
+            .position(|step| *step == self)
+            .expect("BeginnerStep::ORDER must contain every step")
     }
 }
 
@@ -660,6 +653,28 @@ mod tests {
     }
 
     #[test]
+    fn ordered_steps_keep_numbers_and_forward_back_navigation_in_lockstep() {
+        let expected = [
+            BeginnerStep::Welcome,
+            BeginnerStep::NavigationHelp,
+            BeginnerStep::Player,
+            BeginnerStep::Search,
+            BeginnerStep::Library,
+            BeginnerStep::DjGem,
+            BeginnerStep::Settings,
+            BeginnerStep::Finish,
+        ];
+        assert_eq!(BeginnerStep::ORDER, expected);
+        assert_eq!(BeginnerStep::COUNT, expected.len());
+
+        for (index, step) in expected.iter().copied().enumerate() {
+            assert_eq!(step.number(), index + 1);
+            assert_eq!(step.previous(), index.checked_sub(1).map(|i| expected[i]));
+            assert_eq!(step.next(), expected.get(index + 1).copied());
+        }
+    }
+
+    #[test]
     fn steps_persist_once_and_resume_the_last_incomplete_step() {
         let mut app = beginner_app(BeginnerStep::Welcome);
         let cmds = app.activate_onboarding(OnboardingAction::Primary);
@@ -681,12 +696,31 @@ mod tests {
         let before = app.onboarding_observation();
         app.overlays.help_visible = true;
         let cmds = app.observe_beginner_tutorial(before);
-        assert_eq!(app.onboarding.step(), BeginnerStep::Search);
+        assert_eq!(app.onboarding.step(), BeginnerStep::Player);
+        assert!(app.onboarding.target_reached());
         assert_eq!(cmds.len(), 1);
         assert!(
             app.observe_beginner_tutorial(app.onboarding_observation())
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn fresh_player_step_continues_to_search_without_leaving_player_first() {
+        let mut app = beginner_app(BeginnerStep::Player);
+        assert_eq!(app.mode, Mode::Player);
+        assert!(app.onboarding.target_reached());
+
+        let cmds = app.activate_onboarding(OnboardingAction::Primary);
+
+        assert_eq!(app.mode, Mode::Player);
+        assert_eq!(app.onboarding.step(), BeginnerStep::Search);
+        assert!(!app.onboarding.target_reached());
+        assert_eq!(app.config.beginner_tutorial.next_step, "search");
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Persist(PersistCmd::Config(_))]
+        ));
     }
 
     #[test]
@@ -711,8 +745,8 @@ mod tests {
     fn old_progress_normalizes_but_future_progress_is_preserved_and_suppressed() {
         let mut old = App::new(50);
         old.config.beginner_mode = true;
-        old.config.beginner_tutorial.content_version = 0;
-        old.config.beginner_tutorial.next_step = "old_step".to_owned();
+        old.config.beginner_tutorial.content_version = 1;
+        old.config.beginner_tutorial.next_step = "library".to_owned();
         old.prepare_beginner_onboarding(true);
         assert!(old.onboarding.visible());
         assert_eq!(
