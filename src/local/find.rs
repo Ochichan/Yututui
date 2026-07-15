@@ -280,10 +280,10 @@ impl SearchFields {
     fn major_values(&self) -> impl Iterator<Item = &str> {
         self.titles
             .iter()
-            .chain(&self.artists)
-            .chain(&self.albums)
-            .chain(&self.album_artists)
-            .chain(&self.genres)
+            .chain(self.artists.iter())
+            .chain(self.albums.iter())
+            .chain(self.album_artists.iter())
+            .chain(self.genres.iter())
             .map(String::as_str)
     }
 
@@ -419,7 +419,7 @@ impl LocalFindCorpus {
         let genres = build_genres(tracks, &track_data, &order);
         let folders = build_folders(tracks, &track_data, &order);
         let resolver = PlaylistResolver::new(tracks);
-        let playlist_docs = playlists
+        let playlist_docs: Vec<SearchDocument> = playlists
             .iter()
             .map(|playlist| playlist_document(resolver.resolve(playlist), &track_data))
             .collect();
@@ -427,11 +427,11 @@ impl LocalFindCorpus {
         let mut entity_tracks = BTreeMap::new();
         for document in track_docs
             .iter()
-            .chain(&albums)
-            .chain(&artists)
-            .chain(&genres)
-            .chain(&folders)
-            .chain(&playlist_docs)
+            .chain(albums.iter())
+            .chain(artists.iter())
+            .chain(genres.iter())
+            .chain(folders.iter())
+            .chain(playlist_docs.iter())
         {
             entity_tracks.insert(document.id.clone(), document.track_ids.clone());
         }
