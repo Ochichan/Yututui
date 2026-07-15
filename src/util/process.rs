@@ -376,13 +376,19 @@ pub(crate) struct StableProcessTarget {
 }
 
 pub(crate) enum StableProcessOpen {
+    // Unsupported targets can only construct `Unavailable`; keep the shared result API intact.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     Pinned(StableProcessTarget),
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     Gone,
     Unavailable(std::io::Error),
 }
 
 pub(crate) enum StableProcessKill {
+    // Unsupported targets can only construct `Retry`; keep the shared result API intact.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     Killed,
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     Gone,
     Retry(std::io::Error),
 }
