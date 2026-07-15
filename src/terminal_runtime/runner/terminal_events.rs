@@ -1027,6 +1027,7 @@ mod tests {
             armed_at.elapsed() < Duration::from_millis(500),
             "scaled watchdog exceeded its bounded detection window"
         );
+        watchdog.join().unwrap();
         assert!(killed_after_latch.load(Ordering::Acquire));
         assert!(
             failure
@@ -1043,7 +1044,6 @@ mod tests {
         *released.lock().unwrap() = true;
         changed.notify_all();
         input.join().unwrap();
-        watchdog.join().unwrap();
     }
 
     #[test]
