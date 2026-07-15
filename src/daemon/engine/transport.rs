@@ -4,10 +4,39 @@ use super::*;
 pub(super) struct TransportRecovery {
     pub(super) video_id: String,
     pub(super) paused: bool,
-    pub(super) position_secs: Option<f64>,
-    pub(super) force_ram_only: bool,
+    mode: TransportRecoveryMode,
     pub(super) generation: u64,
     pub(super) attempts: u8,
+}
+
+#[cfg(test)]
+impl TransportRecovery {
+    pub(super) fn reload_for_test(
+        video_id: String,
+        paused: bool,
+        generation: u64,
+        attempts: u8,
+    ) -> Self {
+        Self {
+            video_id,
+            paused,
+            mode: TransportRecoveryMode::Reload,
+            generation,
+            attempts,
+        }
+    }
+}
+
+/// Physical replay semantics for a daemon-owned replacement transport.
+///
+/// A generic disconnect has no trustworthy resume position. A cache-safety recycle must force the
+/// replacement media to RAM-only mode and may or may not have observed a position yet. Keeping
+/// those payloads in separate variants prevents a generic reload from accidentally carrying a
+/// resume position while preserving the valid RAM-only-without-position case.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum TransportRecoveryMode {
+    Reload,
+    ResumeRamOnly { position_secs: Option<f64> },
 }
 
 /// Owner-loop lifecycle for automatic player replacement.
@@ -186,8 +215,7 @@ impl DaemonEngine {
             .begin(loaded_video_id.map(|video_id| TransportRecovery {
                 video_id,
                 paused,
-                position_secs: None,
-                force_ram_only: false,
+                mode: TransportRecoveryMode::Reload,
                 generation,
                 attempts: 0,
             }));
@@ -252,8 +280,7 @@ impl DaemonEngine {
             .begin(loaded_video_id.map(|video_id| TransportRecovery {
                 video_id,
                 paused,
-                position_secs,
-                force_ram_only: true,
+                mode: TransportRecoveryMode::ResumeRamOnly { position_secs },
                 generation,
                 attempts: 0,
             }));
@@ -375,9 +402,10 @@ impl DaemonEngine {
             | (_, LoadCurrentIntent::Ordinary) => None,
         };
         let recovery_paused = recovery.as_ref().map(|recovery| recovery.paused);
-        let recovery_position = recovery
-            .as_ref()
-            .and_then(|recovery| recovery.position_secs);
+        let recovery_position = recovery.as_ref().and_then(|recovery| match recovery.mode {
+            TransportRecoveryMode::Reload => None,
+            TransportRecoveryMode::ResumeRamOnly { position_secs } => position_secs,
+        });
         let planned_loaded_video_id = match intent {
             LoadCurrentIntent::TransportRecovery => {
                 recovery.as_ref().map(|recovery| recovery.video_id.as_str())
@@ -390,26 +418,26 @@ impl DaemonEngine {
             },
         };
         let source_context = crate::player::MediaSourceContext::from_live(song.is_radio_station());
-        let restore = if recovery
-            .as_ref()
-            .is_some_and(|recovery| recovery.force_ram_only)
-        {
-            crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
-                planned_loaded_video_id,
-                &song.video_id,
-                target,
-                recovery_position.unwrap_or(0.0),
-                recovery_paused.unwrap_or(true),
-                source_context,
-            )
-        } else {
-            crate::player::recovery::TransportRestorePlan::reload_if_loaded(
-                planned_loaded_video_id,
-                &song.video_id,
-                target,
-                recovery_paused.unwrap_or(false),
-                source_context,
-            )
+        let restore = match recovery.as_ref().map(|recovery| recovery.mode) {
+            Some(TransportRecoveryMode::ResumeRamOnly { position_secs }) => {
+                crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
+                    planned_loaded_video_id,
+                    &song.video_id,
+                    target,
+                    position_secs.unwrap_or(0.0),
+                    recovery_paused.unwrap_or(true),
+                    source_context,
+                )
+            }
+            Some(TransportRecoveryMode::Reload) | None => {
+                crate::player::recovery::TransportRestorePlan::reload_if_loaded(
+                    planned_loaded_video_id,
+                    &song.video_id,
+                    target,
+                    recovery_paused.unwrap_or(false),
+                    source_context,
+                )
+            }
         };
         self.send_active_player_batch("load_current", restore.into_commands(None))?;
 

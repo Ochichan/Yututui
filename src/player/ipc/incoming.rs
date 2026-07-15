@@ -36,6 +36,11 @@ fn prepare_cache_action(state: &mut DispatchState, action: CacheAction) -> Optio
 }
 
 fn reset_file_state(state: &mut DispatchState) {
+    reset_file_observations(state);
+    state.resume.reset_post_load();
+}
+
+fn reset_file_observations(state: &mut DispatchState) {
     super::diagnostics::paused_for_cache(state.active_file_generation, false);
     state.last_sent_time_sec = None;
     state.last_sent_cache_sec = None;
@@ -44,9 +49,6 @@ fn reset_file_state(state: &mut DispatchState) {
     state.legacy_pending_end_generation = None;
     state.last_confirmed_time = 0.0;
     state.media_seekable = None;
-    state.resume_telemetry = None;
-    state.resume_post_load_generation = None;
-    state.post_load_commands.clear();
     state.file_loaded_generation = None;
     state.playback_ready_generation = None;
     state.pending_load_restart_generation = None;
@@ -55,21 +57,12 @@ fn reset_file_state(state: &mut DispatchState) {
 }
 
 fn reset_file_state_preserving_resume(state: &mut DispatchState, preserve_generation: Option<u64>) {
-    let resume = state
-        .resume_telemetry
-        .take()
-        .filter(|gate| Some(gate.file_generation) == preserve_generation);
-    let post_load = (state.resume_post_load_generation == preserve_generation
-        && preserve_generation.is_some())
-    .then(|| std::mem::take(&mut state.post_load_commands));
-    reset_file_state(state);
-    if let Some(resume) = resume {
-        state.last_confirmed_time = resume.target_secs;
-        state.resume_telemetry = Some(resume);
-    }
-    if let (Some(generation), Some(post_load)) = (preserve_generation, post_load) {
-        state.resume_post_load_generation = Some(generation);
-        state.post_load_commands = post_load;
+    let resume_target = preserve_generation
+        .and_then(|generation| state.resume.telemetry_target_for_generation(generation));
+    reset_file_observations(state);
+    state.resume.reset_post_load_preserving(preserve_generation);
+    if let Some(target) = resume_target {
+        state.last_confirmed_time = target;
     }
 }
 
@@ -82,23 +75,20 @@ fn reset_file_state_for_start(state: &mut DispatchState) {
 
 const RESUME_TELEMETRY_FLOOR_TOLERANCE_SECS: f64 = 2.0;
 
-#[derive(Clone, Debug)]
-struct ResumeTelemetryGate {
-    file_generation: u64,
-    target_secs: f64,
-    expected_request_id: Option<u64>,
-    exact_completed: bool,
-    buffered_near_target: Option<f64>,
-    latest_seek_position: Option<f64>,
-    terminal_deadline: Option<Instant>,
-    source_recovery: bool,
-}
-
 fn record_resume_outcome(
     resume: Option<&super::recovery::LoadWithResume>,
     outcome: super::diagnostics::SourceRecoveryOutcome,
 ) {
     if resume.is_some_and(super::recovery::LoadWithResume::is_source_recovery) {
+        super::diagnostics::source_recovery_outcome(outcome);
+    }
+}
+
+fn record_resume_purpose(
+    purpose: resume::ResumePurpose,
+    outcome: super::diagnostics::SourceRecoveryOutcome,
+) {
+    if purpose.is_source_recovery() {
         super::diagnostics::source_recovery_outcome(outcome);
     }
 }
@@ -117,21 +107,20 @@ fn finish_load_validation(
                 file_generation: pending.file_generation,
                 url,
                 resume: pending.resume,
-                restore_transport: pending.restore_transport,
                 source_context: pending.source_context,
                 wait_for_cache_reset,
             }))
         }
         LoadValidationOutcome::Superseded => {
             record_resume_outcome(
-                pending.resume.as_ref(),
+                pending.resume.request(),
                 super::diagnostics::SourceRecoveryOutcome::Superseded,
             );
             None
         }
         LoadValidationOutcome::Rejected(error) => {
             record_resume_outcome(
-                pending.resume.as_ref(),
+                pending.resume.request(),
                 super::diagnostics::SourceRecoveryOutcome::ValidationRejected,
             );
             tracing::warn!(%error, "blocked unsafe playback URL");
@@ -161,44 +150,25 @@ fn prepare_load_replacement(state: &mut DispatchState) -> bool {
     wait_for_cache_reset
 }
 
+#[cfg(test)]
 fn install_resume_telemetry(
     state: &mut DispatchState,
     file_generation: u64,
     request: &super::recovery::LoadWithResume,
 ) {
     state.last_confirmed_time = request.position_secs;
-    state.resume_telemetry = (request.position_secs > 0.0).then_some(ResumeTelemetryGate {
-        file_generation,
-        target_secs: request.position_secs,
-        expected_request_id: None,
-        exact_completed: false,
-        buffered_near_target: None,
-        latest_seek_position: None,
-        terminal_deadline: None,
-        source_recovery: request.is_source_recovery(),
-    });
+    state.resume.install_telemetry(file_generation, request);
 }
 
 fn cancel_resume_post_load_if_superseded(state: &mut DispatchState, command: &PlayerCmd) {
     if !supersedes_pending_resume(command) {
         return;
     }
-    let source_recovery = state
-        .pending_resume
-        .as_ref()
-        .is_some_and(|pending| pending.request.is_source_recovery())
-        || state
-            .resume_telemetry
-            .as_ref()
-            .is_some_and(|gate| gate.source_recovery);
-    let pending_owned = state.pending_resume.take().is_some();
-    let post_load_owned = state.resume_post_load_generation.take().is_some();
-    let owned = pending_owned || post_load_owned || !state.post_load_commands.is_empty();
-    if owned {
-        state.post_load_commands.clear();
-        state.resume_telemetry = None;
-    }
-    if owned && source_recovery {
+    let cancelled = state.resume.cancel_if_owned();
+    if matches!(
+        cancelled,
+        resume::ResumeCancellation::Owned(resume::ResumePurpose::SourceRecovery)
+    ) {
         super::diagnostics::source_recovery_outcome(
             super::diagnostics::SourceRecoveryOutcome::Superseded,
         );
@@ -209,7 +179,7 @@ fn pop_next_actor_command(
     state: &mut DispatchState,
     backlog: &mut VecDeque<PlayerCmd>,
 ) -> Option<PlayerCmd> {
-    if let Some(command) = state.post_load_commands.pop_front() {
+    if let Some(command) = state.resume.pop_command() {
         Some(command)
     } else {
         backlog.pop_front()
@@ -217,17 +187,9 @@ fn pop_next_actor_command(
 }
 
 fn begin_resume_seek_observation(state: &mut DispatchState, file_generation: u64, request_id: u64) {
-    if let Some(gate) = state
-        .resume_telemetry
-        .as_mut()
-        .filter(|gate| gate.file_generation == file_generation)
-    {
-        gate.expected_request_id = Some(request_id);
-        gate.exact_completed = false;
-        gate.buffered_near_target = None;
-        gate.latest_seek_position = None;
-        gate.terminal_deadline = None;
-    }
+    state
+        .resume
+        .begin_seek_observation(file_generation, request_id);
 }
 
 fn complete_resume_telemetry(
@@ -236,24 +198,14 @@ fn complete_resume_telemetry(
     file_generation: u64,
     request_id: u64,
 ) {
-    let buffered = {
-        let Some(gate) = state.resume_telemetry.as_mut().filter(|gate| {
-            gate.file_generation == file_generation && gate.expected_request_id == Some(request_id)
-        }) else {
-            return;
-        };
-        gate.exact_completed = true;
-        gate.latest_seek_position = None;
-        if let Some(position) = gate.buffered_near_target.take() {
-            Some((position, gate.source_recovery))
-        } else {
-            gate.terminal_deadline = Some(Instant::now() + RESUME_POSITION_TERMINAL_TIMEOUT);
-            None
-        }
-    };
-    if let Some((position, source_recovery)) = buffered {
-        state.resume_telemetry = None;
-        if source_recovery {
+    if let resume::TelemetryCompletion::Completed { position, purpose } =
+        state.resume.complete_seek_observation(
+            file_generation,
+            request_id,
+            Instant::now() + RESUME_POSITION_TERMINAL_TIMEOUT,
+        )
+    {
+        if purpose.is_source_recovery() {
             super::diagnostics::source_recovery_outcome(
                 super::diagnostics::SourceRecoveryOutcome::ResumeDispatched,
             );
@@ -263,40 +215,25 @@ fn complete_resume_telemetry(
 }
 
 fn resume_position_terminal_deadline(state: &DispatchState) -> Option<Instant> {
-    state
-        .resume_telemetry
-        .as_ref()
-        .and_then(|gate| gate.terminal_deadline)
+    state.resume.terminal_deadline()
 }
 
 fn observe_time_pos(emit: &EventSink, state: &mut DispatchState, position: f64) {
     let position = crate::playback_policy::norm_position(position);
-    if let Some(gate) = state.resume_telemetry.as_mut()
-        && (state.active_file_generation.is_none()
-            || state.active_file_generation == Some(gate.file_generation))
-    {
-        gate.latest_seek_position = Some(position);
-        if gate.expected_request_id.is_none() {
-            return;
-        }
-        let near_target = (gate.target_secs == 0.0 || position > 0.0)
-            && (position - gate.target_secs).abs() <= RESUME_TELEMETRY_FLOOR_TOLERANCE_SECS;
-        if !gate.exact_completed {
-            if near_target {
-                gate.buffered_near_target = Some(position);
+    match state.resume.observe_position(
+        state.active_file_generation,
+        position,
+        RESUME_TELEMETRY_FLOOR_TOLERANCE_SECS,
+    ) {
+        resume::PositionDisposition::Hold => return,
+        resume::PositionDisposition::Completed(purpose) => {
+            if purpose.is_source_recovery() {
+                super::diagnostics::source_recovery_outcome(
+                    super::diagnostics::SourceRecoveryOutcome::ResumeDispatched,
+                );
             }
-            return;
         }
-        if !near_target {
-            return;
-        }
-        let source_recovery = gate.source_recovery;
-        state.resume_telemetry = None;
-        if source_recovery {
-            super::diagnostics::source_recovery_outcome(
-                super::diagnostics::SourceRecoveryOutcome::ResumeDispatched,
-            );
-        }
+        resume::PositionDisposition::Forward => {}
     }
     forward_time_pos(emit, state, position);
 }
@@ -562,26 +499,9 @@ fn activate_correlated_entry(emit: &EventSink, state: &mut DispatchState, genera
 }
 
 fn release_pending_resume_if_ready(state: &mut DispatchState) {
-    let ready = state.pending_resume.as_ref().is_some_and(|pending| {
-        pending.file_loaded && state.active_file_generation == Some(pending.file_generation)
-    });
-    if !ready {
-        return;
-    }
-    let pending = state
-        .pending_resume
-        .take()
-        .expect("ready recovery remains installed");
-    state.resume_post_load_generation = Some(pending.file_generation);
-    if pending.request.position_secs > 0.0 {
-        state
-            .post_load_commands
-            .push_back(PlayerCmd::exact_seek(pending.request.position_secs));
-    }
-    state.post_load_commands.push_back(PlayerCmd::SetProperty {
-        name: "pause".to_owned(),
-        value: serde_json::Value::Bool(pending.request.paused),
-    });
+    state
+        .resume
+        .release_if_correlated(state.active_file_generation);
 }
 
 fn use_entry_id_protocol(state: &mut DispatchState) {
@@ -951,14 +871,11 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             } else if playlist_entry_id == state.active_playlist_entry_id {
                 state.uncorrelated_file_loaded = true;
             }
-            if let Some(pending) = state.pending_resume.as_mut()
-                && (event_generation == Some(pending.file_generation)
-                    || (event_generation.is_none()
-                        && playlist_entry_id == state.active_playlist_entry_id))
-            {
-                pending.file_loaded = true;
-            }
-            release_pending_resume_if_ready(state);
+            state.resume.mark_file_loaded(
+                event_generation,
+                playlist_entry_id == state.active_playlist_entry_id,
+                state.active_file_generation,
+            );
         }
         MpvIncoming::EndFile {
             reason,
@@ -998,21 +915,15 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                 }
             }
             if reason == "error"
-                && state.resume_telemetry.as_ref().is_some_and(|gate| {
-                    gate.source_recovery
-                        && gate.file_generation
-                            == generation.unwrap_or(state.issued_file_generation)
-                })
+                && state
+                    .resume
+                    .source_recovery_matches(generation.unwrap_or(state.issued_file_generation))
             {
                 super::diagnostics::source_recovery_outcome(
                     super::diagnostics::SourceRecoveryOutcome::LoadRejected,
                 );
             }
-            if state.pending_resume.as_ref().is_some_and(|pending| {
-                generation.is_none_or(|value| value == pending.file_generation)
-            }) {
-                state.pending_resume = None;
-            }
+            state.resume.cancel_pending_for_generation(generation);
             let preserve_generation = generation
                 .is_some_and(|generation| generation != state.issued_file_generation)
                 .then_some(state.issued_file_generation);
@@ -1129,7 +1040,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     }
                 } else {
                     record_resume_outcome(
-                        state.pending_resume.as_ref().map(|resume| &resume.request),
+                        state.resume.pending_request(),
                         super::diagnostics::SourceRecoveryOutcome::LoadRejected,
                     );
                     state.failed_load_generations.insert(file_generation);

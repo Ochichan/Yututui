@@ -26,11 +26,13 @@ use crate::player::long_form_seek::{CacheAction, CacheEffectiveState};
 
 mod actor_exit;
 mod audio_output;
+mod resume;
 mod wire;
 
 pub(super) use wire::write_json;
 
 use actor_exit::{ActorExit, finish_actor, transport_exit_or_shutdown};
+use resume::ResumeCoordinator;
 
 #[cfg(test)]
 use audio_output::{
@@ -111,10 +113,7 @@ struct DispatchState {
     last_confirmed_time: f64,
     paused: bool,
     media_seekable: Option<bool>,
-    pending_resume: Option<PendingResume>,
-    resume_telemetry: Option<ResumeTelemetryGate>,
-    resume_post_load_generation: Option<u64>,
-    post_load_commands: VecDeque<PlayerCmd>,
+    resume: ResumeCoordinator,
     terminal_failure: Option<ActorExit>,
 }
 
@@ -192,10 +191,7 @@ impl Default for DispatchState {
             last_confirmed_time: 0.0,
             paused: true,
             media_seekable: None,
-            pending_resume: None,
-            resume_telemetry: None,
-            resume_post_load_generation: None,
-            post_load_commands: VecDeque::new(),
+            resume: ResumeCoordinator::default(),
             terminal_failure: None,
         }
     }
@@ -209,15 +205,10 @@ fn queue_cache_action(state: &mut DispatchState, action: Option<CacheAction>) {
 }
 
 fn command_ready_for_dispatch(state: &DispatchState, command: &PlayerCmd) -> bool {
-    let waiting_for_resume_position =
-        matches!(
-            command,
-            PlayerCmd::SetProperty { name, .. } if name == "pause"
-        ) && state.resume_post_load_generation.is_some_and(|generation| {
-            state.resume_telemetry.as_ref().is_some_and(|gate| {
-                gate.file_generation == generation && gate.terminal_deadline.is_some()
-            })
-        });
+    let waiting_for_resume_position = matches!(
+        command,
+        PlayerCmd::SetProperty { name, .. } if name == "pause"
+    ) && state.resume.pause_waits_for_position();
     !waiting_for_resume_position
         && (SeekPurpose::for_command(command).is_none()
             || (state.active_file_generation == Some(state.issued_file_generation)
@@ -586,8 +577,8 @@ pub(crate) async fn run_actor(
         // evidence, later targets collapse where allowed and ordering barriers wait.
         let dispatch_check_at = Instant::now();
         let next_command_ready = state
-            .post_load_commands
-            .front()
+            .resume
+            .front_command()
             .or_else(|| command_backlog.front())
             .is_none_or(|command| {
                 command_ready_for_dispatch(&state, command)
@@ -597,7 +588,7 @@ pub(crate) async fn run_actor(
             && pending_load_boundary.is_none()
             && !cache_reset_pending
             && seek_flight.is_none()
-            && state.pending_resume.is_none()
+            && !state.resume.is_awaiting_boundary()
             && state.audio_output.is_idle()
             && next_command_ready
             && let Some(cmd) = pop_next_actor_command(&mut state, &mut command_backlog)
@@ -811,11 +802,7 @@ pub(crate) async fn run_actor(
                     .expect("resume terminal branch is guarded");
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
             }, if resume_terminal_deadline.is_some() => {
-                if state
-                    .resume_telemetry
-                    .as_ref()
-                    .is_some_and(|gate| gate.source_recovery)
-                {
+                if state.resume.telemetry_is_source_recovery() {
                     super::diagnostics::source_recovery_outcome(
                         super::diagnostics::SourceRecoveryOutcome::ResumeRejected,
                     );
@@ -916,8 +903,8 @@ pub(crate) async fn run_actor(
                     .wake_deadline()
                     .is_some_and(|deadline| Instant::now() < deadline)
                 && state
-                    .post_load_commands
-                    .front()
+                    .resume
+                    .front_command()
                     .or_else(|| command_backlog.front())
                     .is_some_and(PlayerCmd::is_interactive_seek) => {},
             // Give the read side a scheduling point between queued command writes so replies and
@@ -991,8 +978,7 @@ async fn begin_or_dispatch_command(
             request_id: load_request_id,
             file_generation,
             task,
-            restore_transport: resume.is_some(),
-            resume,
+            resume: resume::ResumeLoad::from_request(resume),
             source_context,
         }));
     }
@@ -1043,6 +1029,15 @@ async fn validate_load_until_superseded(
     }
 }
 
+fn install_resume_state(
+    state: &mut DispatchState,
+    file_generation: u64,
+    request: super::recovery::LoadWithResume,
+) {
+    state.last_confirmed_time = request.position_secs;
+    state.resume.install(file_generation, request);
+}
+
 async fn dispatch_validated_load(
     conn: &Stream,
     state: &mut DispatchState,
@@ -1051,7 +1046,7 @@ async fn dispatch_validated_load(
 ) -> io::Result<()> {
     if load
         .resume
-        .as_ref()
+        .request()
         .is_some_and(super::recovery::LoadWithResume::forces_ram_only)
         && let Some(cache) = state.cache.as_mut()
     {
@@ -1121,13 +1116,8 @@ async fn dispatch_validated_load(
         &proto::cmd_loadfile(&load.url, "replace", load.request_id),
     )
     .await?;
-    if let Some(request) = load.resume {
-        install_resume_telemetry(state, load.file_generation, &request);
-        state.pending_resume = Some(PendingResume {
-            file_generation: load.file_generation,
-            request,
-            file_loaded: false,
-        });
+    if let Some(request) = load.resume.into_request() {
+        install_resume_state(state, load.file_generation, request);
     }
     state.legacy_latest_playlist_filename = None;
     state.legacy_loads.push_back(LegacyLoad {
@@ -1387,7 +1377,7 @@ async fn dispatch_command(
             operation,
         )?;
         if recovery_pause_restore {
-            state.resume_post_load_generation = None;
+            state.resume.finish_dispatch();
         }
     } else if let Some(acknowledgement) = acknowledgement {
         remember_pending_tracked(state, command_request_id, label, acknowledgement)?;
@@ -1398,7 +1388,7 @@ async fn dispatch_command(
 }
 
 fn recovery_terminal_operation(state: &DispatchState, command: &PlayerCmd) -> Option<&'static str> {
-    state.resume_post_load_generation?;
+    state.resume.dispatch_generation()?;
     match command {
         PlayerCmd::SeekAbsolute {
             precision: super::SeekPrecision::Exact,
