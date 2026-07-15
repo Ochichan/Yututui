@@ -78,6 +78,7 @@ pub enum AudioOutputSelectionSource {
 pub struct AudioOutputPicker {
     pub selected: usize,
     pub manual_input: String,
+    pub manual_cursor: TextCursor,
     pub editing_manual: bool,
     pub applying: bool,
     pub error: Option<String>,
@@ -102,6 +103,7 @@ impl AudioOutputPicker {
             manual_input: saved
                 .filter(|saved| !devices.iter().any(|device| device.name == *saved))
                 .unwrap_or_default(),
+            manual_cursor: TextCursor::default(),
             editing_manual: false,
             applying: false,
             error: None,
@@ -291,6 +293,9 @@ impl App {
             .as_ref()
             .is_some_and(|picker| picker.editing_manual)
         {
+            if self.keymap.text_edit_action(key.into()).is_some() {
+                return self.audio_output_manual_key(key);
+            }
             let delta = match key.code {
                 KeyCode::Up => Some(-1),
                 KeyCode::Down => Some(1),
@@ -327,14 +332,16 @@ impl App {
     }
 
     fn audio_output_manual_key(&mut self, key: KeyEvent) -> Vec<Cmd> {
-        if matches!(
-            self.keymap.text_edit_action(key.into()),
-            Some(Action::DeleteWord)
-        ) {
+        if let Some(action) = self.keymap.text_edit_action(key.into()) {
             if let Some(picker) = self.overlays.audio_output_picker.as_mut() {
-                crate::util::text_edit::delete_previous_word(&mut picker.manual_input);
+                let _ = apply_text_edit_action(
+                    action,
+                    &mut picker.manual_cursor,
+                    &mut picker.manual_input,
+                );
                 picker.error = None;
             }
+            self.dirty = true;
             return Vec::new();
         }
         match key.code {
@@ -362,17 +369,13 @@ impl App {
                     picker.error = None;
                 }
             }
-            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
-                if let Some(picker) = self.overlays.audio_output_picker.as_mut() {
-                    picker.manual_input.pop();
-                    picker.error = None;
-                }
-            }
             KeyCode::Char(ch) if safe_manual_char(ch) => {
                 if let Some(picker) = self.overlays.audio_output_picker.as_mut()
                     && picker.manual_input.len() + ch.len_utf8() <= MANUAL_DEVICE_ID_MAX_BYTES
                 {
-                    picker.manual_input.push(ch);
+                    picker
+                        .manual_cursor
+                        .insert_char(&mut picker.manual_input, ch);
                     picker.error = None;
                 }
             }
@@ -499,6 +502,7 @@ impl App {
             Some(AudioOutputRowKind::Manual) => {
                 if let Some(picker) = self.overlays.audio_output_picker.as_mut() {
                     picker.editing_manual = true;
+                    picker.manual_cursor = TextCursor::at_end(&picker.manual_input);
                     picker.error = None;
                 }
                 self.dirty = true;

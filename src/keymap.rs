@@ -79,6 +79,10 @@ pub enum Action {
     FocusPrev,
     DeleteChar,
     DeleteWord,
+    MoveCursorLeft,
+    MoveCursorRight,
+    MoveCursorWordLeft,
+    MoveCursorWordRight,
     SelectAll,
     ToggleSearchSourceMenu,
     /// Search box: flip between searching tracks and public YouTube playlists.
@@ -345,6 +349,30 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "delete_word",
         "Delete previous word (text inputs)",
         "이전 단어 삭제 (텍스트 입력)",
+    ),
+    (
+        Action::MoveCursorLeft,
+        "move_cursor_left",
+        "Move cursor left",
+        "커서 왼쪽 이동",
+    ),
+    (
+        Action::MoveCursorRight,
+        "move_cursor_right",
+        "Move cursor right",
+        "커서 오른쪽 이동",
+    ),
+    (
+        Action::MoveCursorWordLeft,
+        "move_cursor_word_left",
+        "Move cursor to previous word",
+        "커서 이전 단어로 이동",
+    ),
+    (
+        Action::MoveCursorWordRight,
+        "move_cursor_word_right",
+        "Move cursor to next word",
+        "커서 다음 단어로 이동",
     ),
     (Action::SelectAll, "select_all", "Select all", "전체 선택"),
     (
@@ -959,7 +987,7 @@ impl KeyMap {
         }
         compat::preserve_legacy_lyrics_delay_overrides(overrides, &mut labels);
         compat::preserve_legacy_shuffle_override(overrides, &mut labels);
-        compat::preserve_legacy_delete_word_overrides(overrides, &mut labels);
+        compat::preserve_legacy_text_edit_overrides(overrides, &mut labels);
         // Preserve the old Search-results shortcut as an unlisted compatibility binding:
         // the Player search key also focuses the query box from results. The new advertised
         // bidirectional binding is SearchInput/SearchResults FocusPrev (Shift+Tab).
@@ -1015,7 +1043,17 @@ impl KeyMap {
         self.bindings
             .get(&(KeyContext::Common, chord))
             .copied()
-            .filter(|action| matches!(action, Action::DeleteWord))
+            .filter(|action| {
+                matches!(
+                    action,
+                    Action::DeleteChar
+                        | Action::DeleteWord
+                        | Action::MoveCursorLeft
+                        | Action::MoveCursorRight
+                        | Action::MoveCursorWordLeft
+                        | Action::MoveCursorWordRight
+                )
+            })
     }
 
     /// The chord bound to `action` in `ctx`, formatted for the current display mode.
@@ -1285,6 +1323,18 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
             C::Common,
             A::DeleteWord,
             Chord::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+        ),
+        (C::Common, A::MoveCursorLeft, key(KeyCode::Left)),
+        (C::Common, A::MoveCursorRight, key(KeyCode::Right)),
+        (
+            C::Common,
+            A::MoveCursorWordLeft,
+            Chord::new(KeyCode::Left, KeyModifiers::CONTROL),
+        ),
+        (
+            C::Common,
+            A::MoveCursorWordRight,
+            Chord::new(KeyCode::Right, KeyModifiers::CONTROL),
         ),
         (C::Common, A::Back, ch('q')),
         // Global (active across screens; typeable globals are suppressed in text fields).
@@ -1669,3 +1719,5 @@ fn modifier_token(modifier: ModifierKeyCode) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_edit_tests;

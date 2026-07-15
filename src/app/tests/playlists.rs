@@ -199,6 +199,37 @@ fn ctrl_backspace_edits_both_playlist_name_inputs() {
 }
 
 #[test]
+fn both_playlist_name_inputs_insert_at_the_word_cursor() {
+    let mut create = app_with_playlists();
+    create.update(Msg::Key(key(KeyCode::Char('n'))));
+    for c in "Road Trip".chars() {
+        create.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    create.update(Msg::Key(ctrl(KeyCode::Left)));
+    create.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(
+        create.library_ui.create_input.as_deref(),
+        Some("Road XTrip")
+    );
+
+    let mut picker = app_with_picker_fixture();
+    picker.update(Msg::Key(key(KeyCode::Char('p'))));
+    picker.update(Msg::Key(key(KeyCode::Char('n'))));
+    for c in "Night Drive".chars() {
+        picker.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    picker.update(Msg::Key(ctrl(KeyCode::Left)));
+    picker.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(
+        picker
+            .playlist_picker
+            .as_ref()
+            .and_then(|picker| picker.naming.as_deref()),
+        Some("Night XDrive")
+    );
+}
+
+#[test]
 fn blank_create_popup_enter_hints_instead_of_creating() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_with_playlists();

@@ -703,6 +703,7 @@ fn art_overlay_mask_tracks_each_popup_independently() {
         songs: vec![fsong("pick", "Pick", "Artist")],
         cursor: 0,
         naming: None,
+        naming_cursor: TextCursor::default(),
     });
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_PLAYLIST_PICKER_BIT);
     app.playlist_picker = None;

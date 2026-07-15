@@ -170,8 +170,16 @@ fn manual_editor_keeps_long_id_tail_and_caret_visible() {
     let _ = app.audio_output_picker_key(key(KeyCode::Enter));
 
     let buffer = render_app_buffer(&app, 70, 24);
-    assert!(buffer_contains(&buffer, "…"));
-    assert!(buffer_contains(&buffer, "visible-tail▏"));
+    let row = app
+        .hits
+        .rect_of_target(MouseTarget::AudioOutputRow(manual))
+        .expect("manual audio-output row");
+    let rendered = buffer_row(&buffer, row.y);
+    assert!(rendered.contains("visible-tail▏"));
+    assert!(
+        !rendered.contains('…'),
+        "editable windows clip at grapheme boundaries without a synthetic ellipsis"
+    );
 }
 
 #[test]
@@ -185,6 +193,7 @@ fn ctrl_backspace_edits_the_manual_device_id() {
         picker.selected = manual;
         picker.editing_manual = true;
         picker.manual_input = "pipewire studio".to_owned();
+        picker.manual_cursor = TextCursor::at_end(&picker.manual_input);
     }
 
     app.update(Msg::Key(ctrl(KeyCode::Backspace)));
@@ -195,6 +204,62 @@ fn ctrl_backspace_edits_the_manual_device_id() {
             .unwrap()
             .manual_input,
         "pipewire "
+    );
+}
+
+#[test]
+fn manual_device_id_inserts_at_the_word_cursor() {
+    let mut app = App::new(100);
+    app.audio_devices.loading = false;
+    open_audio_output_picker(&mut app);
+    let manual = app.audio_output_rows().len() - 1;
+    {
+        let picker = app.overlays.audio_output_picker.as_mut().unwrap();
+        picker.selected = manual;
+        picker.manual_input = "pipewire studio".to_owned();
+    }
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(
+        app.overlays
+            .audio_output_picker
+            .as_ref()
+            .unwrap()
+            .manual_input,
+        "pipewire Xstudio"
+    );
+}
+
+#[test]
+fn manual_editor_text_action_remap_beats_picker_navigation() {
+    let mut app = App::new(100);
+    app.audio_devices.loading = false;
+    open_audio_output_picker(&mut app);
+    let manual = app.audio_output_rows().len() - 1;
+    {
+        let picker = app.overlays.audio_output_picker.as_mut().unwrap();
+        picker.selected = manual;
+        picker.manual_input = "pipewire studio".to_owned();
+    }
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    app.keymap.unbind(KeyContext::Common, Action::MoveUp);
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::MoveCursorWordLeft,
+            Chord::new(KeyCode::Up, KeyModifiers::empty()),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(key(KeyCode::Up)));
+
+    let picker = app.overlays.audio_output_picker.as_ref().unwrap();
+    assert!(picker.editing_manual);
+    assert_eq!(picker.selected, manual);
+    assert_eq!(
+        picker.manual_cursor.byte_index(&picker.manual_input),
+        "pipewire ".len()
     );
 }
 

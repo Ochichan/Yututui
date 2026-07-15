@@ -385,6 +385,8 @@ pub struct RecordingSettingsPopup {
     pub row: usize,
     /// True while the output-folder text field is being typed into.
     pub editing_dir: bool,
+    /// Caret within the output-folder draft while [`Self::editing_dir`] is active.
+    pub dir_cursor: TextCursor,
     /// Screen rect of the popup, written each render so a click outside it can be detected
     /// (which closes it) and clicks inside can be hit-tested. `Cell` because render only has
     /// `&App`.
@@ -432,6 +434,8 @@ pub struct Lyrics {
 pub struct SearchState {
     /// The search query being typed.
     pub input: String,
+    /// Caret within [`Self::input`], stored as a grapheme-safe UTF-8 byte offset.
+    pub input_cursor: TextCursor,
     /// The source currently selected in the search box.
     pub source: SearchSource,
     /// Whether Ctrl+A has selected the whole query (desktop-style: the next edit
@@ -480,6 +484,8 @@ pub struct AiState {
     pub(crate) transcript_cache_token: Arc<()>,
     /// The DJ Gem prompt being typed.
     pub input: String,
+    /// Caret within [`Self::input`], stored as a grapheme-safe UTF-8 byte offset.
+    pub input_cursor: TextCursor,
     /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
     pub select_all: bool,
     /// True while a request is in flight (drives the spinner; blocks a second request).
@@ -619,6 +625,8 @@ pub struct LibraryView {
     /// In-library incremental filter query (`/`). When non-empty, the active list narrows to
     /// rows whose title or artist contains it (case-insensitive). Empty = no filter.
     pub filter_query: String,
+    /// Caret within [`Self::filter_query`] while the live filter is focused.
+    pub filter_cursor: TextCursor,
     /// Whether the filter input box is capturing keystrokes (typed chars edit `filter_query`
     /// and the list narrows live). Committed with Enter (keeps the filter, returns to list
     /// navigation); cleared with Esc.
@@ -629,6 +637,8 @@ pub struct LibraryView {
     /// The create-playlist popup's name buffer. `Some` while the popup is open and capturing
     /// keystrokes (Enter creates, Esc cancels).
     pub create_input: Option<String>,
+    /// Caret within the create-playlist name buffer.
+    pub create_cursor: TextCursor,
     /// Pending "delete playlist" confirmation: the id of the playlist queued for deletion
     /// (removes the whole list at once, so it's gated behind an explicit yes/no like the
     /// download-file delete). `None` when no modal is open.
@@ -652,6 +662,8 @@ pub struct PlaylistPicker {
     /// `Some` while the trailing "New playlist…" row is capturing a name (phase two of
     /// the popup). Enter creates the playlist and adds the songs; Esc returns to the list.
     pub naming: Option<String>,
+    /// Caret within the inline new-playlist name buffer.
+    pub naming_cursor: TextCursor,
 }
 
 /// The search results-filter popup ("추가 창"): a transient fzf-style window over the
@@ -666,6 +678,8 @@ pub struct SearchFilterPopup {
     pub open: bool,
     /// The live filter text; the popup's row list narrows to matches as it changes.
     pub query: String,
+    /// Caret within [`Self::query`]; distinct from the highlighted result-row cursor.
+    pub input_cursor: TextCursor,
     /// The highlighted row, as a *display* index into [`Self::matches`].
     pub cursor: usize,
     /// Cached original-`results` indices of the rows matching `query`, in results order.
@@ -686,6 +700,7 @@ impl SearchFilterPopup {
     pub(in crate::app) fn open_fresh(&mut self) {
         self.open = true;
         self.query.clear();
+        self.input_cursor = TextCursor::default();
         self.cursor = 0;
         self.matches.clear();
         self.scroll.reset();
@@ -695,6 +710,7 @@ impl SearchFilterPopup {
     pub(in crate::app) fn close(&mut self) {
         self.open = false;
         self.query.clear();
+        self.input_cursor = TextCursor::default();
         self.cursor = 0;
         self.matches.clear();
         self.rect.set(None);
@@ -874,6 +890,8 @@ pub struct LocalUi {
     pub drill: Vec<LocalDrill>,
     /// Current Local Deck live-filter query.
     pub filter_query: String,
+    /// Caret within [`Self::filter_query`] while the live filter is focused.
+    pub filter_cursor: TextCursor,
     /// Whether typed keys edit `filter_query`.
     pub filter_editing: bool,
 }

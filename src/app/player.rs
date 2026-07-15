@@ -761,6 +761,7 @@ impl App {
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
+                self.search.input_cursor = TextCursor::at_end(&self.search.input);
                 let search = self.search_config_for_mode();
                 self.search.source = search.normalized_source(self.search.source);
                 self.dropdowns.eq_open = false;

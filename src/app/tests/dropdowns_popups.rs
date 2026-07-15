@@ -322,6 +322,7 @@ fn library_playlist_popups_render_create_picker_and_confirmations() {
         songs: vec![Song::remote("b", "B", "Artist", "2:00")],
         cursor: 0,
         naming: None,
+        naming_cursor: TextCursor::default(),
     });
     let buf = render_app_buffer(&app, 80, 24);
     assert!(buffer_contains(&buf, "Add to playlist"));

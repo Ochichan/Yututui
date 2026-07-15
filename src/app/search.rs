@@ -3,7 +3,7 @@
 use super::*;
 use crate::util::query::{
     MAX_FILTER_QUERY_BYTES, MAX_SEARCH_QUERY_BYTES, QueryRejectReason, sanitize_query_for_submit,
-    try_push_query_char,
+    try_insert_query_char,
 };
 
 impl App {
@@ -131,10 +131,37 @@ impl App {
         }
         match self.search.focus {
             SearchFocus::Input => {
-                let delete_word = matches!(
-                    self.keymap.text_edit_action(k.into()),
-                    Some(Action::DeleteWord)
-                );
+                let text_action = self.keymap.text_edit_action(k.into());
+                if let Some(action) = text_action {
+                    if std::mem::take(&mut self.search.select_all) {
+                        match action {
+                            Action::DeleteChar | Action::DeleteWord => {
+                                self.search.input.clear();
+                                self.search.input_cursor = TextCursor::default();
+                            }
+                            Action::MoveCursorLeft | Action::MoveCursorWordLeft => {
+                                self.search.input_cursor.move_to_start();
+                            }
+                            Action::MoveCursorRight | Action::MoveCursorWordRight => {
+                                self.search.input_cursor.move_to_end(&self.search.input);
+                            }
+                            _ => {}
+                        }
+                        self.dirty = true;
+                    } else if matches!(
+                        apply_text_edit_action(
+                            action,
+                            &mut self.search.input_cursor,
+                            &mut self.search.input,
+                        ),
+                        Some(
+                            TextEditResult::BufferChanged(true) | TextEditResult::CursorMoved(true)
+                        )
+                    ) {
+                        self.dirty = true;
+                    }
+                    return Vec::new();
+                }
                 // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
                 if matches!(
                     self.keymap.action(KeyContext::SearchInput, k.into()),
@@ -159,29 +186,23 @@ impl App {
                         && let KeyCode::Char(c) = k.code
                     {
                         let mut replacement = String::new();
-                        match try_push_query_char(&mut replacement, c, MAX_SEARCH_QUERY_BYTES) {
-                            Ok(()) => self.search.input = replacement,
+                        let mut replacement_cursor = TextCursor::default();
+                        match try_insert_query_char(
+                            &mut replacement,
+                            &mut replacement_cursor,
+                            c,
+                            MAX_SEARCH_QUERY_BYTES,
+                        ) {
+                            Ok(()) => {
+                                self.search.input = replacement;
+                                self.search.input_cursor = replacement_cursor;
+                            }
                             Err(reason) => self.set_query_reject_status(reason),
                         }
                         return Vec::new();
                     }
-                    if delete_word
-                        || matches!(
-                            self.keymap.action(KeyContext::SearchInput, k.into()),
-                            Some(Action::DeleteChar)
-                        )
-                    {
-                        self.search.input.clear();
-                        return Vec::new();
-                    }
                 }
                 let chord = Chord::from(k);
-                if delete_word {
-                    if crate::util::text_edit::delete_previous_word(&mut self.search.input) {
-                        self.dirty = true;
-                    }
-                    return Vec::new();
-                }
                 if matches!(
                     self.keymap.context_action(KeyContext::SearchInput, chord),
                     Some(Action::FocusPrev)
@@ -197,7 +218,12 @@ impl App {
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
                 {
-                    match try_push_query_char(&mut self.search.input, c, MAX_SEARCH_QUERY_BYTES) {
+                    match try_insert_query_char(
+                        &mut self.search.input,
+                        &mut self.search.input_cursor,
+                        c,
+                        MAX_SEARCH_QUERY_BYTES,
+                    ) {
                         Ok(()) => self.dirty = true,
                         Err(reason) => self.set_query_reject_status(reason),
                     }
@@ -212,11 +238,6 @@ impl App {
                     }
                     Some(Action::Back) => {
                         self.mode = Mode::Player;
-                        self.dirty = true;
-                        return Vec::new();
-                    }
-                    Some(Action::DeleteChar) => {
-                        self.search.input.pop();
                         self.dirty = true;
                         return Vec::new();
                     }
@@ -518,12 +539,17 @@ impl App {
     pub(in crate::app) fn on_key_search_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
         let len = self.search_filter.matches.len();
         let clamp_last = len.saturating_sub(1);
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if crate::util::text_edit::delete_previous_word(&mut self.search_filter.query) {
-                self.after_search_filter_change();
+        if let Some(result) = self.keymap.text_edit_action(k.into()).and_then(|action| {
+            apply_text_edit_action(
+                action,
+                &mut self.search_filter.input_cursor,
+                &mut self.search_filter.query,
+            )
+        }) {
+            match result {
+                TextEditResult::BufferChanged(true) => self.after_search_filter_change(),
+                TextEditResult::CursorMoved(true) => self.dirty = true,
+                TextEditResult::BufferChanged(false) | TextEditResult::CursorMoved(false) => {}
             }
             return Vec::new();
         }
@@ -534,11 +560,6 @@ impl App {
             }
             KeyCode::Enter => {
                 return self.search_filter_activate(self.search_filter.cursor.min(clamp_last));
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if self.search_filter.query.pop().is_some() {
-                    self.after_search_filter_change();
-                }
             }
             KeyCode::Up => {
                 self.search_filter.cursor = self.search_filter.cursor.saturating_sub(1);
@@ -575,8 +596,12 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                match try_push_query_char(&mut self.search_filter.query, c, MAX_FILTER_QUERY_BYTES)
-                {
+                match try_insert_query_char(
+                    &mut self.search_filter.query,
+                    &mut self.search_filter.input_cursor,
+                    c,
+                    MAX_FILTER_QUERY_BYTES,
+                ) {
                     Ok(()) => self.after_search_filter_change(),
                     Err(reason) => self.set_query_reject_status(reason),
                 }

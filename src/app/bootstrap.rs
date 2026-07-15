@@ -50,6 +50,7 @@ impl App {
                 transcript_revision: 0,
                 transcript_cache_token: Arc::new(()),
                 input: String::new(),
+                input_cursor: TextCursor::default(),
                 select_all: false,
                 thinking: false,
                 suggestions: Vec::new(),
@@ -63,6 +64,7 @@ impl App {
             station: StationStore::default(),
             search: SearchState {
                 input: String::new(),
+                input_cursor: TextCursor::default(),
                 source: SearchSource::Youtube,
                 select_all: false,
                 focus: SearchFocus::Input,

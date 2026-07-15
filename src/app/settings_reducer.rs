@@ -188,6 +188,7 @@ impl App {
             row: 0,
             draft,
             editing_text: false,
+            text_cursor: TextCursor::default(),
             color_picker: None,
             secret_restore: None,
             keymap: self.keymap.clone(),
@@ -969,6 +970,8 @@ impl App {
                         prev
                     });
                 }
+                st.text_cursor = Self::settings_text_buf(st)
+                    .map_or_else(TextCursor::default, |buf| TextCursor::at_end(buf));
                 st.editing_text = true;
                 self.dirty = true;
                 Vec::new()
@@ -1302,8 +1305,13 @@ impl App {
             .unwrap_or(0);
         match row {
             3 => {
+                let end = self
+                    .settings
+                    .as_ref()
+                    .map_or(0, |st| st.draft.recording_dir.len());
                 if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.editing_dir = true;
+                    p.dir_cursor = TextCursor::from_byte_index(end);
                 }
                 self.dirty = true;
                 Vec::new()
@@ -1322,12 +1330,17 @@ impl App {
     /// Feed one key into the output-folder buffer while `editing_dir` is set.
     fn recording_dir_edit(&mut self, k: KeyEvent) -> Vec<Cmd> {
         self.dirty = true;
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
+        if let Some(action) = self.keymap.text_edit_action(k.into()) {
+            let mut cursor = self
+                .overlays
+                .recording_settings
+                .as_ref()
+                .map_or_else(TextCursor::default, |popup| popup.dir_cursor);
             if let Some(st) = self.settings.as_mut() {
-                crate::util::text_edit::delete_previous_word(&mut st.draft.recording_dir);
+                let _ = apply_text_edit_action(action, &mut cursor, &mut st.draft.recording_dir);
+            }
+            if let Some(popup) = self.overlays.recording_settings.as_mut() {
+                popup.dir_cursor = cursor;
             }
             return Vec::new();
         }
@@ -1337,14 +1350,17 @@ impl App {
                     p.editing_dir = false;
                 }
             }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if let Some(st) = self.settings.as_mut() {
-                    st.draft.recording_dir.pop();
-                }
-            }
             KeyCode::Char(c) => {
+                let mut cursor = self
+                    .overlays
+                    .recording_settings
+                    .as_ref()
+                    .map_or_else(TextCursor::default, |popup| popup.dir_cursor);
                 if let Some(st) = self.settings.as_mut() {
-                    st.draft.recording_dir.push(c);
+                    cursor.insert_char(&mut st.draft.recording_dir, c);
+                }
+                if let Some(popup) = self.overlays.recording_settings.as_mut() {
+                    popup.dir_cursor = cursor;
                 }
             }
             _ => {}
@@ -1636,6 +1652,7 @@ impl App {
                     buf.clear();
                     prev
                 });
+                st.text_cursor = TextCursor::default();
                 st.editing_text = true;
                 self.dirty = true;
                 Vec::new()
@@ -1710,14 +1727,13 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if let Some(st) = self.settings.as_mut()
-                && let Some(buf) = Self::settings_text_buf(st)
-            {
-                crate::util::text_edit::delete_previous_word(buf);
+        if let Some(action) = self.keymap.text_edit_action(k.into()) {
+            if let Some(st) = self.settings.as_mut() {
+                let mut cursor = st.text_cursor;
+                if let Some(buf) = Self::settings_text_buf(st) {
+                    let _ = apply_text_edit_action(action, &mut cursor, buf);
+                }
+                st.text_cursor = cursor;
             }
             return Vec::new();
         }
@@ -1740,18 +1756,12 @@ impl App {
                 self.settings_persist_text_field(field)
             }
             KeyCode::Char(c) => {
-                if let Some(st) = self.settings.as_mut()
-                    && let Some(buf) = Self::settings_text_buf(st)
-                {
-                    buf.push(c);
-                }
-                Vec::new()
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if let Some(st) = self.settings.as_mut()
-                    && let Some(buf) = Self::settings_text_buf(st)
-                {
-                    buf.pop();
+                if let Some(st) = self.settings.as_mut() {
+                    let mut cursor = st.text_cursor;
+                    if let Some(buf) = Self::settings_text_buf(st) {
+                        cursor.insert_char(buf, c);
+                    }
+                    st.text_cursor = cursor;
                 }
                 Vec::new()
             }

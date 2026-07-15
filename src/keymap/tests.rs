@@ -454,10 +454,6 @@ fn defaults_resolve_to_actions() {
         km.global_action(parse_chord("?").unwrap()),
         Some(Action::ToggleHelp)
     );
-    assert_eq!(
-        km.text_edit_action(parse_chord("ctrl+backspace").unwrap()),
-        Some(Action::DeleteWord)
-    );
 }
 
 #[test]
@@ -1097,7 +1093,7 @@ fn overrides_round_trip() {
 }
 
 #[test]
-fn shuffle_default_and_delete_word_are_exposed_on_the_wire() {
+fn shuffle_default_is_exposed_on_the_wire() {
     let km = KeyMap::default();
     assert_eq!(
         km.wire_bindings()
@@ -1105,17 +1101,6 @@ fn shuffle_default_and_delete_word_are_exposed_on_the_wire() {
             .map(String::as_str),
         Some("x")
     );
-    assert_eq!(
-        km.wire_bindings()
-            .get("common.delete_word")
-            .map(String::as_str),
-        Some("ctrl+backspace")
-    );
-    let delete_word = wire_actions()
-        .into_iter()
-        .find(|entry| entry.context == "common" && entry.id == "delete_word")
-        .expect("delete-word action should be in the wire catalog");
-    assert_eq!(delete_word.default_chord, "ctrl+backspace");
 }
 
 #[test]
@@ -1163,44 +1148,6 @@ fn legacy_x_and_uppercase_s_claims_leave_shuffle_unbound() {
             .get("player.toggle_shuffle")
             .map(String::as_str),
         Some("")
-    );
-}
-
-#[test]
-fn legacy_delete_word_chord_claim_is_preserved() {
-    for override_key in [
-        "player.open_library",
-        "common.back",
-        "global.toggle_help",
-        "search_input.select_all",
-        "ai_input.select_all",
-    ] {
-        let mut overrides = BTreeMap::new();
-        overrides.insert(override_key.to_owned(), "ctrl+backspace".to_owned());
-        let km = KeyMap::from_overrides(&overrides);
-        assert_eq!(
-            km.chord(KeyContext::Common, Action::DeleteWord),
-            None,
-            "{override_key}"
-        );
-        assert_eq!(
-            km.to_overrides()
-                .get("common.delete_word")
-                .map(String::as_str),
-            Some("")
-        );
-    }
-}
-
-#[test]
-fn explicit_delete_word_override_wins_legacy_migration() {
-    let mut overrides = BTreeMap::new();
-    overrides.insert("global.toggle_help".to_owned(), "ctrl+backspace".to_owned());
-    overrides.insert("common.delete_word".to_owned(), "f8".to_owned());
-    let km = KeyMap::from_overrides(&overrides);
-    assert_eq!(
-        km.text_edit_action(parse_chord("f8").unwrap()),
-        Some(Action::DeleteWord)
     );
 }
 

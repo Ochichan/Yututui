@@ -68,6 +68,107 @@ fn ctrl_a_then_typing_replaces_search_input() {
 }
 
 #[test]
+fn search_and_ai_support_middle_cursor_edits() {
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "ab🙂c".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(key(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Left)));
+    assert_eq!(app.search.input_cursor.byte_index(&app.search.input), 2);
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(app.search.input, "abX🙂c");
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    assert_eq!(app.search.input, "ab🙂c");
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
+    for c in "one two".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(app.ai.input, "one Xtwo");
+}
+
+#[test]
+fn select_all_collapses_directionally_without_an_extra_jump() {
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "lofi".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    assert!(!app.search.select_all);
+    assert_eq!(app.search.input_cursor.byte_index(&app.search.input), 0);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Right)));
+    assert!(!app.search.select_all);
+    assert_eq!(
+        app.search.input_cursor.byte_index(&app.search.input),
+        app.search.input.len()
+    );
+}
+
+#[test]
+fn text_edit_remaps_beat_typeable_and_input_context_actions() {
+    let mut search = App::new(100);
+    search.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "lofi".chars() {
+        search.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    search.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    search
+        .keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteChar,
+            Chord::new(KeyCode::Char(';'), KeyModifiers::empty()),
+        )
+        .unwrap();
+    search.update(Msg::Key(key(KeyCode::Char(';'))));
+    assert!(search.search.input.is_empty());
+
+    for c in "word".chars() {
+        search.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    search
+        .keymap
+        .rebind(
+            KeyContext::Common,
+            Action::MoveCursorLeft,
+            Chord::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+    search.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    assert!(!search.search.select_all);
+    assert_eq!(
+        search.search.input_cursor.byte_index(&search.search.input),
+        "wor".len()
+    );
+
+    let mut ai = App::new(100);
+    ai.update(Msg::Key(key(KeyCode::Char('g'))));
+    for c in "gem".chars() {
+        ai.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    ai.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    ai.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteChar,
+            Chord::new(KeyCode::Char(';'), KeyModifiers::empty()),
+        )
+        .unwrap();
+    ai.update(Msg::Key(key(KeyCode::Char(';'))));
+    assert!(ai.ai.input.is_empty());
+}
+
+#[test]
 fn ctrl_backspace_deletes_words_in_search_and_ai_inputs() {
     let mut app = App::new(100);
     app.update(Msg::Key(key(KeyCode::Char('s'))));

@@ -104,16 +104,33 @@ fn render_header(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
 }
 
 fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, area: Rect) {
-    let text = if app.local_mode.ui.filter_editing || !app.local_mode.ui.filter_query.is_empty() {
-        if app.local_mode.ui.filter_editing {
-            format!("/{}", app.local_mode.ui.filter_query)
-        } else {
-            format!(
-                "{}: /{}",
-                t!("Filter", "필터"),
-                app.local_mode.ui.filter_query
-            )
-        }
+    if app.local_mode.ui.filter_editing {
+        let query = &app.local_mode.ui.filter_query;
+        let cursor = app.local_mode.ui.filter_cursor.byte_index(query);
+        let window = crate::ui::text::editable_window(
+            query,
+            cursor,
+            (area.width as usize).saturating_sub(1),
+        );
+        let line = Line::from(vec![
+            Span::styled("/", app.theme.style(R::TextMuted)),
+            Span::styled(window.before, app.theme.style(R::TextPrimary)),
+            crate::ui::anim::caret_span(
+                app,
+                app.theme.style(R::Accent),
+                app.theme.color(R::Background),
+            ),
+            Span::styled(window.after, app.theme.style(R::TextPrimary)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let text = if !app.local_mode.ui.filter_query.is_empty() {
+        format!(
+            "{}: /{}",
+            t!("Filter", "필터"),
+            app.local_mode.ui.filter_query
+        )
     } else if let Some(hint) = app.local_import_action_hint_for_snapshot(local_rows) {
         hint
     } else if app.local_mode.index.loading {

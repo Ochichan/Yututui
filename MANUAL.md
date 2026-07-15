@@ -36,7 +36,7 @@ The first launch points to Search for ten seconds; press its displayed key (norm
 ### Play your first song
 
 1. Press **`s`** — a search box opens.
-2. Type a song or artist name, press **`Enter`**. While typing, **`Backspace`** deletes one character and **`Ctrl+Backspace`** deletes the previous word.
+2. Type a song or artist name, press **`Enter`**. In any text field, **`←`** / **`→`** moves the cursor by one character and **`Ctrl+←`** / **`Ctrl+→`** by one word; **`Backspace`** deletes one character and **`Ctrl+Backspace`** the previous word.
 3. Move down the results with **`↓`**, press **`Enter`** on the one you want.
 
 Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.

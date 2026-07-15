@@ -42,6 +42,38 @@ use crate::station::StationStore;
 use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
+use crate::util::text_edit::TextCursor;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextEditResult {
+    CursorMoved(bool),
+    BufferChanged(bool),
+}
+
+/// Apply a Common text-edit action before a screen-specific arrow/navigation action.
+fn apply_text_edit_action(
+    action: Action,
+    cursor: &mut TextCursor,
+    buffer: &mut String,
+) -> Option<TextEditResult> {
+    match action {
+        Action::DeleteChar => Some(TextEditResult::BufferChanged(
+            cursor.delete_previous_grapheme(buffer),
+        )),
+        Action::DeleteWord => Some(TextEditResult::BufferChanged(
+            cursor.delete_previous_word(buffer),
+        )),
+        Action::MoveCursorLeft => Some(TextEditResult::CursorMoved(cursor.move_left(buffer))),
+        Action::MoveCursorRight => Some(TextEditResult::CursorMoved(cursor.move_right(buffer))),
+        Action::MoveCursorWordLeft => {
+            Some(TextEditResult::CursorMoved(cursor.move_word_left(buffer)))
+        }
+        Action::MoveCursorWordRight => {
+            Some(TextEditResult::CursorMoved(cursor.move_word_right(buffer)))
+        }
+        _ => None,
+    }
+}
 
 mod types;
 pub use types::*;

@@ -147,18 +147,21 @@ impl App {
     /// Open the create-playlist popup with an empty name buffer.
     pub(in crate::app) fn open_playlist_create(&mut self) {
         self.library_ui.create_input = Some(String::new());
+        self.library_ui.create_cursor = TextCursor::default();
         self.dirty = true;
     }
 
     /// Keystrokes while the create-playlist popup is open: type/Backspace edit the name,
     /// Enter creates, Esc cancels. Mirrors the library filter's plain-char gate.
     pub(in crate::app) fn on_key_playlist_create(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
+        if let Some(action) = self.keymap.text_edit_action(k.into()) {
             if let Some(buf) = self.library_ui.create_input.as_mut()
-                && crate::util::text_edit::delete_previous_word(buf)
+                && let Some(result) =
+                    apply_text_edit_action(action, &mut self.library_ui.create_cursor, buf)
+                && matches!(
+                    result,
+                    TextEditResult::BufferChanged(true) | TextEditResult::CursorMoved(true)
+                )
             {
                 self.dirty = true;
             }
@@ -167,15 +170,10 @@ impl App {
         match k.code {
             KeyCode::Esc => {
                 self.library_ui.create_input = None;
+                self.library_ui.create_cursor = TextCursor::default();
                 self.dirty = true;
             }
             KeyCode::Enter => return self.playlist_create_commit(),
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if let Some(buf) = self.library_ui.create_input.as_mut() {
-                    buf.pop();
-                    self.dirty = true;
-                }
-            }
             KeyCode::Char(c)
                 if !k
                     .modifiers
@@ -184,7 +182,7 @@ impl App {
                 if let Some(buf) = self.library_ui.create_input.as_mut()
                     && buf.chars().count() < PLAYLIST_NAME_MAX
                 {
-                    buf.push(c);
+                    self.library_ui.create_cursor.insert_char(buf, c);
                     self.dirty = true;
                 }
             }
@@ -213,6 +211,7 @@ impl App {
         match self.playlists.create(&name) {
             Some(id) => {
                 self.library_ui.create_input = None;
+                self.library_ui.create_cursor = TextCursor::default();
                 self.status.kind = StatusKind::Info;
                 self.status.text =
                     format!("{}: {name}", t!("Created playlist", "플레이리스트 생성"));
@@ -241,6 +240,7 @@ impl App {
     pub(in crate::app) fn reset_playlist_ui_state(&mut self) {
         self.library_ui.open_playlist = None;
         self.library_ui.create_input = None;
+        self.library_ui.create_cursor = TextCursor::default();
         self.library_ui.confirm_playlist_delete = None;
     }
 
@@ -291,6 +291,7 @@ impl App {
             songs,
             cursor: 0,
             naming: None,
+            naming_cursor: TextCursor::default(),
         });
         self.dirty = true;
     }
@@ -300,17 +301,19 @@ impl App {
     /// close. Naming phase: type/Backspace edit, Enter creates-and-adds, Esc backs out
     /// to the list.
     pub(in crate::app) fn on_key_playlist_picker(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        let delete_word = matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        );
+        let text_action = self.keymap.text_edit_action(k.into());
         let Some(picker) = self.playlist_picker.as_mut() else {
             return Vec::new();
         };
         if picker.naming.is_some() {
-            if delete_word {
+            if let Some(action) = text_action {
                 if let Some(buf) = picker.naming.as_mut()
-                    && crate::util::text_edit::delete_previous_word(buf)
+                    && let Some(result) =
+                        apply_text_edit_action(action, &mut picker.naming_cursor, buf)
+                    && matches!(
+                        result,
+                        TextEditResult::BufferChanged(true) | TextEditResult::CursorMoved(true)
+                    )
                 {
                     self.dirty = true;
                 }
@@ -319,15 +322,10 @@ impl App {
             match k.code {
                 KeyCode::Esc => {
                     picker.naming = None;
+                    picker.naming_cursor = TextCursor::default();
                     self.dirty = true;
                 }
                 KeyCode::Enter => return self.picker_create_commit(),
-                KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                    if let Some(buf) = picker.naming.as_mut() {
-                        buf.pop();
-                        self.dirty = true;
-                    }
-                }
                 KeyCode::Char(c)
                     if !k
                         .modifiers
@@ -336,7 +334,7 @@ impl App {
                     if let Some(buf) = picker.naming.as_mut()
                         && buf.chars().count() < PLAYLIST_NAME_MAX
                     {
-                        buf.push(c);
+                        picker.naming_cursor.insert_char(buf, c);
                         self.dirty = true;
                     }
                 }
@@ -360,6 +358,7 @@ impl App {
             }
             KeyCode::Char('n') => {
                 picker.naming = Some(String::new());
+                picker.naming_cursor = TextCursor::default();
                 self.dirty = true;
             }
             KeyCode::Enter => {
@@ -379,6 +378,7 @@ impl App {
         };
         if row >= self.playlists.playlists.len() {
             picker.naming = Some(String::new());
+            picker.naming_cursor = TextCursor::default();
             picker.cursor = self.playlists.playlists.len();
             self.dirty = true;
             return Vec::new();

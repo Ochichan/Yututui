@@ -206,6 +206,7 @@ fn ctrl_backspace_edits_settings_and_recording_paths() {
     {
         let settings = app.settings.as_mut().unwrap();
         settings.draft.cookies_file = "/one two".to_owned();
+        settings.text_cursor = TextCursor::at_end(&settings.draft.cookies_file);
         settings.editing_text = true;
     }
     app.update(Msg::Key(ctrl(KeyCode::Backspace)));
@@ -216,8 +217,38 @@ fn ctrl_backspace_edits_settings_and_recording_paths() {
         ..RecordingSettingsPopup::default()
     });
     app.settings.as_mut().unwrap().draft.recording_dir = "Radio Shows".to_owned();
+    app.overlays.recording_settings.as_mut().unwrap().dir_cursor =
+        TextCursor::at_end("Radio Shows");
     app.update(Msg::Key(ctrl(KeyCode::Backspace)));
     assert_eq!(app.settings.as_ref().unwrap().draft.recording_dir, "Radio ");
+}
+
+#[test]
+fn settings_and_recording_paths_insert_at_the_word_cursor() {
+    let mut app = App::new(100);
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::General, Field::CookiesFile);
+    app.settings.as_mut().unwrap().draft.cookies_file = "one two".to_owned();
+    app.settings_activate();
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.cookies_file,
+        "one Xtwo"
+    );
+
+    app.overlays.recording_settings = Some(RecordingSettingsPopup {
+        row: 3,
+        ..RecordingSettingsPopup::default()
+    });
+    app.settings.as_mut().unwrap().draft.recording_dir = "Radio Shows".to_owned();
+    app.recording_settings_confirm();
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.recording_dir,
+        "Radio XShows"
+    );
 }
 
 #[test]

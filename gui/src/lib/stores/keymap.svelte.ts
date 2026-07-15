@@ -13,6 +13,7 @@
 import type { Client } from '../ipc/client';
 import type { SettingsSnapshot } from './settings.svelte';
 import type { ActionInfoModel } from '../../generated/protocol/ActionInfoModel';
+import { TEXT_EDIT_ACTIONS, type TextEditAction } from '../keyboard/text-edit';
 
 /** The KeyContext ids of src/keymap.rs (CONTEXT_META), in GUI display order. */
 export type KeyContext =
@@ -152,6 +153,10 @@ const SEED_ROWS: SeedRow[] = [
   ['common', 'focus_next', 'Next tab / focus', 'tab'],
   ['common', 'delete_char', 'Delete character', 'backspace'],
   ['common', 'delete_word', 'Delete previous word (text inputs)', 'ctrl+backspace'],
+  ['common', 'move_cursor_left', 'Move cursor left', 'left'],
+  ['common', 'move_cursor_right', 'Move cursor right', 'right'],
+  ['common', 'move_cursor_word_left', 'Move cursor to previous word', 'ctrl+left'],
+  ['common', 'move_cursor_word_right', 'Move cursor to next word', 'ctrl+right'],
   ['common', 'back', 'Back / close', 'q'],
   ['global', 'home', 'Go home', 'ctrl+h'],
   ['global', 'toggle_streaming', 'Toggle autoplay', 'ctrl+r'],
@@ -294,9 +299,22 @@ export class KeymapStore {
   }
 
   /** Resolve the text editor action directly, ahead of a view-specific binding. */
-  textEditMatch(chord: string): string | null {
+  textEditMatch(chord: string): TextEditAction | null {
     const bindings = this.#merged();
-    return bindings['common.delete_word'] === chord ? 'delete_word' : null;
+    for (const action of TEXT_EDIT_ACTIONS) {
+      if (bindings[`common.${action}`] === chord) return action;
+    }
+    return null;
+  }
+
+  /** Whether a chord is native browser behavior owned by a factory text-edit action. */
+  isTextEditFactoryChord(chord: string): boolean {
+    return this.actions.some(
+      (action) =>
+        action.context === 'common' &&
+        TEXT_EDIT_ACTIONS.some((textAction) => textAction === action.id) &&
+        action.default_chord === chord,
+    );
   }
 
   // ── mutations (Apply(Keymap(...))) ───────────────────────────────────────────────────
