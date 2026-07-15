@@ -86,7 +86,7 @@ static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 ///
 /// Also detects the terminal's text-zoom mechanism into `zoom` — done here because the
 /// probes must run after the alternate screen is entered (so probe glyphs land on a
-/// throwaway screen) and before the event loop's `EventStream` starts reading stdin
+/// throwaway screen) and before the exclusive terminal event worker starts reading stdin
 /// (the probes read their own cursor-position replies).
 pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<AppTerminal> {
     // `try_init` = panic hook + raw mode + alternate screen + a `DefaultTerminal` we

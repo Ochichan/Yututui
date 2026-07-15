@@ -14,6 +14,7 @@ pub struct OwnedProcessTree {
     // during automatic field drop. `Drop` also terminates it explicitly before reaping `child`.
     tree: ChildTreeGuard,
     child: Option<Child>,
+    guardian_lease: Option<crate::player::guardian::GuardianLease>,
     pid: u32,
     exit_status: Option<ExitStatus>,
 }
@@ -25,6 +26,19 @@ impl OwnedProcessTree {
         Self {
             tree,
             child: Some(child),
+            guardian_lease: None,
+            pid,
+            exit_status: None,
+        }
+    }
+
+    /// Own a same-binary mpv guardian while exposing the actual mpv pid to overlay reducers.
+    pub(crate) fn new_guarded(guarded: crate::player::guardian::GuardedSpawn) -> Self {
+        let (tree, child, lease, pid) = guarded.into_parts();
+        Self {
+            tree,
+            child: Some(child),
+            guardian_lease: Some(lease),
             pid,
             exit_status: None,
         }
@@ -38,19 +52,37 @@ impl OwnedProcessTree {
         if self.exit_status.is_some() {
             return Ok(self.exit_status);
         }
-        let Some(child) = self.child.as_mut() else {
+        let Some(child) = self.child.as_ref() else {
             // A bounded close may have handed a very slow child to the background reaper.
             return Ok(None);
         };
-        let status = child.try_wait()?;
-        if status.is_some() {
-            self.exit_status = status;
+
+        let Some(clean) = super::process::child_exit_without_reap(child)? else {
+            return Ok(None);
+        };
+        if let Some(lease) = self.guardian_lease.as_mut() {
+            lease.disarm_after_guardian_exit(clean);
         }
-        Ok(status)
+        // Disarm the pid-based group guard before wait releases the direct child's pid. This also
+        // cleans any detached helper while the process-group generation is still unambiguous.
+        self.tree.terminate();
+        let status = self
+            .child
+            .as_mut()
+            .expect("observed child remains owned")
+            .wait()?;
+        self.exit_status = Some(status);
+        self.child = None;
+        Ok(Some(status))
     }
 
     /// Terminate the whole tree and reap the direct child. Safe to call repeatedly.
     pub fn terminate_and_wait(&mut self) {
+        if let Some(mut lease) = self.guardian_lease.take() {
+            self.terminate_guarded(&mut lease);
+            return;
+        }
+
         // Do this even after the direct child was reaped: a detached descendant may still own the
         // process group / Job Object and must not escape when the wrapper is later dropped.
         self.tree.terminate();
@@ -97,16 +129,41 @@ impl OwnedProcessTree {
             "owned child exceeded the bounded reap deadline"
         );
         let pid = self.pid;
+        let reaper_child = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+        let thread_child = std::sync::Arc::clone(&reaper_child);
         if let Err(error) = std::thread::Builder::new()
             .name("ytt-child-reaper".to_owned())
             .spawn(move || {
-                if let Err(error) = child.wait() {
+                let mut child = thread_child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(child) = child.as_mut()
+                    && let Err(error) = child.wait()
+                {
                     tracing::warn!(%error, pid, "background child reap failed");
                 }
             })
         {
             tracing::warn!(%error, pid, "failed to start background child reaper");
+            let mut child = reaper_child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(child) = child.as_mut()
+                && let Err(error) = child.wait()
+            {
+                tracing::warn!(%error, pid, "synchronous child reap failed");
+            }
         }
+    }
+
+    fn terminate_guarded(&mut self, lease: &mut crate::player::guardian::GuardianLease) {
+        let Some(child) = self.child.take() else {
+            return;
+        };
+        self.exit_status =
+            crate::player::guardian::shutdown_and_reap_guardian(child, &mut self.tree, lease);
     }
 }
 

@@ -1355,7 +1355,7 @@ $ ytt</span>
   </div>
 
   <div class="rely reveal" aria-label="Reliability details">
-    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.1h">No orphaned mpv. Ever.</span></h4><p data-i18n="rely.1p">Kill it, crash it, close the window, log off — signal hooks, a panic hook, a Windows Job Object, and a PID lifeline file make sure the audio dies with the app.</p></div>
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.1h">mpv bound to its owner</span></h4><p data-i18n="rely.1p">ytt's mpv launches are protected by a heartbeat guardian. POSIX adds an inherited mpv fd lease, Linux also adds PDEATHSIG, and Windows instead uses Job Objects. Recognized Unix terminal/multiplexer loss and normal Windows console events fail closed. Retained ConPTY brokers and repeated Screen/Zellij nesting need the daemon or a host-side lifetime supervisor/lease.</p></div>
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.2h">Instant skips</span></h4><p data-i18n="rely.2p">The next track's stream URL is resolved while the current one plays, so "next" starts in a blink, not in three seconds. Gapless by default.</p></div>
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.3h">Crash-safe by paranoia</span></h4><p data-i18n="rely.3p">Scrobbles hit disk before the network. Transfers checkpoint every few tracks. Config saves are atomic. Your data assumes the worst so you don't have to.</p></div>
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.4h">Self-healing yt-dlp</span></h4><p data-i18n="rely.4p">YouTube changes weekly. ytt keeps its own current yt-dlp (SHA-256-verified), swaps it in when a track breaks, and retries — automatically. ytt doctor checks everything else.</p></div>
@@ -1610,8 +1610,8 @@ var KO = {
   "os.win": "앨범 아트·시크 지원 미디어 오버레이에, 트레이 동반자까지: 왼쪽 클릭은 미니 플레이어, 오른쪽 클릭은 전체 메뉴. 로그인 시 자동 실행은 <code>yututray --install-startup</code>.",
   "os.lin": "당당한 <code>org.mpris.MediaPlayer2</code> 시민: playerctl, GNOME·KDE 위젯, waybar — 전부 평범한 음악 플레이어로 인식해요. 실제로 그러니까요.",
 
-  "rely.1h": "고아 mpv는 없습니다. 절대로.",
-  "rely.1p": "죽이든, 크래시가 나든, 창을 닫든, 로그아웃하든 — 시그널 훅, 패닉 훅, Windows Job Object, PID 라이프라인 파일이 오디오가 앱과 함께 꺼지도록 보장합니다.",
+  "rely.1h": "owner 수명에 묶인 mpv",
+  "rely.1p": "heartbeat guardian이 ytt의 mpv 실행을 보호합니다. POSIX는 상속 mpv fd lease를, Linux는 PDEATHSIG를 더하고, Windows는 대신 Job Object를 사용합니다. 인식 가능한 Unix 터미널/multiplexer 클라이언트 상실과 일반 Windows console event는 안전하게 종료됩니다. 유지된 ConPTY broker와 반복 중첩된 Screen/Zellij은 daemon이나 호스트 측 수명 supervisor/lease가 필요합니다.",
   "rely.2h": "즉각적인 스킵",
   "rely.2p": "다음 곡의 스트림 URL을 현재 곡이 재생되는 동안 미리 풀어둬서, \"다음\"이 3초가 아니라 눈 깜짝할 새에 시작됩니다. 갭리스는 기본값.",
   "rely.3h": "편집증적 크래시 안전",
@@ -1777,8 +1777,8 @@ var JA = {
   "os.win": "アートワークとシーク付きのメディアオーバーレイに、トレイの相棒も: 左クリックでミニプレイヤー、右クリックでフルメニュー。ログイン時起動は <code>yututray --install-startup</code>。",
   "os.lin": "堂々たる <code>org.mpris.MediaPlayer2</code> の市民: playerctl、GNOME・KDE のウィジェット、waybar — どれも普通の音楽プレイヤーとして認識します。実際そうですから。",
 
-  "rely.1h": "孤児 mpv は残しません。絶対に。",
-  "rely.1p": "強制終了しても、クラッシュしても、ウィンドウを閉じても、ログオフしても — シグナルフック、パニックフック、Windows の Job Object、PID ライフラインファイルが、音声がアプリと一緒に消えることを保証します。",
+  "rely.1h": "owner の寿命に結び付く mpv",
+  "rely.1p": "heartbeat guardian が ytt の mpv 起動を保護します。POSIX は継承 mpv fd lease、Linux は PDEATHSIG を追加し、Windows は代わりに Job Object を使います。識別できる Unix ターミナル/multiplexer の喪失と通常の Windows console event は安全側に終了します。維持された ConPTY broker と繰り返しネストした Screen/Zellij には daemon またはホスト側の寿命 supervisor/lease が必要です。",
   "rely.2h": "一瞬でスキップ",
   "rely.2p": "次の曲のストリーム URL を再生中に先に解決しておくので、「次へ」は3秒ではなく瞬きの間に始まります。ギャップレスは初期設定でオン。",
   "rely.3h": "心配性なクラッシュ安全",

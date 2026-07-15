@@ -32,7 +32,13 @@ ytt
 初回起動では 10 秒間 Search の場所を案内します。表示されたキー（通常は `s`）を押すか
 **Search** をクリックしてください。mpv、yt-dlp、ffmpeg が不足している場合は、案内
 カードのコピー/ガイドボタンを使い、インストール後に **再確認** を選びます。技術的な
-詳細は引き続き `ytt doctor` で確認できます。
+詳細は引き続き `ytt doctor` で確認できます。POSIX 環境で guardian に保護された再生を
+使うには mpv 0.33 以降が必要です。対話型 `ytt` プレイヤーは、識別できる Unix
+ターミナルまたは multiplexer クライアントを失うと終了し、multiplexer を照会できない
+場合も安全側に終了します。維持された Windows ConPTY broker と同種類で繰り返し
+ネストした Screen/Zellij は、接続中のクライアントと区別できません。その場合は
+`ytt daemon` またはホスト側の寿命 supervisor/lease を使ってください。対応範囲は
+[ターミナル互換性](docs/terminal-compatibility.md#terminal-lifetime-detection)を参照してください。
 
 ### 最初の一曲を再生する
 

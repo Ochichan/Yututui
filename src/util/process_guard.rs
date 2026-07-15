@@ -90,6 +90,42 @@ impl ChildTreeGuard {
         }
     }
 
+    /// Prove that a guardian is protected before allowing it to spawn mpv.
+    ///
+    /// On Windows this additionally duplicates the kill-on-close Job handle into the blocked
+    /// guardian. The returned value is meaningful only in that target process and is delivered
+    /// in the private spawn request. Unix needs no token: the process-group id is the proof.
+    pub(crate) fn guardian_token(&self) -> std::io::Result<Option<u64>> {
+        if !self.armed {
+            return Err(std::io::Error::other("guardian tree guard is not armed"));
+        }
+
+        #[cfg(unix)]
+        {
+            if self.pgid.is_none() {
+                return Err(std::io::Error::other(
+                    "guardian has no isolated process group",
+                ));
+            }
+            Ok(None)
+        }
+
+        #[cfg(windows)]
+        {
+            self.job
+                .ok_or_else(|| std::io::Error::other("guardian Job Object assignment failed"))?;
+            let process = self
+                .process
+                .ok_or_else(|| std::io::Error::other("guardian process handle is unavailable"))?;
+            super::process::create_guardian_inner_job(process).map(Some)
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        Err(std::io::Error::other(
+            "strict guardian process trees are unsupported on this platform",
+        ))
+    }
+
     /// Synchronously terminates any remaining member of the owned process tree.
     ///
     /// This is also used after the direct child exits successfully: a detached helper that kept
@@ -122,6 +158,17 @@ impl ChildTreeGuard {
         {
             self.process = None;
         }
+        self.armed = false;
+    }
+
+    /// Stop retaining a raw process-group id without signalling it.
+    ///
+    /// Unix guardian shutdown uses this only after non-reaping child observation failed and every
+    /// emergency pid hook was removed. It must then call `Child::wait` directly; signalling the
+    /// group after that wait could target a reused generation.
+    #[cfg(unix)]
+    pub(crate) fn release_without_termination(&mut self) {
+        self.pgid = None;
         self.armed = false;
     }
 

@@ -32,6 +32,11 @@ That's the whole launch. The player appears in the window.
 The first launch points to Search for ten seconds; press its displayed key (normally `s`) or click
 **Search**. If mpv, yt-dlp, or ffmpeg is missing, use the setup card's copy/guide buttons and choose
 **Check again** after installing it. The technical details remain available through `ytt doctor`.
+On POSIX systems, guarded playback requires mpv 0.33 or newer. The interactive `ytt` player exits
+when it loses a recognized Unix terminal or multiplexer client, and fails closed if a multiplexer
+cannot be queried. Retained Windows ConPTY brokers and repeated same-type Screen/Zellij nesting
+cannot be distinguished from an attached client; use `ytt daemon` or a host-side lifetime
+supervisor/lease there. The supported scope is in [terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
 
 ### Play your first song
 

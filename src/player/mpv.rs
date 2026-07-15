@@ -7,19 +7,18 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Stdio;
 use std::sync::Mutex;
 
-use anyhow::{Context, Result};
-use tokio::process::Child;
+use anyhow::{Context, Result, bail};
 
 use crate::config::MpvAudioRuntimeConfig;
-use crate::util::process;
 #[cfg(unix)]
 use crate::util::runtime;
 
 /// Whether the installed mpv accepts `flag` — the version-independence gate for any
-/// option newer than our ~0.32 baseline. Older mpv must never see an unknown flag
+/// option newer than a particular build. POSIX playback requires mpv 0.33+ for the native
+/// guardian lease, but version-independent probes still avoid brittle version-string parsing.
+/// Unsupported mpv must never see an unknown flag
 /// (they are fatal at startup), and version parsing breaks on git builds, so this
 /// runs a capability probe instead:
 ///
@@ -42,21 +41,124 @@ pub fn flag_supported(flag: &str) -> bool {
     if let Some(&supported) = cache.get(&key) {
         return supported;
     }
+    if !crate::deps::on_path(&program) {
+        cache.insert(key, false);
+        return false;
+    }
     // Route through the timeout-bounded runner so a wedged/hung mpv binary can't block this
     // synchronous startup probe forever; a timeout (or any error) is treated as "unsupported".
-    let mut cmd = process::std_command(&program, process::ProcessProfile::Media);
-    cmd.args(["--no-config", flag, "--version"])
-        .stdin(Stdio::null());
-    let supported = process::std_output_limited(
-        cmd,
-        process::ProcessProfile::Media,
+    let supported = super::guardian::probe(
+        &program,
+        vec![
+            "--no-config".to_owned(),
+            flag.to_owned(),
+            "--version".to_owned(),
+        ],
         std::time::Duration::from_secs(5),
         64 * 1024,
     )
-    .map(|out| out.status.success())
+    .map(|out| out.success)
     .unwrap_or(false);
     cache.insert(key, supported);
     supported
+}
+
+/// Whether this platform can enforce the guardian-to-mpv hard-death lease.
+///
+/// POSIX uses mpv's `--input-ipc-client=fd://N` (introduced in 0.33). Windows instead uses
+/// parent-only outer and guardian-only inner kill-on-close Job Objects, so no mpv option gate is
+/// needed there.
+pub fn lifeline_supported() -> bool {
+    #[cfg(unix)]
+    {
+        static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+        let program = crate::tools::mpv_program();
+        let mut cached = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((cached_program, supported)) = cached.as_ref()
+            && cached_program == &program
+        {
+            return *supported;
+        }
+        // The guardian injects its own valid fd:// client immediately before --version. An old mpv
+        // rejects that option, while a supported build proves the exact lease path playback uses.
+        let supported = crate::deps::on_path(&program)
+            && super::guardian::probe(
+                &program,
+                vec!["--version".to_owned()],
+                std::time::Duration::from_secs(5),
+                64 * 1024,
+            )
+            .is_ok_and(|output| output.success);
+        *cached = Some((program, supported));
+        supported
+    }
+    #[cfg(windows)]
+    {
+        static CACHE: Mutex<Option<(String, bool)>> = Mutex::new(None);
+        let program = crate::tools::mpv_program();
+        let mut cached = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((cached_program, supported)) = cached.as_ref()
+            && cached_program == &program
+        {
+            return *supported;
+        }
+        let supported = crate::deps::on_path(&program)
+            && super::guardian::probe(
+                &program,
+                vec!["--version".to_owned()],
+                std::time::Duration::from_secs(5),
+                64 * 1024,
+            )
+            .is_ok_and(|output| output.success);
+        *cached = Some((program, supported));
+        supported
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Fail closed before playback when the required process-lifetime primitive is unavailable.
+pub fn ensure_lifeline_supported() -> Result<()> {
+    let program = crate::tools::mpv_program();
+    if !crate::deps::on_path(&program) {
+        bail!("mpv is not installed or not executable: {program}");
+    }
+    if !lifeline_supported() {
+        #[cfg(unix)]
+        bail!(
+            "mpv lifetime protection unavailable: POSIX playback requires mpv 0.33 or newer \
+             with --input-ipc-client=fd:// support"
+        );
+        #[cfg(windows)]
+        bail!(
+            "mpv lifetime protection unavailable: Windows outer/inner Job Object guardian \
+             setup or the guarded mpv probe failed"
+        );
+        #[cfg(not(any(unix, windows)))]
+        bail!("mpv lifetime protection unavailable on this platform");
+    }
+    Ok(())
+}
+
+/// First `mpv --version` line, executed under the same native-lease guardian as every other mpv
+/// probe. An old POSIX mpv without `fd://` client support intentionally yields no version rather
+/// than creating a lease-free process.
+pub fn version_line(program: &str) -> Option<String> {
+    if !crate::deps::on_path(program) {
+        return None;
+    }
+    super::guardian::probe(
+        program,
+        vec!["--version".to_owned()],
+        std::time::Duration::from_secs(5),
+        64 * 1024,
+    )
+    .ok()
+    .filter(|out| out.success)
+    .and_then(|out| String::from_utf8(out.stdout).ok())
+    .and_then(|stdout| stdout.lines().next().map(str::to_owned))
 }
 
 /// Whether mpv accepts `--media-controls` (added in mpv 0.39).
@@ -114,9 +216,9 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
     }
 }
 
-/// Spawn mpv listening on `ipc_path`. `kill_on_drop(true)` is the tokio-level half of
-/// the no-orphan guarantee: if the owning [`super::Mpv`] is dropped, the child is
-/// SIGKILLed. The OS-enforced backstops (signals, panic hook, Job Object) live in
+/// Spawn mpv listening on `ipc_path` behind the same-binary guardian. The guardian owns the
+/// process tree and a heartbeat/native IPC lease; [`super::Mpv`] owns and boundedly reaps that
+/// guardian. Signal, panic, terminal-loss, and disk-recovery backstops live in
 /// [`super::lifetime`].
 ///
 /// `cookies_file`, when present, is handed to mpv's bundled yt-dlp so authenticated
@@ -130,47 +232,48 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
 /// long-lived mpv keeps its spawn-time binary until restart — the playback self-heal
 /// therefore feeds mpv *resolved* CDN URLs (via the resolver) instead of watch URLs
 /// when a fresher yt-dlp lands mid-session; the daemon simply respawns its player.
-pub fn spawn(
+pub(crate) fn spawn(
     ipc_path: &str,
     cookies_file: Option<&Path>,
     gapless: bool,
     audio: &MpvAudioRuntimeConfig,
     managed_cache_args: &[String],
-) -> Result<Child> {
-    let mut cmd =
-        process::tokio_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
-    cmd.arg("--no-video")
-        .arg("--no-terminal")
-        .arg("--idle=yes")
-        // mpv 0.32's JSON end-file event has no reason. Keeping a naturally ended file open
+) -> Result<super::guardian::GuardedSpawn> {
+    super::lifetime::ensure_media_start_allowed()?;
+    ensure_lifeline_supported()?;
+    let mut args = vec![
+        "--no-video".to_owned(),
+        "--no-terminal".to_owned(),
+        "--idle=yes".to_owned(),
+        // Retained legacy protocol robustness: old JSON end-file events omitted a reason.
+        // Keeping a naturally ended file open
         // gives the eof-reached observer one ordered loop turn before the app loads the next
         // track; load failures still enter the explicit idle event used by the IPC actor.
-        .arg("--keep-open=yes")
-        .arg("--no-config")
+        "--keep-open=yes".to_owned(),
+        "--no-config".to_owned(),
         // Don't decode embedded cover art into a video track — pure audio engine.
-        .arg("--audio-display=no")
-        .arg(if gapless {
-            "--gapless-audio=yes"
+        "--audio-display=no".to_owned(),
+        if gapless {
+            "--gapless-audio=yes".to_owned()
         } else {
-            "--gapless-audio=no"
-        })
+            "--gapless-audio=no".to_owned()
+        },
         // Bound the streaming cache: mpv's default forward demuxer cache is 150 MiB,
         // which would balloon RAM on long tracks. ~40 MiB total is plenty of audio
         // buffering while keeping us honest on priority #1 (low RAM).
-        .arg("--cache=yes")
-        .arg(format!("--input-ipc-server={ipc_path}"));
-    for arg in structured_audio_args(audio) {
-        cmd.arg(arg);
-    }
+        "--cache=yes".to_owned(),
+        format!("--input-ipc-server={ipc_path}"),
+    ];
+    args.extend(structured_audio_args(audio));
 
     // Capability-selected current-media cache lifecycle options. They precede both raw user
     // layers so the existing last-option-wins escape hatch remains authoritative.
     for arg in managed_cache_args {
-        cmd.arg(arg);
+        args.push(arg.clone());
     }
 
     for arg in crate::tools::mpv_ytdl_raw_option_args(cookies_file) {
-        cmd.arg(arg);
+        args.push(arg);
     }
 
     // Pin ytdl_hook to the selected yt-dlp. Ancient option, no probe needed;
@@ -188,7 +291,7 @@ pub fn spawn(
         // `-append` (not `--script-opts=`) so a pin path containing a comma can't be misread as
         // an option separator by mpv's script-opts parser. Under `--no-config` this is the only
         // script-opt, so append is functionally identical in the normal case — just comma-safe.
-        cmd.arg(format!(
+        args.push(format!(
             "--script-opts-append=ytdl_hook-ytdl_path={}",
             pin.display()
         ));
@@ -198,11 +301,11 @@ pub fn spawn(
     // docs. Placed before YTM_MPV_EXTRA so mpv's last-option-wins rule keeps
     // `YTM_MPV_EXTRA=--media-controls=yes` working as a user override.
     if media_controls_flag_supported() {
-        cmd.arg("--media-controls=no");
+        args.push("--media-controls=no".to_owned());
     }
 
     for arg in &audio.extra_args {
-        cmd.arg(arg);
+        args.push(arg.clone());
     }
 
     // Escape hatch for tests/debugging, e.g. `YTM_MPV_EXTRA="--ao=null --volume=0"`.
@@ -210,17 +313,12 @@ pub fn spawn(
     // space-separated flags behave exactly as the previous `split_whitespace`.
     if let Ok(extra) = std::env::var("YTM_MPV_EXTRA") {
         for a in split_shell_like(&extra) {
-            cmd.arg(a);
+            args.push(a);
         }
     }
 
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-
-    cmd.spawn()
-        .context("failed to spawn mpv — is it installed and on PATH?")
+    super::guardian::spawn(&crate::tools::mpv_program(), args, false)
+        .context("failed to spawn protected mpv")
 }
 
 pub(crate) fn structured_audio_args(audio: &MpvAudioRuntimeConfig) -> Vec<String> {

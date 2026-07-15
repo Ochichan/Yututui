@@ -26,16 +26,226 @@ if matches=$(grep -RInE 'crate::(api|recorder)([^[:alnum:]_]|$)' src/player --in
   fail=1
 fi
 
-# Media process lifetime is a tree boundary, not a direct-child handle. The long-lived audio mpv
-# and detached video overlay can both launch yt-dlp/ffmpeg helpers; Unix process groups and Windows
-# Job Objects must remain attached to their owners on close, cancellation, and drop.
+# Every mpv invocation crosses the same-binary guardian boundary. The guardian must be dispatched
+# before normal startup, retain an owner heartbeat, add mpv's inherited POSIX IPC lease last, and
+# keep both audio and overlay ownership fail closed when that protection cannot be armed.
 grep -Fq 'pub proc: Option<crate::util::process_tree::OwnedProcessTree>' src/app/state.rs || {
   echo "error: Video must own an OwnedProcessTree, not a raw child" >&2
   fail=1
 }
 
-grep -Fq 'child_tree: ChildTreeGuard' src/player/mod.rs || {
-  echo "error: Mpv must own a ChildTreeGuard" >&2
+grep -Fq 'pub mod guardian;' src/player/mod.rs || {
+  echo "error: the same-binary mpv guardian module is missing" >&2
+  fail=1
+}
+
+grep -Fq 'Some(std::ffi::OsStr::new("__mpv-guardian"))' src/main.rs || {
+  echo "error: main must dispatch the private mpv guardian before normal startup" >&2
+  fail=1
+}
+guardian_dispatch_line=$(
+  grep -n -m1 'Some(std::ffi::OsStr::new("__mpv-guardian"))' src/main.rs | cut -d: -f1 || true
+)
+normal_identity_line=$(
+  grep -n -m1 'media::identity::adopt_process_identity' src/main.rs | cut -d: -f1 || true
+)
+if [[ -z "$guardian_dispatch_line" || -z "$normal_identity_line" || \
+      "$guardian_dispatch_line" -ge "$normal_identity_line" ]]; then
+  echo "error: private mpv guardian dispatch must precede process identity and normal startup" >&2
+  fail=1
+fi
+
+grep -Fq 'guardian_lease: Option<guardian::GuardianLease>' src/player/mod.rs || {
+  echo "error: Mpv must retain the guardian heartbeat lease" >&2
+  fail=1
+}
+
+grep -Fq 'super::guardian::spawn(&crate::tools::mpv_program(), args, false)' src/player/mpv.rs || {
+  echo "error: audio mpv must launch through the guardian" >&2
+  fail=1
+}
+
+grep -Fq 'crate::player::guardian::spawn(&crate::tools::mpv_program(), args, true)' \
+  src/video_overlay.rs || {
+  echo "error: video-overlay mpv must launch through the guardian" >&2
+  fail=1
+}
+
+grep -Fq 'ensure_lifeline_supported()?;' src/player/mpv.rs || {
+  echo "error: audio mpv must fail closed when lifetime protection is unavailable" >&2
+  fail=1
+}
+
+grep -Fq 'refusing to spawn an unprotected video overlay' src/video_overlay.rs || {
+  echo "error: video-overlay mpv must fail closed when lifetime protection is unavailable" >&2
+  fail=1
+}
+
+grep -Fq 'HEARTBEAT_TIMEOUT' src/player/guardian.rs || {
+  echo "error: mpv guardian owner heartbeat is missing" >&2
+  fail=1
+}
+
+grep -Fq -- '--input-ipc-client=fd://{fd}' src/player/guardian.rs || {
+  echo "error: POSIX mpv must inherit its native hard-death IPC lease" >&2
+  fail=1
+}
+
+grep -Fq 'process::inherit_fd_in_child(&mut command, fd);' src/player/guardian.rs || {
+  echo "error: the POSIX mpv lease fd must be explicitly inherited" >&2
+  fail=1
+}
+
+# A raw command constructor that names either the configured mpv program or literal `mpv` creates
+# a second, unguarded launch boundary. Inspect every Rust source (and tolerate multiline calls),
+# with guardian.rs as the sole command-spawn authority.
+if matches=$(python3 - <<'PY'
+from pathlib import Path
+import re
+import sys
+
+constructor = re.compile(
+    r"(?:"
+    r"(?:(?:std|tokio)::process::)?Command::new"
+    r"|(?:crate::util::process::|process::)?(?:std_command|tokio_command)"
+    r")\s*\(\s*(?:"
+    r"&?\s*(?:crate::)?tools::mpv_program\s*\(\s*\)"
+    r"|&?\s*(?:r\#*)?[\"']mpv[\"']\#*"
+    r")",
+    re.MULTILINE,
+)
+mpv_binding = re.compile(
+    r"\blet\s+(?:mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*(?::[^=;]+)?=\s*&?\s*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*::)*mpv_program\s*\(\s*\)\s*;"
+)
+next_function = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+[A-Za-z_]"
+)
+constructor_prefix = (
+    r"(?:(?:(?:std|tokio)::process::)?Command::new"
+    r"|(?:crate::util::process::|process::)?(?:std_command|tokio_command))\s*\(\s*&?\s*"
+)
+
+found = False
+for path in sorted(Path("src").rglob("*.rs")):
+    if path == Path("src/player/guardian.rs"):
+        continue
+    text = path.read_text(encoding="utf-8")
+    for match in constructor.finditer(text):
+        found = True
+        line = text.count("\n", 0, match.start()) + 1
+        snippet = " ".join(match.group(0).split())
+        print(f"{path}:{line}:{snippet}")
+    # Also follow the ordinary `let program = mpv_program(); Command::new(&program)` spelling
+    # within one function. This is deliberately a narrow local alias check, not whole-program
+    # dataflow; central callers should pass that alias only to guardian::spawn/probe.
+    for binding in mpv_binding.finditer(text):
+        following_function = next_function.search(text, binding.end())
+        scope_end = following_function.start() if following_function else len(text)
+        alias_constructor = re.compile(
+            constructor_prefix + re.escape(binding.group("name")) + r"\b"
+        )
+        alias_match = alias_constructor.search(text, binding.end(), scope_end)
+        if alias_match:
+            found = True
+            line = text.count("\n", 0, alias_match.start()) + 1
+            snippet = " ".join(alias_match.group(0).split())
+            print(f"{path}:{line}:{snippet} (mpv_program alias)")
+sys.exit(0 if found else 1)
+PY
+); then
+  echo "error: raw mpv Command construction is forbidden outside player/guardian.rs:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+
+# The fixed-slot registry has exactly one publication path: a blocked guardian is registered,
+# then atomically upgraded to the actual mpv pid. The pre-guardian single-pid setters and generic
+# disk `register` function would let a caller bypass that ordering.
+if matches=$(grep -RInE \
+  '(^|[^[:alnum:]_])set_mpv_pid[[:space:]]*\(|(^|[^[:alnum:]_])(crate::|super::)?(player::)?lifetime::register[[:space:]]*\(' \
+  src --include='*.rs' 2>/dev/null); then
+  echo "error: obsolete mpv lifetime registration bypass API is forbidden:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+if matches=$(grep -nE 'fn[[:space:]]+register[[:space:]]*\(' src/player/lifetime.rs 2>/dev/null); then
+  echo "error: lifetime recovery must not expose the legacy generic register function:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+
+# Disk recovery is collateral-safe only if it pins the kernel process object before inspecting
+# argv and signals through that pinned object. Do not allow a future refactor to restore the old
+# check-then-kill numeric-PID race.
+stable_open_line=$(grep -nF -m1 \
+  'open_stable_process(record.mpv_pid)' src/player/lifetime.rs | cut -d: -f1 || true)
+target_refresh_line=$(grep -nF -m1 \
+  'sys.refresh_processes(ProcessesToUpdate::Some(&[mpv_pid]), true);' \
+  src/player/lifetime.rs | cut -d: -f1 || true)
+stable_kill_line=$(grep -nF -m1 \
+  'target.terminate_media()' src/player/lifetime.rs | cut -d: -f1 || true)
+if [[ -z "$stable_open_line" || -z "$target_refresh_line" || -z "$stable_kill_line" || \
+      "$stable_open_line" -ge "$target_refresh_line" || \
+      "$target_refresh_line" -ge "$stable_kill_line" ]]; then
+  echo "error: orphan recovery must pin the process before argv refresh and terminate via that handle" >&2
+  fail=1
+fi
+
+grep -Fq 'StableProcessOpen::Pinned(target)' src/player/lifetime.rs || {
+  echo "error: orphan recovery must require a pinned stable process target" >&2
+  fail=1
+}
+
+if matches=$(python3 - <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path("src/player/lifetime.rs")
+text = path.read_text(encoding="utf-8")
+start = text.find("pub fn reap_orphans(")
+end = text.find("\n#[derive", start)
+body = text[start:end] if start >= 0 and end > start else ""
+
+# `target.terminate_media()` is the sole permitted signalling call in recovery. Banning every
+# other kill/signal/terminate invocation also catches a recorded pid copied into a local alias.
+body = re.sub(r"\btarget\s*\.\s*terminate_media\s*\(\s*\)", "", body)
+raw_signal = re.compile(
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]*::)*"
+    r"[A-Za-z0-9_]*(?:kill|signal|terminate)[A-Za-z0-9_]*\s*\("
+    r"|(?:Command::new|std_command|tokio_command)\s*\(",
+    re.IGNORECASE,
+)
+found = False
+for match in raw_signal.finditer(body):
+    found = True
+    line = text.count("\n", 0, start + match.start()) + 1
+    snippet = " ".join(match.group(0).split())
+    print(f"{path}:{line}:{snippet}")
+sys.exit(0 if found else 1)
+PY
+); then
+  echo "error: orphan recovery must never signal a recorded numeric mpv pid:" >&2
+  echo "$matches" >&2
+  fail=1
+fi
+
+grep -Fq 'libc::SYS_pidfd_open' src/util/process.rs || {
+  echo "error: Linux orphan recovery must pin its target with pidfd_open" >&2
+  fail=1
+}
+grep -Fq 'libc::SYS_pidfd_send_signal' src/util/process.rs || {
+  echo "error: Linux orphan recovery must signal only through its pinned pidfd" >&2
+  fail=1
+}
+grep -Fq 'OpenProcess(' src/util/process.rs || {
+  echo "error: Windows orphan recovery must pin its target with a process handle" >&2
+  fail=1
+}
+grep -Fq 'TerminateProcess(handle, 1)' src/util/process.rs || {
+  echo "error: Windows orphan recovery must terminate only through its pinned process handle" >&2
   fail=1
 }
 
@@ -48,6 +258,11 @@ grep -Fq 'matches!(profile, ProcessProfile::Media | ProcessProfile::YtDlp)' \
 grep -Fq 'matches!(profile, ProcessProfile::Media | ProcessProfile::YtDlp)' \
   src/util/process_guard.rs || {
   echo "error: Media child trees must stay armed for Unix groups / Windows Job Objects" >&2
+  fail=1
+}
+
+grep -Fq 'guardian_token(&self)' src/util/process_guard.rs || {
+  echo "error: a guardian must prove tree/Job ownership before mpv spawn" >&2
   fail=1
 }
 

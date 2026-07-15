@@ -606,10 +606,17 @@ impl super::RuntimeHandles {
                         )
                     ));
                 } else if app.status.text.is_empty() {
-                    app.set_status_error(crate::t!(
-                        "Playback tool setup is required",
-                        "재생 도구 설치가 필요합니다"
-                    ));
+                    if e.contains("mpv lifetime protection unavailable:") {
+                        app.set_status_error(crate::t!(
+                            "mpv cannot be lifetime-protected — install mpv 0.33+ and run `ytt doctor`",
+                            "mpv 수명 보호를 사용할 수 없습니다 — mpv 0.33 이상을 설치하고 `ytt doctor`를 실행하세요"
+                        ));
+                    } else {
+                        app.set_status_error(crate::t!(
+                            "Playback tool setup is required",
+                            "재생 도구 설치가 필요합니다"
+                        ));
+                    }
                 }
             }
             PlayerStartupCompletion::Discarded => {

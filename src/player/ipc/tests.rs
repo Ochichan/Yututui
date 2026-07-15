@@ -394,8 +394,8 @@ fn mpv_032_eof_property_emits_one_natural_end_for_the_active_generation() {
             &mut state,
         );
     }
-    // mpv 0.32 sends a bare end-file and then becomes idle. The EOF latch keeps that ordered
-    // compatibility boundary from being misclassified as an error.
+    // Legacy mpv 0.32 sends a bare end-file and then becomes idle. Retain this robustness fixture
+    // so a sparse or reordered IPC stream is not misclassified as an error.
     dispatch_incoming(r#"{"event":"end-file"}"#, &emit, &mut state);
     dispatch_incoming(r#"{"event":"idle"}"#, &emit, &mut state);
 
