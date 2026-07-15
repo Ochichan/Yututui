@@ -67,6 +67,7 @@ impl App {
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.ai.select_all = false;
+        self.ai.input_cursor = TextCursor::at_end(&self.ai.input);
         self.status.text.clear();
         self.bridges.ai_transcript_scroll.scroll_to_end();
         self.dirty = true;
@@ -90,10 +91,37 @@ impl App {
     pub(in crate::app) fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.ai.focus {
             AiFocus::Input => {
-                let delete_word = matches!(
-                    self.keymap.text_edit_action(k.into()),
-                    Some(Action::DeleteWord)
-                );
+                let text_action = self.keymap.text_edit_action(k.into());
+                if let Some(action) = text_action {
+                    if std::mem::take(&mut self.ai.select_all) {
+                        match action {
+                            Action::DeleteChar | Action::DeleteWord => {
+                                self.ai.input.clear();
+                                self.ai.input_cursor = TextCursor::default();
+                            }
+                            Action::MoveCursorLeft | Action::MoveCursorWordLeft => {
+                                self.ai.input_cursor.move_to_start();
+                            }
+                            Action::MoveCursorRight | Action::MoveCursorWordRight => {
+                                self.ai.input_cursor.move_to_end(&self.ai.input);
+                            }
+                            _ => {}
+                        }
+                        self.dirty = true;
+                    } else if matches!(
+                        apply_text_edit_action(
+                            action,
+                            &mut self.ai.input_cursor,
+                            &mut self.ai.input
+                        ),
+                        Some(
+                            TextEditResult::BufferChanged(true) | TextEditResult::CursorMoved(true)
+                        )
+                    ) {
+                        self.dirty = true;
+                    }
+                    return Vec::new();
+                }
                 // Ctrl+A selects the whole prompt (desktop-style); idempotent re-select.
                 if matches!(
                     self.keymap.action(KeyContext::AiInput, k.into()),
@@ -112,30 +140,16 @@ impl App {
                         && let KeyCode::Char(c) = k.code
                     {
                         self.ai.input.clear();
-                        self.ai.input.push(c);
-                        return Vec::new();
-                    }
-                    if delete_word
-                        || matches!(
-                            self.keymap.action(KeyContext::AiInput, k.into()),
-                            Some(Action::DeleteChar)
-                        )
-                    {
-                        self.ai.input.clear();
+                        self.ai.input_cursor = TextCursor::default();
+                        self.ai.input_cursor.insert_char(&mut self.ai.input, c);
                         return Vec::new();
                     }
                 }
                 let chord = Chord::from(k);
-                if delete_word {
-                    if crate::util::text_edit::delete_previous_word(&mut self.ai.input) {
-                        self.dirty = true;
-                    }
-                    return Vec::new();
-                }
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
                 {
-                    self.ai.input.push(c);
+                    self.ai.input_cursor.insert_char(&mut self.ai.input, c);
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -146,11 +160,6 @@ impl App {
                         return Vec::new();
                     }
                     Some(Action::Confirm) => return self.submit_ai_prompt(),
-                    Some(Action::DeleteChar) => {
-                        self.ai.input.pop();
-                        self.dirty = true;
-                        return Vec::new();
-                    }
                     // Drop into the suggestions list (if any) to pick a track.
                     Some(Action::MoveDown | Action::FocusNext)
                         if !self.ai.suggestions.is_empty() =>
@@ -213,6 +222,7 @@ impl App {
             prompt
         };
         self.ai.input.clear();
+        self.ai.input_cursor = TextCursor::default();
         self.ai.select_all = false;
         self.push_ai_message(AiRole::User, prompt.clone());
         self.dirty = true;

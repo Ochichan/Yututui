@@ -23,6 +23,7 @@ use crate::search_source::SearchConfig;
 use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
+use crate::util::text_edit::TextCursor;
 
 mod actions;
 mod color_picker;
@@ -1096,6 +1097,8 @@ pub struct SettingsState {
     pub draft: SettingsDraft,
     /// Whether the focused text field is in character-entry mode.
     pub editing_text: bool,
+    /// Caret within whichever draft string backs the focused text field.
+    pub text_cursor: TextCursor,
     /// Open color picker for the focused theme role. Owned here (rather than the global overlay
     /// mask) so closing Settings always drops it and does not consume an album-art mask bit.
     pub color_picker: Option<ColorPickerState>,

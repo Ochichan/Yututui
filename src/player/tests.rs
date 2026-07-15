@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(unix)]
+use crate::util::process::ProcessProfile;
+#[cfg(unix)]
+use crate::util::process_guard::ChildTreeGuard;
 
 #[test]
 fn file_generation_advances_only_for_admitted_load_and_stop_barriers() {
@@ -120,20 +124,6 @@ fn rejected_load_rolls_back_the_expected_file_generation() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
-async fn terminate_and_reap_waits_for_the_child_exit() {
-    let mut child = tokio::process::Command::new("sh")
-        .args(["-c", "exec sleep 30"])
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn inert child");
-
-    terminate_and_reap(&mut child);
-
-    assert!(matches!(child.try_wait(), Ok(Some(_))));
-}
-
-#[cfg(unix)]
-#[tokio::test(flavor = "current_thread")]
 async fn mpv_drop_terminates_media_process_group_descendants() {
     use std::process::Stdio;
 
@@ -149,17 +139,18 @@ async fn mpv_drop_terminates_media_process_group_descendants() {
     std::fs::create_dir_all(&root).expect("create mpv tree fixture");
     let pid_file = root.join("helper.pid");
     let script = format!("sleep 10 & echo $! > '{}'; wait", pid_file.display());
-    let mut command = crate::util::process::tokio_command("sh", ProcessProfile::Media);
+    let mut command = crate::util::process::std_command("sh", ProcessProfile::Media);
     command
         .args(["-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let child = command.spawn().expect("spawn fake long-lived mpv tree");
-    let child_tree = ChildTreeGuard::for_tokio(&child, ProcessProfile::Media);
+    let child_tree = ChildTreeGuard::for_std(&child, ProcessProfile::Media);
     let mpv = Mpv {
         child_tree,
-        child,
+        child: Some(child),
+        guardian_lease: None,
         ipc_path: root.join("mpv.sock").to_string_lossy().into_owned(),
     };
 

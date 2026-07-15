@@ -3,6 +3,7 @@
 //! Leaf domain events cross this single orchestration boundary into reducer messages.
 
 use ratatui_image::thread::ResizeResponse;
+use std::sync::atomic::AtomicU64;
 
 #[cfg(test)]
 use crate::app::PersistCmd;
@@ -19,6 +20,7 @@ use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy}
 mod delivery_reporting;
 mod event_policy;
 pub(crate) mod ingress;
+mod local_find;
 mod persist_delivery;
 pub(crate) mod player_delivery;
 mod read_only;
@@ -615,6 +617,9 @@ pub struct RuntimeHandles {
     persist: crate::persist::PersistHandle,
     /// Runtime-local blocking jobs and cancellable maintenance work.
     background_tasks: RuntimeTaskSet,
+    /// Latest admitted Local Find evaluation. Older blocking searches poll this epoch and retire
+    /// without publishing, so fast typing cannot build an unbounded tail of obsolete work.
+    local_find_query_epoch: std::sync::Arc<AtomicU64>,
     /// A deliberate secondary player may use playback/network actors, but every command capable
     /// of durable mutation is rejected before it reaches an actor or blocking worker.
     persistence_read_only: Option<std::sync::Arc<str>>,
@@ -681,6 +686,7 @@ impl RuntimeHandles {
             transfer_handle: None,
             persist,
             background_tasks: RuntimeTaskSet::new(),
+            local_find_query_epoch: std::sync::Arc::new(AtomicU64::new(0)),
             persistence_read_only: match crate::persist::persistence_access() {
                 crate::persist::PersistenceAccess::Writable => None,
                 crate::persist::PersistenceAccess::ReadOnly { reason } => Some(reason),
@@ -1168,6 +1174,27 @@ impl RuntimeHandles {
                                 },
                             )));
                         });
+                }
+                crate::app::LocalCmd::BuildFindCorpus {
+                    generation,
+                    tracks,
+                    playlists,
+                    revision,
+                    options,
+                } => {
+                    self.dispatch_local_find_build(generation, tracks, playlists, revision, options)
+                }
+                crate::app::LocalCmd::EvaluateFind {
+                    request_id,
+                    generation,
+                    corpus,
+                    query,
+                    scope,
+                    sort,
+                } => self
+                    .dispatch_local_find_query(request_id, generation, corpus, query, scope, sort),
+                crate::app::LocalCmd::CancelFindEvaluations => {
+                    self.cancel_local_find_queries();
                 }
             },
             Cmd::Recorder(job) => {

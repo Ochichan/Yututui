@@ -226,8 +226,8 @@ impl ZoomHandle {
 }
 
 /// Detect which zoom mechanism this terminal has. Must run with raw mode + the
-/// alternate screen active and **before** the crossterm `EventStream` exists — the
-/// probes read their CPR replies off stdin themselves (`crossterm::cursor::position()`).
+/// alternate screen active and **before** the exclusive terminal event worker exists —
+/// the probes read their CPR replies off stdin themselves (`crossterm::cursor::position()`).
 ///
 /// Order matters: OSC 66 is strictly better (fine-grained levels), so it's checked
 /// first on the terminal families that ship or answer it quickly; Windows Terminal is

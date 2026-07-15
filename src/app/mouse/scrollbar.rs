@@ -1,12 +1,54 @@
 use super::*;
 
 impl App {
+    pub(super) fn on_any_scrollbar_press(
+        &mut self,
+        target: &MouseTarget,
+        rect: Rect,
+        row: u16,
+    ) -> Option<Vec<Cmd>> {
+        match target {
+            MouseTarget::Scrollbar(surface) => Some(self.on_scrollbar_press(*surface, rect, row)),
+            MouseTarget::LocalFindScrollbar { stamp } => {
+                Some(self.on_local_find_scrollbar_press(stamp.clone(), rect, row))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn on_scrollbar_press(
         &mut self,
         surface: ScrollSurface,
         rect: Rect,
         row: u16,
     ) -> Vec<Cmd> {
+        self.on_scrollbar_press_stamped(surface, rect, row, None)
+    }
+
+    pub(super) fn on_local_find_scrollbar_press(
+        &mut self,
+        stamp: LocalFindPointerStamp,
+        rect: Rect,
+        row: u16,
+    ) -> Vec<Cmd> {
+        if !self.local_find_pointer_stamp_is_live(&stamp) {
+            return Vec::new();
+        }
+        self.on_scrollbar_press_stamped(ScrollSurface::LocalFind, rect, row, Some(stamp))
+    }
+
+    fn on_scrollbar_press_stamped(
+        &mut self,
+        surface: ScrollSurface,
+        rect: Rect,
+        row: u16,
+        local_find_stamp: Option<LocalFindPointerStamp>,
+    ) -> Vec<Cmd> {
+        // Local Find must always use its generation-stamped target; fail closed if a future
+        // caller accidentally routes it through the generic scrollbar path.
+        if surface == ScrollSurface::LocalFind && local_find_stamp.is_none() {
+            return Vec::new();
+        }
         let Some((content_len, viewport, position)) = self.scrollbar_snapshot(surface) else {
             return Vec::new();
         };
@@ -30,15 +72,25 @@ impl App {
             content_len,
             viewport,
             grab,
+            local_find_stamp,
         };
         self.interaction.drag_selection = None;
         self.interaction.ai_transcript_drag = None;
-        self.interaction.drag_scrollbar = Some(drag);
-        self.drag_scrollbar_to(drag, row);
+        self.interaction.drag_scrollbar = Some(drag.clone());
+        self.drag_scrollbar_to(&drag, row);
         Vec::new()
     }
 
-    pub(super) fn drag_scrollbar_to(&mut self, drag: ScrollbarDrag, row: u16) {
+    pub(super) fn drag_scrollbar_to(&mut self, drag: &ScrollbarDrag, row: u16) {
+        if drag.surface == ScrollSurface::LocalFind
+            && !drag
+                .local_find_stamp
+                .as_ref()
+                .is_some_and(|stamp| self.local_find_pointer_stamp_is_live(stamp))
+        {
+            self.interaction.drag_scrollbar = None;
+            return;
+        }
         if drag.rect.height == 0 {
             return;
         }
@@ -72,6 +124,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => &self.bridges.library_scroll,
             ScrollSurface::Search => &self.bridges.search_scroll,
+            ScrollSurface::LocalFind => &self.bridges.local_find_scroll,
             ScrollSurface::SearchFilter => &self.search_filter.scroll,
             ScrollSurface::AiTranscript => &self.bridges.ai_transcript_scroll,
             ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
@@ -92,6 +145,7 @@ impl App {
                 }
             }
             ScrollSurface::Search => self.search.results.len(),
+            ScrollSurface::LocalFind => self.local_find_rows_len(),
             ScrollSurface::SearchFilter => self.search_filter.matches.len(),
             ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),

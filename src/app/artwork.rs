@@ -234,30 +234,10 @@ impl App {
         }
     }
 
-    /// Whether some text input with a caret is on screen right now (the search box, the DJ Gem
-    /// prompt, the library filter, a playlist-name entry, or a settings text field). Drives the
-    /// caret-blink clock and the render helper, so the two can't drift.
+    /// Whether some text input with a caret is on screen right now. Drives the caret-blink clock
+    /// and the render helper, so the two can't drift from the canonical editor inventory.
     pub fn text_input_caret_visible(&self) -> bool {
-        if self
-            .playlist_picker
-            .as_ref()
-            .is_some_and(|p| p.naming.is_some())
-        {
-            return true;
-        }
-        // The results-filter popup's query input is always live while it's open.
-        if self.search_filter.open {
-            return true;
-        }
-        match self.mode {
-            Mode::Search => self.search.focus == SearchFocus::Input,
-            Mode::Ai => self.ai.focus == AiFocus::Input,
-            Mode::Library => {
-                self.library_ui.filter_editing || self.library_ui.create_input.is_some()
-            }
-            Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
-            Mode::Player => false,
-        }
+        self.in_text_entry()
     }
 
     /// Logical animation tick rate. This remains the configured FPS so frame-based animation phases
@@ -637,7 +617,8 @@ impl App {
                     || self.library_ui.confirm_download.is_some()
                     || self.local_mode.pending_organize_confirm.is_some()
                     || self.local_mode.pending_accept_all_confirm.is_some()
-                    || self.local_mode.pending_import_record_delete.is_some(),
+                    || self.local_mode.pending_import_record_delete.is_some()
+                    || self.local_mode.find.pending_bulk_confirm.is_some(),
                 ART_OVERLAY_LIBRARY_CONFIRM_BIT,
             )
             | flag(!matches!(self.mode, Mode::Player), ART_OVERLAY_NOT_PLAYER_BIT)
@@ -654,7 +635,10 @@ impl App {
                 self.playlist_picker.is_some(),
                 ART_OVERLAY_PLAYLIST_PICKER_BIT,
             )
-            | flag(self.search_filter.open, ART_OVERLAY_SEARCH_FILTER_BIT)
+            | flag(
+                self.search_filter.open || self.local_mode.find.refine_popup.open,
+                ART_OVERLAY_SEARCH_FILTER_BIT,
+            )
             | flag(
                 self.overlays.context_menu.is_some(),
                 ART_OVERLAY_CONTEXT_MENU_BIT,

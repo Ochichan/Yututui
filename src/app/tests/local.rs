@@ -542,6 +542,40 @@ fn ctrl_backspace_edits_the_local_deck_filter() {
 }
 
 #[test]
+fn local_deck_filter_inserts_at_the_word_cursor() {
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "album artist".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Left)));
+    app.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(app.local_mode.ui.filter_query, "album Xartist");
+}
+
+#[test]
+fn local_filter_text_action_remap_beats_the_mode_toggle() {
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "one".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::MoveCursorLeft,
+            Chord::new(KeyCode::Char('l'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(alt_shift(KeyCode::Char('l'))));
+
+    assert!(app.local_mode.ui.filter_editing);
+    assert!(app.local_mode.pending_confirm.is_none());
+    assert_eq!(app.local_mode.ui.filter_cursor.byte_index("one"), 2);
+}
+
+#[test]
 fn local_deck_sidebar_switches_sections_with_mouse_and_number_keys() {
     let mut app = app_with_local_deck_index(vec![local_deck_track(
         "/tmp/music/Daft Punk/Discovery/One More Time.flac",

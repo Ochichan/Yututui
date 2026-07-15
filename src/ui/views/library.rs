@@ -8,6 +8,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
 use crate::library::FavoriteLookup;
@@ -166,18 +167,6 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     let editing = app.library_ui.filter_editing;
     let query = &app.library_ui.filter_query;
-
-    let mut spans = vec![
-        Span::styled(t!("filter: ", "필터: "), app.theme.style(R::TextMuted)),
-        Span::styled(query.clone(), app.theme.style(R::TextPrimary)),
-    ];
-    if editing {
-        spans.push(crate::ui::anim::caret_span(
-            app,
-            app.theme.style(R::Accent),
-            app.theme.color(R::Background),
-        ));
-    }
     let hint = if matches == 0 {
         t!("  (no matches)", "  (일치 없음)").to_owned()
     } else if editing {
@@ -189,6 +178,25 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     } else {
         t!("  (Esc to clear)", "  (Esc: 지우기)").to_owned()
     };
+    let label = t!("filter: ", "필터: ");
+    let mut spans = vec![Span::styled(label, app.theme.style(R::TextMuted))];
+    if editing {
+        let width = (area.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(label) + UnicodeWidthStr::width(hint.as_str()));
+        let cursor = app.library_ui.filter_cursor.byte_index(query);
+        let window = crate::ui::text::editable_window(query, cursor, width);
+        spans.extend([
+            Span::styled(window.before, app.theme.style(R::TextPrimary)),
+            crate::ui::anim::caret_span(
+                app,
+                app.theme.style(R::Accent),
+                app.theme.color(R::Background),
+            ),
+            Span::styled(window.after, app.theme.style(R::TextPrimary)),
+        ]);
+    } else {
+        spans.push(Span::styled(query.clone(), app.theme.style(R::TextPrimary)));
+    }
     spans.push(Span::styled(hint, app.theme.style(R::TextMuted)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -625,21 +633,22 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     // `name: <typed>█` — the filter prompt's visual language, inside the popup.
-    let shown = crate::ui::text::truncate_owned_to_width(
-        name.clone(),
-        (rows[1].width as usize).saturating_sub(12),
+    let label = t!("  name: ", "  이름: ");
+    let cursor = app.library_ui.create_cursor.byte_index(name);
+    let shown = crate::ui::text::editable_window(
+        name,
+        cursor,
+        (rows[1].width as usize).saturating_sub(UnicodeWidthStr::width(label)),
     );
     let input = Line::from(vec![
-        Span::styled(
-            t!("  name: ", "  이름: "),
-            crate::ui::popup_style(app, R::TextMuted),
-        ),
-        Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
+        Span::styled(label, crate::ui::popup_style(app, R::TextMuted)),
+        Span::styled(shown.before, crate::ui::popup_style(app, R::TextPrimary)),
         crate::ui::anim::caret_span(
             app,
             crate::ui::popup_style(app, R::Accent),
             crate::ui::popup_bg(app),
         ),
+        Span::styled(shown.after, crate::ui::popup_style(app, R::TextPrimary)),
     ]);
     frame.render_widget(Paragraph::new(input), rows[1]);
 
@@ -716,21 +725,22 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     if let Some(name) = picker.naming.as_ref() {
         // Phase two: the inline new-playlist name entry.
-        let shown = crate::ui::text::truncate_owned_to_width(
-            name.clone(),
-            (rows[1].width as usize).saturating_sub(12),
+        let label = t!("  name: ", "  이름: ");
+        let cursor = picker.naming_cursor.byte_index(name);
+        let shown = crate::ui::text::editable_window(
+            name,
+            cursor,
+            (rows[1].width as usize).saturating_sub(UnicodeWidthStr::width(label)),
         );
         let input = Line::from(vec![
-            Span::styled(
-                t!("  name: ", "  이름: "),
-                crate::ui::popup_style(app, R::TextMuted),
-            ),
-            Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
+            Span::styled(label, crate::ui::popup_style(app, R::TextMuted)),
+            Span::styled(shown.before, crate::ui::popup_style(app, R::TextPrimary)),
             crate::ui::anim::caret_span(
                 app,
                 crate::ui::popup_style(app, R::Accent),
                 crate::ui::popup_bg(app),
             ),
+            Span::styled(shown.after, crate::ui::popup_style(app, R::TextPrimary)),
         ]);
         frame.render_widget(Paragraph::new(input), rows[1]);
 

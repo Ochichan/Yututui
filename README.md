@@ -87,7 +87,17 @@ YuTuTui! uses **mpv** for playback, **yt-dlp** for search/stream resolution, and
 download post-processing. Packaged installs include them. If a direct or source install is
 missing one, the app shows a friendly setup card with a copyable OS command, setup guide, and
 **Check again** button instead of exposing a process error. `ytt doctor` remains the detailed
-diagnostic command.
+diagnostic command. POSIX systems require **mpv 0.33 or newer** for the inherited lifetime lease.
+
+`ytt` routes mpv launches through a private guardian. The guardian uses an owner heartbeat; POSIX
+adds an inherited mpv `fd://` IPC lease, Linux also adds `PR_SET_PDEATHSIG`, and Windows instead
+uses kill-on-close Job Objects. These bind mpv to the `ytt` owner. The
+standalone Unix TUI also fails closed when it loses a recognized direct/conmon PTY or a supported
+tmux/screen/Zellij client; an inaccessible or ambiguous multiplexer query is treated as lost.
+Normal Windows console-control events are handled too. A retained ConPTY broker and repeated
+same-type Screen/Zellij nesting cannot be proven detached from inside the client; use `ytt daemon`
+or a host-side lifetime supervisor/lease for those cases. See
+[terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
 
 ## Quick start
 
@@ -201,7 +211,9 @@ Build playlists in the Library (or let DJ Gem build them), pop the queue with **
 
 ### Local Deck — an offline player for everything on disk
 
-**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres, smart lists, no internet needed. The [manual](MANUAL.md) has the full tour.
+**`Alt+Shift+L`** in the Library opens an immersive player for your downloads and local files — albums, artists, genres and smart lists. Choose **Find** or press **`Ctrl+F`** to search tracks, albums, artists, genres, folders and locally playable playlist entries without an online fallback; **`/`** still filters only the section you're viewing. Refine the scope or sort, open a collection, or play/enqueue one result or the whole result mix.
+
+Local playback and Find use only files already on your computer. Other opt-in integrations may still use the network, and the manual online-candidate search in **Import Sessions** explicitly asks before leaving the Local Deck. The Local Deck also remembers its own theme separately from normal and Radio modes: a fresh or older installation starts it with **Local Launch**, then restores whichever Local theme you save there. The [manual](MANUAL.md) has the full tour.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/localdeck.png, delete the "coming soon" line above, then uncomment:
@@ -290,6 +302,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `z` / `Shift+Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
 | `Shift+B` | Collapse / expand the docked control box |
+| `←` / `→` · `Ctrl+←` / `Ctrl+→` | Move by one character · one word in a text field |
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |

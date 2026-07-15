@@ -283,6 +283,56 @@ fn configure_tokio_child(cmd: &mut TokioCommand, profile: ProcessProfile) {
     }
 }
 
+/// Arrange for an already-open Unix descriptor to survive `exec` in exactly this child.
+///
+/// Rust creates sockets with close-on-exec enabled. mpv's `fd://N` IPC transport needs the
+/// descriptor inherited, but clearing the flag in the guardian itself would leak it into any
+/// concurrently spawned helper. Doing it in `pre_exec` keeps the change child-local.
+#[cfg(unix)]
+pub(crate) fn inherit_fd_in_child(cmd: &mut StdCommand, fd: std::os::fd::RawFd) {
+    // SAFETY: `fcntl` is async-signal-safe. The descriptor stays owned by the caller until
+    // `Command::spawn` returns, and this closure neither allocates nor touches shared Rust state.
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// Make a Linux media child die if its guardian disappears between heartbeat checks.
+///
+/// The guardian's private IPC socket is the portable primary lease. PDEATHSIG closes the tiny
+/// remaining window where the guardian itself is killed before it can terminate mpv's group.
+#[cfg(target_os = "linux")]
+pub(crate) fn configure_parent_death_signal(cmd: &mut StdCommand) {
+    // Capture before fork so the child can detect the documented race where its parent exits
+    // before PR_SET_PDEATHSIG is installed.
+    let expected_parent = std::process::id() as libc::pid_t;
+    // SAFETY: `prctl` and `getppid` are async-signal-safe syscalls. Error construction uses only
+    // raw OS codes and the closure performs no allocation.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != expected_parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn configure_parent_death_signal(_cmd: &mut StdCommand) {}
+
 #[cfg(unix)]
 pub(crate) fn terminate_process_group(pgid: libc::pid_t) {
     if pgid <= 0 {
@@ -296,6 +346,292 @@ pub(crate) fn terminate_process_group(pgid: libc::pid_t) {
             libc::kill(pgid, libc::SIGKILL);
         }
     }
+}
+
+/// Ask a same-binary guardian to terminate its media tree and reap it before exiting.
+///
+/// This intentionally targets only the stable direct-child pid and uses SIGTERM: SIGKILLing the
+/// guardian would destroy mpv's only reliable reaper in containers with a non-reaping PID 1.
+#[cfg(unix)]
+pub(crate) fn request_process_termination(pid: libc::pid_t) {
+    if pid <= 0 {
+        return;
+    }
+    // SAFETY: `pid` is retained by the caller's live Child ownership handshake. SIGTERM is handled
+    // by the guardian using one lock-free atomic store.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+
+/// A process identity pinned by the kernel before a recovery path inspects its command line.
+///
+/// Raw numeric PIDs can be recycled between an identity check and a later signal. Linux pidfds
+/// and Windows process handles instead keep the signal target bound to the same process object.
+pub(crate) struct StableProcessTarget {
+    #[cfg(target_os = "linux")]
+    pidfd: std::os::fd::OwnedFd,
+    #[cfg(windows)]
+    process: std::os::windows::io::OwnedHandle,
+}
+
+pub(crate) enum StableProcessOpen {
+    // Unsupported targets can only construct `Unavailable`; keep the shared result API intact.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+    Pinned(StableProcessTarget),
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+    Gone,
+    Unavailable(std::io::Error),
+}
+
+pub(crate) enum StableProcessKill {
+    // Unsupported targets can only construct `Retry`; keep the shared result API intact.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+    Killed,
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+    Gone,
+    Retry(std::io::Error),
+}
+
+/// Pin `pid` without ever falling back to a racy raw-PID recovery target.
+#[cfg(target_os = "linux")]
+pub(crate) fn open_stable_process(pid: u32) -> StableProcessOpen {
+    use std::os::fd::FromRawFd;
+
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return StableProcessOpen::Gone;
+    };
+    // SAFETY: pidfd_open takes the numeric pid and zero flags and returns either a newly owned
+    // close-on-exec descriptor or -1. Ownership is transferred to OwnedFd exactly once.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if raw >= 0 {
+        // SAFETY: a nonnegative pidfd_open result is a fresh descriptor owned by this call.
+        let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as std::os::fd::RawFd) };
+        return StableProcessOpen::Pinned(StableProcessTarget { pidfd });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        StableProcessOpen::Gone
+    } else {
+        StableProcessOpen::Unavailable(error)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn open_stable_process(pid: u32) -> StableProcessOpen {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+
+    // SAFETY: OpenProcess returns a newly owned process handle or null. The requested rights are
+    // limited to identity/query, waiting, and termination for this exact recovery target.
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+            0,
+            pid,
+        )
+    };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error()
+            == Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32)
+        {
+            StableProcessOpen::Gone
+        } else {
+            StableProcessOpen::Unavailable(error)
+        };
+    }
+    // SAFETY: `raw` is the fresh owned handle returned by the successful OpenProcess call.
+    let process = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw as _) };
+    StableProcessOpen::Pinned(StableProcessTarget { process })
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(crate) fn open_stable_process(_pid: u32) -> StableProcessOpen {
+    StableProcessOpen::Unavailable(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this platform has no collateral-safe process signal handle",
+    ))
+}
+
+impl StableProcessTarget {
+    /// Terminate the pinned media target (and its group where the kernel supports a pinned group
+    /// signal). A failure is returned for retry; this method never substitutes a numeric PID.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn terminate_media(&self) -> StableProcessKill {
+        use std::os::fd::AsRawFd;
+
+        let send = |flags: libc::c_uint| {
+            // SAFETY: the pidfd remains owned by `self`; siginfo is null as documented, SIGKILL is
+            // valid, and flags is either the process-group extension or zero.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    flags,
+                )
+            }
+        };
+        let mut result = send(libc::PIDFD_SIGNAL_PROCESS_GROUP);
+        if result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+            // Linux 5.3-6.8 supports stable process signaling but not the 6.9 group flag. Killing
+            // the exact mpv remains collateral-safe; guardian ownership is the primary tree edge.
+            result = send(0);
+        }
+        if result >= 0 {
+            StableProcessKill::Killed
+        } else {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                StableProcessKill::Gone
+            } else {
+                StableProcessKill::Retry(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn terminate_media(&self) -> StableProcessKill {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
+
+        let handle = self.process.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        // SAFETY: the OwnedHandle pins a valid process object for the duration of both calls.
+        let state = unsafe { WaitForSingleObject(handle, 0) };
+        match state {
+            WAIT_OBJECT_0 => StableProcessKill::Gone,
+            WAIT_TIMEOUT => {
+                // SAFETY: the same pinned handle carries PROCESS_TERMINATE access.
+                if unsafe { TerminateProcess(handle, 1) } != 0 {
+                    StableProcessKill::Killed
+                } else {
+                    StableProcessKill::Retry(std::io::Error::last_os_error())
+                }
+            }
+            WAIT_FAILED => StableProcessKill::Retry(std::io::Error::last_os_error()),
+            value => StableProcessKill::Retry(std::io::Error::other(format!(
+                "unexpected process wait result: {value}"
+            ))),
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    pub(crate) fn terminate_media(&self) -> StableProcessKill {
+        StableProcessKill::Retry(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this platform has no collateral-safe process signal handle",
+        ))
+    }
+}
+
+/// Observe a direct child's exit without reaping it.
+///
+/// `None` means the child is still running; `Some` contains whether it exited successfully. The
+/// guardian deliberately retains an exited mpv as a zombie until the guardian itself exits. That
+/// keeps the mpv pid unavailable for reuse throughout the interval in which the owner registry can
+/// still see a running guardian.
+#[cfg(unix)]
+pub(crate) fn direct_child_exit_without_reap(pid: libc::pid_t) -> std::io::Result<Option<bool>> {
+    if pid <= 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "direct child pid must be positive",
+        ));
+    }
+
+    let id = libc::id_t::try_from(pid).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "direct child pid does not fit id_t",
+        )
+    })?;
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `info` points to writable storage for siginfo_t. P_PID restricts observation to the
+    // supplied direct child, WNOHANG makes the call non-blocking, and WNOWAIT deliberately leaves
+    // an exited child unreaped. POSIX defines a zero si_pid when no requested state is available;
+    // the buffer is pre-zeroed for kernels predating that clarification.
+    unsafe {
+        if libc::waitid(
+            libc::P_PID,
+            id,
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let info = info.assume_init();
+        if info.si_pid() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(
+                info.si_code == libc::CLD_EXITED && info.si_status() == 0,
+            ))
+        }
+    }
+}
+
+/// Observe a `std::process::Child` completion without releasing its pid/process object.
+///
+/// Guarded owners use this to remove every pid-based teardown hook before the final `wait()`.
+#[cfg(unix)]
+pub(crate) fn child_exit_without_reap(
+    child: &std::process::Child,
+) -> std::io::Result<Option<bool>> {
+    let pid = libc::pid_t::try_from(child.id()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "child pid does not fit pid_t",
+        )
+    })?;
+    direct_child_exit_without_reap(pid)
+}
+
+#[cfg(windows)]
+pub(crate) fn child_exit_without_reap(
+    child: &std::process::Child,
+) -> std::io::Result<Option<bool>> {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+
+    let process = child.as_raw_handle() as HANDLE;
+    // SAFETY: the Child retains ownership of a valid process handle for this whole call. Waiting
+    // with a zero timeout and reading its exit code neither closes the handle nor releases the OS
+    // process object, so the pid cannot be recycled through this observation.
+    unsafe {
+        match WaitForSingleObject(process, 0) {
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                if GetExitCodeProcess(process, &mut code) == 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(Some(code == 0))
+                }
+            }
+            WAIT_FAILED => Err(std::io::Error::last_os_error()),
+            result => Err(std::io::Error::other(format!(
+                "unexpected process wait result: {result}"
+            ))),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn child_exit_without_reap(
+    _child: &std::process::Child,
+) -> std::io::Result<Option<bool>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "non-reaping child observation is unsupported on this platform",
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -356,6 +692,79 @@ pub(super) fn create_child_job(process: isize) -> Option<isize> {
     }
 }
 
+/// Duplicate an owned Job Object handle into the already-created guardian process.
+///
+/// The guardian is still blocked on its request pipe when this runs. It receives the numeric
+/// target-process handle only after duplication succeeds, so mpv can never start outside the
+/// kill-on-close job. Keeping a copy in the guardian also lets a heartbeat timeout terminate the
+/// job even while the owner process is alive but wedged.
+#[cfg(windows)]
+pub(super) fn duplicate_child_job_into(job: isize, process: isize) -> std::io::Result<u64> {
+    use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut remote: HANDLE = std::ptr::null_mut();
+    // SAFETY: `job` and `process` are borrowed from a live ChildTreeGuard. `remote` is a valid
+    // output pointer. On success Windows creates a distinct handle owned by the target process;
+    // it is deliberately not closed in this process because it is not valid here.
+    unsafe {
+        if DuplicateHandle(
+            GetCurrentProcess(),
+            job as HANDLE,
+            process as HANDLE,
+            &mut remote,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(remote as usize as u64)
+}
+
+/// Create a nested, kill-on-close Job for a blocked guardian and transfer the only surviving
+/// handle into that guardian.
+///
+/// The guardian is already a member of the parent's outer Job. Windows 8+ nested-job semantics
+/// make its future children members of both jobs. The parent keeps the outer handle (so owner
+/// hard death kills everything), while the guardian alone owns this inner handle (so direct
+/// guardian death also kills mpv). The guardian cannot spawn mpv until the returned token is sent.
+#[cfg(windows)]
+pub(super) fn create_guardian_inner_job(process: isize) -> std::io::Result<u64> {
+    let inner = create_child_job(process)
+        .ok_or_else(|| std::io::Error::other("guardian inner Job Object assignment failed"))?;
+    let remote = match duplicate_child_job_into(inner, process) {
+        Ok(remote) => remote,
+        Err(error) => {
+            close_child_job(inner);
+            return Err(error);
+        }
+    };
+    // The duplicated target-process handle is now the only inner-job handle. Closing our copy
+    // cannot terminate the job because the guardian's copy is already live.
+    close_child_job(inner);
+    Ok(remote)
+}
+
+/// Terminate the guardian's inherited Job Object, including the guardian itself and every mpv
+/// descendant. If termination fails, the caller still falls back to its direct process-tree kill.
+#[cfg(windows)]
+pub(crate) fn terminate_inherited_job(job: u64) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+    // SAFETY: the value was produced by `duplicate_child_job_into` for this process and remains
+    // open for the guardian's lifetime. TerminateJobObject does not consume the handle.
+    unsafe {
+        if TerminateJobObject(job as usize as HANDLE, 1) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(super) fn close_child_job(job: isize) {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -382,6 +791,24 @@ pub(super) fn terminate_child_process(process: isize) {
             let error = std::io::Error::last_os_error();
             tracing::warn!(%error, "failed to terminate unassigned child directly");
         }
+    }
+}
+
+/// Allocation-free best-effort process termination for the Windows console control handler.
+#[cfg(windows)]
+pub(crate) fn terminate_process_id(pid: u32) {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // SAFETY: OpenProcess returns a newly owned handle or null. The handle is used only for
+    // TerminateProcess and closed exactly once before returning.
+    unsafe {
+        let process: HANDLE = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if process.is_null() {
+            return;
+        }
+        let _ = TerminateProcess(process, 1);
+        let _ = CloseHandle(process);
     }
 }
 
@@ -654,6 +1081,36 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(root);
         panic!("grandchild process {pid} survived child-tree cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreaped_child_pid_remains_owned_while_its_guardian_finishes() {
+        let mut child = StdCommand::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn direct child fixture");
+        let pid = libc::pid_t::try_from(child.id()).expect("child pid fits pid_t");
+        assert_eq!(direct_child_exit_without_reap(pid).unwrap(), None);
+
+        child.kill().expect("terminate direct child fixture");
+        let mut observed_exit = false;
+        for _ in 0..100 {
+            if direct_child_exit_without_reap(pid).unwrap().is_some() {
+                observed_exit = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(observed_exit, "waitid should observe the exited child");
+        assert!(
+            process_exists_for_test(pid),
+            "WNOWAIT must retain the exited child's pid while its guardian is live"
+        );
+        assert!(direct_child_exit_without_reap(pid).unwrap().is_some());
+        // WNOWAIT must leave ownership with the Child handle rather than consuming its status.
+        child.wait().expect("reap direct child fixture");
+        assert!(!process_exists_for_test(pid));
     }
 
     #[test]

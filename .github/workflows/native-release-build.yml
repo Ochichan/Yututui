@@ -1,0 +1,553 @@
+name: native release build
+
+# RELEASE PIPELINE CORE: edits require the same release-work sanction as build.yml and packaging/.
+# This reusable workflow builds, tests, smokes, packages, checksums, and uploads every native
+# release archive, but never publishes or receives release secrets itself.
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Architecture invariants
+        run: scripts/check-architecture.sh
+      - name: File-size ratchet
+        run: scripts/check-file-size.sh
+      - name: Public docs honesty
+        run: scripts/check-doc-honesty.sh
+      - name: Vendored ratatui-image patch invariants
+        run: scripts/check-ratatui-image-patch.sh
+      - name: Unsafe inventory
+        run: scripts/check-unsafe-inventory.sh
+      - name: Vendored ratatui-image Clippy
+        run: >-
+          cargo clippy
+          --manifest-path crates/ratatui-image/Cargo.toml
+          --no-default-features
+          --features crossterm,tokio
+          --all-targets -- -D warnings
+      - name: Install supply-chain tools
+        run: cargo install --locked cargo-audit cargo-deny
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2024-0411 \
+            --ignore RUSTSEC-2024-0412 \
+            --ignore RUSTSEC-2024-0413 \
+            --ignore RUSTSEC-2024-0414 \
+            --ignore RUSTSEC-2024-0415 \
+            --ignore RUSTSEC-2024-0416 \
+            --ignore RUSTSEC-2024-0418 \
+            --ignore RUSTSEC-2024-0419 \
+            --ignore RUSTSEC-2024-0420 \
+            --ignore RUSTSEC-2024-0429 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2024-0370
+      - name: Dependency policy
+        run: cargo deny check
+      # --- Non-shipping GUI/frontend contract gates (docs/gui/04 §5) ---
+      # The full GUI app is not published in this release. These still run so the protocol and
+      # future frontend do not drift while the shipped surface remains TUI + tray.
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: GUI frontend (typecheck, test, build)
+        run: |
+          cd gui
+          npm ci
+          npm run check
+          npm run test
+          npm run build
+      - name: GUI protocol type drift
+        # Regenerating the ts-rs bindings must produce no diff (committed types stay honest).
+        run: scripts/check-gui-types.sh
+      - name: Feature graph invariants
+        # `default` stays empty; `desktop` must not pull the build/test-only ts-export tooling
+        # into a shipped binary (keeps ytt/yututray free of ts-rs).
+        run: |
+          grep -qE '^default = \[\]' Cargo.toml
+          if grep -E '^desktop = \[' Cargo.toml | grep -q 'ts-export'; then
+            echo "error: the desktop feature must not enable ts-export" >&2
+            exit 1
+          fi
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macOS (arm64)
+            target: aarch64-apple-darwin
+            bin: ytt
+            archive: yututui-macos-arm64.tar.gz
+          - os: macos-15-intel
+            name: macOS (x64)
+            target: x86_64-apple-darwin
+            bin: ytt
+            archive: yututui-macos-x64.tar.gz
+          - os: windows-latest
+            name: Windows (x64)
+            target: x86_64-pc-windows-msvc
+            bin: ytt.exe
+            archive: yututui-windows-x64.zip
+          - os: ubuntu-22.04
+            name: Linux (x64)
+            target: x86_64-unknown-linux-gnu
+            bin: ytt
+            archive: yututui-linux-x64.tar.gz
+          - os: ubuntu-22.04-arm
+            name: Linux (arm64)
+            target: aarch64-unknown-linux-gnu
+            bin: ytt
+            archive: yututui-linux-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # native-tls links against the system OpenSSL on Linux, so the runner needs the headers
+      # plus pkg-config to locate them. (macOS/Windows use Security.framework/SChannel —
+      # nothing to install.) The native arm64 runner installs arm64 libssl, so there's no
+      # cross-compilation and no PKG_CONFIG_SYSROOT juggling.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config mpv
+
+      - name: Install macOS smoke dependencies
+        if: runner.os == 'macOS'
+        run: |
+          # Hosted images currently leave an unrelated, untrusted aws/tap behind. Remove it
+          # rather than granting broad trust so Homebrew 6 can resolve official mpv cleanly.
+          if brew tap | grep -Fxq 'aws/tap'; then
+            brew untap aws/tap
+          fi
+          brew install mpv
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      # The tray companion ships on Windows (notification area) and macOS (menu bar).
+      # Linux has no tray backend — the main binary's MPRIS session covers it.
+      - name: Clippy tray helper
+        if: runner.os != 'Linux'
+        run: |
+          cargo clippy --features desktop --target ${{ matrix.target }} --bin yututray -- -D warnings
+
+      - name: Test
+        # Unit tests intentionally share one process-scoped persistence sandbox. Run the
+        # release matrix serially so filesystem fixtures cannot observe each other's writes.
+        run: cargo test --target ${{ matrix.target }} -- --test-threads=1
+
+      - name: Test tray helper
+        if: runner.os != 'Linux'
+        run: |
+          cargo test --features desktop --target ${{ matrix.target }} desktop::
+
+      - name: Release build
+        if: runner.os == 'Linux'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Release build (macOS + tray)
+        if: runner.os == 'macOS'
+        env:
+          YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
+        run: |
+          mkdir -p "$YTM_TUI_GUI_DIST"
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin yututray
+
+      - name: Smoke release CLI
+        if: runner.os != 'Windows'
+        run: scripts/release-cli-smoke.sh --target "${{ matrix.target }}" --profile release
+
+      # Release-gating daemon lifecycle smoke for the shipped Unix TUI. macOS disables the
+      # OS media session inside the script because hosted runners have no login session;
+      # Linux keeps MPRIS enabled so that path stays covered.
+      - name: Smoke Unix daemon
+        if: runner.os != 'Windows'
+        timeout-minutes: 6
+        run: scripts/unix-daemon-smoke.sh --target "${{ matrix.target }}" --profile release
+
+      - name: Smoke macOS tray CLI
+        if: runner.os == 'macOS'
+        run: |
+          out="$(target/${{ matrix.target }}/release/yututray --version)"
+          echo "$out"
+          case "$out" in yututray\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
+
+      - name: Release build (Windows + tray)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:YTM_TUI_GUI_DIST | Out-Null
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin yututray
+
+      - name: Smoke Windows release CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/release-cli-smoke.ps1 -Target "${{ matrix.target }}" -Profile release
+
+      - name: Verify Windows subsystem split
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Get-PeSubsystem($Path) {
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            $optionalHeaderOffset = $peOffset + 24
+            return [BitConverter]::ToUInt16($bytes, $optionalHeaderOffset + 68)
+          }
+
+          $ytt = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt.exe"
+          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/yututray.exe"
+
+          if ($ytt -ne 3) {
+            throw "ytt.exe should use the Windows console subsystem, found $ytt"
+          }
+          if ($tray -ne 2) {
+            throw "yututray.exe should use the Windows GUI subsystem, found $tray"
+          }
+
+      - name: Validate Windows PowerShell scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($script in @(
+            "scripts/windows-daemon-smoke.ps1",
+            "scripts/windows-tray-process-smoke.ps1",
+            "scripts/windows-tray-manual-qa.ps1",
+            "scripts/verify-windows-tray-manual-qa.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parser found errors in $script"
+            }
+          }
+
+      - name: Self-test Windows manual QA verifier
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "windows-tray-manual-qa-verifier-self-test"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          function Write-Evidence {
+            param(
+              [string]$Name,
+              [string]$Text = ""
+            )
+            Set-Content -LiteralPath (Join-Path $evidence $Name) -Value $Text -Encoding UTF8
+          }
+
+          $trueFields = @(
+            "startup_roundtrip",
+            "no_console_window",
+            "notification_icon_visible",
+            "background_starts_tray_only",
+            "bare_secondary_opens_mini_player",
+            "secondary_background_raises_no_window",
+            "left_click_toggles_mini_player",
+            "right_click_menu_opens",
+            "mini_player_opens",
+            "mini_player_disconnected_state",
+            "mini_player_absent_from_taskbar",
+            "mini_player_absent_from_alt_tab",
+            "mini_player_toolwindow_style",
+            "main_window_opens_from_intent",
+            "main_window_present_in_taskbar",
+            "main_window_present_in_alt_tab",
+            "main_window_appwindow_style",
+            "hidden_main_leaves_task_switchers",
+            "open_tui_launches_terminal",
+            "ytt_taskbar_clicks_do_not_crash",
+            "shortcut_icon_correct",
+            "explorer_restart_recovered_icon",
+            "idle_daemon_has_no_mpv_child",
+            "resume_started_music_without_terminal",
+            "tray_status_updates",
+            "playback_menu_controls_work",
+            "mini_player_playback_controls_work",
+            "stop_daemon_reaped_mpv",
+            "quit_player_keeps_tray",
+            "quit_tray_exits_only_tray",
+            "tray_scale_100_crisp",
+            "tray_scale_150_crisp",
+            "tray_scale_200_crisp"
+          )
+          $results = [ordered]@{
+            ytt_subsystem = 3
+            ytt_tray_subsystem = 2
+            display_scaling_values = "100,150,200"
+          }
+          foreach ($field in $trueFields) {
+            $results[$field] = $true
+          }
+          $results | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence "results.json") -Encoding UTF8
+
+          $emptyFiles = @(
+            "transcript.txt",
+            "tray-process-before.txt",
+            "ytt-process-before.txt",
+            "mpv-process-before.txt",
+            "ytt-version.txt",
+            "yututray-version.txt",
+            "startup-status-before.txt",
+            "startup-uninstall-before.txt",
+            "startup-install.txt",
+            "startup-uninstall-after.txt",
+            "activate-bare-intent.txt",
+            "activate-background-intent.txt",
+            "activate-mini-intent.txt",
+            "mini-player-disconnected.png",
+            "activate-main-window-intent.txt",
+            "main-window.png",
+            "tray-visual-check.png",
+            "tray-scale-100.png",
+            "tray-scale-150.png",
+            "tray-scale-200.png",
+            "tray-after-explorer-restart.png",
+            "daemon-status-before.txt",
+            "ytt-process-before-daemon.txt",
+            "mpv-process-before-daemon.txt",
+            "mini-player-playback.png",
+            "mpv-after-idle-daemon.txt",
+            "mpv-after-stop-daemon.txt",
+            "tray-process-after-quit-tray.txt",
+            "yututui.log",
+            "daemon.log"
+          )
+          foreach ($name in $emptyFiles) {
+            Write-Evidence -Name $name
+          }
+
+          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\yututray.exe" --background'
+          Write-Evidence -Name "yututray-help.txt" -Text "--background --mini --main-window"
+          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\yututray.exe" --background'
+          Write-Evidence -Name "startup-status-after-uninstall.txt" -Text "disabled"
+          Write-Evidence -Name "open-tui-plan.txt" -Text "wt.exe C:\fake\ytt.exe"
+
+          $trayProcess = @"
+          Id : 1234
+          ProcessName : yututray
+          WorkingSet64 : 1048576
+          PrivateMemorySize64 : 2097152
+          "@
+          Write-Evidence -Name "tray-process-start.txt" -Text $trayProcess
+          Write-Evidence -Name "tray-process-idle.txt" -Text $trayProcess
+          Write-Evidence -Name "tray-process-after-quit-player.txt" -Text $trayProcess
+          Write-Evidence -Name "mpv-after-resume-daemon.txt" -Text "Id : 4321"
+
+          @{ ok = $true; status = @{ owner_mode = "daemon"; paused = $true; total = 0; title = $null } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-idle.txt") -Encoding UTF8
+          @{ ok = $true; status = @{ owner_mode = "daemon"; paused = $false; total = 2; title = "Windows Smoke One" } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-resumed.txt") -Encoding UTF8
+          @{ ok = $false; status = @{ owner_mode = "standalone" } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-after-stop.txt") -Encoding UTF8
+
+          ./scripts/verify-windows-tray-manual-qa.ps1 -EvidenceDir $evidence
+
+      - name: Report Windows release binary sizes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($name in @("ytt.exe", "yututray.exe")) {
+            $path = "target/${{ matrix.target }}/release/$name"
+            $size = (Get-Item -LiteralPath $path).Length
+            "{0}: {1:N0} bytes" -f $name, $size
+          }
+
+      - name: Smoke Windows tray process
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-tray-process-smoke.ps1 -Target "${{ matrix.target }}" -Profile release
+
+      - name: Install Windows smoke dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install mpv -y --no-progress
+          # choco's mpvio.install drops mpv.exe in its package tools dir and appends that
+          # dir to the *machine* PATH — which later steps in this job do not inherit (there
+          # is no refreshenv between steps). Surface it via $GITHUB_PATH so the daemon
+          # smoke's `Get-Command mpv` resolves in the next step.
+          $mpv = Get-ChildItem -Path "$env:ChocolateyInstall\lib" -Recurse -Filter mpv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mpv) { throw "mpv.exe not found under $env:ChocolateyInstall\lib after choco install" }
+          Split-Path $mpv.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # GATING again (was continue-on-error while "the hang" was unexplained). Root cause
+      # found on real hardware 2026-07-04: `ytt daemon start` spawned the daemon with
+      # bInheritHandles=TRUE, leaking the client's inheritable std-pipe write end into the
+      # long-lived daemon — any shell CAPTURING the client's output then never saw EOF.
+      # Fixed at the spawn site (HANDLE_FLAG_INHERIT stripped, src/daemon/mod.rs); the
+      # SMTC guess in the old comment was wrong (YTM_NO_MEDIA_SESSION stays as a separate,
+      # still-needed guard for the runner's non-interactive session). The timeout stays as
+      # a cheap backstop against runner flakiness burning the job budget.
+      - name: Smoke Windows daemon and tray CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 8
+        run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
+
+      # macOS ships the bare binaries (ytt + the yututray menu-bar helper) alongside their
+      # YuTuTui!.app / YuTuTray!.app bundles (icon + Info.plist); Linux ships the bare binary
+      # (MPRIS lives in ytt itself); Windows ships ytt.exe plus the notification-area helper.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/package-macos.sh "${{ matrix.target }}" "${{ matrix.archive }}" "${{ matrix.bin }}" "$GITHUB_WORKSPACE"
+
+      - name: Verify macOS package contents
+        if: runner.os == 'macOS'
+        run: |
+          listing="$(tar -tzf "${{ matrix.archive }}")"
+          for entry in ytt yututray YuTuTui!.app/Contents/MacOS/ytt YuTuTray!.app/Contents/MacOS/yututray YuTuTray!.app/Contents/MacOS/ytt; do
+            if ! grep -qx "$entry" <<<"$listing"; then
+              echo "macOS archive is missing $entry" >&2
+              exit 1
+            fi
+          done
+          stage="$(mktemp -d)"
+          tar -xzf "${{ matrix.archive }}" -C "$stage"
+          scripts/release-cli-smoke.sh --ytt "$stage/ytt"
+
+      # Ship the desktop entry + 1024² icon beside the binary so `ytt` gets a launcher and
+      # the MPRIS media widget shows artwork/name (install.sh and the AUR package place them
+      # into the freedesktop dirs). The binary stays at the archive root so existing
+      # extract paths (install.sh, AUR `$srcdir/ytt`) are unaffected.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          staging="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
+          cp packaging/linux/yututui.desktop "$staging/"
+          cp assets/icons/yututui.png "$staging/"
+          tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" yututui.desktop yututui.png
+
+      - name: Smoke Linux package CLI
+        if: runner.os == 'Linux'
+        run: |
+          stage="$(mktemp -d)"
+          tar -xzf "${{ matrix.archive }}" -C "$stage"
+          scripts/release-cli-smoke.sh --ytt "$stage/${{ matrix.bin }}"
+
+      # The .ico rides at the archive root: `ytt register-media-identity` points the
+      # media-flyout IconUri at the copy installed next to the exe (install.ps1 / Scoop).
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path `
+            "target/${{ matrix.target }}/release/ytt.exe", `
+            "target/${{ matrix.target }}/release/yututray.exe", `
+            "assets/icons/yututui.ico" `
+            -DestinationPath "${{ matrix.archive }}"
+
+      - name: Verify Windows package contents
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "yututui-windows-package"
+          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          Expand-Archive -Path "${{ matrix.archive }}" -DestinationPath $stage
+
+          foreach ($name in @("ytt.exe", "yututray.exe", "yututui.ico")) {
+            $path = Join-Path $stage $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Windows archive is missing $name"
+            }
+          }
+
+          $manifest = Get-Content packaging/scoop/yututui.json.tmpl -Raw | ConvertFrom-Json
+          foreach ($name in @("ytt.exe", "yututray.exe")) {
+            if ($manifest.bin -notcontains $name) {
+              throw "Scoop manifest does not expose $name in bin"
+            }
+          }
+          $shortcut = @($manifest.shortcuts) | Where-Object {
+            $_[0] -eq "yututray.exe" -and $_[1] -eq "YuTuTray!"
+          }
+          if (-not $shortcut) {
+            throw "Scoop manifest is missing the YuTuTray! shortcut"
+          }
+          if (-not $manifest.post_install) {
+            throw "Scoop manifest is missing the media-identity post_install"
+          }
+
+          ./scripts/release-cli-smoke.ps1 -YttPath (Join-Path $stage "ytt.exe")
+
+      # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash
+      # runs on all three runners (Git Bash on Windows); sha256sum ships on Linux and
+      # Git-for-Windows while macOS has shasum — so this single step is uniform across the matrix.
+      - name: Checksum
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.archive }}" | tee "${{ matrix.archive }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.archive }}" | tee "${{ matrix.archive }}.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256

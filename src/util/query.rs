@@ -1,3 +1,5 @@
+use super::text_edit::TextCursor;
+
 pub const MAX_SEARCH_QUERY_BYTES: usize = 2048;
 pub const MAX_FILTER_QUERY_BYTES: usize = 512;
 pub const MAX_QUERY_PREVIEW_CHARS: usize = 32;
@@ -22,13 +24,23 @@ pub fn try_push_query_char(
     ch: char,
     max_bytes: usize,
 ) -> Result<(), QueryRejectReason> {
+    let mut cursor = TextCursor::at_end(buf);
+    try_insert_query_char(buf, &mut cursor, ch, max_bytes)
+}
+
+pub fn try_insert_query_char(
+    buf: &mut String,
+    cursor: &mut TextCursor,
+    ch: char,
+    max_bytes: usize,
+) -> Result<(), QueryRejectReason> {
     if forbidden_query_char(ch) {
         return Err(QueryRejectReason::ForbiddenChar);
     }
     if buf.len().saturating_add(ch.len_utf8()) > max_bytes {
         return Err(QueryRejectReason::TooLong { max: max_bytes });
     }
-    buf.push(ch);
+    cursor.insert_char(buf, ch);
     Ok(())
 }
 

@@ -179,8 +179,10 @@ fn all_animations_on_render_every_view_without_panic() {
         songs: vec![cur.clone()],
         cursor: 0,
         naming: Some("mix".to_owned()),
+        naming_cursor: TextCursor::at_end("mix"),
     });
     app.library_ui.create_input = Some("new list".to_owned());
+    app.library_ui.create_cursor = TextCursor::at_end("new list");
 
     for retro in [false, true] {
         app.config.retro_mode = retro;

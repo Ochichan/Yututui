@@ -96,6 +96,49 @@ fn ctrl_backspace_edits_library_and_search_result_filters() {
     assert_eq!(search.search_filter.query, "billie ");
 }
 
+#[test]
+fn library_and_search_popup_filters_insert_at_the_word_cursor() {
+    let mut library = app_with_favorites(vec![fsong("a", "One", "Artist")]);
+    library.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "one two".chars() {
+        library.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    library.update(Msg::Key(ctrl(KeyCode::Left)));
+    library.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(library.library_ui.filter_query, "one Xtwo");
+
+    let mut search = app_with_search_results();
+    search.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "billie eilish".chars() {
+        search.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    search.update(Msg::Key(ctrl(KeyCode::Left)));
+    search.update(Msg::Key(key(KeyCode::Char('X'))));
+    assert_eq!(search.search_filter.query, "billie Xeilish");
+}
+
+#[test]
+fn filter_text_action_remap_beats_the_library_mode_toggle() {
+    let mut app = app_with_favorites(vec![fsong("a", "One", "Artist")]);
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "one".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::MoveCursorLeft,
+            Chord::new(KeyCode::Char('l'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(alt_shift(KeyCode::Char('l'))));
+
+    assert!(app.library_ui.filter_editing);
+    assert!(app.local_mode.pending_confirm.is_none());
+    assert_eq!(app.library_ui.filter_cursor.byte_index("one"), 2);
+}
+
 // --- search results-filter popup (`/`) -----------------------------------------
 
 /// Search screen with three results loaded; results arrival focuses the list.

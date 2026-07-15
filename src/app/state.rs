@@ -51,6 +51,9 @@ pub struct RenderBridges {
     /// on-screen with a margin. One per list so each keeps its own place.
     pub library_scroll: crate::ui::scroll::ScrollState,
     pub search_scroll: crate::ui::scroll::ScrollState,
+    /// Local Find owns its own result offset. It deliberately does not reuse the online
+    /// Search offset because both surfaces keep their cursor/viewport across mode round-trips.
+    pub local_find_scroll: crate::ui::scroll::ScrollState,
     pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
     /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
     /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
@@ -385,6 +388,8 @@ pub struct RecordingSettingsPopup {
     pub row: usize,
     /// True while the output-folder text field is being typed into.
     pub editing_dir: bool,
+    /// Caret within the output-folder draft while [`Self::editing_dir`] is active.
+    pub dir_cursor: TextCursor,
     /// Screen rect of the popup, written each render so a click outside it can be detected
     /// (which closes it) and clicks inside can be hit-tested. `Cell` because render only has
     /// `&App`.
@@ -432,6 +437,8 @@ pub struct Lyrics {
 pub struct SearchState {
     /// The search query being typed.
     pub input: String,
+    /// Caret within [`Self::input`], stored as a grapheme-safe UTF-8 byte offset.
+    pub input_cursor: TextCursor,
     /// The source currently selected in the search box.
     pub source: SearchSource,
     /// Whether Ctrl+A has selected the whole query (desktop-style: the next edit
@@ -480,6 +487,8 @@ pub struct AiState {
     pub(crate) transcript_cache_token: Arc<()>,
     /// The DJ Gem prompt being typed.
     pub input: String,
+    /// Caret within [`Self::input`], stored as a grapheme-safe UTF-8 byte offset.
+    pub input_cursor: TextCursor,
     /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
     pub select_all: bool,
     /// True while a request is in flight (drives the spinner; blocks a second request).
@@ -619,6 +628,8 @@ pub struct LibraryView {
     /// In-library incremental filter query (`/`). When non-empty, the active list narrows to
     /// rows whose title or artist contains it (case-insensitive). Empty = no filter.
     pub filter_query: String,
+    /// Caret within [`Self::filter_query`] while the live filter is focused.
+    pub filter_cursor: TextCursor,
     /// Whether the filter input box is capturing keystrokes (typed chars edit `filter_query`
     /// and the list narrows live). Committed with Enter (keeps the filter, returns to list
     /// navigation); cleared with Esc.
@@ -629,6 +640,8 @@ pub struct LibraryView {
     /// The create-playlist popup's name buffer. `Some` while the popup is open and capturing
     /// keystrokes (Enter creates, Esc cancels).
     pub create_input: Option<String>,
+    /// Caret within the create-playlist name buffer.
+    pub create_cursor: TextCursor,
     /// Pending "delete playlist" confirmation: the id of the playlist queued for deletion
     /// (removes the whole list at once, so it's gated behind an explicit yes/no like the
     /// download-file delete). `None` when no modal is open.
@@ -652,6 +665,8 @@ pub struct PlaylistPicker {
     /// `Some` while the trailing "New playlist…" row is capturing a name (phase two of
     /// the popup). Enter creates the playlist and adds the songs; Esc returns to the list.
     pub naming: Option<String>,
+    /// Caret within the inline new-playlist name buffer.
+    pub naming_cursor: TextCursor,
 }
 
 /// The search results-filter popup ("추가 창"): a transient fzf-style window over the
@@ -666,6 +681,8 @@ pub struct SearchFilterPopup {
     pub open: bool,
     /// The live filter text; the popup's row list narrows to matches as it changes.
     pub query: String,
+    /// Caret within [`Self::query`]; distinct from the highlighted result-row cursor.
+    pub input_cursor: TextCursor,
     /// The highlighted row, as a *display* index into [`Self::matches`].
     pub cursor: usize,
     /// Cached original-`results` indices of the rows matching `query`, in results order.
@@ -686,6 +703,7 @@ impl SearchFilterPopup {
     pub(in crate::app) fn open_fresh(&mut self) {
         self.open = true;
         self.query.clear();
+        self.input_cursor = TextCursor::default();
         self.cursor = 0;
         self.matches.clear();
         self.scroll.reset();
@@ -695,6 +713,7 @@ impl SearchFilterPopup {
     pub(in crate::app) fn close(&mut self) {
         self.open = false;
         self.query.clear();
+        self.input_cursor = TextCursor::default();
         self.cursor = 0;
         self.matches.clear();
         self.rect.set(None);
@@ -778,13 +797,16 @@ pub(crate) struct AiTranscriptDrag {
     pub moved: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScrollbarDrag {
     pub surface: ScrollSurface,
     pub rect: Rect,
     pub content_len: usize,
     pub viewport: usize,
     pub grab: u16,
+    /// Present only for Local Find. Generic surfaces have stable list ownership rules; Local
+    /// Find can replace the row set asynchronously while the mouse button remains held.
+    pub local_find_stamp: Option<LocalFindPointerStamp>,
 }
 
 /// Live pointer-interaction sessions: the in-flight drag/scrub selections and the held-key
@@ -874,6 +896,8 @@ pub struct LocalUi {
     pub drill: Vec<LocalDrill>,
     /// Current Local Deck live-filter query.
     pub filter_query: String,
+    /// Caret within [`Self::filter_query`] while the live filter is focused.
+    pub filter_cursor: TextCursor,
     /// Whether typed keys edit `filter_query`.
     pub filter_editing: bool,
 }
@@ -882,6 +906,8 @@ pub struct LocalUi {
 #[derive(Default)]
 pub struct LocalIndexRuntime {
     pub index: crate::local::LocalIndex,
+    /// Monotonic generation advanced only when a loaded/scanned index is committed.
+    pub revision: u64,
     pub index_path: Option<PathBuf>,
     pub loaded: bool,
     pub loading: bool,
@@ -893,6 +919,133 @@ pub struct LocalIndexRuntime {
     pub last_summary: Option<crate::local::LocalScanSummary>,
     pub load_errors: Vec<crate::local::ScanError>,
     pub errors: Vec<crate::local::ScanError>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LocalFindFocus {
+    #[default]
+    Input,
+    Results,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFindDrill {
+    pub title: String,
+    pub source: crate::local::find::LocalFindHitId,
+    pub track_ids: Vec<crate::local::LocalTrackId>,
+    pub corpus_revision: crate::local::find::LocalFindCorpusRevision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalFindBulkAction {
+    Play,
+    Enqueue,
+    ShufflePlay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFindBulkConfirm {
+    pub action: LocalFindBulkAction,
+    pub track_ids: Vec<crate::local::LocalTrackId>,
+    pub accepted_count: usize,
+    pub result_generation: u64,
+    pub corpus_revision: crate::local::find::LocalFindCorpusRevision,
+    pub queue_revision: u64,
+    pub capacity_recalculated: bool,
+}
+
+/// Transactional scope/sort editor. Draft values do not affect the visible result until Apply.
+pub struct LocalFindRefine {
+    pub open: bool,
+    pub row: usize,
+    pub draft_scope: crate::local::find::LocalFindScope,
+    pub draft_sort: crate::local::find::LocalFindSort,
+    pub rect: Cell<Option<Rect>>,
+    pub help_scroll: crate::ui::scroll::ScrollState,
+}
+
+impl Default for LocalFindRefine {
+    fn default() -> Self {
+        Self {
+            open: false,
+            row: 0,
+            draft_scope: crate::local::find::LocalFindScope::All,
+            draft_sort: crate::local::find::LocalFindSort::Relevance,
+            rect: Cell::new(None),
+            help_scroll: crate::ui::scroll::ScrollState::default(),
+        }
+    }
+}
+
+/// Local-only search state. No field is shared with the online Search reducer, which prevents
+/// a Local query/source/result from leaking into normal or dedicated Radio mode.
+pub struct LocalFindState {
+    pub query: String,
+    pub input_cursor: TextCursor,
+    pub select_all: bool,
+    pub focus: LocalFindFocus,
+    pub scope: crate::local::find::LocalFindScope,
+    pub sort: crate::local::find::LocalFindSort,
+    pub selected: usize,
+    pub return_section: LocalSection,
+    pub parse_error: Option<String>,
+    pub searching: bool,
+    /// An explicit Enter/Find-button commit selects the first row when its current result lands;
+    /// live edits leave this false so stable-ID selection retention remains active.
+    pub reset_selection_on_result: bool,
+    pub request_id: u64,
+    pub corpus_generation: u64,
+    pub(in crate::app) building_revision: Option<crate::local::find::LocalFindCorpusRevision>,
+    pub(in crate::app) corpus: Option<Arc<crate::local::find::LocalFindCorpus>>,
+    pub snapshot: Option<crate::local::find::LocalFindSnapshot>,
+    pub drill: Option<LocalFindDrill>,
+    pub refine_popup: LocalFindRefine,
+    pub pending_bulk_confirm: Option<LocalFindBulkConfirm>,
+    /// Full index rebuild discards incremental reuse, so the typed command requires an explicit
+    /// confirmation before admitting scanner work.
+    pub pending_rebuild_confirm: bool,
+}
+
+impl Default for LocalFindState {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            input_cursor: TextCursor::default(),
+            select_all: false,
+            focus: LocalFindFocus::Input,
+            scope: crate::local::find::LocalFindScope::All,
+            sort: crate::local::find::LocalFindSort::Relevance,
+            selected: 0,
+            return_section: LocalSection::Home,
+            parse_error: None,
+            searching: false,
+            reset_selection_on_result: false,
+            request_id: 0,
+            corpus_generation: 0,
+            building_revision: None,
+            corpus: None,
+            snapshot: None,
+            drill: None,
+            refine_popup: LocalFindRefine::default(),
+            pending_bulk_confirm: None,
+            pending_rebuild_confirm: false,
+        }
+    }
+}
+
+impl LocalFindState {
+    /// Clear only the Local Find interaction session after an admitted Local exit. The immutable
+    /// corpus remains a reusable cache for the unchanged index/playlists, while advancing both
+    /// worker tokens makes any corpus build or query result already in flight stale.
+    pub(in crate::app) fn clear_transient_for_exit(&mut self) {
+        let corpus = self.corpus.take();
+        let request_id = self.request_id.wrapping_add(1).max(1);
+        let corpus_generation = self.corpus_generation.wrapping_add(1).max(1);
+        *self = Self::default();
+        self.request_id = request_id;
+        self.corpus_generation = corpus_generation;
+        self.corpus = corpus;
+    }
 }
 
 /// One immutable view of the Local Deck rows used by a render pass. The backing row slice and
@@ -921,6 +1074,12 @@ impl LocalRowsSnapshot {
 pub struct LocalMode {
     pub ui: LocalUi,
     pub index: LocalIndexRuntime,
+    pub find: LocalFindState,
+    /// The normal-mode theme to restore after leaving Local Deck.
+    pub(in crate::app) normal_mode_theme: Option<ThemeConfig>,
+    /// The Local-Deck theme to restore on the next entry. Falls back to Local Launch until the
+    /// user saves a Local theme.
+    pub(in crate::app) local_mode_theme: Option<ThemeConfig>,
     /// Explicit production mutation generation for the Local Deck derived-row cache.
     pub(in crate::app) rows_revision: Cell<u64>,
     /// A single entry is enough: only the active section/query/drill path is rendered, and
@@ -933,12 +1092,25 @@ pub struct LocalMode {
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
+    /// Monotonic namespace shared by Local confirmation and player-intent tokens. Tokens make a
+    /// cancelled confirmation distinct from a later confirmation with the same `Enter`/`Exit`
+    /// enum value, closing the deferred-admission ABA window.
+    pub(in crate::app) next_transition_token: u64,
+    /// Identity of the confirmation currently painted to the user. Import-search continuations
+    /// bind to this token so an older deferred exit can never consume a newer confirmation.
+    pub(in crate::app) pending_confirm_token: Option<u64>,
+    /// Identity of the one player intent currently claiming the confirmation. A second Enter is
+    /// ignored until this intent commits or rejects, so its rejection cannot steal the first
+    /// intent's single-use continuation.
+    pub(in crate::app) pending_intent_token: Option<u64>,
     pub pending_organize_confirm: Option<LocalOrganizeConfirm>,
     pub pending_accept_all_confirm: Option<LocalImportAcceptAllConfirm>,
     /// Import-history artifact selected for confirmed deletion. Imported songs are retained.
     pub pending_import_record_delete: Option<String>,
     pub(in crate::app) pending_import_reviews: HashMap<String, u64>,
     pub(in crate::app) next_import_review_op_id: u64,
+    /// Confirmed manual online-search handoff, consumed only after a successful Local exit.
+    pub(in crate::app) pending_import_search: Option<LocalImportSearchContinuation>,
 }
 
 /// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every

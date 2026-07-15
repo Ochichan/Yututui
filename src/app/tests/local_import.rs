@@ -29,7 +29,7 @@ fn local_deck_track(
     track
 }
 
-fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
+pub(super) fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
     let mut app = App::new(100);
     app.mode = Mode::Library;
     let mut cmds = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
@@ -51,7 +51,7 @@ fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
     app
 }
 
-fn save_ambiguous_import_job(job_id: &str) {
+pub(super) fn save_ambiguous_import_job(job_id: &str) {
     let mut cp = Checkpoint::new(
         job_id.to_owned(),
         JobSpec {
@@ -1032,51 +1032,6 @@ fn local_deck_import_failed_row_r_retries_download() {
         request.song.origin_url.as_deref(),
         Some("https://open.spotify.com/track/retry-me")
     );
-}
-
-#[test]
-fn local_deck_import_row_s_starts_manual_youtube_search() {
-    let session_id = "sp2yt-local-manual-search";
-    save_ambiguous_import_job(session_id);
-
-    let mut app = app_with_local_deck_index(Vec::new());
-    app.update(Msg::Key(key(KeyCode::Char('9'))));
-    app.local_mode.ui.filter_query = session_id.to_owned();
-    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
-    assert!(open.is_empty());
-    app.local_mode.ui.filter_query.clear();
-    let hint = app.local_import_action_hint().expect("review action hint");
-    for expected in [
-        "A mark all ready",
-        "a accept",
-        "r reject",
-        "c candidate",
-        "x skip",
-        "o open candidate",
-        "s search",
-    ] {
-        assert!(hint.contains(expected), "missing {expected:?} in {hint:?}");
-    }
-
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
-    assert_eq!(app.mode, Mode::Search);
-    assert_eq!(app.search.focus, SearchFocus::Input);
-    assert_eq!(app.search.kind, SearchKind::Songs);
-    assert_eq!(app.search.input, "Maybe Artist");
-    let [
-        Cmd::Search {
-            query,
-            source,
-            config,
-            ..
-        },
-    ] = cmds.as_slice()
-    else {
-        panic!("expected manual search command");
-    };
-    assert_eq!(query, "Maybe Artist");
-    assert_eq!(*source, crate::search_source::SearchSource::Youtube);
-    assert_eq!(config.source, crate::search_source::SearchSource::Youtube);
 }
 
 #[test]

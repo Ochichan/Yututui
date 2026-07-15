@@ -790,6 +790,32 @@ fn status_line_parts_with_labels_reusing(
             )
         };
         parts.push((Some(MouseTarget::StreamingMenu), Cow::Owned(streaming)));
+    } else if app.local_dedicated_mode && app.autoplay_streaming {
+        // Local Deck suppresses the effective online top-up without rewriting the user's normal
+        // preference. Keep that distinction visible instead of making the control disappear and
+        // leaving a saved `On` setting looking like it was lost.
+        parts.push((None, Cow::Borrowed(gap)));
+        let streaming = if labels.beginner() {
+            beginner_control_label(
+                app,
+                labels,
+                KeyContext::Global,
+                Action::ToggleStreaming,
+                if retro {
+                    "Streaming autoplay"
+                } else {
+                    t!("Streaming autoplay", "스트리밍 자동재생")
+                },
+                Some(if retro {
+                    "Off (saved On)".to_owned()
+                } else {
+                    t!("Off (saved On)", "끔 (저장: 켬)").to_owned()
+                }),
+            )
+        } else {
+            "streaming:off(saved:on)".to_owned()
+        };
+        parts.push((Some(MouseTarget::StreamingMenu), Cow::Owned(streaming)));
     }
     // Download indicator for the current track, if one is in flight or finished. While one is
     // actually running and the activity animation is on, a spinner stands in for the `⬇` so

@@ -67,11 +67,9 @@ where
             .unwrap_or_else(|| Duration::from_secs(0));
         if ratatui::crossterm::event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press {
-                        if let KeyCode::Char(c) = key.code {
-                            needs_render = app.on_key(c);
-                        }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if let KeyCode::Char(c) = key.code {
+                        needs_render = app.on_key(c);
                     }
                 }
                 Event::Resize(_, _) => {

@@ -4,6 +4,7 @@
 //! [`LocalTrack`] values, index stores can persist them, and the app/UI can turn
 //! them into ordinary [`crate::api::Song`] values for playback.
 
+pub mod find;
 pub mod index;
 pub mod metadata;
 pub mod model;

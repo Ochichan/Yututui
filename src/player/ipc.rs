@@ -81,7 +81,7 @@ struct DispatchState {
     pending_redirects: HashMap<u64, (u64, u64)>,
     failed_load_generations: HashSet<u64>,
     playlist_identity_mode: PlaylistIdentityMode,
-    /// mpv 0.32 predates playlist-entry IDs in events, command results, and playlist
+    /// Legacy mpv 0.32 predates playlist-entry IDs in events, command results, and playlist
     /// properties. Keep its accepted direct loads ordered, and explicitly inherit a redirect's
     /// generation into the next start-file event. Newer mpv never consults this fallback.
     legacy_loads: VecDeque<LegacyLoad>,
@@ -91,7 +91,7 @@ struct DispatchState {
     /// `--keep-open` makes the observable `eof-reached` property the primary natural-end
     /// signal on every supported mpv; explicit newer end-file reasons remain a fallback.
     eof_emitted: bool,
-    /// A reasonless 0.32 end waits for the ordered idle/start/eof boundary: idle means a
+    /// A reasonless legacy end waits for the ordered idle/start/eof boundary: idle means a
     /// playback failure, start means a redirect, and eof is handled by the property latch.
     legacy_pending_end_generation: Option<u64>,
     /// Property notifications can race ahead of the `loadfile` reply. Hold a small bounded set
@@ -401,14 +401,14 @@ pub(crate) async fn run_actor(
         // For the radio recorder: pick the passthrough container from the stream codec.
         (7, "audio-codec-name"),
         (8, "file-format"),
-        // mpv 0.32 has no playlist entry IDs, but its playlist property still exposes the
+        // Legacy mpv 0.32 has no playlist entry IDs, but its playlist property still exposes the
         // selected filename. That is the legacy correlation key for rapid replacements.
         (9, "playlist"),
-        // mpv 0.32 also omits end-file reasons from JSON IPC. This observed property is its
+        // Legacy mpv 0.32 also omits end-file reasons from JSON IPC. This observed property is its
         // reliable natural-EOF signal; newer mpv remains covered by explicit end-file data.
         (10, "eof-reached"),
         // Interactive seeks stay in flight until mpv reports a stable seeking transition or a
-        // playback restart. This property exists on the supported mpv 0.32 floor.
+        // playback restart. This property exists as far back as the legacy mpv 0.32 line.
         (11, "seeking"),
         // Narrow long-form policy facts. Unsupported properties fail only their observation;
         // the player keeps running and the policy remains fail-closed in RAM.
@@ -1126,7 +1126,7 @@ async fn dispatch_validated_load(
         replied: false,
     });
 
-    // mpv 0.33+ exposes stable IDs. mpv 0.32 exposes only the selected filename, so its
+    // mpv 0.33+ exposes stable IDs. Legacy mpv 0.32 exposes only the selected filename, so its
     // ordered snapshot remains the barrier that distinguishes a direct rapid replacement from
     // a redirect child. Once stable event IDs are proven, the redundant query is omitted.
     if let Some(identity_request_id) = identity_request_id {

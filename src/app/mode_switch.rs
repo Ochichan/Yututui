@@ -93,6 +93,7 @@ impl App {
         self.search.selected = 0;
         self.collapse_search_selection();
         self.search.focus = SearchFocus::Input;
+        self.search.input_cursor = TextCursor::at_end(&self.search.input);
         self.bridges.search_scroll.reset();
         self.library_ui.tab = LibraryTab::RadioFavorites;
         self.clear_library_filter();

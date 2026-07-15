@@ -9,7 +9,7 @@ mod import_fingerprint;
 mod rows_cache;
 
 use super::*;
-use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
+use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_insert_query_char};
 pub(in crate::app) use import_fingerprint::LocalImportFilesFingerprintCache;
 #[cfg(test)]
 pub(in crate::app) use import_fingerprint::{
@@ -18,6 +18,12 @@ pub(in crate::app) use import_fingerprint::{
 pub(in crate::app) use rows_cache::{LocalRowsCache, LocalRowsData};
 
 impl App {
+    pub(in crate::app) fn allocate_local_transition_token(&mut self) -> u64 {
+        self.local_mode.next_transition_token =
+            self.local_mode.next_transition_token.wrapping_add(1).max(1);
+        self.local_mode.next_transition_token
+    }
+
     pub(in crate::app) fn request_local_mode_switch(&mut self) -> Vec<Cmd> {
         if !self.local_dedicated_mode && self.radio_dedicated_mode {
             self.status.kind = StatusKind::Error;
@@ -30,11 +36,17 @@ impl App {
             return Vec::new();
         }
 
+        let confirmation_token = self.allocate_local_transition_token();
+        self.local_mode.pending_import_search = None;
         self.local_mode.pending_confirm = Some(if self.local_dedicated_mode {
             LocalModeConfirm::Exit
         } else {
             LocalModeConfirm::Enter
         });
+        self.local_mode.pending_confirm_token = Some(confirmation_token);
+        // A new confirmation invalidates any older deferred plan. The runtime will reject that
+        // plan at its preflight; token-scoped cleanup keeps it from touching this request.
+        self.local_mode.pending_intent_token = None;
         self.dropdowns.eq_open = false;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
@@ -42,6 +54,14 @@ impl App {
         self.search_filter.close();
         self.dirty = true;
         Vec::new()
+    }
+
+    pub(in crate::app) fn cancel_local_mode_switch(&mut self) {
+        self.local_mode.pending_confirm = None;
+        self.local_mode.pending_confirm_token = None;
+        self.local_mode.pending_intent_token = None;
+        self.local_mode.pending_import_search = None;
+        self.dirty = true;
     }
 
     pub(in crate::app) fn apply_local_mode_confirm(
@@ -53,6 +73,11 @@ impl App {
 
     pub(in crate::app) fn activate_local_dedicated_mode_ui(&mut self) {
         self.local_dedicated_mode = true;
+        self.theme = self
+            .local_mode
+            .local_mode_theme
+            .clone()
+            .unwrap_or_else(|| self.config.effective_local_theme());
         self.mode = Mode::Library;
         self.local_mode.ui.section = if self.local_track_rows_len() == 0 {
             LocalSection::Home
@@ -77,6 +102,9 @@ impl App {
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
         let chord = crate::keymap::Chord::from(k);
+        if self.local_mode.ui.filter_editing && self.keymap.text_edit_action(chord).is_some() {
+            return self.on_key_local_filter(k);
+        }
         // Keep the remappable Local Deck toggle available for non-text keys while the
         // Local Deck filter is focused. Typeable remaps still belong to the filter input.
         if self.local_mode.ui.filter_editing
@@ -179,6 +207,8 @@ impl App {
             Some(Action::ToggleLocalMode) => self.request_local_mode_switch(),
             Some(Action::LibraryFilter) => {
                 self.local_mode.ui.filter_editing = true;
+                self.local_mode.ui.filter_cursor =
+                    TextCursor::at_end(&self.local_mode.ui.filter_query);
                 self.dirty = true;
                 Vec::new()
             }
@@ -367,8 +397,10 @@ impl App {
                 index,
                 warnings,
             } => {
+                let pending_rescan = self.local_mode.index.pending_rescan.take();
                 self.local_mode.index.index_path = index_path;
                 self.local_mode.index.index = index;
+                self.local_mode.index.revision = self.local_mode.index.revision.wrapping_add(1);
                 self.local_mode.index.loaded = true;
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
@@ -387,15 +419,23 @@ impl App {
                         t!("issues", "문제")
                     );
                 }
+                if let Some(full) = pending_rescan {
+                    return self.request_local_scan(full);
+                }
                 if self.local_dedicated_mode && self.local_mode.index.index.is_empty() {
                     return self.request_local_scan(false);
                 }
-                Vec::new()
+                if self.local_dedicated_mode && self.mode == Mode::Search {
+                    self.ensure_local_find_corpus()
+                } else {
+                    Vec::new()
+                }
             }
             LocalMsg::ScanFinished { index_path, result } => {
                 let pending_rescan = self.local_mode.index.pending_rescan.take();
                 self.local_mode.index.index_path = index_path;
                 self.local_mode.index.index = result.index;
+                self.local_mode.index.revision = self.local_mode.index.revision.wrapping_add(1);
                 self.local_mode.index.loaded = true;
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
@@ -416,7 +456,13 @@ impl App {
                     t!("tracks", "곡")
                 );
                 self.dirty = true;
-                pending_rescan.map_or_else(Vec::new, |full| self.request_local_scan(full))
+                if let Some(full) = pending_rescan {
+                    self.request_local_scan(full)
+                } else if self.local_dedicated_mode && self.mode == Mode::Search {
+                    self.ensure_local_find_corpus()
+                } else {
+                    Vec::new()
+                }
             }
             LocalMsg::ScanProgress(progress) => {
                 if self.local_mode.index.scanning {
@@ -432,6 +478,11 @@ impl App {
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
                 self.local_mode.index.progress = None;
+                self.local_mode.index.errors = vec![crate::local::ScanError {
+                    path: PathBuf::from("local-scan"),
+                    message: error.clone(),
+                }];
+                self.invalidate_local_rows();
                 self.status.kind = StatusKind::Error;
                 self.status.text =
                     format!("{}: {error}", t!("Local scan failed", "로컬 스캔 실패"));
@@ -461,6 +512,14 @@ impl App {
                 self.invalidate_local_rows();
                 cmds
             }
+            LocalMsg::FindCorpusReady { generation, corpus } => {
+                self.apply_local_find_corpus(generation, corpus)
+            }
+            LocalMsg::FindResultsReady {
+                request_id,
+                generation,
+                snapshot,
+            } => self.apply_local_find_results(request_id, generation, snapshot),
         }
     }
 
@@ -482,7 +541,7 @@ impl App {
     }
 
     pub(in crate::app) fn request_local_scan(&mut self, full: bool) -> Vec<Cmd> {
-        if self.local_mode.index.scanning {
+        if self.local_mode.index.loading || self.local_mode.index.scanning {
             self.local_mode.index.pending_rescan =
                 Some(self.local_mode.index.pending_rescan.unwrap_or_default() || full);
             return Vec::new();
@@ -502,10 +561,17 @@ impl App {
         self.local_mode.index.loading = false;
         self.local_mode.index.scanning = true;
         self.local_mode.index.progress = Some(crate::local::LocalScanProgress::default());
-        self.local_mode.index.errors.clear();
         self.invalidate_local_rows();
         self.status.kind = StatusKind::Info;
-        self.status.text = t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned();
+        self.status.text = if self.local_mode.index.errors.is_empty() {
+            t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned()
+        } else {
+            t!(
+                "Retrying local scan after previous errors...",
+                "이전 오류를 보존하고 로컬 음악 스캔을 다시 시도하는 중..."
+            )
+            .to_owned()
+        };
         self.dirty = true;
         let previous = if full {
             crate::local::LocalIndex::default()
@@ -1499,6 +1565,7 @@ impl App {
 
     fn clear_local_filter(&mut self) {
         self.local_mode.ui.filter_query.clear();
+        self.local_mode.ui.filter_cursor = TextCursor::default();
         self.local_mode.ui.filter_editing = false;
         self.local_mode.ui.selected = 0;
         self.local_mode.ui.anchor = 0;
@@ -1513,12 +1580,17 @@ impl App {
     }
 
     fn on_key_local_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if crate::util::text_edit::delete_previous_word(&mut self.local_mode.ui.filter_query) {
-                self.after_local_filter_change();
+        if let Some(result) = self.keymap.text_edit_action(k.into()).and_then(|action| {
+            apply_text_edit_action(
+                action,
+                &mut self.local_mode.ui.filter_cursor,
+                &mut self.local_mode.ui.filter_query,
+            )
+        }) {
+            match result {
+                TextEditResult::BufferChanged(true) => self.after_local_filter_change(),
+                TextEditResult::CursorMoved(true) => self.dirty = true,
+                TextEditResult::BufferChanged(false) | TextEditResult::CursorMoved(false) => {}
             }
             return Vec::new();
         }
@@ -1530,10 +1602,6 @@ impl App {
             KeyCode::Enter => {
                 self.local_mode.ui.filter_editing = false;
                 self.dirty = true;
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                self.local_mode.ui.filter_query.pop();
-                self.after_local_filter_change();
             }
             KeyCode::Up => {
                 self.local_mode.ui.selected = self.local_mode.ui.selected.saturating_sub(1);
@@ -1553,8 +1621,9 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                match try_push_query_char(
+                match try_insert_query_char(
                     &mut self.local_mode.ui.filter_query,
+                    &mut self.local_mode.ui.filter_cursor,
                     c,
                     MAX_FILTER_QUERY_BYTES,
                 ) {

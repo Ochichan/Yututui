@@ -19,6 +19,9 @@ pub(in crate::app) struct ModeSwitchPlan {
     expected_local_mode: bool,
     expected_radio_confirm: Option<RadioModeConfirm>,
     expected_local_confirm: Option<LocalModeConfirm>,
+    expected_local_confirm_token: Option<u64>,
+    local_intent_token: Option<u64>,
+    local_import_search_confirmation_token: Option<u64>,
     expected_theme: Vec<u8>,
     expected_target_theme: Option<Vec<u8>>,
     expected_target_queue: Vec<u8>,
@@ -50,6 +53,9 @@ impl App {
             expected_local_mode: self.local_dedicated_mode,
             expected_radio_confirm: self.radio_mode.pending_radio_mode_confirm,
             expected_local_confirm: self.local_mode.pending_confirm,
+            expected_local_confirm_token: self.local_mode.pending_confirm_token,
+            local_intent_token: None,
+            local_import_search_confirmation_token: None,
             expected_theme: theme_projection(Some(&self.theme)),
             expected_target_theme: Some(theme_projection(target_theme)),
             expected_target_queue: queue_projection(&target_queue),
@@ -69,20 +75,41 @@ impl App {
     ) -> Vec<Cmd> {
         if matches!(confirm, LocalModeConfirm::Enter) == self.local_dedicated_mode {
             self.local_mode.pending_confirm = None;
+            self.local_mode.pending_confirm_token = None;
+            self.local_mode.pending_intent_token = None;
+            self.local_mode.pending_import_search = None;
             return Vec::new();
         }
+        // The first Enter owns this confirmation until its player batch settles. Repeated Enter
+        // must not create a second intent whose Busy rejection could clear the first intent's
+        // single-use online-search continuation.
+        if self.local_mode.pending_intent_token.is_some() {
+            return Vec::new();
+        }
+        let intent_token = self.allocate_local_transition_token();
+        self.local_mode.pending_intent_token = Some(intent_token);
         let target_queue = match confirm {
             LocalModeConfirm::Enter => self.local_mode.local_mode_queue.clone(),
             LocalModeConfirm::Exit => self.local_mode.normal_mode_queue.clone(),
         };
+        let kind = DedicatedModeSwitch::Local(confirm);
+        let import_search_confirmation_token = self
+            .local_mode
+            .pending_import_search
+            .as_ref()
+            .map(|pending| pending.confirmation_token)
+            .filter(|token| Some(*token) == self.local_mode.pending_confirm_token);
         let plan = ModeSwitchPlan {
-            kind: DedicatedModeSwitch::Local(confirm),
+            kind,
             expected_radio_mode: self.radio_dedicated_mode,
             expected_local_mode: self.local_dedicated_mode,
             expected_radio_confirm: self.radio_mode.pending_radio_mode_confirm,
             expected_local_confirm: self.local_mode.pending_confirm,
+            expected_local_confirm_token: self.local_mode.pending_confirm_token,
+            local_intent_token: Some(intent_token),
+            local_import_search_confirmation_token: import_search_confirmation_token,
             expected_theme: theme_projection(Some(&self.theme)),
-            expected_target_theme: None,
+            expected_target_theme: self.mode_switch_target_theme_projection(kind),
             expected_target_queue: queue_projection(&target_queue),
             expected_video_generation: self.video.generation,
             expected_video_pause_owned: self.video.paused_audio,
@@ -110,6 +137,25 @@ impl App {
         assert_eq!(
             self.local_mode.pending_confirm, plan.expected_local_confirm,
             "local confirmation changed before mode-switch commit"
+        );
+        assert_eq!(
+            self.local_mode.pending_confirm_token, plan.expected_local_confirm_token,
+            "local confirmation token changed before mode-switch commit"
+        );
+        if let Some(token) = plan.local_intent_token {
+            assert_eq!(
+                self.local_mode.pending_intent_token,
+                Some(token),
+                "local intent token changed before mode-switch commit"
+            );
+        }
+        assert_eq!(
+            self.local_mode
+                .pending_import_search
+                .as_ref()
+                .map(|pending| pending.confirmation_token),
+            plan.local_import_search_confirmation_token,
+            "local import-search continuation changed before mode-switch commit"
         );
         assert_eq!(
             self.video.generation, plan.expected_video_generation,
@@ -146,13 +192,14 @@ impl App {
             plan.expected_target_queue,
             "cached queue changed before mode-switch commit"
         );
-        if let Some(expected) = plan.expected_target_theme.as_ref() {
-            assert_eq!(
-                theme_projection(target_theme.flatten()),
-                *expected,
-                "cached theme changed before mode-switch commit"
-            );
-        }
+        let actual_target_theme = match plan.kind {
+            DedicatedModeSwitch::Radio(_) => Some(theme_projection(target_theme.flatten())),
+            DedicatedModeSwitch::Local(_) => self.mode_switch_target_theme_projection(plan.kind),
+        };
+        assert_eq!(
+            actual_target_theme, plan.expected_target_theme,
+            "cached theme changed before mode-switch commit"
+        );
     }
 
     pub(in crate::app) fn mode_switch_is_current(&self, plan: &ModeSwitchPlan) -> bool {
@@ -160,6 +207,16 @@ impl App {
             || self.local_dedicated_mode != plan.expected_local_mode
             || self.radio_mode.pending_radio_mode_confirm != plan.expected_radio_confirm
             || self.local_mode.pending_confirm != plan.expected_local_confirm
+            || self.local_mode.pending_confirm_token != plan.expected_local_confirm_token
+            || plan
+                .local_intent_token
+                .is_some_and(|token| self.local_mode.pending_intent_token != Some(token))
+            || self
+                .local_mode
+                .pending_import_search
+                .as_ref()
+                .map(|pending| pending.confirmation_token)
+                != plan.local_import_search_confirmation_token
             || self.video.generation != plan.expected_video_generation
             || self.video.paused_audio != plan.expected_video_pause_owned
             || theme_projection(Some(&self.theme)) != plan.expected_theme
@@ -183,11 +240,12 @@ impl App {
                 (&self.local_mode.normal_mode_queue, None)
             }
         };
+        let actual_target_theme = match plan.kind {
+            DedicatedModeSwitch::Radio(_) => Some(theme_projection(target_theme.flatten())),
+            DedicatedModeSwitch::Local(_) => self.mode_switch_target_theme_projection(plan.kind),
+        };
         queue_projection(target_queue) == plan.expected_target_queue
-            && plan
-                .expected_target_theme
-                .as_ref()
-                .is_none_or(|expected| theme_projection(target_theme.flatten()) == *expected)
+            && actual_target_theme == plan.expected_target_theme
     }
 
     /// Apply projections which affect track-load follow-ups before committing the prepared load.
@@ -232,16 +290,29 @@ impl App {
                 self.radio_mode.pending_radio_mode_confirm = None;
             }
             DedicatedModeSwitch::Local(LocalModeConfirm::Enter) => {
+                self.local_mode.normal_mode_theme = Some(self.theme.clone());
                 self.local_mode.normal_mode_queue = Some(plan.outgoing_queue.clone());
                 self.activate_local_dedicated_mode_ui();
                 self.local_mode.local_mode_queue = None;
                 self.local_mode.pending_confirm = None;
+                self.local_mode.pending_confirm_token = None;
+                self.local_mode.pending_intent_token = None;
             }
             DedicatedModeSwitch::Local(LocalModeConfirm::Exit) => {
+                self.local_mode.local_mode_theme = Some(self.theme.clone());
                 self.local_mode.local_mode_queue = Some(plan.outgoing_queue.clone());
                 self.local_dedicated_mode = false;
+                self.theme = self
+                    .local_mode
+                    .normal_mode_theme
+                    .take()
+                    .unwrap_or_else(|| self.config.effective_theme());
                 self.local_mode.pending_confirm = None;
+                self.local_mode.pending_confirm_token = None;
+                self.local_mode.pending_intent_token = None;
+                self.local_mode.find.clear_transient_for_exit();
                 self.bridges.library_scroll.reset();
+                self.bridges.local_find_scroll.reset();
                 self.local_mode.normal_mode_queue = None;
             }
         }
@@ -261,7 +332,7 @@ impl App {
         &mut self,
         plan: ModeSwitchPlan,
     ) -> Vec<Cmd> {
-        let effects = match plan.kind {
+        let mut effects = match plan.kind {
             DedicatedModeSwitch::Local(LocalModeConfirm::Enter) => self.ensure_local_index_ready(),
             _ => Vec::new(),
         };
@@ -281,14 +352,52 @@ impl App {
             }
         }
         .to_owned();
+        if matches!(
+            plan.kind,
+            DedicatedModeSwitch::Local(LocalModeConfirm::Exit)
+        ) {
+            effects.extend(self.complete_local_import_search_continuation(
+                plan.local_import_search_confirmation_token,
+            ));
+        }
         self.dirty = true;
         effects
+    }
+
+    fn mode_switch_target_theme_projection(&self, kind: DedicatedModeSwitch) -> Option<Vec<u8>> {
+        let theme = match kind {
+            DedicatedModeSwitch::Radio(RadioModeConfirm::Enter) => {
+                return Some(theme_projection(self.radio_mode.radio_mode_theme.as_ref()));
+            }
+            DedicatedModeSwitch::Radio(RadioModeConfirm::Exit) => {
+                return Some(theme_projection(self.radio_mode.normal_mode_theme.as_ref()));
+            }
+            DedicatedModeSwitch::Local(LocalModeConfirm::Enter) => self
+                .local_mode
+                .local_mode_theme
+                .clone()
+                .unwrap_or_else(|| self.config.effective_local_theme()),
+            DedicatedModeSwitch::Local(LocalModeConfirm::Exit) => self
+                .local_mode
+                .normal_mode_theme
+                .clone()
+                .unwrap_or_else(|| self.config.effective_theme()),
+        };
+        Some(theme_projection(Some(&theme)))
     }
 }
 
 impl ModeSwitchPlan {
     pub(in crate::app) const fn releases_video_pause(&self) -> bool {
         self.expected_video_pause_owned
+    }
+
+    pub(in crate::app) const fn local_intent_token(&self) -> Option<u64> {
+        self.local_intent_token
+    }
+
+    pub(in crate::app) const fn local_import_search_confirmation_token(&self) -> Option<u64> {
+        self.local_import_search_confirmation_token
     }
 }
 

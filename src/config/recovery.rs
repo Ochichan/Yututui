@@ -638,7 +638,10 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(installed, pending);
         assert!(!journal_path(&path).exists());
+        #[cfg(unix)]
         assert!(!sidecar.exists());
+        #[cfg(not(unix))]
+        assert_eq!(std::fs::read(&sidecar).unwrap(), pending_bytes);
 
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

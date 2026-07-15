@@ -798,14 +798,12 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     }
                 }
             }
-            "eof-reached" => {
-                if value.as_bool() == Some(true) && !state.eof_emitted {
-                    state.eof_emitted = true;
-                    if let Some(generation) = state.legacy_pending_end_generation.take() {
-                        emit(PlayerEvent::file_scoped(generation, PlayerEvent::Eof));
-                    } else {
-                        emit_file_event(emit, state, PlayerEvent::Eof);
-                    }
+            "eof-reached" if value.as_bool() == Some(true) && !state.eof_emitted => {
+                state.eof_emitted = true;
+                if let Some(generation) = state.legacy_pending_end_generation.take() {
+                    emit(PlayerEvent::file_scoped(generation, PlayerEvent::Eof));
+                } else {
+                    emit_file_event(emit, state, PlayerEvent::Eof);
                 }
             }
             "demuxer-cache-time" => match value.as_f64() {
@@ -944,8 +942,8 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     state.eof_emitted = true;
                 }
                 "error" => {
-                    // Current mpv normally exposes only `loading failed`; 0.32 exposes no
-                    // detail. Keep the owner signal URL-free in either case. The owner allows
+                    // Current mpv normally exposes only `loading failed`; legacy 0.32 exposes
+                    // no detail. Keep the owner signal URL-free in either case. The owner allows
                     // one generic refresh only with confirmed same-item mid-track evidence.
                     let _ = file_error;
                     emit_file_event_for_generation(
@@ -960,7 +958,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     state.legacy_pending_end_generation = generation;
                     tracing::debug!(
                         ?generation,
-                        "waiting for mpv 0.32 idle/start/eof terminal boundary"
+                        "waiting for legacy mpv idle/start/eof terminal boundary"
                     );
                 }
                 // `stop` (our own Stop/replace), `quit`, `redirect`, and any future reason:

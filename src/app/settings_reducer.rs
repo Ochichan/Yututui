@@ -188,6 +188,7 @@ impl App {
             row: 0,
             draft,
             editing_text: false,
+            text_cursor: TextCursor::default(),
             color_picker: None,
             secret_restore: None,
             keymap: self.keymap.clone(),
@@ -621,6 +622,17 @@ impl App {
                 Vec::new()
             }
             Field::AutoplayStreaming => {
+                // Local Deck is offline. The draft carries the saved normal-mode preference, so
+                // leave it untouched and explain why this control is inactive in Local mode.
+                if self.local_dedicated_mode {
+                    self.status.text = t!(
+                        "Autoplay stays off in Local Deck",
+                        "로컬 덱에서는 자동재생이 꺼져 있어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 // Music-mode invariant: can't enable autoplay while repeat is on.
                 let repeat_on = self.queue.repeat.is_on();
                 if !self.settings_mut().draft.autoplay_streaming && repeat_on {
@@ -969,6 +981,8 @@ impl App {
                         prev
                     });
                 }
+                st.text_cursor = Self::settings_text_buf(st)
+                    .map_or_else(TextCursor::default, |buf| TextCursor::at_end(buf));
                 st.editing_text = true;
                 self.dirty = true;
                 Vec::new()
@@ -1302,8 +1316,13 @@ impl App {
             .unwrap_or(0);
         match row {
             3 => {
+                let end = self
+                    .settings
+                    .as_ref()
+                    .map_or(0, |st| st.draft.recording_dir.len());
                 if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.editing_dir = true;
+                    p.dir_cursor = TextCursor::from_byte_index(end);
                 }
                 self.dirty = true;
                 Vec::new()
@@ -1322,12 +1341,17 @@ impl App {
     /// Feed one key into the output-folder buffer while `editing_dir` is set.
     fn recording_dir_edit(&mut self, k: KeyEvent) -> Vec<Cmd> {
         self.dirty = true;
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
+        if let Some(action) = self.keymap.text_edit_action(k.into()) {
+            let mut cursor = self
+                .overlays
+                .recording_settings
+                .as_ref()
+                .map_or_else(TextCursor::default, |popup| popup.dir_cursor);
             if let Some(st) = self.settings.as_mut() {
-                crate::util::text_edit::delete_previous_word(&mut st.draft.recording_dir);
+                let _ = apply_text_edit_action(action, &mut cursor, &mut st.draft.recording_dir);
+            }
+            if let Some(popup) = self.overlays.recording_settings.as_mut() {
+                popup.dir_cursor = cursor;
             }
             return Vec::new();
         }
@@ -1337,14 +1361,17 @@ impl App {
                     p.editing_dir = false;
                 }
             }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if let Some(st) = self.settings.as_mut() {
-                    st.draft.recording_dir.pop();
-                }
-            }
             KeyCode::Char(c) => {
+                let mut cursor = self
+                    .overlays
+                    .recording_settings
+                    .as_ref()
+                    .map_or_else(TextCursor::default, |popup| popup.dir_cursor);
                 if let Some(st) = self.settings.as_mut() {
-                    st.draft.recording_dir.push(c);
+                    cursor.insert_char(&mut st.draft.recording_dir, c);
+                }
+                if let Some(popup) = self.overlays.recording_settings.as_mut() {
+                    popup.dir_cursor = cursor;
                 }
             }
             _ => {}
@@ -1544,7 +1571,8 @@ impl App {
                 // Library shows it now and a later in-app save can't clobber it. (The
                 // app persists its own mutations immediately, so disk is the union — which
                 // also means a just-deleted playlist reappears if the job re-created it.)
-                self.playlists = crate::playlists::Playlists::load();
+                self.playlists
+                    .replace_reloaded(crate::playlists::Playlists::load());
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
@@ -1636,6 +1664,7 @@ impl App {
                     buf.clear();
                     prev
                 });
+                st.text_cursor = TextCursor::default();
                 st.editing_text = true;
                 self.dirty = true;
                 Vec::new()
@@ -1710,14 +1739,13 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if let Some(st) = self.settings.as_mut()
-                && let Some(buf) = Self::settings_text_buf(st)
-            {
-                crate::util::text_edit::delete_previous_word(buf);
+        if let Some(action) = self.keymap.text_edit_action(k.into()) {
+            if let Some(st) = self.settings.as_mut() {
+                let mut cursor = st.text_cursor;
+                if let Some(buf) = Self::settings_text_buf(st) {
+                    let _ = apply_text_edit_action(action, &mut cursor, buf);
+                }
+                st.text_cursor = cursor;
             }
             return Vec::new();
         }
@@ -1740,18 +1768,12 @@ impl App {
                 self.settings_persist_text_field(field)
             }
             KeyCode::Char(c) => {
-                if let Some(st) = self.settings.as_mut()
-                    && let Some(buf) = Self::settings_text_buf(st)
-                {
-                    buf.push(c);
-                }
-                Vec::new()
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                if let Some(st) = self.settings.as_mut()
-                    && let Some(buf) = Self::settings_text_buf(st)
-                {
-                    buf.pop();
+                if let Some(st) = self.settings.as_mut() {
+                    let mut cursor = st.text_cursor;
+                    if let Some(buf) = Self::settings_text_buf(st) {
+                        cursor.insert_char(buf, c);
+                    }
+                    st.text_cursor = cursor;
                 }
                 Vec::new()
             }
@@ -1862,6 +1884,13 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| self.config.effective_theme()),
             )
+        } else if self.local_dedicated_mode {
+            Some(
+                self.local_mode
+                    .normal_mode_theme
+                    .clone()
+                    .unwrap_or_else(|| self.config.effective_theme()),
+            )
         } else {
             None
         };
@@ -1892,6 +1921,15 @@ impl App {
             self.config.radio_theme = Some(self.theme.clone());
             if let Some(normal_theme) = normal_theme {
                 self.radio_mode.normal_mode_theme = Some(normal_theme.clone());
+                self.config.theme = normal_theme;
+            }
+        } else if self.local_dedicated_mode {
+            self.local_mode.local_mode_theme = Some(self.theme.clone());
+            // Persist the Local theme in its own slot. `SettingsDraft::apply_to` writes the
+            // visible draft into `config.theme`, so restore the stashed normal slot afterward.
+            self.config.local_theme = Some(self.theme.clone());
+            if let Some(normal_theme) = normal_theme {
+                self.local_mode.normal_mode_theme = Some(normal_theme.clone());
                 self.config.theme = normal_theme;
             }
         } else {

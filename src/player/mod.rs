@@ -11,6 +11,7 @@ pub(crate) mod cache_budget;
 pub(crate) mod cache_runtime;
 pub mod cache_support;
 pub(crate) mod diagnostics;
+pub mod guardian;
 pub mod ipc;
 pub mod lifetime;
 pub mod long_form_seek;
@@ -29,11 +30,9 @@ use std::sync::{
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use tokio::process::Child;
 use tokio::sync::mpsc::{self, Sender};
 
 use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
-use crate::util::process::ProcessProfile;
 use crate::util::process_guard::ChildTreeGuard;
 
 pub use audio::AudioDevice;
@@ -828,13 +827,14 @@ async fn drain_player_queue(tx: Sender<PlayerCmd>, pending: Arc<Mutex<PlayerPend
     }
 }
 
-/// RAII guard owning the mpv child. Dropping it kills and boundedly reaps mpv (with tokio
-/// `kill_on_drop` as the final backstop) before removing the IPC socket.
+/// RAII guard owning the guardian which in turn owns mpv. Dropping it closes the owner lease,
+/// boundedly terminates/reaps the guardian boundary, and then removes the JSON IPC socket.
 pub struct Mpv {
-    /// Owns mpv's full process group / Job Object. It is explicitly terminated before `child`
-    /// is reaped so the borrowed Windows process handle remains valid.
+    /// Owns the guardian process group / outer Job Object. It is explicitly terminated before
+    /// `child` is reaped so the borrowed Windows process handle remains valid.
     child_tree: ChildTreeGuard,
-    child: Child,
+    child: Option<std::process::Child>,
+    guardian_lease: Option<guardian::GuardianLease>,
     /// The IPC endpoint path. Read only to unlink the Unix socket on drop; Windows named
     /// pipes self-clean, so the field is unused there.
     #[cfg_attr(windows, allow(dead_code))]
@@ -843,9 +843,26 @@ pub struct Mpv {
 
 impl Drop for Mpv {
     fn drop(&mut self) {
-        self.child_tree.terminate();
-        lifetime::kill_mpv_now();
-        terminate_and_reap(&mut self.child);
+        let mut lease = self.guardian_lease.take();
+        match (lease.as_mut(), self.child.take()) {
+            (Some(lease), Some(child)) => {
+                let _ = guardian::shutdown_and_reap_guardian(child, &mut self.child_tree, lease);
+            }
+            (None, Some(mut child)) => {
+                // Defensive/test-only fallback for an unguarded child.
+                self.child_tree.terminate();
+                let _ = child.kill();
+                let _ = std::thread::Builder::new()
+                    .name("ytt-unguarded-child-reaper".to_owned())
+                    .spawn(move || {
+                        let _ = child.wait();
+                    });
+            }
+            (_, None) => {}
+        }
+        // Clean completion removes disk identity after non-reaping exit observation; hard fallback
+        // deliberately preserves it for the next-start exact-marker reaper.
+        drop(lease);
         #[cfg(unix)]
         {
             let _ = std::fs::remove_file(&self.ipc_path);
@@ -853,36 +870,9 @@ impl Drop for Mpv {
     }
 }
 
-const MPV_REAP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-const MPV_REAP_POLL: std::time::Duration = std::time::Duration::from_millis(5);
-
-fn terminate_and_reap(child: &mut Child) {
-    let pid = child.id();
-    if let Err(error) = child.start_kill() {
-        tracing::debug!(?pid, %error, "mpv was already unavailable during teardown");
-    }
-    let deadline = std::time::Instant::now() + MPV_REAP_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(MPV_REAP_POLL);
-            }
-            Ok(None) => {
-                tracing::warn!(?pid, "mpv did not exit before the bounded reap deadline");
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(?pid, %error, "failed to reap mpv during teardown");
-                return;
-            }
-        }
-    }
-}
-
-/// Spawn mpv, wire up the IPC actor, and register the lifeline. `emit` receives
-/// player events; `data_dir` (if available) stores the PID registry for orphan reaping;
-/// `cookies_file` (if any) is forwarded to mpv's yt-dlp for authenticated streams.
+/// Spawn guarded mpv and wire up the IPC actor. `emit` receives player events; `data_dir` marks a
+/// mutation-owning process which may use the managed cache; `cookies_file` (if any) is forwarded
+/// to mpv's yt-dlp for authenticated streams.
 pub async fn spawn<F>(
     emit: F,
     data_dir: Option<PathBuf>,
@@ -904,7 +894,7 @@ where
         environment_args.as_deref(),
         mpv::flag_supported,
     );
-    let child = mpv::spawn(
+    let guarded = mpv::spawn(
         &ipc_path,
         cookies_file.as_deref(),
         gapless,
@@ -918,23 +908,17 @@ where
     let long_form_seek_status = Arc::new(Mutex::new(SharedLongFormSeekStatus::for_owner_process(
         cache_runtime.status(),
     )));
-    // Arm tree ownership immediately after spawn, before registry work or any cancellable await.
-    let child_tree = ChildTreeGuard::for_tokio(&child, ProcessProfile::Media);
-    let mpv_pid = child.id().context("mpv exited before reporting a pid")?;
-
-    lifetime::set_mpv_pid(mpv_pid);
-    if let Some(dir) = &data_dir {
-        lifetime::register(dir, std::process::id(), mpv_pid, &ipc_path);
-    }
-
+    // Guardian ownership is complete before any cancellable await. `into_parts` preserves the
+    // architecture gate's explicit ChildTreeGuard while the lease owns the actual mpv registry.
+    let (child_tree, child, guardian_lease, _mpv_pid) = guarded.into_parts();
     // Establish complete ownership before the first cancellable await. IPC connection can fail
     // or the startup task can be aborted while it is retrying; in both cases dropping this guard
-    // terminates the process tree, kills/reaps mpv, clears the signal-handler PID, and removes the
-    // Unix socket. Keeping `child` and its tree guard as independent locals across the await could
-    // otherwise leave a stale global PID when startup is cancelled.
+    // closes the heartbeat, terminates/reaps the guardian-owned media tree, disarms its fixed-slot
+    // registry entry, and removes the Unix socket.
     let mpv = Mpv {
         child_tree,
-        child,
+        child: Some(child),
+        guardian_lease: Some(guardian_lease),
         ipc_path: ipc_path.clone(),
     };
 

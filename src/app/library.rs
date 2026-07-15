@@ -1,7 +1,7 @@
 //! Library-input reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
-use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
+use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_insert_query_char};
 
 impl App {
     /// Move the library cursor up/down by `lines`, clamped, collapsing the multi-select
@@ -86,6 +86,7 @@ impl App {
     /// of the now-unfiltered list. Also used when switching tabs.
     pub(in crate::app) fn clear_library_filter(&mut self) {
         self.library_ui.filter_query.clear();
+        self.library_ui.filter_cursor = TextCursor::default();
         self.library_ui.filter_editing = false;
         self.library_ui.selected = 0;
         self.library_ui.anchor = 0;
@@ -107,12 +108,17 @@ impl App {
     /// to commit (keep the filter, return to list nav), Esc to cancel (clear the filter), and
     /// the arrows to move the cursor within the filtered rows.
     fn on_key_library_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        if matches!(
-            self.keymap.text_edit_action(k.into()),
-            Some(Action::DeleteWord)
-        ) {
-            if crate::util::text_edit::delete_previous_word(&mut self.library_ui.filter_query) {
-                self.after_library_filter_change();
+        if let Some(result) = self.keymap.text_edit_action(k.into()).and_then(|action| {
+            apply_text_edit_action(
+                action,
+                &mut self.library_ui.filter_cursor,
+                &mut self.library_ui.filter_query,
+            )
+        }) {
+            match result {
+                TextEditResult::BufferChanged(true) => self.after_library_filter_change(),
+                TextEditResult::CursorMoved(true) => self.dirty = true,
+                TextEditResult::BufferChanged(false) | TextEditResult::CursorMoved(false) => {}
             }
             return Vec::new();
         }
@@ -124,10 +130,6 @@ impl App {
             KeyCode::Enter => {
                 self.library_ui.filter_editing = false;
                 self.dirty = true;
-            }
-            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
-                self.library_ui.filter_query.pop();
-                self.after_library_filter_change();
             }
             KeyCode::Up => {
                 self.library_ui.selected = self.library_ui.selected.saturating_sub(1);
@@ -151,8 +153,9 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                match try_push_query_char(
+                match try_insert_query_char(
                     &mut self.library_ui.filter_query,
+                    &mut self.library_ui.filter_cursor,
                     c,
                     MAX_FILTER_QUERY_BYTES,
                 ) {
@@ -172,6 +175,9 @@ impl App {
             return self.on_key_playlist_create(k);
         }
         let chord = crate::keymap::Chord::from(k);
+        if self.library_ui.filter_editing && self.keymap.text_edit_action(chord).is_some() {
+            return self.on_key_library_filter(k);
+        }
         // A non-text Local Deck toggle should still work while the Library filter is focused.
         // If the user remaps it to a typeable key, the filter keeps owning that key.
         if !chord.is_typeable()
@@ -219,6 +225,7 @@ impl App {
             Some(Action::LibraryFilter) => {
                 // Open the filter input (re-opens with the current query if one is applied).
                 self.library_ui.filter_editing = true;
+                self.library_ui.filter_cursor = TextCursor::at_end(&self.library_ui.filter_query);
                 self.dirty = true;
                 Vec::new()
             }

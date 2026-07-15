@@ -80,7 +80,18 @@ YuTuTui!는 재생에 **mpv**, 검색·스트림 해석에 **yt-dlp**, 다운로
 **ffmpeg**를 씁니다. 패키지 설치에는 모두 포함됩니다. 직접 설치나 소스 빌드에서
 도구가 빠졌다면 무서운 프로세스 오류 대신, OS에 맞는 설치 명령 복사·설치 안내·
 **다시 확인** 버튼이 있는 카드가 나타납니다. 자세한 진단은 계속 `ytt doctor`가
-담당합니다.
+담당합니다. POSIX 환경에서는 상속된 수명 lease를 위해 **mpv 0.33 이상**이 필요합니다.
+
+`ytt`는 mpv 실행을 비공개 guardian으로 보냅니다. guardian은 owner heartbeat를 쓰고,
+POSIX는 상속 mpv `fd://` IPC lease를, Linux는 `PR_SET_PDEATHSIG`를 더하며, Windows는
+대신 닫히면 종료하는 Job Object를 사용합니다. 이 장치들이 mpv를 `ytt` owner의 수명에
+묶습니다. 단독 Unix TUI는 인식 가능한 직접/conmon PTY나 지원하는
+tmux/screen/Zellij 클라이언트를 잃어도 안전하게 종료하며, multiplexer 조회가
+불가능하거나 모호하면 클라이언트를 잃은 것으로 처리합니다. 일반적인 Windows console
+control event도 처리합니다. 그러나 유지된 ConPTY broker와 같은 종류로 반복 중첩된
+Screen/Zellij의 detach는 클라이언트 내부에서 확인할 수 없습니다. 이런 경우에는
+`ytt daemon`이나 호스트 측 수명 supervisor/lease를 사용하세요. 자세한 내용은
+[터미널 호환성](docs/terminal-compatibility.md#terminal-lifetime-detection)을 참고하세요.
 
 ## 빠른 시작
 
@@ -195,7 +206,9 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ### 로컬 덱 — 디스크 위 모든 음악의 오프라인 플레이어
 
-라이브러리에서 **`Alt+Shift+L`** 을 누르면 다운로드와 로컬 파일을 위한 몰입형 플레이어가 열립니다 — 앨범, 아티스트, 장르, 스마트 리스트, 인터넷 불필요. 자세한 안내는 [사용 설명서](MANUAL.ko.md)에.
+라이브러리에서 **`Alt+Shift+L`** 을 누르면 다운로드와 로컬 파일을 위한 몰입형 플레이어가 열립니다 — 앨범, 아티스트, 장르, 스마트 리스트까지. **찾기**를 고르거나 **`Ctrl+F`** 를 누르면 곡·앨범·아티스트·장르·폴더·로컬에서 재생 가능한 플레이리스트 항목을 온라인 대체 검색 없이 찾습니다. **`/`** 는 여전히 지금 보고 있는 섹션만 거릅니다. 범위와 정렬을 다듬고, 컬렉션을 열거나, 한 결과 또는 전체 결과 모음을 재생·큐 추가할 수 있어요.
+
+로컬 재생과 찾기는 컴퓨터에 이미 있는 파일만 사용합니다. 별도로 켠 연동 기능은 네트워크를 쓸 수 있고, **가져오기 세션**의 수동 온라인 후보 검색은 로컬 덱을 나가기 전에 명시적으로 확인합니다. 로컬 덱 테마도 일반·라디오 모드와 따로 기억합니다. 새 설치와 기존 설정 모두 처음에는 **Local Launch**로 시작하고, 이후에는 로컬 덱에서 저장한 테마로 돌아옵니다. 자세한 안내는 [사용 설명서](MANUAL.ko.md)에.
 
 > 🖼️ *스크린샷 준비 중!*
 <!-- 📸 채우는 법: docs/media/localdeck.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -284,6 +297,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | `z` / `Shift+Z` | 가사를 0.1초 앞당김 / 늦춤 (`[±]` 로 `−/+` 를 3초간 다시 열기) |
 | `v` | 뮤직비디오 오버레이 |
 | `Shift+B` | 도킹된 컨트롤 박스 접기 / 펼치기 |
+| `←` / `→` · `Ctrl+←` / `Ctrl+→` | 텍스트 입력칸에서 한 글자씩 · 단어씩 커서 이동 |
 | `Backspace` / `Ctrl+Backspace` | 텍스트 입력칸에서 한 글자 / 이전 단어 삭제 |
 | `Ctrl+R` | DJ Gem 스트리밍 |
 | `g` | DJ Gem 어시스턴트 |

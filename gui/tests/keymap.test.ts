@@ -64,14 +64,22 @@ describe('KeymapStore model + lookup', () => {
     expect(store.match('player', 'enter')).toBe('confirm');
     expect(store.match('player', 'x')).toBe('toggle_shuffle');
     expect(store.match('player', 'S')).toBeNull();
+    expect(store.textEditMatch('backspace')).toBe('delete_char');
     expect(store.textEditMatch('ctrl+backspace')).toBe('delete_word');
+    expect(store.textEditMatch('left')).toBe('move_cursor_left');
+    expect(store.textEditMatch('right')).toBe('move_cursor_right');
+    expect(store.textEditMatch('ctrl+left')).toBe('move_cursor_word_left');
+    expect(store.textEditMatch('ctrl+right')).toBe('move_cursor_word_right');
+    expect(store.isTextEditFactoryChord('left')).toBe(true);
+    expect(store.isTextEditFactoryChord('ctrl+right')).toBe(true);
+    expect(store.isTextEditFactoryChord('f8')).toBe(false);
     // specific context wins over the fallbacks ('q' is both player.back and common.back)
     expect(store.match('settings', 'q')).toBe('settings_cancel');
     // no binding
     expect(store.match('player', 'ctrl+shift+z')).toBeNull();
   });
 
-  it('resolves the text editor binding directly and honors remaps', async () => {
+  it('resolves text editor bindings directly and honors remaps and unbinds', async () => {
     const client = new Client(new DemoCoreTransport());
     const store = new KeymapStore(client);
     client.sub(['settings']);
@@ -80,6 +88,17 @@ describe('KeymapStore model + lookup', () => {
     await store.rebind('common', 'delete_word', 'f8');
     expect(store.textEditMatch('ctrl+backspace')).toBeNull();
     expect(store.textEditMatch('f8')).toBe('delete_word');
+    expect(store.isTextEditFactoryChord('ctrl+backspace')).toBe(true);
+
+    await store.rebind('common', 'move_cursor_left', 'f7');
+    expect(store.textEditMatch('left')).toBeNull();
+    expect(store.textEditMatch('f7')).toBe('move_cursor_left');
+    expect(store.isTextEditFactoryChord('left')).toBe(true);
+
+    store.unbind('common', 'move_cursor_right');
+    await settle();
+    expect(store.textEditMatch('right')).toBeNull();
+    expect(store.isTextEditFactoryChord('right')).toBe(true);
   });
 });
 

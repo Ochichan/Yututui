@@ -64,6 +64,36 @@ ytm-tui configuration.
 - Video overlay is an mpv GUI window. It is not meaningful on a bare Linux TTY
   or a headless SSH session.
 
+## Terminal Lifetime Detection
+
+Playback lifetime protection and terminal-attachment detection are separate
+layers:
+
+- `ytt` routes mpv launches through a private heartbeat guardian. POSIX builds also
+  give mpv an inherited `fd://` IPC lease (mpv 0.33 or newer), Linux adds a
+  `PR_SET_PDEATHSIG`, and Windows uses parent-only and guardian-only
+  kill-on-close Job Objects.
+- On recognized Unix direct PTYs, one exclusive input worker checks periodic
+  cursor-position replies. This includes the Distrobox/Podman `conmon` case
+  where the PTY endpoint remains open after its interactive client disappears.
+- Supported tmux, GNU screen, and Zellij 0.40.1+ sessions are checked through their
+  client-query CLIs as well as the terminal reply. A missing, inaccessible,
+  timed-out, or malformed multiplexer query fails closed: the standalone TUI
+  shuts down rather than assuming a client still exists. Distinct multiplexer
+  layers visible in the environment are checked within one bounded query window.
+- On Windows, normal console control events trigger guarded shutdown. A ConPTY
+  broker that deliberately keeps the console and `ytt` process alive after its
+  visible client disappears is not distinguishable from a live client inside
+  `ytt`.
+- Repeated same-type GNU screen or Zellij nesting is likewise not
+  distinguishable through those tools' public client listings: an inner client
+  can still appear attached to an outer session whose real client is gone.
+
+Use `ytt daemon` when playback is meant to survive terminal detach. If playback
+must instead stop with an opaque ConPTY or repeated Screen/Zellij host session,
+run `ytt` under a host-side lifetime supervisor or lease that owns that
+boundary.
+
 Run:
 
 ```sh

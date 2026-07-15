@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod local_find;
 mod scrollbar;
 
 /// The last-rendered mouse hit map: the clickable button rects views publish each frame plus
@@ -164,8 +165,7 @@ impl App {
                     return self.on_mouse_target(t);
                 }
                 _ => {
-                    self.local_mode.pending_confirm = None;
-                    self.dirty = true;
+                    self.cancel_local_mode_switch();
                     return Vec::new();
                 }
             }
@@ -293,10 +293,13 @@ impl App {
                 }
             }
         }
+        if let Some(commands) = self.local_find_mouse_modal(col, row) {
+            return commands;
+        }
         // The search results-filter popup is modal like the queue window: a click outside
         // it closes it; inside it only its own rows / scrollbar act, so a click landing on
         // the list underneath can't leak through.
-        if self.search_filter.open {
+        if self.search_filter.open && self.active_search_surface() != ActiveSearchSurface::Local {
             let inside = self
                 .search_filter
                 .rect
@@ -446,8 +449,8 @@ impl App {
             }
         }
         if let Some(region) = self.mouse_region_at(col, row) {
-            if let MouseTarget::Scrollbar(surface) = region.target {
-                return self.on_scrollbar_press(surface, region.rect, row);
+            if let Some(commands) = self.on_any_scrollbar_press(&region.target, region.rect, row) {
+                return commands;
             }
             if matches!(region.target, MouseTarget::SettingsColorSwatch(_)) {
                 self.interaction.color_picker_click = Some((col, row));
@@ -567,18 +570,32 @@ impl App {
             // Nav bar: switch screens from anywhere.
             MouseTarget::Nav(mode) => self.navigate_to(mode),
             // Search bar submit button.
-            MouseTarget::SearchSubmit if self.mode == Mode::Search => self.submit_search_query(),
+            MouseTarget::SearchSubmit
+                if self.mode == Mode::Search
+                    && self.active_search_surface() != ActiveSearchSurface::Local =>
+            {
+                self.submit_search_query()
+            }
             MouseTarget::SearchSubmit => Vec::new(),
-            MouseTarget::SearchInput if self.mode == Mode::Search => {
+            MouseTarget::SearchInput
+                if self.mode == Mode::Search
+                    && self.active_search_surface() != ActiveSearchSurface::Local =>
+            {
                 self.search.focus = SearchFocus::Input;
                 self.search.select_all = false;
+                self.search.input_cursor = TextCursor::at_end(&self.search.input);
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
             }
             MouseTarget::SearchInput => Vec::new(),
             // The `⌕ Filter` button opens the results-filter popup (a no-op with no results).
-            MouseTarget::SearchFilterOpen if self.mode == Mode::Search => self.open_search_filter(),
+            MouseTarget::SearchFilterOpen
+                if self.mode == Mode::Search
+                    && self.active_search_surface() != ActiveSearchSurface::Local =>
+            {
+                self.open_search_filter()
+            }
             MouseTarget::SearchFilterOpen => Vec::new(),
             // Single-click a filter-popup row: move the popup cursor there (double-click plays).
             MouseTarget::SearchFilterRow(i) if self.search_filter.open => {
@@ -605,6 +622,7 @@ impl App {
             MouseTarget::AiInput if self.mode == Mode::Ai => {
                 self.ai.focus = AiFocus::Input;
                 self.ai.select_all = false;
+                self.ai.input_cursor = TextCursor::at_end(&self.ai.input);
                 self.dirty = true;
                 Vec::new()
             }
@@ -663,6 +681,16 @@ impl App {
                 self.local_row_click(i)
             }
             MouseTarget::LocalRow(_) => Vec::new(),
+            target @ (MouseTarget::LocalFindRow { .. }
+            | MouseTarget::LocalFindInput
+            | MouseTarget::LocalFindSubmit
+            | MouseTarget::LocalFindRefineOpen
+            | MouseTarget::LocalFindRefineRow(_)
+            | MouseTarget::LocalFindLaunchpad { .. }
+            | MouseTarget::ConfirmLocalFindBulk
+            | MouseTarget::CancelLocalFindBulk
+            | MouseTarget::ConfirmLocalFindRebuild
+            | MouseTarget::CancelLocalFindRebuild) => self.on_local_find_mouse_target(target),
             MouseTarget::LocalImportDel(session_id)
                 if self.mode == Mode::Library && self.local_dedicated_mode =>
             {
@@ -722,7 +750,7 @@ impl App {
             // Single-click a list row: select it (double-click plays — see double-click path).
             MouseTarget::ListRow(i) => self.on_list_row_click(i),
             // Scrollbar targets are handled by the coordinate-aware click/drag paths.
-            MouseTarget::Scrollbar(_) => Vec::new(),
+            MouseTarget::Scrollbar(_) | MouseTarget::LocalFindScrollbar { .. } => Vec::new(),
             // Open the queue window from the `N/M` position label.
             MouseTarget::QueuePos if self.mode == Mode::Player => {
                 self.open_queue_popup();
@@ -859,8 +887,7 @@ impl App {
                 self.apply_local_mode_confirm(confirm)
             }
             MouseTarget::CancelLocalMode => {
-                self.local_mode.pending_confirm = None;
-                self.dirty = true;
+                self.cancel_local_mode_switch();
                 Vec::new()
             }
             MouseTarget::ConfirmLocalOrganize => {
@@ -963,6 +990,9 @@ impl App {
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
+            || self.local_mode.find.pending_bulk_confirm.is_some()
+            || self.local_mode.find.pending_rebuild_confirm
+            || self.local_mode.find.refine_popup.open
             || self.local_import_confirmation_open()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
@@ -1023,6 +1053,9 @@ impl App {
             Some(MouseTarget::LocalRow(i)) if self.local_dedicated_mode => {
                 self.local_row_activate(i)
             }
+            Some(MouseTarget::LocalFindRow { index, stamp }) => {
+                self.local_find_mouse_activate(index, stamp)
+            }
             Some(MouseTarget::ListRow(i)) => {
                 self.restore_double_click_selection(i);
                 self.on_list_row_activate(i)
@@ -1056,8 +1089,8 @@ impl App {
             return Vec::new();
         }
         if self.queue_popup.open {
-            if let Some(drag) = self.interaction.drag_scrollbar {
-                self.drag_scrollbar_to(drag, row);
+            if let Some(drag) = self.interaction.drag_scrollbar.clone() {
+                self.drag_scrollbar_to(&drag, row);
                 return Vec::new();
             }
             if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
@@ -1072,16 +1105,14 @@ impl App {
             }
             return Vec::new();
         }
-        if let Some(drag) = self.interaction.drag_scrollbar {
-            self.drag_scrollbar_to(drag, row);
+        if let Some(drag) = self.interaction.drag_scrollbar.clone() {
+            self.drag_scrollbar_to(&drag, row);
             return Vec::new();
         }
-        if let Some(MouseButtonRegion {
-            target: MouseTarget::Scrollbar(surface),
-            rect,
-        }) = self.mouse_region_at(col, row)
+        if let Some(region) = self.mouse_region_at(col, row)
+            && let Some(commands) = self.on_any_scrollbar_press(&region.target, region.rect, row)
         {
-            return self.on_scrollbar_press(surface, rect, row);
+            return commands;
         }
         if self.mode == Mode::Ai
             && let Some(MouseTarget::AiTranscriptRow(i)) = self.mouse_target_at(col, row)
@@ -1207,6 +1238,9 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
+        if self.local_find_mouse_scroll_modal(up, MOUSE_SCROLL_LINES) {
+            return Vec::new();
+        }
         if self.audio_output_picker_scroll(up, MOUSE_SCROLL_LINES) {
             return Vec::new();
         }
@@ -1271,7 +1305,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.search_filter.open {
+        if self.search_filter.open && self.active_search_surface() != ActiveSearchSurface::Local {
             let len = self.search_filter.matches.len();
             self.search_filter.scroll.wheel(up, n, len);
             self.dirty = true;
@@ -1298,6 +1332,9 @@ impl App {
                 };
                 self.bridges.library_scroll.wheel(up, n, len);
                 self.dirty = true;
+            }
+            Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
+                self.scroll_local_find(up, n);
             }
             Mode::Search => {
                 self.bridges

@@ -150,8 +150,8 @@ pub fn cmd_observe(id: u64, name: &str) -> String {
     json!({ "command": ["observe_property", id, name], "request_id": id }).to_string()
 }
 
-/// `get_property <name>` — used to correlate a load with its stable playlist entry on mpv
-/// 0.32, whose successful `loadfile` reply predates the direct `playlist_entry_id` result.
+/// `get_property <name>` — retained protocol robustness for legacy mpv 0.32, whose successful
+/// `loadfile` reply predates the direct `playlist_entry_id` result.
 pub fn cmd_get_property(name: &str, request_id: u64) -> String {
     json!({ "command": ["get_property", name], "request_id": request_id }).to_string()
 }

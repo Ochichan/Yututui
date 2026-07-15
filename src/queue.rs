@@ -163,6 +163,14 @@ impl Queue {
         additional <= MAX.saturating_sub(self.songs.len())
     }
 
+    pub(crate) fn remaining_capacity(&self) -> usize {
+        MAX.saturating_sub(self.songs.len())
+    }
+
+    pub(crate) const fn max_len() -> usize {
+        MAX
+    }
+
     /// The membership/order revision. Equal revs ⇒ identical contents and play order
     /// (process-wide — safe to compare across queue swaps); cursor moves don't change it.
     pub fn rev(&self) -> u64 {

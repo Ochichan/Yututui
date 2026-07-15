@@ -276,7 +276,7 @@ pub struct RateEvidence {
 impl RateEvidence {
     /// Conservative maximum across the safe evidence currently available. `raw-input-rate` can
     /// corroborate and raise another bound, but cannot establish admission by itself because it is
-    /// missing on mpv 0.32 and can under-report segmented input.
+    /// missing on legacy mpv 0.32 and can under-report segmented input.
     pub fn conservative_bound(self) -> Option<u64> {
         let corroborated = [
             self.fixture_max_bytes_per_sec,
