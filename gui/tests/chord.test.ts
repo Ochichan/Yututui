@@ -75,9 +75,9 @@ describe('chordFromCapture (dispatch-parity, IME-safe)', () => {
 
   it('falls back to the physical code for composition and Alt chords', () => {
     expect(chordFromCapture(ev({ key: 'Process', code: 'KeyR' }))).toBe('r');
-    expect(
-      chordFromCapture(ev({ key: '®', code: 'KeyR', altKey: true, shiftKey: true })),
-    ).toBe('alt+shift+r');
+    expect(chordFromCapture(ev({ key: '®', code: 'KeyR', altKey: true, shiftKey: true }))).toBe(
+      'alt+shift+r',
+    );
   });
 });
 
@@ -88,7 +88,7 @@ describe('displayChord', () => {
     expect(displayChord('space')).toBe('Space');
     expect(displayChord('backtab')).toBe('BackTab');
     expect(displayChord('shift+f10')).toBe('Shift+F10');
-    expect(displayChord('A')).toBe('A');
+    expect(displayChord('A')).toBe('Shift+A');
     expect(displayChord('?')).toBe('?');
   });
 });

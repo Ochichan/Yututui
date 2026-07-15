@@ -153,13 +153,24 @@ impl App {
     /// Keystrokes while the create-playlist popup is open: type/Backspace edit the name,
     /// Enter creates, Esc cancels. Mirrors the library filter's plain-char gate.
     pub(in crate::app) fn on_key_playlist_create(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if let Some(buf) = self.library_ui.create_input.as_mut()
+                && crate::util::text_edit::delete_previous_word(buf)
+            {
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Esc => {
                 self.library_ui.create_input = None;
                 self.dirty = true;
             }
             KeyCode::Enter => return self.playlist_create_commit(),
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 if let Some(buf) = self.library_ui.create_input.as_mut() {
                     buf.pop();
                     self.dirty = true;
@@ -289,17 +300,29 @@ impl App {
     /// close. Naming phase: type/Backspace edit, Enter creates-and-adds, Esc backs out
     /// to the list.
     pub(in crate::app) fn on_key_playlist_picker(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let delete_word = matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        );
         let Some(picker) = self.playlist_picker.as_mut() else {
             return Vec::new();
         };
         if picker.naming.is_some() {
+            if delete_word {
+                if let Some(buf) = picker.naming.as_mut()
+                    && crate::util::text_edit::delete_previous_word(buf)
+                {
+                    self.dirty = true;
+                }
+                return Vec::new();
+            }
             match k.code {
                 KeyCode::Esc => {
                     picker.naming = None;
                     self.dirty = true;
                 }
                 KeyCode::Enter => return self.picker_create_commit(),
-                KeyCode::Backspace => {
+                KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                     if let Some(buf) = picker.naming.as_mut() {
                         buf.pop();
                         self.dirty = true;

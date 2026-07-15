@@ -62,10 +62,24 @@ describe('KeymapStore model + lookup', () => {
     expect(store.match('library', 'ctrl+h')).toBe('home');
     // common fallback (player has no enter binding of its own)
     expect(store.match('player', 'enter')).toBe('confirm');
+    expect(store.match('player', 'x')).toBe('toggle_shuffle');
+    expect(store.match('player', 'S')).toBeNull();
+    expect(store.textEditMatch('ctrl+backspace')).toBe('delete_word');
     // specific context wins over the fallbacks ('q' is both player.back and common.back)
     expect(store.match('settings', 'q')).toBe('settings_cancel');
     // no binding
     expect(store.match('player', 'ctrl+shift+z')).toBeNull();
+  });
+
+  it('resolves the text editor binding directly and honors remaps', async () => {
+    const client = new Client(new DemoCoreTransport());
+    const store = new KeymapStore(client);
+    client.sub(['settings']);
+    await settle();
+
+    await store.rebind('common', 'delete_word', 'f8');
+    expect(store.textEditMatch('ctrl+backspace')).toBeNull();
+    expect(store.textEditMatch('f8')).toBe('delete_word');
   });
 });
 
@@ -129,9 +143,7 @@ describe('KeymapStore against the demo core', () => {
     store.applyCapture('ctrl+j');
     expect(store.capture).toBeNull();
     await settle();
-    const shuffle = store.actions.find(
-      (a) => a.context === 'player' && a.id === 'toggle_shuffle',
-    )!;
+    const shuffle = store.actions.find((a) => a.context === 'player' && a.id === 'toggle_shuffle')!;
     expect(store.chordFor(shuffle)).toBe('ctrl+j');
   });
 });

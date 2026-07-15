@@ -107,6 +107,15 @@ impl App {
     /// to commit (keep the filter, return to list nav), Esc to cancel (clear the filter), and
     /// the arrows to move the cursor within the filtered rows.
     fn on_key_library_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if crate::util::text_edit::delete_previous_word(&mut self.library_ui.filter_query) {
+                self.after_library_filter_change();
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Esc => {
                 self.clear_library_filter();
@@ -116,7 +125,7 @@ impl App {
                 self.library_ui.filter_editing = false;
                 self.dirty = true;
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 self.library_ui.filter_query.pop();
                 self.after_library_filter_change();
             }

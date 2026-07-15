@@ -1322,13 +1322,22 @@ impl App {
     /// Feed one key into the output-folder buffer while `editing_dir` is set.
     fn recording_dir_edit(&mut self, k: KeyEvent) -> Vec<Cmd> {
         self.dirty = true;
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if let Some(st) = self.settings.as_mut() {
+                crate::util::text_edit::delete_previous_word(&mut st.draft.recording_dir);
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Enter | KeyCode::Esc => {
                 if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.editing_dir = false;
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 if let Some(st) = self.settings.as_mut() {
                     st.draft.recording_dir.pop();
                 }
@@ -1701,6 +1710,17 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if let Some(st) = self.settings.as_mut()
+                && let Some(buf) = Self::settings_text_buf(st)
+            {
+                crate::util::text_edit::delete_previous_word(buf);
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Enter | KeyCode::Esc => {
                 if let Field::ThemeColor(role) = field {
@@ -1727,7 +1747,7 @@ impl App {
                 }
                 Vec::new()
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 if let Some(st) = self.settings.as_mut()
                     && let Some(buf) = Self::settings_text_buf(st)
                 {

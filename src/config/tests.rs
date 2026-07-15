@@ -606,7 +606,7 @@ fn keybindings_persist_through_config_json() {
     km.rebind(
         KeyContext::Player,
         Action::TogglePause,
-        parse_chord("x").unwrap(),
+        parse_chord("f8").unwrap(),
     )
     .unwrap();
     let cfg = Config {
@@ -618,7 +618,7 @@ fn keybindings_persist_through_config_json() {
         cfg.keybindings
             .get("player.toggle_pause")
             .map(String::as_str),
-        Some("x")
+        Some("f8")
     );
 
     // Round-trip through the exact serde path `Config::save`/`load` use (write JSON,
@@ -629,7 +629,7 @@ fn keybindings_persist_through_config_json() {
     // On next launch the persisted override rebuilds into the live keymap.
     let restored = KeyMap::from_config(&back);
     assert_eq!(
-        restored.action(KeyContext::Player, parse_chord("x").unwrap()),
+        restored.action(KeyContext::Player, parse_chord("f8").unwrap()),
         Some(Action::TogglePause)
     );
     assert_eq!(

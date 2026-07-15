@@ -327,6 +327,16 @@ impl App {
     }
 
     fn audio_output_manual_key(&mut self, key: KeyEvent) -> Vec<Cmd> {
+        if matches!(
+            self.keymap.text_edit_action(key.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if let Some(picker) = self.overlays.audio_output_picker.as_mut() {
+                crate::util::text_edit::delete_previous_word(&mut picker.manual_input);
+                picker.error = None;
+            }
+            return Vec::new();
+        }
         match key.code {
             KeyCode::Enter => {
                 let value = self
@@ -352,7 +362,7 @@ impl App {
                     picker.error = None;
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
                 if let Some(picker) = self.overlays.audio_output_picker.as_mut() {
                     picker.manual_input.pop();
                     picker.error = None;

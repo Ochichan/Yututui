@@ -827,7 +827,7 @@ mod tests {
 
         let nav = groups
             .iter()
-            .find_map(|(title, rows)| (title == "Navigation (all screens)").then_some(rows))
+            .find_map(|(title, rows)| (title == "Common navigation & text editing").then_some(rows))
             .expect("navigation group");
         assert!(nav.contains(&("Up".to_owned(), "Move up".to_owned())));
         assert!(nav.contains(&("Down".to_owned(), "Move down".to_owned())));
@@ -867,7 +867,7 @@ mod tests {
             .into_iter()
             .find_map(|(title, rows)| (title == "Local Deck").then_some(rows))
             .expect("local deck group");
-        assert!(local_deck.contains(&("A".to_owned(), "Mark all import tracks Ready".to_owned())));
+        assert!(local_deck.contains(&("⇧A".to_owned(), "Mark all import tracks Ready".to_owned())));
     }
 
     #[test]
@@ -888,7 +888,7 @@ mod tests {
         let app = App::new(100);
         let nav = help_groups(&app)
             .into_iter()
-            .find_map(|(title, rows)| (title == "Navigation (all screens)").then_some(rows))
+            .find_map(|(title, rows)| (title == "Common navigation & text editing").then_some(rows))
             .expect("navigation group");
         for row in [
             ("PgUp".to_owned(), "Page up".to_owned()),

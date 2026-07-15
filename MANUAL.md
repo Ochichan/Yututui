@@ -36,7 +36,7 @@ The first launch points to Search for ten seconds; press its displayed key (norm
 ### Play your first song
 
 1. Press **`s`** — a search box opens.
-2. Type a song or artist name, press **`Enter`**.
+2. Type a song or artist name, press **`Enter`**. While typing, **`Backspace`** deletes one character and **`Ctrl+Backspace`** deletes the previous word.
 3. Move down the results with **`↓`**, press **`Enter`** on the one you want.
 
 Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.
@@ -61,7 +61,7 @@ YuTuTui! is five screens, each one key away:
 
 The now-playing controls — title, progress bar, transport, status — live in a bar docked to
 the bottom of **every** screen, so you can pause or seek from Search or Library without
-leaving. Press `B` (or click the `▼` / `▲` next to the footer's mouse hint) to tuck the bar
+leaving. Press `Shift+B` (or click the `▼` / `▲` next to the footer's mouse hint) to tuck the bar
 away on those screens and reclaim the rows; the Player screen always keeps it. If you
 prefer the classic look with the controls at the top of the Player screen only, switch
 *Settings › General › Player bar position* to **Top**.
@@ -82,10 +82,11 @@ the window grows again. Nothing to configure; it just follows the window.
 | `,` / `.` | Previous / next song |
 | `←` / `→` | Rewind / fast-forward |
 | `↑` / `↓` | Volume |
-| `f` | ♥ Favorite the current song |
+| `f` | Cycle the current song through like / dislike / unrated |
+| `x` / `r` | Shuffle / cycle repeat |
 | `c` | Show the queue (what plays next) |
 | `Shift+L` | Lyrics, synced to the music; click a visible line to seek there |
-| `z` / `Z` | Show lyrics 0.1s earlier / later |
+| `z` / `Shift+Z` | Show lyrics 0.1s earlier / later |
 | `v` | Music video in a floating window |
 | `Ctrl+Q` | Quit |
 
@@ -228,7 +229,7 @@ The music-video mode names its playlist `<original name> (Music Videos)`. It pre
 
 ### 5d. Reviewing the leftovers
 
-Songs the app wasn't sure about are never guessed — they wait in the **Local Deck → Import Sessions** (and its **Inbox**). Go there (chapter 4), open the session, and go through the rows: each shows what Spotify had and what the best candidates are. Accept the ones that look right — or press **`A`** to accept all matched candidates at once. Rows can also retry their downloads or open candidate links so you can check with your own ears.
+Songs the app wasn't sure about are never guessed — they wait in the **Local Deck → Import Sessions** (and its **Inbox**). Go there (chapter 4), open the session, and go through the rows: each shows what Spotify had and what the best candidates are. Accept the ones that look right — or press **`Shift+A`** to accept all matched candidates at once. Rows can also retry their downloads or open candidate links so you can check with your own ears.
 
 ### 5e. The command-line version *(optional)*
 

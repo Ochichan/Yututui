@@ -531,6 +531,17 @@ fn local_deck_escape_clears_committed_filter_before_exit() {
 }
 
 #[test]
+fn ctrl_backspace_edits_the_local_deck_filter() {
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "album artist".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.local_mode.ui.filter_query, "album ");
+}
+
+#[test]
 fn local_deck_sidebar_switches_sections_with_mouse_and_number_keys() {
     let mut app = app_with_local_deck_index(vec![local_deck_track(
         "/tmp/music/Daft Punk/Discovery/One More Time.flac",

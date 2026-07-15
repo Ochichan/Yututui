@@ -68,6 +68,55 @@ fn ctrl_a_then_typing_replaces_search_input() {
 }
 
 #[test]
+fn ctrl_backspace_deletes_words_in_search_and_ai_inputs() {
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "lofi hip hop".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.search.input, "lofi hip ");
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    assert_eq!(app.search.input, "lofi hip");
+    app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert!(app.search.input.is_empty());
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
+    for c in "quiet piano".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.ai.input, "quiet ");
+}
+
+#[test]
+fn word_delete_honors_remap_and_unbind_in_text_inputs() {
+    let mut app = App::new(100);
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteWord,
+            crate::keymap::parse_chord("f8").unwrap(),
+        )
+        .unwrap();
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "one two".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.search.input, "one two");
+    app.update(Msg::Key(key(KeyCode::F(8))));
+    assert_eq!(app.search.input, "one ");
+
+    app.keymap.unbind(KeyContext::Common, Action::DeleteWord);
+    app.update(Msg::Key(key(KeyCode::F(8))));
+    assert_eq!(app.search.input, "one ");
+}
+
+#[test]
 fn navigating_away_clears_a_pending_select_all_highlight() {
     let mut app = App::new(100);
     // Search box: select the whole query, then leave via Ctrl+H (a global nav action that's

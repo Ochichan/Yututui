@@ -16,6 +16,7 @@ fn space_formats_as_symbol() {
 #[test]
 fn ctrl_and_arrow_formatting() {
     assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^r");
+    assert_eq!(format_chord(parse_chord("ctrl+backspace").unwrap()), "^⌫");
     assert_eq!(format_chord(parse_chord("ctrl+shift+x").unwrap()), "^⇧x");
     assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^q");
     assert_eq!(format_chord(parse_chord("ctrl+h").unwrap()), "^h");
@@ -28,6 +29,16 @@ fn ctrl_and_arrow_formatting() {
         chord_to_config(parse_chord("ctrl+shift+x").unwrap()),
         "ctrl+shift+x"
     );
+}
+
+#[test]
+fn inherent_uppercase_chords_display_as_shifted_without_changing_config() {
+    let chord = parse_chord("L").unwrap();
+    assert_eq!(format_chord(chord), "⇧L");
+    assert_eq!(format_chord_retro(chord), "Shift+L");
+    assert_eq!(chord_to_config(chord), "L");
+    assert_eq!(format_chord(parse_chord("?").unwrap()), "?");
+    assert_eq!(format_chord(parse_chord("ctrl+shift+x").unwrap()), "^⇧x");
 }
 
 #[test]
@@ -343,8 +354,12 @@ fn defaults_resolve_to_actions() {
         Some(Action::OpenSearch)
     );
     assert_eq!(
-        km.action(KeyContext::Player, parse_chord("S").unwrap()),
+        km.action(KeyContext::Player, parse_chord("x").unwrap()),
         Some(Action::ToggleShuffle)
+    );
+    assert_eq!(
+        km.action(KeyContext::Player, parse_chord("S").unwrap()),
+        None
     );
     assert_eq!(
         km.action(KeyContext::Player, parse_chord("l").unwrap()),
@@ -438,6 +453,10 @@ fn defaults_resolve_to_actions() {
     assert_eq!(
         km.global_action(parse_chord("?").unwrap()),
         Some(Action::ToggleHelp)
+    );
+    assert_eq!(
+        km.text_edit_action(parse_chord("ctrl+backspace").unwrap()),
+        Some(Action::DeleteWord)
     );
 }
 
@@ -798,7 +817,7 @@ fn rebind_rejects_conflict() {
 #[test]
 fn rebind_moves_binding() {
     let mut km = KeyMap::default();
-    let p_upper = parse_chord("x").unwrap();
+    let p_upper = parse_chord("f5").unwrap();
     km.rebind(KeyContext::Player, Action::TogglePause, p_upper)
         .unwrap();
     assert_eq!(
@@ -1058,22 +1077,130 @@ fn overrides_round_trip() {
     km.rebind(
         KeyContext::Player,
         Action::TogglePause,
-        parse_chord("x").unwrap(),
+        parse_chord("f5").unwrap(),
     )
     .unwrap();
     let overrides = km.to_overrides();
     assert_eq!(
         overrides.get("player.toggle_pause").map(String::as_str),
-        Some("x")
+        Some("f5")
     );
     let restored = KeyMap::from_overrides(&overrides);
     assert_eq!(
-        restored.action(KeyContext::Player, parse_chord("x").unwrap()),
+        restored.action(KeyContext::Player, parse_chord("f5").unwrap()),
         Some(Action::TogglePause)
     );
     assert_eq!(
         restored.action(KeyContext::Player, parse_chord("space").unwrap()),
         None
+    );
+}
+
+#[test]
+fn shuffle_default_and_delete_word_are_exposed_on_the_wire() {
+    let km = KeyMap::default();
+    assert_eq!(
+        km.wire_bindings()
+            .get("player.toggle_shuffle")
+            .map(String::as_str),
+        Some("x")
+    );
+    assert_eq!(
+        km.wire_bindings()
+            .get("common.delete_word")
+            .map(String::as_str),
+        Some("ctrl+backspace")
+    );
+    let delete_word = wire_actions()
+        .into_iter()
+        .find(|entry| entry.context == "common" && entry.id == "delete_word")
+        .expect("delete-word action should be in the wire catalog");
+    assert_eq!(delete_word.default_chord, "ctrl+backspace");
+}
+
+#[test]
+fn legacy_x_override_keeps_old_shuffle_default() {
+    for override_key in ["player.open_library", "common.back", "global.toggle_help"] {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(override_key.to_owned(), "x".to_owned());
+        let km = KeyMap::from_overrides(&overrides);
+        assert_eq!(
+            km.chord(KeyContext::Player, Action::ToggleShuffle),
+            parse_chord("S")
+        );
+        assert_eq!(
+            km.to_overrides()
+                .get("player.toggle_shuffle")
+                .map(String::as_str),
+            Some("S")
+        );
+    }
+}
+
+#[test]
+fn explicit_shuffle_override_wins_legacy_migration() {
+    for value in ["S", "f8", ""] {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("player.open_library".to_owned(), "x".to_owned());
+        overrides.insert("player.toggle_shuffle".to_owned(), value.to_owned());
+        let km = KeyMap::from_overrides(&overrides);
+        assert_eq!(
+            km.chord(KeyContext::Player, Action::ToggleShuffle),
+            parse_chord(value)
+        );
+    }
+}
+
+#[test]
+fn legacy_x_and_uppercase_s_claims_leave_shuffle_unbound() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert("player.open_library".to_owned(), "x".to_owned());
+    overrides.insert("global.toggle_help".to_owned(), "S".to_owned());
+    let km = KeyMap::from_overrides(&overrides);
+    assert_eq!(km.chord(KeyContext::Player, Action::ToggleShuffle), None);
+    assert_eq!(
+        km.to_overrides()
+            .get("player.toggle_shuffle")
+            .map(String::as_str),
+        Some("")
+    );
+}
+
+#[test]
+fn legacy_delete_word_chord_claim_is_preserved() {
+    for override_key in [
+        "player.open_library",
+        "common.back",
+        "global.toggle_help",
+        "search_input.select_all",
+        "ai_input.select_all",
+    ] {
+        let mut overrides = BTreeMap::new();
+        overrides.insert(override_key.to_owned(), "ctrl+backspace".to_owned());
+        let km = KeyMap::from_overrides(&overrides);
+        assert_eq!(
+            km.chord(KeyContext::Common, Action::DeleteWord),
+            None,
+            "{override_key}"
+        );
+        assert_eq!(
+            km.to_overrides()
+                .get("common.delete_word")
+                .map(String::as_str),
+            Some("")
+        );
+    }
+}
+
+#[test]
+fn explicit_delete_word_override_wins_legacy_migration() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert("global.toggle_help".to_owned(), "ctrl+backspace".to_owned());
+    overrides.insert("common.delete_word".to_owned(), "f8".to_owned());
+    let km = KeyMap::from_overrides(&overrides);
+    assert_eq!(
+        km.text_edit_action(parse_chord("f8").unwrap()),
+        Some(Action::DeleteWord)
     );
 }
 

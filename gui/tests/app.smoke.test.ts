@@ -167,9 +167,9 @@ describe('App against the demo core', () => {
     ctx.ui.helpOpen = true;
     await settle();
     // The grouped cheat sheet reads the keymap model (not a fabricated table). 'Global' and
-    // 'Common' are context group headers unique to the overlay.
+    // These are context group headers unique to the overlay.
     expect(q.getByText('Global')).toBeTruthy();
-    expect(q.getByText('Common')).toBeTruthy();
+    expect(q.getByText('Common navigation & text editing')).toBeTruthy();
     expect(q.getAllByText('Play / pause').length).toBeGreaterThan(0);
 
     // Filtering narrows the rows.

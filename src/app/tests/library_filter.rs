@@ -77,6 +77,25 @@ fn enter_commits_filter_and_esc_clears_it() {
     assert_eq!(app.library_len(), 2);
 }
 
+#[test]
+fn ctrl_backspace_edits_library_and_search_result_filters() {
+    let mut library = app_with_favorites(vec![fsong("a", "One", "Artist")]);
+    library.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "one two".chars() {
+        library.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    library.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(library.library_ui.filter_query, "one ");
+
+    let mut search = app_with_search_results();
+    search.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "billie eilish".chars() {
+        search.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    search.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(search.search_filter.query, "billie ");
+}
+
 // --- search results-filter popup (`/`) -----------------------------------------
 
 /// Search screen with three results loaded; results arrival focuses the list.

@@ -173,6 +173,32 @@ fn esc_cancels_the_create_popup_without_creating() {
 }
 
 #[test]
+fn ctrl_backspace_edits_both_playlist_name_inputs() {
+    let mut create = app_with_playlists();
+    create.update(Msg::Key(key(KeyCode::Char('n'))));
+    for c in "Road Trip".chars() {
+        create.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    create.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(create.library_ui.create_input.as_deref(), Some("Road "));
+
+    let mut picker = app_with_picker_fixture();
+    picker.update(Msg::Key(key(KeyCode::Char('p'))));
+    picker.update(Msg::Key(key(KeyCode::Char('n'))));
+    for c in "Night Drive".chars() {
+        picker.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    picker.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(
+        picker
+            .playlist_picker
+            .as_ref()
+            .and_then(|picker| picker.naming.as_deref()),
+        Some("Night ")
+    );
+}
+
+#[test]
 fn blank_create_popup_enter_hints_instead_of_creating() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_with_playlists();

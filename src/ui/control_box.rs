@@ -23,6 +23,8 @@ use crate::util::format;
 
 mod beginner;
 use beginner::{StatusLabelTier, control_label as beginner_control_label, pad_display_state};
+mod status_glyphs;
+use status_glyphs::*;
 
 /// Render the control block into four caller-provided single-height rows — the Player
 /// view's legacy top layout passes its own `rows[1]/[3]/[5]/[7]`, so the output is
@@ -262,84 +264,16 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
     app.hits.set_seekbar_rect(area);
 }
 
-/// The current track's tri-state rating glyph: 👍 liked, 👎 disliked, 🤔 neither. Language-neutral
-/// Unicode — all three are width-2, so the status line never shifts as the state changes — so the
-/// row reads identically in every UI language. Retro mode picks the single-cell `+`/`-`/`?`
-/// stand-ins at the source (still one width across all states), so a 256-glyph console never
-/// sees the emoji at all. `like` is favorite membership; `dislike` is the streaming engine's
-/// hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
-/// [`Action::CycleRating`].
-fn rating_glyph(liked: bool, disliked: bool, retro: bool) -> &'static str {
-    match (retro, liked, disliked) {
-        (false, true, _) => "👍",
-        (false, false, true) => "👎",
-        (false, false, false) => "🤔",
-        (true, true, _) => "+",
-        (true, false, true) => "-",
-        (true, false, false) => "?",
-    }
-}
-
-/// The `S:` shuffle toggle's state glyph. Both states of a mode share one display width, so the
-/// centered status line never shifts on toggle: the non-retro cross pads to the 🔀 emoji's two
-/// cells, and the retro pair are single-cell CP437 glyphs (`v`/`x`, the same checked/cross
-/// convention the retro scrubber maps ✓/✗ to elsewhere).
-fn shuffle_glyph(on: bool, retro: bool) -> &'static str {
-    match (retro, on) {
-        (false, true) => "🔀",
-        (false, false) => "✗ ",
-        (true, true) => "v",
-        (true, false) => "x",
-    }
-}
-
-/// The `R:` repeat toggle's state glyph — the media repeat-all / repeat-one symbols, or a cross
-/// padded to their two cells when off. Retro mode picks single-cell CP437 glyphs at the source
-/// instead of trusting the post-pass scrubber: `∞` repeat-all, `1` repeat-one, `x` off — three
-/// distinct states where the old scrub collapsed 🔁 and 🔂 into the same letter.
-fn repeat_glyph(mode: Repeat, retro: bool) -> &'static str {
-    match (retro, mode) {
-        (false, Repeat::Off) => "✗ ",
-        (false, Repeat::All) => "🔁",
-        (false, Repeat::One) => "🔂",
-        (true, Repeat::Off) => "x",
-        (true, Repeat::All) => "∞",
-        (true, Repeat::One) => "1",
-    }
-}
-
-/// The shuffle slot's stand-in on a live radio stream: the `LIVE:` sync verdict. Same
-/// width discipline as [`shuffle_glyph`] — every state pads to the emoji pair's two cells
-/// non-retro, and retro picks single-cell CP437 glyphs (the `v`/`x` check/cross convention,
-/// `-` for unknown) at the source.
-fn live_sync_glyph(synced: Option<bool>, retro: bool) -> &'static str {
-    match (retro, synced) {
-        (false, Some(true)) => "✓ ",
-        (false, Some(false)) => "✗ ",
-        (false, None) => "· ",
-        (true, Some(true)) => "v",
-        (true, Some(false)) => "x",
-        (true, None) => "-",
-    }
-}
-
-/// The repeat slot's stand-in on a live radio stream: the `SYNC:` re-sync action. One
-/// state only, so the width invariant is trivial — but it still matches its non-radio
-/// sibling's cells (two non-retro, one CP437 retro).
-fn resync_glyph(retro: bool) -> &'static str {
-    if retro { "»" } else { "🔄" }
-}
-
 /// The transport status line: state, queue position, rating, shuffle, repeat, speed, EQ, etc.
 ///
-/// Rendered as click segments rather than one string so `R:` (toggles repeat) and
+/// Rendered as click segments rather than one string so repeat and
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
 pub(in crate::ui) fn render_status_line(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
     // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
-    // the `eq:` / `R:` toggles at the tail must stay visible and clickable.
+    // the `eq:` / repeat toggles at the tail must stay visible and clickable.
     let (gap_w, parts) = fitted_status_line_parts(app, area.width, animated);
     // The identify chip (`ID?` / `지듣노`) is the smallest control on the line, and its
     // trailing `?` sits right on its rect's edge — fold up to two cells of the flanking
@@ -496,7 +430,7 @@ fn status_line_parts_with_labels_reusing(
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
         // Clickable (opens the queue window) but styled exactly like the labels around it,
-        // so the line looks unchanged — same as the `S:`/`R:` toggles next to it.
+        // so the line looks unchanged — same as the shuffle/repeat toggles next to it.
         parts.push((None, Cow::Borrowed(gap)));
         let value = format!("{pos}/{}", app.queue.len());
         let text = if labels.beginner() {
@@ -518,7 +452,7 @@ fn status_line_parts_with_labels_reusing(
         parts.push((Some(MouseTarget::QueuePos), Cow::Owned(text)));
     }
     // The current track's rating: one tri-state glyph (🤔/👍/👎) that replaces the old separate
-    // ♥ favorite + ✗ dislike columns. Same `PlayerLabel` style and 4-space gap as `S:`/`R:` next
+    // ♥ favorite + ✗ dislike columns. Same `PlayerLabel` style and 4-space gap as the toggles next
     // to it; click and the `f` key hit the same Action, so it mirrors the keyboard exactly.
     if let Some(cur) = app.queue.current() {
         let liked = app.library.is_favorite(&cur.video_id);
@@ -574,7 +508,7 @@ fn status_line_parts_with_labels_reusing(
     }
     // Shuffle and repeat are both always shown as click toggles, and every state of each keeps
     // one display width, so the line's layout never shifts as they toggle or appear. Each
-    // carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂` repeat — or a padded cross when
+    // carries its media glyph — `<key>:🔀` shuffle, `<key>:🔁`/`<key>:🔂` repeat — or a padded cross when
     // off, so they read the same in every UI language.
     // On a live radio stream the same two slots (and the same actions/keys behind them)
     // read as the live transport instead: `LIVE:` sync verdict, `SYNC:` re-sync.
@@ -723,7 +657,11 @@ fn status_line_parts_with_labels_reusing(
                 Some(pad_display_state(state, &states)),
             )
         } else {
-            format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))
+            format!(
+                "{}:{}",
+                player_action_key_label(app, Action::ToggleShuffle, retro),
+                shuffle_glyph(app.queue.shuffle, retro)
+            )
         };
         parts.push((
             Some(MouseTarget::Player(Action::ToggleShuffle)),
@@ -763,7 +701,11 @@ fn status_line_parts_with_labels_reusing(
                 Some(pad_display_state(state, &states)),
             )
         } else {
-            format!("R:{}", repeat_glyph(app.queue.repeat, retro))
+            format!(
+                "{}:{}",
+                player_action_key_label(app, Action::CycleRepeat, retro),
+                repeat_glyph(app.queue.repeat, retro)
+            )
         };
         parts.push((
             Some(MouseTarget::Player(Action::CycleRepeat)),
@@ -1170,7 +1112,7 @@ mod tests {
         // The status line is centered, so a width change in any always-present segment
         // shifts the whole line. Every state of shuffle / repeat / rating must therefore
         // measure the same in its mode — including retro, where the old post-pass scrub
-        // turned `S:🔀`→`S:S ` but `S:✗`→`S:x` and nudged the line on every toggle.
+        // rewrote enabled/disabled glyphs to unequal widths and nudged the line on every toggle.
         let w = UnicodeWidthStr::width;
         for retro in [false, true] {
             assert_eq!(
@@ -1199,7 +1141,7 @@ mod tests {
     #[test]
     fn retro_toggle_glyphs_are_distinct_single_cp437_cells() {
         // Repeat-all and repeat-one must stay tellable apart on a basic console (the old
-        // scrub mapped both 🔁 and 🔂 to `R`), and every retro state glyph must be a plain
+        // scrub mapped both 🔁 and 🔂 to the same letter), and every retro state glyph must be a plain
         // single-cell symbol so the scrubber has nothing left to rewrite.
         let states = [
             shuffle_glyph(true, true),
@@ -1287,7 +1229,7 @@ mod tests {
         assert!(
             !parts
                 .iter()
-                .any(|(_, s)| s.starts_with("S:") || s.starts_with("R:")),
+                .any(|(_, s)| s.starts_with("x:") || s.starts_with("r:")),
             "music-mode shuffle/repeat labels must not appear on radio"
         );
         // The minimal responsive tier keeps both controls reachable.
@@ -1360,7 +1302,7 @@ mod tests {
                 "retro={retro}: live-sync widths differ: {widths:?}"
             );
             // The stand-ins must occupy their slot's exact cells so swapping the labels
-            // in radio mode is the only width change (LIVE:/SYNC: vs S:/R:).
+            // in radio mode is the only width change (LIVE:/SYNC: vs key labels).
             assert_eq!(
                 w(live_sync_glyph(Some(true), retro)),
                 w(shuffle_glyph(true, retro))
@@ -1451,7 +1393,7 @@ mod tests {
         let (_, roomy) = fitted_status_line_parts(&app, 100, false);
         assert_eq!(
             text_for(&roomy, &MouseTarget::Player(Action::ToggleShuffle)).trim_end(),
-            "[S] Shuffle: Off"
+            "[x] Shuffle: Off"
         );
         assert_eq!(
             text_for(&roomy, &MouseTarget::Player(Action::CycleRepeat)).trim_end(),
@@ -1468,12 +1410,12 @@ mod tests {
         assert!(!shuffle.contains('['), "keycaps should shed before names");
 
         let (_, narrow) = fitted_status_line_parts(&app, 32, false);
-        assert!(text_for(&narrow, &MouseTarget::Player(Action::ToggleShuffle)).starts_with("S:"));
+        assert!(text_for(&narrow, &MouseTarget::Player(Action::ToggleShuffle)).starts_with("x:"));
         assert!(text_for(&narrow, &MouseTarget::EqMenu).starts_with("eq:"));
     }
 
     #[test]
-    fn beginner_off_keeps_legacy_status_segment_bytes() {
+    fn beginner_off_uses_live_default_key_labels() {
         let _guard = crate::i18n::lock_for_test();
         let mut app = App::new(100);
         app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
@@ -1486,13 +1428,37 @@ mod tests {
         );
         assert_eq!(
             text_for(&parts, &MouseTarget::Player(Action::ToggleShuffle)),
-            "S:✗ "
+            "x:✗ "
         );
         assert_eq!(
             text_for(&parts, &MouseTarget::Player(Action::CycleRepeat)),
-            "R:✗ "
+            "r:✗ "
         );
         assert_eq!(text_for(&parts, &MouseTarget::EqMenu), "eq:Flat");
+    }
+
+    #[test]
+    fn compact_status_uses_remapped_and_unbound_key_labels() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        app.keymap
+            .rebind(
+                KeyContext::Player,
+                Action::ToggleShuffle,
+                crate::keymap::parse_chord("f8").unwrap(),
+            )
+            .unwrap();
+        app.keymap.unbind(KeyContext::Player, Action::CycleRepeat);
+
+        let parts = status_line_parts(&app, "    ", false, false);
+        assert_eq!(
+            text_for(&parts, &MouseTarget::Player(Action::ToggleShuffle)),
+            "F8:✗ "
+        );
+        assert_eq!(
+            text_for(&parts, &MouseTarget::Player(Action::CycleRepeat)),
+            "—:✗ "
+        );
     }
 
     #[test]

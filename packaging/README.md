@@ -52,9 +52,7 @@ one-time setup below — the channels simply don't publish until their secret is
 
 - `homebrew-tap` and `scoop-bucket` already exist — the first tagged run overwrites their
   formula/manifest with the prebuilt versions. No manual edit needed.
-- AUR `yututui-bin` does **not** exist yet. The AUR creates the package repo automatically on
-  the **first authenticated push**, so once `AUR_SSH_PRIVATE_KEY` is set, the first `v*` tag
-  creates and populates it. (You must have an AUR account; the SSH key ties the push to it.)
+- AUR `yututui-bin` is live; tagged releases update it through `publish-aur`.
 
 ### 3. Windows users + the `extras` bucket
 

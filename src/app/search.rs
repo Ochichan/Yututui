@@ -131,6 +131,10 @@ impl App {
         }
         match self.search.focus {
             SearchFocus::Input => {
+                let delete_word = matches!(
+                    self.keymap.text_edit_action(k.into()),
+                    Some(Action::DeleteWord)
+                );
                 // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
                 if matches!(
                     self.keymap.action(KeyContext::SearchInput, k.into()),
@@ -161,15 +165,23 @@ impl App {
                         }
                         return Vec::new();
                     }
-                    if matches!(
-                        self.keymap.action(KeyContext::SearchInput, k.into()),
-                        Some(Action::DeleteChar)
-                    ) {
+                    if delete_word
+                        || matches!(
+                            self.keymap.action(KeyContext::SearchInput, k.into()),
+                            Some(Action::DeleteChar)
+                        )
+                    {
                         self.search.input.clear();
                         return Vec::new();
                     }
                 }
                 let chord = Chord::from(k);
+                if delete_word {
+                    if crate::util::text_edit::delete_previous_word(&mut self.search.input) {
+                        self.dirty = true;
+                    }
+                    return Vec::new();
+                }
                 if matches!(
                     self.keymap.context_action(KeyContext::SearchInput, chord),
                     Some(Action::FocusPrev)
@@ -506,6 +518,15 @@ impl App {
     pub(in crate::app) fn on_key_search_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
         let len = self.search_filter.matches.len();
         let clamp_last = len.saturating_sub(1);
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if crate::util::text_edit::delete_previous_word(&mut self.search_filter.query) {
+                self.after_search_filter_change();
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Esc => {
                 self.search_filter.close();
@@ -514,7 +535,7 @@ impl App {
             KeyCode::Enter => {
                 return self.search_filter_activate(self.search_filter.cursor.min(clamp_last));
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 if self.search_filter.query.pop().is_some() {
                     self.after_search_filter_change();
                 }
