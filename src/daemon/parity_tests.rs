@@ -393,6 +393,155 @@ async fn midtrack_source_recovery_trace_and_epoch_match_in_both_owners() {
     assert_eq!(engine_position_epoch, engine_epoch + 1);
 }
 
+fn app_transport_restore(app: &mut App, reason: &str) -> Vec<crate::player::PlayerCmd> {
+    app.update(PlayerMsg::TransportClosed(reason.to_owned()))
+        .into_iter()
+        .find_map(|command| match command {
+            Cmd::PlayerControl(PlayerControl::Restart { restore }) => Some(restore),
+            _ => None,
+        })
+        .expect("App transport loss must request one replacement player")
+}
+
+async fn recv_parity_player_command(
+    receiver: &mut tokio::sync::mpsc::Receiver<crate::player::PlayerCmd>,
+) -> crate::player::PlayerCmd {
+    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("player command timed out")
+        .expect("player command lane closed")
+}
+
+#[tokio::test]
+async fn loaded_transport_loss_has_the_same_restore_trace_and_projection_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 42.0, 225.0);
+    app.playback.paused = true;
+    let app_epoch = app.playback.position_epoch;
+
+    let old_engine_player = engine.install_seek_parity_player("b", 42.0, 225.0);
+    assert!(
+        engine
+            .handle_player_event(crate::player::PlayerEvent::Paused(true))
+            .await
+            .is_empty()
+    );
+    let (_, engine_epoch) = engine.seek_parity_projection();
+    let mut replacement_player = engine.queue_transport_recovery_parity_player();
+
+    let app_restore = app_transport_restore(&mut app, "unexpected EOF");
+    let engine_effects = engine
+        .handle_player_event(crate::player::PlayerEvent::TransportClosed(
+            "unexpected EOF".to_owned(),
+        ))
+        .await;
+
+    assert!(engine_effects.is_empty());
+    assert!(old_engine_player.is_closed());
+    assert!(matches!(
+        recv_parity_player_command(&mut replacement_player).await,
+        crate::player::PlayerCmd::SetVolume(_)
+    ));
+    assert!(matches!(
+        recv_parity_player_command(&mut replacement_player).await,
+        crate::player::PlayerCmd::SetAudioFilter(_)
+    ));
+
+    let app_load = match app_restore.as_slice() {
+        [
+            crate::player::PlayerCmd::Load(load),
+            crate::player::PlayerCmd::CyclePause,
+        ] => load,
+        _ => panic!("paused App recovery must restore exactly Load then CyclePause"),
+    };
+    let engine_load = match recv_parity_player_command(&mut replacement_player).await {
+        crate::player::PlayerCmd::Load(load) => load,
+        _ => panic!("paused daemon recovery must restore Load after player setup"),
+    };
+    assert_eq!(app_load, &engine_load);
+    assert!(matches!(
+        recv_parity_player_command(&mut replacement_player).await,
+        crate::player::PlayerCmd::CyclePause
+    ));
+    assert!(
+        replacement_player.try_recv().is_err(),
+        "daemon recovery emitted an unexpected command after CyclePause"
+    );
+
+    assert_eq!(app.playback.time_pos, None);
+    let (engine_position, engine_position_epoch) = engine.seek_parity_projection();
+    assert_eq!(engine_position, None);
+    assert!(app.playback.paused);
+    assert_eq!(app.playback.position_epoch, app_epoch + 1);
+    assert_eq!(engine_position_epoch, engine_epoch + 1);
+    assert_parity("loaded transport recovery", &app, &engine);
+}
+
+#[tokio::test]
+async fn stopped_current_item_is_not_resurrected_by_late_transport_loss_in_either_owner() {
+    let (mut app, mut engine) = hermetic_pair();
+    app.install_seek_parity_state("b", 42.0, 225.0);
+    app.playback.paused = false;
+    let app_epoch = app.playback.position_epoch;
+
+    let mut engine_player = engine.install_seek_parity_player("b", 42.0, 225.0);
+    assert!(
+        engine
+            .handle_player_event(crate::player::PlayerEvent::Paused(false))
+            .await
+            .is_empty()
+    );
+    let (_, engine_epoch) = engine.seek_parity_projection();
+
+    let app_stop = app.update(Msg::Media(MediaCommand::Stop));
+    assert!(
+        app_stop
+            .iter()
+            .flat_map(Cmd::player_commands)
+            .any(|command| matches!(command, crate::player::PlayerCmd::Stop)),
+        "App media Stop must reach the player before clearing loaded identity"
+    );
+    admit_app_player_intents(&mut app, app_stop);
+    let (shutdown, engine_effects) = engine.handle_media(MediaCommand::Stop).await;
+    assert!(!shutdown);
+    assert!(engine_effects.is_empty());
+    assert!(matches!(
+        recv_parity_player_command(&mut engine_player).await,
+        crate::player::PlayerCmd::Stop
+    ));
+    assert!(engine_player.is_closed());
+
+    assert_eq!(app.playback.time_pos, None);
+    let (engine_position, engine_position_epoch) = engine.seek_parity_projection();
+    assert_eq!(engine_position, None);
+    assert!(app.playback.paused);
+    assert_eq!(app.playback.position_epoch, app_epoch + 1);
+    assert_eq!(engine_position_epoch, engine_epoch + 1);
+
+    let app_restore = app_transport_restore(&mut app, "late close after Stop");
+    let engine_effects = engine
+        .handle_player_event(crate::player::PlayerEvent::TransportClosed(
+            "late close after Stop".to_owned(),
+        ))
+        .await;
+
+    assert!(
+        app_restore.is_empty(),
+        "App must not reload the queue cursor after Stop cleared loaded identity"
+    );
+    assert!(engine_effects.is_empty());
+    let app_media = app.media_snapshot();
+    let engine_media = engine.media_snapshot();
+    assert!(!app_media.caps.can_seek);
+    assert!(!engine_media.caps.can_seek);
+    assert_eq!(app_media.status, crate::media::MediaPlaybackStatus::Paused);
+    assert_eq!(
+        engine_media.status,
+        crate::media::MediaPlaybackStatus::Paused
+    );
+    assert_parity("late transport close after Stop", &app, &engine);
+}
+
 fn assert_reply_before_player_event(
     owner: &str,
     frame_id: u64,

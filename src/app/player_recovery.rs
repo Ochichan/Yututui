@@ -16,8 +16,7 @@ pub struct SourceRecoveryPlan {
     expected_loaded_video_id: Option<String>,
     logical_generation: u64,
     origin_file_generation: u64,
-    episode_id: crate::player::recovery::RecoveryEpisodeId,
-    transport_epoch: crate::player::recovery::TransportIntentEpoch,
+    ticket: crate::player::recovery::RecoveryTicket,
     position_secs: f64,
     paused: bool,
 }
@@ -78,7 +77,7 @@ impl App {
         let expected_video_id = song.video_id.clone();
         let logical_generation = self.prefetch.source_logical_generation;
         let origin_file_generation = self.prefetch.source_file_generation;
-        let (episode_id, transport_epoch) = self.prefetch.source_recovery.begin_episode(
+        let ticket = self.prefetch.source_recovery.begin_ticket(
             error,
             logical_generation,
             origin_file_generation,
@@ -91,20 +90,17 @@ impl App {
             expected_loaded_video_id: self.prefetch.loaded_video_id.clone(),
             logical_generation,
             origin_file_generation,
-            episode_id,
-            transport_epoch,
+            ticket,
             position_secs,
             paused: self.playback.paused,
         };
-        let request = crate::player::recovery::LoadWithResume {
-            url: watch_url,
+        let request = crate::player::recovery::LoadWithResume::source_recovery(
+            watch_url,
             position_secs,
-            paused: plan.paused,
-            source_context: crate::player::MediaSourceContext::OnDemand,
-            episode_id,
-            transport_epoch,
-            force_ram_only: false,
-        };
+            plan.paused,
+            crate::player::MediaSourceContext::OnDemand,
+            ticket,
+        );
         Some(self.player_intent(
             "source_recovery",
             PlayerCmd::LoadWithResume(request),
@@ -121,11 +117,10 @@ impl App {
         ) && self.prefetch.loaded_video_id == plan.expected_loaded_video_id
             && self.prefetch.source_logical_generation == plan.logical_generation
             && self.prefetch.source_file_generation == plan.origin_file_generation
-            && self.prefetch.source_recovery.accepts_resolved_source(
-                plan.episode_id,
+            && self.prefetch.source_recovery.accepts_ticket(
+                plan.ticket,
                 plan.logical_generation,
                 plan.origin_file_generation,
-                plan.transport_epoch,
             )
     }
 
@@ -141,19 +136,14 @@ impl App {
             "loaded track changed before source-recovery commit"
         );
         assert!(
-            self.prefetch.source_recovery.accepts_resolved_source(
-                plan.episode_id,
+            self.prefetch.source_recovery.accepts_ticket(
+                plan.ticket,
                 plan.logical_generation,
                 plan.origin_file_generation,
-                plan.transport_epoch,
             ),
             "source-recovery correlation changed before commit"
         );
-        assert!(
-            self.prefetch
-                .source_recovery
-                .finish_episode(plan.episode_id)
-        );
+        assert!(self.prefetch.source_recovery.finish_ticket(plan.ticket));
         crate::player::diagnostics::source_recovery_outcome(
             crate::player::diagnostics::SourceRecoveryOutcome::AdmissionAccepted,
         );
@@ -189,7 +179,7 @@ impl App {
     pub(crate) fn reject_source_recovery(&mut self, plan: &SourceRecoveryPlan) {
         self.prefetch
             .source_recovery
-            .cancel_unadmitted_episode(plan.episode_id);
+            .cancel_unadmitted_ticket(plan.ticket);
         crate::player::diagnostics::source_recovery_outcome(
             crate::player::diagnostics::SourceRecoveryOutcome::AdmissionRejected,
         );

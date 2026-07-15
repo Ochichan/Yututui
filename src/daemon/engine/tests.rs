@@ -42,9 +42,8 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         signals: Signals::default(),
         station: StationStore::default(),
         loaded_video_id: None,
-        transport_recovery: None,
+        transport_recovery: TransportRecoveryState::Armed,
         transport_recovery_generation: 0,
-        transport_auto_recovery_armed: true,
         source_recovery: crate::player::recovery::RecoveryPlanner::default(),
         source_logical_generation: 0,
         source_file_generation: 0,
@@ -992,22 +991,22 @@ async fn remote_commands_cover_no_load_branches_and_gui_search_dispatch() {
     assert!(response.ok);
     assert!(engine.config.gemini_api_key.is_none());
 
-    engine.transport_recovery = Some(TransportRecovery {
-        video_id: "queued-before-quit".to_owned(),
-        paused: false,
-        position_secs: None,
-        force_ram_only: false,
-        generation: 9,
-        attempts: 0,
-    });
-    engine.transport_auto_recovery_armed = true;
+    let _player_rx = install_accepting_player(&mut engine);
+    engine.loaded_video_id = Some("queued-before-quit".to_owned());
+    let generation = engine
+        .handle_transport_closed("queued before quit".to_owned())
+        .expect("loaded transport close should schedule recovery");
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 0
+    ));
     let (response, shutdown, effects) = engine.handle_remote(RemoteCommand::Quit).await;
     assert!(response.ok);
     assert!(shutdown);
     assert!(effects.is_empty());
     assert!(engine.loaded_video_id.is_none());
-    assert!(engine.transport_recovery.is_none());
-    assert!(!engine.transport_auto_recovery_armed);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Shutdown);
 }
 
 #[tokio::test]
@@ -1088,21 +1087,19 @@ async fn media_commands_ignore_invalid_or_disabled_operations() {
     assert!(engine.playback.paused);
     assert_eq!(engine.playback.position_epoch, epoch);
 
-    engine.transport_recovery = Some(TransportRecovery {
-        video_id: "queued-before-media-quit".to_owned(),
-        paused: false,
-        position_secs: None,
-        force_ram_only: false,
-        generation: 11,
-        attempts: 0,
-    });
-    engine.transport_auto_recovery_armed = true;
+    let generation = engine
+        .handle_transport_closed("queued before media quit".to_owned())
+        .expect("loaded transport close should schedule recovery");
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 0
+    ));
     let (shutdown, effects) = engine.handle_media(crate::media::MediaCommand::Quit).await;
     assert!(shutdown);
     assert!(effects.is_empty());
     assert!(engine.loaded_video_id.is_none());
-    assert!(engine.transport_recovery.is_none());
-    assert!(!engine.transport_auto_recovery_armed);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Shutdown);
 }
 
 #[tokio::test]

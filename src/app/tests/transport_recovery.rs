@@ -83,6 +83,27 @@ fn transport_recovery_without_a_current_track_restarts_with_an_empty_restore_bat
 }
 
 #[test]
+fn stopped_current_item_is_not_resurrected_by_a_late_transport_close() {
+    let mut app = app_playing(1, 0);
+    app.commit_playback_cleared();
+    assert_eq!(
+        current(&app),
+        "id0",
+        "stop deliberately preserves the queue"
+    );
+    assert_eq!(app.prefetch.loaded_video_id, None);
+
+    let cmds = app.update(PlayerMsg::TransportClosed("late close".to_owned()));
+
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::PlayerControl(PlayerControl::Restart { restore })] if restore.is_empty()
+    ));
+    assert_no_load(&cmds);
+    assert_eq!(app.prefetch.loaded_video_id, None);
+}
+
+#[test]
 fn cache_emergency_preserves_position_once_and_requests_a_forced_ram_resume() {
     let mut app = app_playing(1, 0);
     app.playback.paused = true;
@@ -111,7 +132,7 @@ fn cache_emergency_preserves_position_once_and_requests_a_forced_ram_resume() {
         .expect("cache emergency restart must carry a correlated resume");
     assert!((request.position_secs - 3_600.25).abs() < f64::EPSILON);
     assert!(request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert_eq!(
         request.source_context,
         crate::player::MediaSourceContext::OnDemand
@@ -154,7 +175,7 @@ fn cache_emergency_cannot_overwrite_a_newer_same_generation_seek_or_pause() {
         .expect("cache emergency restart must retain the newest owner transport");
     assert!((request.position_secs - 3_630.0).abs() < f64::EPSILON);
     assert!(request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert_eq!(app.playback.time_pos, Some(3_630.0));
     assert!(app.playback.paused);
     assert_eq!(app.playback.position_epoch, admitted_epoch + 1);
@@ -186,7 +207,7 @@ fn replacement_cache_emergency_replays_new_item_ram_only_without_old_position() 
     assert_eq!(current(&app), "id1");
     assert_eq!(request.position_secs, 0.0);
     assert!(!request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert!(request.url.contains("id1"), "must replay the new item");
 }
 

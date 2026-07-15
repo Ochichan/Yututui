@@ -44,7 +44,9 @@ use delivery::{record_player_delivery, require_player_delivery};
 use engine_session::data_dir;
 pub(super) use gui_search::RequesterKey;
 use gui_search::{GuiSearchAdmission, GuiSearchIndex};
+#[cfg(test)]
 use transport::TransportRecovery;
+use transport::TransportRecoveryState;
 
 // Autoplay/streaming policy + volume bounds are single-sourced with the TUI App in
 // `crate::playback_policy`, so a threshold can't drift between the two playback owners.
@@ -127,15 +129,12 @@ pub struct DaemonEngine {
     signals: Signals,
     station: StationStore,
     loaded_video_id: Option<String>,
-    /// A dead transport's current-track identity and pause bit. The next explicit load
-    /// consumes it without duplicating history/signals and restores the pause state.
-    transport_recovery: Option<TransportRecovery>,
+    /// One explicit lifecycle owns both the automatic-restart gate and any current-track replay
+    /// payload, so contradictory armed/pending combinations cannot be represented.
+    transport_recovery: TransportRecoveryState,
     /// Monotonic identity for scheduled transport retries. Stale retry events must never
     /// restart a newer player lifetime.
     transport_recovery_generation: u64,
-    /// One-shot crash-loop gate. Only a normal (non-recovery) load rearms it; merely
-    /// recreating mpv or receiving late telemetry from the dead actor does not.
-    transport_auto_recovery_armed: bool,
     /// Shared one-shot arbiter for same-item stale-source replacement. Its logical generation
     /// advances only on ordinary loads; a recovery replacement advances the file generation
     /// without rearming the item latch.
@@ -331,9 +330,8 @@ impl DaemonEngine {
             signals,
             station,
             loaded_video_id: None,
-            transport_recovery: None,
+            transport_recovery: TransportRecoveryState::Armed,
             transport_recovery_generation: 0,
-            transport_auto_recovery_armed: true,
             source_recovery: crate::player::recovery::RecoveryPlanner::default(),
             source_logical_generation: 0,
             source_file_generation: 0,
@@ -395,6 +393,18 @@ impl DaemonEngine {
         self.loaded_video_id = Some(video_id.to_owned());
         self.playback.time_pos = Some(position);
         self.playback.duration = Some(duration);
+        rx
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_transport_recovery_parity_player(
+        &mut self,
+    ) -> tokio::sync::mpsc::Receiver<PlayerCmd> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        self.test_player_starts.push_back(PlayerRuntime {
+            handle: PlayerHandle::test_handle(tx),
+            _guard: None,
+        });
         rx
     }
 
@@ -2510,8 +2520,7 @@ impl DaemonEngine {
         }
         self.reset_idle_playback();
         self.loaded_video_id = None;
-        self.transport_recovery = None;
-        self.transport_auto_recovery_armed = true;
+        self.transport_recovery.rearm_after_normal_load_or_stop();
     }
 
     fn reset_idle_playback(&mut self) {

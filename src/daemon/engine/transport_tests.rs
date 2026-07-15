@@ -180,8 +180,7 @@ async fn transport_terminal_automatically_restarts_and_replays_without_duplicate
         "pause intent must survive transport loss"
     );
     assert_eq!(engine.playback.position_epoch, epoch + 1);
-    assert_eq!(engine.transport_recovery, None);
-    assert!(!engine.transport_auto_recovery_armed);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
     assert!(
         !engine
             .last_error
@@ -193,6 +192,104 @@ async fn transport_terminal_automatically_restarts_and_replays_without_duplicate
     assert_eq!(engine.library.history.len(), history_len);
     assert_eq!(engine.signals.play_count("seed"), play_count);
     assert_eq!(engine.signals.artist_weight("artist"), artist_weight);
+}
+
+#[tokio::test]
+async fn normal_load_rearms_transport_recovery_after_a_stable_replacement() {
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = false;
+    let _old_rx = install_test_player(&mut engine);
+    let mut first_replacement_rx = queue_test_player_start(&mut engine);
+
+    assert!(
+        engine
+            .handle_player_event(PlayerEvent::TransportClosed("first".to_owned()))
+            .await
+            .is_empty()
+    );
+    assert_setup_then_load(&mut first_replacement_rx, false).await;
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
+
+    engine
+        .load_current_loaded()
+        .expect("ordinary load should be admitted");
+    assert!(matches!(
+        recv_player_command(&mut first_replacement_rx).await,
+        PlayerCmd::Load(_)
+    ));
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Armed);
+
+    let mut second_replacement_rx = queue_test_player_start(&mut engine);
+    assert!(
+        engine
+            .handle_player_event(PlayerEvent::TransportClosed("second".to_owned()))
+            .await
+            .is_empty()
+    );
+    assert_setup_then_load(&mut second_replacement_rx, false).await;
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
+}
+
+#[tokio::test]
+async fn ordinary_load_supersedes_an_automatic_recovery_for_a_different_item() {
+    let mut engine = super::tests::engine_with_queue(&["old", "new"]);
+    engine.loaded_video_id = Some("old".to_owned());
+    let old_rx = install_test_player(&mut engine);
+    let mut replacement_rx = queue_test_player_start(&mut engine);
+
+    let generation = engine
+        .handle_transport_closed("old transport".to_owned())
+        .expect("loaded transport close should schedule recovery");
+    assert!(old_rx.is_closed());
+    assert_eq!(
+        engine.queue.next(false).map(|song| song.video_id.as_str()),
+        Some("new")
+    );
+
+    let effects = engine.attempt_transport_recovery(generation).await;
+    assert!(matches!(
+        effects.as_slice(),
+        [EngineEffect::TransportRecoveryRetry {
+            generation: retry_generation,
+            ..
+        }] if *retry_generation == generation
+    ));
+    assert_eq!(engine.loaded_video_id, None);
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.video_id == "old" && recovery.attempts == 1
+    ));
+    assert!(matches!(
+        recv_player_command(&mut replacement_rx).await,
+        PlayerCmd::SetVolume(50)
+    ));
+    assert!(matches!(
+        recv_player_command(&mut replacement_rx).await,
+        PlayerCmd::SetAudioFilter(_)
+    ));
+    assert!(
+        replacement_rx.try_recv().is_err(),
+        "automatic recovery must not load a different queue item"
+    );
+
+    engine
+        .load_current_loaded()
+        .expect("ordinary load should supersede stale recovery");
+    assert!(matches!(
+        recv_player_command(&mut replacement_rx).await,
+        PlayerCmd::Load(_)
+    ));
+    assert_eq!(engine.loaded_video_id.as_deref(), Some("new"));
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Armed);
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert!(replacement_rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -233,7 +330,7 @@ async fn cache_emergency_restarts_once_at_exact_position_forced_to_ram_only() {
     };
     assert!((request.position_secs - 3_600.25).abs() < f64::EPSILON);
     assert!(request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert_eq!(
         request.source_context,
         crate::player::MediaSourceContext::OnDemand
@@ -285,7 +382,7 @@ async fn cache_emergency_cannot_overwrite_newer_same_generation_daemon_transport
     };
     assert_eq!(request.position_secs, 3_630.0);
     assert!(request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert!(replacement_rx.try_recv().is_err());
 }
 
@@ -343,6 +440,23 @@ async fn cache_emergency_freeze_bumps_epoch_even_when_recovery_delivery_exhausts
         epoch + 1,
         "failed recovery attempts must not defer or duplicate the freeze epoch"
     );
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 2
+    ));
+
+    let exhausted = engine.transport_recovery.clone();
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        engine.transport_recovery, exhausted,
+        "an exhausted recovery generation must be inert"
+    );
 }
 
 #[tokio::test]
@@ -396,7 +510,7 @@ async fn replacement_cache_emergency_replays_new_item_without_old_position() {
     };
     assert_eq!(request.position_secs, 0.0);
     assert!(!request.paused);
-    assert!(request.force_ram_only);
+    assert!(request.forces_ram_only());
     assert!(request.url.contains("new"), "must replay the new item");
 }
 
@@ -428,7 +542,7 @@ async fn stop_cache_emergency_retires_actor_without_replaying_queue_current() {
     assert!(effects.is_empty());
     assert!(old_rx.is_closed());
     assert!(engine.player.is_none());
-    assert!(engine.transport_recovery.is_none());
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Armed);
     assert_eq!(engine.loaded_video_id, None);
 }
 
@@ -448,12 +562,44 @@ async fn shutdown_suppression_prevents_a_queued_transport_terminal_from_replacin
     assert!(effects.is_empty());
     assert!(old_rx.is_closed());
     assert!(engine.player.is_none());
-    assert!(engine.transport_recovery.is_none());
-    assert!(!engine.transport_auto_recovery_armed);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Shutdown);
     assert_eq!(
         engine.test_player_starts.len(),
         1,
         "the queued replacement must remain unused during shutdown"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_suppression_cancels_an_already_scheduled_transport_retry() {
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    let old_rx = install_test_player(&mut engine);
+    let _unused_replacement_rx = queue_test_player_start(&mut engine);
+
+    let generation = engine
+        .handle_transport_closed("scheduled before shutdown".to_owned())
+        .expect("loaded transport close should schedule recovery");
+    assert!(old_rx.is_closed());
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 0
+    ));
+
+    engine.suppress_transport_recovery_for_shutdown();
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Shutdown);
+    assert!(engine.player.is_none());
+    assert_eq!(
+        engine.test_player_starts.len(),
+        1,
+        "shutdown must not consume the queued replacement"
     );
 }
 
@@ -472,6 +618,56 @@ async fn transport_recovery_keeps_playing_state_without_pause_toggle() {
     assert!(effects.is_empty());
     assert_setup_then_load(&mut replacement_rx, false).await;
     assert!(!engine.playback.paused);
+}
+
+#[tokio::test]
+async fn closed_replacement_startup_is_retried_once_then_becomes_inert() {
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    let _old_rx = install_test_player(&mut engine);
+
+    let (first_closed, first_rx) = test_player(1);
+    drop(first_rx);
+    engine.test_player_starts.push_back(first_closed);
+    let effects = engine
+        .handle_player_event(PlayerEvent::TransportClosed("first".to_owned()))
+        .await;
+    let generation = match effects.as_slice() {
+        [EngineEffect::TransportRecoveryRetry { generation, .. }] => *generation,
+        _ => panic!("closed replacement setup must schedule exactly one retry"),
+    };
+    assert!(engine.player.is_none());
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 1
+    ));
+
+    let (second_closed, second_rx) = test_player(1);
+    drop(second_rx);
+    engine.test_player_starts.push_back(second_closed);
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert!(engine.player.is_none());
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 2
+    ));
+
+    let exhausted = engine.transport_recovery.clone();
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert_eq!(engine.transport_recovery, exhausted);
+    assert!(engine.player.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -514,7 +710,7 @@ async fn saturated_recovery_batch_is_retried_atomically_after_capacity_returns()
     assert_eq!(engine.playback.position_epoch, epoch + 1);
     assert_eq!(
         engine.transport_recovery,
-        Some(TransportRecovery {
+        TransportRecoveryState::Recovering(TransportRecovery {
             video_id: "seed".to_owned(),
             paused: true,
             position_secs: None,
@@ -545,8 +741,71 @@ async fn saturated_recovery_batch_is_retried_atomically_after_capacity_returns()
         PlayerCmd::CyclePause
     ));
     assert_eq!(engine.loaded_video_id.as_deref(), Some("seed"));
-    assert_eq!(engine.transport_recovery, None);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
     assert_eq!(engine.playback.position_epoch, epoch + 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn replacement_close_while_retry_is_pending_disarms_the_recovery_generation() {
+    let mut engine = super::tests::engine_with_queue(&["seed"]);
+    engine.loaded_video_id = Some("seed".to_owned());
+    engine.playback.paused = true;
+    let _old_rx = install_test_player(&mut engine);
+
+    let (tx, replacement_rx) = tokio::sync::mpsc::channel(1);
+    let handle = PlayerHandle::test_handle(tx);
+    assert!(handle.send(PlayerCmd::Stop).is_ok(), "fill actor lane");
+    for _ in 0..crate::player::pending::PLAYER_PENDING_MAX - 3 {
+        assert!(
+            handle.send(PlayerCmd::Stop).is_ok(),
+            "leave setup capacity but saturate the recovery batch"
+        );
+    }
+    engine.test_player_starts.push_back(PlayerRuntime {
+        handle,
+        _guard: None,
+    });
+
+    let effects = engine
+        .handle_player_event(PlayerEvent::TransportClosed("first".to_owned()))
+        .await;
+    let generation = match effects.as_slice() {
+        [EngineEffect::TransportRecoveryRetry { generation, .. }] => *generation,
+        _ => panic!("failed first restore must schedule one retry"),
+    };
+    assert!(engine.player.is_some());
+    assert!(matches!(
+        &engine.transport_recovery,
+        TransportRecoveryState::Recovering(recovery)
+            if recovery.generation == generation && recovery.attempts == 1
+    ));
+    drop(replacement_rx);
+
+    let _unused_second_replacement = queue_test_player_start(&mut engine);
+    assert!(
+        engine
+            .handle_player_event(PlayerEvent::TransportClosed(
+                "replacement died before retry".to_owned(),
+            ))
+            .await
+            .is_empty()
+    );
+    assert!(engine.player.is_none());
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
+    assert_eq!(
+        engine.test_player_starts.len(),
+        1,
+        "a replacement terminal must not consume another player start"
+    );
+
+    assert!(
+        engine
+            .attempt_transport_recovery(generation)
+            .await
+            .is_empty()
+    );
+    assert!(engine.player.is_none());
+    assert_eq!(engine.test_player_starts.len(), 1);
 }
 
 #[tokio::test]
@@ -563,14 +822,14 @@ async fn replacement_that_closes_before_progress_cannot_enter_a_restart_loop() {
     assert!(effects.is_empty());
     let first_generation = engine.transport_recovery_generation;
     assert!(engine.player.is_some());
-    assert!(!engine.transport_auto_recovery_armed);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
 
     let effects = engine
         .handle_player_event(PlayerEvent::TransportClosed("replacement died".to_owned()))
         .await;
     assert!(effects.is_empty());
     assert!(engine.player.is_none());
-    assert_eq!(engine.transport_recovery, None);
+    assert_eq!(engine.transport_recovery, TransportRecoveryState::Disarmed);
     assert!(engine.test_player_starts.is_empty());
 
     // A stale scheduled retry is inert too; it cannot recreate the replacement.
@@ -583,55 +842,29 @@ async fn replacement_that_closes_before_progress_cannot_enter_a_restart_loop() {
     assert!(engine.player.is_none());
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn paused_transport_recovery_rejects_the_whole_batch_before_load_is_visible() {
+#[tokio::test]
+async fn stale_retry_cannot_mutate_a_newer_transport_recovery_generation() {
     let mut engine = super::tests::engine_with_queue(&["seed"]);
     engine.loaded_video_id = Some("seed".to_owned());
-    engine.playback.paused = true;
-    let epoch = engine.playback.position_epoch;
+    let old_rx = install_test_player(&mut engine);
+    let _unused_replacement_rx = queue_test_player_start(&mut engine);
+    let newer_generation = engine
+        .handle_transport_closed("newer generation".to_owned())
+        .expect("loaded transport close should schedule recovery");
+    assert!(old_rx.is_closed());
+    let newer_recovery = engine.transport_recovery.clone();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let handle = PlayerHandle::test_handle(tx);
-    assert!(handle.send(PlayerCmd::Stop).is_ok(), "fill actor lane");
-    // Keep the drainer blocked on the full actor lane and leave room for only one more
-    // semantic command. Recovery needs two, so `send_batch` must publish neither.
-    for _ in 0..crate::player::pending::PLAYER_PENDING_MAX - 1 {
-        assert!(
-            handle.send(PlayerCmd::Stop).is_ok(),
-            "fill semantic backlog"
-        );
-    }
-    engine.player = Some(PlayerRuntime {
-        handle,
-        _guard: None,
-    });
-    engine.transport_recovery = Some(TransportRecovery {
-        video_id: "seed".to_owned(),
-        paused: true,
-        position_secs: None,
-        force_ram_only: false,
-        generation: 1,
-        attempts: 1,
-    });
-    engine.loaded_video_id = None;
-
-    assert!(engine.load_current_loaded().is_err());
-    assert_eq!(engine.loaded_video_id, None);
-    assert_eq!(engine.playback.position_epoch, epoch);
-    assert_eq!(
-        engine.transport_recovery,
-        Some(TransportRecovery {
-            video_id: "seed".to_owned(),
-            paused: true,
-            position_secs: None,
-            force_ram_only: false,
-            generation: 1,
-            attempts: 1,
-        })
-    );
-    assert!(matches!(rx.try_recv(), Ok(PlayerCmd::Stop)));
     assert!(
-        rx.try_recv().is_err(),
-        "recovery Load prefix must not be visible"
+        engine
+            .attempt_transport_recovery(newer_generation.wrapping_sub(1))
+            .await
+            .is_empty()
+    );
+    assert_eq!(engine.transport_recovery, newer_recovery);
+    assert!(engine.player.is_none());
+    assert_eq!(
+        engine.test_player_starts.len(),
+        1,
+        "a stale retry must not start a player for the newer generation"
     );
 }

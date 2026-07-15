@@ -1,9 +1,98 @@
 use super::*;
 use crate::app::{PendingRemoteReply, PlayerCommit, PlayerIntent, RemoteReplyPlan};
 use crate::runtime::player_delivery::{
-    PendingPlayerCmds, PendingPlayerIntents, PlayerRestartDecision, PlayerRestartGate,
-    begin_player_shutdown_state,
+    PendingPlayerIntents, PlayerAdmission, PlayerStartupCompletion, PlayerStartupKind,
+    RuntimePlayerLifecycle, admit_ready_player_work, begin_player_shutdown_state,
 };
+
+type DropLog = std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
+type TestLifecycle = RuntimePlayerLifecycle<&'static str, &'static str>;
+
+struct DropOrder {
+    label: &'static str,
+    log: DropLog,
+}
+
+impl DropOrder {
+    fn new(label: &'static str, log: &DropLog) -> Self {
+        Self {
+            label,
+            log: std::sync::Arc::clone(log),
+        }
+    }
+}
+
+impl Drop for DropOrder {
+    fn drop(&mut self) {
+        self.log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(self.label);
+    }
+}
+
+fn live_initial_lifecycle() -> TestLifecycle {
+    let mut player = RuntimePlayerLifecycle::default();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok(("initial-handle", "initial-guard"))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Initial,
+            restore,
+        } if restore.is_empty()
+    ));
+    player
+}
+
+fn restart_queued_lifecycle() -> TestLifecycle {
+    let mut player = live_initial_lifecycle();
+    assert_eq!(
+        player.request_restart(Vec::new()).0,
+        PlayerRestartDecision::Start
+    );
+    player
+}
+
+fn starting_replacement_lifecycle() -> TestLifecycle {
+    let mut player = restart_queued_lifecycle();
+    assert!(player.take_restart_request());
+    player
+}
+
+fn live_replacement_lifecycle() -> TestLifecycle {
+    let mut player = starting_replacement_lifecycle();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok(("replacement-handle", "replacement-guard"))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Replacement,
+            restore,
+        } if restore.is_empty()
+    ));
+    player
+}
+
+fn failed_initial_lifecycle() -> TestLifecycle {
+    let mut player = RuntimePlayerLifecycle::default();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Err("initial failure")),
+        PlayerStartupCompletion::Failed {
+            kind: PlayerStartupKind::Initial,
+            error: "initial failure",
+        }
+    ));
+    player
+}
+
+fn failed_replacement_lifecycle() -> TestLifecycle {
+    let mut player = starting_replacement_lifecycle();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Err("replacement failure")),
+        PlayerStartupCompletion::Failed {
+            kind: PlayerStartupKind::Replacement,
+            error: "replacement failure",
+        }
+    ));
+    player
+}
 
 fn seek_intent(position: f64, remote_reply: Option<PendingRemoteReply>) -> Box<PlayerIntent> {
     Box::new(PlayerIntent {
@@ -131,36 +220,258 @@ fn startup_failure_rejects_the_deferred_intent_without_state_commit() {
 }
 
 #[test]
-fn shutdown_retires_active_player_before_slow_cleanup_and_replies_to_pending_intents() {
-    #[derive(Clone)]
-    struct DropOrder {
-        label: &'static str,
-        log: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
-    }
+fn lifecycle_initial_success_installs_a_live_player_without_restore_work() {
+    let mut player: TestLifecycle = RuntimePlayerLifecycle::default();
 
-    impl Drop for DropOrder {
-        fn drop(&mut self) {
-            self.log
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(self.label);
+    assert!(matches!(player.admission(), PlayerAdmission::Deferred));
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok(("handle", "guard"))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Initial,
+            restore,
+        } if restore.is_empty()
+    ));
+
+    assert!(matches!(
+        player.admission(),
+        PlayerAdmission::Live(handle) if *handle == "handle"
+    ));
+    assert!(matches!(player, RuntimePlayerLifecycle::LiveInitial(_)));
+}
+
+#[test]
+fn lifecycle_initial_failure_closes_admission_but_still_allows_one_replacement() {
+    let mut player: TestLifecycle = RuntimePlayerLifecycle::default();
+
+    assert!(matches!(
+        player.complete_start::<&'static str>(Err("mpv unavailable")),
+        PlayerStartupCompletion::Failed {
+            kind: PlayerStartupKind::Initial,
+            error: "mpv unavailable",
         }
-    }
+    ));
+    assert!(matches!(player.admission(), PlayerAdmission::Closed));
+    assert!(matches!(player, RuntimePlayerLifecycle::FailedInitial));
 
+    let (decision, delivery) = player.request_restart(Vec::new());
+    assert_eq!(decision, PlayerRestartDecision::Start);
+    assert!(delivery.is_none());
+    assert!(matches!(
+        player,
+        RuntimePlayerLifecycle::RestartQueued { .. }
+    ));
+}
+
+#[test]
+fn lifecycle_replacement_start_failure_is_terminal_for_the_automatic_retry_budget() {
+    let mut player = starting_replacement_lifecycle();
+
+    assert!(matches!(
+        player.complete_start::<&'static str>(Err("replacement failed")),
+        PlayerStartupCompletion::Failed {
+            kind: PlayerStartupKind::Replacement,
+            error: "replacement failed",
+        }
+    ));
+    assert!(matches!(player.admission(), PlayerAdmission::Closed));
+    assert!(matches!(player, RuntimePlayerLifecycle::FailedReplacement));
+    let (decision, delivery) = player.request_restart(vec![PlayerCmd::Stop]);
+    assert_eq!(decision, PlayerRestartDecision::Exhausted);
+    assert!(delivery.is_none());
+}
+
+#[test]
+fn lifecycle_replacement_preserves_restore_order_and_ignores_duplicate_requests() {
+    let mut player = live_initial_lifecycle();
+    let restore = vec![
+        PlayerCmd::SetVolume(10),
+        PlayerCmd::SetAudioFilter("lavfi=[volume=1]".to_owned()),
+        PlayerCmd::CyclePause,
+    ];
+
+    let (decision, delivery) = player.request_restart(restore);
+    assert_eq!(decision, PlayerRestartDecision::Start);
+    assert!(delivery.is_some_and(|result| result.is_ok()));
+    assert!(matches!(
+        player,
+        RuntimePlayerLifecycle::RestartQueued { .. }
+    ));
+
+    let (decision, delivery) = player.request_restart(vec![PlayerCmd::SetVolume(99)]);
+    assert_eq!(decision, PlayerRestartDecision::AlreadyPending);
+    assert!(delivery.is_none());
+    assert!(player.take_restart_request());
+    assert!(matches!(
+        player,
+        RuntimePlayerLifecycle::StartingReplacement { .. }
+    ));
+
+    let (decision, delivery) = player.request_restart(vec![PlayerCmd::Stop]);
+    assert_eq!(decision, PlayerRestartDecision::AlreadyPending);
+    assert!(delivery.is_none());
+    assert!(!player.take_restart_request());
+
+    let completion =
+        player.complete_start::<&'static str>(Ok(("replacement-handle", "replacement-guard")));
+    let PlayerStartupCompletion::Ready {
+        kind: PlayerStartupKind::Replacement,
+        restore,
+    } = completion
+    else {
+        panic!("replacement readiness must install the queued generation");
+    };
+    assert!(matches!(
+        restore.as_slice(),
+        [
+            PlayerCmd::SetVolume(10),
+            PlayerCmd::SetAudioFilter(filter),
+            PlayerCmd::CyclePause,
+        ] if filter == "lavfi=[volume=1]"
+    ));
+    assert!(matches!(
+        player.admission(),
+        PlayerAdmission::Live(handle) if *handle == "replacement-handle"
+    ));
+    assert!(matches!(player, RuntimePlayerLifecycle::LiveReplacement(_)));
+}
+
+#[test]
+fn lifecycle_replacement_disconnect_exhausts_the_single_retry_and_retires_in_order() {
     let drops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut handle = Some(DropOrder {
-        label: "handle",
-        log: std::sync::Arc::clone(&drops),
-    });
-    let mut guard = Some(DropOrder {
-        label: "guard",
-        log: std::sync::Arc::clone(&drops),
-    });
-    let mut gate = PlayerRestartGate::default();
-    assert_eq!(gate.request(), PlayerRestartDecision::Start);
-    let mut failed = false;
-    let mut pending_cmds = PendingPlayerCmds::default();
-    assert!(pending_cmds.push(PlayerCmd::SetVolume(10)).is_ok());
+    let mut player = RuntimePlayerLifecycle::default();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok((
+            DropOrder::new("initial-handle", &drops),
+            DropOrder::new("initial-guard", &drops),
+        ))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Initial,
+            ..
+        }
+    ));
+    assert_eq!(
+        player.request_restart(Vec::new()).0,
+        PlayerRestartDecision::Start
+    );
+    assert!(player.take_restart_request());
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok((
+            DropOrder::new("replacement-handle", &drops),
+            DropOrder::new("replacement-guard", &drops),
+        ))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Replacement,
+            ..
+        }
+    ));
+
+    assert_eq!(
+        player.request_restart(Vec::new()).0,
+        PlayerRestartDecision::Exhausted
+    );
+    assert!(matches!(player.admission(), PlayerAdmission::Closed));
+    assert!(matches!(player, RuntimePlayerLifecycle::FailedReplacement));
+    assert_eq!(
+        player.request_restart(Vec::new()).0,
+        PlayerRestartDecision::Exhausted
+    );
+    assert_eq!(
+        *drops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        [
+            "initial-handle",
+            "initial-guard",
+            "replacement-handle",
+            "replacement-guard",
+        ]
+    );
+}
+
+#[test]
+fn lifecycle_shutdown_absorbs_every_owner_phase() {
+    let mut shutdown = RuntimePlayerLifecycle::default();
+    shutdown.begin_shutdown();
+    let states = vec![
+        ("starting_initial", RuntimePlayerLifecycle::default()),
+        ("live_initial", live_initial_lifecycle()),
+        ("failed_initial", failed_initial_lifecycle()),
+        ("restart_queued", restart_queued_lifecycle()),
+        ("starting_replacement", starting_replacement_lifecycle()),
+        ("live_replacement", live_replacement_lifecycle()),
+        ("failed_replacement", failed_replacement_lifecycle()),
+        ("shutdown", shutdown),
+    ];
+
+    for (phase, mut player) in states {
+        player.begin_shutdown();
+        player.begin_shutdown();
+        assert!(
+            matches!(player, RuntimePlayerLifecycle::Shutdown),
+            "phase {phase} did not enter shutdown"
+        );
+        assert!(matches!(player.admission(), PlayerAdmission::Closed));
+        assert!(player.handle().is_none());
+        assert_eq!(
+            player.request_restart(vec![PlayerCmd::Stop]).0,
+            PlayerRestartDecision::Suppressed,
+            "phase {phase} admitted a restart after shutdown"
+        );
+        assert!(!player.take_restart_request());
+        assert!(matches!(
+            player.complete_start::<&'static str>(Ok(("late-handle", "late-guard"))),
+            PlayerStartupCompletion::Discarded
+        ));
+        assert!(matches!(
+            player.complete_start::<&'static str>(Err("late failure")),
+            PlayerStartupCompletion::Discarded
+        ));
+        assert!(matches!(player, RuntimePlayerLifecycle::Shutdown));
+    }
+}
+
+#[test]
+fn lifecycle_discards_late_replacement_readiness_handle_before_guard() {
+    let drops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut player: RuntimePlayerLifecycle<DropOrder, DropOrder> =
+        RuntimePlayerLifecycle::default();
+    assert_eq!(
+        player.request_restart(vec![PlayerCmd::SetVolume(10)]).0,
+        PlayerRestartDecision::Start
+    );
+    assert!(player.take_restart_request());
+    player.begin_shutdown();
+
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok((
+            DropOrder::new("late-handle", &drops),
+            DropOrder::new("late-guard", &drops),
+        ))),
+        PlayerStartupCompletion::Discarded
+    ));
+    assert!(matches!(player, RuntimePlayerLifecycle::Shutdown));
+    assert_eq!(
+        *drops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ["late-handle", "late-guard"]
+    );
+}
+
+#[test]
+fn shutdown_retires_active_player_before_slow_cleanup_and_replies_to_pending_intents() {
+    let drops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut player = RuntimePlayerLifecycle::default();
+    assert!(matches!(
+        player.complete_start::<&'static str>(Ok((
+            DropOrder::new("handle", &drops),
+            DropOrder::new("guard", &drops),
+        ))),
+        PlayerStartupCompletion::Ready {
+            kind: PlayerStartupKind::Initial,
+            restore,
+        } if restore.is_empty()
+    ));
     let mut pending_intents = PendingPlayerIntents::default();
     let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
     assert!(
@@ -176,27 +487,19 @@ fn shutdown_retires_active_player_before_slow_cleanup_and_replies_to_pending_int
     );
     let mut app = App::new(50);
 
-    let follow_ups = begin_player_shutdown_state(
-        &mut gate,
-        &mut failed,
-        &mut handle,
-        &mut guard,
-        &mut pending_cmds,
-        &mut pending_intents,
-        &mut app,
-    );
+    let follow_ups = begin_player_shutdown_state(&mut player, &mut pending_intents, &mut app);
     drops
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push("slow_cleanup");
 
     assert!(follow_ups.is_empty());
-    assert!(failed);
-    assert!(handle.is_none());
-    assert!(guard.is_none());
-    assert_eq!(pending_cmds.len(), 0);
     assert_eq!(pending_intents.len(), 0);
-    assert_eq!(gate.request(), PlayerRestartDecision::Suppressed);
+    assert!(matches!(player, RuntimePlayerLifecycle::Shutdown));
+    assert_eq!(
+        player.request_restart(vec![PlayerCmd::SetVolume(10)]).0,
+        PlayerRestartDecision::Suppressed
+    );
     assert_eq!(
         *drops
             .lock()
@@ -356,10 +659,12 @@ async fn recovery_restore_batch_reaches_player_before_deferred_user_intent() {
         ),
         PlayerCmd::SetAudioFilter("lavfi=[volume=1]".to_owned()),
     ];
-    assert!(player.send_batch(restore).is_ok());
-
     let mut app = App::new(50);
-    assert!(admit_player_intent(&player, &mut app, *seek_intent(15.0, None)).is_empty());
+    let mut pending = PendingPlayerIntents::default();
+    assert!(pending.push(seek_intent(15.0, None)).is_ok());
+
+    assert!(admit_ready_player_work(&player, &mut app, restore, &mut pending).is_empty());
+    assert_eq!(pending.len(), 0);
 
     assert!(matches!(
         rx.recv().await,

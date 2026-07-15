@@ -36,9 +36,7 @@ use player_delivery::{
     PENDING_PLAYER_CMDS_MAX, PENDING_PLAYER_INTENTS_MAX, PlayerRestartDecision,
     admit_player_intent, reject_pending_player_intents, settle_player_intent,
 };
-use player_delivery::{
-    PendingPlayerCmds, PendingPlayerIntents, PlayerRestartGate, report_player_delivery,
-};
+use player_delivery::{PendingPlayerIntents, RuntimePlayerLifecycle, report_player_delivery};
 use task_set::RuntimeTaskSet;
 
 pub use ingress::{
@@ -596,14 +594,10 @@ pub fn remote_sink(
 
 pub struct RuntimeHandles {
     worker_tx: RuntimeSender,
-    player_handle: Option<PlayerHandle>,
-    /// Runtime-owned restore commands are kept apart from user intents so restore is always
-    /// admitted first when a replacement actor becomes ready.
-    pending_player_cmds: PendingPlayerCmds,
+    /// Typed owner lifecycle keeps handle/guard ownership, restart budget, and the ordered
+    /// restore batch in one reachable state.
+    player: RuntimePlayerLifecycle<PlayerHandle, crate::player::Mpv>,
     pending_player_intents: PendingPlayerIntents,
-    player_failed: bool,
-    player_restart: PlayerRestartGate,
-    _mpv_guard: Option<crate::player::Mpv>,
     /// Command sender for the *current* video overlay's IPC client. Replaced wholesale
     /// on every `Cmd::VideoConnect` (each spawn generation gets a fresh client); rejected
     /// sends are surfaced through the common player-delivery status path.
@@ -674,12 +668,8 @@ impl RuntimeHandles {
     ) -> Self {
         Self {
             worker_tx,
-            player_handle: None,
-            pending_player_cmds: PendingPlayerCmds::default(),
+            player: RuntimePlayerLifecycle::default(),
             pending_player_intents: PendingPlayerIntents::default(),
-            player_failed: false,
-            player_restart: PlayerRestartGate::default(),
-            _mpv_guard: None,
             video_handle: None,
             api_handle,
             lyrics_handle,
@@ -858,11 +848,7 @@ impl RuntimeHandles {
         }
         match cmd {
             Cmd::PlayerControl(PlayerControl::Restart { restore }) => {
-                let restart_started = self.handle_player_transport_closed(app);
-                if restart_started && !restore.is_empty() {
-                    let result = self.admit_player_restore_batch(restore);
-                    report_player_delivery(app, "transport_restore", result);
-                }
+                self.handle_player_transport_closed(app, restore);
             }
             Cmd::PlayerControl(PlayerControl::Intent(intent)) => {
                 self.dispatch_player_intent(app, intent);

@@ -88,7 +88,7 @@ impl App {
         );
 
         let mut cmds = self.recorder_teardown();
-        let mut restore = Vec::new();
+        let restore = Vec::new();
         let Some(song) = self.queue.current().cloned() else {
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
@@ -106,22 +106,20 @@ impl App {
             }
         };
 
-        self.prefetch.last_load_prefetched = false;
-        restore.push(PlayerCmd::LoadWithResume(
-            crate::player::recovery::LoadWithResume::emergency(
-                target,
-                position_secs,
-                paused,
-                crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-            ),
-        ));
         let af = match self.settings.as_deref() {
             Some(st) => eq::build_af_string(&st.draft.eq_bands, st.draft.normalize),
             None => self.current_af(),
         };
-        if let Some(af) = af {
-            restore.push(PlayerCmd::SetAudioFilter(af));
-        }
+        let restore = crate::player::recovery::TransportRestorePlan::resume_ram_only_if_loaded(
+            self.prefetch.loaded_video_id.as_deref(),
+            &song.video_id,
+            target,
+            position_secs,
+            paused,
+            crate::player::MediaSourceContext::from_live(song.is_radio_station()),
+        )
+        .into_commands(af);
+        self.prefetch.last_load_prefetched = false;
         cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
         cmds
     }
@@ -159,7 +157,7 @@ impl App {
         );
 
         let mut cmds = self.recorder_teardown();
-        let mut restore = Vec::new();
+        let restore = Vec::new();
         let Some(song) = self.queue.current().cloned() else {
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
@@ -185,21 +183,19 @@ impl App {
             }
         };
 
-        self.prefetch.last_load_prefetched = false;
-        restore.push(PlayerCmd::load(
-            target,
-            crate::player::MediaSourceContext::from_live(song.is_radio_station()),
-        ));
         let af = match self.settings.as_deref() {
             Some(st) => eq::build_af_string(&st.draft.eq_bands, st.draft.normalize),
             None => self.current_af(),
         };
-        if let Some(af) = af {
-            restore.push(PlayerCmd::SetAudioFilter(af));
-        }
-        if was_paused {
-            restore.push(PlayerCmd::CyclePause);
-        }
+        let restore = crate::player::recovery::TransportRestorePlan::reload_if_loaded(
+            self.prefetch.loaded_video_id.as_deref(),
+            &song.video_id,
+            target,
+            was_paused,
+            crate::player::MediaSourceContext::from_live(song.is_radio_station()),
+        )
+        .into_commands(af);
+        self.prefetch.last_load_prefetched = false;
         cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
         cmds
     }

@@ -50,10 +50,6 @@ impl PendingPlayerCmds {
         self.cmds.drain(..).collect()
     }
 
-    pub(super) fn clear(&mut self) {
-        self.cmds.clear();
-    }
-
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.cmds.len()
@@ -201,6 +197,27 @@ pub(super) fn reject_pending_player_intents(
         .collect()
 }
 
+/// Admit replacement restore as one barrier before the user transaction deferred during startup.
+///
+/// `PendingPlayerIntents` admits at most one whole transaction, so collecting its follow-ups
+/// preserves the same reducer/dispatch order while making the recovery-before-user boundary one
+/// directly testable operation.
+pub(super) fn admit_ready_player_work(
+    player: &crate::player::PlayerHandle,
+    app: &mut App,
+    restore: Vec<PlayerCmd>,
+    pending: &mut PendingPlayerIntents,
+) -> Vec<Cmd> {
+    if !restore.is_empty() {
+        report_player_delivery(app, "transport_restore", player.send_batch(restore));
+    }
+    pending
+        .drain()
+        .into_iter()
+        .flat_map(|intent| admit_player_intent(player, app, intent))
+        .collect()
+}
+
 /// Atomically close the owner-side player admission boundary for process teardown.
 ///
 /// The handle must drop before the process guard: closing the command lane first tells the IPC
@@ -208,30 +225,53 @@ pub(super) fn reject_pending_player_intents(
 /// unavailable so correlated remote callers do not wait through the slower actor/persistence
 /// cleanup which follows owner-loop exit.
 pub(super) fn begin_player_shutdown_state<H, G>(
-    restart: &mut PlayerRestartGate,
-    player_failed: &mut bool,
-    player_handle: &mut Option<H>,
-    mpv_guard: &mut Option<G>,
-    pending_cmds: &mut PendingPlayerCmds,
+    player: &mut RuntimePlayerLifecycle<H, G>,
     pending_intents: &mut PendingPlayerIntents,
     app: &mut App,
 ) -> Vec<Cmd> {
-    restart.suppress_for_shutdown();
-    *player_failed = true;
-    drop(player_handle.take());
-    drop(mpv_guard.take());
-    pending_cmds.clear();
+    player.begin_shutdown();
     let mut follow_ups = reject_pending_player_intents(pending_intents, app);
     follow_ups.extend(app.settle_recorder_owner_shutdown());
     follow_ups
 }
 
+pub(super) struct ActivePlayer<H, G> {
+    handle: H,
+    guard: G,
+}
+
+impl<H, G> ActivePlayer<H, G> {
+    fn new(handle: H, guard: G) -> Self {
+        Self { handle, guard }
+    }
+
+    /// Close actor ingress before dropping the process guard which kills mpv.
+    fn retire(self) {
+        drop(self.handle);
+        drop(self.guard);
+    }
+}
+
+/// Complete runtime ownership for the primary audio player.
+///
+/// Each variant is one reachable owner-loop phase. Keeping the live handle and process guard in
+/// `ActivePlayer`, and the restore batch inside replacement startup, makes invalid flag/Option
+/// combinations unrepresentable.
 #[derive(Default)]
-pub(super) struct PlayerRestartGate {
-    requested: bool,
-    in_flight: bool,
-    used: bool,
-    shutdown: bool,
+pub(super) enum RuntimePlayerLifecycle<H, G> {
+    #[default]
+    StartingInitial,
+    LiveInitial(ActivePlayer<H, G>),
+    FailedInitial,
+    RestartQueued {
+        restore: PendingPlayerCmds,
+    },
+    StartingReplacement {
+        restore: PendingPlayerCmds,
+    },
+    LiveReplacement(ActivePlayer<H, G>),
+    FailedReplacement,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,42 +282,174 @@ pub(super) enum PlayerRestartDecision {
     Suppressed,
 }
 
-impl PlayerRestartGate {
-    pub(super) fn request(&mut self) -> PlayerRestartDecision {
-        if self.shutdown {
-            return PlayerRestartDecision::Suppressed;
+pub(super) enum PlayerAdmission<'a, H> {
+    Live(&'a H),
+    Deferred,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlayerStartupKind {
+    Initial,
+    Replacement,
+}
+
+impl PlayerStartupKind {
+    const fn is_replacement(self) -> bool {
+        matches!(self, Self::Replacement)
+    }
+}
+
+pub(super) enum PlayerStartupCompletion<E> {
+    Ready {
+        kind: PlayerStartupKind,
+        restore: Vec<PlayerCmd>,
+    },
+    Failed {
+        kind: PlayerStartupKind,
+        error: E,
+    },
+    Discarded,
+}
+
+impl<H, G> RuntimePlayerLifecycle<H, G> {
+    pub(super) fn admission(&self) -> PlayerAdmission<'_, H> {
+        match self {
+            Self::LiveInitial(player) | Self::LiveReplacement(player) => {
+                PlayerAdmission::Live(&player.handle)
+            }
+            Self::StartingInitial
+            | Self::RestartQueued { .. }
+            | Self::StartingReplacement { .. } => PlayerAdmission::Deferred,
+            Self::FailedInitial | Self::FailedReplacement | Self::Shutdown => {
+                PlayerAdmission::Closed
+            }
         }
-        if self.requested || self.in_flight {
-            return PlayerRestartDecision::AlreadyPending;
-        }
-        if self.used {
-            return PlayerRestartDecision::Exhausted;
-        }
-        self.used = true;
-        self.requested = true;
-        PlayerRestartDecision::Start
     }
 
-    pub(super) fn take_request(&mut self) -> bool {
-        if self.shutdown {
-            self.requested = false;
-            return false;
+    pub(super) fn handle(&self) -> Option<&H> {
+        match self.admission() {
+            PlayerAdmission::Live(handle) => Some(handle),
+            PlayerAdmission::Deferred | PlayerAdmission::Closed => None,
         }
-        if !std::mem::take(&mut self.requested) {
-            return false;
-        }
-        self.in_flight = true;
-        true
     }
 
-    pub(super) fn complete_start(&mut self) -> bool {
-        std::mem::take(&mut self.in_flight)
+    pub(super) fn request_restart(
+        &mut self,
+        commands: Vec<PlayerCmd>,
+    ) -> (PlayerRestartDecision, Option<DeliveryResult>) {
+        let state = std::mem::replace(self, Self::Shutdown);
+        match state {
+            Self::StartingInitial | Self::FailedInitial => {
+                let mut restore = PendingPlayerCmds::default();
+                let delivery = (!commands.is_empty()).then(|| restore.push_batch(commands));
+                *self = Self::RestartQueued { restore };
+                (PlayerRestartDecision::Start, delivery)
+            }
+            Self::LiveInitial(player) => {
+                player.retire();
+                let mut restore = PendingPlayerCmds::default();
+                let delivery = (!commands.is_empty()).then(|| restore.push_batch(commands));
+                *self = Self::RestartQueued { restore };
+                (PlayerRestartDecision::Start, delivery)
+            }
+            Self::RestartQueued { restore } => {
+                *self = Self::RestartQueued { restore };
+                (PlayerRestartDecision::AlreadyPending, None)
+            }
+            Self::StartingReplacement { restore } => {
+                *self = Self::StartingReplacement { restore };
+                (PlayerRestartDecision::AlreadyPending, None)
+            }
+            Self::LiveReplacement(player) => {
+                player.retire();
+                *self = Self::FailedReplacement;
+                (PlayerRestartDecision::Exhausted, None)
+            }
+            Self::FailedReplacement => {
+                *self = Self::FailedReplacement;
+                (PlayerRestartDecision::Exhausted, None)
+            }
+            Self::Shutdown => {
+                *self = Self::Shutdown;
+                (PlayerRestartDecision::Suppressed, None)
+            }
+        }
     }
 
-    /// Permanently close the automatic-replacement gate for process teardown.
-    pub(super) fn suppress_for_shutdown(&mut self) {
-        self.shutdown = true;
-        self.requested = false;
+    pub(super) fn take_restart_request(&mut self) -> bool {
+        let state = std::mem::replace(self, Self::Shutdown);
+        match state {
+            Self::RestartQueued { restore } => {
+                *self = Self::StartingReplacement { restore };
+                true
+            }
+            state => {
+                *self = state;
+                false
+            }
+        }
+    }
+
+    pub(super) fn complete_start<E>(
+        &mut self,
+        result: Result<(H, G), E>,
+    ) -> PlayerStartupCompletion<E> {
+        let state = std::mem::replace(self, Self::Shutdown);
+        match (state, result) {
+            (Self::StartingInitial, Ok((handle, guard))) => {
+                *self = Self::LiveInitial(ActivePlayer::new(handle, guard));
+                PlayerStartupCompletion::Ready {
+                    kind: PlayerStartupKind::Initial,
+                    restore: Vec::new(),
+                }
+            }
+            (Self::StartingInitial, Err(error)) => {
+                *self = Self::FailedInitial;
+                PlayerStartupCompletion::Failed {
+                    kind: PlayerStartupKind::Initial,
+                    error,
+                }
+            }
+            (Self::StartingReplacement { mut restore }, Ok((handle, guard))) => {
+                let restore = restore.drain();
+                *self = Self::LiveReplacement(ActivePlayer::new(handle, guard));
+                PlayerStartupCompletion::Ready {
+                    kind: PlayerStartupKind::Replacement,
+                    restore,
+                }
+            }
+            (Self::StartingReplacement { .. }, Err(error)) => {
+                *self = Self::FailedReplacement;
+                PlayerStartupCompletion::Failed {
+                    kind: PlayerStartupKind::Replacement,
+                    error,
+                }
+            }
+            (state, Ok((handle, guard))) => {
+                ActivePlayer::new(handle, guard).retire();
+                *self = state;
+                PlayerStartupCompletion::Discarded
+            }
+            (state, Err(_)) => {
+                *self = state;
+                PlayerStartupCompletion::Discarded
+            }
+        }
+    }
+
+    /// Permanently close admission and retire any live player in handle-before-guard order.
+    pub(super) fn begin_shutdown(&mut self) {
+        let state = std::mem::replace(self, Self::Shutdown);
+        match state {
+            Self::LiveInitial(player) | Self::LiveReplacement(player) => player.retire(),
+            Self::StartingInitial
+            | Self::FailedInitial
+            | Self::RestartQueued { .. }
+            | Self::StartingReplacement { .. }
+            | Self::FailedReplacement
+            | Self::Shutdown => {}
+        }
     }
 }
 
@@ -287,8 +459,8 @@ impl super::RuntimeHandles {
     /// while a newer Load/Stop must recover solely from the owner's committed destination.
     pub fn reconcile_cache_safety_event(&self, event: &mut crate::player::PlayerEvent) {
         let current_generation = self
-            .player_handle
-            .as_ref()
+            .player
+            .handle()
             .map(crate::player::PlayerHandle::current_file_generation);
         reconcile_cache_safety_event(event, current_generation);
     }
@@ -298,12 +470,12 @@ impl super::RuntimeHandles {
             return true;
         };
         let current_generation = self
-            .player_handle
-            .as_ref()
+            .player
+            .handle()
             .map(crate::player::PlayerHandle::current_file_generation);
         let current = self
-            .player_handle
-            .as_ref()
+            .player
+            .handle()
             .is_some_and(|player| player.event_is_current(event));
         if !current {
             tracing::debug!(
@@ -315,49 +487,22 @@ impl super::RuntimeHandles {
         current
     }
 
-    pub(super) fn admit_player_restore_batch(
-        &mut self,
-        commands: Vec<PlayerCmd>,
-    ) -> DeliveryResult {
-        if let Some(player) = &self.player_handle {
-            player.send_batch(commands)
-        } else if self.player_failed {
-            Err(DeliveryError::Closed)
-        } else {
-            self.pending_player_cmds.push_batch(commands)
-        }
-    }
-
     pub(super) fn dispatch_player_intent(&mut self, app: &mut App, intent: Box<PlayerIntent>) {
-        let follow_ups = if let Some(player) = &self.player_handle {
-            admit_player_intent(player, app, *intent)
-        } else if self.player_failed {
-            settle_player_intent(app, *intent, Err(DeliveryError::Closed))
-        } else {
-            match self.pending_player_intents.push(intent) {
+        let follow_ups = match self.player.admission() {
+            PlayerAdmission::Live(player) => admit_player_intent(player, app, *intent),
+            PlayerAdmission::Closed => {
+                settle_player_intent(app, *intent, Err(DeliveryError::Closed))
+            }
+            PlayerAdmission::Deferred => match self.pending_player_intents.push(intent) {
                 Ok(receipt) => {
                     tracing::trace!(?receipt, "player intent deferred until player readiness");
                     return;
                 }
                 Err((error, intent)) => settle_player_intent(app, *intent, Err(error)),
-            }
+            },
         };
         for follow_up in follow_ups {
             self.dispatch(app, follow_up);
-        }
-    }
-
-    fn settle_pending_player_intents(&mut self, app: &mut App) {
-        let pending = self.pending_player_intents.drain();
-        for intent in pending {
-            let player = self
-                .player_handle
-                .as_ref()
-                .expect("pending intents settle only after a player is installed");
-            let follow_ups = admit_player_intent(player, app, intent);
-            for follow_up in follow_ups {
-                self.dispatch(app, follow_up);
-            }
         }
     }
 
@@ -373,15 +518,12 @@ impl super::RuntimeHandles {
         result: Result<(crate::player::PlayerHandle, crate::player::Mpv), String>,
         app: &mut App,
     ) {
-        let was_recovery = self.player_restart.complete_start();
-        match result {
-            Ok((handle, guard)) => {
-                self.player_failed = false;
-                // Install the live actor before settling any deferred intent. A commit may
-                // produce a follow-up player command, which must target this actor immediately
-                // instead of being re-deferred behind later startup work.
-                self.player_handle = Some(handle);
-                self._mpv_guard = Some(guard);
+        match self.player.complete_start(result) {
+            PlayerStartupCompletion::Ready { kind, restore } => {
+                let was_recovery = kind.is_replacement();
+                // The lifecycle installs the live actor before settling any deferred intent. A
+                // commit may produce a follow-up player command, which must target this actor
+                // immediately instead of being re-deferred behind later startup work.
                 if was_recovery {
                     app.set_status_info(crate::t!(
                         "Player connection restored",
@@ -391,8 +533,8 @@ impl super::RuntimeHandles {
                 report_player_delivery(
                     app,
                     "set_volume",
-                    self.player_handle
-                        .as_ref()
+                    self.player
+                        .handle()
                         .expect("player handle was installed above")
                         .send(PlayerCmd::SetVolume(app.playback.volume)),
                 );
@@ -400,8 +542,8 @@ impl super::RuntimeHandles {
                     report_player_delivery(
                         app,
                         "set_speed",
-                        self.player_handle
-                            .as_ref()
+                        self.player
+                            .handle()
                             .expect("player handle was installed above")
                             .send(PlayerCmd::SetProperty {
                                 name: "speed".to_owned(),
@@ -414,8 +556,8 @@ impl super::RuntimeHandles {
                     report_player_delivery(
                         app,
                         "set_audio_filter",
-                        self.player_handle
-                            .as_ref()
+                        self.player
+                            .handle()
                             .expect("player handle was installed above")
                             .send(PlayerCmd::SetAudioFilter(af)),
                     );
@@ -424,35 +566,33 @@ impl super::RuntimeHandles {
                     report_player_delivery(
                         app,
                         "load",
-                        self.player_handle
-                            .as_ref()
+                        self.player
+                            .handle()
                             .expect("player handle was installed above")
                             .load(url, crate::player::MediaSourceContext::OnDemand),
                     );
                 }
-                let restore = self.pending_player_cmds.drain();
-                if !restore.is_empty() {
-                    // Recovery state is one atomic barrier ahead of every user intent accepted
-                    // while the replacement actor was starting.
-                    let result = self
-                        .player_handle
-                        .as_ref()
-                        .expect("player handle was installed above")
-                        .send_batch(restore);
-                    report_player_delivery(app, "transport_restore", result);
+                let follow_ups = admit_ready_player_work(
+                    self.player
+                        .handle()
+                        .expect("player handle was installed above"),
+                    app,
+                    restore,
+                    &mut self.pending_player_intents,
+                );
+                for follow_up in follow_ups {
+                    self.dispatch(app, follow_up);
                 }
-                self.settle_pending_player_intents(app);
                 if was_recovery {
                     // Only this readiness result can retire the recorder failure latch: the
-                    // restart gate proves it belongs to the replacement generation, and all
+                    // lifecycle proves it belongs to the replacement generation, and all
                     // queued restore work has already been admitted to that live actor.
                     app.recorder_player_restart_completed(true);
                 }
             }
-            Err(e) => {
+            PlayerStartupCompletion::Failed { kind, error: e } => {
+                let was_recovery = kind.is_replacement();
                 tracing::error!(error = %e, "failed to start mpv");
-                self.player_failed = true;
-                self.pending_player_cmds.clear();
                 // Every deferred caller receives the same authoritative terminal result. No
                 // reducer state or remote success was published while readiness was unknown.
                 self.reject_pending_player_intents(app);
@@ -472,22 +612,29 @@ impl super::RuntimeHandles {
                     ));
                 }
             }
+            PlayerStartupCompletion::Discarded => {
+                tracing::debug!("discarded player readiness outside its lifecycle phase");
+            }
         }
     }
 
-    pub(super) fn handle_player_transport_closed(&mut self, app: &mut App) -> bool {
-        // Close the command channel before dropping the process guard. The actor treats that
-        // ordering as intentional shutdown, while its already-emitted TransportClosed remains
-        // the final event from the old, single active actor.
-        drop(self.player_handle.take());
-        drop(self._mpv_guard.take());
+    pub(super) fn handle_player_transport_closed(
+        &mut self,
+        app: &mut App,
+        restore: Vec<PlayerCmd>,
+    ) -> bool {
+        // Requesting replacement retires any live player in handle-before-guard order and moves
+        // the ordered restore batch into the same lifecycle transition.
+        let (decision, restore_delivery) = self.player.request_restart(restore);
         for effect in app.settle_recorder_player_retired() {
             self.dispatch(app, effect);
         }
 
-        match self.player_restart.request() {
+        match decision {
             PlayerRestartDecision::Start => {
-                self.player_failed = false;
+                if let Some(result) = restore_delivery {
+                    report_player_delivery(app, "transport_restore", result);
+                }
                 true
             }
             PlayerRestartDecision::AlreadyPending => {
@@ -495,8 +642,6 @@ impl super::RuntimeHandles {
                 false
             }
             PlayerRestartDecision::Exhausted => {
-                self.player_failed = true;
-                self.pending_player_cmds.clear();
                 self.reject_pending_player_intents(app);
                 app.set_status_error(crate::t!(
                     "Player stopped after the replacement also disconnected",
@@ -521,15 +666,8 @@ impl super::RuntimeHandles {
         // point onward retain their exact event in the task outbox. Consequently no later actor
         // event can enter the main queue and overtake that fallback during the final drain.
         self.worker_tx.close_admission();
-        let follow_ups = begin_player_shutdown_state(
-            &mut self.player_restart,
-            &mut self.player_failed,
-            &mut self.player_handle,
-            &mut self._mpv_guard,
-            &mut self.pending_player_cmds,
-            &mut self.pending_player_intents,
-            app,
-        );
+        let follow_ups =
+            begin_player_shutdown_state(&mut self.player, &mut self.pending_player_intents, app);
         for follow_up in follow_ups {
             self.dispatch(app, follow_up);
         }
@@ -547,7 +685,7 @@ impl super::RuntimeHandles {
     /// Consume the one automatic restart request. The runner replaces its readiness slot,
     /// which drops any obsolete startup result before launching the sole replacement actor.
     pub fn take_player_restart_request(&mut self) -> bool {
-        self.player_restart.take_request()
+        self.player.take_restart_request()
     }
 }
 
