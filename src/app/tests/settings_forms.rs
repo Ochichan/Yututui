@@ -199,6 +199,28 @@ fn settings_text_fields_persist_provider_ids_and_download_dir() {
 }
 
 #[test]
+fn ctrl_backspace_edits_settings_and_recording_paths() {
+    let mut app = App::new(100);
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::General, Field::CookiesFile);
+    {
+        let settings = app.settings.as_mut().unwrap();
+        settings.draft.cookies_file = "/one two".to_owned();
+        settings.editing_text = true;
+    }
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.settings.as_ref().unwrap().draft.cookies_file, "/one ");
+
+    app.overlays.recording_settings = Some(RecordingSettingsPopup {
+        editing_dir: true,
+        ..RecordingSettingsPopup::default()
+    });
+    app.settings.as_mut().unwrap().draft.recording_dir = "Radio Shows".to_owned();
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(app.settings.as_ref().unwrap().draft.recording_dir, "Radio ");
+}
+
+#[test]
 fn settings_recording_popup_adjusts_sliders_toggles_and_text() {
     let mut app = App::new(100);
     app.open_settings();

@@ -40,7 +40,7 @@ fn r_cycles_repeat_and_persists() {
 }
 
 #[test]
-fn s_enters_search_and_shift_s_toggles_shuffle() {
+fn s_enters_search_and_x_toggles_shuffle() {
     let mut app = app_playing(3, 0);
     assert!(!app.queue.shuffle);
     app.update(Msg::Key(key(KeyCode::Char('s'))));
@@ -48,7 +48,7 @@ fn s_enters_search_and_shift_s_toggles_shuffle() {
     assert!(!app.queue.shuffle);
 
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('S'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
     assert!(app.queue.shuffle);
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(saved.shuffle, Some(true));

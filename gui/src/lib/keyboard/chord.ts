@@ -136,7 +136,7 @@ export function chordFromCapture(e: KeyboardEvent): string | null {
   return chordFromEvent(e);
 }
 
-/** Pretty token for display: modifiers / named keys TitleCased, letter case preserved. */
+/** Pretty token for display: modifiers / named keys TitleCased, shifted letters explicit. */
 const DISPLAY_TOKEN: Record<string, string> = {
   ctrl: 'Ctrl',
   alt: 'Alt',
@@ -161,6 +161,7 @@ const DISPLAY_TOKEN: Record<string, string> = {
 
 /** Render a canonical config chord for humans (`ctrl+u → Ctrl+u`, `shift+f10 → Shift+F10`). */
 export function displayChord(chord: string): string {
+  if (/^[A-Z]$/.test(chord)) return `Shift+${chord}`;
   return chord
     .split('+')
     .map((tok) => DISPLAY_TOKEN[tok] ?? (FKEY.test(tok) ? tok.toUpperCase() : tok))

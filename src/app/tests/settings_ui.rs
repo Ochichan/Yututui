@@ -966,12 +966,14 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         .rebind(
             KeyContext::Player,
             Action::TogglePause,
-            crate::keymap::parse_chord("x").unwrap(),
+            crate::keymap::parse_chord("f8").unwrap(),
         )
         .unwrap();
     assert_eq!(
-        app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
+        app.keymap.action(
+            KeyContext::Player,
+            crate::keymap::parse_chord("f8").unwrap()
+        ),
         Some(Action::TogglePause)
     );
 
@@ -995,13 +997,18 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         Some(Action::TogglePause)
     );
     assert_eq!(
-        draft_keymap.action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
+        draft_keymap.action(
+            KeyContext::Player,
+            crate::keymap::parse_chord("f8").unwrap()
+        ),
         None
     );
     // The live keymap follows the existing Settings flow: changes commit on close.
     assert_eq!(
-        app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
+        app.keymap.action(
+            KeyContext::Player,
+            crate::keymap::parse_chord("f8").unwrap()
+        ),
         Some(Action::TogglePause)
     );
 
@@ -1016,8 +1023,10 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         Some(Action::TogglePause)
     );
     assert_eq!(
-        app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
+        app.keymap.action(
+            KeyContext::Player,
+            crate::keymap::parse_chord("f8").unwrap()
+        ),
         None
     );
 }

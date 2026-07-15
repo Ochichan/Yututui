@@ -1513,6 +1513,15 @@ impl App {
     }
 
     fn on_key_local_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if matches!(
+            self.keymap.text_edit_action(k.into()),
+            Some(Action::DeleteWord)
+        ) {
+            if crate::util::text_edit::delete_previous_word(&mut self.local_mode.ui.filter_query) {
+                self.after_local_filter_change();
+            }
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Esc => {
                 self.clear_local_filter();
@@ -1522,7 +1531,7 @@ impl App {
                 self.local_mode.ui.filter_editing = false;
                 self.dirty = true;
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if k.modifiers == KeyModifiers::NONE => {
                 self.local_mode.ui.filter_query.pop();
                 self.after_local_filter_change();
             }

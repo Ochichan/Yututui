@@ -28,6 +28,74 @@ pub(super) fn preserve_legacy_lyrics_delay_overrides(
     }
 }
 
+/// Moving the Player shuffle default from `S` to `x` must not make a pre-existing sparse
+/// override on `x` nondeterministic. Keep the old default in that case; an explicit shuffle
+/// remap (including an unbind) always wins.
+pub(super) fn preserve_legacy_shuffle_override(
+    overrides: &BTreeMap<String, String>,
+    labels: &mut HashMap<(KeyContext, Action), Chord>,
+) {
+    if overrides.contains_key("player.toggle_shuffle") {
+        return;
+    }
+    let new_default = parse_chord("x").expect("factory chord");
+    if !overrides.iter().any(|(key, value)| {
+        legacy_player_scope_claims(key, value, new_default, Action::ToggleShuffle)
+    }) {
+        return;
+    }
+
+    let old_default = parse_chord("S").expect("factory chord");
+    if overrides.iter().any(|(key, value)| {
+        legacy_player_scope_claims(key, value, old_default, Action::ToggleShuffle)
+    }) {
+        labels.remove(&(KeyContext::Player, Action::ToggleShuffle));
+    } else {
+        labels.insert((KeyContext::Player, Action::ToggleShuffle), old_default);
+    }
+}
+
+/// A new Common text-editing default must not steal a chord from any explicit legacy
+/// override. Leave it unbound until the user chooses a chord explicitly.
+pub(super) fn preserve_legacy_delete_word_overrides(
+    overrides: &BTreeMap<String, String>,
+    labels: &mut HashMap<(KeyContext, Action), Chord>,
+) {
+    if overrides.contains_key("common.delete_word") {
+        return;
+    }
+    let default = parse_chord("ctrl+backspace").expect("factory chord");
+    if overrides.iter().any(|(key, value)| {
+        let Some((context_id, action_id)) = key.split_once('.') else {
+            return false;
+        };
+        KeyContext::from_id(context_id).is_some()
+            && Action::from_id(action_id).is_some_and(|action| action != Action::DeleteWord)
+            && parse_chord(value) == Some(default)
+    }) {
+        labels.remove(&(KeyContext::Common, Action::DeleteWord));
+    }
+}
+
+fn legacy_player_scope_claims(key: &str, value: &str, chord: Chord, excluded: Action) -> bool {
+    let Some((context_id, action_id)) = key.split_once('.') else {
+        return false;
+    };
+    let Some(context) = KeyContext::from_id(context_id) else {
+        return false;
+    };
+    if !matches!(
+        context,
+        KeyContext::Player | KeyContext::Common | KeyContext::Global
+    ) {
+        return false;
+    }
+    let Some(action) = Action::from_id(action_id) else {
+        return false;
+    };
+    action != excluded && parse_chord(value) == Some(chord)
+}
+
 fn legacy_override_claims(key: &str, value: &str, chord: Chord) -> bool {
     let Some((context_id, action_id)) = key.split_once('.') else {
         return false;

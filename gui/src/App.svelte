@@ -17,6 +17,7 @@
   import AboutCard from './views/overlays/AboutCard.svelte';
   import ChordCapture from './lib/components/ChordCapture.svelte';
   import { chordFromEvent, isTypeableTarget, isPlainTypeable } from './lib/keyboard/chord';
+  import { deleteWordBackward, isTextInputTarget } from './lib/keyboard/text-edit';
   import { resolveContext } from './lib/keyboard/dispatcher';
   import { runAction } from './lib/keyboard/actions';
 
@@ -121,7 +122,13 @@
     if (keymap.capture) return;
     const chord = chordFromEvent(e);
     if (!chord) return;
-    if (isTypeableTarget(e.target) && isPlainTypeable(e)) return;
+    const typeable = isTypeableTarget(e.target);
+    const textInput = isTextInputTarget(e.target);
+    if (textInput && keymap.textEditMatch(chord) === 'delete_word') {
+      if (deleteWordBackward(e.target)) e.preventDefault();
+      return;
+    }
+    if (typeable && isPlainTypeable(e)) return;
     const context = resolveContext(ui.view, document.activeElement);
     const action = keymap.match(context, chord);
     if (!action) {
@@ -136,9 +143,14 @@
         return;
       }
       if (chord === 'esc' && ui.closeTopOverlay()) e.preventDefault();
+      if (textInput && chord === 'ctrl+backspace') e.preventDefault();
       return;
     }
-    if (runAction(action, ctx)) e.preventDefault();
+    if (runAction(action, ctx)) {
+      e.preventDefault();
+      return;
+    }
+    if (textInput && chord === 'ctrl+backspace') e.preventDefault();
   }
 </script>
 

@@ -90,6 +90,10 @@ impl App {
     pub(in crate::app) fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.ai.focus {
             AiFocus::Input => {
+                let delete_word = matches!(
+                    self.keymap.text_edit_action(k.into()),
+                    Some(Action::DeleteWord)
+                );
                 // Ctrl+A selects the whole prompt (desktop-style); idempotent re-select.
                 if matches!(
                     self.keymap.action(KeyContext::AiInput, k.into()),
@@ -111,15 +115,23 @@ impl App {
                         self.ai.input.push(c);
                         return Vec::new();
                     }
-                    if matches!(
-                        self.keymap.action(KeyContext::AiInput, k.into()),
-                        Some(Action::DeleteChar)
-                    ) {
+                    if delete_word
+                        || matches!(
+                            self.keymap.action(KeyContext::AiInput, k.into()),
+                            Some(Action::DeleteChar)
+                        )
+                    {
                         self.ai.input.clear();
                         return Vec::new();
                     }
                 }
                 let chord = Chord::from(k);
+                if delete_word {
+                    if crate::util::text_edit::delete_previous_word(&mut self.ai.input) {
+                        self.dirty = true;
+                    }
+                    return Vec::new();
+                }
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
                 {

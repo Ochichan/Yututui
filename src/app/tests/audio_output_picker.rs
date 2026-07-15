@@ -175,6 +175,30 @@ fn manual_editor_keeps_long_id_tail_and_caret_visible() {
 }
 
 #[test]
+fn ctrl_backspace_edits_the_manual_device_id() {
+    let mut app = App::new(100);
+    app.audio_devices.loading = false;
+    open_audio_output_picker(&mut app);
+    let manual = app.audio_output_rows().len() - 1;
+    {
+        let picker = app.overlays.audio_output_picker.as_mut().unwrap();
+        picker.selected = manual;
+        picker.editing_manual = true;
+        picker.manual_input = "pipewire studio".to_owned();
+    }
+
+    app.update(Msg::Key(ctrl(KeyCode::Backspace)));
+    assert_eq!(
+        app.overlays
+            .audio_output_picker
+            .as_ref()
+            .unwrap()
+            .manual_input,
+        "pipewire "
+    );
+}
+
+#[test]
 fn leaving_manual_editor_by_navigation_or_click_makes_enter_apply_highlighted_device() {
     let mut keyboard = App::new(100);
     keyboard.audio_devices.loading = false;

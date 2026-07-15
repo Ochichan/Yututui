@@ -548,6 +548,19 @@ impl App {
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        if self
+            .overlays
+            .audio_output_picker
+            .as_ref()
+            .is_some_and(|picker| picker.editing_manual)
+            || self
+                .overlays
+                .recording_settings
+                .as_ref()
+                .is_some_and(|settings| settings.editing_dir)
+        {
+            return true;
+        }
         // The picker's inline name entry captures text regardless of the mode it opened over.
         if self
             .playlist_picker

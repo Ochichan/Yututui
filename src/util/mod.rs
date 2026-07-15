@@ -34,3 +34,4 @@ pub mod query;
 pub mod runtime;
 pub mod safe_fs;
 pub mod sanitize;
+pub mod text_edit;

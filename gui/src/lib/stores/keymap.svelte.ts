@@ -62,7 +62,7 @@ export const CONTEXT_LABELS: Record<KeyContext, string> = {
   settings: 'Settings',
   ai_input: 'DJ Gem — input',
   ai_suggestions: 'DJ Gem — suggestions',
-  common: 'Common',
+  common: 'Common navigation & text editing',
   global: 'Global',
 };
 
@@ -109,8 +109,10 @@ const SEED_ROWS: SeedRow[] = [
   ['player', 'open_queue', 'Open queue', 'c'],
   ['player', 'queue_remove', 'Remove current from queue', 'delete'],
   ['player', 'toggle_lyrics', 'Toggle lyrics', 'L'],
+  ['player', 'lyrics_delay_earlier', 'Lyrics earlier', 'z'],
+  ['player', 'lyrics_delay_later', 'Lyrics later', 'Z'],
   ['player', 'download', 'Download track', 'd'],
-  ['player', 'toggle_shuffle', 'Toggle shuffle', 'S'],
+  ['player', 'toggle_shuffle', 'Toggle shuffle', 'x'],
   ['player', 'cycle_repeat', 'Cycle repeat', 'r'],
   ['player', 'identify_now_playing', "What's playing (radio)", 'i'],
   ['player', 'cycle_eq', 'Cycle EQ preset', 'e'],
@@ -149,6 +151,7 @@ const SEED_ROWS: SeedRow[] = [
   ['common', 'focus_prev', 'Previous tab / focus', 'backtab'],
   ['common', 'focus_next', 'Next tab / focus', 'tab'],
   ['common', 'delete_char', 'Delete character', 'backspace'],
+  ['common', 'delete_word', 'Delete previous word (text inputs)', 'ctrl+backspace'],
   ['common', 'back', 'Back / close', 'q'],
   ['global', 'home', 'Go home', 'ctrl+h'],
   ['global', 'toggle_streaming', 'Toggle autoplay', 'ctrl+r'],
@@ -288,6 +291,12 @@ export class KeymapStore {
       }
     }
     return null;
+  }
+
+  /** Resolve the text editor action directly, ahead of a view-specific binding. */
+  textEditMatch(chord: string): string | null {
+    const bindings = this.#merged();
+    return bindings['common.delete_word'] === chord ? 'delete_word' : null;
   }
 
   // ── mutations (Apply(Keymap(...))) ───────────────────────────────────────────────────

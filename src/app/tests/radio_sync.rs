@@ -270,12 +270,12 @@ fn rejected_radio_live_seek_keeps_state_and_does_not_escalate_retry() {
 }
 
 #[test]
-fn radio_shift_s_reports_sync_state_without_touching_shuffle() {
+fn radio_x_reports_sync_state_without_touching_shuffle() {
     let mut app = radio_playing("groove");
     app.update(PlayerMsg::TimePos(100.0));
     app.update(PlayerMsg::CacheTime(Some(103.0)));
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('S'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
 
     assert!(cmds.is_empty(), "the sync note is read-only");
     assert!(!app.queue.shuffle);

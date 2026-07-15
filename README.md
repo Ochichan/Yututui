@@ -35,8 +35,6 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 | **Linux** — any other | Download and run the installer below |
 | **From source** | `./install.sh --build` (needs [Rust](https://rustup.rs)) |
 
-> Arch AUR publishing is temporarily pending; use Nix or the installer until `yututui-bin` is available.
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Ochichan/Yututui/main/install.sh | bash
 ```
@@ -122,7 +120,7 @@ same one-line instruction; extra shots are welcome — just copy a slot block. -
 
 ### The player — real album art & time-synced lyrics
 
-Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected — pick Standard, High or Original quality in Settings); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×14 turns the whole app into a tiny miniplayer that springs back when the window grows.
+Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detected — pick Standard, High or Original quality in Settings); **`Shift+L`** scrolls the lyrics underneath. Click any visible lyric line to seek there, or use **`z`** / **`Shift+Z`** to show the lyrics 0.1 seconds earlier / later. When lyrics load, **`[ − 0.0s + ]`** appears for three seconds; after it folds to **`[±]`**, click the handle to reopen it for three seconds and use **`−/+`** for fine adjustment. The player controls dock to the bottom of every screen (collapse them with **`Shift+B`**; the classic top layout is one setting away), the art stays centered in whatever space is left, and shrinking the window below ~32×14 turns the whole app into a tiny miniplayer that springs back when the window grows.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/player.png, delete the "coming soon" line above, then uncomment:
@@ -260,7 +258,7 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 ### The app remembers the keys
 
-**`?`** opens a live cheat sheet that reflects *your* bindings — every key rebindable, the whole UI mouse-aware, interface in English & 한국어.
+**`?`** opens a live cheat sheet that reflects *your* bindings — app actions are rebindable, the whole UI is mouse-aware, and safety/modal keys stay fixed and dependable.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/help.png, delete the "coming soon" line above, then uncomment:
@@ -275,7 +273,7 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 
 ## Essential keys
 
-Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bindings, and every key is rebindable (Settings → Hotkeys). The core:
+Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bindings, and app actions can be changed in Settings → Hotkeys (safety and modal keys remain fixed). The core:
 
 | Key | Does |
 | --- | --- |
@@ -284,13 +282,15 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `←` / `→` · `↑` / `↓` | Seek · volume |
 | `s` | Search (`Tab` picks the catalog) |
 | `l` / `c` | Library / queue |
+| `x` / `r` | Shuffle / cycle repeat |
 | hold `↑`/`↓` · `Shift`+`↑`/`↓` | Fast-scroll a list (accelerates) · extend the selection |
-| `f` / `d` | Favorite / download (select rows with `Shift`+`↑`/`↓` or drag, then `d`, to grab many) |
+| `f` / `d` | Rate like/dislike (or favorite a selected Library row) / download |
 | `Shift+D` | Download the whole list / playlist |
 | `Shift+L` | Synced lyrics; click a visible line to seek there |
-| `z` / `Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
+| `z` / `Shift+Z` | Show lyrics 0.1s earlier / later (`[±]` reopens `−/+` for 3s) |
 | `v` | Music-video overlay |
-| `B` | Collapse / expand the docked control box |
+| `Shift+B` | Collapse / expand the docked control box |
+| `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |
 | `o` | Settings |
