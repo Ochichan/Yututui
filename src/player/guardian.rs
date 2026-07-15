@@ -1260,7 +1260,8 @@ mod tests {
                 timeout_ms: 250,
                 stdout_max: 1024,
             },
-            windows_inner_job: None,
+            // The decoder enforces Windows' fail-closed contract; this token is only serialized.
+            windows_inner_job: cfg!(windows).then_some(1),
         };
         let mut frame = Vec::new();
         write_request(&mut frame, &request).unwrap();
