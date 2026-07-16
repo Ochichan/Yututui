@@ -53,7 +53,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "Leave Local Player before entering Radio mode.",
-                "라디오 모드로 들어가기 전에 로컬 플레이어를 먼저 나가세요."
+                "라디오 모드로 들어가기 전에 로컬 플레이어를 먼저 나가세요.",
+                "ラジオモードに入る前にローカルプレイヤーを終了してください。"
             )
             .to_owned();
             self.dirty = true;

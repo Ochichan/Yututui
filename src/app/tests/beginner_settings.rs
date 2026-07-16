@@ -84,7 +84,7 @@ fn saving_reenabled_beginner_mode_schedules_welcome_for_next_launch_only() {
     assert!(saved.beginner_mode);
     assert_eq!(
         saved.beginner_tutorial,
-        crate::config::BeginnerTutorialProgress::welcome()
+        crate::config::BeginnerTutorialProgress::start()
     );
     assert!(
         !app.onboarding.active(),
@@ -117,7 +117,7 @@ fn active_tour_finishes_only_after_beginner_mode_save_is_admitted() {
     assert!(!app.config.beginner_mode);
     assert_eq!(
         app.config.beginner_tutorial,
-        crate::config::BeginnerTutorialProgress::welcome()
+        crate::config::BeginnerTutorialProgress::start()
     );
     assert!(!app.onboarding.active());
     assert_eq!(

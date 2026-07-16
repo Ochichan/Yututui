@@ -169,7 +169,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Stream changed; resuming from the last position",
-            "스트림이 변경되어 마지막 위치에서 다시 재생합니다"
+            "스트림이 변경되어 마지막 위치에서 다시 재생합니다",
+            "ストリームが変わったため前回の位置から再開します"
         )
         .to_owned();
         self.dirty = true;
@@ -244,13 +245,15 @@ impl App {
         self.status.text = if prefetch_paused {
             t!(
                 "Prefetched streams are being rejected — pausing prefetch and retrying this track",
-                "미리 받은 스트림이 반복 거부됨 — 프리페치를 쉬고 같은 곡을 다시 시도"
+                "미리 받은 스트림이 반복 거부됨 — 프리페치를 쉬고 같은 곡을 다시 시도",
+                "先読みストリームが拒否され続けています — 先読みを休止して同じ曲を再試行"
             )
             .to_owned()
         } else {
             t!(
                 "Prefetched stream was rejected — retrying this track",
-                "미리 받은 스트림이 거부됨 — 같은 곡을 다시 시도"
+                "미리 받은 스트림이 거부됨 — 같은 곡을 다시 시도",
+                "先読みストリームが拒否されました — 同じ曲を再試行"
             )
             .to_owned()
         };
@@ -331,7 +334,12 @@ impl App {
         // admitted-seek path still bumps the position epoch.
         self.radio_resync_at = Some(plan.attempted_at);
         self.status.kind = StatusKind::Info;
-        self.status.text = t!("Re-synced to live", "실시간으로 다시 맞췄어요").to_owned();
+        self.status.text = t!(
+            "Re-synced to live",
+            "실시간으로 다시 맞췄어요",
+            "ライブに再同期しました"
+        )
+        .to_owned();
         self.dirty = true;
         Vec::new()
     }
@@ -356,7 +364,8 @@ impl App {
             StatusKind::Info,
             t!(
                 "Reconnected to the live stream",
-                "라이브 스트림에 다시 연결했어요"
+                "라이브 스트림에 다시 연결했어요",
+                "ライブストリームに再接続しました"
             )
             .to_owned(),
         );

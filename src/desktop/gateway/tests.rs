@@ -12,6 +12,7 @@ fn test_instance(endpoint: String, token: &str) -> InstanceFile {
         mode: InstanceMode::Daemon,
         protocol_version: PROTOCOL_VERSION,
         capabilities: vec!["events-v8".to_string()],
+        host_terminal: None,
     }
 }
 

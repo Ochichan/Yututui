@@ -6,6 +6,7 @@ use crate::config::{BEGINNER_TUTORIAL_VERSION, BeginnerTutorialProgress};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BeginnerStep {
     #[default]
+    Language,
     Welcome,
     NavigationHelp,
     Player,
@@ -17,7 +18,8 @@ pub enum BeginnerStep {
 }
 
 impl BeginnerStep {
-    const ORDER: [Self; 8] = [
+    const ORDER: [Self; 9] = [
+        Self::Language,
         Self::Welcome,
         Self::NavigationHelp,
         Self::Player,
@@ -31,6 +33,7 @@ impl BeginnerStep {
 
     pub fn id(self) -> &'static str {
         match self {
+            Self::Language => "language",
             Self::Welcome => "welcome",
             Self::NavigationHelp => "navigation_help",
             Self::Search => "search",
@@ -44,6 +47,7 @@ impl BeginnerStep {
 
     pub fn from_id(id: &str) -> Option<Self> {
         Some(match id {
+            "language" => Self::Language,
             "welcome" => Self::Welcome,
             "navigation_help" => Self::NavigationHelp,
             "search" => Self::Search,
@@ -84,6 +88,9 @@ pub struct OnboardingState {
     pending: bool,
     armed: bool,
     step: BeginnerStep,
+    /// Whether the Language step renders its retro variant (captured at step entry; retro
+    /// pins the UI to English, so the step offers Continue/Skip instead of language buttons).
+    retro_variant: bool,
     target_reached: bool,
     guide_focused: bool,
     mini_guide_focused: bool,
@@ -140,6 +147,20 @@ impl OnboardingState {
                 OnboardingAction::ConfirmSkip
             };
         }
+        if self.language_choices() {
+            return match crate::i18n::Language::CYCLE.get(self.selected) {
+                Some(lang) => OnboardingAction::ChooseLanguage(*lang),
+                None => OnboardingAction::Skip,
+            };
+        }
+        if self.step == BeginnerStep::Language {
+            // Retro variant: [Continue] [Skip].
+            return if self.selected == 0 {
+                OnboardingAction::Primary
+            } else {
+                OnboardingAction::Skip
+            };
+        }
         match self.selected {
             0 => OnboardingAction::Back,
             1 => OnboardingAction::Primary,
@@ -147,12 +168,36 @@ impl OnboardingState {
         }
     }
 
+    /// The Language step offers one button per UI language (plus Skip) — except in retro
+    /// mode, whose pinned-English variant keeps the plain Continue/Skip row.
+    pub fn language_choices(&self) -> bool {
+        self.step == BeginnerStep::Language && !self.retro_variant
+    }
+
     fn primary_index(&self) -> usize {
+        if self.language_choices() {
+            let current = crate::i18n::current();
+            return crate::i18n::Language::CYCLE
+                .iter()
+                .position(|lang| *lang == current)
+                .unwrap_or(0);
+        }
+        if self.step == BeginnerStep::Language {
+            return 0;
+        }
         1
     }
 
     fn action_count(&self) -> usize {
-        if self.skip_confirmation { 2 } else { 3 }
+        if self.skip_confirmation {
+            2
+        } else if self.language_choices() {
+            crate::i18n::Language::CYCLE.len() + 1
+        } else if self.step == BeginnerStep::Language {
+            2
+        } else {
+            3
+        }
     }
 
     fn select_primary(&mut self) {
@@ -193,23 +238,25 @@ impl App {
         match progress.content_version.cmp(&BEGINNER_TUTORIAL_VERSION) {
             Ordering::Greater => return,
             Ordering::Less => {
-                self.config.beginner_tutorial = BeginnerTutorialProgress::welcome();
+                self.config.beginner_tutorial = BeginnerTutorialProgress::start();
                 self.onboarding.startup_persist_pending = true;
             }
             Ordering::Equal => {
                 if BeginnerStep::from_id(&progress.next_step).is_none() {
-                    self.config.beginner_tutorial = BeginnerTutorialProgress::welcome();
+                    self.config.beginner_tutorial = BeginnerTutorialProgress::start();
                     self.onboarding.startup_persist_pending = true;
                 }
             }
         }
 
         let step = BeginnerStep::from_id(&self.config.beginner_tutorial.next_step)
-            .unwrap_or(BeginnerStep::Welcome);
+            .unwrap_or(BeginnerStep::Language);
         self.onboarding.pending = true;
         self.onboarding.step = step;
+        self.onboarding.retro_variant = self.retro_mode();
         self.onboarding.target_reached = self.beginner_step_target_reached(step);
-        self.onboarding.guide_focused = step == BeginnerStep::Welcome;
+        self.onboarding.guide_focused =
+            matches!(step, BeginnerStep::Language | BeginnerStep::Welcome);
         self.onboarding.select_primary();
         self.arm_beginner_onboarding();
     }
@@ -433,11 +480,34 @@ impl App {
                 Vec::new()
             }
             OnboardingAction::ConfirmSkip => self.skip_beginner_tutorial(),
+            OnboardingAction::ChooseLanguage(lang) => self.choose_beginner_language(lang),
         }
+    }
+
+    /// Commit the Language step's choice: persist it, republish the process-wide language so
+    /// the rest of the tour (and the whole UI) re-renders translated, and move on to Welcome.
+    /// This is the only place the tour writes the global language — highlighting an option
+    /// merely previews it card-locally.
+    fn choose_beginner_language(&mut self, lang: crate::i18n::Language) -> Vec<Cmd> {
+        if self.onboarding.step != BeginnerStep::Language {
+            return Vec::new();
+        }
+        self.config.language = lang;
+        crate::i18n::set_language(self.config.effective_language());
+        // Mirror the central apply pair (see bootstrap): a resolved `Auto` DJ Gem language
+        // follows the UI language, so it must be re-resolved when the tour changes it.
+        crate::i18n::set_dj_gem_language(self.config.effective_dj_gem_language());
+        if let Some(settings) = self.settings.as_mut() {
+            settings.draft.language = lang;
+        }
+        self.advance_beginner_step()
     }
 
     fn activate_beginner_primary(&mut self) -> Vec<Cmd> {
         match self.onboarding.step {
+            // Reachable only through the retro variant's Continue button (retro pins the UI
+            // to English, so there is nothing to choose).
+            BeginnerStep::Language => self.advance_beginner_step(),
             BeginnerStep::Welcome => self.advance_beginner_step(),
             BeginnerStep::NavigationHelp => {
                 self.overlays.help_visible = true;
@@ -527,7 +597,11 @@ impl App {
     fn back_beginner_step(&mut self) -> Vec<Cmd> {
         let Some(previous) = self.onboarding.step.previous() else {
             self.onboarding.select_primary();
-            self.set_status_info(t!("This is the first step", "첫 번째 단계입니다"));
+            self.set_status_info(t!(
+                "This is the first step",
+                "첫 번째 단계입니다",
+                "最初のステップです"
+            ));
             return Vec::new();
         };
         if self.onboarding.step == BeginnerStep::Finish
@@ -544,10 +618,12 @@ impl App {
         self.config.beginner_tutorial.content_version = BEGINNER_TUTORIAL_VERSION;
         self.config.beginner_tutorial.next_step = step.id().to_owned();
         self.onboarding.step = step;
+        self.onboarding.retro_variant = self.retro_mode();
         self.onboarding.target_reached = self.beginner_step_target_reached(step);
         self.onboarding.settings_tab_visited = false;
         self.onboarding.skip_confirmation = false;
-        self.onboarding.guide_focused = step == BeginnerStep::Welcome;
+        self.onboarding.guide_focused =
+            matches!(step, BeginnerStep::Language | BeginnerStep::Welcome);
         self.onboarding.mini_guide_focused = false;
         self.onboarding.guide_focused_before_skip = false;
         self.onboarding.mini_guide_focused_before_skip = false;
@@ -557,6 +633,7 @@ impl App {
 
     fn beginner_step_target_reached(&self, step: BeginnerStep) -> bool {
         match step {
+            BeginnerStep::Language => true,
             BeginnerStep::Welcome => true,
             BeginnerStep::NavigationHelp => false,
             BeginnerStep::Search => self.mode == Mode::Search,
@@ -569,7 +646,7 @@ impl App {
 
     fn skip_beginner_tutorial(&mut self) -> Vec<Cmd> {
         self.config.beginner_mode = false;
-        self.config.beginner_tutorial = BeginnerTutorialProgress::welcome();
+        self.config.beginner_tutorial = BeginnerTutorialProgress::start();
         if let Some(settings) = self.settings.as_mut() {
             settings.draft.beginner_mode = false;
             settings.draft.restart_beginner_tutorial = false;
@@ -577,7 +654,8 @@ impl App {
         self.onboarding = OnboardingState::default();
         self.set_status_info(t!(
             "Beginner Mode is off · turn it on in Settings to see the tour again",
-            "비기너 모드를 껐어요 · 설정에서 다시 켜면 튜토리얼을 볼 수 있어요"
+            "비기너 모드를 껐어요 · 설정에서 다시 켜면 튜토리얼을 볼 수 있어요",
+            "ビギナーモードをオフにしました · 設定でオンにすると再びツアーを見られます"
         ));
         self.request_native_image_clear();
         vec![self.persist_beginner_config()]
@@ -597,21 +675,23 @@ impl App {
                 if tutorial_was_active
                     || self.config.beginner_tutorial.content_version <= BEGINNER_TUTORIAL_VERSION
                 {
-                    self.config.beginner_tutorial = BeginnerTutorialProgress::welcome();
+                    self.config.beginner_tutorial = BeginnerTutorialProgress::start();
                 }
                 self.onboarding = OnboardingState::default();
                 self.set_status_info(t!(
                     "Beginner Mode is off · onboarding complete",
-                    "비기너 모드를 껐어요 · 온보딩을 마쳤습니다"
+                    "비기너 모드를 껐어요 · 온보딩을 마쳤습니다",
+                    "ビギナーモードをオフにしました · オンボーディングを完了しました"
                 ));
                 self.request_native_image_clear();
             }
         } else if !old_enabled || restart_requested {
-            self.config.beginner_tutorial = BeginnerTutorialProgress::welcome();
+            self.config.beginner_tutorial = BeginnerTutorialProgress::start();
             self.onboarding = OnboardingState::default();
             self.set_status_info(t!(
                 "Beginner Mode is on · the tour starts next launch",
-                "비기너 모드를 켰어요 · 다음 실행 때 튜토리얼이 시작됩니다"
+                "비기너 모드를 켰어요 · 다음 실행 때 튜토리얼이 시작됩니다",
+                "ビギナーモードをオンにしました · 次回起動時にツアーが始まります"
             ));
         }
     }
@@ -655,6 +735,7 @@ mod tests {
     #[test]
     fn ordered_steps_keep_numbers_and_forward_back_navigation_in_lockstep() {
         let expected = [
+            BeginnerStep::Language,
             BeginnerStep::Welcome,
             BeginnerStep::NavigationHelp,
             BeginnerStep::Player,
@@ -671,6 +752,7 @@ mod tests {
             assert_eq!(step.number(), index + 1);
             assert_eq!(step.previous(), index.checked_sub(1).map(|i| expected[i]));
             assert_eq!(step.next(), expected.get(index + 1).copied());
+            assert_eq!(BeginnerStep::from_id(step.id()), Some(step));
         }
     }
 
@@ -731,7 +813,7 @@ mod tests {
         assert!(!app.config.beginner_mode);
         assert_eq!(
             app.config.beginner_tutorial,
-            BeginnerTutorialProgress::welcome()
+            BeginnerTutorialProgress::start()
         );
         assert!(!app.settings.as_ref().unwrap().draft.beginner_mode);
         assert!(!app.onboarding.visible());
@@ -751,7 +833,7 @@ mod tests {
         assert!(old.onboarding.visible());
         assert_eq!(
             old.config.beginner_tutorial,
-            BeginnerTutorialProgress::welcome()
+            BeginnerTutorialProgress::start()
         );
         assert!(old.take_beginner_startup_persist().is_some());
 
@@ -851,6 +933,90 @@ mod tests {
         app.activate_onboarding(OnboardingAction::Skip);
         app.activate_onboarding(OnboardingAction::CancelSkip);
         assert!(app.onboarding.guide_focused());
+    }
+
+    #[test]
+    fn fresh_default_progress_starts_at_language_selection() {
+        let mut app = App::new(50);
+        app.config.beginner_mode = true;
+        app.prepare_beginner_onboarding(true);
+        assert!(app.onboarding.visible());
+        assert_eq!(app.onboarding.step(), BeginnerStep::Language);
+        assert!(app.onboarding.guide_focused());
+        assert!(app.onboarding.language_choices());
+    }
+
+    #[test]
+    fn language_choice_persists_language_and_advances_to_welcome() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut app = beginner_app(BeginnerStep::Language);
+        app.open_settings();
+        let cmds = app.activate_onboarding(OnboardingAction::ChooseLanguage(
+            crate::i18n::Language::Japanese,
+        ));
+        assert_eq!(app.config.language, crate::i18n::Language::Japanese);
+        assert_eq!(crate::i18n::current(), crate::i18n::Language::Japanese);
+        assert_eq!(
+            app.settings.as_ref().unwrap().draft.language,
+            crate::i18n::Language::Japanese
+        );
+        assert_eq!(app.onboarding.step(), BeginnerStep::Welcome);
+        assert_eq!(app.config.beginner_tutorial.next_step, "welcome");
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Persist(PersistCmd::Config(_))]
+        ));
+    }
+
+    #[test]
+    fn language_highlight_previews_card_locally_without_global_writes() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut app = beginner_app(BeginnerStep::Language);
+        // Fresh entry highlights the active language, not a hardcoded index.
+        assert_eq!(
+            app.onboarding.selected_action(),
+            OnboardingAction::ChooseLanguage(crate::i18n::Language::English)
+        );
+        app.onboarding.move_selection(true);
+        assert_eq!(
+            app.onboarding.selected_action(),
+            OnboardingAction::ChooseLanguage(crate::i18n::Language::Korean)
+        );
+        // Highlighting is a card-local preview: the process-wide language is untouched.
+        assert_eq!(crate::i18n::current(), crate::i18n::Language::English);
+
+        // Skip → Cancel re-selects the ACTIVE language (step-aware primary), still no write.
+        app.activate_onboarding(OnboardingAction::Skip);
+        app.activate_onboarding(OnboardingAction::CancelSkip);
+        assert_eq!(
+            app.onboarding.selected_action(),
+            OnboardingAction::ChooseLanguage(crate::i18n::Language::English)
+        );
+        assert_eq!(crate::i18n::current(), crate::i18n::Language::English);
+    }
+
+    #[test]
+    fn retro_language_step_offers_continue_only_and_primary_advances() {
+        let mut app = App::new(50);
+        app.config.beginner_mode = true;
+        app.config.retro_mode = true;
+        app.config.beginner_tutorial.next_step = BeginnerStep::Language.id().to_owned();
+        app.prepare_beginner_onboarding(true);
+        assert!(app.onboarding.visible());
+        assert!(!app.onboarding.language_choices());
+        // Retro variant is a plain [Continue] [Skip] row; primary sits at index 0.
+        assert_eq!(app.onboarding.selected_action(), OnboardingAction::Primary);
+        app.onboarding.move_selection(true);
+        assert_eq!(app.onboarding.selected_action(), OnboardingAction::Skip);
+        app.onboarding.move_selection(true);
+        let cmds = app.activate_onboarding(OnboardingAction::Primary);
+        assert_eq!(app.onboarding.step(), BeginnerStep::Welcome);
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Persist(PersistCmd::Config(_))]
+        ));
     }
 
     #[test]

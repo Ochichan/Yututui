@@ -29,7 +29,7 @@ fn first_seen_update_emits_desktop_notification_and_marks_seen() {
         Cmd::DesktopNotify { title, body }
             if title.contains("1.0.1")
                 && body.contains("Latest: v1.0.1")
-                && body.contains("cargo install yututui --force")
+                && body.contains("cargo install --git https://github.com/Ochichan/Yututui --force")
     )));
     assert!(cmds.iter().any(|cmd| matches!(
         cmd,

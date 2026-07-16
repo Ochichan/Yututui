@@ -82,7 +82,12 @@ impl App {
         };
         if songs.is_empty() {
             self.status.kind = StatusKind::Info;
-            self.status.text = t!("Playlist is empty", "플레이리스트가 비어 있어요").to_string();
+            self.status.text = t!(
+                "Playlist is empty",
+                "플레이리스트가 비어 있어요",
+                "プレイリストが空です"
+            )
+            .to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -105,7 +110,12 @@ impl App {
         };
         if songs.is_empty() {
             self.status.kind = StatusKind::Info;
-            self.status.text = t!("Playlist is empty", "플레이리스트가 비어 있어요").to_string();
+            self.status.text = t!(
+                "Playlist is empty",
+                "플레이리스트가 비어 있어요",
+                "プレイリストが空です"
+            )
+            .to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -138,7 +148,11 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = format!(
             "{}: {}",
-            t!("Deleted playlist", "플레이리스트 삭제"),
+            t!(
+                "Deleted playlist",
+                "플레이리스트 삭제",
+                "プレイリストを削除"
+            ),
             removed.name
         );
         vec![Cmd::Persist(PersistCmd::Playlists)]
@@ -202,8 +216,12 @@ impl App {
             .to_owned();
         if name.is_empty() {
             self.status.kind = StatusKind::Info;
-            self.status.text =
-                t!("Enter a playlist name", "플레이리스트 이름을 입력하세요").to_string();
+            self.status.text = t!(
+                "Enter a playlist name",
+                "플레이리스트 이름을 입력하세요",
+                "プレイリスト名を入力してください"
+            )
+            .to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -213,8 +231,14 @@ impl App {
                 self.library_ui.create_input = None;
                 self.library_ui.create_cursor = TextCursor::default();
                 self.status.kind = StatusKind::Info;
-                self.status.text =
-                    format!("{}: {name}", t!("Created playlist", "플레이리스트 생성"));
+                self.status.text = format!(
+                    "{}: {name}",
+                    t!(
+                        "Created playlist",
+                        "플레이리스트 생성",
+                        "プレイリストを作成"
+                    )
+                );
                 // Land the cursor on the new playlist so Enter/`a` act on it right away.
                 if self.playlists_root() {
                     self.clear_library_filter();
@@ -228,8 +252,12 @@ impl App {
             // Blank is pre-checked above, so `None` here means the playlist cap.
             None => {
                 self.status.kind = StatusKind::Error;
-                self.status.text =
-                    t!("Playlists are full", "플레이리스트가 가득 찼어요").to_string();
+                self.status.text = t!(
+                    "Playlists are full",
+                    "플레이리스트가 가득 찼어요",
+                    "プレイリストが上限に達しました"
+                )
+                .to_string();
                 Vec::new()
             }
         }
@@ -254,10 +282,14 @@ impl App {
             self.retro_mode(),
         );
         self.status.kind = StatusKind::Info;
-        self.status.text = if crate::i18n::is_korean() {
-            format!("{key} 키로 새 플레이리스트를 만들어 보세요")
-        } else {
-            format!("Press {key} to create a new playlist")
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("{key} 키로 새 플레이리스트를 만들어 보세요")
+            }
+            crate::i18n::Language::Japanese => {
+                format!("{key} キーで新しいプレイリストを作成できます")
+            }
+            _ => format!("Press {key} to create a new playlist"),
         };
         self.dirty = true;
     }
@@ -403,8 +435,12 @@ impl App {
         self.dirty = true;
         if name.is_empty() {
             self.status.kind = StatusKind::Info;
-            self.status.text =
-                t!("Enter a playlist name", "플레이리스트 이름을 입력하세요").to_string();
+            self.status.text = t!(
+                "Enter a playlist name",
+                "플레이리스트 이름을 입력하세요",
+                "プレイリスト名を入力してください"
+            )
+            .to_string();
             return Vec::new();
         }
         match self.playlists_mut().create(&name) {
@@ -418,8 +454,12 @@ impl App {
             // Blank is pre-checked above, so `None` here means the playlist cap.
             None => {
                 self.status.kind = StatusKind::Error;
-                self.status.text =
-                    t!("Playlists are full", "플레이리스트가 가득 찼어요").to_string();
+                self.status.text = t!(
+                    "Playlists are full",
+                    "플레이리스트가 가득 찼어요",
+                    "プレイリストが上限に達しました"
+                )
+                .to_string();
                 Vec::new()
             }
         }
@@ -444,30 +484,49 @@ impl App {
         self.dirty = true;
         if full > 0 && added == 0 {
             self.status.kind = StatusKind::Error;
-            self.status.text = t!("Playlist is full", "플레이리스트가 가득 찼어요").to_string();
+            self.status.text = t!(
+                "Playlist is full",
+                "플레이리스트가 가득 찼어요",
+                "プレイリストがいっぱいです"
+            )
+            .to_string();
             return Vec::new();
         }
         if added == 0 {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {name}",
-                t!("Already in playlist", "이미 플레이리스트에 있어요")
+                t!(
+                    "Already in playlist",
+                    "이미 플레이리스트에 있어요",
+                    "すでにプレイリストにあります"
+                )
             );
             return Vec::new();
         }
         self.status.kind = StatusKind::Info;
-        self.status.text = if crate::i18n::is_korean() {
-            if dupes > 0 {
-                format!("{name}에 {added}곡 추가 ({dupes}곡은 이미 있음)")
-            } else {
-                format!("{name}에 {added}곡 추가")
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                if dupes > 0 {
+                    format!("{name}에 {added}곡 추가 ({dupes}곡은 이미 있음)")
+                } else {
+                    format!("{name}에 {added}곡 추가")
+                }
             }
-        } else {
-            let noun = if added == 1 { "track" } else { "tracks" };
-            if dupes > 0 {
-                format!("Added {added} {noun} to {name} ({dupes} already there)")
-            } else {
-                format!("Added {added} {noun} to {name}")
+            crate::i18n::Language::Japanese => {
+                if dupes > 0 {
+                    format!("{name}に{added}曲を追加 ({dupes}曲はすでに存在)")
+                } else {
+                    format!("{name}に{added}曲を追加")
+                }
+            }
+            _ => {
+                let noun = if added == 1 { "track" } else { "tracks" };
+                if dupes > 0 {
+                    format!("Added {added} {noun} to {name} ({dupes} already there)")
+                } else {
+                    format!("Added {added} {noun} to {name}")
+                }
             }
         };
         vec![Cmd::Persist(PersistCmd::Playlists)]

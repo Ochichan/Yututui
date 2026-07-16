@@ -1,12 +1,16 @@
 use std::io;
 use std::path::Path;
 
-pub(super) fn report_dir(label: &str, dir: &Path, kr: bool) -> bool {
+pub(super) fn report_dir(label: &str, dir: &Path, lang: crate::i18n::Language) -> bool {
     if dir_is_writable(dir) {
         println!("  ✓ {label} — {}", dir.display());
         true
     } else {
-        let note = if kr { "쓰기 불가" } else { "not writable" };
+        let note = match lang {
+            crate::i18n::Language::Korean => "쓰기 불가",
+            crate::i18n::Language::Japanese => "書き込み不可",
+            _ => "not writable",
+        };
         println!("  ✗ {label} — {} ({note})", dir.display());
         false
     }

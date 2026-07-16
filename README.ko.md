@@ -24,7 +24,9 @@ Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움
 
 ## 설치
 
-각 명령은 `ytt`와 보조 프로그램(mpv, yt-dlp, ffmpeg)을 **한 번에** 함께 설치합니다.
+패키지 매니저 명령(brew, scoop, nix, yay)은 `ytt`와 보조 프로그램(mpv, yt-dlp, ffmpeg)을
+**한 번에** 함께 설치합니다. 직접 설치 스크립트와 소스 빌드는 `ytt`만 설치하며, 보조
+프로그램은 점검해서 부족한 것을 알려줍니다.
 
 | OS | 한 줄이면 끝 |
 | --- | --- |
@@ -44,6 +46,24 @@ Windows 직접 설치:
 ```powershell
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
+
+<details>
+<summary><b>다운로드 검증하기</b> <i>(선택)</i></summary>
+
+모든 릴리스에는 `checksums.txt`(SHA-256)와 GitHub 빌드 provenance attestation이 포함됩니다.
+움직이는 브랜치(main) 대신 최신 릴리스에 고정된 설치 스크립트를 쓸 수도 있어요:
+
+```sh
+curl -fsSL https://github.com/Ochichan/Yututui/releases/latest/download/install.sh | bash
+
+# 체크섬 (산출물과 checksums.txt를 같은 폴더에 두고):
+sha256sum -c --ignore-missing checksums.txt        # macOS: shasum -a 256 -c
+
+# Provenance — 이 저장소의 릴리스 워크플로가 만든 산출물인지 증명 (GitHub CLI):
+gh attestation verify yututui-linux-x64.tar.gz --repo Ochichan/Yututui
+```
+
+</details>
 
 Windows에서는 시작 메뉴의 **YuTuTui!** 를 누르세요. Tray 보조 앱이 Windows Terminal을
 열고 `ytt`를 실행하며, tray 아이콘 우클릭 메뉴에도 **플레이어 열기(Open Player)** 가
@@ -109,7 +129,7 @@ ytt
 
 끝. 음악 나옵니다.
 
-**터미널이 낯설다면?** 설정 → 일반에서 **비기너 모드**를 켜면 다음 실행에 대화형 단계별 안내가 더해집니다 — [친절한 사용 설명서](MANUAL.ko.md)로도 모든 모드를 내 속도로 익힐 수 있어요.
+**터미널이 낯설다면?** 설정 → 일반에서 **비기너 모드**를 켜면 다음 실행에 대화형 9단계 안내가 더해집니다 — 첫 단계에서 UI 언어(English / 한국어 / 日本語)부터 고를 수 있어요 — [친절한 사용 설명서](MANUAL.ko.md)로도 모든 모드를 내 속도로 익힐 수 있어요.
 
 ## 둘러보기
 
@@ -229,7 +249,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ### 내 마음대로
 
-테마 14종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지.
+테마 14종(색 역할 34개 전부 hex 편집), 애니메이션 40종 — 별똥별과 도는 ASCII 도넛부터 풀캔버스 쇼피스(불꽃놀이, 라이프 게임, 파이프, 플라즈마)까지 — 프리셋 있는 10밴드 EQ, 오디오 출력 장치 선택, 라우드니스 노멀라이즈까지. UI 자체도 English / 한국어 / 日本語 세 언어를 말합니다 — 설정 → 일반 → **언어**에서 차례로 전환돼요.
 
 > 🖼️ *움짤 준비 중!*
 <!-- 📸 채우는 법: docs/media/themes.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -247,7 +267,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 
 ### 레트로 모드
 
-토글 하나로 모든 것이 CP437 안전이 됩니다 — 맨몸 리눅스 콘솔이나 낡은 SSH 세션용, 앨범 아트도 정직한 ASCII 아트로.
+토글 하나로 모든 것이 CP437 안전이 됩니다 — 맨몸 리눅스 콘솔이나 낡은 SSH 세션용, 앨범 아트도 정직한 ASCII 아트로. 레트로 모드에서는 UI 언어도 영어로 고정됩니다 — CP437에는 CJK 글리프가 없거든요.
 
 > 🖼️ *스크린샷 준비 중!*
 <!-- 📸 채우는 법: docs/media/retro.png 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -511,6 +531,12 @@ ytt tools unpin               # 기본 managed/system 선택 정책으로 복귀
 앱 자체의 yt-dlp 호출은 기본적으로 여러분의 yt-dlp 설정 파일을 무시하므로, 셸 다운로드용 옵션이 파싱 출력을 깨지 않습니다. 앱 파싱 호출에도 yt-dlp 설정을 쓰려면 `YTM_YTDLP_USER_CONFIG=1`. mpv의 `ytdl_hook`을 통한 재생은 여전히 yt-dlp 설정을 따르고, 검색·플레이리스트 조회·메타데이터·프리페치 해석·다운로드만 기본적으로 무시합니다.
 
 </details>
+
+## 보안
+
+취약점을 찾으셨나요? 공개 이슈 대신
+[GitHub 비공개 취약점 신고](https://github.com/Ochichan/Yututui/security/advisories/new)를
+이용해 주세요 — 지원 버전과 산출물 검증 방법은 [SECURITY.md](SECURITY.md)에 있습니다.
 
 ## 감사 & 라이선스
 

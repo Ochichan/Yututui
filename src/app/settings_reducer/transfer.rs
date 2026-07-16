@@ -1,20 +1,25 @@
 //! Spotify transfer actor event reduction for the settings surface.
 
 use super::super::*;
+use crate::i18n::Language;
 
 fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) -> String {
-    if crate::i18n::is_korean() {
-        format!(
+    match crate::i18n::current() {
+        Language::Korean => format!(
             "가져오기 완료: {} · Library > Playlists에 저장됨 · 검토: Local Deck > Import Sessions 또는 ytt transfer session {}",
             report.render_text(),
             report.job_id
-        )
-    } else {
-        format!(
+        ),
+        Language::Japanese => format!(
+            "インポート完了: {} · Library > Playlistsに保存済み · 確認: Local Deck > Import Sessions または ytt transfer session {}",
+            report.render_text(),
+            report.job_id
+        ),
+        _ => format!(
             "Import finished: {} · saved in Library > Playlists · review: Local Deck > Import Sessions or ytt transfer session {}",
             report.render_text(),
             report.job_id
-        )
+        ),
     }
 }
 
@@ -176,10 +181,10 @@ impl App {
                         used_client_id = Some(cid);
                     }
                 }
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("Spotify 연결됨: {display_name}")
-                } else {
-                    format!("Spotify connected as {display_name}")
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => format!("Spotify 연결됨: {display_name}"),
+                    Language::Japanese => format!("Spotify接続済み: {display_name}"),
+                    _ => format!("Spotify connected as {display_name}"),
                 };
                 self.status.kind = StatusKind::Info;
                 // Repair config if it had lost or mismatched the Client ID (recovered
@@ -198,7 +203,11 @@ impl App {
                 let _ = crate::spotify::auth::clear_pending_auth_url();
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Spotify authorization failed", "Spotify 인증 실패"),
+                    t!(
+                        "Spotify authorization failed",
+                        "Spotify 인증 실패",
+                        "Spotify認証失敗"
+                    ),
                     crate::util::sanitize::sanitize_error_text(error)
                 );
                 self.status.kind = StatusKind::Error;
@@ -209,14 +218,22 @@ impl App {
                     st.draft.spotify_stale = false;
                     st.draft.spotify_username.clear();
                 }
-                self.status.text =
-                    t!("Spotify disconnected", "Spotify 연결을 해제했어요").to_owned();
+                self.status.text = t!(
+                    "Spotify disconnected",
+                    "Spotify 연결을 해제했어요",
+                    "Spotifyの接続を解除しました"
+                )
+                .to_owned();
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::SpotifyPlaylists(Ok(items)) => {
                 if items.is_empty() {
-                    self.status.text =
-                        t!("No Spotify playlists", "Spotify 플레이리스트 없음").to_owned();
+                    self.status.text = t!(
+                        "No Spotify playlists",
+                        "Spotify 플레이리스트 없음",
+                        "Spotifyプレイリストなし"
+                    )
+                    .to_owned();
                     self.status.kind = StatusKind::Info;
                 } else {
                     self.status.text.clear();
@@ -229,7 +246,8 @@ impl App {
                     "{}: {}",
                     t!(
                         "Could not list Spotify playlists",
-                        "Spotify 플레이리스트 조회 실패"
+                        "Spotify 플레이리스트 조회 실패",
+                        "Spotifyプレイリスト取得失敗"
                     ),
                     crate::util::sanitize::sanitize_error_text(error)
                 );
@@ -237,8 +255,8 @@ impl App {
             }
             TransferEvent::Progress(p) => {
                 self.transfer_running = true;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!(
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => format!(
                         "Spotify 가져오기: {} {}/{} · 맞춤 {} · 자동 {} · 검토 {} · 누락 {} · 작성 {} · {}",
                         p.stage.label(),
                         p.done,
@@ -249,9 +267,20 @@ impl App {
                         p.not_found,
                         p.written,
                         p.current
-                    )
-                } else {
-                    format!(
+                    ),
+                    Language::Japanese => format!(
+                        "Spotifyインポート: {} {}/{} · 一致 {} · 自動 {} · 確認 {} · 欠落 {} · 作成 {} · {}",
+                        p.stage.label(),
+                        p.done,
+                        p.total,
+                        p.matched,
+                        p.auto_accepted,
+                        p.ambiguous,
+                        p.not_found,
+                        p.written,
+                        p.current
+                    ),
+                    _ => format!(
                         "Spotify import: {} {}/{} · matched {} · auto {} · review {} · missing {} · written {} · {}",
                         p.stage.label(),
                         p.done,
@@ -262,7 +291,7 @@ impl App {
                         p.not_found,
                         p.written,
                         p.current
-                    )
+                    ),
                 };
                 self.status.kind = StatusKind::Info;
             }
@@ -292,7 +321,11 @@ impl App {
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = format!(
                     "{}: {error}",
-                    t!("Import request rejected", "가져오기 요청 거부")
+                    t!(
+                        "Import request rejected",
+                        "가져오기 요청 거부",
+                        "インポートリクエスト拒否"
+                    )
                 );
                 self.status.kind = StatusKind::Error;
             }
@@ -306,10 +339,13 @@ impl App {
                 self.status.text = if resumable && !job_id.is_empty() {
                     format!(
                         "{}: {error} · ytt transfer resume {job_id}",
-                        t!("Import interrupted", "가져오기 중단")
+                        t!("Import interrupted", "가져오기 중단", "インポート中断")
                     )
                 } else {
-                    format!("{}: {error}", t!("Import failed", "가져오기 실패"))
+                    format!(
+                        "{}: {error}",
+                        t!("Import failed", "가져오기 실패", "インポート失敗")
+                    )
                 };
                 self.status.kind = StatusKind::Error;
             }

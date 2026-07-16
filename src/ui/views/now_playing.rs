@@ -28,7 +28,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" Now playing ", " 지금 듣는 노래 "))
+        .title(t!(
+            " Now playing ",
+            " 지금 듣는 노래 ",
+            " いま流れている曲 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::BorderPrimary))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -68,13 +72,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Empty heart until it's actually in the favorites; filled once saved. The fill is driven by
     // real library state (not merely a resolved YouTube match), so pressing favorite flips ♡ → ♥.
     let fav_label = if overlay.resolving {
-        t!("Saving…", "저장 중…").to_owned()
+        t!("Saving…", "저장 중…", "保存中…").to_owned()
     } else if app.now_playing_is_favorited() {
-        format!("{} ({fav_key})", t!("♥ Saved", "♥ 저장됨"))
+        format!("{} ({fav_key})", t!("♥ Saved", "♥ 저장됨", "♥ 保存済み"))
     } else {
-        format!("{} ({fav_key})", t!("♡ Favorite", "♡ 즐겨찾기"))
+        format!(
+            "{} ({fav_key})",
+            t!("♡ Favorite", "♡ 즐겨찾기", "♡ お気に入り")
+        )
     };
-    let ask_label = format!("{} ({ask_key})", t!("Tell me more", "더 알아보기"));
+    let ask_label = format!(
+        "{} ({ask_key})",
+        t!("Tell me more", "더 알아보기", "もっと詳しく")
+    );
     let mut segs: Vec<Seg> = Vec::with_capacity(5);
     if app.now_playing_can_favorite() {
         segs.push(Seg::button(MouseTarget::NowPlayingFavorite, &fav_label));
@@ -86,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     segs.push(Seg::button(
         MouseTarget::CloseNowPlaying,
-        t!("Close", "닫기"),
+        t!("Close", "닫기", "閉じる"),
     ));
     buttons::render_segments(
         frame,
@@ -101,10 +111,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let close_key =
         app.keymap
             .label_for_display(KeyContext::Player, Action::IdentifyNowPlaying, retro);
-    let hint = if crate::i18n::is_korean() {
-        format!("{close_key} / Esc 닫기")
-    } else {
-        format!("{close_key} / Esc to close")
+    let hint = match crate::i18n::current() {
+        crate::i18n::Language::Korean => format!("{close_key} / Esc 닫기"),
+        crate::i18n::Language::Japanese => format!("{close_key} / Esc で閉じる"),
+        _ => format!("{close_key} / Esc to close"),
     };
     frame.render_widget(
         Paragraph::new(Line::from(hint))
@@ -153,7 +163,8 @@ fn draw_body(
             Line::from(Span::styled(
                 t!(
                     "Sounds like station content (ad / jingle), not a song.",
-                    "광고나 방송국 징글 같아요 — 노래가 아니에요"
+                    "광고나 방송국 징글 같아요 — 노래가 아니에요",
+                    "広告や局のジングルのようです — 曲ではありません"
                 ),
                 primary,
             )),
@@ -164,7 +175,8 @@ fn draw_body(
             Line::from(Span::styled(
                 t!(
                     "This station doesn't expose song info.",
-                    "이 방송국은 곡 정보를 제공하지 않아요"
+                    "이 방송국은 곡 정보를 제공하지 않아요",
+                    "この放送局は曲情報を提供していません"
                 ),
                 primary,
             )),
@@ -172,7 +184,8 @@ fn draw_body(
             Line::from(Span::styled(
                 t!(
                     "(no usable stream title right now)",
-                    "(지금은 쓸 만한 스트림 제목이 없어요)"
+                    "(지금은 쓸 만한 스트림 제목이 없어요)",
+                    "(現在利用できるストリームタイトルがありません)"
                 ),
                 muted,
             )),

@@ -49,9 +49,13 @@ impl RecordingMode {
     /// Bilingual label for the settings selector / button summary.
     pub fn label(self) -> String {
         match self {
-            RecordingMode::Everything => t!("Save all tracks", "모든 트랙 저장").to_owned(),
-            RecordingMode::Decide => t!("Decide per track", "트랙별 선택").to_owned(),
-            RecordingMode::Nothing => t!("Off", "끄기").to_owned(),
+            RecordingMode::Everything => {
+                t!("Save all tracks", "모든 트랙 저장", "すべての曲を保存").to_owned()
+            }
+            RecordingMode::Decide => {
+                t!("Decide per track", "트랙별 선택", "曲ごとに選択").to_owned()
+            }
+            RecordingMode::Nothing => t!("Off", "끄기", "オフ").to_owned(),
         }
     }
 
@@ -115,27 +119,39 @@ impl RecordingState {
     /// Bilingual one-line status for the recordings browser.
     pub fn label(self) -> String {
         match self {
-            RecordingState::Recording => t!("Recording…", "녹음 중…").to_owned(),
-            RecordingState::Recorded => t!("Ready", "준비됨").to_owned(),
-            RecordingState::RecordedReachedMaxDuration => {
-                t!("Ready (max length)", "준비됨 (최대 길이)").to_owned()
+            RecordingState::Recording => t!("Recording…", "녹음 중…", "録音中…").to_owned(),
+            RecordingState::Recorded => t!("Ready", "준비됨", "準備完了").to_owned(),
+            RecordingState::RecordedReachedMaxDuration => t!(
+                "Ready (max length)",
+                "준비됨 (최대 길이)",
+                "準備完了 (最大長)"
+            )
+            .to_owned(),
+            RecordingState::Saved => t!("Saved", "저장됨", "保存済み").to_owned(),
+            RecordingState::SaveRequested => t!(
+                "Preparing durable save…",
+                "내구성 저장 준비 중…",
+                "永続保存を準備中…"
+            )
+            .to_owned(),
+            RecordingState::SavePending => t!(
+                "Saving / queued for recovery…",
+                "저장 중 / 복구 대기 중…",
+                "保存中 / 復旧待機中…"
+            )
+            .to_owned(),
+            RecordingState::DiscardedBelowMinDuration => {
+                t!("Too short", "너무 짧음", "短すぎ").to_owned()
             }
-            RecordingState::Saved => t!("Saved", "저장됨").to_owned(),
-            RecordingState::SaveRequested => {
-                t!("Preparing durable save…", "내구성 저장 준비 중…").to_owned()
-            }
-            RecordingState::SavePending => {
-                t!("Saving / queued for recovery…", "저장 중 / 복구 대기 중…").to_owned()
-            }
-            RecordingState::DiscardedBelowMinDuration => t!("Too short", "너무 짧음").to_owned(),
-            RecordingState::DiscardedCancelled => t!("Discarded", "버림").to_owned(),
+            RecordingState::DiscardedCancelled => t!("Discarded", "버림", "破棄").to_owned(),
             RecordingState::AutomaticSaveBlocked => t!(
                 "Automatic save blocked — action needed",
-                "자동 저장 차단 — 조치 필요"
+                "자동 저장 차단 — 조치 필요",
+                "自動保存ブロック — 要対応"
             )
             .to_owned(),
             RecordingState::AutomaticSaveRetrying => {
-                t!("Retrying save…", "저장 재시도 중…").to_owned()
+                t!("Retrying save…", "저장 재시도 중…", "保存を再試行中…").to_owned()
             }
         }
     }

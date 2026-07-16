@@ -44,6 +44,7 @@ pub mod romanize;
 pub mod runtime;
 pub mod scrobble;
 pub mod search_source;
+pub mod second_launch;
 pub mod session;
 pub mod settings;
 pub mod signals;

@@ -26,7 +26,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Only for live radio stations",
-                "라디오 방송에서만 쓸 수 있어요"
+                "라디오 방송에서만 쓸 수 있어요",
+                "ラジオ放送でのみ使えます"
             )
             .to_owned();
             self.dirty = true;
@@ -192,7 +193,8 @@ impl App {
                     self.status.kind = StatusKind::Error;
                     self.status.text = t!(
                         "Couldn't find this track on YouTube",
-                        "YouTube에서 이 곡을 찾지 못했어요"
+                        "YouTube에서 이 곡을 찾지 못했어요",
+                        "YouTube でこの曲を見つけられませんでした"
                     )
                     .to_owned();
                     return Vec::new();
@@ -221,15 +223,23 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.dirty = true;
         if self.library.is_favorite(&song.video_id) {
-            self.status.text =
-                t!("Already in music favorites", "이미 음악 즐겨찾기에 있어요").to_owned();
+            self.status.text = t!(
+                "Already in music favorites",
+                "이미 음악 즐겨찾기에 있어요",
+                "すでに音楽のお気に入りにあります"
+            )
+            .to_owned();
             return Vec::new();
         }
         self.library_mut().toggle_favorite(&song);
-        self.status.text = if crate::i18n::is_korean() {
-            format!("음악 즐겨찾기에 저장: {} — {}", song.title, song.artist)
-        } else {
-            format!("Saved to music favorites: {} — {}", song.title, song.artist)
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("음악 즐겨찾기에 저장: {} — {}", song.title, song.artist)
+            }
+            crate::i18n::Language::Japanese => {
+                format!("音楽のお気に入りに保存: {} — {}", song.title, song.artist)
+            }
+            _ => format!("Saved to music favorites: {} — {}", song.title, song.artist),
         };
         vec![Cmd::Persist(PersistCmd::Library)]
     }
@@ -249,7 +259,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "DJ Gem is busy — try again in a moment",
-                "DJ Gem이 응답 중이에요 — 잠시 후 다시 시도해 주세요"
+                "DJ Gem이 응답 중이에요 — 잠시 후 다시 시도해 주세요",
+                "DJ Gem が応答中です — しばらくしてからもう一度お試しください"
             )
             .to_owned();
             self.dirty = true;
@@ -281,7 +292,11 @@ impl App {
              resolve to a real track, say so instead of inventing one.",
             "이 곡을 풍부하게 소개해줘 — 아티스트(배경·대표작), 이 곡(수록 앨범/발매 정보·의미·\
              비하인드), 장르와 시대, 알아두면 좋은 점, 그리고 좋아할 만한 비슷한 곡 두어 개 추천. \
-             각 항목은 짧게. 제목이 실제 곡으로 확인되지 않으면 지어내지 말고 그렇다고 말해줘."
+             각 항목은 짧게. 제목이 실제 곡으로 확인되지 않으면 지어내지 말고 그렇다고 말해줘.",
+            "この曲を詳しく紹介して — アーティスト(経歴・代表作)、この曲(収録アルバム/リリース\
+             情報・意味・裏話)、ジャンルと時代、知っておくと良い点、そして気に入りそうな似た曲を\
+             2〜3曲。各項目は短く。タイトルが実在の曲として確認できなければ、でっち上げずにそう\
+             伝えて。"
         );
         let seed = format!(
             "<now_playing>\n\
@@ -303,7 +318,11 @@ impl App {
             AiRole::User,
             format!(
                 "{} ({compact})",
-                t!("Tell me more about this track", "이 곡 더 알려줘")
+                t!(
+                    "Tell me more about this track",
+                    "이 곡 더 알려줘",
+                    "この曲についてもっと教えて"
+                )
             ),
         );
         self.ai.thinking = true;

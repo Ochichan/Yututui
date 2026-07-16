@@ -43,6 +43,58 @@ pub const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 /// for the whole process lifetime; a reset costs at most one extra self-heal per track.
 pub const HEAL_ATTEMPTED_MAX: usize = 512;
 
+// --- Autoplay refill admission ------------------------------------------------
+
+/// The owner-neutral part of an admitted autoplay refill. The App and daemon attach their
+/// own exclusion policy, effect type, status text, and in-flight state after this plan is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoplayRefill {
+    pub seed: String,
+    pub seed_video_id: String,
+}
+
+/// The seed fields an owner-side adapter extracts from its current track. Core has no track
+/// model; the root crate's `streaming::plan_autoplay_refill` adapter maps its `Song` into
+/// this view.
+#[derive(Debug, Clone, Copy)]
+pub struct RefillSeedTrack<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub video_id: &'a str,
+    /// Live-radio pseudo-tracks are hard-stopped: a station is not a seedable song.
+    pub is_radio_station: bool,
+}
+
+/// Decide whether an autoplay refill may start, and capture the current track as its seed.
+///
+/// Both playback owners feed this function their effective streaming state and their own
+/// definition of "refill pending". Forced refills bypass only the queue-length and cooldown
+/// gates; disabled streaming, an in-flight refill, a missing current track, and a live-radio
+/// pseudo-track remain hard stops.
+pub fn plan_autoplay_refill(
+    active: bool,
+    refill_pending: bool,
+    force: bool,
+    remaining: usize,
+    since_last: Option<Duration>,
+    current: Option<RefillSeedTrack<'_>>,
+) -> Option<AutoplayRefill> {
+    if !active || refill_pending {
+        return None;
+    }
+    if !force && remaining > AUTOPLAY_THRESHOLD {
+        return None;
+    }
+    if !force && since_last.is_some_and(|elapsed| elapsed < AUTOPLAY_COOLDOWN) {
+        return None;
+    }
+    let current = current.filter(|track| !track.is_radio_station)?;
+    Some(AutoplayRefill {
+        seed: format!("{} — {}", current.title, current.artist),
+        seed_video_id: current.video_id.to_owned(),
+    })
+}
+
 // --- Playback-mode transitions ----------------------------------------------
 
 /// The owner-neutral portion of playback mode state.
@@ -383,5 +435,81 @@ mod tests {
         assert_eq!(norm_volume_event(-5.0), Some(0));
         assert_eq!(norm_volume_event(f64::NAN), None);
         assert_eq!(norm_volume_event(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn autoplay_refill_admission_truth_table() {
+        let track = RefillSeedTrack {
+            title: "Current Track",
+            artist: "Current Artist",
+            video_id: "seed-id",
+            is_radio_station: false,
+        };
+        let radio = RefillSeedTrack {
+            is_radio_station: true,
+            ..track
+        };
+        let recent = AUTOPLAY_COOLDOWN - Duration::from_nanos(1);
+
+        for active in [false, true] {
+            for refill_pending in [false, true] {
+                for force in [false, true] {
+                    for remaining in [AUTOPLAY_THRESHOLD, AUTOPLAY_THRESHOLD + 1] {
+                        for since_last in [None, Some(recent), Some(AUTOPLAY_COOLDOWN)] {
+                            // 0 = seedable current, 1 = live radio, 2 = missing current.
+                            for current_kind in 0..3 {
+                                let current = match current_kind {
+                                    0 => Some(track),
+                                    1 => Some(radio),
+                                    _ => None,
+                                };
+                                let cooldown_elapsed = match since_last {
+                                    Some(elapsed) => elapsed >= AUTOPLAY_COOLDOWN,
+                                    None => true,
+                                };
+                                let expected = active
+                                    && !refill_pending
+                                    && (force || remaining <= AUTOPLAY_THRESHOLD)
+                                    && (force || cooldown_elapsed)
+                                    && current_kind == 0;
+
+                                let actual = plan_autoplay_refill(
+                                    active,
+                                    refill_pending,
+                                    force,
+                                    remaining,
+                                    since_last,
+                                    current,
+                                );
+                                assert_eq!(
+                                    actual.is_some(),
+                                    expected,
+                                    "active={active} pending={refill_pending} force={force} \
+                                     remaining={remaining} since_last={since_last:?} \
+                                     current_kind={current_kind}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn autoplay_refill_captures_the_owner_effect_payload() {
+        let current = RefillSeedTrack {
+            title: "Current Track",
+            artist: "Current Artist",
+            video_id: "seed-id",
+            is_radio_station: false,
+        };
+        assert_eq!(
+            plan_autoplay_refill(true, false, false, 0, None, Some(current)),
+            Some(AutoplayRefill {
+                seed: "Current Track — Current Artist".to_owned(),
+                seed_video_id: "seed-id".to_owned(),
+            })
+        );
     }
 }

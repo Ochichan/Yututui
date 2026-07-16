@@ -69,7 +69,7 @@ fn block_on<F: std::future::Future>(fut: F) -> Option<F::Output> {
 fn status(why: bool) -> i32 {
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     let Some(()) = block_on(tools::init(&cfg.tools)) else {
         eprintln!("ytt tools: failed to build async runtime");
@@ -89,10 +89,10 @@ fn status(why: bool) -> i32 {
         ),
         None => println!(
             "yt-dlp: {}",
-            if kr {
-                "없음 — `ytt tools update`로 받으세요"
-            } else {
-                "none found — fetch one with `ytt tools update`"
+            match lang {
+                i18n::Language::Korean => "없음 — `ytt tools update`로 받으세요",
+                i18n::Language::Japanese => "なし — `ytt tools update`で取得してください",
+                _ => "none found — fetch one with `ytt tools update`",
             }
         ),
     }
@@ -102,19 +102,19 @@ fn status(why: bool) -> i32 {
     if !cfg.tools.managed_enabled() {
         println!(
             "managed: {}",
-            if kr {
-                "꺼짐 (tools.ytdlp_managed = false)"
-            } else {
-                "disabled (tools.ytdlp_managed = false)"
+            match lang {
+                i18n::Language::Korean => "꺼짐 (tools.ytdlp_managed = false)",
+                i18n::Language::Japanese => "無効 (tools.ytdlp_managed = false)",
+                _ => "disabled (tools.ytdlp_managed = false)",
             }
         );
     } else if tools::ytdlp::asset_name().is_none() {
         println!(
             "managed: {}",
-            if kr {
-                "이 플랫폼은 미지원 (시스템 yt-dlp 사용)"
-            } else {
-                "unsupported on this platform (system yt-dlp is used)"
+            match lang {
+                i18n::Language::Korean => "이 플랫폼은 미지원 (시스템 yt-dlp 사용)",
+                i18n::Language::Japanese => "このプラットフォームは未対応 (システムのyt-dlpを使用)",
+                _ => "unsupported on this platform (system yt-dlp is used)",
             }
         );
     } else {
@@ -132,32 +132,37 @@ fn status(why: bool) -> i32 {
             None => println!(
                 "managed: {} — {}",
                 channel.label(),
-                if kr {
-                    "설치되지 않음"
-                } else {
-                    "not installed"
+                match lang {
+                    i18n::Language::Korean => "설치되지 않음",
+                    i18n::Language::Japanese => "未インストール",
+                    _ => "not installed",
                 }
             ),
         }
+        let last_check = match lang {
+            i18n::Language::Korean => "마지막 확인",
+            i18n::Language::Japanese => "最終確認",
+            _ => "last check",
+        };
         match state.last_check_unix {
             Some(at) => {
                 let age_h = tools::ytdlp::now_unix().saturating_sub(at) / 3600;
-                println!(
-                    "{}: {age_h}h",
-                    if kr { "마지막 확인" } else { "last check" }
-                );
+                println!("{last_check}: {age_h}h");
             }
             None => println!(
-                "{}: {}",
-                if kr { "마지막 확인" } else { "last check" },
-                if kr { "없음" } else { "never" }
+                "{last_check}: {}",
+                match lang {
+                    i18n::Language::Korean => "없음",
+                    i18n::Language::Japanese => "なし",
+                    _ => "never",
+                }
             ),
         }
     }
 
     println!("mpv: {}", cfg.tools.mpv_program());
     if why {
-        print_status_why(&cfg, kr);
+        print_status_why(&cfg, lang);
     }
     match tools::ytdlp_selection() {
         Some(_) => 0,
@@ -189,50 +194,68 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a == b
 }
 
-fn print_status_why(cfg: &config::Config, kr: bool) {
+fn print_status_why(cfg: &config::Config, lang: i18n::Language) {
     println!();
     println!(
         "{}",
-        if kr {
-            "선택 이유"
-        } else {
-            "Selection reasons"
+        match lang {
+            i18n::Language::Korean => "선택 이유",
+            i18n::Language::Japanese => "選択理由",
+            _ => "Selection reasons",
         }
     );
     println!(
         "  - {}",
-        if kr {
-            "정책: override > enabled managed/system 최신 버전 비교; 같은 버전이면 managed 우선"
-        } else {
-            "policy: override > newest enabled managed/system; equal versions prefer managed"
+        match lang {
+            i18n::Language::Korean =>
+                "정책: override > enabled managed/system 최신 버전 비교; 같은 버전이면 managed 우선",
+            i18n::Language::Japanese =>
+                "ポリシー: override > 有効な managed/system の新しい方; 同一バージョンなら managed 優先",
+            _ => "policy: override > newest enabled managed/system; equal versions prefer managed",
         }
     );
     if cfg!(target_os = "macos") {
         println!(
             "  - {}",
-            if kr {
-                "macOS 예외: 실행 가능한 system yt-dlp가 있으면 managed보다 우선 (스탠드얼론 실행 지연 회피)"
-            } else {
-                "macOS exception: a usable system yt-dlp wins over managed to avoid standalone exec latency"
+            match lang {
+                i18n::Language::Korean =>
+                    "macOS 예외: 실행 가능한 system yt-dlp가 있으면 managed보다 우선 (스탠드얼론 실행 지연 회피)",
+                i18n::Language::Japanese =>
+                    "macOS 例外: 実行可能な system yt-dlp があれば managed より優先 (スタンドアロン実行の遅延回避)",
+                _ =>
+                    "macOS exception: a usable system yt-dlp wins over managed to avoid standalone exec latency",
             }
         );
     }
 
+    let ignored_managed = match lang {
+        i18n::Language::Korean => "무시됨 (tools.ytdlp_managed = false)",
+        i18n::Language::Japanese => "無視 (tools.ytdlp_managed = false)",
+        _ => "ignored (tools.ytdlp_managed = false)",
+    };
     match cfg.tools.ytdlp_override() {
         Some(path) => {
             let version = probe_ytdlp_path(&path).unwrap_or_else(|| "?".to_owned());
             println!(
                 "  - override: {} {} · {}",
-                if kr { "활성" } else { "active" },
+                match lang {
+                    i18n::Language::Korean => "활성",
+                    i18n::Language::Japanese => "有効",
+                    _ => "active",
+                },
                 version,
                 path.display()
             );
-            print_js_runtime_why(kr);
+            print_js_runtime_why(lang);
             return;
         }
         None => println!(
             "  - override: {}",
-            if kr { "설정되지 않음" } else { "not set" }
+            match lang {
+                i18n::Language::Korean => "설정되지 않음",
+                i18n::Language::Japanese => "未設定",
+                _ => "not set",
+            }
         ),
     }
 
@@ -240,29 +263,18 @@ fn print_status_why(cfg: &config::Config, kr: bool) {
         match tools::ytdlp::installed_managed_path() {
             Some(path) => println!(
                 "  - managed candidate: {} · {}",
-                if kr {
-                    "무시됨 (tools.ytdlp_managed = false)"
-                } else {
-                    "ignored (tools.ytdlp_managed = false)"
-                },
+                ignored_managed,
                 path.display()
             ),
-            None => println!(
-                "  - managed candidate: {}",
-                if kr {
-                    "무시됨 (tools.ytdlp_managed = false)"
-                } else {
-                    "ignored (tools.ytdlp_managed = false)"
-                }
-            ),
+            None => println!("  - managed candidate: {ignored_managed}"),
         }
     } else if tools::ytdlp::asset_name().is_none() {
         println!(
             "  - managed candidate: {}",
-            if kr {
-                "이 플랫폼은 공식 managed 빌드 없음"
-            } else {
-                "no official managed build for this platform"
+            match lang {
+                i18n::Language::Korean => "이 플랫폼은 공식 managed 빌드 없음",
+                i18n::Language::Japanese => "このプラットフォーム向けの公式 managed ビルドなし",
+                _ => "no official managed build for this platform",
             }
         );
     } else {
@@ -273,10 +285,10 @@ fn print_status_why(cfg: &config::Config, kr: bool) {
             }
             None => println!(
                 "  - managed candidate: {}",
-                if kr {
-                    "설치되지 않음"
-                } else {
-                    "not installed"
+                match lang {
+                    i18n::Language::Korean => "설치되지 않음",
+                    i18n::Language::Japanese => "未インストール",
+                    _ => "not installed",
                 }
             ),
         }
@@ -286,10 +298,10 @@ fn print_status_why(cfg: &config::Config, kr: bool) {
     if system_candidates.is_empty() {
         println!(
             "  - system candidates: {}",
-            if kr {
-                "PATH에서 찾지 못함"
-            } else {
-                "not found on PATH"
+            match lang {
+                i18n::Language::Korean => "PATH에서 찾지 못함",
+                i18n::Language::Japanese => "PATHに見つかりません",
+                _ => "not found on PATH",
             }
         );
     } else {
@@ -300,7 +312,7 @@ fn print_status_why(cfg: &config::Config, kr: bool) {
         }
     }
 
-    print_js_runtime_why(kr);
+    print_js_runtime_why(lang);
 }
 
 fn probe_ytdlp_path(path: &Path) -> Option<String> {
@@ -337,7 +349,7 @@ fn use_ytdlp(args: &[String]) -> i32 {
 
     let mut cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     let target = match parse_use_target(&args[0]) {
         Ok(target) => target,
@@ -348,7 +360,7 @@ fn use_ytdlp(args: &[String]) -> i32 {
         }
     };
 
-    let pin = match resolve_pin_target(&target, kr) {
+    let pin = match resolve_pin_target(&target, lang) {
         Ok(pin) => pin,
         Err(msg) => {
             eprintln!("ytt tools use: {msg}");
@@ -365,39 +377,33 @@ fn use_ytdlp(args: &[String]) -> i32 {
     println!(
         "{} {} · {}",
         match pin.kind {
-            PinKind::System => {
-                if kr {
-                    "yt-dlp를 system에 고정했습니다:"
-                } else {
-                    "yt-dlp pinned to system:"
-                }
-            }
-            PinKind::Managed => {
-                if kr {
-                    "yt-dlp를 managed에 고정했습니다:"
-                } else {
-                    "yt-dlp pinned to managed:"
-                }
-            }
-            PinKind::Path => {
-                if kr {
-                    "yt-dlp를 지정 경로에 고정했습니다:"
-                } else {
-                    "yt-dlp pinned to path:"
-                }
-            }
+            PinKind::System => match lang {
+                i18n::Language::Korean => "yt-dlp를 system에 고정했습니다:",
+                i18n::Language::Japanese => "yt-dlpをsystemに固定しました:",
+                _ => "yt-dlp pinned to system:",
+            },
+            PinKind::Managed => match lang {
+                i18n::Language::Korean => "yt-dlp를 managed에 고정했습니다:",
+                i18n::Language::Japanese => "yt-dlpをmanagedに固定しました:",
+                _ => "yt-dlp pinned to managed:",
+            },
+            PinKind::Path => match lang {
+                i18n::Language::Korean => "yt-dlp를 지정 경로에 고정했습니다:",
+                i18n::Language::Japanese => "yt-dlpを指定パスに固定しました:",
+                _ => "yt-dlp pinned to path:",
+            },
         },
         pin.version,
         pin.path.display()
     );
-    warn_env_override(kr);
+    warn_env_override(lang);
     0
 }
 
 fn unpin_ytdlp() -> i32 {
     let mut cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     cfg.tools.ytdlp_path = None;
     cfg.tools.ytdlp_managed = None;
@@ -408,13 +414,15 @@ fn unpin_ytdlp() -> i32 {
 
     println!(
         "{}",
-        if kr {
-            "yt-dlp 고정을 해제했습니다. 기본 managed/system 선택 정책을 사용합니다."
-        } else {
-            "yt-dlp unpinned. The normal managed/system selection policy is active."
+        match lang {
+            i18n::Language::Korean =>
+                "yt-dlp 고정을 해제했습니다. 기본 managed/system 선택 정책을 사용합니다.",
+            i18n::Language::Japanese =>
+                "yt-dlpの固定を解除しました。通常のmanaged/system選択ポリシーを使用します。",
+            _ => "yt-dlp unpinned. The normal managed/system selection policy is active.",
         }
     );
-    warn_env_override(kr);
+    warn_env_override(lang);
     0
 }
 
@@ -425,24 +433,24 @@ fn reset(args: &[String]) -> i32 {
     }
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     let mut ok = true;
     match session::SessionCache::clear() {
         Ok(true) => println!(
             "{}",
-            if kr {
-                "session cache: 삭제됨"
-            } else {
-                "session cache: cleared"
+            match lang {
+                i18n::Language::Korean => "session cache: 삭제됨",
+                i18n::Language::Japanese => "session cache: 削除済み",
+                _ => "session cache: cleared",
             }
         ),
         Ok(false) => println!(
             "{}",
-            if kr {
-                "session cache: 없음"
-            } else {
-                "session cache: not present"
+            match lang {
+                i18n::Language::Korean => "session cache: 없음",
+                i18n::Language::Japanese => "session cache: なし",
+                _ => "session cache: not present",
             }
         ),
         Err(e) => {
@@ -454,28 +462,28 @@ fn reset(args: &[String]) -> i32 {
     tools::ytdlp::clear_probe_cache();
     println!(
         "{}",
-        if kr {
-            "yt-dlp probe cache: 삭제됨"
-        } else {
-            "yt-dlp probe cache: cleared"
+        match lang {
+            i18n::Language::Korean => "yt-dlp probe cache: 삭제됨",
+            i18n::Language::Japanese => "yt-dlp probe cache: 削除済み",
+            _ => "yt-dlp probe cache: cleared",
         }
     );
 
     match tools::ytdlp::remove_update_lock_if_free() {
         Ok(true) => println!(
             "{}",
-            if kr {
-                "yt-dlp update lock: stale lock 삭제됨"
-            } else {
-                "yt-dlp update lock: stale lock removed"
+            match lang {
+                i18n::Language::Korean => "yt-dlp update lock: stale lock 삭제됨",
+                i18n::Language::Japanese => "yt-dlp update lock: stale lock 削除済み",
+                _ => "yt-dlp update lock: stale lock removed",
             }
         ),
         Ok(false) => println!(
             "{}",
-            if kr {
-                "yt-dlp update lock: 없음 또는 사용 중"
-            } else {
-                "yt-dlp update lock: absent or busy"
+            match lang {
+                i18n::Language::Korean => "yt-dlp update lock: 없음 또는 사용 중",
+                i18n::Language::Japanese => "yt-dlp update lock: なしまたは使用中",
+                _ => "yt-dlp update lock: absent or busy",
             }
         ),
         Err(e) => {
@@ -499,7 +507,7 @@ fn reset(args: &[String]) -> i32 {
 fn diagnose() -> i32 {
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
     if block_on(tools::init(&cfg.tools)).is_none() {
         eprintln!("ytt tools diagnose: failed to refresh tool selection");
         return 1;
@@ -663,10 +671,10 @@ fn diagnose() -> i32 {
     }
     println!(
         "{} {}",
-        if kr {
-            "진단 파일:"
-        } else {
-            "diagnostic file:"
+        match lang {
+            i18n::Language::Korean => "진단 파일:",
+            i18n::Language::Japanese => "診断ファイル:",
+            _ => "diagnostic file:",
         },
         path.display()
     );
@@ -710,25 +718,27 @@ fn looks_like_path(raw: &str) -> bool {
     path.is_absolute() || path.components().count() > 1 || raw.contains('\\')
 }
 
-fn resolve_pin_target(target: &UseTarget, kr: bool) -> Result<ResolvedPin, String> {
+fn resolve_pin_target(target: &UseTarget, lang: i18n::Language) -> Result<ResolvedPin, String> {
     match target {
         UseTarget::System => {
             let path = deps::resolve_on_path("yt-dlp").ok_or_else(|| {
-                if kr {
-                    "PATH에서 system yt-dlp를 찾지 못했습니다.".to_owned()
-                } else {
-                    "system yt-dlp was not found on PATH.".to_owned()
+                match lang {
+                    i18n::Language::Korean => "PATH에서 system yt-dlp를 찾지 못했습니다.",
+                    i18n::Language::Japanese => "PATHにsystem yt-dlpが見つかりませんでした。",
+                    _ => "system yt-dlp was not found on PATH.",
                 }
+                .to_owned()
             })?;
-            let version = probe_ytdlp_path(&path).ok_or_else(|| {
-                if kr {
-                    format!(
-                        "system yt-dlp 버전을 확인할 수 없습니다: {}",
-                        path.display()
-                    )
-                } else {
-                    format!("could not read system yt-dlp version: {}", path.display())
-                }
+            let version = probe_ytdlp_path(&path).ok_or_else(|| match lang {
+                i18n::Language::Korean => format!(
+                    "system yt-dlp 버전을 확인할 수 없습니다: {}",
+                    path.display()
+                ),
+                i18n::Language::Japanese => format!(
+                    "system yt-dlpのバージョンを確認できません: {}",
+                    path.display()
+                ),
+                _ => format!("could not read system yt-dlp version: {}", path.display()),
             })?;
             Ok(ResolvedPin {
                 kind: PinKind::System,
@@ -738,22 +748,27 @@ fn resolve_pin_target(target: &UseTarget, kr: bool) -> Result<ResolvedPin, Strin
         }
         UseTarget::Managed => {
             let path = tools::ytdlp::installed_managed_path().ok_or_else(|| {
-                if kr {
-                    "managed yt-dlp가 설치되어 있지 않습니다. 먼저 `ytt tools update`를 실행하세요."
-                        .to_owned()
-                } else {
-                    "managed yt-dlp is not installed. Run `ytt tools update` first.".to_owned()
+                match lang {
+                    i18n::Language::Korean => {
+                        "managed yt-dlp가 설치되어 있지 않습니다. 먼저 `ytt tools update`를 실행하세요."
+                    }
+                    i18n::Language::Japanese => {
+                        "managed yt-dlpがインストールされていません。先に`ytt tools update`を実行してください。"
+                    }
+                    _ => "managed yt-dlp is not installed. Run `ytt tools update` first.",
                 }
+                .to_owned()
             })?;
-            let version = probe_ytdlp_path(&path).ok_or_else(|| {
-                if kr {
-                    format!(
-                        "managed yt-dlp 버전을 확인할 수 없습니다: {}",
-                        path.display()
-                    )
-                } else {
-                    format!("could not read managed yt-dlp version: {}", path.display())
-                }
+            let version = probe_ytdlp_path(&path).ok_or_else(|| match lang {
+                i18n::Language::Korean => format!(
+                    "managed yt-dlp 버전을 확인할 수 없습니다: {}",
+                    path.display()
+                ),
+                i18n::Language::Japanese => format!(
+                    "managed yt-dlpのバージョンを確認できません: {}",
+                    path.display()
+                ),
+                _ => format!("could not read managed yt-dlp version: {}", path.display()),
             })?;
             Ok(ResolvedPin {
                 kind: PinKind::Managed,
@@ -762,33 +777,42 @@ fn resolve_pin_target(target: &UseTarget, kr: bool) -> Result<ResolvedPin, Strin
             })
         }
         UseTarget::Path(raw_path) => {
-            let path = std::fs::canonicalize(raw_path).map_err(|e| {
-                if kr {
-                    format!(
-                        "지정한 yt-dlp 경로를 열 수 없습니다: {} ({e})",
-                        raw_path.display()
-                    )
-                } else {
-                    format!("could not open yt-dlp path: {} ({e})", raw_path.display())
-                }
+            let path = std::fs::canonicalize(raw_path).map_err(|e| match lang {
+                i18n::Language::Korean => format!(
+                    "지정한 yt-dlp 경로를 열 수 없습니다: {} ({e})",
+                    raw_path.display()
+                ),
+                i18n::Language::Japanese => format!(
+                    "指定したyt-dlpのパスを開けません: {} ({e})",
+                    raw_path.display()
+                ),
+                _ => format!("could not open yt-dlp path: {} ({e})", raw_path.display()),
             })?;
             let path_str = path.to_string_lossy();
             if !deps::on_path(path_str.as_ref()) {
-                return Err(if kr {
-                    format!("지정한 yt-dlp가 실행 파일이 아닙니다: {}", path.display())
-                } else {
-                    format!("yt-dlp path is not executable: {}", path.display())
+                return Err(match lang {
+                    i18n::Language::Korean => {
+                        format!("지정한 yt-dlp가 실행 파일이 아닙니다: {}", path.display())
+                    }
+                    i18n::Language::Japanese => {
+                        format!(
+                            "指定したyt-dlpが実行ファイルではありません: {}",
+                            path.display()
+                        )
+                    }
+                    _ => format!("yt-dlp path is not executable: {}", path.display()),
                 });
             }
-            let version = probe_ytdlp_path(&path).ok_or_else(|| {
-                if kr {
-                    format!(
-                        "지정한 yt-dlp 버전을 확인할 수 없습니다: {}",
-                        path.display()
-                    )
-                } else {
-                    format!("could not read yt-dlp version: {}", path.display())
-                }
+            let version = probe_ytdlp_path(&path).ok_or_else(|| match lang {
+                i18n::Language::Korean => format!(
+                    "지정한 yt-dlp 버전을 확인할 수 없습니다: {}",
+                    path.display()
+                ),
+                i18n::Language::Japanese => format!(
+                    "指定したyt-dlpのバージョンを確認できません: {}",
+                    path.display()
+                ),
+                _ => format!("could not read yt-dlp version: {}", path.display()),
             })?;
             Ok(ResolvedPin {
                 kind: PinKind::Path,
@@ -815,19 +839,21 @@ fn apply_pin(cfg: &mut config::Config, pin: &ResolvedPin) {
     }
 }
 
-fn warn_env_override(kr: bool) {
+fn warn_env_override(lang: i18n::Language) {
     let Some(value) = active_env_ytdlp_override() else {
         return;
     };
 
     eprintln!(
         "{}",
-        if kr {
-            format!(
+        match lang {
+            i18n::Language::Korean => format!(
                 "주의: 현재 프로세스에는 YTM_YTDLP={value} 가 설정되어 있어 config보다 우선합니다."
-            )
-        } else {
-            format!("note: YTM_YTDLP={value} is set and still overrides config.")
+            ),
+            i18n::Language::Japanese => format!(
+                "注意: 現在のプロセスにはYTM_YTDLP={value}が設定されており、configより優先されます。"
+            ),
+            _ => format!("note: YTM_YTDLP={value} is set and still overrides config."),
         }
     );
 }
@@ -839,7 +865,7 @@ fn active_env_ytdlp_override() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn print_js_runtime_why(kr: bool) {
+fn print_js_runtime_why(lang: i18n::Language) {
     let probes = tools::js_runtime_diagnostics();
     if let Some(probe) = probes.iter().find(|probe| probe.supported) {
         let version = probe
@@ -848,11 +874,17 @@ fn print_js_runtime_why(kr: bool) {
             .map(|v| format!(" {v}"))
             .unwrap_or_default();
         let mode = if probe.runtime.flag_value().is_none() {
-            if kr { "자동 사용" } else { "auto-used" }
-        } else if kr {
-            "--js-runtimes 로 연결"
+            match lang {
+                i18n::Language::Korean => "자동 사용",
+                i18n::Language::Japanese => "自動使用",
+                _ => "auto-used",
+            }
         } else {
-            "wired via --js-runtimes"
+            match lang {
+                i18n::Language::Korean => "--js-runtimes 로 연결",
+                i18n::Language::Japanese => "--js-runtimes で接続",
+                _ => "wired via --js-runtimes",
+            }
         };
         println!(
             "  - JS runtime: supported {}{} ({mode})",
@@ -872,14 +904,21 @@ fn print_js_runtime_why(kr: bool) {
             probe.reason.unwrap_or("unsupported version")
         );
     } else {
-        println!("  - JS runtime: {}", if kr { "없음" } else { "none found" });
+        println!(
+            "  - JS runtime: {}",
+            match lang {
+                i18n::Language::Korean => "없음",
+                i18n::Language::Japanese => "なし",
+                _ => "none found",
+            }
+        );
     }
 }
 
 fn update() -> i32 {
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     let outcome = block_on(async {
         tools::init(&cfg.tools).await;
@@ -890,10 +929,10 @@ fn update() -> i32 {
             } => println!("  … {p:>3}% ({})", channel.label()),
             tools::ToolsEvent::Progress { channel, .. } => println!(
                 "{} ({})…",
-                if kr {
-                    "yt-dlp 다운로드 중"
-                } else {
-                    "downloading yt-dlp"
+                match lang {
+                    i18n::Language::Korean => "yt-dlp 다운로드 중",
+                    i18n::Language::Japanese => "yt-dlpをダウンロード中",
+                    _ => "downloading yt-dlp",
                 },
                 channel.label()
             ),
@@ -911,10 +950,10 @@ fn update() -> i32 {
         tools::ytdlp::UpdateOutcome::Installed { version } => {
             println!(
                 "{}",
-                if kr {
-                    format!("yt-dlp {version} 설치 완료.")
-                } else {
-                    format!("yt-dlp {version} installed.")
+                match lang {
+                    i18n::Language::Korean => format!("yt-dlp {version} 설치 완료."),
+                    i18n::Language::Japanese => format!("yt-dlp {version} インストール完了。"),
+                    _ => format!("yt-dlp {version} installed."),
                 }
             );
             0
@@ -923,16 +962,19 @@ fn update() -> i32 {
             let state = tools::ytdlp::load_state();
             println!(
                 "{}",
-                if kr {
-                    format!(
+                match lang {
+                    i18n::Language::Korean => format!(
                         "이미 최신입니다 ({}).",
                         state.version.as_deref().unwrap_or("?")
-                    )
-                } else {
-                    format!(
+                    ),
+                    i18n::Language::Japanese => format!(
+                        "既に最新です ({})。",
+                        state.version.as_deref().unwrap_or("?")
+                    ),
+                    _ => format!(
                         "Already up to date ({}).",
                         state.version.as_deref().unwrap_or("?")
-                    )
+                    ),
                 }
             );
             0
@@ -1135,10 +1177,10 @@ mod tests {
     #[test]
     fn resolve_pin_target_reports_missing_system_when_path_is_empty() {
         with_var("PATH", Some(""), || {
-            let err = resolve_pin_target(&UseTarget::System, false).unwrap_err();
+            let err = resolve_pin_target(&UseTarget::System, i18n::Language::English).unwrap_err();
             assert!(err.contains("system yt-dlp was not found"));
 
-            let err = resolve_pin_target(&UseTarget::System, true).unwrap_err();
+            let err = resolve_pin_target(&UseTarget::System, i18n::Language::Korean).unwrap_err();
             assert!(err.contains("system yt-dlp"));
         });
     }
@@ -1148,7 +1190,8 @@ mod tests {
         let missing = temp_path("missing-path");
         let _ = std::fs::remove_file(&missing);
 
-        let err = resolve_pin_target(&UseTarget::Path(missing.clone()), false).unwrap_err();
+        let err = resolve_pin_target(&UseTarget::Path(missing.clone()), i18n::Language::English)
+            .unwrap_err();
         assert!(err.contains("could not open yt-dlp path"));
         assert!(err.contains(&missing.display().to_string()));
     }
@@ -1164,7 +1207,8 @@ mod tests {
         perms.set_mode(0o600);
         std::fs::set_permissions(&path, perms).unwrap();
 
-        let err = resolve_pin_target(&UseTarget::Path(path.clone()), false).unwrap_err();
+        let err = resolve_pin_target(&UseTarget::Path(path.clone()), i18n::Language::English)
+            .unwrap_err();
         assert!(err.contains("yt-dlp path is not executable"));
 
         let _ = std::fs::remove_file(path);

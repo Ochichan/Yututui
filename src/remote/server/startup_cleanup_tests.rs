@@ -38,6 +38,7 @@ async fn dropping_bound_server_before_start_releases_lease_or_recovery_failure_e
         owns_instance_file: true,
         mode: InstanceMode::StandaloneTui,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
 
     drop(server);

@@ -30,7 +30,8 @@ pub fn render_beginner_coach(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(t!(
                 "Beginner Mode · resize",
-                "비기너 모드 · 창을 키워 주세요"
+                "비기너 모드 · 창을 키워 주세요",
+                "ビギナーモード · 画面を広げてください"
             ))
             .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD)),
             area,
@@ -67,12 +68,17 @@ pub fn render_beginner_coach(frame: &mut Frame, app: &App, area: Rect) {
     );
     crate::ui::render_popup_background(frame, app, popup);
     let title = if confirming {
-        t!(" Skip Beginner Mode? ", " 비기너 모드를 건너뛸까요? ").to_owned()
+        t!(
+            " Skip Beginner Mode? ",
+            " 비기너 모드를 건너뛸까요? ",
+            " ビギナーモードをスキップしますか? "
+        )
+        .to_owned()
     } else {
         format!(
             " {} · {} {}/{} ",
-            t!("Beginner Mode", "비기너 모드"),
-            t!("Step", "단계"),
+            t!("Beginner Mode", "비기너 모드", "ビギナーモード"),
+            t!("Step", "단계", "ステップ"),
             app.onboarding.step().number(),
             BeginnerStep::COUNT
         )
@@ -108,23 +114,53 @@ pub fn render_beginner_coach(frame: &mut Frame, app: &App, area: Rect) {
 
     let focused = app.onboarding.guide_focused_for(mini);
     let hint = if confirming {
-        t!("Esc cancel · ←/→ · Enter", "Esc 취소 · ←/→ · Enter")
+        t!(
+            "Esc cancel · ←/→ · Enter",
+            "Esc 취소 · ←/→ · Enter",
+            "Esc キャンセル · ←/→ · Enter"
+        )
     } else if mini && focused {
-        t!("Esc: app · Enter: Skip", "Esc: 앱 · Enter: 건너뛰기")
+        t!(
+            "Esc: app · Enter: Skip",
+            "Esc: 앱 · Enter: 건너뛰기",
+            "Esc: アプリ · Enter: スキップ"
+        )
     } else if mini {
         t!(
             "F6: Skip · resize to resume",
-            "F6: 건너뛰기 · 창을 키우면 계속"
+            "F6: 건너뛰기 · 창을 키우면 계속",
+            "F6: スキップ · 画面を広げると再開"
         )
+    } else if app.onboarding.language_choices() {
+        // Language-step preview: the hint follows the highlighted option, not the process
+        // language (which stays untouched until the user confirms).
+        let preview = preview_language(app);
+        if focused {
+            pick3(
+                preview,
+                "F6/Esc: app · ←/→ choose · Enter",
+                "F6/Esc: 앱 · ←/→ 선택 · Enter",
+                "F6/Esc: アプリ · ←/→ 選択 · Enter",
+            )
+        } else {
+            pick3(
+                preview,
+                "Use the app normally · F6 guide controls",
+                "앱을 직접 사용해 보세요 · F6 안내 버튼",
+                "アプリはそのまま操作できます · F6 で案内ボタン",
+            )
+        }
     } else if focused {
         t!(
             "F6/Esc: app · ←/→ choose · Enter",
-            "F6/Esc: 앱 · ←/→ 선택 · Enter"
+            "F6/Esc: 앱 · ←/→ 선택 · Enter",
+            "F6/Esc: アプリ · ←/→ 選択 · Enter"
         )
     } else {
         t!(
             "Use the app normally · F6 guide controls",
-            "앱을 직접 사용해 보세요 · F6 안내 버튼"
+            "앱을 직접 사용해 보세요 · F6 안내 버튼",
+            "アプリはそのまま操作できます · F6 で案内ボタン"
         )
     };
     let hint_area = Rect {
@@ -148,12 +184,14 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
         return CoachCopy {
             heading: t!(
                 "You can restart it from Settings.",
-                "설정에서 언제든 다시 시작할 수 있어요."
+                "설정에서 언제든 다시 시작할 수 있어요.",
+                "設定からいつでも再開できます。"
             )
             .to_owned(),
             body: t!(
                 "Skipping turns Beginner Mode off and resets this tour to Welcome.",
-                "건너뛰면 비기너 모드가 꺼지고 이 투어는 처음 단계로 초기화돼요."
+                "건너뛰면 비기너 모드가 꺼지고 이 투어는 처음 단계로 초기화돼요.",
+                "スキップするとビギナーモードがオフになり、このツアーは最初のステップに戻ります。"
             )
             .to_owned(),
             primary: String::new(),
@@ -163,14 +201,19 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
         return CoachCopy {
             heading: t!(
                 "Make the terminal a little bigger",
-                "터미널 창을 조금 더 키워 주세요"
+                "터미널 창을 조금 더 키워 주세요",
+                "ターミナルを少し大きくしてください"
             )
             .to_owned(),
             body: format!(
                 "{} · {} 32×14 · {} {}/{}",
-                t!("The tour is paused", "튜토리얼이 잠시 멈췄어요"),
-                t!("minimum", "최소 크기"),
-                t!("Step", "단계"),
+                t!(
+                    "The tour is paused",
+                    "튜토리얼이 잠시 멈췄어요",
+                    "ツアーは一時停止中です"
+                ),
+                t!("minimum", "최소 크기", "最小サイズ"),
+                t!("Step", "단계", "ステップ"),
                 app.onboarding.step().number(),
                 BeginnerStep::COUNT
             ),
@@ -184,99 +227,166 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
     };
     let reached = app.onboarding.target_reached();
     match app.onboarding.step() {
+        BeginnerStep::Language => {
+            if !app.onboarding.language_choices() {
+                // Retro variant: retro pins the UI to English, so there is nothing to pick.
+                return CoachCopy {
+                    heading: t!(
+                        "Choose your language",
+                        "언어를 선택해 주세요",
+                        "言語を選択してください"
+                    )
+                    .to_owned(),
+                    body: t!(
+                        "Retro mode keeps the UI in English. Turn Retro Mode off in Settings to pick another language.",
+                        "레트로 모드에서는 UI가 영어로 고정돼요. 다른 언어를 쓰려면 설정에서 레트로 모드를 꺼 주세요.",
+                        "レトロモードではUIが英語に固定されます。他の言語を使うには設定でレトロモードをオフにしてください。"
+                    )
+                    .to_owned(),
+                    primary: t!("Continue", "계속", "続行").to_owned(),
+                };
+            }
+            // Card-local preview: the card renders in the HIGHLIGHTED language so each option
+            // presents itself in itself. The process-wide language is untouched until Enter.
+            let preview = preview_language(app);
+            CoachCopy {
+                heading: pick3(
+                    preview,
+                    "Choose your language",
+                    "언어를 선택해 주세요",
+                    "言語を選択してください",
+                )
+                .to_owned(),
+                body: pick3(
+                    preview,
+                    "The tour and the whole app will use this language. You can change it anytime in Settings.",
+                    "튜토리얼과 앱 전체가 이 언어로 표시돼요. 설정에서 언제든 바꿀 수 있어요.",
+                    "ツアーとアプリ全体がこの言語で表示されます。設定でいつでも変更できます。",
+                )
+                .to_owned(),
+                primary: String::new(),
+            }
+        }
         BeginnerStep::Welcome => CoachCopy {
-            heading: t!("Welcome to YuTuTui!", "YuTuTui!에 오신 걸 환영해요").to_owned(),
-            body: t!(
-                "Take a short, safe tour of every screen. Your place is saved, and the tour never requires playback, downloads, sign-in, or a network search.",
-                "모든 화면을 짧고 안전하게 둘러봐요. 진행 위치는 저장되며 재생, 다운로드, 로그인, 실제 검색은 요구하지 않아요."
+            heading: t!(
+                "Welcome to YuTuTui!",
+                "YuTuTui!에 오신 걸 환영해요",
+                "YuTuTui!へようこそ"
             )
             .to_owned(),
-            primary: t!("Start tour", "투어 시작").to_owned(),
+            body: t!(
+                "Take a short, safe tour of every screen. Your place is saved, and the tour never requires playback, downloads, sign-in, or a network search.",
+                "모든 화면을 짧고 안전하게 둘러봐요. 진행 위치는 저장되며 재생, 다운로드, 로그인, 실제 검색은 요구하지 않아요.",
+                "すべての画面を短く安全に見て回れます。進み具合は保存され、再生、ダウンロード、ログイン、実際の検索は求められません。"
+            )
+            .to_owned(),
+            primary: t!("Start tour", "투어 시작", "ツアー開始").to_owned(),
         },
         BeginnerStep::NavigationHelp => CoachCopy {
-            heading: t!("Navigation and Help", "화면 이동과 도움말").to_owned(),
+            heading: t!("Navigation and Help", "화면 이동과 도움말", "画面移動とヘルプ").to_owned(),
             body: format!(
                 "{} {}. {}",
                 t!(
                     "The top row switches between Player, Search, Library, Settings, and DJ Gem. Open the complete live key guide with",
-                    "위쪽 메뉴에서 플레이어, 검색, 라이브러리, 설정, DJ Gem으로 이동할 수 있어요. 현재 단축키 도움말은"
+                    "위쪽 메뉴에서 플레이어, 검색, 라이브러리, 설정, DJ Gem으로 이동할 수 있어요. 현재 단축키 도움말은",
+                    "上部メニューからプレイヤー、検索、ライブラリ、設定、DJ Gemへ移動できます。最新のショートカットヘルプは"
                 ),
                 key(KeyContext::Global, Action::ToggleHelp),
-                t!("Mouse controls work too.", "키로 열 수 있고 마우스도 사용할 수 있어요.")
+                t!(
+                    "Mouse controls work too.",
+                    "키로 열 수 있고 마우스도 사용할 수 있어요.",
+                    "キーで開けます。マウスも使えます。"
+                )
             ),
-            primary: t!("Open Help", "도움말 열기").to_owned(),
+            primary: t!("Open Help", "도움말 열기", "ヘルプを開く").to_owned(),
         },
         BeginnerStep::Search => CoachCopy {
-            heading: t!("Find music safely", "안전하게 음악 찾기").to_owned(),
+            heading: t!("Find music safely", "안전하게 음악 찾기", "安全に音楽を探す").to_owned(),
             body: if reached {
                 t!(
                     "Choose a source, type in the query box, and inspect results or filters. Enter submits; double-click plays; right-click opens safe row actions. You do not need to search now.",
-                    "검색 소스를 고르고 입력 칸과 결과 필터를 살펴보세요. Enter는 검색, 더블클릭은 재생, 우클릭은 안전한 행 메뉴예요. 지금 실제 검색할 필요는 없어요."
+                    "검색 소스를 고르고 입력 칸과 결과 필터를 살펴보세요. Enter는 검색, 더블클릭은 재생, 우클릭은 안전한 행 메뉴예요. 지금 실제 검색할 필요는 없어요.",
+                    "検索ソースを選び、入力欄や結果フィルターを見てみましょう。Enterは検索、ダブルクリックは再生、右クリックは安全な行メニューです。今すぐ検索する必要はありません。"
                 )
                 .to_owned()
             } else {
                 format!(
                     "{} {} {}",
-                    t!("Open Search with", "검색 화면은"),
+                    t!("Open Search with", "검색 화면은", "検索画面は"),
                     key(KeyContext::Player, Action::OpenSearch),
-                    t!("or the top navigation.", "키 또는 위쪽 메뉴로 열 수 있어요.")
+                    t!(
+                        "or the top navigation.",
+                        "키 또는 위쪽 메뉴로 열 수 있어요.",
+                        "キーまたは上部メニューで開けます。"
+                    )
                 )
             },
             primary: if reached {
-                t!("Continue", "계속").to_owned()
+                t!("Continue", "계속", "続行").to_owned()
             } else {
-                t!("Open Search", "검색 열기").to_owned()
+                t!("Open Search", "검색 열기", "検索を開く").to_owned()
             },
         },
         BeginnerStep::Player => CoachCopy {
-            heading: t!("Player controls", "플레이어 조작").to_owned(),
+            heading: t!("Player controls", "플레이어 조작", "プレイヤー操作").to_owned(),
             body: if reached {
                 t!(
                     "Transport, seek, Volume, Queue, Rating, Shuffle, Repeat, and Equalizer live here. Beginner Mode spells each control and state out. Autoplay and Repeat cannot be enabled together.",
-                    "재생, 탐색, 볼륨, 대기열, 평가, 셔플, 반복, 이퀄라이저를 여기서 조작해요. 비기너 모드는 이름과 상태를 풀어서 보여 줘요. 자동재생과 반복은 함께 켤 수 없어요."
+                    "재생, 탐색, 볼륨, 대기열, 평가, 셔플, 반복, 이퀄라이저를 여기서 조작해요. 비기너 모드는 이름과 상태를 풀어서 보여 줘요. 자동재생과 반복은 함께 켤 수 없어요.",
+                    "再生、シーク、音量、キュー、評価、シャッフル、リピート、イコライザーをここで操作します。ビギナーモードは名前と状態を分かりやすく表示します。自動再生とリピートは同時にオンにできません。"
                 )
                 .to_owned()
             } else {
                 format!(
                     "{} {}.",
-                    t!("Return to Player/Home with", "플레이어 홈으로 돌아가는 키는"),
+                    t!(
+                        "Return to Player/Home with",
+                        "플레이어 홈으로 돌아가는 키는",
+                        "プレイヤー/ホームに戻るキーは"
+                    ),
                     key(KeyContext::Global, Action::Home)
                 )
             },
             primary: if reached {
-                t!("Continue", "계속").to_owned()
+                t!("Continue", "계속", "続行").to_owned()
             } else {
-                t!("Open Player", "플레이어 열기").to_owned()
+                t!("Open Player", "플레이어 열기", "プレイヤーを開く").to_owned()
             },
         },
         BeginnerStep::Library => CoachCopy {
-            heading: t!("Your Library", "내 라이브러리").to_owned(),
+            heading: t!("Your Library", "내 라이브러리", "マイライブラリ").to_owned(),
             body: if reached {
                 t!(
                     "Browse All, Favorites, History, Downloads, and Playlists. Single-click selects; double-click activates; right-click opens the row menu. Nothing needs to be downloaded now.",
-                    "전체, 즐겨찾기, 기록, 다운로드, 플레이리스트를 둘러보세요. 한 번 클릭은 선택, 더블클릭은 실행, 우클릭은 행 메뉴예요. 지금 다운로드할 필요는 없어요."
+                    "전체, 즐겨찾기, 기록, 다운로드, 플레이리스트를 둘러보세요. 한 번 클릭은 선택, 더블클릭은 실행, 우클릭은 행 메뉴예요. 지금 다운로드할 필요는 없어요.",
+                    "すべて、お気に入り、履歴、ダウンロード、プレイリストを見てみましょう。シングルクリックは選択、ダブルクリックは実行、右クリックは行メニューです。今ダウンロードする必要はありません。"
                 )
                 .to_owned()
             } else {
                 format!(
                     "{} {} {}",
-                    t!("Open Library with", "라이브러리는"),
+                    t!("Open Library with", "라이브러리는", "ライブラリは"),
                     key(KeyContext::Player, Action::OpenLibrary),
-                    t!("or the top navigation.", "키 또는 위쪽 메뉴로 열 수 있어요.")
+                    t!(
+                        "or the top navigation.",
+                        "키 또는 위쪽 메뉴로 열 수 있어요.",
+                        "キーまたは上部メニューで開けます。"
+                    )
                 )
             },
             primary: if reached {
-                t!("Continue", "계속").to_owned()
+                t!("Continue", "계속", "続行").to_owned()
             } else {
-                t!("Open Library", "라이브러리 열기").to_owned()
+                t!("Open Library", "라이브러리 열기", "ライブラリを開く").to_owned()
             },
         },
         BeginnerStep::DjGem => CoachCopy {
-            heading: t!("Meet DJ Gem", "DJ Gem 만나기").to_owned(),
+            heading: t!("Meet DJ Gem", "DJ Gem 만나기", "DJ Gemの紹介").to_owned(),
             body: if reached {
                 t!(
                     "DJ Gem can chat about music and help curate autoplay when an API key is configured. It is optional; Radio and Local Deck are optional advanced modes too.",
-                    "DJ Gem은 API 키가 있을 때 음악 대화와 자동재생 큐레이팅을 도와줘요. 선택 기능이며 라디오와 Local Deck도 선택형 고급 모드예요."
+                    "DJ Gem은 API 키가 있을 때 음악 대화와 자동재생 큐레이팅을 도와줘요. 선택 기능이며 라디오와 Local Deck도 선택형 고급 모드예요.",
+                    "APIキーを設定すると、DJ Gemが音楽の会話や自動再生のキュレーションを手伝ってくれます。利用は任意で、ラジオとローカルデッキも同じく任意の上級モードです。"
                 )
                 .to_owned()
             } else {
@@ -294,27 +404,29 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                     || {
                         t!(
                             "Use the top navigation or the guide action below.",
-                            "위쪽 메뉴나 아래 안내 버튼을 사용하세요."
+                            "위쪽 메뉴나 아래 안내 버튼을 사용하세요.",
+                            "上部メニューか下の案内ボタンを使ってください。"
                         )
                         .to_owned()
                     },
                     |context| {
                         format!(
                             "{} {} {}",
-                            t!("Open DJ Gem with", "DJ Gem은"),
+                            t!("Open DJ Gem with", "DJ Gem은", "DJ Gemは"),
                             key(context, Action::OpenAi),
                             t!(
                                 "or the top navigation.",
-                                "키 또는 위쪽 메뉴로 열 수 있어요."
+                                "키 또는 위쪽 메뉴로 열 수 있어요.",
+                                "キーまたは上部メニューで開けます。"
                             )
                         )
                     },
                 )
             },
             primary: if reached {
-                t!("Continue", "계속").to_owned()
+                t!("Continue", "계속", "続行").to_owned()
             } else {
-                t!("Open DJ Gem", "DJ Gem 열기").to_owned()
+                t!("Open DJ Gem", "DJ Gem 열기", "DJ Gemを開く").to_owned()
             },
         },
         BeginnerStep::Settings => settings_copy(app, &key),
@@ -329,52 +441,57 @@ fn settings_copy(app: &App, key: &impl Fn(KeyContext, Action) -> String) -> Coac
         None => (
             t!(
                 "Choose Settings in the top navigation, or use the guide action below.",
-                "위쪽 메뉴에서 설정을 선택하거나 아래 안내 버튼을 사용하세요."
+                "위쪽 메뉴에서 설정을 선택하거나 아래 안내 버튼을 사용하세요.",
+                "上部メニューで設定を選ぶか、下の案内ボタンを使ってください。"
             )
             .to_owned(),
-            t!("Open Settings", "설정 열기").to_owned(),
+            t!("Open Settings", "설정 열기", "設定を開く").to_owned(),
         ),
         Some(SettingsTab::General) if !visited => (
             format!(
                 "{} {}.",
                 t!(
                     "Explore General, Playback, Hotkeys, Graphics, DJ Gem, and Accounts. Switch to any other tab with",
-                    "일반, 재생, 핫키, 그래픽, DJ Gem, 계정 탭을 둘러봐요. 다른 탭으로 이동하는 키는"
+                    "일반, 재생, 핫키, 그래픽, DJ Gem, 계정 탭을 둘러봐요. 다른 탭으로 이동하는 키는",
+                    "全般、再生、ホットキー、グラフィック、DJ Gem、アカウントのタブを見てみましょう。別のタブへ移動するキーは"
                 ),
                 key(KeyContext::Settings, Action::FocusNext)
             ),
-            t!("Try another tab", "다른 탭 보기").to_owned(),
+            t!("Try another tab", "다른 탭 보기", "別のタブを見る").to_owned(),
         ),
         Some(SettingsTab::General) => (
             format!(
                 "{} {}.",
                 t!(
                     "Great. Arrows change values and Enter activates. Save and close Settings with",
-                    "좋아요. 화살표로 값을 바꾸고 Enter로 실행해요. 설정을 저장하고 닫는 키는"
+                    "좋아요. 화살표로 값을 바꾸고 Enter로 실행해요. 설정을 저장하고 닫는 키는",
+                    "いいですね。矢印キーで値を変え、Enterで実行します。設定を保存して閉じるキーは"
                 ),
                 key(KeyContext::Settings, Action::SettingsCancel)
             ),
-            t!("Continue", "계속").to_owned(),
+            t!("Continue", "계속", "続行").to_owned(),
         ),
         Some(_) if visited => (
             t!(
                 "Each tab groups related options. Return to General to finish the tour.",
-                "각 탭에는 관련 설정이 모여 있어요. 투어를 마치려면 일반 탭으로 돌아가세요."
+                "각 탭에는 관련 설정이 모여 있어요. 투어를 마치려면 일반 탭으로 돌아가세요.",
+                "各タブには関連する設定がまとまっています。ツアーを終えるには全般タブに戻ってください。"
             )
             .to_owned(),
-            t!("Back to General", "일반으로 돌아가기").to_owned(),
+            t!("Back to General", "일반으로 돌아가기", "全般に戻る").to_owned(),
         ),
         Some(_) => (
             t!(
                 "You switched a settings tab. Return to General when you are ready.",
-                "설정 탭을 직접 바꿨어요. 준비되면 일반 탭으로 돌아가세요."
+                "설정 탭을 직접 바꿨어요. 준비되면 일반 탭으로 돌아가세요.",
+                "設定タブを切り替えましたね。準備ができたら全般タブに戻ってください。"
             )
             .to_owned(),
-            t!("Back to General", "일반으로 돌아가기").to_owned(),
+            t!("Back to General", "일반으로 돌아가기", "全般に戻る").to_owned(),
         ),
     };
     CoachCopy {
-        heading: t!("Settings tour", "설정 둘러보기").to_owned(),
+        heading: t!("Settings tour", "설정 둘러보기", "設定ツアー").to_owned(),
         body,
         primary,
     }
@@ -387,19 +504,31 @@ fn finish_copy(app: &App, key: &impl Fn(KeyContext, Action) -> String) -> CoachC
         (
             t!(
                 "Open Settings one last time. The Beginner Mode row is at the top of General.",
-                "마지막으로 설정을 열어 주세요. 비기너 모드는 일반 탭 맨 위에 있어요."
+                "마지막으로 설정을 열어 주세요. 비기너 모드는 일반 탭 맨 위에 있어요.",
+                "最後にもう一度設定を開いてください。ビギナーモードは全般タブの一番上にあります。"
             )
             .to_owned(),
-            t!("Open Beginner Mode", "비기너 모드 열기").to_owned(),
+            t!(
+                "Open Beginner Mode",
+                "비기너 모드 열기",
+                "ビギナーモードを開く"
+            )
+            .to_owned(),
         )
     } else if enabled {
         (
             t!(
                 "Turn Beginner Mode Off yourself. This keeps completion intentional; you can enable it again whenever you want.",
-                "비기너 모드를 직접 꺼 주세요. 그래야 온보딩 완료가 분명해지며, 원하면 언제든 다시 켤 수 있어요."
+                "비기너 모드를 직접 꺼 주세요. 그래야 온보딩 완료가 분명해지며, 원하면 언제든 다시 켤 수 있어요.",
+                "ビギナーモードを自分でオフにしてください。完了が明確になり、いつでもまたオンにできます。"
             )
             .to_owned(),
-            t!("Turn off Beginner Mode", "비기너 모드 끄기").to_owned(),
+            t!(
+                "Turn off Beginner Mode",
+                "비기너 모드 끄기",
+                "ビギナーモードをオフにする"
+            )
+            .to_owned(),
         )
     } else {
         (
@@ -407,23 +536,54 @@ fn finish_copy(app: &App, key: &impl Fn(KeyContext, Action) -> String) -> CoachC
                 "{} {}.",
                 t!(
                     "All set. Save and close Settings with",
-                    "모두 끝났어요. 설정을 저장하고 닫는 키는"
+                    "모두 끝났어요. 설정을 저장하고 닫는 키는",
+                    "これで完了です。設定を保存して閉じるキーは"
                 ),
                 key(KeyContext::Settings, Action::SettingsCancel)
             ),
-            t!("Save and finish", "저장하고 완료").to_owned(),
+            t!("Save and finish", "저장하고 완료", "保存して完了").to_owned(),
         )
     };
     CoachCopy {
-        heading: t!("Finish Beginner Mode", "비기너 모드 마치기").to_owned(),
+        heading: t!(
+            "Finish Beginner Mode",
+            "비기너 모드 마치기",
+            "ビギナーモードを完了"
+        )
+        .to_owned(),
         body,
         primary,
+    }
+}
+
+/// The language the Language card previews: the highlighted option, or the active language
+/// while Skip (or nothing selectable) is highlighted.
+fn preview_language(app: &App) -> crate::i18n::Language {
+    match app.onboarding.selected_action() {
+        OnboardingAction::ChooseLanguage(lang) => lang,
+        _ => crate::i18n::current(),
+    }
+}
+
+/// Card-local language pick for the Language step's preview — deliberately NOT `t!`, which
+/// reads the process-wide language this card must leave untouched until the user confirms.
+fn pick3(
+    lang: crate::i18n::Language,
+    en: &'static str,
+    ko: &'static str,
+    ja: &'static str,
+) -> &'static str {
+    match lang {
+        crate::i18n::Language::Korean => ko,
+        crate::i18n::Language::Japanese => ja,
+        crate::i18n::Language::English => en,
     }
 }
 
 fn coach_anchor(app: &App) -> Option<MouseTarget> {
     let reached = app.onboarding.target_reached();
     match app.onboarding.step() {
+        BeginnerStep::Language => None,
         BeginnerStep::Welcome => None,
         BeginnerStep::NavigationHelp => Some(MouseTarget::Global(Action::ToggleHelp)),
         BeginnerStep::Search => Some(if reached {
@@ -477,27 +637,73 @@ fn render_coach_buttons(
 ) {
     let selected = app.onboarding.selected_action();
     let focused = app.onboarding.guide_focused_for(mini);
+    let language_row = !confirming && !mini && app.onboarding.language_choices();
+    // The 4-button language row is wider than the standard 3-button row (≈46 cols with the
+    // Japanese Skip label), so it compacts earlier than the 44-col default.
+    let compact = inner.width < if language_row { 48 } else { 44 };
     let mut owned: Vec<(OnboardingAction, String)> = if confirming {
         vec![
             (
                 OnboardingAction::CancelSkip,
-                t!("Cancel", "취소").to_owned(),
+                t!("Cancel", "취소", "キャンセル").to_owned(),
             ),
             (
                 OnboardingAction::ConfirmSkip,
-                t!("Skip tour", "투어 건너뛰기").to_owned(),
+                t!("Skip tour", "투어 건너뛰기", "ツアーをスキップ").to_owned(),
             ),
         ]
     } else if mini {
-        vec![(OnboardingAction::Skip, t!("Skip", "건너뛰기").to_owned())]
+        vec![(
+            OnboardingAction::Skip,
+            t!("Skip", "건너뛰기", "スキップ").to_owned(),
+        )]
+    } else if language_row {
+        // One button per language, each labeled in itself (never translated); Skip follows
+        // the previewed language so the whole card reads consistently.
+        let preview = preview_language(app);
+        let mut row: Vec<(OnboardingAction, String)> = crate::i18n::Language::CYCLE
+            .iter()
+            .map(|lang| {
+                let label = if compact && *lang == crate::i18n::Language::English {
+                    "EN".to_owned()
+                } else {
+                    lang.native_name().to_owned()
+                };
+                (OnboardingAction::ChooseLanguage(*lang), label)
+            })
+            .collect();
+        row.push((
+            OnboardingAction::Skip,
+            if compact {
+                "Skip".to_owned()
+            } else {
+                pick3(preview, "Skip", "건너뛰기", "スキップ").to_owned()
+            },
+        ));
+        row
+    } else if app.onboarding.step() == BeginnerStep::Language {
+        // Retro variant: the first step has nothing before it, so no Back — just
+        // [Continue] [Skip], matching the keyboard action map (count 2, primary at 0).
+        vec![
+            (OnboardingAction::Primary, primary.to_owned()),
+            (
+                OnboardingAction::Skip,
+                t!("Skip", "건너뛰기", "スキップ").to_owned(),
+            ),
+        ]
     } else {
         vec![
-            (OnboardingAction::Back, t!("Back", "이전").to_owned()),
+            (
+                OnboardingAction::Back,
+                t!("Back", "이전", "戻る").to_owned(),
+            ),
             (OnboardingAction::Primary, primary.to_owned()),
-            (OnboardingAction::Skip, t!("Skip", "건너뛰기").to_owned()),
+            (
+                OnboardingAction::Skip,
+                t!("Skip", "건너뛰기", "スキップ").to_owned(),
+            ),
         ]
     };
-    let compact = inner.width < 44;
     if compact
         && let Some((_, label)) = owned
             .iter_mut()
@@ -546,29 +752,31 @@ fn render_coach_buttons(
 }
 
 fn compact_primary_label(app: &App) -> &'static str {
-    let next = t!("Next", "다음");
+    let next = t!("Next", "다음", "次へ");
     match app.onboarding.step() {
-        BeginnerStep::Welcome => t!("Start", "시작"),
-        BeginnerStep::NavigationHelp => t!("Help", "도움말"),
+        // Only the retro variant renders a Primary button on this step.
+        BeginnerStep::Language => t!("Continue", "계속", "続行"),
+        BeginnerStep::Welcome => t!("Start", "시작", "開始"),
+        BeginnerStep::NavigationHelp => t!("Help", "도움말", "ヘルプ"),
         BeginnerStep::Search => {
             if app.onboarding.target_reached() {
                 next
             } else {
-                t!("Search", "검색")
+                t!("Search", "검색", "検索")
             }
         }
         BeginnerStep::Player => {
             if app.onboarding.target_reached() {
                 next
             } else {
-                t!("Player", "플레이어")
+                t!("Player", "플레이어", "プレイヤー")
             }
         }
         BeginnerStep::Library => {
             if app.onboarding.target_reached() {
                 next
             } else {
-                t!("Library", "라이브러리")
+                t!("Library", "라이브러리", "ライブラリ")
             }
         }
         BeginnerStep::DjGem => {
@@ -581,22 +789,22 @@ fn compact_primary_label(app: &App) -> &'static str {
         BeginnerStep::Settings => {
             let tab = app.settings.as_ref().map(|settings| settings.tab);
             if app.mode != Mode::Settings {
-                t!("Settings", "설정")
+                t!("Settings", "설정", "設定")
             } else if !app.onboarding.settings_tab_visited() {
-                t!("Try tab", "탭 보기")
+                t!("Try tab", "탭 보기", "タブを見る")
             } else if tab != Some(SettingsTab::General) {
-                t!("General", "일반")
+                t!("General", "일반", "全般")
             } else {
                 next
             }
         }
         BeginnerStep::Finish => {
             if app.mode != Mode::Settings {
-                t!("Settings", "설정")
+                t!("Settings", "설정", "設定")
             } else if app.beginner_mode() {
-                t!("Turn off", "끄기")
+                t!("Turn off", "끄기", "オフ")
             } else {
-                t!("Save", "저장")
+                t!("Save", "저장", "保存")
             }
         }
     }
@@ -675,7 +883,8 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(t!(
                 "Playback tools required · R check · G guide · Esc later",
-                "재생 도구 설치 필요 · R 확인 · G 안내 · Esc 나중에"
+                "재생 도구 설치 필요 · R 확인 · G 안내 · Esc 나중에",
+                "再生ツールが必要 · R 確認 · G ガイド · Esc 後で"
             ))
             .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
             .wrap(Wrap { trim: true }),
@@ -695,10 +904,18 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
     let title = match prompt.context {
         ToolSetupContext::Startup => {
-            t!(" Playback tools required ", " 재생 도구 설치가 필요합니다 ")
+            t!(
+                " Playback tools required ",
+                " 재생 도구 설치가 필요합니다 ",
+                " 再生ツールが必要です "
+            )
         }
         ToolSetupContext::Downloads => {
-            t!(" Download tool required ", " 다운로드 도구가 필요합니다 ")
+            t!(
+                " Download tool required ",
+                " 다운로드 도구가 필요합니다 ",
+                " ダウンロードツールが必要です "
+            )
         }
     };
     let block = Block::default()
@@ -716,22 +933,25 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
     let reason = match prompt.context {
         ToolSetupContext::Startup => t!(
             "YuTuTui! needs these tools to search and play music.",
-            "YuTuTui!가 음악을 검색하고 재생하려면 이 도구가 필요합니다."
+            "YuTuTui!가 음악을 검색하고 재생하려면 이 도구가 필요합니다.",
+            "YuTuTui!が音楽を検索・再生するにはこれらのツールが必要です。"
         ),
         ToolSetupContext::Downloads => t!(
             "Install these tools to finish the queued download.",
-            "대기 중인 다운로드를 마치려면 이 도구를 설치하세요."
+            "대기 중인 다운로드를 마치려면 이 도구를 설치하세요.",
+            "待機中のダウンロードを完了するにはこのツールをインストールしてください。"
         ),
     };
     let command = prompt.command.as_deref().unwrap_or(t!(
         "Use the setup guide for this system.",
-        "이 시스템에서는 설치 안내를 이용하세요."
+        "이 시스템에서는 설치 안내를 이용하세요.",
+        "このシステムではセットアップガイドを使ってください。"
     ));
     let body = vec![
         Line::from(reason),
         Line::from(vec![
             Span::styled(
-                format!("{}: ", t!("Missing", "없는 도구")),
+                format!("{}: ", t!("Missing", "없는 도구", "不足ツール")),
                 app.theme.style(R::TextMuted),
             ),
             Span::styled(missing, app.theme.style(R::Accent)),
@@ -747,13 +967,17 @@ pub fn render_tool_setup(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
 
-    let copy = t!(" Copy command (C) ", " 명령 복사 (C) ");
-    let guide = t!(" Setup guide (G) ", " 설치 안내 (G) ");
-    let retry = t!(" Check again (R) ", " 다시 확인 (R) ");
+    let copy = t!(
+        " Copy command (C) ",
+        " 명령 복사 (C) ",
+        " コマンドをコピー (C) "
+    );
+    let guide = t!(" Setup guide (G) ", " 설치 안내 (G) ", " ガイド (G) ");
+    let retry = t!(" Check again (R) ", " 다시 확인 (R) ", " もう一度確認 (R) ");
     let later = if prompt.context == ToolSetupContext::Downloads {
-        t!(" Cancel (Esc) ", " 취소 (Esc) ")
+        t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) ")
     } else {
-        t!(" Later (Esc) ", " 나중에 (Esc) ")
+        t!(" Later (Esc) ", " 나중에 (Esc) ", " 後で (Esc) ")
     };
     let mut segments = Vec::with_capacity(7);
     if prompt.command.is_some() {
@@ -970,5 +1194,147 @@ mod tests {
         let clipped = with_ellipsis("resize the terminal to continue", 12);
         assert!(clipped.ends_with('…'));
         assert!(buttons::text_width(&clipped) <= 12);
+    }
+
+    /// The buffer's text with all spaces removed: wide (CJK) graphemes occupy a symbol cell
+    /// plus a blank continuation cell, so plain concatenation interleaves spaces into CJK
+    /// runs ("한 국 어"). Space-stripping makes `contains` assertions grapheme-exact instead.
+    fn buffer_text_compact(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .replace(' ', "")
+    }
+
+    #[test]
+    fn language_card_lists_native_names_and_marks_the_active_language() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        let text = buffer_text_compact(&terminal);
+        assert!(text.contains("Chooseyourlanguage"), "heading: {text}");
+        // Every language names itself, regardless of the previewed language.
+        assert!(text.contains("한국어") && text.contains("日本語"));
+        // The active language is the pre-highlighted primary (step-aware, not index 1).
+        assert!(text.contains("›English‹"), "marker: {text}");
+        for lang in crate::i18n::Language::CYCLE {
+            assert!(
+                app.hits
+                    .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                        lang
+                    )))
+                    .is_some(),
+                "missing hit target for {lang:?}"
+            );
+        }
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Skip))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn language_card_entry_previews_the_active_language_card_locally() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let copy = coach_copy(&app, false, false);
+        assert_eq!(copy.heading, "言語を選択してください");
+        assert!(copy.body.contains("設定でいつでも変更できます"));
+        // The preview came from the highlighted option (= active language on entry), and the
+        // process-wide language is what it was — the card never writes it.
+        assert_eq!(crate::i18n::current(), crate::i18n::Language::Japanese);
+    }
+
+    #[test]
+    fn narrow_language_card_compacts_the_row_and_keeps_every_hit_target() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let backend = TestBackend::new(48, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        let popup = app
+            .hits
+            .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Noop))
+            .expect("rendered Beginner coach");
+        let text = buffer_text_compact(&terminal);
+        // Compact path: English shortens to EN, Skip stays ASCII.
+        assert!(text.contains("EN"), "compact English label: {text}");
+        assert!(text.contains("Skip"), "compact Skip label: {text}");
+        for lang in crate::i18n::Language::CYCLE {
+            let target = app
+                .hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                    lang,
+                )))
+                .unwrap_or_else(|| panic!("missing narrow hit target for {lang:?}"));
+            assert!(
+                target.right() <= popup.right() && target.left() >= popup.left(),
+                "{lang:?} button overflows the card: {target:?} vs {popup:?}"
+            );
+        }
+        let skip = app
+            .hits
+            .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Skip))
+            .expect("Skip must stay reachable at narrow widths");
+        assert!(skip.right() <= popup.right());
+    }
+
+    #[test]
+    fn retro_language_card_pins_english_and_offers_continue() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut app = App::new(50);
+        app.config.beginner_mode = true;
+        app.config.retro_mode = true;
+        app.config.beginner_tutorial.next_step = BeginnerStep::Language.id().to_owned();
+        app.prepare_beginner_onboarding(true);
+
+        let copy = coach_copy(&app, false, false);
+        assert!(copy.body.contains("Retro mode keeps the UI in English"));
+        assert_eq!(copy.primary, "Continue");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Primary))
+                .is_some()
+        );
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Back))
+                .is_none(),
+            "the first step has no Back button, retro variant included"
+        );
+        for lang in crate::i18n::Language::CYCLE {
+            assert!(
+                app.hits
+                    .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                        lang
+                    )))
+                    .is_none(),
+                "retro variant must not offer language buttons"
+            );
+        }
     }
 }

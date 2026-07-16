@@ -19,7 +19,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         app,
         area,
-        t!(" Help · keybindings ", " 도움말 · 단축키 "),
+        t!(
+            " Help · keybindings ",
+            " 도움말 · 단축키 ",
+            " ヘルプ · ショートカット "
+        ),
         (80, 80),
         SheetStyle::Compact,
         help_groups(app),
@@ -32,7 +36,7 @@ pub fn render_mouse(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         app,
         area,
-        t!(" Help · mouse ", " 도움말 · 마우스 "),
+        t!(" Help · mouse ", " 도움말 · 마우스 ", " ヘルプ · マウス "),
         (84, 82),
         SheetStyle::Roomy,
         mouse_help_groups(app),
@@ -125,7 +129,7 @@ fn render_sheet(
     let more = len > usize::from(inner.height) + usize::from(offset);
     let block = if more {
         block.title_bottom(
-            Line::from(t!(" ↓ scroll ", " ↓ 스크롤 "))
+            Line::from(t!(" ↓ scroll ", " ↓ 스크롤 ", " ↓ スクロール "))
                 .right_aligned()
                 .style(crate::ui::popup_style(app, R::TextMuted)),
         )
@@ -281,31 +285,66 @@ fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     }
     if app.mode == Mode::Search && app.active_search_surface() == ActiveSearchSurface::Local {
         out.push((
-            t!("Local Find", "로컬 찾기").to_owned(),
+            t!("Local Find", "로컬 찾기", "ローカル検索").to_owned(),
             vec![
-                fixed_help_row("Enter", "Search / open / play", "검색 / 열기 / 재생"),
-                fixed_help_row("Tab", "Next scope / focus", "다음 범위 / 포커스"),
-                fixed_help_row("Shift+Tab", "Previous focus", "이전 포커스"),
-                fixed_help_row("/", "Refine scope and sort", "범위와 정렬 상세 설정"),
-                fixed_help_row("a / \\", "Add selected", "선택 항목 큐에 추가"),
-                fixed_help_row("P", "Play selected", "선택 항목 재생"),
-                fixed_help_row("A", "Add all results", "모든 결과 큐에 추가"),
-                fixed_help_row("s", "Shuffle all results", "모든 결과 셔플 재생"),
-                fixed_help_row("Esc", "Back one level", "한 단계 뒤로"),
-                fixed_help_row("q", "Close Find", "찾기 닫기"),
+                fixed_help_row(
+                    "Enter",
+                    "Search / open / play",
+                    "검색 / 열기 / 재생",
+                    "検索 / 開く / 再生",
+                ),
+                fixed_help_row(
+                    "Tab",
+                    "Next scope / focus",
+                    "다음 범위 / 포커스",
+                    "次の範囲 / フォーカス",
+                ),
+                fixed_help_row(
+                    "Shift+Tab",
+                    "Previous focus",
+                    "이전 포커스",
+                    "前のフォーカス",
+                ),
+                fixed_help_row(
+                    "/",
+                    "Refine scope and sort",
+                    "범위와 정렬 상세 설정",
+                    "範囲と並べ替えの詳細設定",
+                ),
+                fixed_help_row(
+                    "a / \\",
+                    "Add selected",
+                    "선택 항목 큐에 추가",
+                    "選択項目をキューに追加",
+                ),
+                fixed_help_row("P", "Play selected", "선택 항목 재생", "選択項目を再生"),
+                fixed_help_row(
+                    "A",
+                    "Add all results",
+                    "모든 결과 큐에 추가",
+                    "全結果をキューに追加",
+                ),
+                fixed_help_row(
+                    "s",
+                    "Shuffle all results",
+                    "모든 결과 셔플 재생",
+                    "全結果をシャッフル再生",
+                ),
+                fixed_help_row("Esc", "Back one level", "한 단계 뒤로", "1段階戻る"),
+                fixed_help_row("q", "Close Find", "찾기 닫기", "検索を閉じる"),
             ],
         ));
     }
     out
 }
 
-fn fixed_help_row(key: &str, english: &str, korean: &str) -> (String, String) {
+fn fixed_help_row(key: &str, english: &str, korean: &str, japanese: &str) -> (String, String) {
     (
         key.to_owned(),
-        if crate::i18n::is_korean() {
-            korean.to_owned()
-        } else {
-            english.to_owned()
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => korean.to_owned(),
+            crate::i18n::Language::Japanese => japanese.to_owned(),
+            _ => english.to_owned(),
         },
     )
 }
@@ -324,346 +363,450 @@ fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     let context_menu_fallback = (
         format!(
             "{} · {context_menu_key}",
-            t!("Open context menu", "문맥 메뉴 열기")
+            t!(
+                "Open context menu",
+                "문맥 메뉴 열기",
+                "コンテキストメニューを開く"
+            )
         ),
         t!(
             "Open the selected row's actions without right click. The shortcut shown here updates immediately from Settings › Keys.",
-            "우클릭 없이 선택한 행의 동작 메뉴를 엽니다. 여기에 표시되는 단축키는 설정 › 단축키의 변경값을 즉시 반영합니다."
+            "우클릭 없이 선택한 행의 동작 메뉴를 엽니다. 여기에 표시되는 단축키는 설정 › 단축키의 변경값을 즉시 반영합니다.",
+            "右クリックなしで選択行の操作メニューを開きます。ここに表示されるショートカットは設定 › ホットキーの変更を即座に反映します。"
         )
         .to_owned(),
     );
     vec![
         (
-            t!("Common", "공통").to_owned(),
+            t!("Common", "공통", "共通").to_owned(),
             vec![
                 mouse_row(
                     "Left click nav",
                     "상단 탭 클릭",
+                    "上部タブをクリック",
                     "Switch Player, Search, Library, Settings, DJ Gem.",
                     "Player, Search, Library, Settings, DJ Gem 화면으로 이동합니다.",
+                    "Player、Search、Library、Settings、DJ Gemの画面に移動します。",
                 ),
                 mouse_row(
                     "Footer ?",
                     "하단 ?",
+                    "下部の ?",
                     "Open the keybinding cheat-sheet.",
                     "단축키 치트시트를 엽니다.",
+                    "ショートカットのチートシートを開きます。",
                 ),
                 mouse_row(
                     "Footer mouse",
                     "하단 마우스",
+                    "下部のマウス",
                     "Open this mouse cheat-sheet; no keyboard shortcut is bound.",
                     "이 마우스 치트시트를 엽니다. 별도 단축키는 없습니다.",
+                    "このマウスチートシートを開きます。専用のショートカットはありません。",
                 ),
                 mouse_row(
                     "Footer ▼/▲",
                     "하단 ▼/▲",
+                    "下部の ▼/▲",
                     "Collapse or expand the docked player bar on non-Player screens (Bottom bar layout).",
                     "하단 배치에서 Player 외 화면의 도킹 플레이어 바를 접거나 펼칩니다.",
+                    "下部バー配置でPlayer以外の画面のドッキングプレイヤーバーを折りたたみ/展開します。",
                 ),
                 mouse_row(
                     "Wheel / scrollbar",
                     "휠 / 스크롤바",
+                    "ホイール / スクロールバー",
                     "Scroll the visible list; on Player volume, wheel changes volume.",
                     "보이는 목록을 스크롤합니다. Player 볼륨 영역에서는 볼륨을 조절합니다.",
+                    "表示中のリストをスクロールします。Playerの音量エリアでは音量を調節します。",
                 ),
                 mouse_row(
                     "Ctrl + wheel",
                     "Ctrl + 휠",
+                    "Ctrl + ホイール",
                     "Zoom the text like a browser (also Ctrl+-/=; kitty, Windows Terminal, …).",
                     "브라우저처럼 글자를 확대/축소합니다 (Ctrl+-/= 도 동일, kitty·Windows Terminal 등).",
+                    "ブラウザのように文字を拡大/縮小します (Ctrl+-/= も同じ、kitty·Windows Terminal など)。",
                 ),
                 mouse_row(
                     "Picker row click",
                     "피커 행 클릭",
+                    "ピッカー行をクリック",
                     "In the add-to-playlist popup, add the pending song(s) to that playlist.",
                     "플레이리스트 추가 팝업에서 해당 플레이리스트로 곡을 추가합니다.",
+                    "プレイリスト追加ポップアップで、そのプレイリストに曲を追加します。",
                 ),
                 mouse_row(
                     "Right click / double",
                     "우클릭 / 우더블클릭",
+                    "右クリック / 右ダブル",
                     "On supported rows, right click opens actions and right double-click activates quickly; customize each surface in Settings › Keys.",
                     "지원하는 행에서 우클릭은 동작 메뉴를 열고 우더블클릭은 빠르게 실행합니다. 설정 › 단축키에서 화면별로 바꿀 수 있습니다.",
+                    "対応する行では右クリックで操作メニューを開き、右ダブルクリックですばやく実行します。設定 › ホットキーで画面ごとに変更できます。",
                 ),
                 context_menu_fallback,
                 mouse_row(
                     "Terminal-owned menu",
                     "터미널 자체 메뉴",
+                    "ターミナル自体のメニュー",
                     "If the host terminal consumes right click, the TUI cannot intercept it. Disable/rebind that terminal action or use the keyboard fallback shown above.",
                     "호스트 터미널이 우클릭을 먼저 소비하면 TUI는 가로챌 수 없습니다. 터미널 동작을 끄거나 바꾸고 위의 키보드 대체 키를 사용하세요.",
+                    "ホストターミナルが右クリックを先に消費するとTUIは受け取れません。ターミナル側の動作を無効化/変更するか、上記のキーボード代替キーを使ってください。",
                 ),
             ],
         ),
         (
-            t!("Player", "플레이어").to_owned(),
+            t!("Player", "플레이어", "プレイヤー").to_owned(),
             vec![
                 mouse_row(
                     "Transport",
                     "재생 컨트롤",
+                    "再生コントロール",
                     "Click previous, play/pause, next, volume -/+. ",
                     "이전, 재생/일시정지, 다음, 볼륨 -/+ 를 클릭합니다.",
+                    "前へ、再生/一時停止、次へ、音量 -/+ をクリックします。",
                 ),
                 mouse_row(
                     "Seek bar",
                     "탐색 막대",
+                    "シークバー",
                     "Click a position to seek there.",
                     "원하는 위치를 클릭해 그 시점으로 이동합니다.",
+                    "位置をクリックしてそこへシークします。",
                 ),
                 mouse_row(
                     "Lyric line",
                     "가사 행",
+                    "歌詞の行",
                     "Click a visible lyric line to seek to its synced position.",
                     "보이는 가사 행을 클릭해 해당 싱크 시점으로 이동합니다.",
+                    "表示中の歌詞の行をクリックして、その同期位置へ移動します。",
                 ),
                 mouse_row(
                     "Lyrics [±]",
                     "가사 [±]",
+                    "歌詞 [±]",
                     "Click the collapsed handle to reopen the lyric-sync controls for 3 seconds.",
                     "접힌 핸들을 클릭하면 가사 싱크 컨트롤이 3초 동안 다시 펼쳐집니다.",
+                    "折りたたまれたハンドルをクリックすると、歌詞同期コントロールが3秒間再び開きます。",
                 ),
                 mouse_row(
                     "Lyrics −/+",
                     "가사 −/+",
+                    "歌詞 −/+",
                     "Click − to show lyrics 0.1s earlier or + to show them 0.1s later.",
                     "−는 가사를 0.1초 앞당기고 +는 0.1초 늦춥니다.",
+                    "−は歌詞を0.1秒早め、+は0.1秒遅らせます。",
                 ),
                 mouse_row(
                     "Queue count",
                     "대기열 숫자",
+                    "キューの数字",
                     "Click N/M to open the queue window.",
                     "N/M 표시를 클릭해 대기열 창을 엽니다.",
+                    "N/M 表示をクリックしてキューウィンドウを開きます。",
                 ),
                 mouse_row(
                     "Rating / menus",
                     "평가 / 메뉴",
+                    "評価 / メニュー",
                     "Click heart/thumb, shuffle, repeat, eq, or streaming status labels.",
                     "하트/싫어요, 셔플, 반복, eq, streaming 상태 라벨을 클릭합니다.",
+                    "ハート/低評価、シャッフル、リピート、eq、streaming の状態ラベルをクリックします。",
                 ),
             ],
         ),
         (
-            t!("Queue window", "대기열 창").to_owned(),
+            t!("Queue window", "대기열 창", "キューウィンドウ").to_owned(),
             vec![
                 mouse_row(
                     "Left click row",
                     "행 좌클릭",
+                    "行を左クリック",
                     "Select a row and start a drag range there.",
                     "행을 선택하고 드래그 범위의 시작점으로 둡니다.",
+                    "行を選択し、そこをドラッグ範囲の起点にします。",
                 ),
                 mouse_row(
                     "Double click row",
                     "행 더블클릭",
+                    "行をダブルクリック",
                     "Jump playback to that queue entry.",
                     "해당 대기열 곡으로 바로 이동해 재생합니다.",
+                    "そのキューの曲へジャンプして再生します。",
                 ),
                 mouse_row(
                     "Drag rows",
                     "행 드래그",
+                    "行をドラッグ",
                     "Extend the selected queue range.",
                     "대기열 선택 범위를 확장합니다.",
+                    "キューの選択範囲を広げます。",
                 ),
                 mouse_row(
                     "Right click row",
                     "행 우클릭",
+                    "行を右クリック",
                     "Open actions for the selected queue row or range (play from here, remove).",
                     "선택한 대기열 행 또는 범위의 동작 메뉴를 엽니다 (여기서 재생, 삭제).",
+                    "選択したキューの行または範囲の操作メニューを開きます (ここから再生、削除)。",
                 ),
                 mouse_row(
                     "Click x",
                     "x 클릭",
+                    "x をクリック",
                     "Remove that one queue entry.",
                     "해당 대기열 항목 하나를 삭제합니다.",
+                    "そのキュー項目を1件削除します。",
                 ),
                 mouse_row(
                     "Outside click",
                     "바깥 클릭",
+                    "外側をクリック",
                     "Close the queue window.",
                     "대기열 창을 닫습니다.",
+                    "キューウィンドウを閉じます。",
                 ),
             ],
         ),
         (
-            t!("Search", "검색").to_owned(),
+            t!("Search", "검색", "検索").to_owned(),
             vec![
                 mouse_row(
                     "Search box",
                     "검색 상자",
+                    "検索ボックス",
                     "Click to focus typing.",
                     "클릭해 입력 포커스를 둡니다.",
+                    "クリックして入力にフォーカスします。",
                 ),
                 mouse_row(
                     "Source chip",
                     "소스 칩",
+                    "ソースチップ",
                     "Open the search-source menu; click a menu row to choose it.",
                     "검색 소스 메뉴를 열고, 메뉴 행을 클릭해 선택합니다.",
+                    "検索ソースメニューを開き、メニュー行をクリックして選択します。",
                 ),
                 mouse_row(
                     "Search button",
                     "검색 버튼",
+                    "検索ボタン",
                     "Submit the current query.",
                     "현재 검색어로 검색합니다.",
+                    "現在の検索語で検索します。",
                 ),
                 mouse_row(
                     "Filter button",
                     "필터 버튼",
+                    "フィルターボタン",
                     "Open the results-filter popup (keyboard: `/`).",
                     "결과 필터 팝업을 엽니다 (키보드는 `/`).",
+                    "結果フィルターのポップアップを開きます (キーボードは `/`)。",
                 ),
                 mouse_row(
                     "Result click",
                     "결과 클릭",
+                    "結果をクリック",
                     "Single-click selects; double-click plays now.",
                     "한 번 클릭은 선택, 더블클릭은 바로 재생입니다.",
+                    "シングルクリックは選択、ダブルクリックは即再生です。",
                 ),
                 mouse_row(
                     "Drag rows",
                     "행 드래그",
+                    "行をドラッグ",
                     "Select a range of results for play, enqueue, playlist, or download actions.",
                     "재생, 큐 추가, 플레이리스트, 다운로드에 쓸 결과 범위를 선택합니다.",
+                    "再生、キューに追加、プレイリスト、ダウンロードに使う結果範囲を選択します。",
                 ),
                 multi_click_row(),
                 mouse_row(
                     "Result right click",
                     "결과 우클릭",
+                    "結果を右クリック",
                     "Open actions for that result or the selected rows (play, enqueue, favorite, playlist, download).",
                     "해당 결과 또는 선택한 행들의 동작 메뉴를 엽니다 (재생, 큐 추가, 즐겨찾기, 플레이리스트, 다운로드).",
+                    "その結果または選択した行の操作メニューを開きます (再生、キューに追加、お気に入り、プレイリスト、ダウンロード)。",
                 ),
             ],
         ),
         (
-            t!("Library", "라이브러리").to_owned(),
+            t!("Library", "라이브러리", "ライブラリ").to_owned(),
             vec![
                 mouse_row(
                     "Tab click",
                     "탭 클릭",
+                    "タブをクリック",
                     "Switch All, Favorites, History, Radio, Downloads, Playlists.",
                     "All, Favorites, History, Radio, Downloads, Playlists 탭을 전환합니다.",
+                    "All、Favorites、History、Radio、Downloads、Playlists のタブを切り替えます。",
                 ),
                 mouse_row(
                     "Row click",
                     "행 클릭",
+                    "行をクリック",
                     "Single-click selects; double-click plays now (opens a playlist).",
                     "한 번 클릭은 선택, 더블클릭은 바로 재생(플레이리스트는 열기)입니다.",
+                    "シングルクリックは選択、ダブルクリックは即再生(プレイリストは開く)です。",
                 ),
                 mouse_row(
                     "Row right click",
                     "행 우클릭",
+                    "行を右クリック",
                     "Open actions for that song, playlist, or selected range.",
                     "해당 곡, 플레이리스트 또는 선택 범위의 동작 메뉴를 엽니다.",
+                    "その曲、プレイリスト、または選択範囲の操作メニューを開きます。",
                 ),
                 mouse_row(
                     "Drag rows",
                     "행 드래그",
+                    "行をドラッグ",
                     "Select a range for play, enqueue, or delete actions.",
                     "재생, 큐 추가, 삭제에 쓸 범위를 선택합니다.",
+                    "再生、キューに追加、削除に使う範囲を選択します。",
                 ),
                 multi_click_row(),
                 mouse_row(
                     "Click x",
                     "x 클릭",
+                    "x をクリック",
                     "Remove/unfavorite/forget/download-delete by the active tab.",
                     "현재 탭 의미에 맞게 제거, 즐겨찾기 해제, 기록 삭제, 파일 삭제를 합니다.",
+                    "現在のタブに応じて削除、お気に入り解除、履歴削除、ファイル削除を行います。",
                 ),
                 mouse_row(
                     "Breadcrumb click",
                     "브레드크럼 클릭",
+                    "パンくずをクリック",
                     "Inside a playlist, go back to the playlist list.",
                     "플레이리스트 안에서 목록으로 돌아갑니다.",
+                    "プレイリスト内で一覧に戻ります。",
                 ),
             ],
         ),
         (
-            t!("Local Deck", "로컬 덱").to_owned(),
+            t!("Local Deck", "로컬 덱", "ローカルデッキ").to_owned(),
             vec![
                 mouse_row(
                     "Row right click",
                     "행 우클릭",
+                    "行を右クリック",
                     "Open the safe actions available for that local row.",
                     "해당 로컬 행에서 사용할 수 있는 안전한 동작 메뉴를 엽니다.",
+                    "そのローカル行で使える安全な操作メニューを開きます。",
                 ),
                 mouse_row(
                     "Row right double-click",
                     "행 우더블클릭",
+                    "行を右ダブルクリック",
                     "Activate that local row by default; customize it in Settings › Keys.",
                     "기본값은 해당 로컬 행을 실행합니다. 설정 › 단축키에서 바꿀 수 있습니다.",
+                    "デフォルトではそのローカル行を実行します。設定 › ホットキーで変更できます。",
                 ),
             ],
         ),
         (
-            t!("Settings", "설정").to_owned(),
+            t!("Settings", "설정", "設定").to_owned(),
             vec![
                 mouse_row(
                     "Tab click",
                     "탭 클릭",
+                    "タブをクリック",
                     "Switch Settings sections.",
                     "설정 섹션을 전환합니다.",
+                    "設定のセクションを切り替えます。",
                 ),
                 mouse_row(
                     "Field row",
                     "필드 행",
+                    "フィールド行",
                     "Click a row or value to focus/activate it; Keys includes safe mouse presets.",
                     "행이나 값을 클릭해 포커스하거나 실행합니다. 단축키 탭에는 안전한 마우스 프리셋도 있습니다.",
+                    "行や値をクリックしてフォーカス/実行します。ホットキータブには安全なマウスプリセットもあります。",
                 ),
                 mouse_row(
                     "Checkbox / arrows",
                     "체크박스 / 화살표",
+                    "チェックボックス / 矢印",
                     "Toggle booleans or step select/slider values.",
                     "토글을 바꾸거나 선택/슬라이더 값을 한 단계 조절합니다.",
+                    "トグルを切り替えるか、選択/スライダーの値を1段階調節します。",
                 ),
                 mouse_row(
                     "Confirm buttons",
                     "확인 버튼",
+                    "確認ボタン",
                     "Click Delete/Cancel or Save/Cancel in confirmation popups.",
                     "확인 팝업의 Delete/Cancel 또는 Save/Cancel을 클릭합니다.",
+                    "確認ポップアップの Delete/Cancel または Save/Cancel をクリックします。",
                 ),
             ],
         ),
         (
-            t!("DJ Gem", "DJ Gem").to_owned(),
+            t!("DJ Gem", "DJ Gem", "DJ Gem").to_owned(),
             vec![
                 mouse_row(
                     "Suggestions wheel",
                     "추천 휠",
+                    "おすすめのホイール",
                     "Wheel or drag the scrollbar when suggestions overflow.",
                     "추천 목록이 넘치면 휠이나 스크롤바로 이동합니다.",
+                    "おすすめが多いときはホイールかスクロールバーで移動します。",
                 ),
                 mouse_row(
                     "Footer",
                     "하단",
+                    "下部",
                     "Use the same keybinding and mouse cheat-sheet buttons.",
                     "같은 단축키/마우스 치트시트 버튼을 씁니다.",
+                    "同じショートカット/マウスのチートシートボタンを使います。",
                 ),
             ],
         ),
         (
-            t!("Popups", "팝업").to_owned(),
+            t!("Popups", "팝업", "ポップアップ").to_owned(),
             vec![
                 mouse_row(
                     "Dropdown row",
                     "드롭다운 행",
+                    "ドロップダウン行",
                     "Click a row to select it; click elsewhere to close.",
                     "행을 클릭해 선택하고, 바깥을 클릭해 닫습니다.",
+                    "行をクリックして選択し、外側をクリックして閉じます。",
                 ),
                 mouse_row(
                     "Filter popup",
                     "필터 팝업",
+                    "フィルターポップアップ",
                     "Click selects; double-click plays; right-click opens actions; wheel scrolls.",
                     "클릭 선택, 더블클릭 재생, 우클릭 동작 메뉴, 휠 스크롤.",
+                    "クリックは選択、ダブルクリックは再生、右クリックは操作メニュー、ホイールはスクロール。",
                 ),
                 mouse_row(
                     "Help/About",
                     "도움말/About",
+                    "ヘルプ/About",
                     "Click anywhere outside special links to dismiss.",
                     "특수 링크 외 아무 곳이나 클릭해 닫습니다.",
+                    "特別なリンク以外の場所をクリックして閉じます。",
                 ),
             ],
         ),
     ]
 }
 
-fn mouse_row(action_en: &str, action_ko: &str, desc_en: &str, desc_ko: &str) -> (String, String) {
+fn mouse_row(
+    action_en: &str,
+    action_ko: &str,
+    action_ja: &str,
+    desc_en: &str,
+    desc_ko: &str,
+    desc_ja: &str,
+) -> (String, String) {
     (
-        t!(action_en, action_ko).to_owned(),
-        t!(desc_en, desc_ko).to_owned(),
+        t!(action_en, action_ko, action_ja).to_owned(),
+        t!(desc_en, desc_ko, desc_ja).to_owned(),
     )
 }
 
@@ -677,14 +820,15 @@ fn multi_click_row() -> (String, String) {
         "Ctrl"
     };
     (
-        if crate::i18n::is_korean() {
-            format!("{modk} + 클릭")
-        } else {
-            format!("{modk} + click")
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("{modk} + 클릭"),
+            crate::i18n::Language::Japanese => format!("{modk} + クリック"),
+            _ => format!("{modk} + click"),
         },
         t!(
             "Toggle single rows in/out of the selection (pick several non-adjacent rows).",
-            "클릭한 행만 선택/해제해 떨어져 있는 여러 행을 고릅니다."
+            "클릭한 행만 선택/해제해 떨어져 있는 여러 행을 고릅니다.",
+            "クリックした行だけを選択/解除して、離れた複数行を選べます。"
         )
         .to_owned(),
     )

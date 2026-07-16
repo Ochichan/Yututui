@@ -1,16 +1,19 @@
-// i18n catalog wiring (docs/gui/05 §9, i18n.catalog): the en/ko catalogs stay in lockstep,
+// i18n catalog wiring (docs/gui/05 §9, i18n.catalog): the en/ko/ja catalogs stay in lockstep,
 // carry no blanks, keep interpolation placeholders aligned, and cover every literal `t()`
 // key the source references. Plus the reactive t()'s interpolation + fallback + live switch.
 
 import { describe, expect, it } from 'vitest';
 import en from '../src/i18n/en.json';
 import ko from '../src/i18n/ko.json';
+import ja from '../src/i18n/ja.json';
 import { i18n, t } from '../src/lib/i18n.svelte';
 
 const enCat = en as Record<string, string>;
 const koCat = ko as Record<string, string>;
+const jaCat = ja as Record<string, string>;
 const enKeys = Object.keys(enCat).sort();
 const koKeys = Object.keys(koCat).sort();
+const jaKeys = Object.keys(jaCat).sort();
 
 // Every literal t('some.key') reference in src (dynamic `t(`nav.${id}`)` keys are excluded).
 const RAW = import.meta.glob(['../src/**/*.svelte', '../src/**/*.ts'], {
@@ -27,8 +30,9 @@ const literalKeys = [...allText.matchAll(/\bt\(\s*'([a-z][\w.]*)'/g)].map((m) =>
 const placeholders = (s: string) => (s.match(/\{[a-zA-Z0-9_]+\}/g) ?? []).sort();
 
 describe('i18n catalog', () => {
-  it('en and ko declare the identical key set', () => {
+  it('en, ko, and ja declare the identical key set', () => {
     expect(koKeys).toEqual(enKeys);
+    expect(jaKeys).toEqual(enKeys);
   });
 
   it('has a plausible number of keys', () => {
@@ -39,12 +43,14 @@ describe('i18n catalog', () => {
     for (const k of enKeys) {
       expect(enCat[k], `en.${k}`).toBeTruthy();
       expect(koCat[k], `ko.${k}`).toBeTruthy();
+      expect(jaCat[k], `ja.${k}`).toBeTruthy();
     }
   });
 
   it('keeps interpolation placeholders aligned across languages', () => {
     for (const k of enKeys) {
-      expect(placeholders(koCat[k]), `placeholders for ${k}`).toEqual(placeholders(enCat[k]));
+      expect(placeholders(koCat[k]), `ko placeholders for ${k}`).toEqual(placeholders(enCat[k]));
+      expect(placeholders(jaCat[k]), `ja placeholders for ${k}`).toEqual(placeholders(enCat[k]));
     }
   });
 
@@ -65,8 +71,10 @@ describe('t()', () => {
   it('live-switches to another language and ignores unknown ones', () => {
     i18n.set('ko');
     expect(t('nav.search')).toBe(koCat['nav.search']);
+    i18n.set('ja');
+    expect(t('nav.search')).toBe(jaCat['nav.search']);
     i18n.set('zz-nope');
-    expect(i18n.lang).toBe('ko'); // stayed put on an unknown code
+    expect(i18n.lang).toBe('ja'); // stayed put on an unknown code
     i18n.set('en');
     expect(t('nav.search')).toBe(enCat['nav.search']);
   });

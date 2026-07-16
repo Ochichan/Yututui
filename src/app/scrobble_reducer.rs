@@ -21,13 +21,15 @@ impl App {
                 self.status.text = if opened.launched() {
                     t!(
                         "Approve YuTuTui! in the browser (link copied as fallback)",
-                        "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+                        "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)",
+                        "ブラウザでYuTuTui!を承認してください (リンクは予備としてコピー済み)"
                     )
                     .to_owned()
                 } else {
                     t!(
                         "Could not open browser; link copied. Paste it manually or run `ytt doctor --verbose`.",
-                        "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요."
+                        "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요.",
+                        "ブラウザを開けません。コピーしたリンクを手動で貼り付けるか `ytt doctor --verbose` を実行してください。"
                     )
                     .to_owned()
                 };
@@ -46,10 +48,10 @@ impl App {
                     st.draft.lastfm_session_key = session_key;
                     st.draft.lastfm_username = username.clone();
                 }
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("Last.fm 연결됨: {username}")
-                } else {
-                    format!("Last.fm connected as {username}")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("Last.fm 연결됨: {username}"),
+                    crate::i18n::Language::Japanese => format!("Last.fm 接続済み: {username}"),
+                    _ => format!("Last.fm connected as {username}"),
                 };
                 self.status.kind = StatusKind::Info;
                 vec![
@@ -63,44 +65,73 @@ impl App {
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = format!(
                     "{}: {error}",
-                    t!("Last.fm authorization failed", "Last.fm 인증 실패")
+                    t!(
+                        "Last.fm authorization failed",
+                        "Last.fm 인증 실패",
+                        "Last.fm 認証に失敗"
+                    )
                 );
                 self.status.kind = StatusKind::Error;
                 Vec::new()
             }
             ScrobbleEvent::SessionInvalid(kind) => {
-                self.status.text = if crate::i18n::is_korean() {
-                    format!(
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!(
                         "{} 세션이 만료되었어요 — 설정 › 계정에서 다시 연결해 주세요",
                         kind.label()
-                    )
-                } else {
-                    format!(
+                    ),
+                    crate::i18n::Language::Japanese => format!(
+                        "{} セッションの期限が切れました — 設定 › アカウントから再接続してください",
+                        kind.label()
+                    ),
+                    _ => format!(
                         "{} session expired — reconnect in Settings › Accounts",
                         kind.label()
-                    )
+                    ),
                 };
                 self.status.kind = StatusKind::Error;
                 Vec::new()
             }
             ScrobbleEvent::QueueStalled { pending } => {
-                self.status.text = if pending == 0 && crate::i18n::is_korean() {
-                    "스크로블 저장소가 복구되어 대기 중인 항목을 저장했어요".to_owned()
-                } else if pending == 0 {
-                    "Scrobble storage recovered; retained listens were saved".to_owned()
-                } else if crate::i18n::is_korean() {
-                    format!("스크로블 {pending}건이 전송 대기 중이에요")
+                self.status.text = if pending == 0 {
+                    match crate::i18n::current() {
+                        crate::i18n::Language::Korean => {
+                            "스크로블 저장소가 복구되어 대기 중인 항목을 저장했어요".to_owned()
+                        }
+                        crate::i18n::Language::Japanese => {
+                            "スクロブルの保存領域が復旧し、保留分を保存しました".to_owned()
+                        }
+                        _ => "Scrobble storage recovered; retained listens were saved".to_owned(),
+                    }
                 } else {
-                    format!("{pending} scrobbles waiting to be delivered")
+                    match crate::i18n::current() {
+                        crate::i18n::Language::Korean => {
+                            format!("스크로블 {pending}건이 전송 대기 중이에요")
+                        }
+                        crate::i18n::Language::Japanese => {
+                            format!("スクロブル{pending}件が送信待ちです")
+                        }
+                        _ => format!("{pending} scrobbles waiting to be delivered"),
+                    }
                 };
                 self.status.kind = StatusKind::Info;
                 Vec::new()
             }
             ScrobbleEvent::QueueDropped { dropped } => {
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("오프라인 스크로블 큐가 가득 차 {dropped}건을 삭제했어요")
-                } else {
-                    format!("Offline scrobble queue was full; dropped {dropped} oldest scrobbles")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("오프라인 스크로블 큐가 가득 차 {dropped}건을 삭제했어요")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!(
+                            "オフラインのスクロブルキューが満杯のため古い{dropped}件を削除しました"
+                        )
+                    }
+                    _ => {
+                        format!(
+                            "Offline scrobble queue was full; dropped {dropped} oldest scrobbles"
+                        )
+                    }
                 };
                 self.status.kind = StatusKind::Error;
                 Vec::new()

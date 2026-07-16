@@ -244,7 +244,12 @@ fn streaming_source_options(language: Language) -> Vec<PanelOptionPayload> {
 
 fn search_source_label(source: SearchSource, language: Language) -> &'static str {
     if source == SearchSource::All {
-        tr(language, "All enabled", "활성화된 전체 소스")
+        tr(
+            language,
+            "All enabled",
+            "활성화된 전체 소스",
+            "有効なすべてのソース",
+        )
     } else {
         source.label()
     }
@@ -252,9 +257,9 @@ fn search_source_label(source: SearchSource, language: Language) -> &'static str
 
 fn streaming_mode_label(mode: StreamingMode, language: Language) -> &'static str {
     match mode {
-        StreamingMode::Focused => tr(language, "Focused", "집중"),
-        StreamingMode::Balanced => tr(language, "Balanced", "균형"),
-        StreamingMode::Discovery => tr(language, "Discovery", "발견"),
+        StreamingMode::Focused => tr(language, "Focused", "집중", "集中"),
+        StreamingMode::Balanced => tr(language, "Balanced", "균형", "バランス"),
+        StreamingMode::Discovery => tr(language, "Discovery", "발견", "発見"),
     }
 }
 
@@ -288,9 +293,9 @@ fn repeat_id(repeat: Repeat) -> &'static str {
 
 fn repeat_label(repeat: Repeat, language: Language) -> &'static str {
     match repeat {
-        Repeat::Off => tr(language, "Off", "끔"),
-        Repeat::All => tr(language, "All", "전체"),
-        Repeat::One => tr(language, "One", "한 곡"),
+        Repeat::Off => tr(language, "Off", "끔", "オフ"),
+        Repeat::All => tr(language, "All", "전체", "すべて"),
+        Repeat::One => tr(language, "One", "한 곡", "1曲"),
     }
 }
 
@@ -308,9 +313,16 @@ fn title_for_state(state: &TrayState, language: Language) -> String {
             language,
             "YuTuTui! is not running",
             "YuTuTui!가 실행 중이 아닙니다",
+            "YuTuTui!は実行されていません",
         )
         .to_string(),
-        _ => tr(language, "Nothing playing", "재생 중인 곡 없음").to_string(),
+        _ => tr(
+            language,
+            "Nothing playing",
+            "재생 중인 곡 없음",
+            "再生中の曲なし",
+        )
+        .to_string(),
     }
 }
 
@@ -332,28 +344,40 @@ fn state_id(state: &TrayState) -> &'static str {
 
 fn state_label(state: &TrayState, language: Language) -> String {
     match state.kind() {
-        TrayStateKind::ConnectedPlaying => tr(language, "Playing", "재생 중"),
-        TrayStateKind::ConnectedPaused => tr(language, "Paused", "일시 정지"),
-        TrayStateKind::ConnectedIdle => tr(language, "Idle", "대기 중"),
-        TrayStateKind::Disconnected => tr(language, "Disconnected", "연결 안 됨"),
+        TrayStateKind::ConnectedPlaying => tr(language, "Playing", "재생 중", "再生中"),
+        TrayStateKind::ConnectedPaused => tr(language, "Paused", "일시 정지", "一時停止"),
+        TrayStateKind::ConnectedIdle => tr(language, "Idle", "대기 중", "待機中"),
+        TrayStateKind::Disconnected => tr(language, "Disconnected", "연결 안 됨", "未接続"),
     }
     .to_string()
 }
 
 fn owner_label(state: &TrayState, language: Language) -> String {
     match state.status().map(|status| status.owner_mode) {
-        Some(InstanceMode::Daemon) => tr(language, "Daemon", "데몬").to_string(),
+        Some(InstanceMode::Daemon) => tr(language, "Daemon", "데몬", "デーモン").to_string(),
         Some(InstanceMode::StandaloneTui) => "Standalone TUI".to_string(),
-        None => tr(language, "Offline", "오프라인").to_string(),
+        None => tr(language, "Offline", "오프라인", "オフライン").to_string(),
     }
 }
 
 fn queue_label(state: &TrayState, language: Language) -> String {
     let Some(status) = state.status() else {
-        return tr(language, "Queue unavailable", "대기열 사용 불가").to_string();
+        return tr(
+            language,
+            "Queue unavailable",
+            "대기열 사용 불가",
+            "キュー利用不可",
+        )
+        .to_string();
     };
     if status.total == 0 {
-        tr(language, "Queue empty", "대기열 비어 있음").to_string()
+        tr(
+            language,
+            "Queue empty",
+            "대기열 비어 있음",
+            "キューは空です",
+        )
+        .to_string()
     } else {
         format!("{} / {}", status.position, status.total)
     }
@@ -385,6 +409,15 @@ pub(super) fn control_error_label(
             ("backpressure", Language::Korean) => {
                 Some("플레이어가 바쁩니다. 잠시 후 다시 시도해 주세요.")
             }
+            ("stale_rev", Language::Japanese) => {
+                Some("キューが変更されたため更新しました。もう一度お試しください。")
+            }
+            ("incompatible_playback_modes", Language::Japanese) => Some(
+                "自動再生とリピートは同時に使用できません。どちらかをオフにしてもう一度お試しください。",
+            ),
+            ("backpressure", Language::Japanese) => {
+                Some("プレイヤーがビジー状態です。しばらくしてからもう一度お試しください。")
+            }
             _ => None,
         };
         if let Some(message) = translated {
@@ -392,15 +425,24 @@ pub(super) fn control_error_label(
         }
     }
 
-    if language == Language::English {
-        return error.to_string();
-    }
-    match error {
-        ControlError::NotRunning => "YuTuTui!가 실행 중이 아닙니다".to_string(),
-        ControlError::StaleInstance => "저장된 YuTuTui! 인스턴스가 만료되었습니다".to_string(),
-        ControlError::Rejected(reason) => format!("명령이 거부되었습니다: {reason}"),
-        ControlError::MissingStatus => "상태 응답을 받지 못했습니다".to_string(),
-        ControlError::Transport(message) => message.clone(),
+    match language {
+        Language::English => error.to_string(),
+        Language::Korean => match error {
+            ControlError::NotRunning => "YuTuTui!가 실행 중이 아닙니다".to_string(),
+            ControlError::StaleInstance => "저장된 YuTuTui! 인스턴스가 만료되었습니다".to_string(),
+            ControlError::Rejected(reason) => format!("명령이 거부되었습니다: {reason}"),
+            ControlError::MissingStatus => "상태 응답을 받지 못했습니다".to_string(),
+            ControlError::Transport(message) => message.clone(),
+        },
+        Language::Japanese => match error {
+            ControlError::NotRunning => "YuTuTui!は実行されていません".to_string(),
+            ControlError::StaleInstance => {
+                "保存されたYuTuTui!インスタンスは無効になりました".to_string()
+            }
+            ControlError::Rejected(reason) => format!("コマンドが拒否されました: {reason}"),
+            ControlError::MissingStatus => "ステータス応答を受信できませんでした".to_string(),
+            ControlError::Transport(message) => message.clone(),
+        },
     }
 }
 
@@ -415,12 +457,19 @@ pub(super) fn language_code(language: Language) -> &'static str {
     match language {
         Language::English => "en",
         Language::Korean => "ko",
+        Language::Japanese => "ja",
     }
 }
 
-fn tr(language: Language, english: &'static str, korean: &'static str) -> &'static str {
+fn tr(
+    language: Language,
+    english: &'static str,
+    korean: &'static str,
+    japanese: &'static str,
+) -> &'static str {
     match language {
         Language::Korean => korean,
+        Language::Japanese => japanese,
         Language::English => english,
     }
 }

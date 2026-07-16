@@ -120,46 +120,79 @@ impl ContextMenuItem {
 
     pub(crate) fn label(self, count: usize) -> String {
         match self.command {
-            ContextCommand::Activate => t!("Activate", "실행").to_owned(),
+            ContextCommand::Activate => t!("Activate", "실행", "実行").to_owned(),
             ContextCommand::PlayNow if count > 1 => {
-                format!("{} ({count})", t!("Play selected", "선택 항목 재생"))
+                format!(
+                    "{} ({count})",
+                    t!("Play selected", "선택 항목 재생", "選択項目を再生")
+                )
             }
-            ContextCommand::PlayNow => t!("Play now", "지금 재생").to_owned(),
-            ContextCommand::PlayFromHere => t!("Play from here", "여기서부터 재생").to_owned(),
+            ContextCommand::PlayNow => t!("Play now", "지금 재생", "今すぐ再生").to_owned(),
+            ContextCommand::PlayFromHere => {
+                t!("Play from here", "여기서부터 재생", "ここから再生").to_owned()
+            }
             ContextCommand::Enqueue if count > 1 => {
                 format!(
                     "{} ({count})",
-                    t!("Add selected to queue", "선택 항목 큐에 추가")
+                    t!(
+                        "Add selected to queue",
+                        "선택 항목 큐에 추가",
+                        "選択項目をキューに追加"
+                    )
                 )
             }
-            ContextCommand::Enqueue => t!("Add to queue", "대기열에 추가").to_owned(),
-            ContextCommand::ToggleFavorite => {
-                t!("Favorite / unfavorite", "즐겨찾기 추가 / 해제").to_owned()
+            ContextCommand::Enqueue => {
+                t!("Add to queue", "대기열에 추가", "キューに追加").to_owned()
             }
+            ContextCommand::ToggleFavorite => t!(
+                "Favorite / unfavorite",
+                "즐겨찾기 추가 / 해제",
+                "お気に入り追加 / 解除"
+            )
+            .to_owned(),
             ContextCommand::AddToPlaylist if count > 1 => {
                 format!(
                     "{} ({count})",
-                    t!("Add selected to playlist", "선택 항목 플레이리스트에 추가")
+                    t!(
+                        "Add selected to playlist",
+                        "선택 항목 플레이리스트에 추가",
+                        "選択項目をプレイリストに追加"
+                    )
                 )
             }
-            ContextCommand::AddToPlaylist => {
-                t!("Add to playlist", "플레이리스트에 추가").to_owned()
-            }
+            ContextCommand::AddToPlaylist => t!(
+                "Add to playlist",
+                "플레이리스트에 추가",
+                "プレイリストに追加"
+            )
+            .to_owned(),
             ContextCommand::Download if count > 1 => {
                 format!(
                     "{} ({count})",
-                    t!("Download selected", "선택 항목 다운로드")
+                    t!(
+                        "Download selected",
+                        "선택 항목 다운로드",
+                        "選択項目をダウンロード"
+                    )
                 )
             }
-            ContextCommand::Download => t!("Download", "다운로드").to_owned(),
-            ContextCommand::ImportPlaylist => {
-                t!("Import playlist", "플레이리스트 가져오기").to_owned()
+            ContextCommand::Download => t!("Download", "다운로드", "ダウンロード").to_owned(),
+            ContextCommand::ImportPlaylist => t!(
+                "Import playlist",
+                "플레이리스트 가져오기",
+                "プレイリストをインポート"
+            )
+            .to_owned(),
+            ContextCommand::OpenPlaylist => {
+                t!("Open playlist", "플레이리스트 열기", "プレイリストを開く").to_owned()
             }
-            ContextCommand::OpenPlaylist => t!("Open playlist", "플레이리스트 열기").to_owned(),
             ContextCommand::Remove if count > 1 => {
-                format!("{} ({count})", t!("Remove selected", "선택 항목 제거"))
+                format!(
+                    "{} ({count})",
+                    t!("Remove selected", "선택 항목 제거", "選択項目を削除")
+                )
             }
-            ContextCommand::Remove => t!("Remove", "제거").to_owned(),
+            ContextCommand::Remove => t!("Remove", "제거", "削除").to_owned(),
         }
     }
 }
@@ -324,8 +357,12 @@ impl App {
         };
         let Some(rect) = self.hits.rect_of_target(target) else {
             self.status.kind = StatusKind::Info;
-            self.status.text =
-                t!("Selected row is off-screen", "선택한 행이 화면 밖에 있어요").to_owned();
+            self.status.text = t!(
+                "Selected row is off-screen",
+                "선택한 행이 화면 밖에 있어요",
+                "選択した行が画面外にあります"
+            )
+            .to_owned();
             self.dirty = true;
             return Vec::new();
         };
@@ -1052,7 +1089,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "The list changed — open the menu again",
-            "목록이 바뀌었어요 — 메뉴를 다시 열어 주세요"
+            "목록이 바뀌었어요 — 메뉴를 다시 열어 주세요",
+            "リストが変わりました — メニューを開き直してください"
         )
         .to_owned();
         self.dirty = true;

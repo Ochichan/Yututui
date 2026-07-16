@@ -40,10 +40,17 @@ impl PersonalDataExportStatus {
 
     pub fn value_display(&self) -> String {
         match self {
-            Self::Idle => t!("↵ Export to Downloads", "↵ 다운로드 폴더로 내보내기").to_owned(),
-            Self::Exporting => t!("Exporting…", "내보내는 중…").to_owned(),
-            Self::Succeeded => t!("✓ Exported", "✓ 내보내기 완료").to_owned(),
-            Self::Failed => t!("Failed · ↵ retry", "실패 · ↵ 다시 시도").to_owned(),
+            Self::Idle => t!(
+                "↵ Export to Downloads",
+                "↵ 다운로드 폴더로 내보내기",
+                "↵ ダウンロードへエクスポート"
+            )
+            .to_owned(),
+            Self::Exporting => t!("Exporting…", "내보내는 중…", "エクスポート中…").to_owned(),
+            Self::Succeeded => t!("✓ Exported", "✓ 내보내기 완료", "✓ エクスポート完了").to_owned(),
+            Self::Failed => {
+                t!("Failed · ↵ retry", "실패 · ↵ 다시 시도", "失敗 · ↵ 再試行").to_owned()
+            }
         }
     }
 }

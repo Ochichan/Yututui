@@ -186,10 +186,14 @@ pub(in crate::ui) fn render_title_row(
                     Action::OpenSearch,
                     app.retro_mode(),
                 );
-                if crate::i18n::is_korean() {
-                    format!("재생 중인 곡 없음 — {key} 를 눌러 검색")
-                } else {
-                    format!("Nothing playing — press {key} to search")
+                match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("재생 중인 곡 없음 — {key} 를 눌러 검색")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("再生中の曲なし — {key} を押して検索")
+                    }
+                    _ => format!("Nothing playing — press {key} to search"),
                 }
             }
         };
@@ -422,8 +426,8 @@ fn status_line_parts_with_labels_reusing(
             (true, false, _) => "▸",
             (false, true, true) => "‖ paused",
             (false, false, true) => "▸ playing",
-            (false, true, false) => t!("‖ paused", "‖ 일시정지"),
-            (false, false, false) => t!("▸ playing", "▸ 재생 중"),
+            (false, true, false) => t!("‖ paused", "‖ 일시정지", "‖ 一時停止"),
+            (false, false, false) => t!("▸ playing", "▸ 재생 중", "▸ 再生中"),
         };
         parts.push((None, Cow::Borrowed(state)));
     }
@@ -442,7 +446,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Queue"
                 } else {
-                    t!("Queue", "대기열")
+                    t!("Queue", "대기열", "キュー")
                 },
                 Some(value),
             )
@@ -473,16 +477,16 @@ fn status_line_parts_with_labels_reusing(
             } else {
                 (
                     if liked {
-                        t!("Like", "좋아요")
+                        t!("Like", "좋아요", "高く評価")
                     } else if disliked {
-                        t!("Dislike", "싫어요")
+                        t!("Dislike", "싫어요", "低く評価")
                     } else {
-                        t!("None", "없음")
+                        t!("None", "없음", "なし")
                     },
                     [
-                        t!("Like", "좋아요"),
-                        t!("Dislike", "싫어요"),
-                        t!("None", "없음"),
+                        t!("Like", "좋아요", "高く評価"),
+                        t!("Dislike", "싫어요", "低く評価"),
+                        t!("None", "없음", "なし"),
                     ],
                 )
             };
@@ -494,7 +498,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Rating"
                 } else {
-                    t!("Rating", "평가")
+                    t!("Rating", "평가", "評価")
                 },
                 Some(pad_display_state(state, &states)),
             )
@@ -528,14 +532,14 @@ fn status_line_parts_with_labels_reusing(
             } else {
                 (
                     match synced {
-                        Some(true) => t!("Synced", "동기화"),
-                        Some(false) => t!("Behind", "뒤처짐"),
-                        None => t!("Unknown", "알 수 없음"),
+                        Some(true) => t!("Synced", "동기화", "同期済み"),
+                        Some(false) => t!("Behind", "뒤처짐", "遅延"),
+                        None => t!("Unknown", "알 수 없음", "不明"),
                     },
                     [
-                        t!("Synced", "동기화"),
-                        t!("Behind", "뒤처짐"),
-                        t!("Unknown", "알 수 없음"),
+                        t!("Synced", "동기화", "同期済み"),
+                        t!("Behind", "뒤처짐", "遅延"),
+                        t!("Unknown", "알 수 없음", "不明"),
                     ],
                 )
             };
@@ -547,7 +551,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Live"
                 } else {
-                    t!("Live", "라이브")
+                    t!("Live", "라이브", "ライブ")
                 },
                 Some(pad_display_state(state, &states)),
             )
@@ -568,7 +572,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Resync"
                 } else {
-                    t!("Resync", "다시 동기화")
+                    t!("Resync", "다시 동기화", "再同期")
                 },
                 None,
             )
@@ -592,12 +596,12 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Identify"
                 } else {
-                    t!("Identify", "곡 찾기")
+                    t!("Identify", "곡 찾기", "曲を特定")
                 },
                 None,
             )
         } else {
-            t!("ID?", "지듣노").to_owned()
+            t!("ID?", "지듣노", "この曲?").to_owned()
         };
         parts.push((
             Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
@@ -617,12 +621,12 @@ fn status_line_parts_with_labels_reusing(
                     if retro {
                         "Recordings"
                     } else {
-                        t!("Recordings", "녹음 목록")
+                        t!("Recordings", "녹음 목록", "録音一覧")
                     },
                     None,
                 )
             } else {
-                t!("REC", "녹음").to_owned()
+                t!("REC", "녹음", "録音").to_owned()
             };
             parts.push((
                 Some(MouseTarget::Player(Action::ToggleRecordings)),
@@ -637,11 +641,11 @@ fn status_line_parts_with_labels_reusing(
             } else {
                 (
                     if app.queue.shuffle {
-                        t!("On", "켬")
+                        t!("On", "켬", "オン")
                     } else {
-                        t!("Off", "끔")
+                        t!("Off", "끔", "オフ")
                     },
-                    [t!("On", "켬"), t!("Off", "끔")],
+                    [t!("On", "켬", "オン"), t!("Off", "끔", "オフ")],
                 )
             };
             beginner_control_label(
@@ -652,7 +656,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Shuffle"
                 } else {
-                    t!("Shuffle", "셔플")
+                    t!("Shuffle", "셔플", "シャッフル")
                 },
                 Some(pad_display_state(state, &states)),
             )
@@ -681,11 +685,15 @@ fn status_line_parts_with_labels_reusing(
             } else {
                 (
                     match app.queue.repeat {
-                        Repeat::Off => t!("Off", "끔"),
-                        Repeat::All => t!("All", "전체"),
-                        Repeat::One => t!("One", "한 곡"),
+                        Repeat::Off => t!("Off", "끔", "オフ"),
+                        Repeat::All => t!("All", "전체", "すべて"),
+                        Repeat::One => t!("One", "한 곡", "1曲"),
                     },
-                    [t!("Off", "끔"), t!("All", "전체"), t!("One", "한 곡")],
+                    [
+                        t!("Off", "끔", "オフ"),
+                        t!("All", "전체", "すべて"),
+                        t!("One", "한 곡", "1曲"),
+                    ],
                 )
             };
             beginner_control_label(
@@ -696,7 +704,7 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Repeat"
                 } else {
-                    t!("Repeat", "반복")
+                    t!("Repeat", "반복", "リピート")
                 },
                 Some(pad_display_state(state, &states)),
             )
@@ -725,7 +733,7 @@ fn status_line_parts_with_labels_reusing(
             if retro {
                 "Equalizer"
             } else {
-                t!("Equalizer", "이퀄라이저")
+                t!("Equalizer", "이퀄라이저", "イコライザー")
             },
             Some(pad_display_state(
                 app.audio.preset.label(),
@@ -775,11 +783,19 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Streaming autoplay"
                 } else {
-                    t!("Streaming autoplay", "스트리밍 자동재생")
+                    t!(
+                        "Streaming autoplay",
+                        "스트리밍 자동재생",
+                        "ストリーミング自動再生"
+                    )
                 },
                 Some(format!(
                     "{} · {}",
-                    if retro { "On" } else { t!("On", "켬") },
+                    if retro {
+                        "On"
+                    } else {
+                        t!("On", "켬", "オン")
+                    },
                     pad_display_state(mode, &states)
                 )),
             )
@@ -804,12 +820,16 @@ fn status_line_parts_with_labels_reusing(
                 if retro {
                     "Streaming autoplay"
                 } else {
-                    t!("Streaming autoplay", "스트리밍 자동재생")
+                    t!(
+                        "Streaming autoplay",
+                        "스트리밍 자동재생",
+                        "ストリーミング自動再生"
+                    )
                 },
                 Some(if retro {
                     "Off (saved On)".to_owned()
                 } else {
-                    t!("Off (saved On)", "끔 (저장: 켬)").to_owned()
+                    t!("Off (saved On)", "끔 (저장: 켬)", "オフ (保存: オン)").to_owned()
                 }),
             )
         } else {
@@ -866,11 +886,11 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     // Roomy gaps normally; tighter ones when the strip wouldn't fit (a narrow terminal or
     // text zoom shrinking the virtual grid). Beginner mode first shortens Volume to `vol`,
     // then sheds its keycaps, while the legacy path retains exactly the old segment bytes.
-    let compact_volume_label = t!("vol ", "볼륨 ");
+    let compact_volume_label = t!("vol ", "볼륨 ", "音量 ");
     let beginner_volume_label = if app.retro_mode() {
         "Volume "
     } else {
-        t!("Volume ", "볼륨 ")
+        t!("Volume ", "볼륨 ", "音量 ")
     };
     let plain_down = " - ";
     let plain_up = " + ";
@@ -1000,7 +1020,7 @@ pub fn render_streaming_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         app,
         area,
         MouseTarget::StreamingMenu,
-        t!(" Streaming ", " 스트리밍 "),
+        t!(" Streaming ", " 스트리밍 ", " ストリーミング "),
         &rows,
     );
 }

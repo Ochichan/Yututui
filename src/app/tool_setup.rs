@@ -74,14 +74,26 @@ impl App {
             MouseTarget::ToolSetupCopy => {
                 let copied = prompt.command.as_deref().is_some_and(copy_to_clipboard);
                 self.set_status_info(if copied {
-                    t!("Install command copied", "설치 명령을 복사했습니다")
+                    t!(
+                        "Install command copied",
+                        "설치 명령을 복사했습니다",
+                        "インストールコマンドをコピーしました"
+                    )
                 } else {
-                    t!("Clipboard unavailable", "클립보드를 사용할 수 없습니다")
+                    t!(
+                        "Clipboard unavailable",
+                        "클립보드를 사용할 수 없습니다",
+                        "クリップボードを使用できません"
+                    )
                 });
             }
             MouseTarget::ToolSetupGuide => {
                 open_in_browser(crate::deps::setup_guide_url());
-                self.set_status_info(t!("Setup guide opened", "설치 안내를 열었습니다"));
+                self.set_status_info(t!(
+                    "Setup guide opened",
+                    "설치 안내를 열었습니다",
+                    "セットアップガイドを開きました"
+                ));
             }
             MouseTarget::ToolSetupRetry => {
                 let mut missing = Self::tool_setup_missing(prompt.context);
@@ -95,7 +107,8 @@ impl App {
                     self.tool_setup = None;
                     self.set_status_info(t!(
                         "Playback tools are ready",
-                        "재생 도구가 준비되었습니다"
+                        "재생 도구가 준비되었습니다",
+                        "再生ツールの準備ができました"
                     ));
                     self.arm_beginner_onboarding();
                     if prompt.context == ToolSetupContext::Downloads {
@@ -113,7 +126,8 @@ impl App {
                     self.tool_setup = Some(next);
                     self.set_status_error(t!(
                         "Tools are still missing — install them, then check again",
-                        "아직 도구가 없습니다 — 설치한 뒤 다시 확인하세요"
+                        "아직 도구가 없습니다 — 설치한 뒤 다시 확인하세요",
+                        "まだツールが見つかりません — インストールしてからもう一度確認してください"
                     ));
                 }
             }

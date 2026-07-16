@@ -339,16 +339,28 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = match plan.kind {
             DedicatedModeSwitch::Radio(RadioModeConfirm::Enter) => {
-                t!("Radio mode enabled", "라디오 모드 켜짐")
+                t!("Radio mode enabled", "라디오 모드 켜짐", "ラジオモード有効")
             }
             DedicatedModeSwitch::Radio(RadioModeConfirm::Exit) => {
-                t!("Radio mode disabled", "라디오 모드 꺼짐")
+                t!(
+                    "Radio mode disabled",
+                    "라디오 모드 꺼짐",
+                    "ラジオモード無効"
+                )
             }
             DedicatedModeSwitch::Local(LocalModeConfirm::Enter) => {
-                t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐")
+                t!(
+                    "Local Player mode enabled",
+                    "로컬 플레이어 모드 켜짐",
+                    "ローカルプレイヤーモード有効"
+                )
             }
             DedicatedModeSwitch::Local(LocalModeConfirm::Exit) => {
-                t!("Local Player mode disabled", "로컬 플레이어 모드 꺼짐")
+                t!(
+                    "Local Player mode disabled",
+                    "로컬 플레이어 모드 꺼짐",
+                    "ローカルプレイヤーモード無効"
+                )
             }
         }
         .to_owned();

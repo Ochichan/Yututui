@@ -380,6 +380,8 @@ fn golden_v7_instance_file_is_byte_stable_and_parses() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: 7,
         capabilities: vec!["remote-control".to_string(), "status".to_string()],
+        // Byte-stability proof: an absent hint must serialize to the exact golden line.
+        host_terminal: None,
     };
     let line = serde_json::to_string(&file).unwrap();
     assert_eq!(

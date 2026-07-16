@@ -89,7 +89,7 @@ pub(in crate::app) struct LocalRowsCache {
     section: LocalSection,
     drill: Vec<LocalDrill>,
     query: String,
-    korean: bool,
+    lang: crate::i18n::Language,
     index: LocalIndexRowsFingerprint,
     downloads: LocalDownloadRowsFingerprint,
     errors: LocalErrorRowsFingerprint,
@@ -113,7 +113,7 @@ impl App {
                 &mut self.local_mode.import_files_fingerprint_cache.borrow_mut(),
             )
         });
-        let korean = crate::i18n::is_korean();
+        let lang = crate::i18n::current();
         let index = local_index_rows_fingerprint(&self.local_mode.index.index);
         let downloads = local_download_rows_fingerprint(
             self.library_ui.downloaded_rev,
@@ -131,7 +131,7 @@ impl App {
             && cache.section == section
             && cache.drill.as_slice() == drill
             && cache.query == query
-            && cache.korean == korean
+            && cache.lang == lang
             && cache.index == index
             && cache.downloads == downloads
             && cache.errors == errors
@@ -161,7 +161,7 @@ impl App {
             section,
             drill: drill.to_vec(),
             query: query.to_owned(),
-            korean,
+            lang,
             index,
             downloads,
             errors,
@@ -236,7 +236,7 @@ impl App {
             && cache.section == self.local_mode.ui.section
             && cache.drill.as_slice() == self.local_mode.ui.drill.as_slice()
             && cache.query == self.local_mode.ui.filter_query
-            && cache.korean == crate::i18n::is_korean()
+            && cache.lang == crate::i18n::current()
             && cache.index == local_index_rows_fingerprint(&self.local_mode.index.index)
             && cache.downloads
                 == local_download_rows_fingerprint(
@@ -583,7 +583,7 @@ impl App {
                 .downloaded
                 .get(*download_index)
                 .map(|song| local_song_text(self, song))
-                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
+                .unwrap_or_else(|| t!("Missing track", "없는 곡", "不明な曲").to_owned()),
             (LocalRowsKind::Albums(albums), crate::local::LocalRowId::Album(_)) => albums
                 .get(index)
                 .and_then(Option::as_ref)
@@ -601,11 +601,11 @@ impl App {
                         album.title,
                         album.album_artist,
                         album.track_count,
-                        t!("tracks", "곡"),
+                        t!("tracks", "곡", "曲"),
                         suffix
                     )
                 })
-                .unwrap_or_else(|| t!("Missing album", "없는 앨범").to_owned()),
+                .unwrap_or_else(|| t!("Missing album", "없는 앨범", "不明なアルバム").to_owned()),
             (LocalRowsKind::Artists(artists), crate::local::LocalRowId::Artist(_)) => artists
                 .get(index)
                 .and_then(Option::as_ref)
@@ -614,23 +614,29 @@ impl App {
                         "{}  ({} {}, {} {})",
                         artist.name,
                         artist.album_count,
-                        t!("albums", "앨범"),
+                        t!("albums", "앨범", "アルバム"),
                         artist.track_count,
-                        t!("tracks", "곡")
+                        t!("tracks", "곡", "曲")
                     )
                 })
-                .unwrap_or_else(|| t!("Missing artist", "없는 아티스트").to_owned()),
+                .unwrap_or_else(|| {
+                    t!("Missing artist", "없는 아티스트", "不明なアーティスト").to_owned()
+                }),
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Genre(genre)) => {
                 let count = counts.get(index).copied().unwrap_or_default();
-                format!("{genre}  ({count} {})", t!("tracks", "곡"))
+                format!("{genre}  ({count} {})", t!("tracks", "곡", "曲"))
             }
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Folder(folder)) => {
                 let count = counts.get(index).copied().unwrap_or_default();
-                format!("{}  ({count} {})", folder.display(), t!("tracks", "곡"))
+                format!(
+                    "{}  ({count} {})",
+                    folder.display(),
+                    t!("tracks", "곡", "曲")
+                )
             }
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Smart(smart)) => {
                 let count = counts.get(index).copied().unwrap_or_default();
-                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
+                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡", "曲"))
             }
             (
                 LocalRowsKind::ImportSessions(track_counts),
@@ -647,7 +653,7 @@ impl App {
                 .and_then(Option::as_ref)
                 .map(|display| {
                     let artist = if display.artists.is_empty() {
-                        t!("Local file", "로컬 파일").to_owned()
+                        t!("Local file", "로컬 파일", "ローカルファイル").to_owned()
                     } else {
                         display.artists.join(", ")
                     };
@@ -662,7 +668,14 @@ impl App {
             (LocalRowsKind::ScanErrors, crate::local::LocalRowId::ScanError(issue_index)) => self
                 .local_scan_issue(*issue_index)
                 .map(|error| format!("{} - {}", error.path.display(), error.message))
-                .unwrap_or_else(|| t!("Missing scan error", "없는 스캔 오류").to_owned()),
+                .unwrap_or_else(|| {
+                    t!(
+                        "Missing scan error",
+                        "없는 스캔 오류",
+                        "不明なスキャンエラー"
+                    )
+                    .to_owned()
+                }),
             _ => self.local_row_text_uncached(row),
         }
     }
@@ -685,13 +698,13 @@ impl App {
             crate::local::LocalRowId::Track(id) => self
                 .local_track_by_id(id)
                 .map(|track| local_track_text(self, track))
-                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
+                .unwrap_or_else(|| t!("Missing track", "없는 곡", "不明な曲").to_owned()),
             crate::local::LocalRowId::DownloadSeed(index) => self
                 .library_ui
                 .downloaded
                 .get(*index)
                 .map(|song| local_song_text(self, song))
-                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
+                .unwrap_or_else(|| t!("Missing track", "없는 곡", "不明な曲").to_owned()),
             crate::local::LocalRowId::Album(id) => self
                 .local_album_by_id(id)
                 .map(|album| {
@@ -708,11 +721,11 @@ impl App {
                         album.title,
                         album.album_artist,
                         album.track_count,
-                        t!("tracks", "곡"),
+                        t!("tracks", "곡", "曲"),
                         suffix
                     )
                 })
-                .unwrap_or_else(|| t!("Missing album", "없는 앨범").to_owned()),
+                .unwrap_or_else(|| t!("Missing album", "없는 앨범", "不明なアルバム").to_owned()),
             crate::local::LocalRowId::Artist(id) => self
                 .local_artist_by_id(id)
                 .map(|artist| {
@@ -720,23 +733,29 @@ impl App {
                         "{}  ({} {}, {} {})",
                         artist.name,
                         artist.album_ids.len(),
-                        t!("albums", "앨범"),
+                        t!("albums", "앨범", "アルバム"),
                         artist.track_ids.len(),
-                        t!("tracks", "곡")
+                        t!("tracks", "곡", "曲")
                     )
                 })
-                .unwrap_or_else(|| t!("Missing artist", "없는 아티스트").to_owned()),
+                .unwrap_or_else(|| {
+                    t!("Missing artist", "없는 아티스트", "不明なアーティスト").to_owned()
+                }),
             crate::local::LocalRowId::Genre(genre) => {
                 let count = self.local_tracks_for_genre(genre).len();
-                format!("{genre}  ({count} {})", t!("tracks", "곡"))
+                format!("{genre}  ({count} {})", t!("tracks", "곡", "曲"))
             }
             crate::local::LocalRowId::Folder(folder) => {
                 let count = self.local_tracks_for_folder(folder).len();
-                format!("{}  ({count} {})", folder.display(), t!("tracks", "곡"))
+                format!(
+                    "{}  ({count} {})",
+                    folder.display(),
+                    t!("tracks", "곡", "曲")
+                )
             }
             crate::local::LocalRowId::Smart(smart) => {
                 let count = self.local_tracks_for_smart(*smart).len();
-                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
+                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡", "曲"))
             }
             crate::local::LocalRowId::ImportSession(session_id) => local_import_session_text(
                 session_id,
@@ -749,7 +768,14 @@ impl App {
             crate::local::LocalRowId::ScanError(index) => self
                 .local_scan_issue(*index)
                 .map(|error| format!("{} - {}", error.path.display(), error.message))
-                .unwrap_or_else(|| t!("Missing scan error", "없는 스캔 오류").to_owned()),
+                .unwrap_or_else(|| {
+                    t!(
+                        "Missing scan error",
+                        "없는 스캔 오류",
+                        "不明なスキャンエラー"
+                    )
+                    .to_owned()
+                }),
         }
     }
 
@@ -764,7 +790,7 @@ impl App {
         snapshot: &LocalRowsSnapshot,
     ) -> Vec<String> {
         let mut lines = Vec::new();
-        lines.push(t!("Selected", "선택").to_owned());
+        lines.push(t!("Selected", "선택", "選択").to_owned());
         if snapshot.rows().get(self.local_mode.ui.selected).is_some() {
             lines.extend(
                 self.local_row_details_at(snapshot, self.local_mode.ui.selected)
@@ -772,7 +798,14 @@ impl App {
                     .cloned(),
             );
         } else {
-            lines.push(t!("No local item selected.", "선택된 로컬 항목이 없습니다.").to_owned());
+            lines.push(
+                t!(
+                    "No local item selected.",
+                    "선택된 로컬 항목이 없습니다.",
+                    "ローカル項目が選択されていません。"
+                )
+                .to_owned(),
+            );
         }
 
         lines.push(String::new());
@@ -788,15 +821,15 @@ impl App {
             self.local_row_text_at(snapshot, self.local_mode.ui.selected)
                 .to_string()
         } else {
-            t!("No selection", "선택 없음").to_owned()
+            t!("No selection", "선택 없음", "選択なし").to_owned()
         };
         let Some(current) = self.queue.current() else {
-            return format!("{}: {selected}", t!("Selected", "선택"));
+            return format!("{}: {selected}", t!("Selected", "선택", "選択"));
         };
         format!(
             "{}: {selected}  |  {}: {}",
-            t!("Selected", "선택"),
-            t!("Now", "재생 중"),
+            t!("Selected", "선택", "選択"),
+            t!("Now", "재생 중", "再生中"),
             local_song_text(self, current)
         )
     }
@@ -830,82 +863,98 @@ impl App {
             }
             (LocalRowsKind::Albums(albums), crate::local::LocalRowId::Album(_)) => {
                 if let Some(album) = albums.get(index).and_then(Option::as_ref) {
-                    push_detail_line(&mut lines, t!("Album", "앨범"), &album.title);
-                    push_detail_line(&mut lines, t!("Artist", "아티스트"), &album.album_artist);
+                    push_detail_line(&mut lines, t!("Album", "앨범", "アルバム"), &album.title);
+                    push_detail_line(
+                        &mut lines,
+                        t!("Artist", "아티스트", "アーティスト"),
+                        &album.album_artist,
+                    );
                     if let Some(year) = album.year {
-                        push_detail_line(&mut lines, t!("Year", "연도"), year.to_string());
+                        push_detail_line(&mut lines, t!("Year", "연도", "年"), year.to_string());
                     }
                     push_detail_line(
                         &mut lines,
-                        t!("Tracks", "곡"),
-                        format!("{} {}", album.track_count, t!("tracks", "곡")),
+                        t!("Tracks", "곡", "曲"),
+                        format!("{} {}", album.track_count, t!("tracks", "곡", "曲")),
                     );
                     if let Some(duration) = album.duration_ms {
                         push_detail_line(
                             &mut lines,
-                            t!("Duration", "길이"),
+                            t!("Duration", "길이", "再生時間"),
                             format_local_duration_ms(duration),
                         );
                     }
                     push_detail_line(
                         &mut lines,
-                        t!("Cover", "커버"),
+                        t!("Cover", "커버", "カバー"),
                         format_embedded_cover_count(album.embedded_cover_count),
                     );
                 }
             }
             (LocalRowsKind::Artists(artists), crate::local::LocalRowId::Artist(_)) => {
                 if let Some(artist) = artists.get(index).and_then(Option::as_ref) {
-                    push_detail_line(&mut lines, t!("Artist", "아티스트"), &artist.name);
                     push_detail_line(
                         &mut lines,
-                        t!("Albums", "앨범"),
-                        format!("{} {}", artist.album_count, t!("albums", "앨범")),
+                        t!("Artist", "아티스트", "アーティスト"),
+                        &artist.name,
                     );
                     push_detail_line(
                         &mut lines,
-                        t!("Tracks", "곡"),
-                        format!("{} {}", artist.track_count, t!("tracks", "곡")),
+                        t!("Albums", "앨범", "アルバム"),
+                        format!(
+                            "{} {}",
+                            artist.album_count,
+                            t!("albums", "앨범", "アルバム")
+                        ),
+                    );
+                    push_detail_line(
+                        &mut lines,
+                        t!("Tracks", "곡", "曲"),
+                        format!("{} {}", artist.track_count, t!("tracks", "곡", "曲")),
                     );
                 }
             }
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Genre(genre)) => {
-                push_detail_line(&mut lines, t!("Genre", "장르"), genre);
+                push_detail_line(&mut lines, t!("Genre", "장르", "ジャンル"), genre);
                 push_detail_line(
                     &mut lines,
-                    t!("Tracks", "곡"),
+                    t!("Tracks", "곡", "曲"),
                     format!(
                         "{} {}",
                         counts.get(index).copied().unwrap_or_default(),
-                        t!("tracks", "곡")
+                        t!("tracks", "곡", "曲")
                     ),
                 );
             }
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Folder(folder)) => {
                 push_detail_line(
                     &mut lines,
-                    t!("Folder", "폴더"),
+                    t!("Folder", "폴더", "フォルダー"),
                     folder.display().to_string(),
                 );
                 push_detail_line(
                     &mut lines,
-                    t!("Tracks", "곡"),
+                    t!("Tracks", "곡", "曲"),
                     format!(
                         "{} {}",
                         counts.get(index).copied().unwrap_or_default(),
-                        t!("tracks", "곡")
+                        t!("tracks", "곡", "曲")
                     ),
                 );
             }
             (LocalRowsKind::Counted(counts), crate::local::LocalRowId::Smart(smart)) => {
-                push_detail_line(&mut lines, t!("Smart list", "스마트 목록"), smart.label());
                 push_detail_line(
                     &mut lines,
-                    t!("Tracks", "곡"),
+                    t!("Smart list", "스마트 목록", "スマートリスト"),
+                    smart.label(),
+                );
+                push_detail_line(
+                    &mut lines,
+                    t!("Tracks", "곡", "曲"),
                     format!(
                         "{} {}",
                         counts.get(index).copied().unwrap_or_default(),
-                        t!("tracks", "곡")
+                        t!("tracks", "곡", "曲")
                     ),
                 );
             }

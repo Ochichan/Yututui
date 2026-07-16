@@ -595,10 +595,14 @@ impl App {
         self.clamp_library_selection();
         self.dirty = true;
         if failed > 0 {
-            self.set_status_error(if crate::i18n::is_korean() {
-                format!("다운로드 파일 {failed}개를 삭제하지 못했습니다")
-            } else {
-                format!("Could not delete {failed} downloaded file(s)")
+            self.set_status_error(match crate::i18n::current() {
+                crate::i18n::Language::Korean => {
+                    format!("다운로드 파일 {failed}개를 삭제하지 못했습니다")
+                }
+                crate::i18n::Language::Japanese => {
+                    format!("ダウンロードファイル {failed}件を削除できませんでした")
+                }
+                _ => format!("Could not delete {failed} downloaded file(s)"),
             });
         }
         let mut commands = vec![Cmd::Download(DownloadCmd::Scan(root))];

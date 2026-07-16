@@ -158,7 +158,12 @@ impl App {
     /// Friendly value rendered in the Settings form before the modal is opened.
     pub fn audio_output_display_label(&self, saved: &str) -> String {
         let Some(saved) = normalize_saved_device(saved) else {
-            return t!("System default (recommended)", "시스템 기본값 (권장)").to_owned();
+            return t!(
+                "System default (recommended)",
+                "시스템 기본값 (권장)",
+                "システムのデフォルト (推奨)"
+            )
+            .to_owned();
         };
         self.audio_devices
             .devices
@@ -167,10 +172,10 @@ impl App {
             .map(|device| sanitize_display_text(&device.description))
             .unwrap_or_else(|| {
                 let saved = sanitize_display_text(&saved);
-                if crate::i18n::is_korean() {
-                    format!("찾을 수 없음 · {saved}")
-                } else {
-                    format!("Unavailable · {saved}")
+                match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("찾을 수 없음 · {saved}"),
+                    crate::i18n::Language::Japanese => format!("見つかりません · {saved}"),
+                    _ => format!("Unavailable · {saved}"),
                 }
             })
     }
@@ -182,7 +187,12 @@ impl App {
             .as_ref()
             .and_then(|settings| normalize_saved_device(&settings.draft.audio_mpv_device));
         let mut rows = vec![AudioOutputRow {
-            label: t!("System default (recommended)", "시스템 기본값 (권장)").to_owned(),
+            label: t!(
+                "System default (recommended)",
+                "시스템 기본값 (권장)",
+                "システムのデフォルト (推奨)"
+            )
+            .to_owned(),
             kind: AudioOutputRowKind::SystemDefault,
             selectable: true,
         }];
@@ -217,17 +227,26 @@ impl App {
         {
             let display_saved = sanitize_display_text(&saved);
             rows.push(AudioOutputRow {
-                label: if crate::i18n::is_korean() {
-                    format!("저장됨 · 현재 찾을 수 없음 · {display_saved}")
-                } else {
-                    format!("Saved · currently unavailable · {display_saved}")
+                label: match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("저장됨 · 현재 찾을 수 없음 · {display_saved}")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("保存済み · 現在見つかりません · {display_saved}")
+                    }
+                    _ => format!("Saved · currently unavailable · {display_saved}"),
                 },
                 kind: AudioOutputRowKind::SavedUnavailable(saved),
                 selectable: false,
             });
         }
         rows.push(AudioOutputRow {
-            label: t!("Enter a device ID manually…", "장치 ID 직접 입력…").to_owned(),
+            label: t!(
+                "Enter a device ID manually…",
+                "장치 ID 직접 입력…",
+                "デバイス ID を直接入力…"
+            )
+            .to_owned(),
             kind: AudioOutputRowKind::Manual,
             selectable: true,
         });
@@ -354,7 +373,12 @@ impl App {
                     .unwrap_or_default();
                 if value.is_empty() {
                     self.audio_output_selection_failed(
-                        t!("Enter a device ID first", "먼저 장치 ID를 입력하세요").to_owned(),
+                        t!(
+                            "Enter a device ID first",
+                            "먼저 장치 ID를 입력하세요",
+                            "先にデバイス ID を入力してください"
+                        )
+                        .to_owned(),
                     );
                     return Vec::new();
                 }
@@ -424,7 +448,8 @@ impl App {
             self.audio_output_selection_failed(
                 t!(
                     "That saved device is not currently available",
-                    "저장된 장치를 현재 찾을 수 없습니다"
+                    "저장된 장치를 현재 찾을 수 없습니다",
+                    "保存されたデバイスは現在見つかりません"
                 )
                 .to_owned(),
             );
@@ -512,7 +537,8 @@ impl App {
                 self.audio_output_selection_failed(
                     t!(
                         "That saved device is not currently available",
-                        "저장된 장치를 현재 찾을 수 없습니다"
+                        "저장된 장치를 현재 찾을 수 없습니다",
+                        "保存されたデバイスは現在見つかりません"
                     )
                     .to_owned(),
                 );

@@ -22,6 +22,7 @@ fn test_instance(endpoint: String) -> InstanceFile {
         created_unix: 1,
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
+        host_terminal: None,
         capabilities: vec![
             "remote-control".to_string(),
             "status".to_string(),

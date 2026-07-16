@@ -7,7 +7,7 @@ impl Config {
     pub(crate) fn fresh_install() -> Self {
         Self {
             beginner_mode: true,
-            beginner_tutorial: BeginnerTutorialProgress::welcome(),
+            beginner_tutorial: BeginnerTutorialProgress::start(),
             ..Self::default()
         }
     }
@@ -183,6 +183,38 @@ pub(super) fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
 
 pub(crate) fn config_path() -> Option<PathBuf> {
     crate::paths::config_dir().map(|d| d.join("config.json"))
+}
+
+/// Read-only peek at the saved UI language for pre-persistence surfaces.
+///
+/// The second-launch chooser renders before the writer lease exists, so it must not go
+/// through `Config::load` (which can migrate, repair, and write). A 2-field serde read of
+/// the current config is enough: `retro_mode` forces English exactly like
+/// `Config::effective_language`. Any failure — missing file, oversize, corrupt JSON —
+/// falls back to English. Saves are atomic temp+rename, so a torn read cannot happen.
+pub fn peek_saved_language() -> crate::i18n::Language {
+    config_path()
+        .map(|path| peek_saved_language_at(&path))
+        .unwrap_or_default()
+}
+
+pub(super) fn peek_saved_language_at(path: &std::path::Path) -> crate::i18n::Language {
+    #[derive(Default, serde::Deserialize)]
+    struct Peek {
+        #[serde(default)]
+        language: crate::i18n::Language,
+        #[serde(default)]
+        retro_mode: bool,
+    }
+    let Ok(bytes) = crate::util::safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) else {
+        return crate::i18n::Language::English;
+    };
+    let peek: Peek = serde_json::from_slice(&bytes).unwrap_or_default();
+    if peek.retro_mode {
+        crate::i18n::Language::English
+    } else {
+        peek.language
+    }
 }
 
 pub(super) fn old_config_path() -> Option<PathBuf> {

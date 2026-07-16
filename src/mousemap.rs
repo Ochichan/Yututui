@@ -44,10 +44,10 @@ impl MouseContext {
     /// Human-readable group label for the future Settings editor.
     pub fn title(self) -> &'static str {
         match self {
-            Self::Search => crate::t!("Search", "검색"),
-            Self::Library => crate::t!("Library", "라이브러리"),
-            Self::Queue => crate::t!("Queue", "대기열"),
-            Self::Local => crate::t!("Local Deck", "로컬 덱"),
+            Self::Search => crate::t!("Search", "검색", "検索"),
+            Self::Library => crate::t!("Library", "라이브러리", "ライブラリ"),
+            Self::Queue => crate::t!("Queue", "대기열", "キュー"),
+            Self::Local => crate::t!("Local Deck", "로컬 덱", "ローカルデッキ"),
         }
     }
 }
@@ -79,8 +79,10 @@ impl MouseGesture {
 
     pub fn human_label(self) -> &'static str {
         match self {
-            Self::RightClick => crate::t!("Right click", "우클릭"),
-            Self::RightDoubleClick => crate::t!("Right double-click", "우더블클릭"),
+            Self::RightClick => crate::t!("Right click", "우클릭", "右クリック"),
+            Self::RightDoubleClick => {
+                crate::t!("Right double-click", "우더블클릭", "右ダブルクリック")
+            }
         }
     }
 
@@ -130,10 +132,10 @@ impl MouseAction {
 
     pub fn human_label(self) -> &'static str {
         match self {
-            Self::ContextMenu => crate::t!("Context menu", "문맥 메뉴"),
-            Self::Activate => crate::t!("Activate", "실행"),
-            Self::Enqueue => crate::t!("Add to queue", "대기열에 추가"),
-            Self::Disabled => crate::t!("Disabled", "사용 안 함"),
+            Self::ContextMenu => crate::t!("Context menu", "문맥 메뉴", "コンテキストメニュー"),
+            Self::Activate => crate::t!("Activate", "실행", "実行"),
+            Self::Enqueue => crate::t!("Add to queue", "대기열에 추가", "キューに追加"),
+            Self::Disabled => crate::t!("Disabled", "사용 안 함", "無効"),
         }
     }
 

@@ -1,0 +1,114 @@
+name: platform-advisory
+
+# Non-blocking platform coverage (advisory by design — see ci-pr.yml's header):
+#   1. A weekly scheduled light run of the Windows/macOS jobs on the self-hosted
+#      runners, so platform breakage surfaces between releases even when no PR
+#      carries a ci:windows / ci:macos label. An offline runner just leaves a
+#      visible failed/expired run; nothing blocks.
+#   2. A one-time PR comment when a change touches platform-relevant paths,
+#      suggesting the ci:windows / ci:macos label that triggers ci-pr.yml's
+#      optional jobs.
+# NEVER add any job in this file to branch-protection required checks — the
+# self-hosted Windows/macOS machines can be offline and merges must not depend
+# on them.
+
+on:
+  schedule:
+    - cron: "0 21 * * 6" # weekly, Saturday 21:00 UTC
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  paths-advice:
+    name: Platform paths advice
+    # Same-repo PRs only (fork PRs get no self-hosted anything and no comment).
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Suggest platform labels for platform-relevant changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          win=$(echo "$files" | grep -E '^(src/desktop/|src/second_launch/|src/media/(smtc|identity)\.rs|src/bin/yututray\.rs|install\.ps1|src/player/lifetime\.rs|src/util/process\.rs)' || true)
+          mac=$(echo "$files" | grep -E '^(src/desktop/|src/second_launch/|src/media/(macos|identity)\.rs|src/bin/yututray\.rs|install\.sh|src/player/lifetime\.rs|src/util/process\.rs)' || true)
+          [ -z "$win" ] && [ -z "$mac" ] && { echo "no platform-relevant paths"; exit 0; }
+          marker="<!-- platform-advisory -->"
+          if gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[].body' | grep -qF "$marker"; then
+            echo "advice already posted"; exit 0
+          fi
+          labels=""
+          [ -n "$win" ] && labels="\`ci:windows\`"
+          [ -n "$mac" ] && labels="${labels:+$labels and }\`ci:macos\`"
+          matched=$(printf '%s\n%s\n' "$win" "$mac" | sort -u | sed '/^$/d')
+          body=$(printf '%s\nThis PR touches platform-relevant paths. Consider adding the %s label(s) to run the optional self-hosted light job(s) from ci-pr.yml before merging (non-blocking; skip if the runner is offline).\n\n<details><summary>Matched paths</summary>\n\n```\n%s\n```\n\n</details>\n' "$marker" "$labels" "$matched")
+          gh api "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+          echo "advice posted"
+
+  windows-weekly:
+    name: Windows (weekly light)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, windows, x64, yututui]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test tray helper
+        run: "cargo test --features desktop -- desktop::"
+
+  macos-weekly:
+    name: macOS (weekly light)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macOS, ARM64, yututui]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Persist cargo target dir
+        run: |
+          mkdir -p "$HOME/.cache/yututui-ci/target"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/yututui-ci/target" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.rustup" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test tray helper
+        run: "cargo test --features desktop -- desktop::"

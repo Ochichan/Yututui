@@ -117,10 +117,14 @@ impl App {
                 self.theme = state.draft.theme.normalized();
                 let hex = state.draft.theme.effective_hex(role);
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("{} 을(를) {hex} 로 설정함", role.label())
-                } else {
-                    format!("Set {} to {hex}", role.label())
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("{} 을(를) {hex} 로 설정함", role.label())
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("{} を {hex} に設定しました", role.label())
+                    }
+                    _ => format!("Set {} to {hex}", role.label()),
                 };
             }
             Err(message) => {

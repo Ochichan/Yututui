@@ -31,6 +31,7 @@ is_allowed() {
     src/media/smtc.rs) return 0 ;;
     src/player/guardian.rs) return 0 ;;
     src/player/lifetime.rs) return 0 ;;
+    src/second_launch/focus_windows.rs) return 0 ;;
     src/test_util/env.rs) return 0 ;;
     src/util/process.rs) return 0 ;;
     src/util/runtime.rs) return 0 ;;

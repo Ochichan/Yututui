@@ -746,7 +746,8 @@ impl App {
                     self.status.kind = StatusKind::Error;
                     self.status.text = t!(
                         "No playable track remains in the queue",
-                        "대기열에 재생할 수 있는 곡이 없습니다"
+                        "대기열에 재생할 수 있는 곡이 없습니다",
+                        "キューに再生できる曲がありません"
                     )
                     .to_owned();
                 }
@@ -804,7 +805,8 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 self.status.text = t!(
                     "This track is local-only — continuing with audio",
-                    "로컬 전용 트랙이라 소리로 이어서 재생해요"
+                    "로컬 전용 트랙이라 소리로 이어서 재생해요",
+                    "ローカル専用の曲のため音声で続けて再生します"
                 )
                 .to_owned();
             }
@@ -812,7 +814,8 @@ impl App {
                 self.close_video();
                 self.video.paused_audio = false;
                 self.status.kind = StatusKind::Info;
-                self.status.text = t!("Queue ended", "큐가 끝났어요").to_owned();
+                self.status.text =
+                    t!("Queue ended", "큐가 끝났어요", "キューが終了しました").to_owned();
             }
             None => {}
         }

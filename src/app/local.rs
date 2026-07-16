@@ -29,7 +29,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "Leave Radio mode before entering Local Player.",
-                "로컬 플레이어로 들어가기 전에 라디오 모드를 먼저 나가세요."
+                "로컬 플레이어로 들어가기 전에 라디오 모드를 먼저 나가세요.",
+                "ローカルプレイヤーに入る前にラジオモードを終了してください。"
             )
             .to_owned();
             self.dirty = true;
@@ -381,7 +382,12 @@ impl App {
         match songs.len() {
             0 => {
                 self.status.kind = StatusKind::Info;
-                self.status.text = t!("Nothing to download", "다운로드할 곡이 없음").to_owned();
+                self.status.text = t!(
+                    "Nothing to download",
+                    "다운로드할 곡이 없음",
+                    "ダウンロードする曲なし"
+                )
+                .to_owned();
                 self.dirty = true;
                 Vec::new()
             }
@@ -414,9 +420,13 @@ impl App {
                     self.status.kind = StatusKind::Error;
                     self.status.text = format!(
                         "{}: {} {}",
-                        t!("Local index recovered", "로컬 인덱스 복구됨"),
+                        t!(
+                            "Local index recovered",
+                            "로컬 인덱스 복구됨",
+                            "ローカルインデックス復旧"
+                        ),
                         self.local_mode.index.load_errors.len(),
-                        t!("issues", "문제")
+                        t!("issues", "문제", "件の問題")
                     );
                 }
                 if let Some(full) = pending_rescan {
@@ -451,9 +461,13 @@ impl App {
                 };
                 self.status.text = format!(
                     "{}: {} {}",
-                    t!("Local scan finished", "로컬 스캔 완료"),
+                    t!(
+                        "Local scan finished",
+                        "로컬 스캔 완료",
+                        "ローカルスキャン完了"
+                    ),
                     result.summary.indexed,
-                    t!("tracks", "곡")
+                    t!("tracks", "곡", "曲")
                 );
                 self.dirty = true;
                 if let Some(full) = pending_rescan {
@@ -484,8 +498,14 @@ impl App {
                 }];
                 self.invalidate_local_rows();
                 self.status.kind = StatusKind::Error;
-                self.status.text =
-                    format!("{}: {error}", t!("Local scan failed", "로컬 스캔 실패"));
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!(
+                        "Local scan failed",
+                        "로컬 스캔 실패",
+                        "ローカルスキャン失敗"
+                    )
+                );
                 self.dirty = true;
                 pending_rescan.map_or_else(Vec::new, |full| self.request_local_scan(full))
             }
@@ -551,7 +571,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "No local music roots configured",
-                "설정된 로컬 음악 폴더가 없습니다."
+                "설정된 로컬 음악 폴더가 없습니다.",
+                "ローカル音楽フォルダーが設定されていません。"
             )
             .to_owned();
             self.dirty = true;
@@ -564,11 +585,17 @@ impl App {
         self.invalidate_local_rows();
         self.status.kind = StatusKind::Info;
         self.status.text = if self.local_mode.index.errors.is_empty() {
-            t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned()
+            t!(
+                "Scanning local music...",
+                "로컬 음악 스캔 중...",
+                "ローカル音楽をスキャン中..."
+            )
+            .to_owned()
         } else {
             t!(
                 "Retrying local scan after previous errors...",
-                "이전 오류를 보존하고 로컬 음악 스캔을 다시 시도하는 중..."
+                "이전 오류를 보존하고 로컬 음악 스캔을 다시 시도하는 중...",
+                "以前のエラーを保持してローカル音楽のスキャンを再試行中..."
             )
             .to_owned()
         };
@@ -1151,20 +1178,24 @@ impl App {
             }
             crate::local::LocalRowId::Album(id) => {
                 if let Some(album) = self.local_album_by_id(id) {
-                    push_detail_line(lines, t!("Album", "앨범"), album.title);
-                    push_detail_line(lines, t!("Artist", "아티스트"), album.album_artist);
+                    push_detail_line(lines, t!("Album", "앨범", "アルバム"), album.title);
+                    push_detail_line(
+                        lines,
+                        t!("Artist", "아티스트", "アーティスト"),
+                        album.album_artist,
+                    );
                     if let Some(year) = album.year {
-                        push_detail_line(lines, t!("Year", "연도"), year.to_string());
+                        push_detail_line(lines, t!("Year", "연도", "年"), year.to_string());
                     }
                     push_detail_line(
                         lines,
-                        t!("Tracks", "곡"),
-                        format!("{} {}", album.track_count, t!("tracks", "곡")),
+                        t!("Tracks", "곡", "曲"),
+                        format!("{} {}", album.track_count, t!("tracks", "곡", "曲")),
                     );
                     if let Some(duration) = album.duration_ms {
                         push_detail_line(
                             lines,
-                            t!("Duration", "길이"),
+                            t!("Duration", "길이", "再生時間"),
                             format_local_duration_ms(duration),
                         );
                     }
@@ -1175,65 +1206,77 @@ impl App {
                         .count();
                     push_detail_line(
                         lines,
-                        t!("Cover", "커버"),
+                        t!("Cover", "커버", "カバー"),
                         format_embedded_cover_count(cover_count),
                     );
                 }
             }
             crate::local::LocalRowId::Artist(id) => {
                 if let Some(artist) = self.local_artist_by_id(id) {
-                    push_detail_line(lines, t!("Artist", "아티스트"), artist.name);
+                    push_detail_line(lines, t!("Artist", "아티스트", "アーティスト"), artist.name);
                     push_detail_line(
                         lines,
-                        t!("Albums", "앨범"),
-                        format!("{} {}", artist.album_ids.len(), t!("albums", "앨범")),
+                        t!("Albums", "앨범", "アルバム"),
+                        format!(
+                            "{} {}",
+                            artist.album_ids.len(),
+                            t!("albums", "앨범", "アルバム")
+                        ),
                     );
                     push_detail_line(
                         lines,
-                        t!("Tracks", "곡"),
-                        format!("{} {}", artist.track_ids.len(), t!("tracks", "곡")),
+                        t!("Tracks", "곡", "曲"),
+                        format!("{} {}", artist.track_ids.len(), t!("tracks", "곡", "曲")),
                     );
                 }
             }
             crate::local::LocalRowId::Genre(genre) => {
                 let tracks = self.local_tracks_for_genre(genre);
-                push_detail_line(lines, t!("Genre", "장르"), genre.clone());
+                push_detail_line(lines, t!("Genre", "장르", "ジャンル"), genre.clone());
                 push_detail_line(
                     lines,
-                    t!("Tracks", "곡"),
-                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                    t!("Tracks", "곡", "曲"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡", "曲")),
                 );
             }
             crate::local::LocalRowId::Folder(folder) => {
                 let tracks = self.local_tracks_for_folder(folder);
-                push_detail_line(lines, t!("Folder", "폴더"), folder.display().to_string());
                 push_detail_line(
                     lines,
-                    t!("Tracks", "곡"),
-                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                    t!("Folder", "폴더", "フォルダー"),
+                    folder.display().to_string(),
+                );
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡", "曲"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡", "曲")),
                 );
             }
             crate::local::LocalRowId::Smart(smart) => {
                 let tracks = self.local_tracks_for_smart(*smart);
-                push_detail_line(lines, t!("Smart list", "스마트 목록"), smart.label());
                 push_detail_line(
                     lines,
-                    t!("Tracks", "곡"),
-                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                    t!("Smart list", "스마트 목록", "スマートリスト"),
+                    smart.label(),
+                );
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡", "曲"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡", "曲")),
                 );
             }
             crate::local::LocalRowId::ImportSession(session_id) => {
                 let tracks = self.local_tracks_for_import_session(session_id);
                 push_detail_line(
                     lines,
-                    t!("Import session", "임포트 세션"),
+                    t!("Import session", "임포트 세션", "インポートセッション"),
                     session_id.clone(),
                 );
                 push_import_session_summary_details(lines, session_id);
                 push_detail_line(
                     lines,
-                    t!("Tracks", "곡"),
-                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                    t!("Tracks", "곡", "曲"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡", "曲")),
                 );
                 let first_order = tracks
                     .iter()
@@ -1249,7 +1292,7 @@ impl App {
                     } else {
                         format!("#{first}-#{last}")
                     };
-                    push_detail_line(lines, t!("Source order", "원본 순서"), value);
+                    push_detail_line(lines, t!("Source order", "원본 순서", "元の順序"), value);
                 }
             }
             crate::local::LocalRowId::ImportSessionRow {
@@ -1258,109 +1301,161 @@ impl App {
             } => self.push_import_session_row_details(lines, session_id, *source_order),
             crate::local::LocalRowId::ScanError(index) => {
                 if let Some(error) = self.local_scan_issue(*index) {
-                    push_detail_line(lines, t!("Path", "경로"), error.path.display().to_string());
-                    push_detail_line(lines, t!("Error", "오류"), error.message.clone());
+                    push_detail_line(
+                        lines,
+                        t!("Path", "경로", "パス"),
+                        error.path.display().to_string(),
+                    );
+                    push_detail_line(lines, t!("Error", "오류", "エラー"), error.message.clone());
                 }
             }
         }
     }
 
     fn push_local_track_details(&self, lines: &mut Vec<String>, track: &crate::local::LocalTrack) {
-        push_detail_line(lines, t!("Title", "제목"), track.display_title());
-        push_detail_line(lines, t!("Artist", "아티스트"), track.display_artist());
+        push_detail_line(
+            lines,
+            t!("Title", "제목", "タイトル"),
+            track.display_title(),
+        );
+        push_detail_line(
+            lines,
+            t!("Artist", "아티스트", "アーティスト"),
+            track.display_artist(),
+        );
         if let Some(album) = format_album_year(track.album.as_deref(), track.year) {
-            push_detail_line(lines, t!("Album", "앨범"), album);
+            push_detail_line(lines, t!("Album", "앨범", "アルバム"), album);
         }
         if let Some(number) = format_disc_track(track.disc_no, track.track_no) {
-            push_detail_line(lines, t!("Track", "트랙"), number);
+            push_detail_line(lines, t!("Track", "트랙", "トラック"), number);
         }
         if let Some(duration) = track.duration_ms {
             push_detail_line(
                 lines,
-                t!("Duration", "길이"),
+                t!("Duration", "길이", "再生時間"),
                 format_local_duration_ms(duration),
             );
         }
         if let Some(format) = &track.format {
-            push_detail_line(lines, t!("Format", "포맷"), format_audio_format(format));
+            push_detail_line(
+                lines,
+                t!("Format", "포맷", "フォーマット"),
+                format_audio_format(format),
+            );
         }
         if let Some(sample_rate) = track.sample_rate {
             push_detail_line(
                 lines,
-                t!("Sample rate", "샘플레이트"),
+                t!("Sample rate", "샘플레이트", "サンプルレート"),
                 format_sample_rate(sample_rate),
             );
         }
         if let Some(bitrate) = track.bitrate {
-            push_detail_line(lines, t!("Bitrate", "비트레이트"), format_bitrate(bitrate));
+            push_detail_line(
+                lines,
+                t!("Bitrate", "비트레이트", "ビットレート"),
+                format_bitrate(bitrate),
+            );
         }
         push_detail_line(
             lines,
-            t!("Cover", "커버"),
+            t!("Cover", "커버", "カバー"),
             if track.embedded_art_key.is_some() {
-                t!("embedded cover", "내장 커버")
+                t!("embedded cover", "내장 커버", "埋め込みカバー")
             } else {
-                t!("no embedded cover", "내장 커버 없음")
+                t!("no embedded cover", "내장 커버 없음", "埋め込みカバーなし")
             },
         );
         if let Some(name) = track.path.file_name().and_then(|name| name.to_str()) {
-            push_detail_line(lines, t!("File", "파일"), name);
+            push_detail_line(lines, t!("File", "파일", "ファイル"), name);
         }
         if let Some(session_id) = track.import_session_id.as_deref() {
-            push_detail_line(lines, t!("Import session", "임포트 세션"), session_id);
+            push_detail_line(
+                lines,
+                t!("Import session", "임포트 세션", "インポートセッション"),
+                session_id,
+            );
         }
         if let Some(order) = track.import_source_order {
-            push_detail_line(lines, t!("Source order", "원본 순서"), format!("#{order}"));
+            push_detail_line(
+                lines,
+                t!("Source order", "원본 순서", "元の順序"),
+                format!("#{order}"),
+            );
         }
         push_detail_line(
             lines,
-            t!("Path", "경로"),
+            t!("Path", "경로", "パス"),
             self.local_path_for_display(&track.path),
         );
     }
 
     fn push_local_song_details(&self, lines: &mut Vec<String>, song: &Song) {
-        push_detail_line(lines, t!("Title", "제목"), self.display_title(song));
-        push_detail_line(lines, t!("Artist", "아티스트"), self.display_artist(song));
+        push_detail_line(
+            lines,
+            t!("Title", "제목", "タイトル"),
+            self.display_title(song),
+        );
+        push_detail_line(
+            lines,
+            t!("Artist", "아티스트", "アーティスト"),
+            self.display_artist(song),
+        );
         if let Some(album) = song
             .album
             .as_deref()
             .map(str::trim)
             .filter(|album| !album.is_empty())
         {
-            push_detail_line(lines, t!("Album", "앨범"), album);
+            push_detail_line(lines, t!("Album", "앨범", "アルバム"), album);
         }
         if !song.duration.trim().is_empty() {
-            push_detail_line(lines, t!("Duration", "길이"), song.duration.as_str());
+            push_detail_line(
+                lines,
+                t!("Duration", "길이", "再生時間"),
+                song.duration.as_str(),
+            );
         }
         if let Some(path) = &song.local_path {
             push_detail_line(
                 lines,
-                t!("Cover", "커버"),
-                t!("local file artwork source", "로컬 파일 아트워크 소스"),
+                t!("Cover", "커버", "カバー"),
+                t!(
+                    "local file artwork source",
+                    "로컬 파일 아트워크 소스",
+                    "ローカルファイルのアートワークソース"
+                ),
             );
             if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                push_detail_line(lines, t!("File", "파일"), name);
+                push_detail_line(lines, t!("File", "파일", "ファイル"), name);
             }
-            push_detail_line(lines, t!("Path", "경로"), self.local_path_for_display(path));
+            push_detail_line(
+                lines,
+                t!("Path", "경로", "パス"),
+                self.local_path_for_display(path),
+            );
         }
     }
 
     fn push_local_queue_details(&self, lines: &mut Vec<String>) {
-        lines.push(t!("Now playing", "재생 중").to_owned());
+        lines.push(t!("Now playing", "재생 중", "再生中").to_owned());
         if let Some(current) = self.queue.current() {
             let (position, total) = self.queue.position();
             lines.push(local_song_text(self, current));
-            push_detail_line(lines, t!("Queue", "큐"), format!("{position}/{total}"));
+            push_detail_line(
+                lines,
+                t!("Queue", "큐", "キュー"),
+                format!("{position}/{total}"),
+            );
         } else {
-            lines.push(t!("Queue is empty.", "큐가 비어 있습니다.").to_owned());
+            lines.push(t!("Queue is empty.", "큐가 비어 있습니다.", "キューは空です。").to_owned());
         }
 
         lines.push(String::new());
-        lines.push(t!("Up next", "다음 곡").to_owned());
+        lines.push(t!("Up next", "다음 곡", "次の再生").to_owned());
         let upcoming = self.queue.upcoming(3);
         if upcoming.is_empty() {
-            lines.push(t!("End of queue.", "큐의 끝입니다.").to_owned());
+            lines.push(t!("End of queue.", "큐의 끝입니다.", "キューの最後です。").to_owned());
         } else {
             for (index, song) in upcoming.into_iter().enumerate() {
                 lines.push(format!("{}. {}", index + 1, local_song_text(self, song)));

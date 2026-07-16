@@ -10,6 +10,7 @@ use crate::app::{
     App, LocalImportAcceptAllConfirm, LocalModeConfirm, LocalOrganizeConfirm, LocalRowsSnapshot,
     LocalSection, MouseTarget, ScrollSurface,
 };
+use crate::i18n::Language;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -68,24 +69,26 @@ fn render_header(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
     let count = local_rows.total_len();
     let visible_count = local_rows.rows().len();
     let count_label = if !app.local_mode.ui.filter_query.is_empty() {
-        if crate::i18n::is_korean() {
-            format!("{visible_count}/{count}개")
-        } else {
-            format!("{visible_count}/{count} rows")
+        match crate::i18n::current() {
+            Language::Korean => format!("{visible_count}/{count}개"),
+            Language::Japanese => format!("{visible_count}/{count}件"),
+            _ => format!("{visible_count}/{count} rows"),
         }
     } else if count == 1 {
-        t!("1 row", "1개").to_owned()
-    } else if crate::i18n::is_korean() {
-        format!("{count}개")
+        t!("1 row", "1개", "1件").to_owned()
     } else {
-        format!("{count} rows")
+        match crate::i18n::current() {
+            Language::Korean => format!("{count}개"),
+            Language::Japanese => format!("{count}件"),
+            _ => format!("{count} rows"),
+        }
     };
     let scan_label = if app.local_mode.index.scanning {
-        t!("scan: running", "스캔: 진행 중")
+        t!("scan: running", "스캔: 진행 중", "スキャン: 実行中")
     } else if app.local_mode.index.loading {
-        t!("scan: loading", "스캔: 로드 중")
+        t!("scan: loading", "스캔: 로드 중", "スキャン: 読み込み中")
     } else {
-        t!("scan: idle", "스캔: 대기")
+        t!("scan: idle", "스캔: 대기", "スキャン: 待機")
     };
     let section = app.local_section_title();
     let line = Line::from(vec![
@@ -128,7 +131,7 @@ fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
     let text = if !app.local_mode.ui.filter_query.is_empty() {
         format!(
             "{}: /{}",
-            t!("Filter", "필터"),
+            t!("Filter", "필터", "フィルター"),
             app.local_mode.ui.filter_query
         )
     } else if let Some(hint) = app.local_import_action_hint_for_snapshot(local_rows) {
@@ -136,14 +139,16 @@ fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
     } else if app.local_mode.index.loading {
         t!(
             "Loading the Local Deck index...",
-            "로컬 덱 인덱스를 불러오는 중..."
+            "로컬 덱 인덱스를 불러오는 중...",
+            "ローカルデッキのインデックスを読み込み中..."
         )
         .to_owned()
     } else if app.local_mode.index.scanning {
         app.local_scan_progress_text().unwrap_or_else(|| {
             t!(
                 "Scanning the download folder for local audio...",
-                "다운로드 폴더의 로컬 오디오를 스캔 중..."
+                "다운로드 폴더의 로컬 오디오를 스캔 중...",
+                "ダウンロードフォルダーのローカルオーディオをスキャン中..."
             )
             .to_owned()
         })
@@ -152,21 +157,21 @@ fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
         if issue_count > 0 {
             format!(
                 "{}: {} {} (+{} / ~{} / -{} / {} {})",
-                t!("Last scan", "마지막 스캔"),
+                t!("Last scan", "마지막 스캔", "前回のスキャン"),
                 summary.indexed,
-                t!("tracks", "곡"),
+                t!("tracks", "곡", "曲"),
                 summary.added,
                 summary.changed,
                 summary.removed,
                 issue_count,
-                t!("errors", "오류")
+                t!("errors", "오류", "エラー")
             )
         } else {
             format!(
                 "{}: {} {} (+{} / ~{} / -{})",
-                t!("Last scan", "마지막 스캔"),
+                t!("Last scan", "마지막 스캔", "前回のスキャン"),
                 summary.indexed,
-                t!("tracks", "곡"),
+                t!("tracks", "곡", "曲"),
                 summary.added,
                 summary.changed,
                 summary.removed
@@ -175,19 +180,22 @@ fn render_status(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, a
     } else if !app.local_mode.index.index.is_empty() {
         t!(
             "Indexed local audio. Press r to rescan or R for a full rebuild.",
-            "로컬 오디오 인덱스 사용 중. r로 재스캔, R로 전체 재빌드."
+            "로컬 오디오 인덱스 사용 중. r로 재스캔, R로 전체 재빌드.",
+            "ローカルオーディオのインデックスを使用中。r で再スキャン、R で完全再構築。"
         )
         .to_owned()
     } else if app.library_ui.downloaded.is_empty() {
         t!(
             "No local downloads indexed yet - press r to scan the download folder.",
-            "아직 로컬 다운로드가 없어요 - r로 다운로드 폴더를 스캔하세요."
+            "아직 로컬 다운로드가 없어요 - r로 다운로드 폴더를 스캔하세요.",
+            "まだローカルダウンロードがありません - r でダウンロードフォルダーをスキャンしてください。"
         )
         .to_owned()
     } else {
         t!(
             "Showing downloaded audio until the Local Deck index is built.",
-            "로컬 덱 인덱스가 만들어질 때까지 다운로드 오디오를 표시합니다."
+            "로컬 덱 인덱스가 만들어질 때까지 다운로드 오디오를 표시합니다.",
+            "ローカルデッキのインデックスができるまでダウンロード済みオーディオを表示します。"
         )
         .to_owned()
     };
@@ -254,7 +262,9 @@ fn render_details(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, 
     {
         let style = if line.is_empty() {
             app.theme.style(R::TextMuted)
-        } else if i == 0 || line == t!("Now playing", "재생 중") || line == t!("Up next", "다음 곡")
+        } else if i == 0
+            || line == t!("Now playing", "재생 중", "再生中")
+            || line == t!("Up next", "다음 곡", "次の再生")
         {
             app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
         } else {
@@ -292,24 +302,28 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(t!(
                 "Local music has not been indexed yet.",
-                "아직 로컬 음악을 인덱싱하지 않았어요."
+                "아직 로컬 음악을 인덱싱하지 않았어요.",
+                "ローカル音楽はまだインデックスされていません。"
             )),
             Line::from(""),
             Line::from(t!(
                 "Press r to scan the download folder.",
-                "r로 다운로드 폴더를 스캔하세요."
+                "r로 다운로드 폴더를 스캔하세요.",
+                "r でダウンロードフォルダーをスキャンしてください。"
             )),
         ]
     } else {
         vec![
             Line::from(t!(
                 "Downloaded local audio is ready.",
-                "다운로드된 로컬 오디오를 탐색할 수 있어요."
+                "다운로드된 로컬 오디오를 탐색할 수 있어요.",
+                "ダウンロード済みのローカルオーディオを利用できます。"
             )),
             Line::from(""),
             Line::from(t!(
                 "Open Tracks to play downloaded files.",
-                "곡 목록에서 다운로드 파일을 재생하세요."
+                "곡 목록에서 다운로드 파일을 재생하세요.",
+                "曲一覧からダウンロードしたファイルを再生してください。"
             )),
         ]
     };
@@ -479,27 +493,51 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
 
 fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
     let msg = match app.local_mode.ui.section {
-        LocalSection::Albums => t!("No indexed albums yet.", "아직 인덱싱된 앨범이 없어요."),
+        LocalSection::Albums => t!(
+            "No indexed albums yet.",
+            "아직 인덱싱된 앨범이 없어요.",
+            "インデックス済みのアルバムはまだありません。"
+        ),
         LocalSection::Artists => t!(
             "No indexed artists yet.",
-            "아직 인덱싱된 아티스트가 없어요."
+            "아직 인덱싱된 아티스트가 없어요.",
+            "インデックス済みのアーティストはまだありません。"
         ),
-        LocalSection::Genres => t!("No indexed genres yet.", "아직 인덱싱된 장르가 없어요."),
-        LocalSection::Folders => t!("No indexed folders yet.", "아직 인덱싱된 폴더가 없어요."),
+        LocalSection::Genres => t!(
+            "No indexed genres yet.",
+            "아직 인덱싱된 장르가 없어요.",
+            "インデックス済みのジャンルはまだありません。"
+        ),
+        LocalSection::Folders => t!(
+            "No indexed folders yet.",
+            "아직 인덱싱된 폴더가 없어요.",
+            "インデックス済みのフォルダーはまだありません。"
+        ),
         LocalSection::SmartLists => t!(
             "No smart lists available.",
-            "사용할 수 있는 스마트 목록이 없어요."
+            "사용할 수 있는 스마트 목록이 없어요.",
+            "利用できるスマートリストがありません。"
         ),
-        LocalSection::ScanErrors => t!("No scan errors.", "스캔 오류가 없어요."),
+        LocalSection::ScanErrors => t!(
+            "No scan errors.",
+            "스캔 오류가 없어요.",
+            "スキャンエラーはありません。"
+        ),
         LocalSection::ImportSessions => t!(
             "No import sessions yet. Spotify imports appear here for review and follow-up.",
-            "아직 임포트 세션이 없어요. Spotify 가져오기는 검토와 후속 작업을 위해 여기에 표시됩니다."
+            "아직 임포트 세션이 없어요. Spotify 가져오기는 검토와 후속 작업을 위해 여기에 표시됩니다.",
+            "まだインポートセッションがありません。Spotify のインポートは確認と後続作業のためにここに表示されます。"
         ),
         LocalSection::Inbox => t!(
             "No import inbox rows need attention.",
-            "정리할 임포트 인박스 행이 없어요."
+            "정리할 임포트 인박스 행이 없어요.",
+            "対応が必要なインポートインボックスの行はありません。"
         ),
-        _ => t!("No local rows yet.", "아직 로컬 항목이 없어요."),
+        _ => t!(
+            "No local rows yet.",
+            "아직 로컬 항목이 없어요.",
+            "ローカル項目はまだありません。"
+        ),
     };
     frame.render_widget(
         Paragraph::new(Line::from(msg))
@@ -510,16 +548,19 @@ fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_no_filter_matches(frame: &mut Frame, app: &App, area: Rect) {
-    let msg = if crate::i18n::is_korean() {
-        format!(
+    let msg = match crate::i18n::current() {
+        Language::Korean => format!(
             "'{}' 와 일치하는 로컬 항목이 없어요.",
             app.local_mode.ui.filter_query
-        )
-    } else {
-        format!(
+        ),
+        Language::Japanese => format!(
+            "'{}' に一致するローカル項目がありません。",
+            app.local_mode.ui.filter_query
+        ),
+        _ => format!(
             "No Local Deck rows match \"{}\".",
             app.local_mode.ui.filter_query
-        )
+        ),
     };
     frame.render_widget(
         Paragraph::new(Line::from(msg))
@@ -541,14 +582,19 @@ pub fn render_local_mode_confirm(
     let import_search =
         matches!(confirm, LocalModeConfirm::Exit) && app.local_import_search_pending();
     let title = if import_search {
-        t!(" Confirm online search ", " 온라인 검색 확인 ")
+        t!(
+            " Confirm online search ",
+            " 온라인 검색 확인 ",
+            " オンライン検索の確認 "
+        )
     } else {
         confirm.title()
     };
     let prompt = if import_search {
         t!(
             "Leave Local Deck and search YouTube?",
-            "로컬 덱을 나가 YouTube에서 검색할까요?"
+            "로컬 덱을 나가 YouTube에서 검색할까요?",
+            "ローカルデッキを離れて YouTube で検索しますか?"
         )
     } else {
         confirm.prompt()
@@ -556,7 +602,8 @@ pub fn render_local_mode_confirm(
     let detail = if import_search {
         t!(
             "This one search runs only after Local Deck exits successfully.",
-            "로컬 덱 종료가 성공한 뒤 이 검색을 한 번만 실행합니다."
+            "로컬 덱 종료가 성공한 뒤 이 검색을 한 번만 실행합니다.",
+            "ローカルデッキの終了が成功した後に、この検索を一度だけ実行します。"
         )
     } else {
         confirm.detail()
@@ -595,12 +642,12 @@ pub fn render_local_mode_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalMode,
-            t!(" Confirm (Enter) ", " 확인 (Enter) "),
+            t!(" Confirm (Enter) ", " 확인 (Enter) ", " 確認 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalMode,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments_with_hit_height(
@@ -661,12 +708,12 @@ pub fn render_local_organize_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalOrganize,
-            t!(" Commit (Enter) ", " 커밋 (Enter) "),
+            t!(" Commit (Enter) ", " 커밋 (Enter) ", " コミット (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalOrganize,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments_with_hit_height(
@@ -726,12 +773,16 @@ pub fn render_local_accept_all_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalAcceptAll,
-            t!(" Mark Ready (Enter) ", " 준비 완료 (Enter) "),
+            t!(
+                " Mark Ready (Enter) ",
+                " 준비 완료 (Enter) ",
+                " 準備完了 (Enter) "
+            ),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalAcceptAll,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -758,7 +809,11 @@ pub fn render_local_import_delete_confirm(
     let popup = centered_fixed(area, 72, 9);
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" ⚠ Delete import record ", " ⚠ 임포트 기록 삭제 "))
+        .title(t!(
+            " ⚠ Delete import record ",
+            " ⚠ 임포트 기록 삭제 ",
+            " ⚠ インポート記録の削除 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -772,10 +827,10 @@ pub fn render_local_import_delete_confirm(
         Constraint::Min(1),
     ])
     .split(inner);
-    let prompt = if crate::i18n::is_korean() {
-        format!("임포트 세션 {session_id}의 기록을 삭제할까요?")
-    } else {
-        format!("Delete the saved record for import session {session_id}?")
+    let prompt = match crate::i18n::current() {
+        Language::Korean => format!("임포트 세션 {session_id}의 기록을 삭제할까요?"),
+        Language::Japanese => format!("インポートセッション {session_id} の記録を削除しますか?"),
+        _ => format!("Delete the saved record for import session {session_id}?"),
     };
     frame.render_widget(
         Paragraph::new(crate::ui::text::truncate_owned_to_width(
@@ -789,7 +844,8 @@ pub fn render_local_import_delete_confirm(
     frame.render_widget(
         Paragraph::new(t!(
             "Imported songs, audio files, and playlists are not deleted.",
-            "임포트한 곡, 오디오 파일, 플레이리스트는 삭제하지 않습니다."
+            "임포트한 곡, 오디오 파일, 플레이리스트는 삭제하지 않습니다.",
+            "インポートした曲、オーディオファイル、プレイリストは削除しません。"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -798,12 +854,16 @@ pub fn render_local_import_delete_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalImportDelete,
-            t!(" Delete record (Enter) ", " 기록 삭제 (Enter) "),
+            t!(
+                " Delete record (Enter) ",
+                " 기록 삭제 (Enter) ",
+                " 記録を削除 (Enter) "
+            ),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalImportDelete,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(

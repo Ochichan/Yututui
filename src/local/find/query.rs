@@ -306,20 +306,37 @@ impl LocalFindParseError {
     /// User-facing parse feedback in the application's supported UI languages. Keep the typed
     /// error kind in the parser so the reducer never has to translate brittle English strings.
     pub fn localized_message(&self) -> String {
-        if !crate::i18n::is_korean() {
-            return self.message.clone();
-        }
-        match self.kind {
-            LocalFindParseErrorKind::UnclosedQuote => "닫히지 않은 따옴표가 있습니다".to_owned(),
-            LocalFindParseErrorKind::EmptyValue => {
-                format!("'{}'에 값이 필요합니다", self.token)
-            }
-            LocalFindParseErrorKind::InvalidYear => {
-                format!("유효하지 않은 연도 범위입니다: '{}'", self.token)
-            }
-            LocalFindParseErrorKind::InvalidValue => {
-                format!("지원하지 않는 검색 값입니다: '{}'", self.token)
-            }
+        use crate::i18n::Language;
+        match crate::i18n::current() {
+            Language::Korean => match self.kind {
+                LocalFindParseErrorKind::UnclosedQuote => {
+                    "닫히지 않은 따옴표가 있습니다".to_owned()
+                }
+                LocalFindParseErrorKind::EmptyValue => {
+                    format!("'{}'에 값이 필요합니다", self.token)
+                }
+                LocalFindParseErrorKind::InvalidYear => {
+                    format!("유효하지 않은 연도 범위입니다: '{}'", self.token)
+                }
+                LocalFindParseErrorKind::InvalidValue => {
+                    format!("지원하지 않는 검색 값입니다: '{}'", self.token)
+                }
+            },
+            Language::Japanese => match self.kind {
+                LocalFindParseErrorKind::UnclosedQuote => {
+                    "閉じられていない引用符があります".to_owned()
+                }
+                LocalFindParseErrorKind::EmptyValue => {
+                    format!("'{}'に値が必要です", self.token)
+                }
+                LocalFindParseErrorKind::InvalidYear => {
+                    format!("無効な年範囲です: '{}'", self.token)
+                }
+                LocalFindParseErrorKind::InvalidValue => {
+                    format!("対応していない検索値です: '{}'", self.token)
+                }
+            },
+            _ => self.message.clone(),
         }
     }
 }

@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
+use crate::i18n::Language;
 use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -168,17 +169,17 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     let editing = app.library_ui.filter_editing;
     let query = &app.library_ui.filter_query;
     let hint = if matches == 0 {
-        t!("  (no matches)", "  (일치 없음)").to_owned()
+        t!("  (no matches)", "  (일치 없음)", "  (一致なし)").to_owned()
     } else if editing {
-        if crate::i18n::is_korean() {
-            format!("  [{matches}개]")
-        } else {
-            format!("  [{matches} matches]")
+        match crate::i18n::current() {
+            Language::Korean => format!("  [{matches}개]"),
+            Language::Japanese => format!("  [{matches}件]"),
+            _ => format!("  [{matches} matches]"),
         }
     } else {
-        t!("  (Esc to clear)", "  (Esc: 지우기)").to_owned()
+        t!("  (Esc to clear)", "  (Esc: 지우기)", "  (Esc: クリア)").to_owned()
     };
-    let label = t!("filter: ", "필터: ");
+    let label = t!("filter: ", "필터: ", "フィルター: ");
     let mut spans = vec![Span::styled(label, app.theme.style(R::TextMuted))];
     if editing {
         let width = (area.width as usize)
@@ -214,10 +215,17 @@ fn render_list(
     if len == 0 {
         // A filtered-to-nothing list gets a filter-specific message, not the per-tab "empty" hint.
         let msg: String = if !app.library_ui.filter_query.is_empty() {
-            if crate::i18n::is_korean() {
-                format!("'{}' 와 일치하는 곡이 없어요.", app.library_ui.filter_query)
-            } else {
-                format!("No tracks match \"{}\".", app.library_ui.filter_query)
+            match crate::i18n::current() {
+                Language::Korean => {
+                    format!("'{}' 와 일치하는 곡이 없어요.", app.library_ui.filter_query)
+                }
+                Language::Japanese => {
+                    format!(
+                        "'{}' に一致する曲はありません。",
+                        app.library_ui.filter_query
+                    )
+                }
+                _ => format!("No tracks match \"{}\".", app.library_ui.filter_query),
             }
         } else if app.library_ui.tab == LibraryTab::Playlists {
             // The root level never reaches here (it renders via `render_playlist_list`),
@@ -233,45 +241,57 @@ fn render_list(
                 crate::keymap::Action::OpenAi,
                 app.retro_mode(),
             );
-            if crate::i18n::is_korean() {
-                format!(
+            match crate::i18n::current() {
+                Language::Korean => format!(
                     "빈 플레이리스트예요 — 다른 목록에서 {add} 로 곡을 추가하거나 DJ Gem({gem})에게 부탁하세요."
-                )
-            } else {
-                format!(
+                ),
+                Language::Japanese => format!(
+                    "空のプレイリストです — 他のリストで {add} を押して曲を追加するか、DJ Gem({gem})に頼んでください。"
+                ),
+                _ => format!(
                     "This playlist is empty — press {add} on any song to add it here, or ask DJ Gem ({gem})."
-                )
+                ),
             }
         } else {
             match app.library_ui.tab {
                 LibraryTab::All => t!(
                     "No library tracks yet — play, favorite, or download something.",
-                    "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요."
+                    "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요.",
+                    "まだライブラリに曲がありません — 再生・お気に入り・ダウンロードしてみてください。"
                 ),
                 LibraryTab::Favorites => t!(
                     "No favorites yet — press f on a track to save it.",
-                    "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요."
+                    "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요.",
+                    "お気に入りがありません — 曲で f を押して保存してください。"
                 ),
                 LibraryTab::History => {
                     t!(
                         "No history yet — play something.",
-                        "재생 기록이 없어요 — 뭐든 재생해 보세요."
+                        "재생 기록이 없어요 — 뭐든 재생해 보세요.",
+                        "再生履歴がありません — 何か再生してみてください。"
                     )
                 }
                 LibraryTab::RadioFavorites => t!(
                     "No radio favorites yet — press f on a Radio Browser station.",
-                    "라디오 즐겨찾기가 없어요 — Radio Browser 방송에서 f 를 눌러 저장하세요."
+                    "라디오 즐겨찾기가 없어요 — Radio Browser 방송에서 f 를 눌러 저장하세요.",
+                    "ラジオのお気に入りがありません — Radio Browser の放送局で f を押して保存してください。"
                 ),
                 LibraryTab::Radio => t!(
                     "No recent radio stations yet — play one from Radio Browser search.",
-                    "최근 라디오가 없어요 — Radio Browser 검색에서 재생해 보세요."
+                    "최근 라디오가 없어요 — Radio Browser 검색에서 재생해 보세요.",
+                    "最近のラジオがありません — Radio Browser 検索から再生してみてください。"
                 ),
                 LibraryTab::Downloads => t!(
                     "No downloaded tracks found in the download folder.",
-                    "다운로드 폴더에 받은 곡이 없어요."
+                    "다운로드 폴더에 받은 곡이 없어요.",
+                    "ダウンロードフォルダーに曲が見つかりません。"
                 ),
                 // Handled by the keymap-aware branch above; benign fallback for exhaustiveness.
-                LibraryTab::Playlists => t!("This playlist is empty.", "빈 플레이리스트예요."),
+                LibraryTab::Playlists => t!(
+                    "This playlist is empty.",
+                    "빈 플레이리스트예요.",
+                    "空のプレイリストです。"
+                ),
             }
             .to_owned()
         };
@@ -430,13 +450,16 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
     let rows = app.filtered_playlists();
     if rows.is_empty() {
         let msg: String = if !app.library_ui.filter_query.is_empty() {
-            if crate::i18n::is_korean() {
-                format!(
+            match crate::i18n::current() {
+                Language::Korean => format!(
                     "'{}' 와 일치하는 플레이리스트가 없어요.",
                     app.library_ui.filter_query
-                )
-            } else {
-                format!("No playlists match \"{}\".", app.library_ui.filter_query)
+                ),
+                Language::Japanese => format!(
+                    "'{}' に一致するプレイリストはありません。",
+                    app.library_ui.filter_query
+                ),
+                _ => format!("No playlists match \"{}\".", app.library_ui.filter_query),
             }
         } else {
             // Built from the live keymap so a rebind updates the hint in lock-step.
@@ -445,10 +468,16 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
                 crate::keymap::Action::PlaylistCreate,
                 app.retro_mode(),
             );
-            if crate::i18n::is_korean() {
-                format!("아직 플레이리스트가 없어요 — {key} 로 만들거나 Spotify에서 가져오세요.")
-            } else {
-                format!("No playlists yet — press {key} to create one, or import from Spotify.")
+            match crate::i18n::current() {
+                Language::Korean => format!(
+                    "아직 플레이리스트가 없어요 — {key} 로 만들거나 Spotify에서 가져오세요."
+                ),
+                Language::Japanese => format!(
+                    "まだプレイリストがありません — {key} で作成するか、Spotifyからインポートしてください。"
+                ),
+                _ => {
+                    format!("No playlists yet — press {key} to create one, or import from Spotify.")
+                }
             }
         };
         frame.render_widget(
@@ -483,11 +512,13 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
         let selected = i == cursor;
         let marker = if selected { "▶ " } else { "  " };
         let count = playlist.songs.len();
-        let text = if crate::i18n::is_korean() {
-            format!("♪ {} — {count}곡", playlist.name)
-        } else {
-            let noun = if count == 1 { "track" } else { "tracks" };
-            format!("♪ {} — {count} {noun}", playlist.name)
+        let text = match crate::i18n::current() {
+            Language::Korean => format!("♪ {} — {count}곡", playlist.name),
+            Language::Japanese => format!("♪ {} — {count}曲", playlist.name),
+            _ => {
+                let noun = if count == 1 { "track" } else { "tracks" };
+                format!("♪ {} — {count} {noun}", playlist.name)
+            }
         };
         // Long playlist names on the cursor row marquee like the track lists do.
         let text = if selected {
@@ -584,11 +615,13 @@ fn render_playlist_breadcrumb(frame: &mut Frame, app: &App, area: Rect) {
         app.retro_mode(),
     );
     let count = playlist.songs.len();
-    let text = if crate::i18n::is_korean() {
-        format!("⟵ {} — {count}곡  ({back_key}: 뒤로)", playlist.name)
-    } else {
-        let noun = if count == 1 { "track" } else { "tracks" };
-        format!("⟵ {} — {count} {noun}  ({back_key}: back)", playlist.name)
+    let text = match crate::i18n::current() {
+        Language::Korean => format!("⟵ {} — {count}곡  ({back_key}: 뒤로)", playlist.name),
+        Language::Japanese => format!("⟵ {} — {count}曲  ({back_key}: 戻る)", playlist.name),
+        _ => {
+            let noun = if count == 1 { "track" } else { "tracks" };
+            format!("⟵ {} — {count} {noun}  ({back_key}: back)", playlist.name)
+        }
     };
     let w = buttons::text_width(&text).min(area.width);
     frame.render_widget(
@@ -617,7 +650,11 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ♪ New playlist ", " ♪ 새 플레이리스트 "))
+        .title(t!(
+            " ♪ New playlist ",
+            " ♪ 새 플레이리스트 ",
+            " ♪ 新しいプレイリスト "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -633,7 +670,7 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     // `name: <typed>█` — the filter prompt's visual language, inside the popup.
-    let label = t!("  name: ", "  이름: ");
+    let label = t!("  name: ", "  이름: ", "  名前: ");
     let cursor = app.library_ui.create_cursor.byte_index(name);
     let shown = crate::ui::text::editable_window(
         name,
@@ -655,12 +692,12 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmPlaylistCreate,
-            t!(" Create (Enter) ", " 만들기 (Enter) "),
+            t!(" Create (Enter) ", " 만들기 (Enter) ", " 作成 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelPlaylistCreate,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -692,7 +729,11 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ♪ Add to playlist ", " ♪ 플레이리스트에 추가 "))
+        .title(t!(
+            " ♪ Add to playlist ",
+            " ♪ 플레이리스트에 추가 ",
+            " ♪ プレイリストに追加 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -709,13 +750,18 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
     // "adding: <title>" for one song, "adding: N tracks" for a selection.
     let subject = if picker.songs.len() == 1 {
         app.display_title(&picker.songs[0]).into_owned()
-    } else if crate::i18n::is_korean() {
-        format!("{}곡", picker.songs.len())
     } else {
-        format!("{} tracks", picker.songs.len())
+        match crate::i18n::current() {
+            Language::Korean => format!("{}곡", picker.songs.len()),
+            Language::Japanese => format!("{}曲", picker.songs.len()),
+            _ => format!("{} tracks", picker.songs.len()),
+        }
     };
     let subject = crate::ui::text::truncate_owned_to_width(
-        format!("{}{subject}", t!("  adding: ", "  추가할 곡: ")),
+        format!(
+            "{}{subject}",
+            t!("  adding: ", "  추가할 곡: ", "  追加する曲: ")
+        ),
         inner.width as usize,
     );
     frame.render_widget(
@@ -725,7 +771,7 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     if let Some(name) = picker.naming.as_ref() {
         // Phase two: the inline new-playlist name entry.
-        let label = t!("  name: ", "  이름: ");
+        let label = t!("  name: ", "  이름: ", "  名前: ");
         let cursor = picker.naming_cursor.byte_index(name);
         let shown = crate::ui::text::editable_window(
             name,
@@ -747,12 +793,16 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
         let segs = [
             buttons::Seg::button(
                 MouseTarget::ConfirmPickerCreate,
-                t!(" Create + add (Enter) ", " 만들고 추가 (Enter) "),
+                t!(
+                    " Create + add (Enter) ",
+                    " 만들고 추가 (Enter) ",
+                    " 作成して追加 (Enter) "
+                ),
             ),
             buttons::Seg::label("    "),
             buttons::Seg::button(
                 MouseTarget::CancelPickerCreate,
-                t!(" Back (Esc) ", " 뒤로 (Esc) "),
+                t!(" Back (Esc) ", " 뒤로 (Esc) ", " 戻る (Esc) "),
             ),
         ];
         buttons::render_segments(
@@ -775,14 +825,23 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
             let body = if i < playlists.len() {
                 let p = &playlists[i];
                 let count = p.songs.len();
-                if crate::i18n::is_korean() {
-                    format!("{marker}♪ {} — {count}곡", p.name)
-                } else {
-                    let noun = if count == 1 { "track" } else { "tracks" };
-                    format!("{marker}♪ {} — {count} {noun}", p.name)
+                match crate::i18n::current() {
+                    Language::Korean => format!("{marker}♪ {} — {count}곡", p.name),
+                    Language::Japanese => format!("{marker}♪ {} — {count}曲", p.name),
+                    _ => {
+                        let noun = if count == 1 { "track" } else { "tracks" };
+                        format!("{marker}♪ {} — {count} {noun}", p.name)
+                    }
                 }
             } else {
-                format!("{marker}{}", t!("＋ New playlist…", "＋ 새 플레이리스트…"))
+                format!(
+                    "{marker}{}",
+                    t!(
+                        "＋ New playlist…",
+                        "＋ 새 플레이리스트…",
+                        "＋ 新しいプレイリスト…"
+                    )
+                )
             };
             let body = crate::ui::text::truncate_owned_to_width(body, rows[1].width as usize);
             let style = if selected {
@@ -808,7 +867,8 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(t!(
                 "↑↓ move · Enter add · n new · Esc close",
-                "↑↓ 이동 · Enter 추가 · n 새로 만들기 · Esc 닫기"
+                "↑↓ 이동 · Enter 추가 · n 새로 만들기 · Esc 닫기",
+                "↑↓ 移動 · Enter 追加 · n 新規作成 · Esc 閉じる"
             ))
             .alignment(Alignment::Center)
             .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -836,7 +896,11 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ⚠ Delete playlist ", " ⚠ 플레이리스트 삭제 "))
+        .title(t!(
+            " ⚠ Delete playlist ",
+            " ⚠ 플레이리스트 삭제 ",
+            " ⚠ プレイリストの削除 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -852,11 +916,13 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
     ])
     .split(inner);
 
-    let prompt = if crate::i18n::is_korean() {
-        format!("'{name}' ({count}곡) 플레이리스트를 삭제할까요?")
-    } else {
-        let noun = if count == 1 { "track" } else { "tracks" };
-        format!("Delete \"{name}\" ({count} {noun})?")
+    let prompt = match crate::i18n::current() {
+        Language::Korean => format!("'{name}' ({count}곡) 플레이리스트를 삭제할까요?"),
+        Language::Japanese => format!("プレイリスト '{name}' ({count}曲) を削除しますか?"),
+        _ => {
+            let noun = if count == 1 { "track" } else { "tracks" };
+            format!("Delete \"{name}\" ({count} {noun})?")
+        }
     };
     let prompt = crate::ui::text::truncate_owned_to_width(prompt, inner.width as usize);
     frame.render_widget(
@@ -868,7 +934,8 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
     frame.render_widget(
         Paragraph::new(t!(
             "The tracks themselves are not deleted.",
-            "곡 자체는 삭제되지 않아요."
+            "곡 자체는 삭제되지 않아요.",
+            "曲そのものは削除されません。"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -878,12 +945,12 @@ pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) 
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmPlaylistDelete,
-            t!(" Delete (Enter) ", " 삭제 (Enter) "),
+            t!(" Delete (Enter) ", " 삭제 (Enter) ", " 削除 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelPlaylistDelete,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -911,7 +978,8 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(t!(
             " ⚠ Delete downloaded files ",
-            " ⚠ 다운로드한 파일 삭제 "
+            " ⚠ 다운로드한 파일 삭제 ",
+            " ⚠ ダウンロードしたファイルの削除 "
         ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
@@ -928,12 +996,16 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    let prompt = if crate::i18n::is_korean() {
-        // Korean has no plural form, so the count carries the quantity on its own.
-        format!("다운로드한 파일 {count}개를 디스크에서 삭제할까요?")
-    } else {
-        let noun = if count == 1 { "file" } else { "files" };
-        format!("Delete {count} downloaded {noun} from disk?")
+    let prompt = match crate::i18n::current() {
+        // Korean and Japanese have no plural form, so the count carries the quantity on its own.
+        Language::Korean => format!("다운로드한 파일 {count}개를 디스크에서 삭제할까요?"),
+        Language::Japanese => {
+            format!("ダウンロードしたファイル {count}件をディスクから削除しますか?")
+        }
+        _ => {
+            let noun = if count == 1 { "file" } else { "files" };
+            format!("Delete {count} downloaded {noun} from disk?")
+        }
     };
     frame.render_widget(
         Paragraph::new(prompt)
@@ -944,7 +1016,8 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(t!(
             "This permanently removes the actual files.",
-            "실제 파일이 영구적으로 삭제됩니다."
+            "실제 파일이 영구적으로 삭제됩니다.",
+            "実際のファイルが完全に削除されます。"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -954,12 +1027,12 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmDelete,
-            t!(" Delete (Enter) ", " 삭제 (Enter) "),
+            t!(" Delete (Enter) ", " 삭제 (Enter) ", " 削除 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelDelete,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -985,7 +1058,11 @@ pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ⬇ Download songs ", " ⬇ 곡 다운로드 "))
+        .title(t!(
+            " ⬇ Download songs ",
+            " ⬇ 곡 다운로드 ",
+            " ⬇ 曲のダウンロード "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -1001,11 +1078,13 @@ pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    let prompt = if crate::i18n::is_korean() {
-        format!("{count}곡을 다운로드할까요?")
-    } else {
-        let noun = if count == 1 { "song" } else { "songs" };
-        format!("Download {count} {noun}?")
+    let prompt = match crate::i18n::current() {
+        Language::Korean => format!("{count}곡을 다운로드할까요?"),
+        Language::Japanese => format!("{count}曲をダウンロードしますか?"),
+        _ => {
+            let noun = if count == 1 { "song" } else { "songs" };
+            format!("Download {count} {noun}?")
+        }
     };
     frame.render_widget(
         Paragraph::new(prompt)
@@ -1016,7 +1095,8 @@ pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(t!(
             "Already-downloaded tracks are skipped.",
-            "이미 받은 곡은 제외됩니다."
+            "이미 받은 곡은 제외됩니다.",
+            "ダウンロード済みの曲はスキップされます。"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -1026,12 +1106,16 @@ pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmDownload,
-            t!(" Download (Enter) ", " 다운로드 (Enter) "),
+            t!(
+                " Download (Enter) ",
+                " 다운로드 (Enter) ",
+                " ダウンロード (Enter) "
+            ),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelDownload,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(

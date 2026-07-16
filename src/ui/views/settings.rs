@@ -22,6 +22,7 @@ use crate::app::{App, MouseTarget, ScrollSurface, StatusKind};
 use crate::config::{
     FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
 };
+use crate::i18n::Language;
 use crate::keymap::{self, Action, KeyContext};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
@@ -80,11 +81,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         app.keymap
             .label_for_display(KeyContext::Settings, a, app.retro_mode())
     };
-    let ko = crate::i18n::is_korean();
+    let lang = crate::i18n::current();
     let help_text = if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
         t!(
             "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
-            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제"
+            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제",
+            "#RRGGBB または none を入力  ·  Enter 保存  ·  Backspace 削除"
         )
         .to_owned()
     } else if st.editing_text {
@@ -92,7 +94,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         // so the value can't be lost by leaving the screen later.
         t!(
             "type value  ·  Enter or Esc save  ·  Backspace delete",
-            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제"
+            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제",
+            "値を入力  ·  Enter または Esc 保存  ·  Backspace 削除"
         )
         .to_owned()
     } else if matches!(st.current_field(), Some(Field::ExportPersonalData)) {
@@ -101,13 +104,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::Confirm),
             t!(
                 "export · unencrypted JSON · includes private listening history",
-                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함"
+                "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함",
+                "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
             )
         )
     } else if st.tab == SettingsTab::Keys {
         let mouse_row = st.row >= keymap::editable_entries().len();
-        if ko && mouse_row {
-            format!(
+        match (lang, mouse_row) {
+            (Language::Korean, true) => format!(
                 "{}/{} 선택  ·  {}/{} 또는 {} 변경  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -117,9 +121,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
-        } else if ko {
-            format!(
+            ),
+            (Language::Korean, false) => format!(
                 "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -127,9 +130,28 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
-        } else if mouse_row {
-            format!(
+            ),
+            (Language::Japanese, true) => format!(
+                "{}/{} 選択  ·  {}/{} または {} 変更  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+            (Language::Japanese, false) => format!(
+                "{}/{} 選択  ·  {} 再割り当て  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+            (_, true) => format!(
                 "{}/{} select  ·  {}/{} or {} change  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -139,9 +161,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
-        } else {
-            format!(
+            ),
+            (_, false) => format!(
                 "{}/{} select  ·  {} rebind  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -149,11 +170,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
+            ),
         }
     } else if matches!(st.current_field(), Some(Field::ThemeColor(_))) {
-        if ko {
-            format!(
+        match lang {
+            Language::Korean => format!(
                 "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -161,9 +182,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
-        } else {
-            format!(
+            ),
+            Language::Japanese => format!(
+                "{}/{} カラー  ·  {} 編集  ·  {} リセット  ·  {} タブ切替  ·  {} 保存して閉じる",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+            _ => format!(
                 "{}/{} color  ·  {} edit  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
@@ -171,30 +200,41 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::DeleteChar),
                 k(Action::FocusNext),
                 k(Action::SettingsCancel),
-            )
+            ),
         }
-    } else if ko {
-        format!(
-            "{}/{} 이동  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장하고 닫기",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            k(Action::ChangeDecrease),
-            k(Action::ChangeIncrease),
-            k(Action::Confirm),
-            k(Action::FocusNext),
-            k(Action::SettingsCancel),
-        )
     } else {
-        format!(
-            "{}/{} field  ·  {}/{} change  ·  {} edit/toggle  ·  {} switch tab  ·  {} save + quit",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            k(Action::ChangeDecrease),
-            k(Action::ChangeIncrease),
-            k(Action::Confirm),
-            k(Action::FocusNext),
-            k(Action::SettingsCancel),
-        )
+        match lang {
+            Language::Korean => format!(
+                "{}/{} 이동  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장하고 닫기",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                k(Action::Confirm),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+            Language::Japanese => format!(
+                "{}/{} 移動  ·  {}/{} 変更  ·  {} 編集/切替  ·  {} タブ切替  ·  {} 保存して閉じる",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                k(Action::Confirm),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+            _ => format!(
+                "{}/{} field  ·  {}/{} change  ·  {} edit/toggle  ·  {} switch tab  ·  {} save + quit",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::ChangeDecrease),
+                k(Action::ChangeIncrease),
+                k(Action::Confirm),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            ),
+        }
     };
     // The footer row doubles as the status/toast surface. An active status message (Spotify
     // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
@@ -278,7 +318,7 @@ impl BindingGroup {
         match self.kind {
             BindingGroupKind::Key(context) => context.title().to_owned(),
             BindingGroupKind::Mouse(context) => {
-                format!("{} · {}", t!("Mouse", "마우스"), context.title())
+                format!("{} · {}", t!("Mouse", "마우스", "マウス"), context.title())
             }
         }
     }
@@ -434,7 +474,7 @@ fn build_keys_column(
                     context, action, ..
                 } => {
                     let value = if st.capturing == Some((context, action)) {
-                        t!("<press a key…>", "<키 입력 대기…>").to_owned()
+                        t!("<press a key…>", "<키 입력 대기…>", "<キー入力待ち…>").to_owned()
                     } else {
                         st.keymap.chord(context, action).map_or_else(
                             || "—".to_owned(),

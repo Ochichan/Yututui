@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" About ", " 정보 "))
+        .title(t!(" About ", " 정보 ", " 情報 "))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::BorderPrimary))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -317,9 +317,14 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     let desc = vec![
         Line::from(t!(
             "A YouTube Music player that lives",
-            "터미널에서 바로 실행되는"
+            "터미널에서 바로 실행되는",
+            "ターミナルの中で動く"
         )),
-        Line::from(t!("inside your terminal.", "YouTube Music 플레이어.")),
+        Line::from(t!(
+            "inside your terminal.",
+            "YouTube Music 플레이어.",
+            "YouTube Musicプレイヤー。"
+        )),
     ];
     frame.render_widget(
         Paragraph::new(desc)
@@ -332,10 +337,13 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     // The whole block is centered as a unit via the shared pad so it no longer hugs the left edge.
     let block_pad = " ".repeat(kv_left_pad(area.width));
     let info = [
-        (t!("Command", "명령어"), "ytt"),
-        (t!("License", "라이선스"), "MIT · © 2026 Ochichan"),
-        (t!("Author", "제작자"), "Ochichan"),
-        (t!("Built", "빌드"), "Rust · ratatui"),
+        (t!("Command", "명령어", "コマンド"), "ytt"),
+        (
+            t!("License", "라이선스", "使用許諾"),
+            "MIT · © 2026 Ochichan",
+        ),
+        (t!("Author", "제작자", "作者"), "Ochichan"),
+        (t!("Built", "빌드", "ビルド"), "Rust · ratatui"),
     ];
     let key_style = crate::ui::popup_style(app, R::HelpKey);
     let val_style = crate::ui::popup_style(app, R::HelpAction);
@@ -393,7 +401,8 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             t!(
                 " to close · click the link to open ↗",
-                " 닫기 · 링크를 클릭해 열기 ↗"
+                " 닫기 · 링크를 클릭해 열기 ↗",
+                " で閉じる · リンクをクリックで開く ↗"
             ),
             crate::ui::popup_style(app, R::TextMuted),
         ),
@@ -416,10 +425,14 @@ fn draw_update_block(frame: &mut Frame, app: &App, headline: Rect, body: Rect, l
     // `↑` (U+2191) means "version upgrade"; `↗` (U+2197) is reserved for links that open
     // externally. Both stay in the text-presentation Arrows block — `⬆` (U+2B06) renders
     // as a double-width color emoji in common terminal font stacks and breaks centering.
-    let head = if crate::i18n::is_korean() {
-        format!("↑ 새 버전 v{} 사용 가능", status.latest_display())
-    } else {
-        format!("↑ New version v{} available", status.latest_display())
+    let head = match crate::i18n::current() {
+        crate::i18n::Language::Korean => {
+            format!("↑ 새 버전 v{} 사용 가능", status.latest_display())
+        }
+        crate::i18n::Language::Japanese => {
+            format!("↑ 新バージョン v{} が利用可能", status.latest_display())
+        }
+        _ => format!("↑ New version v{} available", status.latest_display()),
     };
     frame.render_widget(
         Paragraph::new(Line::from(head))
@@ -448,7 +461,7 @@ fn draw_update_block(frame: &mut Frame, app: &App, headline: Rect, body: Rect, l
         .add_modifier(Modifier::UNDERLINED);
     let segs = [Seg::button(
         MouseTarget::AboutUpdateLink,
-        t!("Releases ↗", "릴리스 ↗"),
+        t!("Releases ↗", "릴리스 ↗", "リリース ↗"),
     )];
     buttons::render_segments(
         frame,

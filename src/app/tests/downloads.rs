@@ -172,7 +172,8 @@ fn copy_link_copies_youtube_url_for_remote_track() {
         app.status.text,
         t!(
             "✓ Link copied to clipboard",
-            "✓ 링크가 클립보드에 복사됐어요"
+            "✓ 링크가 클립보드에 복사됐어요",
+            "✓ リンクをクリップボードにコピーしました"
         )
     );
 }
@@ -191,7 +192,8 @@ fn copy_link_warns_for_local_only_track() {
         app.status.text,
         t!(
             "This track is local-only — no YouTube link",
-            "로컬 전용 트랙이라 유튜브 링크가 없어요"
+            "로컬 전용 트랙이라 유튜브 링크가 없어요",
+            "ローカル専用の曲のため YouTube リンクがありません"
         )
     );
 }

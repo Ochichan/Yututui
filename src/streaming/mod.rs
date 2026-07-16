@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use crate::api::Song;
 use crate::library::Library;
+#[cfg(test)]
 use crate::playback_policy::{AUTOPLAY_COOLDOWN, AUTOPLAY_THRESHOLD};
 use crate::queue::Queue;
 use crate::signals::Signals;
@@ -32,20 +33,17 @@ pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
 
-/// The owner-neutral part of an admitted autoplay refill. The App and daemon attach their
-/// own exclusion policy, effect type, status text, and in-flight state after this plan is made.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AutoplayRefill {
-    pub seed: String,
-    pub seed_video_id: String,
-}
+pub use crate::playback_policy::AutoplayRefill;
+use crate::playback_policy::RefillSeedTrack;
 
 /// Decide whether an autoplay refill may start, and capture the current track as its seed.
 ///
-/// Both playback owners feed this function their effective streaming state and their own
-/// definition of "refill pending". Forced refills bypass only the queue-length and cooldown
-/// gates; disabled streaming, an in-flight refill, a missing current track, and a live-radio
-/// pseudo-track remain hard stops.
+/// Thin `Song` adapter over the owner-neutral admission rule in
+/// `yututui_core::playback::plan_autoplay_refill` (via [`crate::playback_policy`]) — the
+/// decision itself lives in core so the two playback owners cannot drift on it. Forced
+/// refills bypass only the queue-length and cooldown gates; disabled streaming, an
+/// in-flight refill, a missing current track, and a live-radio pseudo-track remain hard
+/// stops.
 pub fn plan_autoplay_refill(
     active: bool,
     refill_pending: bool,
@@ -54,20 +52,20 @@ pub fn plan_autoplay_refill(
     since_last: Option<Duration>,
     current: Option<&Song>,
 ) -> Option<AutoplayRefill> {
-    if !active || refill_pending {
-        return None;
-    }
-    if !force && remaining > AUTOPLAY_THRESHOLD {
-        return None;
-    }
-    if !force && since_last.is_some_and(|elapsed| elapsed < AUTOPLAY_COOLDOWN) {
-        return None;
-    }
-    let current = current.filter(|song| !song.is_radio_station())?;
-    Some(AutoplayRefill {
-        seed: format!("{} — {}", current.title, current.artist),
-        seed_video_id: current.video_id.clone(),
-    })
+    let current = current.map(|song| RefillSeedTrack {
+        title: &song.title,
+        artist: &song.artist,
+        video_id: &song.video_id,
+        is_radio_station: song.is_radio_station(),
+    });
+    crate::playback_policy::plan_autoplay_refill(
+        active,
+        refill_pending,
+        force,
+        remaining,
+        since_last,
+        current,
+    )
 }
 
 /// Build the "recently heard" context the station scorer filters against: recent track ids
