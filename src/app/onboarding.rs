@@ -494,6 +494,9 @@ impl App {
         }
         self.config.language = lang;
         crate::i18n::set_language(self.config.effective_language());
+        // Mirror the central apply pair (see bootstrap): a resolved `Auto` DJ Gem language
+        // follows the UI language, so it must be re-resolved when the tour changes it.
+        crate::i18n::set_dj_gem_language(self.config.effective_dj_gem_language());
         if let Some(settings) = self.settings.as_mut() {
             settings.draft.language = lang;
         }
