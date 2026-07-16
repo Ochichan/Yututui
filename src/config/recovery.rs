@@ -1,3 +1,4 @@
+use super::storage::{config_for_missing_profile, import_old_from, old_config_path};
 use super::*;
 
 pub(super) fn load_from_path(path: &std::path::Path) -> Config {
