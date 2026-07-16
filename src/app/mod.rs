@@ -18,7 +18,11 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
-use crate::ai::{AiContext, AiPick, GeminiModel, PlaylistInfo};
+// Keep the pre-DJ-actor-split DTO paths source-compatible for callers which still import
+// `app::{AiContext, AiPick, PlaylistInfo}`. Their neutral owner-independent definitions now live
+// in `crate::ai`, but the app facade remains the compatibility boundary.
+use crate::ai::GeminiModel;
+pub use crate::ai::{AiContext, AiPick, PlaylistInfo};
 use crate::api::{ApiMode, Song};
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
