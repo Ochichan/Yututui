@@ -1,24 +1,24 @@
-name: release preflight 1.6.32
+name: release preflight 1.6.33
 
 on:
   pull_request:
     branches: [main]
 
 concurrency:
-  group: release-preflight-1.6.32-${{ github.event.pull_request.number }}
+  group: release-preflight-1.6.33-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
-  PREFLIGHT_VERSION: 1.6.32
+  PREFLIGHT_VERSION: 1.6.33
 
 permissions:
   contents: read
 
 jobs:
   verify-version:
-    name: Verify 1.6.32 source version
+    name: Verify 1.6.33 source version
     if: >-
-      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.head_ref == 'agent/aggregate-1.6.33-preflight' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
@@ -39,7 +39,7 @@ jobs:
   release-build:
     name: Native release build and package
     if: >-
-      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.head_ref == 'agent/aggregate-1.6.33-preflight' &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: verify-version
     uses: ./.github/workflows/native-release-build.yml
@@ -48,9 +48,9 @@ jobs:
       pull-requests: read
 
   aggregate:
-    name: Aggregate 1.6.32 preflight artifacts
+    name: Aggregate 1.6.33 preflight artifacts
     if: >-
-      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.head_ref == 'agent/aggregate-1.6.33-preflight' &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: release-build
     runs-on: ubuntu-latest
@@ -132,7 +132,7 @@ jobs:
       - name: Upload complete preflight bundle
         uses: actions/upload-artifact@v6
         with:
-          name: yututui-1.6.32-preflight
+          name: yututui-1.6.33-preflight
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -144,10 +144,10 @@ jobs:
             checksums.txt
 
   preflight-result:
-    name: Release preflight 1.6.32 result
+    name: Release preflight 1.6.33 result
     if: >-
       always() &&
-      github.head_ref == 'agent/aggregate-1.6.32-preflight' &&
+      github.head_ref == 'agent/aggregate-1.6.33-preflight' &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify-version, release-build, aggregate]
     runs-on: ubuntu-latest
