@@ -122,6 +122,9 @@ impl RuntimeHandles {
             // store is a couple ms of memcpy at worst; the fsync it replaces on this task was
             // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`
             // carries its own owned snapshot.
+            Cmd::Persist(PersistCmd::TransferPlaylistCommit(commit)) => {
+                self.dispatch_transfer_playlist_commit(commit);
+            }
             Cmd::Persist(p) => {
                 let result = persist_delivery::admit(&self.persist, app, p);
                 report_actor_delivery(app, "persistence", result);

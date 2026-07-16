@@ -66,6 +66,33 @@ fn runtime_event_policy_covers_representative_events() {
         }
     );
 
+    let (request, _reply) = crate::transfer::actor::LocalPlaylistRequest::for_test(
+        99,
+        crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Snapshot,
+    );
+    assert_eq!(
+        RuntimeEvent::App(Msg::Data(crate::app::DataMsg::TransferPlaylistPersisted(
+            crate::app::TransferPlaylistPersistence {
+                commit: Box::new(crate::app::TransferPlaylistCommit {
+                    request,
+                    owner_base_revision: 0,
+                    candidate: crate::playlists::Playlists::default(),
+                    kind: crate::app::TransferPlaylistCommitKind::RestoreThenFail {
+                        error: crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(
+                            "test restore",
+                        ),
+                        retry_attempt: 0,
+                    },
+                }),
+                persistence: crate::persist::TargetFlushOutcome::Unconfirmed,
+            },
+        )))
+        .policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+
     assert_eq!(
         RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
             video_id: "v".to_owned(),
@@ -327,6 +354,18 @@ fn runtime_event_policy_covers_leaf_event_classes() {
             job_id: "rejected".to_owned(),
             error: "busy".to_owned(),
         }),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        },
+    );
+    let (request, _reply) = crate::transfer::actor::LocalPlaylistRequest::for_test(
+        7,
+        crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Snapshot,
+    );
+    assert_policy(
+        RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::LocalPlaylistRequest(
+            request,
+        )),
         EventPolicy::MustDeliver {
             lane: EventLane::WorkResult,
         },

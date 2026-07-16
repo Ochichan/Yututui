@@ -36,6 +36,7 @@ pub(super) async fn fetch_source(
     job_id: &str,
     spec: &JobSpec,
     ctx: &mut JobCtx,
+    local_snapshot: Option<&crate::playlists::Playlists>,
 ) -> Result<(String, Vec<TrackEntry>, u32, bool), JobError> {
     let mut beat = progress_beat(job_id, Stage::Fetching);
     let (name, inputs, skipped_local, provider_truncated): (String, Vec<TrackInput>, u32, bool) =
@@ -90,9 +91,8 @@ pub(super) async fn fetch_source(
                 )
             }
             TransferSource::LocalPlaylist { key } => {
-                let store = crate::playlists::Playlists::load();
-                let playlist = store
-                    .find(key)
+                let playlist = local_snapshot
+                    .and_then(|store| store.find(key))
                     .ok_or_else(|| JobError::fatal(anyhow!("no local playlist named `{key}`")))?;
                 (
                     playlist.name.clone(),

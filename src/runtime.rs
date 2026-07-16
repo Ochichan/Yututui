@@ -5,7 +5,6 @@
 use ratatui_image::thread::ResizeResponse;
 use std::sync::atomic::AtomicU64;
 
-#[cfg(test)]
 use crate::app::PersistCmd;
 use crate::app::{
     AiMsg, App, Cmd, DataCmd, DownloadCmd, Msg, PersonalDataExportCmd, PlayerControl, PlayerMsg,
@@ -31,6 +30,7 @@ pub(crate) mod player_delivery;
 mod read_only;
 mod recorder_recovery;
 mod task_set;
+mod transfer_commit;
 
 #[cfg(test)]
 use crate::util::delivery::DeliveryError;

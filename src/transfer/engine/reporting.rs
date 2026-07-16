@@ -17,13 +17,16 @@ pub(super) fn outcome_counts(tracks: &[TrackEntry]) -> (u32, u32, u32) {
     (matched, ambiguous, not_found)
 }
 
-pub(super) fn local_destination_keys(cp: &Checkpoint) -> Option<HashSet<String>> {
+pub(super) fn local_destination_keys(
+    cp: &Checkpoint,
+    store: Option<&crate::playlists::Playlists>,
+) -> Option<HashSet<String>> {
     if !matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
         return None;
     }
-    let store = crate::playlists::Playlists::load();
     Some(
-        find_local_destination(&store, cp)
+        store
+            .and_then(|store| find_local_destination(store, cp))
             .map(|playlist| {
                 playlist
                     .songs

@@ -131,13 +131,6 @@ impl Playlists {
         self.revision
     }
 
-    /// Replace a live store after an external writer changed playlists.json while preserving a
-    /// monotonic in-process generation for Local Find corpus invalidation.
-    pub(crate) fn replace_reloaded(&mut self, mut reloaded: Self) {
-        reloaded.revision = self.revision.wrapping_add(1);
-        *self = reloaded;
-    }
-
     /// Repair a deserialized playlists file so it obeys the same bounded shape as create/add.
     pub fn repair_loaded(&mut self) -> PlaylistRepairReport {
         let mut report = PlaylistRepairReport::default();

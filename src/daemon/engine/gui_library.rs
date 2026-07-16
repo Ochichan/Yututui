@@ -31,12 +31,19 @@ impl DaemonEngine {
             .map(|playlist| playlist.name.clone())
     }
 
-    /// A transfer import wrote the on-disk playlist store from off the owner lane:
-    /// refresh the in-memory copy so a later engine save cannot clobber the imported
-    /// rows, and bump the topic so subscribers see them immediately.
-    pub(in crate::daemon) fn reload_playlists_after_import(&mut self) {
-        self.playlists = crate::playlists::Playlists::load();
+    pub(in crate::daemon) fn transfer_playlists_snapshot(&self) -> crate::playlists::Playlists {
+        self.playlists.clone()
+    }
+
+    /// Persist a transfer candidate before swapping it into the live daemon projection.
+    pub(in crate::daemon) fn commit_transfer_playlists_candidate(
+        &mut self,
+        candidate: crate::playlists::Playlists,
+    ) -> Result<(), crate::transfer::local_playlist::LocalPlaylistStoreError> {
+        self.persist_transfer_playlists_candidate(&candidate)?;
+        self.playlists = candidate;
         self.bump_playlists_rev();
+        Ok(())
     }
 
     pub fn playlists_models(&self) -> Vec<PlaylistSummaryModel> {

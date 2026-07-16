@@ -148,6 +148,9 @@ unicode-segmentation = "1.13"
 wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
 yututui-core = { path = "crates/yututui-core" }
 
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
+
 [build-dependencies]
 embed-resource = "3.0.9"
 

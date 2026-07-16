@@ -19,6 +19,128 @@ fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) ->
 }
 
 impl App {
+    fn plan_transfer_playlist_commit(
+        &mut self,
+        request: crate::transfer::actor::LocalPlaylistRequest,
+        patch: crate::transfer::local_playlist::LocalPlaylistPatch,
+        restore_current_on_error: bool,
+    ) -> Vec<Cmd> {
+        let owner_base_revision = self.playlists.revision();
+        match crate::transfer::local_playlist::plan_apply_local_playlist_patch(
+            &self.playlists,
+            &patch,
+        ) {
+            Ok(plan) => vec![Cmd::Persist(PersistCmd::TransferPlaylistCommit(Box::new(
+                crate::app::TransferPlaylistCommit {
+                    request,
+                    owner_base_revision,
+                    candidate: plan.candidate,
+                    kind: crate::app::TransferPlaylistCommitKind::Apply {
+                        patch,
+                        outcome: plan.outcome,
+                    },
+                },
+            )))],
+            Err(error) => {
+                if restore_current_on_error {
+                    self.restore_transfer_playlist_then_fail(request, error, 0)
+                } else {
+                    request.respond(Err(error));
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    fn restore_transfer_playlist_then_fail(
+        &self,
+        request: crate::transfer::actor::LocalPlaylistRequest,
+        error: crate::transfer::local_playlist::LocalPlaylistStoreError,
+        retry_attempt: u8,
+    ) -> Vec<Cmd> {
+        vec![Cmd::Persist(PersistCmd::TransferPlaylistCommit(Box::new(
+            crate::app::TransferPlaylistCommit {
+                request,
+                owner_base_revision: self.playlists.revision(),
+                candidate: self.playlists.clone(),
+                kind: crate::app::TransferPlaylistCommitKind::RestoreThenFail {
+                    error,
+                    retry_attempt,
+                },
+            },
+        )))]
+    }
+
+    pub(in crate::app) fn on_transfer_playlist_persisted(
+        &mut self,
+        commit: crate::app::TransferPlaylistCommit,
+        persistence: crate::persist::TargetFlushOutcome,
+    ) -> Vec<Cmd> {
+        use crate::persist::TargetFlushOutcome;
+        let crate::app::TransferPlaylistCommit {
+            request,
+            owner_base_revision,
+            candidate,
+            kind,
+        } = commit;
+        match kind {
+            crate::app::TransferPlaylistCommitKind::Apply { patch, outcome } => {
+                match persistence {
+                    TargetFlushOutcome::Unconfirmed => self.restore_transfer_playlist_then_fail(
+                        request,
+                        crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(
+                            "playlist owner could not confirm the targeted durable commit",
+                        ),
+                        0,
+                    ),
+                    TargetFlushOutcome::Superseded => {
+                        // A newer same-store generation won, but it is not proof that the
+                        // transfer patch is present. Rebase; if the destination can no longer be
+                        // planned, reassert the live owner snapshot before releasing the waiter.
+                        self.plan_transfer_playlist_commit(request, patch, true)
+                    }
+                    TargetFlushOutcome::CommittedExact
+                        if self.playlists.revision() != owner_base_revision =>
+                    {
+                        // The exact candidate reached disk, but installing it now would clobber
+                        // newer owner changes. Rebase and confirm a new exact generation.
+                        self.plan_transfer_playlist_commit(request, patch, true)
+                    }
+                    TargetFlushOutcome::CommittedExact => {
+                        self.playlists = candidate;
+                        self.reconcile_playlists_reload();
+                        self.dirty = true;
+                        request.respond(Ok(
+                            crate::transfer::local_playlist::LocalPlaylistOwnerReply::Applied(
+                                outcome,
+                            ),
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+            crate::app::TransferPlaylistCommitKind::RestoreThenFail {
+                error,
+                retry_attempt,
+            } => {
+                if persistence == TargetFlushOutcome::CommittedExact
+                    && self.playlists.revision() == owner_base_revision
+                {
+                    request.respond(Err(error));
+                    Vec::new()
+                } else {
+                    // The old candidate or failed target may still become durable later. Keep a
+                    // higher-order exact restore pending until the current live snapshot wins.
+                    self.restore_transfer_playlist_then_fail(
+                        request,
+                        error,
+                        retry_attempt.saturating_add(1),
+                    )
+                }
+            }
+        }
+    }
+
     /// Auth/listing/job events from the transfer actor.
     pub(in crate::app) fn on_transfer_event(
         &mut self,
@@ -143,17 +265,23 @@ impl App {
                 };
                 self.status.kind = StatusKind::Info;
             }
+            TransferEvent::LocalPlaylistRequest(request) => {
+                return match request.request().clone() {
+                    crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Snapshot => {
+                        request.respond(Ok(
+                            crate::transfer::local_playlist::LocalPlaylistOwnerReply::Snapshot(
+                                self.playlists.clone(),
+                            ),
+                        ));
+                        Vec::new()
+                    }
+                    crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Apply(patch) => {
+                        self.plan_transfer_playlist_commit(request, patch, false)
+                    }
+                };
+            }
             TransferEvent::JobDone(report) => {
                 self.transfer_running = false;
-                // A local-dest job wrote playlists.json from the actor; reload so the
-                // Library shows it now and a later in-app save can't clobber it. (The
-                // app persists its own mutations immediately, so disk is the union — which
-                // also means a just-deleted playlist reappears if the job re-created it.)
-                self.playlists
-                    .replace_reloaded(crate::playlists::Playlists::load());
-                // The store changed under the Playlists tab: drop a drill-down or pending
-                // delete whose playlist vanished and re-clamp the cursor into the new rows.
-                self.reconcile_playlists_reload();
                 self.status.text = transfer_done_status(&report);
                 self.status.kind = StatusKind::Info;
             }
@@ -186,5 +314,285 @@ impl App {
             }
         }
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persist::TargetFlushOutcome;
+    use crate::playlists::AddResult;
+    use crate::transfer::local_playlist::{
+        LocalPlaylistOwnerReply, LocalPlaylistOwnerRequest, LocalPlaylistPatch,
+        LocalPlaylistPatchRow,
+    };
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    fn patch(observed_revision: u64) -> LocalPlaylistPatch {
+        LocalPlaylistPatch {
+            observed_revision,
+            destination_id: None,
+            destination_name: "Transfer".to_owned(),
+            rows: vec![LocalPlaylistPatchRow {
+                checkpoint_index: 4,
+                song: crate::api::Song::remote("transfer-row", "Transfer Row", "Artist", "3:00"),
+            }],
+        }
+    }
+
+    fn begin(
+        app: &mut App,
+        correlation_id: u64,
+    ) -> (
+        Box<crate::app::TransferPlaylistCommit>,
+        tokio::sync::oneshot::Receiver<
+            Result<
+                crate::transfer::local_playlist::LocalPlaylistOwnerReply,
+                crate::transfer::local_playlist::LocalPlaylistStoreError,
+            >,
+        >,
+    ) {
+        begin_patch(app, correlation_id, patch(app.playlists.revision()))
+    }
+
+    fn begin_patch(
+        app: &mut App,
+        correlation_id: u64,
+        patch: LocalPlaylistPatch,
+    ) -> (
+        Box<crate::app::TransferPlaylistCommit>,
+        tokio::sync::oneshot::Receiver<
+            Result<
+                crate::transfer::local_playlist::LocalPlaylistOwnerReply,
+                crate::transfer::local_playlist::LocalPlaylistStoreError,
+            >,
+        >,
+    ) {
+        let (request, reply) = crate::transfer::actor::LocalPlaylistRequest::for_test(
+            correlation_id,
+            LocalPlaylistOwnerRequest::Apply(patch),
+        );
+        let commands = app.on_transfer_event(
+            crate::transfer::actor::TransferEvent::LocalPlaylistRequest(request),
+        );
+        (only_commit(commands), reply)
+    }
+
+    fn only_commit(commands: Vec<Cmd>) -> Box<crate::app::TransferPlaylistCommit> {
+        let mut commands = commands.into_iter();
+        let commit = match commands.next().expect("one transfer commit") {
+            Cmd::Persist(PersistCmd::TransferPlaylistCommit(commit)) => commit,
+            _ => panic!("expected transfer playlist commit"),
+        };
+        assert!(commands.next().is_none());
+        commit
+    }
+
+    fn assert_pending(
+        reply: &mut tokio::sync::oneshot::Receiver<
+            Result<
+                crate::transfer::local_playlist::LocalPlaylistOwnerReply,
+                crate::transfer::local_playlist::LocalPlaylistStoreError,
+            >,
+        >,
+    ) {
+        assert!(matches!(reply.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn apply_keeps_live_store_unchanged_until_exact_same_revision_then_replies() {
+        let mut app = App::new(50);
+        let (commit, mut reply) = begin(&mut app, 1);
+
+        assert!(app.playlists.find("Transfer").is_none());
+        assert_pending(&mut reply);
+
+        let commands =
+            app.on_transfer_playlist_persisted(*commit, TargetFlushOutcome::CommittedExact);
+        assert!(commands.is_empty());
+        let playlist = app.playlists.find("Transfer").expect("candidate installed");
+        assert_eq!(playlist.songs.len(), 1);
+        let response = reply.try_recv().expect("durable reply").expect("success");
+        let LocalPlaylistOwnerReply::Applied(outcome) = response else {
+            panic!("expected apply reply");
+        };
+        assert_eq!(outcome.rows[0].checkpoint_index, 4);
+        assert_eq!(outcome.rows[0].result, AddResult::Added);
+    }
+
+    #[test]
+    fn exact_revision_race_rebases_on_latest_live_store_before_installing() {
+        let mut app = App::new(50);
+        let (stale_commit, mut reply) = begin(&mut app, 2);
+        let destination = app.playlists.create("Transfer").expect("owner playlist");
+        assert_eq!(
+            app.playlists.add(
+                &destination,
+                crate::api::Song::remote("owner-row", "Owner Row", "Artist", "3:00"),
+            ),
+            AddResult::Added
+        );
+
+        let rebased = only_commit(
+            app.on_transfer_playlist_persisted(*stale_commit, TargetFlushOutcome::CommittedExact),
+        );
+        assert_pending(&mut reply);
+        let live = app
+            .playlists
+            .find(&destination)
+            .expect("live owner playlist");
+        assert_eq!(live.songs.len(), 1, "rebased candidate is not live yet");
+
+        assert!(
+            app.on_transfer_playlist_persisted(*rebased, TargetFlushOutcome::CommittedExact)
+                .is_empty()
+        );
+        let installed = app
+            .playlists
+            .find(&destination)
+            .expect("rebased candidate installed");
+        assert_eq!(installed.songs.len(), 2);
+        assert!(
+            installed
+                .songs
+                .iter()
+                .any(|song| song.video_id == "owner-row")
+        );
+        assert!(
+            installed
+                .songs
+                .iter()
+                .any(|song| song.video_id == "transfer-row")
+        );
+        assert!(matches!(
+            reply.try_recv().expect("durable reply"),
+            Ok(LocalPlaylistOwnerReply::Applied(_))
+        ));
+    }
+
+    #[test]
+    fn superseded_target_replans_against_latest_live_store_without_replying() {
+        let mut app = App::new(50);
+        let (stale_commit, mut reply) = begin(&mut app, 3);
+        let destination = app.playlists.create("Transfer").expect("owner playlist");
+        assert_eq!(
+            app.playlists.add(
+                &destination,
+                crate::api::Song::remote("owner-row", "Owner Row", "Artist", "3:00"),
+            ),
+            AddResult::Added
+        );
+
+        let replanned = only_commit(
+            app.on_transfer_playlist_persisted(*stale_commit, TargetFlushOutcome::Superseded),
+        );
+        assert_pending(&mut reply);
+        assert_eq!(app.playlists.find(&destination).unwrap().songs.len(), 1);
+
+        assert!(
+            app.on_transfer_playlist_persisted(*replanned, TargetFlushOutcome::CommittedExact)
+                .is_empty()
+        );
+        assert_eq!(app.playlists.find(&destination).unwrap().songs.len(), 2);
+        assert!(matches!(
+            reply.try_recv().expect("durable reply"),
+            Ok(LocalPlaylistOwnerReply::Applied(_))
+        ));
+    }
+
+    #[test]
+    fn unconfirmed_target_waits_for_an_exact_live_restore_before_error_reply() {
+        let mut app = App::new(50);
+        let (commit, mut reply) = begin(&mut app, 4);
+
+        let restore = only_commit(
+            app.on_transfer_playlist_persisted(*commit, TargetFlushOutcome::Unconfirmed),
+        );
+        assert!(matches!(
+            &restore.kind,
+            crate::app::TransferPlaylistCommitKind::RestoreThenFail {
+                retry_attempt: 0,
+                ..
+            }
+        ));
+        assert!(app.playlists.find("Transfer").is_none());
+        assert_pending(&mut reply);
+
+        let retry_restore = only_commit(
+            app.on_transfer_playlist_persisted(*restore, TargetFlushOutcome::Superseded),
+        );
+        assert!(matches!(
+            &retry_restore.kind,
+            crate::app::TransferPlaylistCommitKind::RestoreThenFail {
+                retry_attempt: 1,
+                ..
+            }
+        ));
+        assert_pending(&mut reply);
+        assert!(
+            app.on_transfer_playlist_persisted(*retry_restore, TargetFlushOutcome::CommittedExact,)
+                .is_empty()
+        );
+        let error = reply
+            .try_recv()
+            .expect("error only after exact restore")
+            .expect_err("unconfirmed apply remains resumable");
+        assert!(error.is_resumable());
+        assert!(app.playlists.find("Transfer").is_none());
+    }
+
+    #[test]
+    fn rebase_errors_restore_live_snapshot_before_replying() {
+        for persistence in [
+            TargetFlushOutcome::CommittedExact,
+            TargetFlushOutcome::Superseded,
+        ] {
+            let mut app = App::new(50);
+            let destination = app
+                .playlists
+                .create("Ephemeral Destination")
+                .expect("owner destination");
+            let owner_revision = app.playlists.revision();
+            let (stale_commit, mut reply) = begin_patch(
+                &mut app,
+                5,
+                LocalPlaylistPatch {
+                    observed_revision: owner_revision,
+                    destination_id: Some(destination.clone()),
+                    destination_name: String::new(),
+                    rows: vec![LocalPlaylistPatchRow {
+                        checkpoint_index: 4,
+                        song: crate::api::Song::remote(
+                            "transfer-row",
+                            "Transfer Row",
+                            "Artist",
+                            "3:00",
+                        ),
+                    }],
+                },
+            );
+            app.playlists
+                .delete(&destination)
+                .expect("concurrent owner delete");
+
+            let restore =
+                only_commit(app.on_transfer_playlist_persisted(*stale_commit, persistence));
+            assert!(matches!(
+                restore.kind,
+                crate::app::TransferPlaylistCommitKind::RestoreThenFail { .. }
+            ));
+            assert_pending(&mut reply);
+
+            assert!(
+                app.on_transfer_playlist_persisted(*restore, TargetFlushOutcome::CommittedExact)
+                    .is_empty()
+            );
+            let error = reply
+                .try_recv()
+                .expect("reply after restore")
+                .expect_err("deleted destination cannot be rebased");
+            assert!(!error.is_resumable());
+            assert!(app.playlists.find(&destination).is_none());
+        }
     }
 }

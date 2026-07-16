@@ -111,6 +111,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
             | crate::transfer::actor::TransferEvent::AuthError(_)
             | crate::transfer::actor::TransferEvent::Disconnected
             | crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
+            | crate::transfer::actor::TransferEvent::LocalPlaylistRequest(_)
             | crate::transfer::actor::TransferEvent::JobDone(_)
             | crate::transfer::actor::TransferEvent::JobRejected { .. }
             | crate::transfer::actor::TransferEvent::JobFailed { .. },

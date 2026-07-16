@@ -146,6 +146,7 @@ pub(crate) fn transfer_event_policy(event: &crate::transfer::actor::TransferEven
         | crate::transfer::actor::TransferEvent::AuthError(_)
         | crate::transfer::actor::TransferEvent::Disconnected
         | crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
+        | crate::transfer::actor::TransferEvent::LocalPlaylistRequest(_)
         | crate::transfer::actor::TransferEvent::JobDone(_)
         | crate::transfer::actor::TransferEvent::JobRejected { .. }
         | crate::transfer::actor::TransferEvent::JobFailed { .. } => EventPolicy::MustDeliver {
@@ -201,6 +202,18 @@ mod tests {
         );
         assert_eq!(
             transfer_event_policy(&crate::transfer::actor::TransferEvent::Disconnected),
+            EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            }
+        );
+        let (request, _reply) = crate::transfer::actor::LocalPlaylistRequest::for_test(
+            1,
+            crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Snapshot,
+        );
+        assert_eq!(
+            transfer_event_policy(
+                &crate::transfer::actor::TransferEvent::LocalPlaylistRequest(request),
+            ),
             EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             }

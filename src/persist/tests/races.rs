@@ -243,7 +243,7 @@ async fn panic_flush_owns_unjournaled_write_while_blocking_pool_is_full() {
     lock(&pending).insert(StoreKind::Config, operation);
     let inflight: SharedInflight = Arc::new(Mutex::new(HashMap::new()));
 
-    journal_pending_operations(&pending).await;
+    journal_pending_operations(&pending, WriteSelection::All).await;
     assert!(
         matches!(
             lock(&pending)[&StoreKind::Config].publication(),

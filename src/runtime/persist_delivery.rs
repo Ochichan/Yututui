@@ -14,6 +14,9 @@ pub(super) fn admit(handle: &PersistHandle, app: &App, command: PersistCmd) -> D
         PersistCmd::Config(config) => handle.save(Snapshot::Config(config)),
         PersistCmd::Playlists => handle.save(Snapshot::Playlists(app.playlists.clone())),
         PersistCmd::StationProfile => handle.save(Snapshot::Station(app.station.clone())),
+        PersistCmd::TransferPlaylistCommit(_) => {
+            unreachable!("targeted transfer persistence is dispatched before snapshot markers")
+        }
     }
 }
 

@@ -302,3 +302,64 @@ async fn next_library_save_failure_preserves_applied_player_and_owner_state() {
             .is_some_and(|error| error.contains("failed to save daemon library history"))
     );
 }
+
+#[test]
+fn transfer_playlist_save_failure_keeps_live_store_and_revision_unchanged() {
+    let mut engine = engine_with_queue(&[]);
+    let before = serde_json::to_vec(&engine.playlists).expect("serialize live playlists");
+    let before_rev = engine.playlists_rev();
+    let mut candidate = engine.transfer_playlists_snapshot();
+    candidate
+        .create("Transfer Candidate")
+        .expect("valid candidate playlist");
+
+    let _guard = fail_store_saves_for_test(StoreKind::Playlists);
+    let error = engine
+        .commit_transfer_playlists_candidate(candidate)
+        .expect_err("injected candidate save failure");
+
+    assert!(error.is_resumable());
+    assert_eq!(
+        serde_json::to_vec(&engine.playlists).expect("serialize unchanged playlists"),
+        before
+    );
+    assert_eq!(engine.playlists_rev(), before_rev);
+    assert!(engine.playlists.find("Transfer Candidate").is_none());
+}
+
+#[test]
+fn transfer_playlist_success_swaps_only_after_save_and_bumps_revision() {
+    let mut engine = engine_with_queue(&[]);
+    let before_rev = engine.playlists_rev();
+    let mut candidate = engine.transfer_playlists_snapshot();
+    candidate
+        .create("Transfer Candidate")
+        .expect("valid candidate playlist");
+
+    engine
+        .commit_transfer_playlists_candidate(candidate)
+        .expect("candidate save succeeds");
+
+    assert!(engine.playlists.find("Transfer Candidate").is_some());
+    assert_eq!(engine.playlists_rev(), before_rev.wrapping_add(1));
+}
+
+#[test]
+fn transfer_playlist_recovery_preflight_failure_keeps_live_state_unchanged() {
+    let mut engine = engine_with_queue(&[]);
+    let before = serde_json::to_vec(&engine.playlists).expect("serialize live playlists");
+    let before_rev = engine.playlists_rev();
+    let mut candidate = engine.transfer_playlists_snapshot();
+    candidate
+        .create("Recovery Candidate")
+        .expect("valid candidate playlist");
+    let _guard = fail_recovery_for_test(recovery_error());
+
+    let error = engine
+        .commit_transfer_playlists_candidate(candidate)
+        .expect_err("recovery preflight rejects save");
+
+    assert!(error.is_resumable());
+    assert_eq!(serde_json::to_vec(&engine.playlists).unwrap(), before);
+    assert_eq!(engine.playlists_rev(), before_rev);
+}

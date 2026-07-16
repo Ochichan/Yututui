@@ -191,11 +191,11 @@ impl TransferHost {
                 .state
                 .failed(crate::util::sanitize::sanitize_error_text(error)),
             TransferEvent::Progress(progress) => self.state.progress(progress),
+            TransferEvent::LocalPlaylistRequest(request) => {
+                settle_local_playlist_request(request, engine);
+                return;
+            }
             TransferEvent::JobDone(report) => {
-                // The import wrote the on-disk playlist store; refresh the engine's
-                // in-memory copy so its next save cannot clobber the imported rows,
-                // and so the `playlists` topic shows the result immediately.
-                engine.reload_playlists_after_import();
                 self.state.absorb_report(&report);
                 if let Some(next) = self.pending.pop_front() {
                     if self
@@ -242,6 +242,28 @@ impl TransferHost {
         }
         self.state.publish(publisher);
     }
+}
+
+fn settle_local_playlist_request(
+    request: crate::transfer::actor::LocalPlaylistRequest,
+    engine: &mut DaemonEngine,
+) {
+    use crate::transfer::local_playlist::{LocalPlaylistOwnerReply, LocalPlaylistOwnerRequest};
+
+    let reply = match request.request().clone() {
+        LocalPlaylistOwnerRequest::Snapshot => Ok(LocalPlaylistOwnerReply::Snapshot(
+            engine.transfer_playlists_snapshot(),
+        )),
+        LocalPlaylistOwnerRequest::Apply(patch) => {
+            let current = engine.transfer_playlists_snapshot();
+            crate::transfer::local_playlist::plan_apply_local_playlist_patch(&current, &patch)
+                .and_then(|plan| {
+                    engine.commit_transfer_playlists_candidate(plan.candidate)?;
+                    Ok(LocalPlaylistOwnerReply::Applied(plan.outcome))
+                })
+        }
+    };
+    request.respond(reply);
 }
 
 fn apply_account_event(event: &TransferEvent, engine: &mut DaemonEngine) -> bool {

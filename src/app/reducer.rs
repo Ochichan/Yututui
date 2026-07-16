@@ -952,6 +952,9 @@ impl App {
                 }
             },
             Msg::Transfer(event) => return self.on_transfer_event(event),
+            Msg::Data(DataMsg::TransferPlaylistPersisted(result)) => {
+                return self.on_transfer_playlist_persisted(*result.commit, result.persistence);
+            }
         }
         Vec::new()
     }

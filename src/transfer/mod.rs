@@ -14,6 +14,7 @@ pub mod csv;
 mod download_cli;
 pub mod download_plan;
 pub mod json;
+pub(crate) mod local_playlist;
 mod match_cache;
 pub mod matching;
 mod organize_cli;
@@ -26,6 +27,7 @@ pub mod session;
 mod engine;
 
 pub use engine::{JobCtx, JobError, run_job, write_reviewed_local_job};
+pub(crate) use engine::{run_job_with_store, write_reviewed_local_job_with_store};
 
 use std::path::PathBuf;
 

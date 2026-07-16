@@ -6,6 +6,34 @@
 
 use super::*;
 
+/// Pending owner-mediated transfer commit. The candidate is intentionally not installed into
+/// live App state until this exact persistence generation is confirmed.
+pub struct TransferPlaylistCommit {
+    pub(crate) request: crate::transfer::actor::LocalPlaylistRequest,
+    pub(crate) owner_base_revision: u64,
+    pub(crate) candidate: crate::playlists::Playlists,
+    pub(crate) kind: TransferPlaylistCommitKind,
+}
+
+pub(crate) enum TransferPlaylistCommitKind {
+    Apply {
+        patch: crate::transfer::local_playlist::LocalPlaylistPatch,
+        outcome: crate::transfer::local_playlist::LocalPlaylistWriteOutcome,
+    },
+    /// Reassert the latest live owner snapshot after a stale transfer candidate reached disk but
+    /// could no longer be safely rebased. The original error is replied only after exact restore.
+    RestoreThenFail {
+        error: crate::transfer::local_playlist::LocalPlaylistStoreError,
+        retry_attempt: u8,
+    },
+}
+
+/// Opaque owner-lane result keeps internal persistence identities out of the public `Msg` shape.
+pub struct TransferPlaylistPersistence {
+    pub(crate) commit: Box<TransferPlaylistCommit>,
+    pub(crate) persistence: crate::persist::TargetFlushOutcome,
+}
+
 pub enum DownloadMsg {
     Progress {
         video_id: String,
@@ -265,6 +293,8 @@ pub enum DataMsg {
     DownloadsScanned(crate::library::DownloadScan),
     /// A portable personal-data export worker event.
     PersonalDataExport(PersonalDataExportMsg),
+    /// Targeted persistence confirmation for an owner-mediated transfer playlist patch.
+    TransferPlaylistPersisted(TransferPlaylistPersistence),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -473,6 +503,9 @@ pub enum PersistCmd {
     Playlists,
     /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
     StationProfile,
+    /// Persist one transfer candidate under an exact target generation. Live playlists stay
+    /// unchanged until the completion returns to the reducer.
+    TransferPlaylistCommit(Box<TransferPlaylistCommit>),
 }
 
 /// Blocking Local Deck work requested by the reducer.
