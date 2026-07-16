@@ -28,6 +28,7 @@ use crate::util::text_edit::TextCursor;
 mod actions;
 mod color_picker;
 mod field_meta;
+pub(crate) mod gui_mutation;
 pub use actions::{FieldKind, PersonalDataExportStatus};
 pub use color_picker::{
     COLOR_PICKER_CHOICE_COUNT, ColorPickerChoice, ColorPickerSelection, ColorPickerState,
