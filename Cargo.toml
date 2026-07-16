@@ -1,6 +1,6 @@
 [package]
 name = "yututui"
-version = "1.6.32"
+version = "1.6.33"
 edition = "2024"
 # Releases are repository-built binaries. The application depends on a private workspace core,
 # so make the existing non-crates.io distribution contract explicit and fail closed on publish.

@@ -6121,7 +6121,7 @@ dependencies = [
 
 [[package]]
 name = "yututui"
-version = "1.6.32"
+version = "1.6.33"
 dependencies = [
  "anyhow",
  "base64",
@@ -6172,7 +6172,7 @@ dependencies = [
 
 [[package]]
 name = "yututui-core"
-version = "1.6.32"
+version = "1.6.33"
 dependencies = [
  "serde",
  "ts-rs",
