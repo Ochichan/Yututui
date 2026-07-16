@@ -166,9 +166,9 @@ pub struct DaemonEngine {
     heal_attempted: HashSet<String>,
     heal_last_check: Option<Instant>,
     last_mode: LastMode,
-    inactive_normal_queue: Option<QueueSnapshot>,
-    inactive_radio_queue: Option<QueueSnapshot>,
-    inactive_local_queue: Option<QueueSnapshot>,
+    inactive_normal_queue: Option<Arc<QueueSnapshot>>,
+    inactive_radio_queue: Option<Arc<QueueSnapshot>>,
+    inactive_local_queue: Option<Arc<QueueSnapshot>>,
     session_events: VecDeque<DaemonSessionEvent>,
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
@@ -2044,11 +2044,12 @@ impl DaemonEngine {
 
     fn restore_session_cache(&mut self, cache: SessionCache) {
         self.last_mode = cache.last_mode;
-        self.inactive_normal_queue = cache.normal_queue.clone();
-        self.inactive_radio_queue = cache.radio_queue.clone();
-        self.inactive_local_queue = cache.local_queue.clone();
+        let active_queue = cache.active_queue().cloned();
+        self.inactive_normal_queue = cache.normal_queue.map(Arc::new);
+        self.inactive_radio_queue = cache.radio_queue.map(Arc::new);
+        self.inactive_local_queue = cache.local_queue.map(Arc::new);
 
-        if let Some(snapshot) = cache.active_queue().cloned() {
+        if let Some(snapshot) = active_queue {
             self.queue.restore_snapshot(snapshot);
             self.reset_idle_playback();
             return;
