@@ -7,7 +7,7 @@ impl Config {
     pub(crate) fn fresh_install() -> Self {
         Self {
             beginner_mode: true,
-            beginner_tutorial: BeginnerTutorialProgress::welcome(),
+            beginner_tutorial: BeginnerTutorialProgress::start(),
             ..Self::default()
         }
     }

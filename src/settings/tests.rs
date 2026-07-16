@@ -392,7 +392,7 @@ fn beginner_mode_projection_restarts_only_when_requested() {
 
     draft.restart_beginner_tutorial = true;
     draft.apply_to(&mut cfg);
-    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::start());
 }
 
 #[test]
@@ -597,7 +597,7 @@ fn apply_to_persists_every_settings_field() {
     cfg.beginner_tutorial.next_step = "finish".to_owned();
     draft.apply_to(&mut cfg);
     assert!(cfg.beginner_mode);
-    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::welcome());
+    assert_eq!(cfg.beginner_tutorial, BeginnerTutorialProgress::start());
     assert_eq!(cfg.recording.mode, crate::recorder::RecordingMode::Decide);
     assert_eq!(cfg.recording.min_duration_secs, 20);
     assert_eq!(cfg.recording.max_duration_secs, 1200);

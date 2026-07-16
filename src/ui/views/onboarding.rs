@@ -116,6 +116,25 @@ pub fn render_beginner_coach(frame: &mut Frame, app: &App, area: Rect) {
             "F6: Skip · resize to resume",
             "F6: 건너뛰기 · 창을 키우면 계속"
         )
+    } else if app.onboarding.language_choices() {
+        // Language-step preview: the hint follows the highlighted option, not the process
+        // language (which stays untouched until the user confirms).
+        let preview = preview_language(app);
+        if focused {
+            pick3(
+                preview,
+                "F6/Esc: app · ←/→ choose · Enter",
+                "F6/Esc: 앱 · ←/→ 선택 · Enter",
+                "F6/Esc: アプリ · ←/→ 選択 · Enter",
+            )
+        } else {
+            pick3(
+                preview,
+                "Use the app normally · F6 guide controls",
+                "앱을 직접 사용해 보세요 · F6 안내 버튼",
+                "アプリはそのまま操作できます · F6 で案内ボタン",
+            )
+        }
     } else if focused {
         t!(
             "F6/Esc: app · ←/→ choose · Enter",
@@ -184,6 +203,40 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
     };
     let reached = app.onboarding.target_reached();
     match app.onboarding.step() {
+        BeginnerStep::Language => {
+            if !app.onboarding.language_choices() {
+                // Retro variant: retro pins the UI to English, so there is nothing to pick.
+                return CoachCopy {
+                    heading: t!("Choose your language", "언어를 선택해 주세요").to_owned(),
+                    body: t!(
+                        "Retro mode keeps the UI in English. Turn Retro Mode off in Settings to pick another language.",
+                        "레트로 모드에서는 UI가 영어로 고정돼요. 다른 언어를 쓰려면 설정에서 레트로 모드를 꺼 주세요."
+                    )
+                    .to_owned(),
+                    primary: t!("Continue", "계속").to_owned(),
+                };
+            }
+            // Card-local preview: the card renders in the HIGHLIGHTED language so each option
+            // presents itself in itself. The process-wide language is untouched until Enter.
+            let preview = preview_language(app);
+            CoachCopy {
+                heading: pick3(
+                    preview,
+                    "Choose your language",
+                    "언어를 선택해 주세요",
+                    "言語を選択してください",
+                )
+                .to_owned(),
+                body: pick3(
+                    preview,
+                    "The tour and the whole app will use this language. You can change it anytime in Settings.",
+                    "튜토리얼과 앱 전체가 이 언어로 표시돼요. 설정에서 언제든 바꿀 수 있어요.",
+                    "ツアーとアプリ全体がこの言語で表示されます。設定でいつでも変更できます。",
+                )
+                .to_owned(),
+                primary: String::new(),
+            }
+        }
         BeginnerStep::Welcome => CoachCopy {
             heading: t!("Welcome to YuTuTui!", "YuTuTui!에 오신 걸 환영해요").to_owned(),
             body: t!(
@@ -421,9 +474,34 @@ fn finish_copy(app: &App, key: &impl Fn(KeyContext, Action) -> String) -> CoachC
     }
 }
 
+/// The language the Language card previews: the highlighted option, or the active language
+/// while Skip (or nothing selectable) is highlighted.
+fn preview_language(app: &App) -> crate::i18n::Language {
+    match app.onboarding.selected_action() {
+        OnboardingAction::ChooseLanguage(lang) => lang,
+        _ => crate::i18n::current(),
+    }
+}
+
+/// Card-local language pick for the Language step's preview — deliberately NOT `t!`, which
+/// reads the process-wide language this card must leave untouched until the user confirms.
+fn pick3(
+    lang: crate::i18n::Language,
+    en: &'static str,
+    ko: &'static str,
+    ja: &'static str,
+) -> &'static str {
+    match lang {
+        crate::i18n::Language::Korean => ko,
+        crate::i18n::Language::Japanese => ja,
+        crate::i18n::Language::English => en,
+    }
+}
+
 fn coach_anchor(app: &App) -> Option<MouseTarget> {
     let reached = app.onboarding.target_reached();
     match app.onboarding.step() {
+        BeginnerStep::Language => None,
         BeginnerStep::Welcome => None,
         BeginnerStep::NavigationHelp => Some(MouseTarget::Global(Action::ToggleHelp)),
         BeginnerStep::Search => Some(if reached {
@@ -477,6 +555,10 @@ fn render_coach_buttons(
 ) {
     let selected = app.onboarding.selected_action();
     let focused = app.onboarding.guide_focused_for(mini);
+    let language_row = !confirming && !mini && app.onboarding.language_choices();
+    // The 4-button language row is wider than the standard 3-button row (≈46 cols with the
+    // Japanese Skip label), so it compacts earlier than the 44-col default.
+    let compact = inner.width < if language_row { 48 } else { 44 };
     let mut owned: Vec<(OnboardingAction, String)> = if confirming {
         vec![
             (
@@ -490,6 +572,30 @@ fn render_coach_buttons(
         ]
     } else if mini {
         vec![(OnboardingAction::Skip, t!("Skip", "건너뛰기").to_owned())]
+    } else if language_row {
+        // One button per language, each labeled in itself (never translated); Skip follows
+        // the previewed language so the whole card reads consistently.
+        let preview = preview_language(app);
+        let mut row: Vec<(OnboardingAction, String)> = crate::i18n::Language::CYCLE
+            .iter()
+            .map(|lang| {
+                let label = if compact && *lang == crate::i18n::Language::English {
+                    "EN".to_owned()
+                } else {
+                    lang.native_name().to_owned()
+                };
+                (OnboardingAction::ChooseLanguage(*lang), label)
+            })
+            .collect();
+        row.push((
+            OnboardingAction::Skip,
+            if compact {
+                "Skip".to_owned()
+            } else {
+                pick3(preview, "Skip", "건너뛰기", "スキップ").to_owned()
+            },
+        ));
+        row
     } else {
         vec![
             (OnboardingAction::Back, t!("Back", "이전").to_owned()),
@@ -497,7 +603,6 @@ fn render_coach_buttons(
             (OnboardingAction::Skip, t!("Skip", "건너뛰기").to_owned()),
         ]
     };
-    let compact = inner.width < 44;
     if compact
         && let Some((_, label)) = owned
             .iter_mut()
@@ -548,6 +653,8 @@ fn render_coach_buttons(
 fn compact_primary_label(app: &App) -> &'static str {
     let next = t!("Next", "다음");
     match app.onboarding.step() {
+        // Only the retro variant renders a Primary button on this step.
+        BeginnerStep::Language => t!("Continue", "계속"),
         BeginnerStep::Welcome => t!("Start", "시작"),
         BeginnerStep::NavigationHelp => t!("Help", "도움말"),
         BeginnerStep::Search => {
@@ -970,5 +1077,141 @@ mod tests {
         let clipped = with_ellipsis("resize the terminal to continue", 12);
         assert!(clipped.ends_with('…'));
         assert!(buttons::text_width(&clipped) <= 12);
+    }
+
+    /// The buffer's text with all spaces removed: wide (CJK) graphemes occupy a symbol cell
+    /// plus a blank continuation cell, so plain concatenation interleaves spaces into CJK
+    /// runs ("한 국 어"). Space-stripping makes `contains` assertions grapheme-exact instead.
+    fn buffer_text_compact(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .replace(' ', "")
+    }
+
+    #[test]
+    fn language_card_lists_native_names_and_marks_the_active_language() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        let text = buffer_text_compact(&terminal);
+        assert!(text.contains("Chooseyourlanguage"), "heading: {text}");
+        // Every language names itself, regardless of the previewed language.
+        assert!(text.contains("한국어") && text.contains("日本語"));
+        // The active language is the pre-highlighted primary (step-aware, not index 1).
+        assert!(text.contains("›English‹"), "marker: {text}");
+        for lang in crate::i18n::Language::CYCLE {
+            assert!(
+                app.hits
+                    .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                        lang
+                    )))
+                    .is_some(),
+                "missing hit target for {lang:?}"
+            );
+        }
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Skip))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn language_card_entry_previews_the_active_language_card_locally() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let copy = coach_copy(&app, false, false);
+        assert_eq!(copy.heading, "言語を選択してください");
+        assert!(copy.body.contains("設定でいつでも変更できます"));
+        // The preview came from the highlighted option (= active language on entry), and the
+        // process-wide language is what it was — the card never writes it.
+        assert_eq!(crate::i18n::current(), crate::i18n::Language::Japanese);
+    }
+
+    #[test]
+    fn narrow_language_card_compacts_the_row_and_keeps_every_hit_target() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        let app = beginner_app_on(BeginnerStep::Language, Mode::Player);
+
+        let backend = TestBackend::new(48, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        let popup = app
+            .hits
+            .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Noop))
+            .expect("rendered Beginner coach");
+        let text = buffer_text_compact(&terminal);
+        // Compact path: English shortens to EN, Skip stays ASCII.
+        assert!(text.contains("EN"), "compact English label: {text}");
+        assert!(text.contains("Skip"), "compact Skip label: {text}");
+        for lang in crate::i18n::Language::CYCLE {
+            let target = app
+                .hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                    lang,
+                )))
+                .unwrap_or_else(|| panic!("missing narrow hit target for {lang:?}"));
+            assert!(
+                target.right() <= popup.right() && target.left() >= popup.left(),
+                "{lang:?} button overflows the card: {target:?} vs {popup:?}"
+            );
+        }
+        let skip = app
+            .hits
+            .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Skip))
+            .expect("Skip must stay reachable at narrow widths");
+        assert!(skip.right() <= popup.right());
+    }
+
+    #[test]
+    fn retro_language_card_pins_english_and_offers_continue() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut app = App::new(50);
+        app.config.beginner_mode = true;
+        app.config.retro_mode = true;
+        app.config.beginner_tutorial.next_step = BeginnerStep::Language.id().to_owned();
+        app.prepare_beginner_onboarding(true);
+
+        let copy = coach_copy(&app, false, false);
+        assert!(copy.body.contains("Retro mode keeps the UI in English"));
+        assert_eq!(copy.primary, "Continue");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &app))
+            .unwrap();
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Primary))
+                .is_some()
+        );
+        for lang in crate::i18n::Language::CYCLE {
+            assert!(
+                app.hits
+                    .rect_of_target(MouseTarget::Onboarding(OnboardingAction::ChooseLanguage(
+                        lang
+                    )))
+                    .is_none(),
+                "retro variant must not offer language buttons"
+            );
+        }
     }
 }

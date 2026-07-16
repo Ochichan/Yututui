@@ -983,7 +983,7 @@ impl SettingsDraft {
     pub fn apply_to(&self, cfg: &mut Config) {
         cfg.beginner_mode = self.beginner_mode;
         if self.beginner_mode && self.restart_beginner_tutorial {
-            cfg.beginner_tutorial = BeginnerTutorialProgress::welcome();
+            cfg.beginner_tutorial = BeginnerTutorialProgress::start();
         }
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);

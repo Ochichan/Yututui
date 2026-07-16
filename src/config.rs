@@ -53,7 +53,7 @@ pub const SPEED_MAX: f64 = 2.0;
 /// Version of the interactive Beginner Mode walkthrough shipped by this build. Bump this only
 /// when the ordered steps or their completion contracts change; copy-only edits must not make a
 /// user repeat the tour.
-pub const BEGINNER_TUTORIAL_VERSION: u16 = 2;
+pub const BEGINNER_TUTORIAL_VERSION: u16 = 3;
 
 /// Persisted Beginner Mode walkthrough cursor. The step stays a string deliberately: a newer
 /// build may write a step this build does not know, and retaining that value lets the app decline
@@ -66,7 +66,8 @@ pub struct BeginnerTutorialProgress {
 }
 
 impl BeginnerTutorialProgress {
-    pub fn welcome() -> Self {
+    /// The reset/initial cursor: the first ordered step of the current tour version.
+    pub fn start() -> Self {
         Self::default()
     }
 }
@@ -75,7 +76,7 @@ impl Default for BeginnerTutorialProgress {
     fn default() -> Self {
         Self {
             content_version: BEGINNER_TUTORIAL_VERSION,
-            next_step: "welcome".to_owned(),
+            next_step: "language".to_owned(),
         }
     }
 }

@@ -608,6 +608,8 @@ pub enum OnboardingAction {
     Skip,
     ConfirmSkip,
     CancelSkip,
+    /// Commit a UI language from the tour's Language step (one button per language).
+    ChooseLanguage(crate::i18n::Language),
 }
 
 /// Exact Local Find view rendered into a pointer hit map. A result snapshot and its drill-down
