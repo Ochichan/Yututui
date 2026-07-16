@@ -1149,6 +1149,10 @@ fn write_operation_durable_using(
     Ok(())
 }
 
+/// Run the durable write with the writer's panics downgraded to `io::Error` so the persist actor
+/// survives them and keeps serving later saves. Containment exists only in unwind builds
+/// (dev/test); release builds use `panic = "abort"`, where a writer panic aborts the process
+/// before reaching the `unwrap_or_else` below — there it documents intent, not a guarantee.
 fn write_operation_caught(operation: &PendingOperation) -> std::io::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         write_operation_durable(operation)
