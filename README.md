@@ -304,6 +304,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `Shift+B` | Collapse / expand the docked control box |
 | `←` / `→` · `Ctrl+←` / `Ctrl+→` | Move by one character · one word in a text field |
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
+| `Ctrl+H` | Return to the Player (on legacy ambiguous terminals, the safe text-edit fallback takes priority) |
 | `Ctrl+R` | DJ Gem streaming |
 | `g` | DJ Gem assistant |
 | `o` | Settings |
@@ -341,6 +342,7 @@ Terminal support varies by emulator — YuTuTui! probes capabilities and falls b
 | --- | --- |
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
 | Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
+| `Ctrl+Backspace` acts like `Ctrl+H`, or Player navigation is suppressed | See [keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes). Direct modern terminals negotiate an exact protocol when supported; legacy/multiplexed sessions reserve ambiguous `^H` for safe word deletion while that binding remains at its default. |
 | Album art looks blocky in VS Code / Apple Terminal | Those terminals have no image protocol — halfblocks are the intended fallback there. |
 | Bare Linux console or an old SSH session looks broken | Switch on retro mode (Settings → Graphics): everything redraws CP437-safe, album art becomes ASCII art. |
 | `v` (music video) does nothing over SSH / a bare TTY | The video overlay is an mpv GUI window — it needs a desktop session. |

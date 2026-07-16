@@ -5,7 +5,7 @@
 //! crash before the terminal is restored.
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
@@ -16,6 +16,7 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
 
+use crate::terminal_keyboard::{KeyboardInputMode, KeyboardInputPlan};
 use crate::zoom::{ZoomBackend, ZoomHandle};
 
 /// Reusable terminal output buffer that never leaks a partial frame after panic restoration.
@@ -80,7 +81,13 @@ pub enum ImeScrubResult {
     Resized,
 }
 
-static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
+const ACTIVE_KEYBOARD_NONE: u8 = 0;
+const ACTIVE_KEYBOARD_KITTY: u8 = 1;
+const ACTIVE_KEYBOARD_WIN32: u8 = 2;
+static ACTIVE_KEYBOARD_PROTOCOL: AtomicU8 = AtomicU8::new(ACTIVE_KEYBOARD_NONE);
+
+const ENABLE_WIN32_INPUT: &[u8] = b"\x1b[?9001h";
+const DISABLE_WIN32_INPUT: &[u8] = b"\x1b[?9001l";
 
 /// Initialise the terminal. When `mouse` is true, mouse events are captured.
 ///
@@ -88,33 +95,49 @@ static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 /// probes must run after the alternate screen is entered (so probe glyphs land on a
 /// throwaway screen) and before the exclusive terminal event worker starts reading stdin
 /// (the probes read their own cursor-position replies).
-pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<AppTerminal> {
+pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<(AppTerminal, KeyboardInputMode)> {
     // `try_init` = panic hook + raw mode + alternate screen + a `DefaultTerminal` we
     // don't want. Drop the terminal (it has no teardown Drop) and rebuild on the zoom
     // backend, keeping ratatui's hook/raw-mode/alt-screen setup — and `ratatui::restore`
     // in `restore()` — exactly as they were.
-    drop(ratatui::try_init()?);
-    let terminal = Terminal::new(ZoomBackend::new(
-        CrosstermBackend::new(PanicSafeBufWriter::new(io::stdout())),
-        zoom.clone(),
-    ))?;
-    if mouse {
-        execute!(io::stdout(), EnableMouseCapture)?;
+    let default_terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            // `try_init` installs its panic hook before entering raw/alternate mode, but an I/O
+            // error is returned rather than panicked. Best-effort restoration closes that gap.
+            let _ = ratatui::try_restore();
+            return Err(error);
+        }
+    };
+    drop(default_terminal);
+    install_keyboard_protocol_panic_hook();
+
+    let initialized = (|| {
+        let terminal = Terminal::new(ZoomBackend::new(
+            CrosstermBackend::new(PanicSafeBufWriter::new(io::stdout())),
+            zoom.clone(),
+        ))?;
+        if mouse {
+            execute!(io::stdout(), EnableMouseCapture)?;
+        }
+        // Ask the terminal to report focus in/out (DECSET ?1004) so the reducer can park
+        // animations while we're hidden. Independent of mouse capture; a no-op on terminals that
+        // don't support it (they simply never send the events, and `App.focused` stays `true`).
+        let _ = execute!(io::stdout(), EnableFocusChange);
+        let keyboard_mode = enable_keyboard_input();
+        zoom.set_mode(crate::zoom::detect_mode());
+        // Discard input buffered by setup probes before the exclusive event worker starts. This
+        // also drains DA1 replies left by a terminal that declined the Kitty query.
+        flush_pending_input();
+        Ok((terminal, keyboard_mode))
+    })();
+
+    if initialized.is_err() {
+        // `try_init` has already entered raw mode and the alternate screen. The caller cannot run
+        // its ordinary teardown when this function returns Err, so restore here as well.
+        restore(mouse);
     }
-    // Ask the terminal to report focus in/out (DECSET ?1004) so the reducer can park animations
-    // while we're hidden. Independent of mouse capture; a no-op on terminals that don't support
-    // it (they simply never send the events, and `App.focused` stays `true`). Safe to enable
-    // before the input flush below — focus is reported only on *transitions*, not as a backlog.
-    let _ = execute!(io::stdout(), EnableFocusChange);
-    enable_keyboard_enhancement();
-    zoom.set_mode(crate::zoom::detect_mode());
-    // Discard any input already queued by terminal setup — chiefly leftover bytes from the
-    // graphics/keyboard capability probes (DA1 `\e[?...c`, cell-size `\e[...t`, kitty APC) that
-    // would otherwise be mis-parsed as key/mouse events the moment the event loop starts.
-    // Runs after the zoom-mode probes so a late/partial CPR reply can't ghost into the
-    // event loop either.
-    flush_pending_input();
-    Ok(terminal)
+    initialized
 }
 
 /// Draw one frame wrapped in a synchronized update (DECSET ?2026), so the terminal swaps the
@@ -300,7 +323,7 @@ fn flush_pending_input() {
 
 /// Restore the terminal to its original state. Safe to call more than once.
 pub fn restore(mouse: bool) {
-    disable_keyboard_enhancement();
+    disable_keyboard_input();
     let _ = execute!(io::stdout(), DisableFocusChange);
     if mouse {
         let _ = execute!(io::stdout(), DisableMouseCapture);
@@ -308,16 +331,40 @@ pub fn restore(mouse: bool) {
     ratatui::restore();
 }
 
-fn enable_keyboard_enhancement() {
-    if !should_probe_keyboard_enhancement() {
-        return;
+fn enable_keyboard_input() -> KeyboardInputMode {
+    let plan = KeyboardInputPlan::detect();
+    select_keyboard_input_mode(
+        plan,
+        || {
+            matches!(
+                crossterm::terminal::supports_keyboard_enhancement(),
+                Ok(true)
+            )
+        },
+        enable_kitty_keyboard,
+        enable_win32_keyboard,
+    )
+}
+
+fn select_keyboard_input_mode(
+    plan: KeyboardInputPlan,
+    mut kitty_supported: impl FnMut() -> bool,
+    mut enable_kitty: impl FnMut() -> bool,
+    mut enable_win32: impl FnMut() -> bool,
+) -> KeyboardInputMode {
+    if plan.native() {
+        return KeyboardInputMode::Native;
     }
-    if !matches!(
-        crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    ) {
-        return;
+    if plan.probe_kitty() && kitty_supported() && enable_kitty() {
+        return KeyboardInputMode::Kitty;
     }
+    if plan.win32_fallback() && enable_win32() {
+        return KeyboardInputMode::Win32Input;
+    }
+    KeyboardInputMode::Legacy
+}
+
+fn enable_kitty_keyboard() -> bool {
     // Deliberately *without* REPORT_ALL_KEYS_AS_ESCAPE_CODES: under that flag kitty (and other
     // strict implementers) route every keystroke — including plain text — as an escape code and
     // turn off the terminal's IME, so Hangul/CJK jamo never compose into syllables in the search
@@ -328,44 +375,58 @@ fn enable_keyboard_enhancement() {
     let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
-    if execute!(io::stdout(), PushKeyboardEnhancementFlags(flags)).is_ok() {
-        KEYBOARD_ENHANCEMENT_ENABLED.store(true, Ordering::Relaxed);
+    if execute!(io::stdout(), PushKeyboardEnhancementFlags(flags)).is_err() {
+        return false;
     }
+    ACTIVE_KEYBOARD_PROTOCOL.store(ACTIVE_KEYBOARD_KITTY, Ordering::Release);
+    true
 }
 
-fn disable_keyboard_enhancement() {
-    if KEYBOARD_ENHANCEMENT_ENABLED.swap(false, Ordering::Relaxed) {
-        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+fn enable_win32_keyboard() -> bool {
+    if write_win32_input_sequence(&mut io::stdout(), ENABLE_WIN32_INPUT).is_err() {
+        return false;
     }
+    ACTIVE_KEYBOARD_PROTOCOL.store(ACTIVE_KEYBOARD_WIN32, Ordering::Release);
+    true
 }
 
-fn should_probe_keyboard_enhancement() -> bool {
-    match std::env::var("YTM_TUI_KEYBOARD_ENHANCEMENT")
-        .ok()
-        .as_deref()
-    {
-        Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF") => return false,
-        Some("1" | "true" | "True" | "TRUE" | "on" | "On" | "ON") => return true,
+fn write_win32_input_sequence(output: &mut impl Write, sequence: &[u8]) -> io::Result<()> {
+    output.write_all(sequence)?;
+    output.flush()
+}
+
+fn disable_keyboard_input() {
+    disable_keyboard_input_with(&ACTIVE_KEYBOARD_PROTOCOL, &mut io::stdout());
+}
+
+fn disable_keyboard_input_with(active: &AtomicU8, output: &mut impl Write) {
+    match active.swap(ACTIVE_KEYBOARD_NONE, Ordering::AcqRel) {
+        ACTIVE_KEYBOARD_KITTY => {
+            let _ = execute!(output, PopKeyboardEnhancementFlags);
+        }
+        ACTIVE_KEYBOARD_WIN32 => {
+            let _ = write_win32_input_sequence(output, DISABLE_WIN32_INPUT);
+        }
         _ => {}
     }
+}
 
-    let term = std::env::var("TERM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let term_program = std::env::var("TERM_PROGRAM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    term.contains("kitty")
-        || term.contains("wezterm")
-        || term.contains("foot")
-        || term.contains("alacritty")
-        || term_program.contains("wezterm")
+fn install_keyboard_protocol_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Installed outside ratatui's hook, so protocol state is popped while the terminal is
+        // still raw/alternate. The later player hook wraps this one and kills media first.
+        disable_keyboard_input();
+        previous(info);
+    }));
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::convert::Infallible;
     use std::io::{self, Write};
+    use std::sync::atomic::AtomicU8;
     use std::sync::{Arc, Mutex};
 
     use ratatui::backend::{Backend, ClearType, CrosstermBackend, TestBackend, WindowSize};
@@ -376,10 +437,145 @@ mod tests {
     use ratatui::{Terminal, TerminalOptions, Viewport};
 
     use super::{
-        ImeScrubResult, PanicSafeBufWriter, draw_frame_after_explicit_clear, draw_frame_inner,
-        draw_frame_with_output, scrub_ime_preedit_with_output, scrub_unchanged_terminal,
+        ACTIVE_KEYBOARD_KITTY, ACTIVE_KEYBOARD_NONE, ACTIVE_KEYBOARD_WIN32, DISABLE_WIN32_INPUT,
+        ENABLE_WIN32_INPUT, ImeScrubResult, PanicSafeBufWriter, disable_keyboard_input_with,
+        draw_frame_after_explicit_clear, draw_frame_inner, draw_frame_with_output,
+        scrub_ime_preedit_with_output, scrub_unchanged_terminal, select_keyboard_input_mode,
+        write_win32_input_sequence,
     };
+    use crate::terminal_keyboard::{KeyboardInputMode, KeyboardInputPlan};
     use crate::zoom::{ZoomBackend, ZoomHandle, ZoomMode};
+
+    #[test]
+    fn keyboard_negotiation_prefers_kitty_and_uses_win32_only_as_fallback() {
+        let calls = RefCell::new(Vec::new());
+        let mode = select_keyboard_input_mode(
+            KeyboardInputPlan::for_test(false, true, true),
+            || {
+                calls.borrow_mut().push("probe");
+                true
+            },
+            || {
+                calls.borrow_mut().push("kitty");
+                true
+            },
+            || {
+                calls.borrow_mut().push("win32");
+                true
+            },
+        );
+        assert_eq!(mode, KeyboardInputMode::Kitty);
+        assert_eq!(*calls.borrow(), ["probe", "kitty"]);
+
+        calls.borrow_mut().clear();
+        let mode = select_keyboard_input_mode(
+            KeyboardInputPlan::for_test(false, true, true),
+            || {
+                calls.borrow_mut().push("probe");
+                false
+            },
+            || {
+                calls.borrow_mut().push("kitty");
+                true
+            },
+            || {
+                calls.borrow_mut().push("win32");
+                true
+            },
+        );
+        assert_eq!(mode, KeyboardInputMode::Win32Input);
+        assert_eq!(*calls.borrow(), ["probe", "win32"]);
+
+        calls.borrow_mut().clear();
+        let mode = select_keyboard_input_mode(
+            KeyboardInputPlan::for_test(false, true, true),
+            || {
+                calls.borrow_mut().push("probe");
+                true
+            },
+            || {
+                calls.borrow_mut().push("kitty");
+                false
+            },
+            || {
+                calls.borrow_mut().push("win32");
+                true
+            },
+        );
+        assert_eq!(mode, KeyboardInputMode::Win32Input);
+        assert_eq!(*calls.borrow(), ["probe", "kitty", "win32"]);
+    }
+
+    #[test]
+    fn native_and_legacy_plans_do_not_run_unnecessary_protocol_operations() {
+        let calls = RefCell::new(0);
+        let native = select_keyboard_input_mode(
+            KeyboardInputPlan::for_test(true, true, true),
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+        );
+        assert_eq!(native, KeyboardInputMode::Native);
+        assert_eq!(*calls.borrow(), 0);
+
+        let legacy = select_keyboard_input_mode(
+            KeyboardInputPlan::for_test(false, false, false),
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+            || {
+                *calls.borrow_mut() += 1;
+                true
+            },
+        );
+        assert_eq!(legacy, KeyboardInputMode::Legacy);
+        assert_eq!(*calls.borrow(), 0);
+    }
+
+    #[test]
+    fn keyboard_protocol_cleanup_emits_the_matching_inverse_once() {
+        let kitty = AtomicU8::new(ACTIVE_KEYBOARD_KITTY);
+        let mut kitty_output = Vec::new();
+        disable_keyboard_input_with(&kitty, &mut kitty_output);
+        disable_keyboard_input_with(&kitty, &mut kitty_output);
+        assert_eq!(
+            kitty.load(std::sync::atomic::Ordering::Relaxed),
+            ACTIVE_KEYBOARD_NONE
+        );
+        assert_eq!(kitty_output, b"\x1b[<1u");
+
+        let win32 = AtomicU8::new(ACTIVE_KEYBOARD_WIN32);
+        let mut win32_output = Vec::new();
+        disable_keyboard_input_with(&win32, &mut win32_output);
+        disable_keyboard_input_with(&win32, &mut win32_output);
+        assert_eq!(
+            win32.load(std::sync::atomic::Ordering::Relaxed),
+            ACTIVE_KEYBOARD_NONE
+        );
+        assert_eq!(win32_output, DISABLE_WIN32_INPUT);
+    }
+
+    #[test]
+    fn win32_input_mode_uses_dec_private_mode_9001() {
+        let mut output = Vec::new();
+        write_win32_input_sequence(&mut output, ENABLE_WIN32_INPUT).unwrap();
+        write_win32_input_sequence(&mut output, DISABLE_WIN32_INPUT).unwrap();
+        assert_eq!(output, b"\x1b[?9001h\x1b[?9001l");
+    }
 
     /// Shared byte sink: the terminal backend and synchronized-update writer use clones so tests
     /// observe their real interleaving in one stream.

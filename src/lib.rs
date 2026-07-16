@@ -49,6 +49,7 @@ pub mod signals;
 pub mod spotify;
 pub mod station;
 pub mod streaming;
+pub mod terminal_keyboard;
 pub mod terminal_runtime;
 pub mod theme;
 pub mod tools;

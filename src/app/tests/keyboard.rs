@@ -1,5 +1,27 @@
 use super::*;
 
+fn use_legacy_keyboard(app: &mut App) {
+    app.terminal_keyboard_mode = crate::terminal_keyboard::KeyboardInputMode::Legacy;
+}
+
+fn begin_key_capture(app: &mut App, ctx: KeyContext, action: Action) {
+    if app.settings.is_none() {
+        app.open_settings();
+    }
+    let row = crate::keymap::editable_entries()
+        .iter()
+        .position(|entry| *entry == (ctx, action))
+        .expect("editable keybinding");
+    let st = app.settings.as_mut().expect("settings open");
+    st.tab = SettingsTab::Keys;
+    st.row = row;
+    app.settings_begin_capture();
+    assert_eq!(
+        app.settings.as_ref().unwrap().capturing,
+        Some((ctx, action))
+    );
+}
+
 #[test]
 fn q_is_back_in_player_mode_without_quitting() {
     let mut app = App::new(100);
@@ -35,6 +57,152 @@ fn korean_ctrl_c_still_quits() {
     let mut app = App::new(100);
     app.update(Msg::Key(ctrl(KeyCode::Char('ㅊ'))));
     assert!(app.should_quit);
+}
+
+#[test]
+fn legacy_ctrl_h_deletes_a_word_in_search_without_navigating() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    for c in "alpha beta".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.search.input, "alpha ");
+}
+
+#[test]
+fn legacy_ctrl_h_is_consumed_outside_text_entry_and_by_overlays() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    app.mode = Mode::Library;
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert_eq!(app.mode, Mode::Library);
+
+    app.mode = Mode::Search;
+    app.search.focus = SearchFocus::Input;
+    app.search.input = "alpha beta".to_owned();
+    app.search.input_cursor = TextCursor::at_end(&app.search.input);
+    app.overlays.help_visible = true;
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.search.input, "alpha beta");
+    assert!(app.overlays.help_visible);
+}
+
+#[test]
+fn legacy_ctrl_h_is_released_when_delete_word_is_remapped() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::DeleteWord,
+            crate::keymap::parse_chord("f8").unwrap(),
+        )
+        .unwrap();
+    app.mode = Mode::Search;
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+
+    assert_eq!(app.mode, Mode::Player);
+}
+
+#[test]
+fn legacy_fallback_survives_home_remap_but_yields_to_an_explicit_ctrl_h_claim() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    app.keymap
+        .rebind(
+            KeyContext::Global,
+            Action::Home,
+            crate::keymap::parse_chord("f8").unwrap(),
+        )
+        .unwrap();
+    app.mode = Mode::Search;
+    app.search.focus = SearchFocus::Input;
+    for c in "alpha beta".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.search.input, "alpha ");
+
+    app.update(Msg::Key(key(KeyCode::F(8))));
+    assert_eq!(app.mode, Mode::Player);
+
+    app.keymap
+        .rebind(
+            KeyContext::Global,
+            Action::ToggleAbout,
+            crate::keymap::parse_chord("ctrl+h").unwrap(),
+        )
+        .unwrap();
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert!(app.overlays.about_visible);
+}
+
+#[test]
+fn legacy_settings_capture_owns_ctrl_h_before_home_navigation() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    begin_key_capture(&mut app, KeyContext::Global, Action::Home);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+
+    assert_eq!(app.mode, Mode::Settings);
+    assert!(app.settings.is_some());
+    assert!(app.settings.as_ref().unwrap().capturing.is_none());
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .keymap
+            .chord(KeyContext::Global, Action::Home),
+        crate::keymap::parse_chord("ctrl+h")
+    );
+}
+
+#[test]
+fn settings_capture_conflict_checks_ctrl_q_but_ctrl_c_remains_emergency_quit() {
+    let mut app = App::new(100);
+    use_legacy_keyboard(&mut app);
+    begin_key_capture(&mut app, KeyContext::Player, Action::TogglePause);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
+
+    assert!(!app.should_quit);
+    assert_eq!(app.mode, Mode::Settings);
+    assert_eq!(
+        app.overlays.key_conflict.map(|conflict| conflict.existing),
+        Some(Action::Quit)
+    );
+
+    let mut emergency = App::new(100);
+    begin_key_capture(&mut emergency, KeyContext::Player, Action::TogglePause);
+    let mut cmds = emergency.update(Msg::Key(ctrl(KeyCode::Char('c'))));
+    assert!(
+        !cmds.is_empty(),
+        "Ctrl+C must start the Settings quit transaction"
+    );
+    admit_player_transition(&mut emergency, &mut cmds);
+    assert!(emergency.should_quit);
+}
+
+#[test]
+fn settings_capture_escape_still_cancels_without_leaving_settings() {
+    let mut app = App::new(100);
+    begin_key_capture(&mut app, KeyContext::Player, Action::TogglePause);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert_eq!(app.mode, Mode::Settings);
+    assert!(app.settings.as_ref().unwrap().capturing.is_none());
+    assert!(!app.status.text.is_empty());
 }
 
 #[test]

@@ -1,0 +1,3 @@
+# Preserve the crates.io snapshot's original CRLF and intentional Markdown spacing without
+# reporting upstream whitespace as a local patch error. Fork source is covered by fmt/clippy.
+* -whitespace

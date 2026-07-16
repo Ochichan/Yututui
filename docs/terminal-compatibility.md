@@ -58,11 +58,43 @@ ytm-tui configuration.
   Set `YTM_TUI_IMAGE_PROTOCOL=halfblocks` if an older build leaves fragments.
 - Text zoom uses OSC 66 when the probe succeeds, `WT_SESSION` / DECDHL where
   applicable, and otherwise stays at 100%.
-- Keyboard enhancement intentionally omits `REPORT_ALL_KEYS_AS_ESCAPE_CODES` so
+- Keyboard input negotiates one of four modes: native Windows console events,
+  Kitty keyboard protocol, Win32 input mode, or a conservative legacy fallback.
+  Kitty enhancement intentionally omits `REPORT_ALL_KEYS_AS_ESCAPE_CODES` so
   Hangul/CJK text input can compose normally in search and DJ Gem fields.
 - Mouse support is a ytm-tui setting plus terminal support for mouse reporting.
 - Video overlay is an mpv GUI window. It is not meaningful on a bare Linux TTY
   or a headless SSH session.
+
+## Keyboard Input Modes
+
+`Ctrl+Backspace` and `Ctrl+H` are different keys, but the oldest terminal wire
+format encodes both as the same `^H` byte. ytm-tui uses an exact input protocol
+where the direct terminal supports one and otherwise fails safe:
+
+| Environment | Input path | Ctrl+Backspace / Ctrl+H |
+|---|---|---|
+| Native Windows console | Console key events | Exact |
+| Direct Kitty, Ghostty, foot, or compatible Alacritty | Kitty keyboard query | Exact when the query succeeds |
+| Direct WezTerm or iTerm2 | Kitty keyboard query | Exact when the terminal's extended-key reporting is enabled |
+| Direct Konsole / Yakuake 26.04+ | Kitty query, then Win32 input fallback | Expected exact; needs a recorded smoke run |
+| Windows Terminal through WSL | Kitty query, then Win32 input fallback | Expected exact; needs a recorded smoke run |
+| tmux, GNU screen, Zellij, SSH, or an unknown terminal | Legacy safe fallback | Ambiguous `^H` never navigates by default |
+
+In Legacy mode, while **Delete previous word** remains bound to its factory
+`Ctrl+Backspace` chord, ytm-tui reserves ambiguous `^H`: it deletes a word in
+the active text editor and is ignored elsewhere, so it cannot unexpectedly
+open the Player. Remapping or unbinding **Delete previous word** releases that
+reservation and lets `Ctrl+H` follow the effective keymap again. This policy is
+derived from the existing key settings; it adds no config field.
+
+Automatic Kitty/Win32 negotiation is disabled inside multiplexers and SSH.
+`YTM_TUI_KEYBOARD_ENHANCEMENT=0|1` can disable or force the Kitty query, and
+`YTM_TUI_WIN32_INPUT=0|1` can disable or force the Win32 fallback. Forced modes
+are advanced troubleshooting overrides; an unset variable is the recommended
+automatic behavior. Normal exit, errors, and panic restore an enabled mode.
+An uncatchable process termination such as SIGKILL cannot emit a restore
+sequence, so reset or reopen the terminal if its key reporting remains altered.
 
 ## Terminal Lifetime Detection
 
@@ -137,10 +169,12 @@ evidence.
 2. Enable album art and verify native image rendering or fallback.
 3. Test click, double-click, right-click, wheel scroll, and Ctrl+wheel when
    supported.
-4. Type Korean/Hangul and a CJK-width sample into search.
-5. Toggle retro mode and confirm CP437-safe rendering.
-6. Open and close video overlay where a GUI session exists.
-7. Test text zoom in and out and verify mouse hit targets under zoom.
+4. In Search, type `alpha beta`; verify `Ctrl+Backspace` leaves `alpha ` without
+   changing screens and `Ctrl+H` opens Player on an exact direct-terminal path.
+5. Type Korean/Hangul and a CJK-width sample into search and verify composition.
+6. Toggle retro mode and confirm CP437-safe rendering.
+7. Open and close video overlay where a GUI session exists.
+8. Test text zoom in and out and verify mouse hit targets under zoom.
 
 ## Verification Log
 
@@ -172,6 +206,8 @@ No `Yes` entries are recorded yet. Keep entries in `Expected`, `Versioned`,
   https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
 - Kitty keyboard protocol:
   https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+- Windows console virtual-terminal input sequences:
+  https://learn.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences
 - WezTerm features:
   https://wezterm.org/features.html
 - Windows Terminal Preview 1.22 release:

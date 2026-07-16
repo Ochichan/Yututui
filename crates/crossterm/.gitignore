@@ -1,0 +1,7 @@
+**/target/
+**/.idea/
+**/.vscode/
+**/*.rs.bk
+**/Cargo.lock
+# yututui patch: retain the upstream standalone lockfile in the vendored source snapshot.
+!/Cargo.lock
