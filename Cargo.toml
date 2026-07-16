@@ -11,6 +11,12 @@ keywords = ["youtube-music", "tui", "music", "mpv", "yt-dlp"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 
+[workspace]
+members = [".", "crates/yututui-core"]
+default-members = ["."]
+exclude = ["crates/crossterm", "crates/ratatui-image"]
+resolver = "3"
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
@@ -44,7 +50,7 @@ desktop-tray = ["desktop"]
 # Build/test-time only: derive ts-rs bindings for the v8 protocol read models and export
 # them to gui/src/generated/protocol/. Never enabled in a release binary — `desktop` does
 # NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`yututray`.
-ts-export = ["dep:ts-rs"]
+ts-export = ["dep:ts-rs", "yututui-core/ts-export"]
 # Build-only escape used by the controlled performance harness. It allows the candidate binary
 # to trust the harness's authenticated loopback source-rate ceiling; ordinary/default builds
 # compile that environment-variable path out and remain fail-closed.
@@ -137,6 +143,7 @@ unicode-normalization = "0.1"
 # indices, but movement/deletion must never split combining sequences or emoji clusters.
 unicode-segmentation = "1.13"
 wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
+yututui-core = { path = "crates/yututui-core" }
 
 [build-dependencies]
 embed-resource = "3.0.9"

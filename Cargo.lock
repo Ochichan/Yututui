@@ -6167,6 +6167,15 @@ dependencies = [
  "windows-sys 0.61.2",
  "wry",
  "ytmapi-rs",
+ "yututui-core",
+]
+
+[[package]]
+name = "yututui-core"
+version = "1.6.32"
+dependencies = [
+ "serde",
+ "ts-rs",
 ]
 
 [[package]]

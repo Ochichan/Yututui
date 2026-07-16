@@ -23,7 +23,11 @@ cp "$BASELINE" "$previous"
     elif [ "$lines" -gt "$GLOBAL_CAP" ]; then
       printf '%s\t%s\n' "$lines" "$f"
     fi
-  done < <(git ls-files --cached --others --exclude-standard -- src | grep -E '\.rs$' | sort -u)
+  done < <(
+    git ls-files --cached --others --exclude-standard -- src crates/yututui-core/src \
+      | grep -E '\.rs$' \
+      | sort -u
+  )
 } | sort -rn > "$next"
 mv "$next" "$BASELINE"
 echo "wrote $BASELINE ($(wc -l < "$BASELINE" | tr -d '[:space:]') entries; existing pins never increased)"

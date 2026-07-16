@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+bash scripts/check-workspace-layout.sh
+
 fail=0
 
 actor_files=()

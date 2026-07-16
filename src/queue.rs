@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::Song;
 use serde::{Deserialize, Serialize};
 
+pub use yututui_core::Repeat;
+
 pub(crate) mod mutation;
 pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
 
@@ -28,55 +30,6 @@ static QUEUE_REV: AtomicU64 = AtomicU64::new(1);
 
 fn next_queue_rev() -> u64 {
     QUEUE_REV.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Repeat mode, cycled by the `r` key.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Repeat {
-    #[default]
-    Off,
-    All,
-    One,
-}
-
-impl Repeat {
-    /// The next mode in the Off → All → One → Off cycle.
-    pub fn cycled(self) -> Self {
-        match self {
-            Repeat::Off => Repeat::All,
-            Repeat::All => Repeat::One,
-            Repeat::One => Repeat::Off,
-        }
-    }
-
-    /// Whether any repeat mode is active (i.e. not `Off`). Named so the streaming⇔repeat
-    /// mutual-exclusion invariant reads the same everywhere it is checked — in the App
-    /// reducers and, in lockstep, in `daemon::engine` — instead of a bare `!= Repeat::Off`.
-    pub fn is_on(self) -> bool {
-        self != Repeat::Off
-    }
-
-    /// Compatibility query for callers that only need to know whether a set request would be
-    /// rejected. The canonical rule lives in [`crate::playback_policy::PlaybackModeState`].
-    pub fn set_blocked_by_streaming(self, streaming: bool) -> bool {
-        crate::playback_policy::PlaybackModeState::new(self, streaming)
-            .transition(crate::playback_policy::PlaybackModeAction::SetRepeat(self))
-            .is_err()
-    }
-
-    /// Compatibility query for a repeat cycle. New owner code should consume the full pure
-    /// transition so the accepted next state and rejection decision cannot be separated.
-    pub fn cycle_blocked_by_streaming(self, streaming: bool) -> bool {
-        crate::playback_policy::PlaybackModeState::new(self, streaming)
-            .transition(crate::playback_policy::PlaybackModeAction::CycleRepeat)
-            .is_err()
-    }
 }
 
 /// A bounded play queue with shuffle and repeat.
