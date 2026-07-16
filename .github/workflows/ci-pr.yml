@@ -142,7 +142,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: stable
-          components: clippy
+          components: clippy, llvm-tools-preview
 
       - name: Install Linux system dependencies
         run: |
@@ -165,6 +165,16 @@ jobs:
 
       - name: Vendored crossterm test
         run: cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
+
+      # Advisory while the number proves stable (81.99% on 2026-07-16, threshold 80);
+      # flip to enforcing by dropping continue-on-error after a release cycle.
+      - name: Core coverage (advisory)
+        continue-on-error: true
+        run: |
+          want="0.8.5"
+          have="$(cargo llvm-cov --version 2>/dev/null | awk '{print $2}')" || have=""
+          [ "$have" = "$want" ] || cargo install --locked cargo-llvm-cov --version "$want"
+          bash scripts/coverage-core.sh
 
   windows-optional:
     name: Windows (optional light)
