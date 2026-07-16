@@ -7,6 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 GLOBAL_CAP=1500
+GRACE=25
 BASELINE=scripts/size-baseline.tsv
 previous=$(mktemp)
 next=$(mktemp)
@@ -20,7 +21,10 @@ cp "$BASELINE" "$previous"
     if [ -n "$old" ]; then
       [ "$old" -lt "$lines" ] && lines=$old
       printf '%s\t%s\n' "$lines" "$f"
-    elif [ "$lines" -gt "$GLOBAL_CAP" ]; then
+    # An unpinned file already passes the checker through GLOBAL_CAP + GRACE. Pinning a file
+    # inside that allowance at its current size would *raise* its effective ceiling by another
+    # grace window, so create a new exception only when re-blessing an actual checker failure.
+    elif [ "$lines" -gt $((GLOBAL_CAP + GRACE)) ]; then
       printf '%s\t%s\n' "$lines" "$f"
     fi
   done < <(
