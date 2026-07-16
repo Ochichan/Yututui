@@ -18,12 +18,13 @@ jobs:
     name: Quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --check
@@ -45,29 +46,18 @@ jobs:
           --features crossterm,tokio
           --all-targets -- -D warnings
       - name: Install supply-chain tools
-        run: cargo install --locked cargo-audit cargo-deny
-      - name: RustSec audit
-        run: |
-          cargo audit --deny warnings \
-            --ignore RUSTSEC-2024-0411 \
-            --ignore RUSTSEC-2024-0412 \
-            --ignore RUSTSEC-2024-0413 \
-            --ignore RUSTSEC-2024-0414 \
-            --ignore RUSTSEC-2024-0415 \
-            --ignore RUSTSEC-2024-0416 \
-            --ignore RUSTSEC-2024-0418 \
-            --ignore RUSTSEC-2024-0419 \
-            --ignore RUSTSEC-2024-0420 \
-            --ignore RUSTSEC-2024-0429 \
-            --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2024-0370
+        run: cargo install --locked cargo-deny --version 0.19.6
+      # RUSTSEC exceptions live in deny.toml [advisories].ignore (single source of
+      # truth); --all-features widens only the advisory scan to optional-feature deps.
+      - name: RustSec advisories (full feature graph)
+        run: cargo deny --all-features check advisories
       - name: Dependency policy
-        run: cargo deny check
+        run: cargo deny check bans licenses sources
       # --- Non-shipping GUI/frontend contract gates (docs/gui/04 §5) ---
       # The full GUI app is not published in this release. These still run so the protocol and
       # future frontend do not drift while the shipped surface remains TUI + tray.
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: GUI frontend (typecheck, test, build)
@@ -98,10 +88,10 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: actions/dependency-review-action@v5
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5
         with:
           fail-on-severity: high
 
@@ -138,7 +128,7 @@ jobs:
             bin: ytt
             archive: yututui-linux-arm64.tar.gz
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
@@ -163,8 +153,9 @@ jobs:
           brew install mpv
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
           components: clippy
 
@@ -545,7 +536,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: ${{ matrix.archive }}
           path: |
