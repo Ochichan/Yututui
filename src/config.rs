@@ -35,7 +35,9 @@ pub use audio::{
     MpvAudioRuntimeConfig,
 };
 pub use spotify::SpotifyImportMode;
-pub use storage::{default_cookies_file, default_download_dir, default_recording_dir};
+pub use storage::{
+    default_cookies_file, default_download_dir, default_recording_dir, peek_saved_language,
+};
 pub use visual::{AlbumArtQuality, PlayerBarPosition, VideoOverlay};
 
 pub(crate) use storage::config_path;

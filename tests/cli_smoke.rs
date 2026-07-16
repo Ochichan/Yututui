@@ -135,6 +135,7 @@ fn isolated_instance(root: &Path, protocol_version: u8, capabilities: Vec<String
         mode: InstanceMode::Daemon,
         protocol_version,
         capabilities,
+        host_terminal: None,
     }
 }
 

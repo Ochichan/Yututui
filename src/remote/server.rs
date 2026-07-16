@@ -34,7 +34,7 @@ use super::endpoint;
 #[cfg(all(test, unix))]
 use super::proto::PROTOCOL_VERSION_V7;
 use super::proto::{
-    HelloRequest, InstanceFile, InstanceMode, PROTOCOL_VERSION,
+    HelloRequest, HostTerminalHint, InstanceFile, InstanceMode, PROTOCOL_VERSION,
     RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, RemoteRequest, RemoteResponse, Topic,
 };
 use super::sessions::{RemoteSessionHub, RemoteSessionRef, SessionTuning, run_session};
@@ -147,12 +147,20 @@ pub struct RemoteServer {
     owns_instance_file: bool,
     mode: InstanceMode,
     capabilities: Vec<String>,
+    /// Terminal identity advertised in the descriptor so a second launch can try to focus
+    /// the hosting window. Only the interactive TUI attaches one; daemons stay `None`.
+    host_terminal: Option<HostTerminalHint>,
 }
 
 impl RemoteServer {
     pub fn with_instance_metadata(mut self, mode: InstanceMode, capabilities: Vec<String>) -> Self {
         self.mode = mode;
         self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_host_terminal(mut self, hint: HostTerminalHint) -> Self {
+        self.host_terminal = Some(hint);
         self
     }
 
@@ -206,6 +214,7 @@ impl RemoteServer {
             mode: self.mode,
             protocol_version: PROTOCOL_VERSION,
             capabilities: self.capabilities.clone(),
+            host_terminal: self.host_terminal.clone(),
         });
         endpoint_lease.publish_instance(advertisement);
         (
@@ -435,6 +444,7 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
                 owns_instance_file: false,
                 mode: InstanceMode::StandaloneTui,
                 capabilities: default_capabilities(),
+                host_terminal: None,
             })),
             Err(e) => {
                 tracing::warn!(error = %e, "remote: secondary instance could not bind; no remote control");
@@ -504,7 +514,30 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
         owns_instance_file: true,
         mode: InstanceMode::StandaloneTui,
         capabilities: default_capabilities(),
+        host_terminal: None,
     }))
+}
+
+/// Wait (bounded) for the primary endpoint to stop answering, polling every 250ms.
+///
+/// Used by the second-launch restart path after sending `Quit`: `true` means the old
+/// owner's socket went quiet within `deadline`. This keeps [`probe_alive`] private.
+pub async fn await_primary_release(deadline: Duration) -> bool {
+    let Ok(ep) = endpoint::socket_endpoint() else {
+        return false;
+    };
+    let legacy_ep = endpoint::legacy_primary_endpoint_for_probe();
+    let end = tokio::time::Instant::now() + deadline;
+    loop {
+        let live = probe_alive(&ep).await || (legacy_ep != ep && probe_alive(&legacy_ep).await);
+        if !live {
+            return true;
+        }
+        if tokio::time::Instant::now() >= end {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 fn default_capabilities() -> Vec<String> {

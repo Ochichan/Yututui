@@ -339,6 +339,7 @@ mod tests {
             mode: InstanceMode::Daemon,
             protocol_version: PROTOCOL_VERSION,
             capabilities: vec!["status".to_string()],
+            host_terminal: None,
         }
     }
 

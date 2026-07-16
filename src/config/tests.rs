@@ -1098,3 +1098,34 @@ fn effective_dj_gem_language_resolves_retro_auto_and_concrete() {
     };
     assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::English);
 }
+
+#[test]
+fn peek_saved_language_never_writes_and_mirrors_effective_language() {
+    let dir = std::env::temp_dir().join(format!("ytm-lang-peek-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    let peek = storage::peek_saved_language_at;
+
+    // Missing file → English, and the peek must not create it.
+    assert_eq!(peek(&path), Language::English);
+    assert!(!path.exists(), "a peek must never write a config file");
+
+    // Saved Korean → Korean.
+    std::fs::write(&path, r#"{"language":"korean"}"#).unwrap();
+    assert_eq!(peek(&path), Language::Korean);
+
+    // Retro mode forces English, mirroring `Config::effective_language`.
+    std::fs::write(&path, r#"{"language":"korean","retro_mode":true}"#).unwrap();
+    assert_eq!(peek(&path), Language::English);
+
+    // Corrupt JSON and oversize files degrade to English without touching the file
+    // (unlike `Config::load`, which would set the file aside and rewrite it).
+    std::fs::write(&path, "{not json").unwrap();
+    assert_eq!(peek(&path), Language::English);
+    std::fs::write(&path, "x".repeat(2 * 1024 * 1024)).unwrap();
+    assert_eq!(peek(&path), Language::English);
+    assert_eq!(std::fs::read(&path).unwrap().len(), 2 * 1024 * 1024);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

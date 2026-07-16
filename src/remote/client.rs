@@ -601,6 +601,7 @@ impl From<InstanceFile> for SanitizedInfo {
             mode,
             protocol_version,
             mut capabilities,
+            host_terminal: _,
         } = instance;
         capabilities
             .retain(|capability| !reflects_descriptor_secret(capability, &endpoint, &token));

@@ -398,15 +398,187 @@ pub struct InstanceFile {
     pub protocol_version: u8,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Best-effort identity of the terminal hosting the primary TUI, captured at publish
+    /// time. Absent for daemons, secondaries, and descriptors written by older builds;
+    /// consumers must treat every field as a hint that may be stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_terminal: Option<HostTerminalHint>,
 }
 
 fn legacy_protocol_version() -> u8 {
     PROTOCOL_VERSION_V7
 }
 
+/// Where the primary TUI's terminal lives, so a second launch can try to focus it.
+///
+/// Every field is optional and additive: serialization skips absent fields, which keeps
+/// the descriptor byte-stable for older readers (see `freeze::v7_lines_with_unknown_
+/// future_fields_still_parse`). Values are session-local window/session identifiers —
+/// nothing here is a secret beyond what the 0600 descriptor already protects.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostTerminalHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term_program: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term: Option<String>,
+    /// X11 window id of the hosting terminal (`$WINDOWID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windowid: Option<String>,
+    /// Windows Terminal session (`$WT_SESSION`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wt_session: Option<String>,
+    /// `$KONSOLE_DBUS_SERVICE`; `org.kde.yakuake` identifies a Yakuake-hosted session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub konsole_dbus_service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub konsole_dbus_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guake_tab_uuid: Option<String>,
+    /// `$TMUX` — report-only; a second launch never yanks another tmux client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux: Option<String>,
+    /// Controlling tty path (Linux best-effort, via /proc/self/fd/0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tty: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wayland: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x11: Option<bool>,
+    /// `$SSH_CONNECTION` present — the terminal is on another machine; skip focusing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<bool>,
+    /// Windows: `GetConsoleWindow()` at startup (classic conhost consoles).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_hwnd: Option<u64>,
+    /// Windows: pid of the terminal-host ancestor (Windows Terminal), when identifiable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_host_pid: Option<u32>,
+}
+
+impl HostTerminalHint {
+    /// Capture the env-derived fields. The Windows-only window fields are filled in by
+    /// the caller (they need Win32 calls that live outside the protocol layer).
+    pub fn capture_from_env() -> Self {
+        Self::capture_with(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    }
+
+    pub fn capture_with(env: impl Fn(&str) -> Option<String>) -> Self {
+        let flag = |k: &str| env(k).is_some().then_some(true);
+        Self {
+            term_program: env("TERM_PROGRAM"),
+            term: env("TERM"),
+            windowid: env("WINDOWID"),
+            wt_session: env("WT_SESSION"),
+            konsole_dbus_service: env("KONSOLE_DBUS_SERVICE"),
+            konsole_dbus_session: env("KONSOLE_DBUS_SESSION"),
+            guake_tab_uuid: env("GUAKE_TAB_UUID"),
+            tmux: env("TMUX"),
+            tty: capture_tty(),
+            wayland: flag("WAYLAND_DISPLAY"),
+            x11: flag("DISPLAY"),
+            ssh: flag("SSH_CONNECTION"),
+            console_hwnd: None,
+            terminal_host_pid: None,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn capture_tty() -> Option<String> {
+    std::fs::read_link("/proc/self/fd/0")
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| p.starts_with("/dev/"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn capture_tty() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_terminal_hint_round_trips_and_stays_absent_when_none() {
+        let mut file = InstanceFile {
+            app_pid: 7,
+            endpoint: "sock".to_string(),
+            token: "tok".to_string(),
+            created_unix: 1,
+            mode: InstanceMode::StandaloneTui,
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: vec!["status".to_string()],
+            host_terminal: None,
+        };
+        let line = serde_json::to_string(&file).unwrap();
+        assert!(
+            !line.contains("host_terminal"),
+            "absent hint must not appear on the wire: {line}"
+        );
+
+        file.host_terminal = Some(HostTerminalHint {
+            term_program: Some("WezTerm".to_string()),
+            windowid: Some("0x1234".to_string()),
+            x11: Some(true),
+            ..HostTerminalHint::default()
+        });
+        let line = serde_json::to_string(&file).unwrap();
+        let back: InstanceFile = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.host_terminal, file.host_terminal);
+        assert!(
+            !line.contains("wt_session"),
+            "absent hint fields must be skipped too: {line}"
+        );
+    }
+
+    #[test]
+    fn legacy_descriptor_without_host_terminal_parses_as_none() {
+        let legacy = r#"{"app_pid":7,"endpoint":"sock","token":"tok","created_unix":1,"mode":"standalone_tui","protocol_version":7,"capabilities":[]}"#;
+        let back: InstanceFile = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.host_terminal, None);
+    }
+
+    #[test]
+    fn host_terminal_hint_captures_env_shapes() {
+        let env_of = |vars: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                vars.iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| (*v).to_string())
+            }
+        };
+
+        let yakuake = HostTerminalHint::capture_with(env_of(&[
+            ("KONSOLE_DBUS_SERVICE", "org.kde.yakuake"),
+            ("DISPLAY", ":0"),
+            ("TERM", "xterm-256color"),
+        ]));
+        assert_eq!(
+            yakuake.konsole_dbus_service.as_deref(),
+            Some("org.kde.yakuake")
+        );
+        assert_eq!(yakuake.x11, Some(true));
+        assert_eq!(yakuake.wayland, None);
+        assert_eq!(yakuake.ssh, None);
+
+        let ssh = HostTerminalHint::capture_with(env_of(&[(
+            "SSH_CONNECTION",
+            "10.0.0.1 22 10.0.0.2 22",
+        )]));
+        assert_eq!(ssh.ssh, Some(true));
+        assert_eq!(ssh.term_program, None);
+
+        let empty_is_absent = HostTerminalHint::capture_with(|_| None);
+        assert_eq!(
+            empty_is_absent,
+            HostTerminalHint {
+                tty: capture_tty(),
+                ..HostTerminalHint::default()
+            }
+        );
+    }
 
     #[test]
     fn toggle_state_resolves() {

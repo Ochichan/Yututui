@@ -131,8 +131,10 @@ fn emit_native(title: String, body: String) {
 
 /// Emit a native desktop toast without terminal capability detection. Desktop-shell commands use
 /// this path when no WebView is visible, so a rejected tray-menu action never disappears into the
-/// log. Best-effort and non-blocking, like the recording notification fallback above.
-#[cfg(feature = "desktop")]
+/// log. The second-launch no-tty path uses it the same way (a Finder/.app launch has no terminal
+/// to print to). Best-effort and non-blocking, like the recording notification fallback above.
+/// Note the macOS abort-build gap documented on [`emit_native`] — macOS callers that must be
+/// heard in release builds need their own `osascript` fallback.
 pub(crate) fn emit_native_notification(title: &str, body: &str) {
     emit_native(title.to_owned(), body.to_owned());
 }

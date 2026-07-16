@@ -1,7 +1,7 @@
 use yututui::{
     auth_cli,
     cli_capability::{OneShotCommand, collect_lossy_cli_args, interactive_persistence_capability},
-    daemon, doctor, i18n, media, persist, player, remote,
+    daemon, doctor, i18n, media, persist, player, remote, second_launch,
     terminal_runtime::{self, StartupTrace},
     tools, transfer, tui, update, zoom,
 };
@@ -13,9 +13,6 @@ use std::time::Duration;
 /// grace only prevents a timed-out `spawn_blocking` closure from making `Runtime::drop` wait
 /// without a bound; normal shutdown should have no work left by the time it starts.
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
-const ALREADY_RUNNING_NOTICE: &str = "ytt is already running.\n  \
-                                      Control it:  ytt -r <command>   (e.g. `ytt -r pp`, `ytt -r next`)\n  \
-                                      Stop it:     ytt -r quit";
 
 fn initialize_cli_persistence(command: OneShotCommand, args: &[String]) -> bool {
     let capability = command.persistence_capability(args);
@@ -45,18 +42,41 @@ fn initialize_cli_persistence(command: OneShotCommand, args: &[String]) -> bool 
 }
 
 fn initialize_interactive_persistence(
-    new_instance: bool,
+    read_only: bool,
 ) -> std::io::Result<persist::PersistenceAccess> {
-    let capability = interactive_persistence_capability(new_instance);
+    let capability = interactive_persistence_capability(read_only);
     debug_assert!(capability.requires_persistence());
     if capability.allows_writes() {
         persist::initialize_persistence_writer(false)
     } else {
-        // `--new-instance` is an explicit observational secondary, even when no primary happens
-        // to be alive. Never opportunistically promote it to the shared-root writer: doing so
-        // makes the same command mutate or migrate state depending on startup timing.
+        // `--new-instance` (and the chooser's read-only path) is an explicit observational
+        // secondary, even when no primary happens to be alive. Never opportunistically promote
+        // it to the shared-root writer: doing so makes the same command mutate or migrate
+        // state depending on startup timing.
         persist::initialize_persistence_reader()
     }
+}
+
+/// Bounded retry over [`initialize_interactive_persistence`] for the restart takeover.
+/// `initialize_writer_state` leaves the process lease `Uninitialized` on a failed acquire,
+/// so retrying is safe.
+fn initialize_interactive_persistence_with_retry(
+    read_only: bool,
+    attempts: u32,
+) -> std::io::Result<persist::PersistenceAccess> {
+    let mut last = None;
+    for attempt in 0..attempts.max(1) {
+        match initialize_interactive_persistence(read_only) {
+            Ok(access) => return Ok(access),
+            Err(error) => {
+                last = Some(error);
+                if attempt + 1 < attempts {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+    }
+    Err(last.expect("at least one attempt always runs"))
 }
 
 mod data_cli;
@@ -272,23 +292,46 @@ fn pause_explorer_console(result: &Result<()>) {
 
 async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {
     // Single-instance guard + control socket. Done BEFORE the terminal is touched so the
-    // "already running" notice prints to a clean screen and, critically, before any config
-    // loader can migrate or repair state. `--new-instance` skips the guard and binds a private
+    // second-launch UX renders on a clean screen and, critically, before any config loader
+    // can migrate or repair state. `--new-instance` skips the guard and binds a private
     // socket; a bind failure degrades to running without remote control rather than refusing.
-    let remote = match remote::bind_or_detect(new_instance).await {
+    let (remote, read_only, via_restart) = match remote::bind_or_detect(new_instance).await {
         remote::BindOutcome::AlreadyRunning => {
-            eprintln!("{ALREADY_RUNNING_NOTICE}");
-            return Ok(());
+            match second_launch::handle_already_running().await {
+                second_launch::Outcome::Exit => return Ok(()),
+                second_launch::Outcome::Continue { remote, read_only } => {
+                    (remote.map(|server| *server), read_only, !read_only)
+                }
+            }
         }
-        remote::BindOutcome::Bound(server) => Some(*server),
-        remote::BindOutcome::Unavailable => None,
+        remote::BindOutcome::Bound(server) => (Some(*server), new_instance, false),
+        remote::BindOutcome::Unavailable => (None, new_instance, false),
     };
+    // Advertise where this TUI lives so a later second launch can focus this terminal.
+    // Only the interactive player: the daemon path never attaches a hint, and a private
+    // `--new-instance` socket never publishes the descriptor anyway.
+    let remote = remote.map(|server| {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut hint = remote::proto::HostTerminalHint::capture_from_env();
+        #[cfg(windows)]
+        {
+            hint.console_hwnd = second_launch::focus_windows::console_hwnd();
+            hint.terminal_host_pid = second_launch::focus_windows::terminal_host_pid();
+        }
+        server.with_host_terminal(hint)
+    });
     startup.mark("remote_bound");
 
     // The primary owner must hold one process-wide writer lease before Config::load can migrate
     // anything. A deliberate secondary player remains available, but only as strict read-only;
     // normal owners and mutating CLI paths fail rather than accepting state a newer epoch discards.
-    let persistence_access = initialize_interactive_persistence(new_instance)?;
+    // A restart takeover retries briefly: the old owner's lease provably dies with its process
+    // (we already waited for pid exit), but the OS can lag releasing the lock file.
+    let persistence_access = if via_restart {
+        initialize_interactive_persistence_with_retry(read_only, 3)?
+    } else {
+        initialize_interactive_persistence(read_only)?
+    };
     let (cfg, persistent_state) = persist::load_verified_startup_state()?;
     startup.mark("config_loaded");
     // Apply the saved UI language before anything renders, so the first frame is already
@@ -362,15 +405,6 @@ mod tests {
             interactive_persistence_capability(false),
             CliPersistenceCapability::Writer
         );
-    }
-
-    #[test]
-    fn already_running_notice_keeps_controls_without_advertising_new_instance() {
-        assert!(ALREADY_RUNNING_NOTICE.contains("Control it:"));
-        assert!(ALREADY_RUNNING_NOTICE.contains("ytt -r <command>"));
-        assert!(ALREADY_RUNNING_NOTICE.contains("Stop it:"));
-        assert!(ALREADY_RUNNING_NOTICE.contains("ytt -r quit"));
-        assert!(!ALREADY_RUNNING_NOTICE.contains("--new-instance"));
     }
 
     #[test]
