@@ -25,4 +25,12 @@ if [ "${#public_docs[@]}" -gt 0 ] &&
     "${public_docs[@]}"; then
   fail "public docs contain unsupported beta/terminal overclaims"
 fi
+
+# Helpers (mpv/yt-dlp/ffmpeg) are bundled only by the package managers; install.sh /
+# install.ps1 merely check for them. Blanket "every command installs helpers" claims
+# contradicted the troubleshooting section once — keep them out.
+if [ "${#public_docs[@]}" -gt 0 ] &&
+  grep -nE 'Each command installs|각 명령은 .*설치|各コマンド[はが].*入れ' "${public_docs[@]}"; then
+  fail "public docs claim every install command bundles the helper tools"
+fi
 echo "doc honesty ok"

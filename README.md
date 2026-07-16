@@ -24,7 +24,9 @@ Public beta: stable enough for daily use, still moving fast.
 
 ## Install
 
-Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
+The package-manager commands (brew, scoop, nix, yay) install `ytt` **and** its helpers
+(mpv, yt-dlp, ffmpeg) in one go. The direct installer and the source build install `ytt`
+only — they check for the helpers and tell you what's missing.
 
 | OS | One command |
 | --- | --- |
