@@ -330,7 +330,8 @@ impl App {
             st.capturing = Some(entry);
             self.status.text = t!(
                 "Press a key to bind (Esc to cancel)…",
-                "바인딩할 키를 누르세요 (Esc로 취소)…"
+                "바인딩할 키를 누르세요 (Esc로 취소)…",
+                "割り当てるキーを押してください (Escでキャンセル)…"
             )
             .to_owned();
             self.dirty = true;
@@ -345,7 +346,12 @@ impl App {
         };
         self.dirty = true;
         if k.code == KeyCode::Esc {
-            self.status.text = t!("Rebinding cancelled", "단축키 변경을 취소했어요").to_owned();
+            self.status.text = t!(
+                "Rebinding cancelled",
+                "단축키 변경을 취소했어요",
+                "割り当てをキャンセルしました"
+            )
+            .to_owned();
             return Vec::new();
         }
         let chord = Chord::from(k);
@@ -354,7 +360,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "That key cannot be installed in mpv",
-                "이 키는 mpv에 설정할 수 없어요"
+                "이 키는 mpv에 설정할 수 없어요",
+                "このキーはmpvに設定できません"
             )
             .to_owned();
             return Vec::new();
@@ -366,7 +373,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "That mpv compatibility key is reserved",
-                "이 mpv 호환 키는 예약되어 있어요"
+                "이 mpv 호환 키는 예약되어 있어요",
+                "このmpv互換キーは予約されています"
             )
             .to_owned();
             return Vec::new();
@@ -378,10 +386,14 @@ impl App {
             Ok(()) => {
                 let label = action.human_label();
                 let chord = crate::keymap::format_chord_for_display(chord, retro);
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("{label} → {chord} 으로 바인딩됨")
-                } else {
-                    format!("Bound {label} to {chord}")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("{label} → {chord} 으로 바인딩됨")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("{label} → {chord} に割り当てました")
+                    }
+                    _ => format!("Bound {label} to {chord}"),
                 };
             }
             Err(conflict) => {
@@ -406,10 +418,14 @@ impl App {
             match st.keymap.reset(ctx, action) {
                 Ok(()) => {
                     let label = action.human_label();
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("{label} 을(를) 기본값으로 되돌림")
-                    } else {
-                        format!("Reset {label} to default")
+                    self.status.text = match crate::i18n::current() {
+                        crate::i18n::Language::Korean => {
+                            format!("{label} 을(를) 기본값으로 되돌림")
+                        }
+                        crate::i18n::Language::Japanese => {
+                            format!("{label} をデフォルトに戻しました")
+                        }
+                        _ => format!("Reset {label} to default"),
                     };
                 }
                 Err(conflict) => {
@@ -431,10 +447,10 @@ impl App {
             st.draft.theme.reset_role(role);
             self.theme = st.draft.theme.normalized();
             let label = role.label();
-            self.status.text = if crate::i18n::is_korean() {
-                format!("{label} 색상을 되돌림")
-            } else {
-                format!("Reset {label} color")
+            self.status.text = match crate::i18n::current() {
+                crate::i18n::Language::Korean => format!("{label} 색상을 되돌림"),
+                crate::i18n::Language::Japanese => format!("{label} のカラーをリセットしました"),
+                _ => format!("Reset {label} color"),
             };
             self.dirty = true;
         }
@@ -540,7 +556,7 @@ impl App {
                     .cycled_source(s.draft.search.source, dir >= 0);
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Search source", "검색 소스"),
+                    t!("Search source", "검색 소스", "検索ソース"),
                     s.draft.search.source.label()
                 );
                 Vec::new()
@@ -553,7 +569,7 @@ impl App {
                     .cycled_streaming_source(s.draft.search.streaming_source, dir >= 0);
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Streaming source", "추천 소스"),
+                    t!("Streaming source", "추천 소스", "ストリーミングソース"),
                     s.draft
                         .search
                         .normalized_streaming_source(s.draft.search.streaming_source)
@@ -614,7 +630,8 @@ impl App {
                 if self.local_dedicated_mode {
                     self.status.text = t!(
                         "Autoplay stays off in Local Deck",
-                        "로컬 덱에서는 자동재생이 꺼져 있어요"
+                        "로컬 덱에서는 자동재생이 꺼져 있어요",
+                        "ローカルデッキでは自動再生はオフのままです"
                     )
                     .to_owned();
                     self.dirty = true;
@@ -635,8 +652,11 @@ impl App {
                 let s = self.settings_mut();
                 let next = s.draft.curating_mode.cycled(dir >= 0);
                 s.draft.curating_mode = next;
-                self.status.text =
-                    format!("{}: {}", t!("Curating mode", "큐레이팅 방식"), next.label());
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Curating mode", "큐레이팅 방식", "キュレーション方式"),
+                    next.label()
+                );
                 Vec::new()
             }
             Field::StreamingMode => {
@@ -645,7 +665,11 @@ impl App {
                 s.draft.streaming_mode = next;
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Curating style", "큐레이팅 스타일"),
+                    t!(
+                        "Curating style",
+                        "큐레이팅 스타일",
+                        "キュレーションスタイル"
+                    ),
                     next.label()
                 );
                 Vec::new()
@@ -657,7 +681,11 @@ impl App {
                 s.spotify_import_mode_dropdown = None;
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Spotify import mode", "Spotify 가져오기 모드"),
+                    t!(
+                        "Spotify import mode",
+                        "Spotify 가져오기 모드",
+                        "Spotifyインポートモード"
+                    ),
                     next.label()
                 );
                 Vec::new()
@@ -668,7 +696,11 @@ impl App {
                 // via `apply_to`, like every other Select field.
                 let next = s.draft.video_layout.cycled(dir >= 0);
                 s.draft.video_layout = next;
-                self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Video window", "영상 창", "動画ウィンドウ"),
+                    next.label()
+                );
                 Vec::new()
             }
             Field::AlbumArtQuality => {
@@ -677,7 +709,7 @@ impl App {
                 s.draft.album_art_quality = next;
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Album art quality", "앨범 아트 화질"),
+                    t!("Album art quality", "앨범 아트 화질", "アルバムアート画質"),
                     next.label()
                 );
                 Vec::new()
@@ -695,13 +727,22 @@ impl App {
                 }
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Player bar position", "플레이어 바 위치"),
+                    t!(
+                        "Player bar position",
+                        "플레이어 바 위치",
+                        "プレイヤーバーの位置"
+                    ),
                     next.label()
                 );
                 Vec::new()
             }
             Field::AudioBackend => {
-                self.status.text = t!("Audio backend: mpv", "오디오 백엔드: mpv").to_owned();
+                self.status.text = t!(
+                    "Audio backend: mpv",
+                    "오디오 백엔드: mpv",
+                    "オーディオバックエンド: mpv"
+                )
+                .to_owned();
                 Vec::new()
             }
             Field::LongFormSeekOptimization => {
@@ -717,7 +758,8 @@ impl App {
                     crate::i18n::set_language(crate::i18n::Language::English);
                     self.status.text = t!(
                         "Retro mode keeps the UI in English",
-                        "레트로 모드는 UI를 영어로 유지합니다"
+                        "레트로 모드는 UI를 영어로 유지합니다",
+                        "レトロモードはUIを英語のまま維持します"
                     )
                     .to_owned();
                     return Vec::new();
@@ -727,7 +769,8 @@ impl App {
                 // Apply live so the whole UI — including this settings screen — re-renders in
                 // the new language on the next frame; `close_settings` persists it.
                 crate::i18n::set_language(next);
-                self.status.text = format!("{}: {}", t!("Language", "언어"), next.native_name());
+                self.status.text =
+                    format!("{}: {}", t!("Language", "언어", "言語"), next.native_name());
                 Vec::new()
             }
             Field::DjGemLanguage => {
@@ -737,7 +780,8 @@ impl App {
                 if s.draft.retro_mode {
                     self.status.text = t!(
                         "Retro mode replies in English",
-                        "레트로 모드는 영어로 답변합니다"
+                        "레트로 모드는 영어로 답변합니다",
+                        "レトロモードでは英語で回答します"
                     )
                     .to_owned();
                     return Vec::new();
@@ -748,7 +792,7 @@ impl App {
                 // request can fire while Settings is open, so there's nothing to update live here.
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Reply language", "답변 언어"),
+                    t!("Reply language", "답변 언어", "回答言語"),
                     next.picker_label()
                 );
                 Vec::new()
@@ -813,7 +857,7 @@ impl App {
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
-                self.status.text = format!("{}: {}", t!("Theme", "테마"), next.label());
+                self.status.text = format!("{}: {}", t!("Theme", "테마", "テーマ"), next.label());
                 Vec::new()
             }
             // Toggle the background between the preset's color and "no color" (transparent).
@@ -1002,9 +1046,12 @@ impl App {
                         self.settings_request_confirm(SettingsConfirm::LastfmDisconnect);
                         Vec::new()
                     } else {
-                        self.status.text =
-                            t!("Requesting Last.fm authorization…", "Last.fm 인증 요청 중…")
-                                .to_owned();
+                        self.status.text = t!(
+                            "Requesting Last.fm authorization…",
+                            "Last.fm 인증 요청 중…",
+                            "Last.fm認証をリクエスト中…"
+                        )
+                        .to_owned();
                         self.status.kind = StatusKind::Info;
                         self.dirty = true;
                         vec![Cmd::Scrobble(ScrobbleCmd::AuthStart)]
@@ -1035,18 +1082,25 @@ impl App {
                     if client_id.is_empty() {
                         self.status.text = t!(
                             "Set a Client ID first (create an app at developer.spotify.com)",
-                            "먼저 클라이언트 ID를 입력하세요 (developer.spotify.com에서 앱 생성)"
+                            "먼저 클라이언트 ID를 입력하세요 (developer.spotify.com에서 앱 생성)",
+                            "先にクライアントIDを入力してください (developer.spotify.comでアプリ作成)"
                         )
                         .to_owned();
                         self.status.kind = StatusKind::Error;
                         return Vec::new();
                     }
                     self.status.text = if stale {
-                        t!("Reconnecting Spotify…", "Spotify 재연결 중…").to_owned()
+                        t!(
+                            "Reconnecting Spotify…",
+                            "Spotify 재연결 중…",
+                            "Spotify再連携中…"
+                        )
+                        .to_owned()
                     } else {
                         t!(
                             "Starting Spotify authorization…",
-                            "Spotify 인증을 시작합니다…"
+                            "Spotify 인증을 시작합니다…",
+                            "Spotify認証を開始します…"
                         )
                         .to_owned()
                     };
@@ -1061,8 +1115,12 @@ impl App {
                     // survives — `ytt transfer resume` can pick it back up).
                     if self.transfer_running {
                         self.transfer_running = false;
-                        self.status.text =
-                            t!("Cancelling the import…", "가져오기를 취소하는 중…").to_owned();
+                        self.status.text = t!(
+                            "Cancelling the import…",
+                            "가져오기를 취소하는 중…",
+                            "インポートをキャンセル中…"
+                        )
+                        .to_owned();
                         self.status.kind = StatusKind::Info;
                         return vec![Cmd::Transfer(
                             crate::transfer::actor::TransferCmd::CancelJob,
@@ -1080,14 +1138,19 @@ impl App {
                         st.draft.spotify_stale = stale;
                     }
                     if !connected {
-                        self.status.text =
-                            t!("Connect Spotify first", "먼저 Spotify를 연결해 주세요").to_owned();
+                        self.status.text = t!(
+                            "Connect Spotify first",
+                            "먼저 Spotify를 연결해 주세요",
+                            "先にSpotifyと連携してください"
+                        )
+                        .to_owned();
                         self.status.kind = StatusKind::Error;
                         return Vec::new();
                     }
                     self.status.text = t!(
                         "Loading Spotify playlists…",
-                        "Spotify 플레이리스트 불러오는 중…"
+                        "Spotify 플레이리스트 불러오는 중…",
+                        "Spotifyのプレイリストを読み込み中…"
                     )
                     .to_owned();
                     self.status.kind = StatusKind::Info;

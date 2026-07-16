@@ -109,9 +109,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let label_w = buttons::text_width(&label);
     let key_label = app.help_footer();
     let mouse_label = if app.retro_mode() {
-        t!("mouse", "마우스").to_owned()
+        t!("mouse", "마우스", "マウス").to_owned()
     } else {
-        format!("🖱 {}", t!("mouse", "마우스"))
+        format!("🖱 {}", t!("mouse", "마우스", "マウス"))
     };
     let help_w = buttons::text_width(key_label.as_str())
         .saturating_add(buttons::text_width("   "))
@@ -150,42 +150,53 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(
                 t!(
                     "DJ Gem assistant — control playback in plain language.",
-                    "DJ Gem 어시스턴트 — 평범한 말로 재생을 제어하세요."
+                    "DJ Gem 어시스턴트 — 평범한 말로 재생을 제어하세요.",
+                    "DJ Gemアシスタント — ふだんの言葉で再生を操作できます。"
                 )
                 .bold(),
             ),
             Line::from(""),
             Line::from(t!(
                 "No Gemini API key is configured.",
-                "Gemini API 키가 설정되지 않았어요."
+                "Gemini API 키가 설정되지 않았어요.",
+                "Gemini APIキーが設定されていません。"
             ))
             .style(app.theme.style(R::Warning)),
             Line::from(t!(
                 "Add one in Settings under the DJ Gem tab,",
-                "설정의 DJ Gem 탭에서 추가하거나,"
+                "설정의 DJ Gem 탭에서 추가하거나,",
+                "設定のDJ Gemタブで追加するか、"
             ))
             .style(app.theme.style(R::TextPrimary)),
             Line::from(t!(
                 "or set the GEMINI_API_KEY environment variable.",
-                "GEMINI_API_KEY 환경 변수를 설정하세요."
+                "GEMINI_API_KEY 환경 변수를 설정하세요.",
+                "GEMINI_API_KEY 環境変数を設定してください。"
             ))
             .style(app.theme.style(R::TextPrimary)),
             Line::from(""),
-            Line::from(t!("Then ask things like:", "그런 다음 이렇게 물어보세요:"))
-                .style(app.theme.style(R::TextMuted)),
+            Line::from(t!(
+                "Then ask things like:",
+                "그런 다음 이렇게 물어보세요:",
+                "そのあと、こんなふうに頼んでみてください:"
+            ))
+            .style(app.theme.style(R::TextMuted)),
             Line::from(t!(
                 "  \"play some lo-fi beats\"",
-                "  \"로파이 음악 좀 틀어줘\""
+                "  \"로파이 음악 좀 틀어줘\"",
+                "  \"ローファイな曲をかけて\""
             ))
             .style(app.theme.style(R::TextMuted)),
             Line::from(t!(
                 "  \"queue three upbeat songs\"",
-                "  \"신나는 곡 세 개 대기열에 넣어줘\""
+                "  \"신나는 곡 세 개 대기열에 넣어줘\"",
+                "  \"アップテンポな曲を3曲キューに入れて\""
             ))
             .style(app.theme.style(R::TextMuted)),
             Line::from(t!(
                 "  \"start streaming based on what's playing\"",
-                "  \"지금 나오는 곡으로 라디오 시작해줘\""
+                "  \"지금 나오는 곡으로 라디오 시작해줘\"",
+                "  \"いま流れている曲でラジオを始めて\""
             ))
             .style(app.theme.style(R::TextMuted)),
         ];
@@ -280,7 +291,7 @@ struct TranscriptCache {
     owner: Arc<()>,
     revision: u64,
     width: usize,
-    korean: bool,
+    lang: crate::i18n::Language,
     thinking_text: Option<String>,
     styles: [Style; 6],
     #[cfg(test)]
@@ -367,9 +378,9 @@ fn build_transcript_lines_with_thinking(
             lines.push(TranscriptLine::blank());
         }
         let (prefix, role) = match m.role {
-            AiRole::User => (t!("you ", "나    "), R::AiUser),
-            AiRole::Ai => (t!("Gem ", "Gem   "), R::AiAssistant),
-            AiRole::Error => (t!("err ", "오류  "), R::AiError),
+            AiRole::User => (t!("you ", "나    ", "自分   "), R::AiUser),
+            AiRole::Ai => (t!("Gem ", "Gem   ", "Gem    "), R::AiAssistant),
+            AiRole::Error => (t!("err ", "오류  ", "エラー "), R::AiError),
         };
         let base = app.theme.style(role);
         // Only assistant replies speak markdown; user prompts and errors stay verbatim.
@@ -386,13 +397,20 @@ fn build_transcript_lines_with_thinking(
         }
         let style = app.theme.style(R::AiThinking);
         let chars: Vec<(char, Style)> = text.chars().map(|c| (c, style)).collect();
-        push_wrapped_styled(&mut lines, t!("Gem ", "Gem   "), style, &chars, width);
+        push_wrapped_styled(
+            &mut lines,
+            t!("Gem ", "Gem   ", "Gem    "),
+            style,
+            &chars,
+            width,
+        );
     }
     if lines.is_empty() {
         lines.push(TranscriptLine::plain(
             t!(
                 "Ask me to play, queue, or find music.",
-                "재생, 대기열 추가, 음악 찾기를 부탁해 보세요."
+                "재생, 대기열 추가, 음악 찾기를 부탁해 보세요.",
+                "再生、キューへの追加、曲探しを頼んでみてください。"
             )
             .to_owned(),
             app.theme.style(R::TextMuted),
@@ -405,15 +423,15 @@ fn transcript_thinking_text(app: &App) -> Option<String> {
     app.ai.thinking.then(|| {
         // Animated dots while a request is in flight (the static text when the flag is off).
         match crate::ui::anim::activity_dots(app) {
-            Some(dots) => format!("{}{dots}", t!("…thinking", "…생각 중")),
-            None => t!("…thinking", "…생각 중").to_owned(),
+            Some(dots) => format!("{}{dots}", t!("…thinking", "…생각 중", "…考え中")),
+            None => t!("…thinking", "…생각 중", "…考え中").to_owned(),
         }
     })
 }
 
 fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, Arc<[Arc<str>]>) {
     let thinking_text = transcript_thinking_text(app);
-    let korean = crate::i18n::is_korean();
+    let lang = crate::i18n::current();
     let styles = [
         R::Accent,
         R::AiUser,
@@ -437,7 +455,7 @@ fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, A
             && Arc::ptr_eq(&cached.owner, &app.ai.transcript_cache_token)
             && cached.revision == app.ai.transcript_revision
             && cached.width == width
-            && cached.korean == korean
+            && cached.lang == lang
             && cached.thinking_text == thinking_text
             && cached.styles == styles
             && fixture_messages_match(cached, app)
@@ -456,7 +474,7 @@ fn cached_transcript_lines(app: &App, width: usize) -> (Arc<[TranscriptLine]>, A
             owner: Arc::clone(&app.ai.transcript_cache_token),
             revision: app.ai.transcript_revision,
             width,
-            korean,
+            lang,
             thinking_text,
             styles,
             #[cfg(test)]
@@ -696,7 +714,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         R::BorderMuted
     };
     let block = Block::default()
-        .title(t!(" Suggestions ", " 추천 곡 "))
+        .title(t!(" Suggestions ", " 추천 곡 ", " おすすめ "))
         .borders(Borders::TOP)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
@@ -829,7 +847,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         R::BorderMuted
     };
     let block = Block::default()
-        .title(t!(" Ask ", " 질문 "))
+        .title(t!(" Ask ", " 질문 ", " 質問 "))
         .borders(Borders::ALL)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
@@ -872,7 +890,7 @@ fn render_send_button(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let label = Line::from(t!("Send", "전송"))
+    let label = Line::from(t!("Send", "전송", "送信"))
         .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
     frame.render_widget(Paragraph::new(label), inner);

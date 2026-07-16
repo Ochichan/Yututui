@@ -92,7 +92,8 @@ impl App {
             self.set_status_info(
                 t!(
                     "Player bar is in the classic Top layout — nothing to collapse",
-                    "플레이어 바가 클래식 상단 배치예요 — 접을 것이 없어요"
+                    "플레이어 바가 클래식 상단 배치예요 — 접을 것이 없어요",
+                    "プレイヤーバーはクラシックの上部配置です — 折りたたむものがありません"
                 )
                 .to_owned(),
             );
@@ -109,11 +110,17 @@ impl App {
         self.set_status_info(if collapsed {
             t!(
                 "Player bar collapsed on other screens (B to expand)",
-                "다른 화면에서 플레이어 바를 접었어요 (B로 펼치기)"
+                "다른 화면에서 플레이어 바를 접었어요 (B로 펼치기)",
+                "他の画面ではプレイヤーバーを折りたたみました (Bで展開)"
             )
             .to_owned()
         } else {
-            t!("Player bar expanded", "플레이어 바를 펼쳤어요").to_owned()
+            t!(
+                "Player bar expanded",
+                "플레이어 바를 펼쳤어요",
+                "プレイヤーバーを展開しました"
+            )
+            .to_owned()
         });
         self.dirty = true;
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
@@ -129,7 +136,8 @@ impl App {
         if !self.zoom.supported() {
             self.set_status_info(t!(
                 "This terminal can't scale text (kitty 0.40+, Windows Terminal, …)",
-                "이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)"
+                "이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)",
+                "このターミナルは文字の拡大に対応していません (kitty 0.40+, Windows Terminal など対応)"
             )
             .to_owned());
             return Vec::new();
@@ -139,15 +147,18 @@ impl App {
         if next == current {
             let status = if zoom_in {
                 let max = self.zoom.max_percent();
-                if crate::i18n::is_korean() {
-                    format!("이미 최대 글자 크기예요 ({max}%)")
-                } else {
-                    format!("Text is already at its largest ({max}%)")
+                match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("이미 최대 글자 크기예요 ({max}%)"),
+                    crate::i18n::Language::Japanese => {
+                        format!("すでに最大の文字サイズです ({max}%)")
+                    }
+                    _ => format!("Text is already at its largest ({max}%)"),
                 }
             } else {
                 t!(
                     "Text is back to its normal size (100%)",
-                    "기본 글자 크기예요 (100%)"
+                    "기본 글자 크기예요 (100%)",
+                    "標準の文字サイズです (100%)"
                 )
                 .to_owned()
             };
@@ -155,10 +166,10 @@ impl App {
             return Vec::new();
         }
         self.zoom.set(next);
-        let status = if crate::i18n::is_korean() {
-            format!("글자 크기 {next}%")
-        } else {
-            format!("Text size {next}%")
+        let status = match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("글자 크기 {next}%"),
+            crate::i18n::Language::Japanese => format!("文字サイズ {next}%"),
+            _ => format!("Text size {next}%"),
         };
         self.set_status_info(status);
         // The virtual grid just changed size: force the full VT-clear redraw path so no
@@ -179,10 +190,15 @@ impl App {
         self.status.text = if locked {
             t!(
                 "Ctrl+wheel zoom locked (Ctrl+-/= still zoom)",
-                "Ctrl+휠 확대 잠금 켜짐 (Ctrl+-/= 는 그대로 동작)"
+                "Ctrl+휠 확대 잠금 켜짐 (Ctrl+-/= 는 그대로 동작)",
+                "Ctrl+ホイール拡大をロック (Ctrl+-/= は引き続き有効)"
             )
         } else {
-            t!("Ctrl+wheel zoom unlocked", "Ctrl+휠 확대 잠금 꺼짐")
+            t!(
+                "Ctrl+wheel zoom unlocked",
+                "Ctrl+휠 확대 잠금 꺼짐",
+                "Ctrl+ホイール拡大のロック解除"
+            )
         }
         .to_owned();
         self.dirty = true;

@@ -120,7 +120,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "No saved import record exists; imported songs were left unchanged.",
-                "저장된 임포트 기록이 없습니다. 임포트한 곡은 변경하지 않았습니다."
+                "저장된 임포트 기록이 없습니다. 임포트한 곡은 변경하지 않았습니다.",
+                "保存されたインポート記録はありません。インポートした曲は変更していません。"
             )
             .to_owned();
             self.dirty = true;
@@ -153,17 +154,22 @@ impl App {
                 self.status.text = if removed == 0 {
                     t!(
                         "Import record was already absent; imported songs were left unchanged.",
-                        "임포트 기록이 이미 없습니다. 임포트한 곡은 변경하지 않았습니다."
+                        "임포트 기록이 이미 없습니다. 임포트한 곡은 변경하지 않았습니다.",
+                        "インポート記録はすでにありません。インポートした曲は変更していません。"
                     )
                     .to_owned()
-                } else if crate::i18n::is_korean() {
-                    format!(
-                        "임포트 기록 {session_id} 삭제 완료 ({removed}개 파일). 임포트한 곡, 오디오 파일, 플레이리스트는 유지했습니다."
-                    )
                 } else {
-                    format!(
-                        "Deleted import record {session_id} ({removed} artifacts). Imported songs, audio files, and playlists were kept."
-                    )
+                    match crate::i18n::current() {
+                        crate::i18n::Language::Korean => format!(
+                            "임포트 기록 {session_id} 삭제 완료 ({removed}개 파일). 임포트한 곡, 오디오 파일, 플레이리스트는 유지했습니다."
+                        ),
+                        crate::i18n::Language::Japanese => format!(
+                            "インポート記録 {session_id} 削除完了 ({removed}件のファイル)。インポートした曲、オーディオファイル、プレイリストは保持しました。"
+                        ),
+                        _ => format!(
+                            "Deleted import record {session_id} ({removed} artifacts). Imported songs, audio files, and playlists were kept."
+                        ),
+                    }
                 };
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -172,7 +178,8 @@ impl App {
                     "{}: {session_id}",
                     t!(
                         "Import is still active; try deleting its record after it finishes",
-                        "임포트가 아직 진행 중입니다. 완료된 뒤 기록 삭제를 다시 시도하세요"
+                        "임포트가 아직 진행 중입니다. 완료된 뒤 기록 삭제를 다시 시도하세요",
+                        "インポートはまだ進行中です。完了した後に記録の削除を再試行してください"
                     )
                 );
             }
@@ -182,7 +189,8 @@ impl App {
                     "{}: {error}",
                     t!(
                         "Could not delete import record",
-                        "임포트 기록을 삭제하지 못했습니다"
+                        "임포트 기록을 삭제하지 못했습니다",
+                        "インポート記録を削除できませんでした"
                     )
                 );
             }
@@ -362,7 +370,12 @@ impl App {
         source_order: u32,
     ) -> String {
         let Some(row) = load_import_session_row(session_id, source_order) else {
-            return t!("Missing import row", "없는 임포트 행").to_owned();
+            return t!(
+                "Missing import row",
+                "없는 임포트 행",
+                "存在しないインポート行"
+            )
+            .to_owned();
         };
         let artist = import_session_row_artist(&row);
         let status = import_session_row_status_label(&row);
@@ -382,20 +395,28 @@ impl App {
         match row {
             crate::local::LocalRowId::ImportSession(session_id) => {
                 let failed = import_session_failed_download_count(&session_id).unwrap_or_default();
-                let mut actions = vec![t!("Enter rows", "Enter 행 보기")];
+                let mut actions = vec![t!("Enter rows", "Enter 행 보기", "Enter 行を表示")];
                 if failed > 0 {
-                    actions.push(t!("r retry failed", "r 실패 재시도"));
+                    actions.push(t!("r retry failed", "r 실패 재시도", "r 失敗を再試行"));
                 }
                 if crate::transfer::review_action::plan_ready_candidates(&session_id)
                     .ok()
                     .is_some_and(|plan| plan.total_count > 0)
                 {
-                    actions.push(t!("A mark all ready", "A 전체 준비"));
+                    actions.push(t!("A mark all ready", "A 전체 준비", "A 全件準備"));
                 }
-                actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
-                actions.push(t!("m commit inbox", "m 인박스 커밋"));
+                actions.push(t!(
+                    "d download accepted",
+                    "d 수락 곡 다운로드",
+                    "d 承認曲をダウンロード"
+                ));
+                actions.push(t!(
+                    "m commit inbox",
+                    "m 인박스 커밋",
+                    "m インボックスをコミット"
+                ));
                 if ImportSession::record_exists(&session_id) {
-                    actions.push(t!("Del delete record", "Del 기록 삭제"));
+                    actions.push(t!("Del delete record", "Del 기록 삭제", "Del 記録を削除"));
                 }
                 Some(actions.join("  |  "))
             }
@@ -407,37 +428,41 @@ impl App {
                 let mut actions = Vec::new();
                 if import_session_row_accepts_manual_review_action(&row) {
                     actions.extend([
-                        t!("a accept", "a 수락"),
-                        t!("r reject", "r 거부"),
-                        t!("c candidate", "c 후보"),
-                        t!("x skip", "x 건너뜀"),
+                        t!("a accept", "a 수락", "a 承認"),
+                        t!("r reject", "r 거부", "r 拒否"),
+                        t!("c candidate", "c 후보", "c 候補"),
+                        t!("x skip", "x 건너뜀", "x スキップ"),
                     ]);
                 }
                 if crate::transfer::review_action::plan_ready_candidates(&session_id)
                     .ok()
                     .is_some_and(|plan| plan.total_count > 0)
                 {
-                    actions.push(t!("A mark all ready", "A 전체 준비"));
+                    actions.push(t!("A mark all ready", "A 전체 준비", "A 全件準備"));
                 }
                 if !row.errors.is_empty() {
-                    actions.push(t!("r retry failed", "r 실패 재시도"));
+                    actions.push(t!("r retry failed", "r 실패 재시도", "r 失敗を再試行"));
                 }
                 if import_session_row_is_download_accepted(&row) && row.local_path.is_none() {
-                    actions.push(t!("d download", "d 다운로드"));
+                    actions.push(t!("d download", "d 다운로드", "d ダウンロード"));
                 }
                 if import_session_row_candidate_url_key(&row).is_some() {
-                    actions.push(t!("o open candidate", "o 후보 열기"));
+                    actions.push(t!("o open candidate", "o 후보 열기", "o 候補を開く"));
                 }
-                actions.push(t!("s search", "s 검색"));
+                actions.push(t!("s search", "s 검색", "s 検索"));
                 if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
-                    actions.push(t!("m commit", "m 커밋"));
+                    actions.push(t!("m commit", "m 커밋", "m コミット"));
                 }
                 if matches!(
                     self.local_mode.ui.drill.last(),
                     Some(LocalDrill::ImportSession(open_id)) if open_id == &session_id
                 ) && ImportSession::record_exists(&session_id)
                 {
-                    actions.push(t!("Del delete session record", "Del 세션 기록 삭제"));
+                    actions.push(t!(
+                        "Del delete session record",
+                        "Del 세션 기록 삭제",
+                        "Del セッション記録を削除"
+                    ));
                 }
                 (!actions.is_empty()).then(|| actions.join("  |  "))
             }
@@ -452,46 +477,62 @@ impl App {
         source_order: u32,
     ) {
         let Some((session, row)) = load_import_session_and_row(session_id, source_order) else {
-            push_detail_line(lines, t!("Import session", "임포트 세션"), session_id);
-            push_detail_line(lines, t!("Row", "행"), format!("#{source_order}"));
+            push_detail_line(
+                lines,
+                t!("Import session", "임포트 세션", "インポートセッション"),
+                session_id,
+            );
+            push_detail_line(lines, t!("Row", "행", "行"), format!("#{source_order}"));
             return;
         };
-        push_detail_line(lines, t!("Import session", "임포트 세션"), session_id);
-        push_detail_line(lines, t!("Row", "행"), format!("#{source_order}"));
         push_detail_line(
             lines,
-            t!("Status", "상태"),
+            t!("Import session", "임포트 세션", "インポートセッション"),
+            session_id,
+        );
+        push_detail_line(lines, t!("Row", "행", "行"), format!("#{source_order}"));
+        push_detail_line(
+            lines,
+            t!("Status", "상태", "状態"),
             import_session_row_status_label(&row),
         );
         if let Some(detail) = import_session_row_status_detail(&row) {
-            push_detail_line(lines, t!("Status detail", "상태 설명"), detail);
+            push_detail_line(
+                lines,
+                t!("Status detail", "상태 설명", "状態の説明"),
+                detail,
+            );
         }
-        push_detail_line(lines, t!("Title", "제목"), row.title.clone());
+        push_detail_line(lines, t!("Title", "제목", "タイトル"), row.title.clone());
         push_detail_line(
             lines,
-            t!("Artist", "아티스트"),
+            t!("Artist", "아티스트", "アーティスト"),
             import_session_row_artist(&row),
         );
         if let Some(album) = row.album.clone() {
-            push_detail_line(lines, t!("Album", "앨범"), album);
+            push_detail_line(lines, t!("Album", "앨범", "アルバム"), album);
         }
         if !row.album_artists.is_empty() {
             push_detail_line(
                 lines,
-                t!("Album artist", "앨범 아티스트"),
+                t!("Album artist", "앨범 아티스트", "アルバムアーティスト"),
                 row.album_artists.join(", "),
             );
         }
         if let Some(release_date) = row.album_release_date.clone() {
-            push_detail_line(lines, t!("Release date", "발매일"), release_date);
+            push_detail_line(
+                lines,
+                t!("Release date", "발매일", "リリース日"),
+                release_date,
+            );
         }
         if let Some(number) = format_disc_track(row.disc_number, row.track_number) {
-            push_detail_line(lines, t!("Track", "트랙"), number);
+            push_detail_line(lines, t!("Track", "트랙", "トラック"), number);
         }
         if let Some(duration) = row.duration_secs {
             push_detail_line(
                 lines,
-                t!("Duration", "길이"),
+                t!("Duration", "길이", "再生時間"),
                 format_local_duration_ms(u64::from(duration) * 1000),
             );
         }
@@ -499,43 +540,55 @@ impl App {
             push_detail_line(lines, "ISRC", isrc);
         }
         if let Some(explicit) = row.explicit {
-            push_detail_line(lines, t!("Explicit", "Explicit"), yes_no(explicit));
+            push_detail_line(
+                lines,
+                t!("Explicit", "Explicit", "Explicit"),
+                yes_no(explicit),
+            );
         }
-        push_detail_line(lines, t!("Source", "원본"), row.source_key.clone());
+        push_detail_line(
+            lines,
+            t!("Source", "원본", "ソース"),
+            row.source_key.clone(),
+        );
         if let Some(url) = row
             .source_url
             .as_deref()
             .filter(|url| *url != row.source_key)
         {
-            push_detail_line(lines, t!("Source URL", "원본 URL"), url);
+            push_detail_line(lines, t!("Source URL", "원본 URL", "ソースURL"), url);
         }
         if let Some(display) = row.selected_display.clone() {
-            push_detail_line(lines, t!("Selected", "선택"), display);
+            push_detail_line(lines, t!("Selected", "선택", "選択"), display);
         } else if let Some(key) = row.selected_key.clone() {
-            push_detail_line(lines, t!("Selected", "선택"), key);
+            push_detail_line(lines, t!("Selected", "선택", "選択"), key);
         }
         if let Some(score) = import_session_row_selected_score(&row) {
-            push_detail_line(lines, t!("Score", "점수"), format_score(score));
+            push_detail_line(lines, t!("Score", "점수", "スコア"), format_score(score));
         }
         if matches!(row.status, ImportSessionRowStatus::NotFound) && !row.search_queries.is_empty()
         {
             push_detail_line(
                 lines,
-                t!("Tried queries", "시도한 검색어"),
+                t!("Tried queries", "시도한 검색어", "試した検索語"),
                 row.search_queries.join(" | "),
             );
         }
         if let Some(reason) = row.reject_reason.clone() {
-            push_detail_line(lines, t!("Top rejection", "주요 거부 이유"), reason);
+            push_detail_line(
+                lines,
+                t!("Top rejection", "주요 거부 이유", "主な拒否理由"),
+                reason,
+            );
         }
         push_detail_line(
             lines,
-            t!("Decision", "결정"),
+            t!("Decision", "결정", "決定"),
             import_session_review_decision_label(row.review_decision.as_ref()),
         );
         push_detail_line(
             lines,
-            t!("Download", "다운로드"),
+            t!("Download", "다운로드", "ダウンロード"),
             import_session_download_label(&row),
         );
         for (index, candidate) in row.candidates.iter().take(5).enumerate() {
@@ -556,19 +609,23 @@ impl App {
         if row.candidates.len() > 5 {
             push_detail_line(
                 lines,
-                t!("Candidates", "후보"),
+                t!("Candidates", "후보", "候補"),
                 format!("+{} more", row.candidates.len() - 5),
             );
         }
         if let Some(path) = row.local_path.clone() {
-            push_detail_line(lines, t!("Path", "경로"), path.display().to_string());
+            push_detail_line(
+                lines,
+                t!("Path", "경로", "パス"),
+                path.display().to_string(),
+            );
         }
         self.push_import_session_organize_preview(lines, &session, source_order);
         for warning in &row.warnings {
-            push_detail_line(lines, t!("Warning", "경고"), warning);
+            push_detail_line(lines, t!("Warning", "경고", "警告"), warning);
         }
         for error in &row.errors {
-            push_detail_line(lines, t!("Error", "오류"), error);
+            push_detail_line(lines, t!("Error", "오류", "エラー"), error);
         }
     }
 
@@ -634,7 +691,8 @@ impl App {
                 "{}: {failed_count}",
                 t!(
                     "No failed import downloads can be retried",
-                    "재시도할 수 있는 실패 다운로드 없음"
+                    "재시도할 수 있는 실패 다운로드 없음",
+                    "再試行できる失敗ダウンロードなし"
                 )
             );
             self.dirty = true;
@@ -665,7 +723,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Import row has no candidate URL",
-                "열 후보 URL이 없는 임포트 행"
+                "열 후보 URL이 없는 임포트 행",
+                "開ける候補URLがないインポート行"
             )
             .to_owned();
             self.dirty = true;
@@ -675,7 +734,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "Import candidate key is not a YouTube video id",
-                "임포트 후보 키가 YouTube 동영상 ID가 아님"
+                "임포트 후보 키가 YouTube 동영상 ID가 아님",
+                "インポート候補キーがYouTube動画IDではありません"
             )
             .to_owned();
             self.dirty = true;
@@ -684,7 +744,11 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = format!(
             "{}: {url}",
-            t!("Opening import candidate", "임포트 후보 열기")
+            t!(
+                "Opening import candidate",
+                "임포트 후보 열기",
+                "インポート候補を開く"
+            )
         );
         #[cfg(not(test))]
         open_in_browser(&url);
@@ -762,7 +826,11 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {session_id}",
-                t!("Import review already in progress", "임포트 검토 진행 중")
+                t!(
+                    "Import review already in progress",
+                    "임포트 검토 진행 중",
+                    "インポートレビュー進行中"
+                )
             );
             self.dirty = true;
             return Some(Vec::new());
@@ -796,7 +864,11 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {session_id}",
-                t!("Import review already in progress", "임포트 검토 진행 중")
+                t!(
+                    "Import review already in progress",
+                    "임포트 검토 진행 중",
+                    "インポートレビュー進行中"
+                )
             );
             self.dirty = true;
             return Some(Vec::new());
@@ -805,7 +877,11 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = format!(
                 "{}: {session_id}",
-                t!("Import session not found", "임포트 세션을 찾을 수 없음")
+                t!(
+                    "Import session not found",
+                    "임포트 세션을 찾을 수 없음",
+                    "インポートセッションが見つかりません"
+                )
             );
             self.dirty = true;
             return Some(Vec::new());
@@ -816,7 +892,8 @@ impl App {
                 "{}: {session_id}",
                 t!(
                     "Import checkpoint not found",
-                    "임포트 체크포인트를 찾을 수 없음"
+                    "임포트 체크포인트를 찾을 수 없음",
+                    "インポートチェックポイントが見つかりません"
                 )
             );
             self.dirty = true;
@@ -846,7 +923,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Confirm marking all safe candidates Ready",
-            "안전한 후보 전체 준비 완료를 확인하세요"
+            "안전한 후보 전체 준비 완료를 확인하세요",
+            "安全な候補すべての準備完了を確認してください"
         )
         .to_owned();
         self.dirty = true;
@@ -866,7 +944,11 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {}",
-                t!("Import review already in progress", "임포트 검토 진행 중"),
+                t!(
+                    "Import review already in progress",
+                    "임포트 검토 진행 중",
+                    "インポートレビュー進行中"
+                ),
                 confirm.session_id
             );
             self.dirty = true;
@@ -881,7 +963,8 @@ impl App {
             "{} {}...",
             t!(
                 "Marking safe candidates Ready",
-                "안전한 후보 준비 완료 표시 중"
+                "안전한 후보 준비 완료 표시 중",
+                "安全な候補を準備完了に設定中"
             ),
             confirm.candidate_count
         );
@@ -918,7 +1001,11 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!(
                     "{}: {error}",
-                    t!("Import review failed", "임포트 검토 실패")
+                    t!(
+                        "Import review failed",
+                        "임포트 검토 실패",
+                        "インポートレビュー失敗"
+                    )
                 );
             }
         }
@@ -963,7 +1050,11 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!(
                     "{}: {error}",
-                    t!("Import review failed", "임포트 검토 실패")
+                    t!(
+                        "Import review failed",
+                        "임포트 검토 실패",
+                        "インポートレビュー失敗"
+                    )
                 );
             }
         }
@@ -992,7 +1083,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Select an import session or inbox row to organize",
-                "정리할 임포트 세션 또는 인박스 행을 선택하세요"
+                "정리할 임포트 세션 또는 인박스 행을 선택하세요",
+                "整理するインポートセッションまたはインボックス行を選択してください"
             )
             .to_owned();
             self.dirty = true;
@@ -1002,7 +1094,11 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = format!(
                 "{}: {session_id}",
-                t!("Import session not found", "임포트 세션을 찾을 수 없음")
+                t!(
+                    "Import session not found",
+                    "임포트 세션을 찾을 수 없음",
+                    "インポートセッションが見つかりません"
+                )
             );
             self.dirty = true;
             return Vec::new();
@@ -1013,7 +1109,11 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!(
                     "{}: {error:#}",
-                    t!("Import organize failed", "임포트 정리 실패")
+                    t!(
+                        "Import organize failed",
+                        "임포트 정리 실패",
+                        "インポート整理失敗"
+                    )
                 );
                 self.dirty = true;
                 return Vec::new();
@@ -1023,11 +1123,15 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {} {} / {} {}",
-                t!("Nothing to organize", "정리할 항목 없음"),
+                t!(
+                    "Nothing to organize",
+                    "정리할 항목 없음",
+                    "整理する項目なし"
+                ),
                 plan.already_count,
-                t!("already", "이미 정리됨"),
+                t!("already", "이미 정리됨", "整理済み"),
                 plan.skipped_count,
-                t!("skipped", "건너뜀")
+                t!("skipped", "건너뜀", "スキップ")
             );
             self.dirty = true;
             return Vec::new();
@@ -1042,7 +1146,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Confirm import organize to move inbox files",
-            "인박스 파일 이동을 확인하세요"
+            "인박스 파일 이동을 확인하세요",
+            "インボックスファイルの移動を確認してください"
         )
         .to_owned();
         self.dirty = true;
@@ -1071,14 +1176,18 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 self.status.text = format!(
                     "{} {}: {} {}, {} {}, {} {}",
-                    t!("Organized import session", "임포트 세션 정리됨"),
+                    t!(
+                        "Organized import session",
+                        "임포트 세션 정리됨",
+                        "インポートセッション整理完了"
+                    ),
                     confirm.session_id,
                     report.moved_count,
-                    t!("moved", "이동됨"),
+                    t!("moved", "이동됨", "移動済み"),
                     report.already_count,
-                    t!("already", "이미 정리됨"),
+                    t!("already", "이미 정리됨", "整理済み"),
                     report.skipped_count,
-                    t!("skipped", "건너뜀")
+                    t!("skipped", "건너뜀", "スキップ")
                 );
                 self.local_mode.ui.selected = self
                     .local_mode
@@ -1093,7 +1202,11 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!(
                     "{}: {error:#}",
-                    t!("Import organize failed", "임포트 정리 실패")
+                    t!(
+                        "Import organize failed",
+                        "임포트 정리 실패",
+                        "インポート整理失敗"
+                    )
                 );
                 self.dirty = true;
                 Vec::new()
@@ -1158,20 +1271,28 @@ impl App {
         match row.decision {
             ImportOrganizeDecision::Move => {
                 if let Some(target) = &row.target_path {
-                    push_detail_line(lines, t!("Target", "대상"), target.display().to_string());
+                    push_detail_line(
+                        lines,
+                        t!("Target", "대상", "移動先"),
+                        target.display().to_string(),
+                    );
                 }
             }
             ImportOrganizeDecision::AlreadyAtTarget => {
                 push_detail_line(
                     lines,
-                    t!("Target", "대상"),
-                    t!("already organized", "이미 정리됨"),
+                    t!("Target", "대상", "移動先"),
+                    t!("already organized", "이미 정리됨", "整理済み"),
                 );
             }
             ImportOrganizeDecision::NotAccepted | ImportOrganizeDecision::MissingLocalPath => {}
         }
         for warning in &row.warnings {
-            push_detail_line(lines, t!("Organize warning", "정리 경고"), warning);
+            push_detail_line(
+                lines,
+                t!("Organize warning", "정리 경고", "整理の警告"),
+                warning,
+            );
         }
     }
 
@@ -1400,21 +1521,42 @@ fn remote_song_from_import_session_row(session_id: &str, row: &ImportSessionRow)
 fn import_review_action_progress_label(action: ImportReviewAction) -> &'static str {
     match action {
         ImportReviewAction::AcceptFirst => {
-            t!("Accepting import row", "임포트 행 수락 중")
+            t!(
+                "Accepting import row",
+                "임포트 행 수락 중",
+                "インポート行を承認中"
+            )
         }
         ImportReviewAction::ChooseNext => {
-            t!("Selecting import candidate", "임포트 후보 선택 중")
+            t!(
+                "Selecting import candidate",
+                "임포트 후보 선택 중",
+                "インポート候補を選択中"
+            )
         }
-        ImportReviewAction::Reject => t!("Rejecting import row", "임포트 행 거부 중"),
-        ImportReviewAction::Skip => t!("Skipping import row", "임포트 행 건너뛰는 중"),
+        ImportReviewAction::Reject => t!(
+            "Rejecting import row",
+            "임포트 행 거부 중",
+            "インポート行を拒否中"
+        ),
+        ImportReviewAction::Skip => t!(
+            "Skipping import row",
+            "임포트 행 건너뛰는 중",
+            "インポート行をスキップ中"
+        ),
     }
 }
 
 fn local_ready_status_text(ready_count: u32, total_count: u32, local_count: u32) -> String {
-    if crate::i18n::is_korean() {
-        format!("준비 {ready_count}/{total_count} · 로컬 {local_count}/{total_count}")
-    } else {
-        format!("Ready {ready_count}/{total_count} · Local {local_count}/{total_count}")
+    use crate::i18n::Language;
+    match crate::i18n::current() {
+        Language::Korean => {
+            format!("준비 {ready_count}/{total_count} · 로컬 {local_count}/{total_count}")
+        }
+        Language::Japanese => {
+            format!("準備 {ready_count}/{total_count} · ローカル {local_count}/{total_count}")
+        }
+        _ => format!("Ready {ready_count}/{total_count} · Local {local_count}/{total_count}"),
     }
 }
 
@@ -1426,35 +1568,59 @@ fn import_review_success_text(
         ImportReviewAction::AcceptFirst => match &summary.display {
             Some(display) => format!(
                 "{} #{}: {display}",
-                t!("Accepted import row", "임포트 행 수락"),
+                t!(
+                    "Accepted import row",
+                    "임포트 행 수락",
+                    "インポート行を承認"
+                ),
                 summary.source_order
             ),
             None => format!(
                 "{} #{}",
-                t!("Accepted import row", "임포트 행 수락"),
+                t!(
+                    "Accepted import row",
+                    "임포트 행 수락",
+                    "インポート行を承認"
+                ),
                 summary.source_order
             ),
         },
         ImportReviewAction::ChooseNext => match &summary.display {
             Some(display) => format!(
                 "{} #{}: {display}",
-                t!("Selected import candidate", "임포트 후보 선택"),
+                t!(
+                    "Selected import candidate",
+                    "임포트 후보 선택",
+                    "インポート候補を選択"
+                ),
                 summary.source_order
             ),
             None => format!(
                 "{} #{}",
-                t!("Selected import candidate", "임포트 후보 선택"),
+                t!(
+                    "Selected import candidate",
+                    "임포트 후보 선택",
+                    "インポート候補を選択"
+                ),
                 summary.source_order
             ),
         },
         ImportReviewAction::Reject => format!(
             "{} #{}",
-            t!("Rejected import row", "임포트 행 거부"),
+            t!(
+                "Rejected import row",
+                "임포트 행 거부",
+                "インポート行を拒否"
+            ),
             summary.source_order
         ),
         ImportReviewAction::Skip => format!(
             "{} #{}",
-            t!("Skipped import row", "임포트 행 건너뜀"),
+            t!(
+                "Skipped import row",
+                "임포트 행 건너뜀",
+                "インポート行をスキップ"
+            ),
             summary.source_order
         ),
     }

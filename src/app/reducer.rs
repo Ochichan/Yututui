@@ -225,7 +225,8 @@ impl App {
                 if mode == ApiMode::Anonymous && had_cookie {
                     self.status.text = crate::t!(
                         "Cookie rejected — anonymous mode (search & play only)",
-                        "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
+                        "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)",
+                        "Cookieが拒否されました — 匿名モード (検索·再生のみ)"
                     )
                     .to_owned();
                 }
@@ -454,7 +455,8 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = t!(
                     "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+                    "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
                 )
                 .to_owned();
                 Self::attach_track_commit_status(
@@ -484,7 +486,8 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = t!(
                     "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+                    "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
                 )
                 .to_owned();
                 Self::attach_track_commit_status(
@@ -516,10 +519,10 @@ impl App {
                 // set makes those stale, so it closes rather than filtering the new list.
                 self.search_filter.close();
                 if songs.is_empty() {
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("\"{query}\" 검색 결과 없음")
-                    } else {
-                        format!("No results for \"{query}\"")
+                    self.status.text = match crate::i18n::current() {
+                        crate::i18n::Language::Korean => format!("\"{query}\" 검색 결과 없음"),
+                        crate::i18n::Language::Japanese => format!("「{query}」の検索結果なし"),
+                        _ => format!("No results for \"{query}\""),
                     };
                     self.search.results.clear();
                     self.search.selected = 0;
@@ -528,7 +531,12 @@ impl App {
                     // A partial result set (the operation deadline dropped a slow source) gets a
                     // subtle note so it doesn't read as the complete set; a full result clears it.
                     self.status.text = if timed_out {
-                        t!("Some sources timed out", "일부 소스 시간 초과").to_string()
+                        t!(
+                            "Some sources timed out",
+                            "일부 소스 시간 초과",
+                            "一部ソースがタイムアウト"
+                        )
+                        .to_string()
                     } else {
                         String::new()
                     };
@@ -549,7 +557,8 @@ impl App {
                     return Vec::new();
                 }
                 self.search.searching = false;
-                self.status.text = format!("{}: {error}", t!("Search error", "검색 오류"));
+                self.status.text =
+                    format!("{}: {error}", t!("Search error", "검색 오류", "検索エラー"));
                 self.dirty = true;
             }
             Msg::Data(DataMsg::DownloadsScanned(scan)) => {
@@ -566,10 +575,11 @@ impl App {
                 if truncated {
                     self.status.text = format!(
                         "{} {limit} {}",
-                        t!("Showing first", "처음"),
+                        t!("Showing first", "처음", "最初の"),
                         t!(
                             "download files; more are hidden",
-                            "개 다운로드 파일만 표시됨; 일부는 숨김"
+                            "개 다운로드 파일만 표시됨; 일부는 숨김",
+                            "件のダウンロードファイルのみ表示; 残りは非表示"
                         )
                     );
                 }
@@ -637,7 +647,8 @@ impl App {
                         "{}: {error}",
                         t!(
                             "Download directory update failed",
-                            "다운로드 폴더 변경 실패"
+                            "다운로드 폴더 변경 실패",
+                            "ダウンロードフォルダーの変更に失敗"
                         )
                     );
                     self.dirty = true;
@@ -650,10 +661,14 @@ impl App {
             } => return self.apply_deleted_downloads(root, deleted, failed),
             Msg::PersistFailed { store, error } => {
                 self.status.kind = StatusKind::Error;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("저장 실패 ({}): {error}", store.label())
-                } else {
-                    format!("Save failed ({}): {error}", store.label())
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("저장 실패 ({}): {error}", store.label())
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("保存に失敗 ({}): {error}", store.label())
+                    }
+                    _ => format!("Save failed ({}): {error}", store.label()),
                 };
                 self.dirty = true;
             }
@@ -727,7 +742,7 @@ impl App {
                     if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                         return self.note_streaming_failure(format!(
                             "{}: {error}",
-                            t!("Autoplay failed", "자동재생 실패")
+                            t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")
                         ));
                     } else {
                         self.dirty = true;
@@ -781,7 +796,8 @@ impl App {
                     if self.local_dedicated_mode {
                         self.status.text = t!(
                             "Autoplay stays off in Local Deck",
-                            "로컬 덱에서는 자동재생이 꺼져 있어요"
+                            "로컬 덱에서는 자동재생이 꺼져 있어요",
+                            "ローカルデッキでは自動再生はオフのままです"
                         )
                         .to_owned();
                         self.dirty = true;
@@ -895,13 +911,20 @@ impl App {
                 // notice + brand dot — read `update_status` directly on every frame.
                 if status.available && status.first_seen {
                     self.status.kind = StatusKind::Info;
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("새 버전 v{} 사용 가능 — About(F1)", status.latest_display())
-                    } else {
-                        format!(
+                    self.status.text = match crate::i18n::current() {
+                        crate::i18n::Language::Korean => {
+                            format!("새 버전 v{} 사용 가능 — About(F1)", status.latest_display())
+                        }
+                        crate::i18n::Language::Japanese => {
+                            format!(
+                                "新バージョン v{} が利用可能 — About(F1)",
+                                status.latest_display()
+                            )
+                        }
+                        _ => format!(
                             "Update available: v{} — see About (F1)",
                             status.latest_display()
-                        )
+                        ),
                     };
                     self.dirty = true;
                     let instructions = crate::update::update_instructions(status.method);
@@ -925,7 +948,11 @@ impl App {
                 crate::tools::ToolsEvent::Progress { channel, percent } => {
                     self.status.kind = StatusKind::Info;
                     let label = channel.label();
-                    let head = t!("Downloading yt-dlp", "yt-dlp 다운로드 중");
+                    let head = t!(
+                        "Downloading yt-dlp",
+                        "yt-dlp 다운로드 중",
+                        "yt-dlpをダウンロード中"
+                    );
                     self.status.text = match percent {
                         Some(p) => format!("{head} ({label})… {p}%"),
                         None => format!("{head} ({label})…"),
@@ -934,10 +961,10 @@ impl App {
                 }
                 crate::tools::ToolsEvent::Installed { version } => {
                     self.status.kind = StatusKind::Info;
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("yt-dlp {version} 준비 완료")
-                    } else {
-                        format!("yt-dlp {version} ready")
+                    self.status.text = match crate::i18n::current() {
+                        crate::i18n::Language::Korean => format!("yt-dlp {version} 준비 완료"),
+                        crate::i18n::Language::Japanese => format!("yt-dlp {version} 準備完了"),
+                        _ => format!("yt-dlp {version} ready"),
                     };
                     self.dirty = true;
                 }

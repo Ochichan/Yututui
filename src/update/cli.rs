@@ -14,17 +14,17 @@ pub fn run(args: &[String]) -> i32 {
 
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     let current = env!("CARGO_PKG_VERSION");
     let method = resolved_install_method();
 
     println!(
         "YuTuTui! {current} · {} {}",
-        if kr {
-            "설치 방식:"
-        } else {
-            "installed via:"
+        match lang {
+            i18n::Language::Korean => "설치 방식:",
+            i18n::Language::Japanese => "インストール方法:",
+            _ => "installed via:",
         },
         method.label()
     );
@@ -34,10 +34,10 @@ pub fn run(args: &[String]) -> i32 {
         Some(Err(e)) => {
             eprintln!(
                 "{} {e}",
-                if kr {
-                    "업데이트 확인 실패:"
-                } else {
-                    "update check failed:"
+                match lang {
+                    i18n::Language::Korean => "업데이트 확인 실패:",
+                    i18n::Language::Japanese => "アップデート確認失敗:",
+                    _ => "update check failed:",
                 }
             );
             return 1;
@@ -52,10 +52,10 @@ pub fn run(args: &[String]) -> i32 {
     if !is_newer(&latest, current) {
         println!(
             "{}",
-            if kr {
-                format!("이미 최신입니다 (최신 릴리즈 {display}).")
-            } else {
-                format!("You're on the latest release ({display}).")
+            match lang {
+                i18n::Language::Korean => format!("이미 최신입니다 (최신 릴리즈 {display})."),
+                i18n::Language::Japanese => format!("既に最新です (最新リリース {display})。"),
+                _ => format!("You're on the latest release ({display})."),
             }
         );
         return 0;
@@ -63,10 +63,11 @@ pub fn run(args: &[String]) -> i32 {
 
     println!(
         "{}",
-        if kr {
-            format!("새 버전 v{display} 사용 가능 (현재 v{current}).")
-        } else {
-            format!("New version v{display} available (you have v{current}).")
+        match lang {
+            i18n::Language::Korean => format!("새 버전 v{display} 사용 가능 (현재 v{current})."),
+            i18n::Language::Japanese =>
+                format!("新バージョン v{display} が利用可能です (現在 v{current})。"),
+            _ => format!("New version v{display} available (you have v{current})."),
         }
     );
     let ins = update_instructions(method);

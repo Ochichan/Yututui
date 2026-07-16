@@ -175,7 +175,8 @@ impl App {
         self.streaming.pending = true;
         self.status.text = t!(
             "Autoplay: finding related tracks",
-            "자동재생: 관련 곡을 찾는 중"
+            "자동재생: 관련 곡을 찾는 중",
+            "自動再生: 関連曲を検索中"
         )
         .to_owned();
         self.dirty = true;
@@ -290,7 +291,8 @@ impl App {
         self.ai.thinking = true;
         self.status.text = t!(
             "Autoplay: DJ Gem reranking",
-            "자동재생: DJ Gem이 순위를 매기는 중"
+            "자동재생: DJ Gem이 순위를 매기는 중",
+            "自動再生: DJ Gemがランク付け中"
         )
         .to_owned();
         self.dirty = true;
@@ -533,16 +535,17 @@ impl App {
             return self.note_streaming_failure(
                 t!(
                     "Autoplay found no new tracks",
-                    "자동재생이 새 곡을 찾지 못했어요"
+                    "자동재생이 새 곡을 찾지 못했어요",
+                    "自動再生で新しい曲が見つかりませんでした"
                 )
                 .to_owned(),
             );
         }
         self.streaming.consecutive_failures = 0;
-        self.status.text = if crate::i18n::is_korean() {
-            format!("{added}곡을 대기열에 추가함")
-        } else {
-            format!("Queued {added} track(s)")
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("{added}곡을 대기열에 추가함"),
+            crate::i18n::Language::Japanese => format!("{added}曲をキューに追加しました"),
+            _ => format!("Queued {added} track(s)"),
         };
         // A successful top-up is a positive confirmation, not an error — render it green.
         self.status.kind = StatusKind::Info;
@@ -595,7 +598,8 @@ impl App {
                 self.streaming.pending = false;
                 self.status.text = t!(
                     "Autoplay stopped (no related tracks found)",
-                    "자동재생을 멈췄어요 (관련 곡을 찾지 못함)"
+                    "자동재생을 멈췄어요 (관련 곡을 찾지 못함)",
+                    "自動再生を停止しました (関連曲が見つからず)"
                 )
                 .to_owned();
             } else {
@@ -675,8 +679,12 @@ impl App {
         {
             self.streaming.pending = true;
             self.status.kind = StatusKind::Info;
-            self.status.text =
-                t!("Autoplay: checking tracks", "자동재생: 곡을 확인하는 중").to_owned();
+            self.status.text = t!(
+                "Autoplay: checking tracks",
+                "자동재생: 곡을 확인하는 중",
+                "自動再生: 曲を確認中"
+            )
+            .to_owned();
             self.dirty = true;
             return vec![Cmd::StreamingPreflight {
                 seed_video_id: seed_video_id.to_owned(),

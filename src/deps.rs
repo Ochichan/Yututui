@@ -190,10 +190,14 @@ pub fn install_command(missing: &[&str]) -> Option<String> {
 }
 
 pub fn setup_guide_url() -> &'static str {
-    if crate::i18n::is_korean() {
-        "https://github.com/Ochichan/Yututui/blob/main/README.ko.md#재생-도구"
-    } else {
-        "https://github.com/Ochichan/Yututui/blob/main/README.md#runtime-tools"
+    match crate::i18n::current() {
+        crate::i18n::Language::Korean => {
+            "https://github.com/Ochichan/Yututui/blob/main/README.ko.md#재생-도구"
+        }
+        crate::i18n::Language::Japanese => {
+            "https://github.com/Ochichan/Yututui/blob/main/README.ja.md#再生ツール"
+        }
+        _ => "https://github.com/Ochichan/Yututui/blob/main/README.md#runtime-tools",
     }
 }
 
@@ -204,26 +208,42 @@ pub fn install_hint(missing: &[&str]) -> String {
     let ytdlp_alt = missing.contains(&"yt-dlp");
     // Tool names and the brew/scoop commands stay verbatim in both languages; only the
     // surrounding guidance is localized.
-    let mut hint = if crate::i18n::is_korean() {
-        if cfg!(target_os = "macos") {
-            format!("{tools} 없음 — 설치: brew install {tools}")
-        } else if cfg!(target_os = "windows") {
-            format!("{tools} 없음 — 설치: scoop install {tools}  (또는 winget)")
-        } else {
-            format!("{tools} 없음 — 패키지 매니저로 설치하세요")
+    let mut hint = match crate::i18n::current() {
+        crate::i18n::Language::Korean => {
+            if cfg!(target_os = "macos") {
+                format!("{tools} 없음 — 설치: brew install {tools}")
+            } else if cfg!(target_os = "windows") {
+                format!("{tools} 없음 — 설치: scoop install {tools}  (또는 winget)")
+            } else {
+                format!("{tools} 없음 — 패키지 매니저로 설치하세요")
+            }
         }
-    } else if cfg!(target_os = "macos") {
-        format!("Missing {tools} — install with: brew install {tools}")
-    } else if cfg!(target_os = "windows") {
-        format!("Missing {tools} — install with: scoop install {tools}  (or winget)")
-    } else {
-        format!("Missing {tools} — install via your package manager")
+        crate::i18n::Language::Japanese => {
+            if cfg!(target_os = "macos") {
+                format!("{tools} がありません — インストール: brew install {tools}")
+            } else if cfg!(target_os = "windows") {
+                format!(
+                    "{tools} がありません — インストール: scoop install {tools}  (または winget)"
+                )
+            } else {
+                format!("{tools} がありません — パッケージマネージャーでインストールしてください")
+            }
+        }
+        _ => {
+            if cfg!(target_os = "macos") {
+                format!("Missing {tools} — install with: brew install {tools}")
+            } else if cfg!(target_os = "windows") {
+                format!("Missing {tools} — install with: scoop install {tools}  (or winget)")
+            } else {
+                format!("Missing {tools} — install via your package manager")
+            }
+        }
     };
     if ytdlp_alt {
-        hint.push_str(if crate::i18n::is_korean() {
-            "  (yt-dlp는 `ytt tools update`로도 받을 수 있어요)"
-        } else {
-            "  (yt-dlp: `ytt tools update` also works)"
+        hint.push_str(match crate::i18n::current() {
+            crate::i18n::Language::Korean => "  (yt-dlp는 `ytt tools update`로도 받을 수 있어요)",
+            crate::i18n::Language::Japanese => "  (yt-dlpは`ytt tools update`でも取得できます)",
+            _ => "  (yt-dlp: `ytt tools update` also works)",
         });
     }
     hint

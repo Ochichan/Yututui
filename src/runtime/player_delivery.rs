@@ -111,11 +111,13 @@ pub(super) fn report_player_delivery(app: &mut App, command: &'static str, resul
         let message = match error {
             DeliveryError::Busy | DeliveryError::Saturated => crate::t!(
                 "Player is busy; command was not accepted",
-                "플레이어가 바빠 명령을 받지 못했습니다"
+                "플레이어가 바빠 명령을 받지 못했습니다",
+                "プレイヤーがビジー状態のためコマンドを受け付けられません"
             ),
             _ => crate::t!(
                 "Player is unavailable; command was not accepted",
-                "플레이어를 사용할 수 없어 명령을 받지 못했습니다"
+                "플레이어를 사용할 수 없어 명령을 받지 못했습니다",
+                "プレイヤーを利用できないためコマンドを受け付けられません"
             ),
         };
         app.set_status_error(message);
@@ -530,7 +532,8 @@ impl super::RuntimeHandles {
                 if was_recovery {
                     app.set_status_info(crate::t!(
                         "Player connection restored",
-                        "플레이어 연결을 복구했습니다"
+                        "플레이어 연결을 복구했습니다",
+                        "プレイヤーの接続を復旧しました"
                     ));
                 }
                 report_player_delivery(
@@ -605,19 +608,22 @@ impl super::RuntimeHandles {
                         "{}: {e}",
                         crate::t!(
                             "Player restart failed",
-                            "플레이어를 다시 시작하지 못했습니다"
+                            "플레이어를 다시 시작하지 못했습니다",
+                            "プレイヤーを再起動できませんでした"
                         )
                     ));
                 } else if app.status.text.is_empty() {
                     if e.contains("mpv lifetime protection unavailable:") {
                         app.set_status_error(crate::t!(
                             "mpv cannot be lifetime-protected — install mpv 0.33+ and run `ytt doctor`",
-                            "mpv 수명 보호를 사용할 수 없습니다 — mpv 0.33 이상을 설치하고 `ytt doctor`를 실행하세요"
+                            "mpv 수명 보호를 사용할 수 없습니다 — mpv 0.33 이상을 설치하고 `ytt doctor`를 실행하세요",
+                            "mpv のライフタイム保護を利用できません — mpv 0.33 以上をインストールして `ytt doctor` を実行してください"
                         ));
                     } else {
                         app.set_status_error(crate::t!(
                             "Playback tool setup is required",
-                            "재생 도구 설치가 필요합니다"
+                            "재생 도구 설치가 필요합니다",
+                            "再生ツールのセットアップが必要です"
                         ));
                     }
                 }
@@ -655,7 +661,8 @@ impl super::RuntimeHandles {
                 self.reject_pending_player_intents(app);
                 app.set_status_error(crate::t!(
                     "Player stopped after the replacement also disconnected",
-                    "교체한 플레이어 연결도 끊어져 재생을 중지했습니다"
+                    "교체한 플레이어 연결도 끊어져 재생을 중지했습니다",
+                    "代替プレイヤーの接続も切れたため再生を停止しました"
                 ));
                 false
             }

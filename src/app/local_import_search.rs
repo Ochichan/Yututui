@@ -26,7 +26,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Import row has no searchable metadata",
-                "검색할 임포트 메타데이터가 없음"
+                "검색할 임포트 메타데이터가 없음",
+                "検索できるインポートメタデータがありません"
             )
             .to_owned();
             self.dirty = true;
@@ -46,7 +47,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "Enable YouTube search before searching an import row",
-                "임포트 행을 검색하려면 YouTube 검색을 먼저 켜세요"
+                "임포트 행을 검색하려면 YouTube 검색을 먼저 켜세요",
+                "インポート行を検索するには、先にYouTube検索をオンにしてください"
             )
             .to_owned();
             self.dirty = true;
@@ -106,7 +108,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "YouTube search was disabled before the confirmed search could run",
-                "확인한 검색을 실행하기 전에 YouTube 검색이 꺼졌어요"
+                "확인한 검색을 실행하기 전에 YouTube 검색이 꺼졌어요",
+                "確認した検索を実行する前にYouTube検索がオフになりました"
             )
             .to_owned();
             self.dirty = true;

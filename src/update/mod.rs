@@ -190,55 +190,86 @@ pub fn update_instructions(method: InstallMethod) -> UpdateInstructions {
     let (command, note) = match method {
         InstallMethod::Homebrew => (
             Some("brew update && brew upgrade yututui"),
-            t!("Update with Homebrew.", "Homebrew로 업데이트하세요."),
+            t!(
+                "Update with Homebrew.",
+                "Homebrew로 업데이트하세요.",
+                "Homebrewでアップデートしてください。"
+            ),
         ),
         InstallMethod::Scoop => (
             Some("scoop update yututui"),
-            t!("Update with Scoop.", "Scoop으로 업데이트하세요."),
+            t!(
+                "Update with Scoop.",
+                "Scoop으로 업데이트하세요.",
+                "Scoopでアップデートしてください。"
+            ),
         ),
         InstallMethod::Aur => (
             Some("yay -Syu yututui-bin"),
-            t!("Update with your AUR helper.", "AUR 헬퍼로 업데이트하세요."),
+            t!(
+                "Update with your AUR helper.",
+                "AUR 헬퍼로 업데이트하세요.",
+                "AURヘルパーでアップデートしてください。"
+            ),
         ),
         InstallMethod::Nix => (
             Some("nix profile upgrade yututui"),
-            t!("Update with Nix.", "Nix로 업데이트하세요."),
+            t!(
+                "Update with Nix.",
+                "Nix로 업데이트하세요.",
+                "Nixでアップデートしてください。"
+            ),
         ),
         InstallMethod::Cargo => (
             Some("cargo install yututui --force"),
-            t!("Reinstall with cargo.", "cargo로 재설치하세요."),
+            t!(
+                "Reinstall with cargo.",
+                "cargo로 재설치하세요.",
+                "cargoで再インストールしてください。"
+            ),
         ),
         InstallMethod::InstallerUnix => (
             None,
             t!(
                 "Re-run the install script to update.",
-                "설치 스크립트를 다시 실행해 업데이트하세요."
+                "설치 스크립트를 다시 실행해 업데이트하세요.",
+                "インストールスクリプトを再実行してアップデートしてください。"
             ),
         ),
         InstallMethod::InstallerWindows => (
             Some("scoop update yututui"),
             t!(
                 "Re-run install.ps1, or update with Scoop.",
-                "install.ps1을 다시 실행하거나 Scoop으로 업데이트하세요."
+                "install.ps1을 다시 실행하거나 Scoop으로 업데이트하세요.",
+                "install.ps1を再実行するか、Scoopでアップデートしてください。"
             ),
         ),
         InstallMethod::MacAppBundle => (
             None,
             t!(
                 "Download the latest macOS build from Releases.",
-                "Releases에서 최신 macOS 빌드를 받으세요."
+                "Releases에서 최신 macOS 빌드를 받으세요.",
+                "Releasesから最新のmacOSビルドをダウンロードしてください。"
             ),
         ),
         InstallMethod::Winget => (
             Some("winget upgrade yututui"),
-            t!("Update with winget.", "winget으로 업데이트하세요."),
+            t!(
+                "Update with winget.",
+                "winget으로 업데이트하세요.",
+                "wingetでアップデートしてください。"
+            ),
         ),
-        InstallMethod::Development => (None, t!("Development build.", "개발 빌드입니다.")),
+        InstallMethod::Development => (
+            None,
+            t!("Development build.", "개발 빌드입니다.", "開発ビルドです。"),
+        ),
         InstallMethod::Unknown => (
             None,
             t!(
                 "Get the latest build from Releases.",
-                "Releases에서 최신 빌드를 받으세요."
+                "Releases에서 최신 빌드를 받으세요.",
+                "Releasesから最新ビルドを入手してください。"
             ),
         ),
     };

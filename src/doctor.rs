@@ -209,7 +209,7 @@ struct SecretFile {
 fn run_privacy(cleanup: bool) -> i32 {
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
     let files = secret_files(&cfg);
     let mut ok = true;
     let mut removed_total = 0usize;
@@ -222,10 +222,10 @@ fn run_privacy(cleanup: bool) -> i32 {
                     ok = false;
                     eprintln!(
                         "{} {}: {e}",
-                        if kr {
-                            "개인정보 백업 정리 실패:"
-                        } else {
-                            "privacy backup cleanup failed for"
+                        match lang {
+                            i18n::Language::Korean => "개인정보 백업 정리 실패:",
+                            i18n::Language::Japanese => "プライバシーバックアップ整理失敗:",
+                            _ => "privacy backup cleanup failed for",
                         },
                         privacy_path(&file.path)
                     );
@@ -236,19 +236,21 @@ fn run_privacy(cleanup: bool) -> i32 {
 
     println!(
         "{}",
-        if kr {
-            "개인정보 파일"
-        } else {
-            "Privacy-sensitive files"
+        match lang {
+            i18n::Language::Korean => "개인정보 파일",
+            i18n::Language::Japanese => "プライバシー関連ファイル",
+            _ => "Privacy-sensitive files",
         }
     );
     if cleanup {
         println!(
             "  {}",
-            if kr {
-                format!("정리됨: 오래된 secret recovery backup {removed_total}개 제거")
-            } else {
-                format!("cleanup: removed {removed_total} old secret recovery backups")
+            match lang {
+                i18n::Language::Korean =>
+                    format!("정리됨: 오래된 secret recovery backup {removed_total}개 제거"),
+                i18n::Language::Japanese =>
+                    format!("整理済み: 古いsecret recovery backupを{removed_total}件削除"),
+                _ => format!("cleanup: removed {removed_total} old secret recovery backups"),
             }
         );
     }
@@ -270,16 +272,16 @@ fn run_privacy(cleanup: bool) -> i32 {
                 {
                     over_retention = true;
                 }
-                println!("    {}", backup_summary(&backups, kr));
+                println!("    {}", backup_summary(&backups, lang));
             }
             Err(e) => {
                 ok = false;
                 println!(
                     "    {}: {e}",
-                    if kr {
-                        "백업을 확인할 수 없음"
-                    } else {
-                        "could not inspect backups"
+                    match lang {
+                        i18n::Language::Korean => "백업을 확인할 수 없음",
+                        i18n::Language::Japanese => "バックアップを確認できません",
+                        _ => "could not inspect backups",
                     }
                 );
             }
@@ -289,16 +291,19 @@ fn run_privacy(cleanup: bool) -> i32 {
     if over_retention && !cleanup {
         println!(
             "{}",
-            if kr {
-                format!(
+            match lang {
+                i18n::Language::Korean => format!(
                     "`ytt doctor privacy --cleanup`으로 secret recovery backup을 최근 {}개만 남길 수 있어요.",
                     crate::util::safe_fs::SECRET_BACKUP_RETENTION
-                )
-            } else {
-                format!(
+                ),
+                i18n::Language::Japanese => format!(
+                    "`ytt doctor privacy --cleanup`でsecret recovery backupを最新{}件だけ残せます。",
+                    crate::util::safe_fs::SECRET_BACKUP_RETENTION
+                ),
+                _ => format!(
                     "Run `ytt doctor privacy --cleanup` to keep only the newest {} secret recovery backups.",
                     crate::util::safe_fs::SECRET_BACKUP_RETENTION
-                )
+                ),
             }
         );
     }
@@ -361,12 +366,15 @@ fn push_secret_file(files: &mut Vec<SecretFile>, file: SecretFile) {
     }
 }
 
-fn backup_summary(backups: &[crate::util::safe_fs::RecoveryBackup], kr: bool) -> String {
+fn backup_summary(
+    backups: &[crate::util::safe_fs::RecoveryBackup],
+    lang: i18n::Language,
+) -> String {
     if backups.is_empty() {
-        return if kr {
-            "recovery backup: 0개".to_owned()
-        } else {
-            "recovery backups: 0".to_owned()
+        return match lang {
+            i18n::Language::Korean => "recovery backup: 0개".to_owned(),
+            i18n::Language::Japanese => "recovery backup: 0件".to_owned(),
+            _ => "recovery backups: 0".to_owned(),
         };
     }
     let newest = backups
@@ -375,27 +383,33 @@ fn backup_summary(backups: &[crate::util::safe_fs::RecoveryBackup], kr: bool) ->
         .max()
         .map(age_label)
         .unwrap_or_else(|| {
-            if kr {
-                "나이 알 수 없음".to_owned()
-            } else {
-                "unknown age".to_owned()
+            match lang {
+                i18n::Language::Korean => "나이 알 수 없음",
+                i18n::Language::Japanese => "経過時間不明",
+                _ => "unknown age",
             }
+            .to_owned()
         });
     let bytes: u64 = backups.iter().map(|backup| backup.len).sum();
-    if kr {
-        format!(
+    match lang {
+        i18n::Language::Korean => format!(
             "recovery backup: {}개, 총 {} bytes, 최근 {}",
             backups.len(),
             bytes,
             newest
-        )
-    } else {
-        format!(
+        ),
+        i18n::Language::Japanese => format!(
+            "recovery backup: {}件, 合計 {} bytes, 最新 {}",
+            backups.len(),
+            bytes,
+            newest
+        ),
+        _ => format!(
             "recovery backups: {}, {} bytes total, newest {}",
             backups.len(),
             bytes,
             newest
-        )
+        ),
     }
 }
 
@@ -579,7 +593,7 @@ fn run_inner(verbose: bool) -> i32 {
     // Localize using the saved UI language, exactly as the TUI does at startup.
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
 
     init_tools_sync(&cfg);
 
@@ -591,47 +605,41 @@ fn run_inner(verbose: bool) -> i32 {
     // Install method (from the running binary's path) + any cached "newer release" notice.
     // Offline: reads only persisted state, never the network — run `ytt update` to re-check.
     let method = crate::update::detect_install_method();
+    let installed_via = match lang {
+        i18n::Language::Korean => "설치 방식:",
+        i18n::Language::Japanese => "インストール方法:",
+        _ => "installed via:",
+    };
     match crate::update::cached_newer_tag() {
         Some(latest) => {
             let display = latest.trim_start_matches(['v', 'V']);
             println!(
-                "{} {} · {}",
-                if kr {
-                    "설치 방식:"
-                } else {
-                    "installed via:"
-                },
+                "{installed_via} {} · {}",
                 method.label(),
-                if kr {
-                    format!("새 버전 v{display} 사용 가능 (`ytt update`)")
-                } else {
-                    format!("update available: v{display} (`ytt update`)")
+                match lang {
+                    i18n::Language::Korean =>
+                        format!("새 버전 v{display} 사용 가능 (`ytt update`)"),
+                    i18n::Language::Japanese =>
+                        format!("新バージョン v{display} が利用可能 (`ytt update`)"),
+                    _ => format!("update available: v{display} (`ytt update`)"),
                 }
             );
         }
-        None => println!(
-            "{} {}",
-            if kr {
-                "설치 방식:"
-            } else {
-                "installed via:"
-            },
-            method.label()
-        ),
+        None => println!("{installed_via} {}", method.label()),
     }
     println!();
 
     // 1) External tools.
     println!(
         "{}",
-        if kr {
-            "외부 도구"
-        } else {
-            "External tools"
+        match lang {
+            i18n::Language::Korean => "외부 도구",
+            i18n::Language::Japanese => "外部ツール",
+            _ => "External tools",
         }
     );
     for &(bin, need) in deps::TOOLS {
-        let role = tool_role(bin, kr);
+        let role = tool_role(bin, lang);
         match bin {
             // yt-dlp reports the *selection* (managed/system/override), not bare PATH
             // presence — the managed binary lives outside PATH by design.
@@ -664,7 +672,7 @@ fn run_inner(verbose: bool) -> i32 {
                             };
                             println!(
                                 "  ✓ {bin:<8} ({role}) — {}{selected}",
-                                mpv_lifetime_report(true, None, kr)
+                                mpv_lifetime_report(true, None, lang)
                             );
                         }
                         Err(error) => {
@@ -695,7 +703,7 @@ fn run_inner(verbose: bool) -> i32 {
     println!();
 
     // 1b) Managed yt-dlp status (the auto-updated copy in <data>/tools).
-    print_managed_ytdlp(&cfg, kr);
+    print_managed_ytdlp(&cfg, lang);
     if verbose {
         print_ytdlp_verbose(&cfg);
     }
@@ -713,24 +721,34 @@ fn run_inner(verbose: bool) -> i32 {
         let rt = probe.runtime;
         println!(
             "{}",
-            if kr {
-                if rt.flag_value().is_none() {
-                    format!("JS 런타임: ✓ {}{} (자동 사용)", rt.label(), version)
-                } else {
-                    format!(
+            if rt.flag_value().is_none() {
+                match lang {
+                    i18n::Language::Korean => {
+                        format!("JS 런타임: ✓ {}{} (자동 사용)", rt.label(), version)
+                    }
+                    i18n::Language::Japanese => {
+                        format!("JSランタイム: ✓ {}{} (自動使用)", rt.label(), version)
+                    }
+                    _ => format!("JS runtime: ✓ {}{} (auto-used)", rt.label(), version),
+                }
+            } else {
+                match lang {
+                    i18n::Language::Korean => format!(
                         "JS 런타임: ✓ {}{} (--js-runtimes 로 연결)",
                         rt.label(),
                         version
-                    )
+                    ),
+                    i18n::Language::Japanese => format!(
+                        "JSランタイム: ✓ {}{} (--js-runtimes で接続)",
+                        rt.label(),
+                        version
+                    ),
+                    _ => format!(
+                        "JS runtime: ✓ {}{} (wired via --js-runtimes)",
+                        rt.label(),
+                        version
+                    ),
                 }
-            } else if rt.flag_value().is_none() {
-                format!("JS runtime: ✓ {}{} (auto-used)", rt.label(), version)
-            } else {
-                format!(
-                    "JS runtime: ✓ {}{} (wired via --js-runtimes)",
-                    rt.label(),
-                    version
-                )
             }
         );
     } else if let Some(probe) = js.first() {
@@ -742,41 +760,66 @@ fn run_inner(verbose: bool) -> i32 {
         let reason = probe.reason.unwrap_or("unsupported version");
         println!(
             "{}",
-            if kr {
-                format!(
+            match lang {
+                i18n::Language::Korean => format!(
                     "JS 런타임: ✗ {}{} 미지원 — {reason}; `deno` 설치를 권장해요.",
                     probe.runtime.label(),
                     version
-                )
-            } else {
-                format!(
+                ),
+                i18n::Language::Japanese => format!(
+                    "JSランタイム: ✗ {}{} 未対応 — {reason}; `deno`のインストールを推奨します。",
+                    probe.runtime.label(),
+                    version
+                ),
+                _ => format!(
                     "JS runtime: ✗ {}{} unsupported — {reason}; install `deno`.",
                     probe.runtime.label(),
                     version
-                )
+                ),
             }
         );
     } else {
         println!(
             "{}",
-            if kr {
-                "JS 런타임: ✗ 없음 — YouTube 재생이 점차 불안정해질 수 있어요. `deno` 설치를 권장해요."
-            } else {
-                "JS runtime: ✗ none — YouTube playback may degrade over time; install `deno`."
+            match lang {
+                i18n::Language::Korean =>
+                    "JS 런타임: ✗ 없음 — YouTube 재생이 점차 불안정해질 수 있어요. `deno` 설치를 권장해요.",
+                i18n::Language::Japanese =>
+                    "JSランタイム: ✗ なし — YouTube再生が徐々に不安定になる可能性があります。`deno`のインストールを推奨します。",
+                _ => "JS runtime: ✗ none — YouTube playback may degrade over time; install `deno`.",
             }
         );
     }
     println!();
 
     // 2) Directories the app needs to write into.
-    println!("{}", if kr { "디렉터리" } else { "Directories" });
+    println!(
+        "{}",
+        match lang {
+            i18n::Language::Korean => "디렉터리",
+            i18n::Language::Japanese => "ディレクトリ",
+            _ => "Directories",
+        }
+    );
     ok &= report_dir(
-        if kr { "다운로드" } else { "downloads" },
+        match lang {
+            i18n::Language::Korean => "다운로드",
+            i18n::Language::Japanese => "ダウンロード",
+            _ => "downloads",
+        },
         &cfg.effective_download_dir(),
-        kr,
+        lang,
     );
     if let Some(data) = data_dir() {
-        ok &= report_dir(if kr { "데이터" } else { "data" }, &data, kr);
+        ok &= report_dir(
+            match lang {
+                i18n::Language::Korean => "데이터",
+                i18n::Language::Japanese => "データ",
+                _ => "data",
+            },
+            &data,
+            lang,
+        );
     }
     println!();
 
@@ -786,10 +829,10 @@ fn run_inner(verbose: bool) -> i32 {
     {
         println!(
             "{}",
-            if kr {
-                "리눅스 도우미 (선택)"
-            } else {
-                "Linux helpers (optional)"
+            match lang {
+                i18n::Language::Korean => "리눅스 도우미 (선택)",
+                i18n::Language::Japanese => "Linuxヘルパー (任意)",
+                _ => "Linux helpers (optional)",
             }
         );
         let mark = |present: bool| if present { "✓" } else { "✗" };
@@ -797,7 +840,11 @@ fn run_inner(verbose: bool) -> i32 {
         let clip = ["wl-copy", "xclip", "xsel"]
             .into_iter()
             .find(|c| deps::on_path(c));
-        let clip_label = if kr { "클립보드" } else { "clipboard" };
+        let clip_label = match lang {
+            i18n::Language::Korean => "클립보드",
+            i18n::Language::Japanese => "クリップボード",
+            _ => "clipboard",
+        };
         match clip {
             Some(found) => println!("  ✓ {clip_label} ({found})"),
             None => println!("  ✗ {clip_label} (wl-copy/xclip/xsel)"),
@@ -812,20 +859,22 @@ fn run_inner(verbose: bool) -> i32 {
     if ok {
         println!(
             "{}",
-            if kr {
-                "정상: 필수 도구와 디렉터리가 모두 준비되었습니다."
-            } else {
-                "OK: all required tools and directories are ready."
+            match lang {
+                i18n::Language::Korean => "정상: 필수 도구와 디렉터리가 모두 준비되었습니다.",
+                i18n::Language::Japanese =>
+                    "正常: 必須ツールとディレクトリはすべて準備できています。",
+                _ => "OK: all required tools and directories are ready.",
             }
         );
         0
     } else {
         println!(
             "{}",
-            if kr {
-                "문제 발견: 위의 ✗ 항목을 설치하거나 수정하세요."
-            } else {
-                "Problems found: install or fix the ✗ items above."
+            match lang {
+                i18n::Language::Korean => "문제 발견: 위의 ✗ 항목을 설치하거나 수정하세요.",
+                i18n::Language::Japanese =>
+                    "問題あり: 上の ✗ 項目をインストールまたは修正してください。",
+                _ => "Problems found: install or fix the ✗ items above.",
             }
         );
         1
@@ -953,24 +1002,24 @@ fn linux_wsl_detected() -> bool {
 
 /// The "Managed yt-dlp" section: whether the app-managed copy is enabled/installed,
 /// its channel, and how fresh the last update check is.
-fn print_managed_ytdlp(cfg: &config::Config, kr: bool) {
+fn print_managed_ytdlp(cfg: &config::Config, lang: i18n::Language) {
     use crate::tools::ytdlp;
 
     println!(
         "{}",
-        if kr {
-            "관리형 yt-dlp"
-        } else {
-            "Managed yt-dlp"
+        match lang {
+            i18n::Language::Korean => "관리형 yt-dlp",
+            i18n::Language::Japanese => "管理型 yt-dlp",
+            _ => "Managed yt-dlp",
         }
     );
     if !cfg.tools.managed_enabled() {
         println!(
             "  - {}",
-            if kr {
-                "꺼짐 (tools.ytdlp_managed = false)"
-            } else {
-                "disabled (tools.ytdlp_managed = false)"
+            match lang {
+                i18n::Language::Korean => "꺼짐 (tools.ytdlp_managed = false)",
+                i18n::Language::Japanese => "無効 (tools.ytdlp_managed = false)",
+                _ => "disabled (tools.ytdlp_managed = false)",
             }
         );
         println!();
@@ -979,10 +1028,12 @@ fn print_managed_ytdlp(cfg: &config::Config, kr: bool) {
     if ytdlp::asset_name().is_none() {
         println!(
             "  - {}",
-            if kr {
-                "이 플랫폼용 공식 스탠드얼론 빌드가 없어 시스템 yt-dlp를 사용합니다"
-            } else {
-                "no official standalone build for this platform; the system yt-dlp is used"
+            match lang {
+                i18n::Language::Korean =>
+                    "이 플랫폼용 공식 스탠드얼론 빌드가 없어 시스템 yt-dlp를 사용합니다",
+                i18n::Language::Japanese =>
+                    "このプラットフォーム向けの公式スタンドアロンビルドがないため、システムのyt-dlpを使用します",
+                _ => "no official standalone build for this platform; the system yt-dlp is used",
             }
         );
         println!();
@@ -1000,20 +1051,34 @@ fn print_managed_ytdlp(cfg: &config::Config, kr: bool) {
         ),
         None => println!(
             "  - {}",
-            if kr {
-                "설치되지 않음 — `ytt tools update`로 받거나, 앱 실행 시 자동으로 받습니다"
-            } else {
-                "not installed — fetch with `ytt tools update` (the app also fetches it automatically)"
+            match lang {
+                i18n::Language::Korean =>
+                    "설치되지 않음 — `ytt tools update`로 받거나, 앱 실행 시 자동으로 받습니다",
+                i18n::Language::Japanese =>
+                    "未インストール — `ytt tools update`で取得するか、アプリ起動時に自動で取得されます",
+                _ =>
+                    "not installed — fetch with `ytt tools update` (the app also fetches it automatically)",
             }
         ),
     }
-    let checked = if kr { "마지막 확인" } else { "last check" };
+    let checked = match lang {
+        i18n::Language::Korean => "마지막 확인",
+        i18n::Language::Japanese => "最終確認",
+        _ => "last check",
+    };
     match state.last_check_unix {
         Some(at) => {
             let age_h = ytdlp::now_unix().saturating_sub(at) / 3600;
             println!("  - {checked}: {age_h}h");
         }
-        None => println!("  - {checked}: {}", if kr { "없음" } else { "never" }),
+        None => println!(
+            "  - {checked}: {}",
+            match lang {
+                i18n::Language::Korean => "없음",
+                i18n::Language::Japanese => "なし",
+                _ => "never",
+            }
+        ),
     }
     println!();
 }
@@ -1112,16 +1177,20 @@ fn inspect_sync(path: &Path) -> Option<crate::tools::ytdlp::BinaryInspection> {
 }
 
 /// A short, localized description of what a tool is for.
-fn tool_role(bin: &str, kr: bool) -> &'static str {
-    match (bin, kr) {
-        ("mpv", false) => "playback",
-        ("mpv", true) => "재생",
-        ("yt-dlp", false) => "search & streaming",
-        ("yt-dlp", true) => "검색·스트리밍",
-        ("ffmpeg", false) => "downloads",
-        ("ffmpeg", true) => "다운로드",
-        (_, false) => "external tool",
-        (_, true) => "외부 도구",
+fn tool_role(bin: &str, lang: i18n::Language) -> &'static str {
+    match (bin, lang) {
+        ("mpv", i18n::Language::Korean) => "재생",
+        ("mpv", i18n::Language::Japanese) => "再生",
+        ("mpv", _) => "playback",
+        ("yt-dlp", i18n::Language::Korean) => "검색·스트리밍",
+        ("yt-dlp", i18n::Language::Japanese) => "検索·ストリーミング",
+        ("yt-dlp", _) => "search & streaming",
+        ("ffmpeg", i18n::Language::Korean) => "다운로드",
+        ("ffmpeg", i18n::Language::Japanese) => "ダウンロード",
+        ("ffmpeg", _) => "downloads",
+        (_, i18n::Language::Korean) => "외부 도구",
+        (_, i18n::Language::Japanese) => "外部ツール",
+        (_, _) => "external tool",
     }
 }
 
@@ -1360,12 +1429,23 @@ mod tests {
 
     #[test]
     fn every_known_tool_has_a_localized_role() {
-        // Both languages must yield a non-empty, non-fallback label for each real tool.
+        // Every language must yield a non-empty, non-fallback label for each real tool.
         for &(bin, _) in deps::TOOLS {
-            for kr in [false, true] {
-                let role = tool_role(bin, kr);
+            for lang in [
+                i18n::Language::English,
+                i18n::Language::Korean,
+                i18n::Language::Japanese,
+            ] {
+                let role = tool_role(bin, lang);
                 assert!(!role.is_empty());
-                assert_ne!(role, if kr { "외부 도구" } else { "external tool" });
+                assert_ne!(
+                    role,
+                    match lang {
+                        i18n::Language::Korean => "외부 도구",
+                        i18n::Language::Japanese => "外部ツール",
+                        _ => "external tool",
+                    }
+                );
             }
         }
     }

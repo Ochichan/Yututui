@@ -116,17 +116,26 @@ impl App {
 
     fn toggle_video_overlay_with(&mut self, spawner: VideoSpawner) -> Vec<Cmd> {
         if self.video_open() || self.video.paused_audio {
-            return self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info);
+            return self.finish_video_overlay(
+                t!("Video closed", "영상 닫음", "動画を閉じました"),
+                StatusKind::Info,
+            );
         }
         let Some(song) = self.queue.current().cloned() else {
-            self.status.text = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
+            self.status.text = t!(
+                "No track playing",
+                "재생 중인 곡이 없습니다",
+                "再生中の曲がありません"
+            )
+            .to_owned();
             self.dirty = true;
             return Vec::new();
         };
         let Some(id) = self.recover_youtube_id(&song) else {
             self.status.text = t!(
                 "This track is local-only — no video",
-                "로컬 전용 트랙이라 영상이 없어요"
+                "로컬 전용 트랙이라 영상이 없어요",
+                "ローカル専用の曲のため動画がありません"
             )
             .to_owned();
             self.dirty = true;
@@ -156,12 +165,20 @@ impl App {
         if self.spawn_video_overlay_now(&id, layout, spawner, &mut effects) {
             self.set_video_transition_status(
                 StatusKind::Info,
-                t!("Opening video in mpv…", "mpv에서 영상을 여는 중…"),
+                t!(
+                    "Opening video in mpv…",
+                    "mpv에서 영상을 여는 중…",
+                    "mpvで動画を開いています…"
+                ),
             );
         } else {
             self.set_video_transition_status(
                 StatusKind::Error,
-                t!("Failed to launch mpv", "mpv 실행에 실패했습니다"),
+                t!(
+                    "Failed to launch mpv",
+                    "mpv 실행에 실패했습니다",
+                    "mpv の起動に失敗しました"
+                ),
             );
         }
         effects
@@ -196,7 +213,11 @@ impl App {
         if self.spawn_video_overlay_now(&plan.id, plan.layout, plan.spawner, &mut effects) {
             self.set_video_transition_status(
                 StatusKind::Info,
-                t!("Opening video in mpv…", "mpv에서 영상을 여는 중…"),
+                t!(
+                    "Opening video in mpv…",
+                    "mpv에서 영상을 여는 중…",
+                    "mpvで動画を開いています…"
+                ),
             );
             return effects;
         }
@@ -204,7 +225,11 @@ impl App {
         // The pause was already admitted. Compensate with another absolute, typed intent; if
         // that lane is temporarily busy, ownership stays explicit and `v` can retry the finish.
         effects.extend(self.video_unpause_intent(
-            t!("Failed to launch mpv", "mpv 실행에 실패했습니다"),
+            t!(
+                "Failed to launch mpv",
+                "mpv 실행에 실패했습니다",
+                "mpv の起動に失敗しました"
+            ),
             StatusKind::Error,
         ));
         effects
@@ -270,7 +295,8 @@ impl App {
         self.dirty = true;
         let status = t!(
             "Video unavailable — continuing with audio",
-            "영상을 사용할 수 없어 소리로 이어서 재생해요"
+            "영상을 사용할 수 없어 소리로 이어서 재생해요",
+            "動画を利用できないため音声で続けて再生します"
         );
         if self.video.paused_audio {
             self.video_unpause_intent(status, StatusKind::Error)
@@ -313,7 +339,11 @@ impl App {
                 Some(id) if self.spawn_video_overlay_now(&id, layout, spawner, &mut effects) => {}
                 Some(_) => {
                     effects.extend(self.finish_video_overlay(
-                        t!("Failed to launch mpv", "mpv 실행에 실패했습니다"),
+                        t!(
+                            "Failed to launch mpv",
+                            "mpv 실행에 실패했습니다",
+                            "mpv の起動に失敗しました"
+                        ),
                         StatusKind::Error,
                     ));
                     return effects;
@@ -322,7 +352,8 @@ impl App {
                     effects.extend(self.finish_video_overlay(
                         t!(
                             "This track is local-only — no video",
-                            "로컬 전용 트랙이라 영상이 없어요"
+                            "로컬 전용 트랙이라 영상이 없어요",
+                            "ローカル専用の曲のため動画がありません"
                         ),
                         StatusKind::Info,
                     ));
@@ -330,15 +361,16 @@ impl App {
                 }
             }
         } else if self.video.paused_audio {
-            effects.extend(
-                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info),
-            );
+            effects.extend(self.finish_video_overlay(
+                t!("Video closed", "영상 닫음", "動画を閉じました"),
+                StatusKind::Info,
+            ));
             return effects;
         }
 
         self.set_video_transition_status(
             StatusKind::Info,
-            &format!("{}: {}", t!("Video", "영상"), layout.label()),
+            &format!("{}: {}", t!("Video", "영상", "動画"), layout.label()),
         );
         effects
     }

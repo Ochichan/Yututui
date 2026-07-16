@@ -14,6 +14,7 @@ use crate::app::{
     App, LocalFindBulkAction, LocalFindBulkConfirm, LocalFindFocus, LocalFindPointerStamp,
     MouseTarget, ScrollSurface, StatusKind,
 };
+use crate::i18n::Language;
 use crate::local::find::{
     LocalFindHit, LocalFindHitId, LocalFindMatchReason, LocalFindScope, LocalFindSort,
 };
@@ -132,28 +133,36 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         |d| d.track_ids.len(),
     );
     let activity = if app.local_mode.index.loading {
-        t!("index loading", "인덱스 로딩 중")
+        t!("index loading", "인덱스 로딩 중", "インデックス読み込み中")
     } else if find.searching {
-        t!("searching...", "검색 중...")
+        t!("searching...", "검색 중...", "検索中...")
     } else if app.local_mode.index.scanning {
-        t!("scan running", "스캔 진행 중")
+        t!("scan running", "스캔 진행 중", "スキャン実行中")
     } else if find.parse_error.is_some() {
-        t!("query needs attention", "검색어 확인 필요")
+        t!("query needs attention", "검색어 확인 필요", "検索語を確認")
     } else {
-        t!("offline", "오프라인")
+        t!("offline", "오프라인", "オフライン")
     };
     let count = if count == 1 {
-        t!("1 result", "결과 1개").to_owned()
-    } else if crate::i18n::is_korean() {
-        format!("결과 {count}개")
+        t!("1 result", "결과 1개", "結果 1件").to_owned()
     } else {
-        format!("{count} results")
+        match crate::i18n::current() {
+            Language::Korean => format!("결과 {count}개"),
+            Language::Japanese => format!("結果 {count}件"),
+            _ => format!("{count} results"),
+        }
     };
     let title = find
         .drill
         .as_ref()
-        .map(|drill| format!("{}  /  {}", t!("LOCAL FIND", "로컬 찾기"), drill.title))
-        .unwrap_or_else(|| t!("LOCAL FIND", "로컬 찾기").to_owned());
+        .map(|drill| {
+            format!(
+                "{}  /  {}",
+                t!("LOCAL FIND", "로컬 찾기", "ローカル検索"),
+                drill.title
+            )
+        })
+        .unwrap_or_else(|| t!("LOCAL FIND", "로컬 찾기", "ローカル検索").to_owned());
     let line = Line::from(vec![
         Span::styled(
             format!(" {title} "),
@@ -214,9 +223,16 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
         R::BorderMuted
     };
     let title = if tier == FindWidthTier::Narrow {
-        format!(" {} ", t!("Find", "찾기"))
+        format!(" {} ", t!("Find", "찾기", "検索"))
     } else {
-        format!(" {} ", t!("Find local collection", "로컬 컬렉션 찾기"))
+        format!(
+            " {} ",
+            t!(
+                "Find local collection",
+                "로컬 컬렉션 찾기",
+                "ローカルを検索"
+            )
+        )
     };
     let block = Block::default()
         .title(title)
@@ -256,9 +272,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
             app,
             area,
             if tier == FindWidthTier::Wide {
-                t!(" Find ", " 찾기 ")
+                t!(" Find ", " 찾기 ", " 検索 ")
             } else {
-                t!("Find", "찾기")
+                t!("Find", "찾기", "検索")
             },
             MouseTarget::LocalFindSubmit,
             R::Accent,
@@ -270,9 +286,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
             app,
             area,
             if tier == FindWidthTier::Wide {
-                t!(" Refine ", " 상세 ")
+                t!(" Refine ", " 상세 ", " 絞り込み ")
             } else {
-                t!("Refine", "상세")
+                t!("Refine", "상세", "絞り込み")
             },
             MouseTarget::LocalFindRefineOpen,
             R::TextPrimary,
@@ -344,23 +360,31 @@ fn render_scope_strip(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthT
     let text = if let Some(error) = error {
         format!(
             "! {error}  -  {}",
-            t!("previous results kept", "이전 결과 유지")
+            t!(
+                "previous results kept",
+                "이전 결과 유지",
+                "以前の結果を保持"
+            )
         )
     } else if tier == FindWidthTier::Narrow {
         format!(
             "{} - {} - / {}",
             scope_label(find.scope),
             sort_label(effective_sort),
-            t!("refine", "상세")
+            t!("refine", "상세", "絞り込み")
         )
     } else {
         format!(
             "{}: {}   {}: {}   {}",
-            t!("Scope", "범위"),
+            t!("Scope", "범위", "範囲"),
             scope_label(find.scope),
-            t!("Sort", "정렬"),
+            t!("Sort", "정렬", "並べ替え"),
             sort_label(effective_sort),
-            t!("offline index only", "오프라인 인덱스만 사용")
+            t!(
+                "offline index only",
+                "오프라인 인덱스만 사용",
+                "オフラインインデックスのみ"
+            )
         )
     };
     let role = if error.is_some() {
@@ -396,7 +420,8 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
             area,
             t!(
                 "Loading the Local Deck index...",
-                "로컬 덱 인덱스를 불러오는 중..."
+                "로컬 덱 인덱스를 불러오는 중...",
+                "ローカルデッキのインデックスを読み込み中..."
             ),
             R::Accent,
         );
@@ -407,7 +432,11 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
             frame,
             app,
             area,
-            t!("Scanning local audio...", "로컬 오디오를 스캔하는 중..."),
+            t!(
+                "Scanning local audio...",
+                "로컬 오디오를 스캔하는 중...",
+                "ローカルオーディオをスキャン中..."
+            ),
             R::Accent,
         );
         return;
@@ -422,7 +451,8 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
             area,
             t!(
                 "Searching the local index...",
-                "로컬 인덱스를 검색하는 중..."
+                "로컬 인덱스를 검색하는 중...",
+                "ローカルインデックスを検索中..."
             ),
             R::Accent,
         ),
@@ -625,16 +655,16 @@ fn format_hit_row(
     };
     let playlist = matches!(&hit.id, LocalFindHitId::Playlist(_));
     let count = match (playlist, hit.locally_playable_count, hit.total_track_count) {
-        (true, local, total) => format!("{local}/{total} {}", t!("local", "로컬")),
+        (true, local, total) => format!("{local}/{total} {}", t!("local", "로컬", "ローカル")),
         (false, 0, 0) => String::new(),
         (false, local, total) if local != total => format!("{local}/{total}"),
         (false, _, 1) => String::new(),
-        (false, local, _) => format!("{local} {}", t!("tracks", "곡")),
+        (false, local, _) => format!("{local} {}", t!("tracks", "곡", "曲")),
     };
     let reason = match hit.match_reason {
-        Some(LocalFindMatchReason::PlaylistName) => t!("name match", "이름 일치"),
+        Some(LocalFindMatchReason::PlaylistName) => t!("name match", "이름 일치", "名前一致"),
         Some(LocalFindMatchReason::ResolvedLocalTrack) => {
-            t!("local track match", "로컬 곡 일치")
+            t!("local track match", "로컬 곡 일치", "ローカル曲一致")
         }
         None => "",
     };
@@ -683,18 +713,18 @@ fn format_hit_row(
 
 fn hit_kind_label(hit: &LocalFindHit) -> &'static str {
     match &hit.id {
-        LocalFindHitId::Track(_) => t!("Track", "곡"),
-        LocalFindHitId::Album(_) => t!("Album", "앨범"),
-        LocalFindHitId::Artist(_) => t!("Artist", "아티스트"),
-        LocalFindHitId::Genre(_) => t!("Genre", "장르"),
-        LocalFindHitId::Folder(_) => t!("Folder", "폴더"),
-        LocalFindHitId::Playlist(_) => t!("Playlist", "플레이리스트"),
-        LocalFindHitId::Command(_) => t!("Command", "명령"),
+        LocalFindHitId::Track(_) => t!("Track", "곡", "曲"),
+        LocalFindHitId::Album(_) => t!("Album", "앨범", "アルバム"),
+        LocalFindHitId::Artist(_) => t!("Artist", "아티스트", "アーティスト"),
+        LocalFindHitId::Genre(_) => t!("Genre", "장르", "ジャンル"),
+        LocalFindHitId::Folder(_) => t!("Folder", "폴더", "フォルダー"),
+        LocalFindHitId::Playlist(_) => t!("Playlist", "플레이리스트", "プレイリスト"),
+        LocalFindHitId::Command(_) => t!("Command", "명령", "コマンド"),
     }
 }
 
 fn format_track_row(track: &crate::local::LocalTrack, tier: FindWidthTier) -> String {
-    let kind = t!("Track", "곡");
+    let kind = t!("Track", "곡", "曲");
     let artist = track.display_artist();
     let album = track.album.as_deref().unwrap_or_default();
     let duration = track.duration_ms.map(format_duration).unwrap_or_default();
@@ -718,7 +748,7 @@ fn render_selection_details(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let block = Block::default()
-        .title(format!(" {} ", t!("Selection", "선택")))
+        .title(format!(" {} ", t!("Selection", "선택", "選択")))
         .borders(Borders::LEFT)
         .border_style(app.theme.style(R::BorderMuted))
         .style(app.theme.style(R::TextPrimary));
@@ -747,14 +777,14 @@ fn render_selection_details(frame: &mut Frame, app: &App, area: Rect) {
         }
         if let Some(year) = hit.year {
             lines.push(
-                Line::from(format!("{}: {year}", t!("Year", "연도")))
+                Line::from(format!("{}: {year}", t!("Year", "연도", "年")))
                     .style(app.theme.style(R::TextMuted)),
             );
         }
         lines.push(
             Line::from(format!(
                 "{}: {}/{}",
-                t!("Playable", "재생 가능"),
+                t!("Playable", "재생 가능", "再生可能"),
                 hit.locally_playable_count,
                 hit.total_track_count
             ))
@@ -762,37 +792,62 @@ fn render_selection_details(frame: &mut Frame, app: &App, area: Rect) {
         );
         if let Some(reason) = hit.match_reason {
             let reason = match reason {
-                LocalFindMatchReason::PlaylistName => t!("Playlist name", "플레이리스트 이름"),
+                LocalFindMatchReason::PlaylistName => {
+                    t!("Playlist name", "플레이리스트 이름", "プレイリスト名")
+                }
                 LocalFindMatchReason::ResolvedLocalTrack => {
-                    t!("Resolved local track", "확인된 로컬 곡")
+                    t!(
+                        "Resolved local track",
+                        "확인된 로컬 곡",
+                        "解決済みのローカル曲"
+                    )
                 }
             };
             lines.push(
-                Line::from(format!("{}: {reason}", t!("Matched by", "일치 기준")))
-                    .style(app.theme.style(R::TextMuted)),
+                Line::from(format!(
+                    "{}: {reason}",
+                    t!("Matched by", "일치 기준", "一致基準")
+                ))
+                .style(app.theme.style(R::TextMuted)),
             );
         }
     }
     lines.push(Line::from(""));
     lines.push(
-        Line::from(t!("Enter open/play  a add", "Enter 열기/재생  a 추가"))
-            .style(app.theme.style(R::TextMuted)),
+        Line::from(t!(
+            "Enter open/play  a add",
+            "Enter 열기/재생  a 추가",
+            "Enter 開く/再生  a 追加"
+        ))
+        .style(app.theme.style(R::TextMuted)),
     );
     lines.push(
-        Line::from(t!("P play  A add all", "P 재생  A 모두 추가"))
-            .style(app.theme.style(R::TextMuted)),
+        Line::from(t!(
+            "P play  A add all",
+            "P 재생  A 모두 추가",
+            "P 再生  A すべて追加"
+        ))
+        .style(app.theme.style(R::TextMuted)),
     );
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-const LAUNCHPAD: [(&str, &str); 7] = [
-    ("1  Recently added", "1  최근 추가"),
-    ("2  Local-only", "2  로컬 전용"),
-    ("3  Lossless", "3  무손실"),
-    ("4  Missing artist", "4  아티스트 누락"),
-    ("5  Missing album", "5  앨범 누락"),
-    ("6  No embedded cover", "6  내장 커버 없음"),
-    ("r  Rescan", "r  다시 스캔"),
+const LAUNCHPAD: [(&str, &str, &str); 7] = [
+    ("1  Recently added", "1  최근 추가", "1  最近追加"),
+    ("2  Local-only", "2  로컬 전용", "2  ローカルのみ"),
+    ("3  Lossless", "3  무손실", "3  ロスレス"),
+    (
+        "4  Missing artist",
+        "4  아티스트 누락",
+        "4  アーティスト欠落",
+    ),
+    ("5  Missing album", "5  앨범 누락", "5  アルバム欠落"),
+    (
+        "6  No embedded cover",
+        "6  내장 커버 없음",
+        "6  埋め込みカバーなし",
+    ),
+    ("r  Rescan", "r  다시 스캔", "r  再スキャン"),
 ];
 
 fn render_launchpad(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTier) {
@@ -807,7 +862,8 @@ fn render_launchpad(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTie
     frame.render_widget(
         Paragraph::new(t!(
             "Start with a smart view, type a query, or use >commands",
-            "스마트 보기에서 시작하거나 검색어 또는 >명령을 입력하세요"
+            "스마트 보기에서 시작하거나 검색어 또는 >명령을 입력하세요",
+            "スマートビューから始めるか、検索語または >コマンドを入力してください"
         ))
         .alignment(Alignment::Center)
         .style(app.theme.style(R::TextMuted)),
@@ -839,7 +895,7 @@ fn render_launchpad(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTie
     );
     let row_width = list.width.saturating_sub(1);
     let stamp = app.local_find_pointer_stamp();
-    for (visible, (index, (english, korean))) in LAUNCHPAD
+    for (visible, (index, (english, korean, japanese))) in LAUNCHPAD
         .iter()
         .enumerate()
         .skip(start)
@@ -852,10 +908,10 @@ fn render_launchpad(frame: &mut Frame, app: &App, area: Rect, tier: FindWidthTie
             width: row_width,
             height: 1,
         };
-        let label = if crate::i18n::is_korean() {
-            *korean
-        } else {
-            *english
+        let label = match crate::i18n::current() {
+            Language::Korean => *korean,
+            Language::Japanese => *japanese,
+            _ => *english,
         };
         let selected = app.local_mode.find.focus == LocalFindFocus::Results
             && app.local_mode.find.selected == index;
@@ -898,14 +954,20 @@ fn render_recovery(frame: &mut Frame, app: &App, area: Rect) {
         (
             t!(
                 "Loading the Local Deck index...",
-                "로컬 덱 인덱스를 불러오는 중..."
+                "로컬 덱 인덱스를 불러오는 중...",
+                "ローカルデッキのインデックスを読み込み中..."
             )
             .to_owned(),
             R::Accent,
         )
     } else if app.local_mode.index.scanning {
         (
-            t!("Scanning local audio...", "로컬 오디오를 스캔하는 중...").to_owned(),
+            t!(
+                "Scanning local audio...",
+                "로컬 오디오를 스캔하는 중...",
+                "ローカルオーディオをスキャン中..."
+            )
+            .to_owned(),
             R::Accent,
         )
     } else if app.status.kind == StatusKind::Error && !app.status.text.is_empty() {
@@ -914,7 +976,8 @@ fn render_recovery(frame: &mut Frame, app: &App, area: Rect) {
         (
             t!(
                 "No local music is indexed yet.",
-                "아직 인덱싱된 로컬 음악이 없습니다."
+                "아직 인덱싱된 로컬 음악이 없습니다.",
+                "ローカル音楽はまだインデックスされていません。"
             )
             .to_owned(),
             R::TextMuted,
@@ -940,14 +1003,16 @@ fn render_no_results(frame: &mut Frame, app: &App, area: Rect) {
         app.local_mode.find.query.clone(),
         area.width.saturating_sub(8) as usize,
     );
-    let text = if crate::i18n::is_korean() {
-        format!(
+    let text = match crate::i18n::current() {
+        Language::Korean => format!(
             "'{query}'와 일치하는 로컬 항목이 없습니다. 범위 칩을 누르거나 Down 뒤 / 로 상세 검색을 여세요."
-        )
-    } else {
-        format!(
+        ),
+        Language::Japanese => format!(
+            "'{query}'に一致するローカル項目がありません。範囲チップを押すか、Down の後 / で絞り込んでください。"
+        ),
+        _ => format!(
             "No local items match \"{query}\". Use the scope chip, or press Down then / to refine."
-        )
+        ),
     };
     render_message_with_recovery(frame, app, area, &text, R::TextMuted);
 }
@@ -957,10 +1022,14 @@ fn render_unknown_command(frame: &mut Frame, app: &App, area: Rect) {
         app.local_mode.find.query.clone(),
         area.width.saturating_sub(10) as usize,
     );
-    let text = if crate::i18n::is_korean() {
-        format!("알 수 없는 로컬 명령: {query}. 예: > tracks, > rescan, > scan errors")
-    } else {
-        format!("Unknown Local command: {query}. Try > tracks, > rescan, or > scan errors.")
+    let text = match crate::i18n::current() {
+        Language::Korean => {
+            format!("알 수 없는 로컬 명령: {query}. 예: > tracks, > rescan, > scan errors")
+        }
+        Language::Japanese => {
+            format!("不明なローカルコマンド: {query}. 例: > tracks, > rescan, > scan errors")
+        }
+        _ => format!("Unknown Local command: {query}. Try > tracks, > rescan, or > scan errors."),
     };
     render_message_with_recovery(frame, app, area, &text, R::Error);
 }
@@ -976,7 +1045,7 @@ fn render_message_with_rows(
     area: Rect,
     text: &str,
     role: R,
-    actions: &[(usize, &str, &str)],
+    actions: &[(usize, &str, &str, &str)],
 ) {
     if area.is_empty() {
         return;
@@ -997,23 +1066,39 @@ fn render_message_with_rows(
     render_recovery_rows(frame, app, options, actions);
 }
 
-fn recovery_rows(app: &App, include_clear: bool) -> Vec<(usize, &'static str, &'static str)> {
+fn recovery_rows(
+    app: &App,
+    include_clear: bool,
+) -> Vec<(usize, &'static str, &'static str, &'static str)> {
     app.local_find_recovery_actions(include_clear)
         .into_iter()
         .filter_map(|action| {
             let labels = match action {
-                6 => ("r  Rescan", "r  다시 스캔"),
-                7 => ("c  Clear query", "c  검색어 지우기"),
-                8 => ("+  Add music folder", "+  음악 폴더 추가"),
-                9 => ("!  View scan errors", "!  스캔 오류 보기"),
+                6 => ("r  Rescan", "r  다시 스캔", "r  再スキャン"),
+                7 => ("c  Clear query", "c  검색어 지우기", "c  検索語をクリア"),
+                8 => (
+                    "+  Add music folder",
+                    "+  음악 폴더 추가",
+                    "+  音楽フォルダーを追加",
+                ),
+                9 => (
+                    "!  View scan errors",
+                    "!  스캔 오류 보기",
+                    "!  スキャンエラーを表示",
+                ),
                 _ => return None,
             };
-            Some((action, labels.0, labels.1))
+            Some((action, labels.0, labels.1, labels.2))
         })
         .collect()
 }
 
-fn render_recovery_rows(frame: &mut Frame, app: &App, area: Rect, actions: &[(usize, &str, &str)]) {
+fn render_recovery_rows(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    actions: &[(usize, &str, &str, &str)],
+) {
     if area.is_empty() || actions.is_empty() {
         return;
     }
@@ -1027,7 +1112,7 @@ fn render_recovery_rows(frame: &mut Frame, app: &App, area: Rect, actions: &[(us
     );
     let row_width = list.width.saturating_sub(1);
     let stamp = app.local_find_pointer_stamp();
-    for (visible, (position, (target, english, korean))) in actions
+    for (visible, (position, (target, english, korean, japanese))) in actions
         .iter()
         .enumerate()
         .skip(start)
@@ -1036,10 +1121,10 @@ fn render_recovery_rows(frame: &mut Frame, app: &App, area: Rect, actions: &[(us
     {
         let selected = app.local_mode.find.focus == LocalFindFocus::Results && cursor == position;
         let marker = if selected { "> " } else { "  " };
-        let label = if crate::i18n::is_korean() {
-            *korean
-        } else {
-            *english
+        let label = match crate::i18n::current() {
+            Language::Korean => *korean,
+            Language::Japanese => *japanese,
+            _ => *english,
         };
         let text = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{label}"),
@@ -1111,12 +1196,14 @@ fn render_actions(frame: &mut Frame, app: &App, area: Rect) {
     let text = if app.local_mode.find.focus == LocalFindFocus::Input {
         t!(
             "Enter search  Down results  Esc back",
-            "Enter 검색  Down 결과  Esc 뒤로"
+            "Enter 검색  Down 결과  Esc 뒤로",
+            "Enter 検索  Down 結果  Esc 戻る"
         )
     } else {
         t!(
             "Enter open/play  a add  P play  A add all  s shuffle all  / refine  Esc back",
-            "Enter 열기/재생  a 추가  P 재생  A 모두 추가  s 전체 셔플  / 상세  Esc 뒤로"
+            "Enter 열기/재생  a 추가  P 재생  A 모두 추가  s 전체 셔플  / 상세  Esc 뒤로",
+            "Enter 開く/再生  a 追加  P 再生  A すべて追加  s 全曲シャッフル  / 絞り込み  Esc 戻る"
         )
     };
     let shown = crate::ui::text::truncate_owned_to_width(text.to_owned(), area.width as usize);
@@ -1135,7 +1222,11 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
     app.local_mode.find.refine_popup.rect.set(Some(popup));
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" Refine Local Find ", " 로컬 찾기 상세 설정 "))
+        .title(t!(
+            " Refine Local Find ",
+            " 로컬 찾기 상세 설정 ",
+            " ローカル検索の絞り込み "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -1156,9 +1247,13 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
         .view(rows[2].height, help.len());
     let block = if help.len() > rows[2].height as usize {
         block.title_bottom(
-            Line::from(t!(" PgUp/PgDn scroll ", " PgUp/PgDn 스크롤 "))
-                .right_aligned()
-                .style(crate::ui::popup_style(app, R::TextMuted)),
+            Line::from(t!(
+                " PgUp/PgDn scroll ",
+                " PgUp/PgDn 스크롤 ",
+                " PgUp/PgDn スクロール "
+            ))
+            .right_aligned()
+            .style(crate::ui::popup_style(app, R::TextMuted)),
         )
     } else {
         block
@@ -1170,7 +1265,7 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
         app,
         rows[0],
         0,
-        t!("Scope", "범위"),
+        t!("Scope", "범위", "範囲"),
         scope_label(app.local_mode.find.refine_popup.draft_scope),
     );
     render_refine_value(
@@ -1178,7 +1273,7 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
         app,
         rows[1],
         1,
-        t!("Sort", "정렬"),
+        t!("Sort", "정렬", "並べ替え"),
         sort_label(app.local_mode.find.refine_popup.draft_sort),
     );
 
@@ -1193,13 +1288,13 @@ fn render_refine_popup(frame: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[3]);
     let (apply, cancel) = if rows[3].width < 32 {
         (
-            t!("Enter apply", "Enter 적용"),
-            t!("Esc cancel", "Esc 취소"),
+            t!("Enter apply", "Enter 적용", "Enter 適用"),
+            t!("Esc cancel", "Esc 취소", "Esc キャンセル"),
         )
     } else {
         (
-            t!("Apply (Enter)", "적용 (Enter)"),
-            t!("Cancel (Esc)", "취소 (Esc)"),
+            t!("Apply (Enter)", "적용 (Enter)", "適用 (Enter)"),
+            t!("Cancel (Esc)", "취소 (Esc)", "キャンセル (Esc)"),
         )
     };
     render_refine_action(frame, app, actions[0], 2, apply);
@@ -1212,31 +1307,38 @@ fn refine_help_lines(width: usize) -> Vec<Line<'static>> {
     let rows = [
         t!(
             "Fields: t: title · ar: artist · al: album · aa: album artist",
-            "필드: t: 제목 · ar: 아티스트 · al: 앨범 · aa: 앨범 아티스트"
+            "필드: t: 제목 · ar: 아티스트 · al: 앨범 · aa: 앨범 아티스트",
+            "フィールド: t: タイトル · ar: アーティスト · al: アルバム · aa: アルバムアーティスト"
         ),
         t!(
             "g: genre · path: filename/path · fmt: audio format",
-            "g: 장르 · path: 파일명/경로 · fmt: 오디오 형식"
+            "g: 장르 · path: 파일명/경로 · fmt: 오디오 형식",
+            "g: ジャンル · path: ファイル名/パス · fmt: オーディオ形式"
         ),
         t!(
             "Year: year:1990 or year:1990..1999",
-            "연도: year:1990 또는 year:1990..1999"
+            "연도: year:1990 또는 year:1990..1999",
+            "年: year:1990 または year:1990..1999"
         ),
         t!(
             "Properties: is:downloaded/local-only/lossless",
-            "속성: is:downloaded/local-only/lossless"
+            "속성: is:downloaded/local-only/lossless",
+            "属性: is:downloaded/local-only/lossless"
         ),
         t!(
             "Missing: missing:artist/album/cover",
-            "누락: missing:artist/album/cover"
+            "누락: missing:artist/album/cover",
+            "欠落: missing:artist/album/cover"
         ),
         t!(
             "Sort: sort:relevance/title/artist/album/year/recent",
-            "정렬: sort:relevance/title/artist/album/year/recent"
+            "정렬: sort:relevance/title/artist/album/year/recent",
+            "並べ替え: sort:relevance/title/artist/album/year/recent"
         ),
         t!(
             "Use quotes for phrases. Start with > for safe Local commands.",
-            "구문은 따옴표로 묶고, 안전한 로컬 명령은 >로 시작하세요."
+            "구문은 따옴표로 묶고, 안전한 로컬 명령은 >로 시작하세요.",
+            "フレーズは引用符で囲み、安全なローカルコマンドは > で始めてください。"
         ),
     ];
     rows.into_iter()
@@ -1307,7 +1409,8 @@ fn render_rebuild_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(t!(
             " Full Local index rebuild ",
-            " 로컬 인덱스 전체 재구축 "
+            " 로컬 인덱스 전체 재구축 ",
+            " ローカルインデックスの完全再構築 "
         ))
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
@@ -1323,7 +1426,8 @@ fn render_rebuild_confirm(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(t!(
             "Rebuild the complete Local Deck index? The last committed index stays searchable until the new scan finishes.",
-            "로컬 덱 인덱스를 전체 재구축할까요? 새 스캔이 끝날 때까지 마지막으로 완료된 인덱스는 계속 검색할 수 있습니다."
+            "로컬 덱 인덱스를 전체 재구축할까요? 새 스캔이 끝날 때까지 마지막으로 완료된 인덱스는 계속 검색할 수 있습니다.",
+            "ローカルデッキのインデックスを完全に再構築しますか? 新しいスキャンが終わるまで、最後に確定したインデックスは引き続き検索できます。"
         ))
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true })
@@ -1333,12 +1437,12 @@ fn render_rebuild_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalFindRebuild,
-            t!(" Rebuild (Enter) ", " 재구축 (Enter) "),
+            t!(" Rebuild (Enter) ", " 재구축 (Enter) ", " 再構築 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalFindRebuild,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -1362,7 +1466,7 @@ fn render_bulk_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: &Local
     frame.render_widget(Clear, popup);
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" Queue capacity ", " 큐 용량 "))
+        .title(t!(" Queue capacity ", " 큐 용량 ", " キュー容量 "))
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -1375,42 +1479,59 @@ fn render_bulk_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: &Local
     ])
     .split(inner);
     let action = match confirm.action {
-        LocalFindBulkAction::Play => t!("play", "재생"),
-        LocalFindBulkAction::Enqueue => t!("add", "추가"),
-        LocalFindBulkAction::ShufflePlay => t!("shuffle-play", "셔플 재생"),
+        LocalFindBulkAction::Play => t!("play", "재생", "再生"),
+        LocalFindBulkAction::Enqueue => t!("add", "추가", "追加"),
+        LocalFindBulkAction::ShufflePlay => t!("shuffle-play", "셔플 재생", "シャッフル再生"),
     };
     let omitted = confirm
         .track_ids
         .len()
         .saturating_sub(confirm.accepted_count);
-    let prompt = if confirm.capacity_recalculated && crate::i18n::is_korean() {
-        format!(
-            "큐가 바뀌었습니다. 전체 {}곡 중 {}곡을 {}하고 {}곡은 제외할까요?",
-            confirm.track_ids.len(),
-            confirm.accepted_count,
-            action,
-            omitted
-        )
-    } else if confirm.capacity_recalculated {
-        format!(
-            "Queue changed. {action} {} of {} tracks and omit {omitted}?",
-            confirm.accepted_count,
-            confirm.track_ids.len()
-        )
-    } else if crate::i18n::is_korean() {
-        format!(
-            "전체 {}곡 중 앞의 {}곡을 {}하고 {}곡은 제외할까요?",
-            confirm.track_ids.len(),
-            confirm.accepted_count,
-            action,
-            omitted
-        )
+    let lang = crate::i18n::current();
+    let prompt = if confirm.capacity_recalculated {
+        match lang {
+            Language::Korean => format!(
+                "큐가 바뀌었습니다. 전체 {}곡 중 {}곡을 {}하고 {}곡은 제외할까요?",
+                confirm.track_ids.len(),
+                confirm.accepted_count,
+                action,
+                omitted
+            ),
+            Language::Japanese => format!(
+                "キューが変わりました。全{}曲のうち{}曲を{}し、{}曲を除外しますか?",
+                confirm.track_ids.len(),
+                confirm.accepted_count,
+                action,
+                omitted
+            ),
+            _ => format!(
+                "Queue changed. {action} {} of {} tracks and omit {omitted}?",
+                confirm.accepted_count,
+                confirm.track_ids.len()
+            ),
+        }
     } else {
-        format!(
-            "{action} the first {} of {} tracks and omit {omitted}?",
-            confirm.accepted_count,
-            confirm.track_ids.len(),
-        )
+        match lang {
+            Language::Korean => format!(
+                "전체 {}곡 중 앞의 {}곡을 {}하고 {}곡은 제외할까요?",
+                confirm.track_ids.len(),
+                confirm.accepted_count,
+                action,
+                omitted
+            ),
+            Language::Japanese => format!(
+                "全{}曲のうち先頭の{}曲を{}し、{}曲を除外しますか?",
+                confirm.track_ids.len(),
+                confirm.accepted_count,
+                action,
+                omitted
+            ),
+            _ => format!(
+                "{action} the first {} of {} tracks and omit {omitted}?",
+                confirm.accepted_count,
+                confirm.track_ids.len(),
+            ),
+        }
     };
     frame.render_widget(
         Paragraph::new(prompt)
@@ -1422,12 +1543,12 @@ fn render_bulk_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: &Local
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalFindBulk,
-            t!(" Continue (Enter) ", " 계속 (Enter) "),
+            t!(" Continue (Enter) ", " 계속 (Enter) ", " 続行 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelLocalFindBulk,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(
@@ -1457,36 +1578,36 @@ fn centered_fixed(area: Rect, width: u16, height: u16) -> Rect {
 
 fn scope_label(scope: LocalFindScope) -> &'static str {
     match scope {
-        LocalFindScope::All => t!("All", "전체"),
-        LocalFindScope::Tracks => t!("Tracks", "곡"),
-        LocalFindScope::Albums => t!("Albums", "앨범"),
-        LocalFindScope::Artists => t!("Artists", "아티스트"),
-        LocalFindScope::Genres => t!("Genres", "장르"),
-        LocalFindScope::Folders => t!("Folders", "폴더"),
-        LocalFindScope::Playlists => t!("Playlists", "플레이리스트"),
+        LocalFindScope::All => t!("All", "전체", "すべて"),
+        LocalFindScope::Tracks => t!("Tracks", "곡", "曲"),
+        LocalFindScope::Albums => t!("Albums", "앨범", "アルバム"),
+        LocalFindScope::Artists => t!("Artists", "아티스트", "アーティスト"),
+        LocalFindScope::Genres => t!("Genres", "장르", "ジャンル"),
+        LocalFindScope::Folders => t!("Folders", "폴더", "フォルダー"),
+        LocalFindScope::Playlists => t!("Playlists", "플레이리스트", "プレイリスト"),
     }
 }
 
 fn scope_short_label(scope: LocalFindScope) -> &'static str {
     match scope {
-        LocalFindScope::All => t!("All", "전체"),
-        LocalFindScope::Tracks => t!("Tracks", "곡"),
-        LocalFindScope::Albums => t!("Albums", "앨범"),
-        LocalFindScope::Artists => t!("Artists", "아티스트"),
-        LocalFindScope::Genres => t!("Genres", "장르"),
-        LocalFindScope::Folders => t!("Folders", "폴더"),
-        LocalFindScope::Playlists => t!("Lists", "목록"),
+        LocalFindScope::All => t!("All", "전체", "すべて"),
+        LocalFindScope::Tracks => t!("Tracks", "곡", "曲"),
+        LocalFindScope::Albums => t!("Albums", "앨범", "アルバム"),
+        LocalFindScope::Artists => t!("Artists", "아티스트", "アーティスト"),
+        LocalFindScope::Genres => t!("Genres", "장르", "ジャンル"),
+        LocalFindScope::Folders => t!("Folders", "폴더", "フォルダー"),
+        LocalFindScope::Playlists => t!("Lists", "목록", "リスト"),
     }
 }
 
 fn sort_label(sort: LocalFindSort) -> &'static str {
     match sort {
-        LocalFindSort::Relevance => t!("Relevance", "관련도"),
-        LocalFindSort::Title => t!("Title", "제목"),
-        LocalFindSort::Artist => t!("Artist", "아티스트"),
-        LocalFindSort::Album => t!("Album", "앨범"),
-        LocalFindSort::Year => t!("Year", "연도"),
-        LocalFindSort::Recent => t!("Recent", "최근"),
+        LocalFindSort::Relevance => t!("Relevance", "관련도", "関連度"),
+        LocalFindSort::Title => t!("Title", "제목", "タイトル"),
+        LocalFindSort::Artist => t!("Artist", "아티스트", "アーティスト"),
+        LocalFindSort::Album => t!("Album", "앨범", "アルバム"),
+        LocalFindSort::Year => t!("Year", "연도", "年"),
+        LocalFindSort::Recent => t!("Recent", "최근", "最近"),
     }
 }
 

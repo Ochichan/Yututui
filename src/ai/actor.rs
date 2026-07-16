@@ -333,14 +333,22 @@ impl AiActor {
             if let Some(reason) = resp.block_reason() {
                 self.emit(AiEvent::Error(format!(
                     "{} ({reason}).",
-                    crate::t!("Request blocked", "요청이 차단되었어요")
+                    crate::t!(
+                        "Request blocked",
+                        "요청이 차단되었어요",
+                        "リクエストがブロックされました"
+                    )
                 )));
                 return;
             }
             let Some(content) = resp.content().cloned() else {
                 self.emit(AiEvent::Error(
-                    crate::t!("Empty response from Gemini.", "Gemini 응답이 비어 있어요.")
-                        .to_owned(),
+                    crate::t!(
+                        "Empty response from Gemini.",
+                        "Gemini 응답이 비어 있어요.",
+                        "Geminiの応答が空です。"
+                    )
+                    .to_owned(),
                 ));
                 return;
             };
@@ -364,7 +372,11 @@ impl AiActor {
                 trim_history(&mut self.history);
                 let mut out = text;
                 if resp.finish_reason() == Some("MAX_TOKENS") {
-                    out.push_str(crate::t!("\n…(response truncated)", "\n…(응답이 잘렸어요)"));
+                    out.push_str(crate::t!(
+                        "\n…(response truncated)",
+                        "\n…(응답이 잘렸어요)",
+                        "\n…(応答が途中で切れました)"
+                    ));
                 }
                 self.emit(AiEvent::Chat(out));
                 return;
@@ -397,7 +409,8 @@ impl AiActor {
         self.emit(AiEvent::Error(
             crate::t!(
                 "Stopped after too many tool steps — try a simpler request.",
-                "도구 호출이 너무 많아 중단했어요 — 좀 더 간단히 요청해 보세요."
+                "도구 호출이 너무 많아 중단했어요 — 좀 더 간단히 요청해 보세요.",
+                "ツール呼び出しが多すぎて中断しました — もう少し簡単に頼んでみてください。"
             )
             .to_owned(),
         ));

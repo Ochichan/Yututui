@@ -1056,25 +1056,25 @@ impl LibraryTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            LibraryTab::All => t!("All", "전체"),
-            LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
-            LibraryTab::History => t!("History", "기록"),
-            LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요"),
-            LibraryTab::Radio => t!("Radio History", "라디오 히스토리"),
-            LibraryTab::Downloads => t!("Downloads", "다운로드"),
-            LibraryTab::Playlists => t!("Playlists", "플레이리스트"),
+            LibraryTab::All => t!("All", "전체", "すべて"),
+            LibraryTab::Favorites => t!("Favorites", "즐겨찾기", "お気に入り"),
+            LibraryTab::History => t!("History", "기록", "履歴"),
+            LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요", "ラジオ高評価"),
+            LibraryTab::Radio => t!("Radio History", "라디오 히스토리", "ラジオ履歴"),
+            LibraryTab::Downloads => t!("Downloads", "다운로드", "ダウンロード"),
+            LibraryTab::Playlists => t!("Playlists", "플레이리스트", "プレイリスト"),
         }
     }
 
     pub fn compact_label(self) -> &'static str {
         match self {
-            LibraryTab::All => t!("All", "전체"),
-            LibraryTab::Favorites => t!("Fav", "즐겨찾기"),
-            LibraryTab::History => t!("Hist", "기록"),
-            LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요"),
-            LibraryTab::Radio => t!("R-Hist", "라디오 기록"),
-            LibraryTab::Downloads => t!("Down", "다운"),
-            LibraryTab::Playlists => t!("Lists", "플리"),
+            LibraryTab::All => t!("All", "전체", "すべて"),
+            LibraryTab::Favorites => t!("Fav", "즐겨찾기", "お気に入り"),
+            LibraryTab::History => t!("Hist", "기록", "履歴"),
+            LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요", "ラジオ高評価"),
+            LibraryTab::Radio => t!("R-Hist", "라디오 기록", "ラジオ履歴"),
+            LibraryTab::Downloads => t!("Down", "다운", "DL"),
+            LibraryTab::Playlists => t!("Lists", "플리", "リスト"),
         }
     }
 }
@@ -1089,8 +1089,20 @@ pub enum RadioModeConfirm {
 impl RadioModeConfirm {
     pub fn title(self) -> &'static str {
         match self {
-            RadioModeConfirm::Enter => t!(" Confirm radio mode ", " 라디오 모드 확인 "),
-            RadioModeConfirm::Exit => t!(" Confirm normal mode ", " 일반 모드 확인 "),
+            RadioModeConfirm::Enter => {
+                t!(
+                    " Confirm radio mode ",
+                    " 라디오 모드 확인 ",
+                    " ラジオモード確認 "
+                )
+            }
+            RadioModeConfirm::Exit => {
+                t!(
+                    " Confirm normal mode ",
+                    " 일반 모드 확인 ",
+                    " 通常モード確認 "
+                )
+            }
         }
     }
 
@@ -1099,10 +1111,15 @@ impl RadioModeConfirm {
             RadioModeConfirm::Enter => {
                 t!(
                     "Switch to dedicated Radio mode?",
-                    "라디오 전용 모드로 전환할까요?"
+                    "라디오 전용 모드로 전환할까요?",
+                    "ラジオ専用モードに切り替えますか?"
                 )
             }
-            RadioModeConfirm::Exit => t!("Leave Radio mode?", "라디오 모드에서 나갈까요?"),
+            RadioModeConfirm::Exit => t!(
+                "Leave Radio mode?",
+                "라디오 모드에서 나갈까요?",
+                "ラジオモードを終了しますか?"
+            ),
         }
     }
 
@@ -1110,11 +1127,13 @@ impl RadioModeConfirm {
         match self {
             RadioModeConfirm::Enter => t!(
                 "Search becomes Radio Browser only; Library shows radio favorites and history.",
-                "검색은 Radio Browser만, 라이브러리는 라디오 좋아요와 히스토리만 표시됩니다."
+                "검색은 Radio Browser만, 라이브러리는 라디오 좋아요와 히스토리만 표시됩니다.",
+                "検索はRadio Browserのみ、ライブラリはラジオの高評価と履歴のみ表示します。"
             ),
             RadioModeConfirm::Exit => t!(
                 "Your normal theme, Search sources, Library tabs, and queue return.",
-                "일반 테마, 검색 소스, 라이브러리 탭, 큐가 돌아옵니다."
+                "일반 테마, 검색 소스, 라이브러리 탭, 큐가 돌아옵니다.",
+                "通常のテーマ、検索ソース、ライブラリタブ、キューが元に戻ります。"
             ),
         }
     }
@@ -1144,8 +1163,16 @@ pub struct LocalImportSearchContinuation {
 impl LocalModeConfirm {
     pub fn title(self) -> &'static str {
         match self {
-            LocalModeConfirm::Enter => t!(" Confirm local player ", " 로컬 플레이어 확인 "),
-            LocalModeConfirm::Exit => t!(" Confirm library mode ", " 라이브러리 모드 확인 "),
+            LocalModeConfirm::Enter => t!(
+                " Confirm local player ",
+                " 로컬 플레이어 확인 ",
+                " ローカルプレイヤー確認 "
+            ),
+            LocalModeConfirm::Exit => t!(
+                " Confirm library mode ",
+                " 라이브러리 모드 확인 ",
+                " ライブラリモード確認 "
+            ),
         }
     }
 
@@ -1153,12 +1180,14 @@ impl LocalModeConfirm {
         match self {
             LocalModeConfirm::Enter => t!(
                 "Switch to Local Player mode?",
-                "로컬 플레이어 모드로 전환할까요?"
+                "로컬 플레이어 모드로 전환할까요?",
+                "ローカルプレイヤーモードに切り替えますか?"
             ),
             LocalModeConfirm::Exit => {
                 t!(
                     "Leave Local Player mode?",
-                    "로컬 플레이어 모드에서 나갈까요?"
+                    "로컬 플레이어 모드에서 나갈까요?",
+                    "ローカルプレイヤーモードを終了しますか?"
                 )
             }
         }
@@ -1168,11 +1197,13 @@ impl LocalModeConfirm {
         match self {
             LocalModeConfirm::Enter => t!(
                 "Browse downloaded local audio in an immersive Library shell.",
-                "라이브러리 안에서 다운로드된 로컬 오디오를 전용 화면으로 탐색합니다."
+                "라이브러리 안에서 다운로드된 로컬 오디오를 전용 화면으로 탐색합니다.",
+                "ライブラリ内でダウンロード済みのローカル音声を専用画面で閲覧します。"
             ),
             LocalModeConfirm::Exit => t!(
                 "Return to the normal Library tabs.",
-                "일반 라이브러리 탭으로 돌아갑니다."
+                "일반 라이브러리 탭으로 돌아갑니다.",
+                "通常のライブラリタブに戻ります。"
             ),
         }
     }
@@ -1190,38 +1221,53 @@ pub struct LocalOrganizeConfirm {
 
 impl LocalOrganizeConfirm {
     pub fn title(&self) -> &'static str {
-        t!(" Commit import files ", " 임포트 파일 커밋 ")
+        t!(
+            " Commit import files ",
+            " 임포트 파일 커밋 ",
+            " インポートファイルのコミット "
+        )
     }
 
     pub fn prompt(&self) -> String {
-        if crate::i18n::is_korean() {
-            format!("{}개 파일을 로컬 라이브러리로 이동할까요?", self.move_count)
-        } else {
-            format!(
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("{}개 파일을 로컬 라이브러리로 이동할까요?", self.move_count)
+            }
+            crate::i18n::Language::Japanese => format!(
+                "{}件のファイルをローカルライブラリに移動しますか?",
+                self.move_count
+            ),
+            _ => format!(
                 "Move {} import file{} into the local library?",
                 self.move_count,
                 if self.move_count == 1 { "" } else { "s" }
-            )
+            ),
         }
     }
 
     pub fn detail(&self) -> String {
-        if crate::i18n::is_korean() {
-            format!(
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
                 "{} -> {}  (이미 정리됨 {}, 건너뜀 {})",
                 self.session_id,
                 self.root.display(),
                 self.already_count,
                 self.skipped_count
-            )
-        } else {
-            format!(
+            ),
+            crate::i18n::Language::Japanese => format!(
+                "{} -> {}  (整理済み {}, スキップ {})",
+                self.session_id,
+                self.root.display(),
+                self.already_count,
+                self.skipped_count
+            ),
+            _ => format!(
                 "{} -> {}  ({} already, {} skipped)",
                 self.session_id,
                 self.root.display(),
                 self.already_count,
                 self.skipped_count
-            )
+            ),
         }
     }
 }
@@ -1240,27 +1286,33 @@ pub struct LocalImportAcceptAllConfirm {
 
 impl LocalImportAcceptAllConfirm {
     pub fn title(&self) -> &'static str {
-        t!(" Mark all Ready ", " 전체 준비 완료 표시 ")
+        t!(
+            " Mark all Ready ",
+            " 전체 준비 완료 표시 ",
+            " 全件を準備完了にマーク "
+        )
     }
 
     pub fn prompt(&self) -> String {
-        if crate::i18n::is_korean() {
-            format!(
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
                 "안전한 후보 {}개를 준비 완료로 표시할까요?",
                 self.candidate_count
-            )
-        } else {
-            format!(
+            ),
+            crate::i18n::Language::Japanese => {
+                format!("安全な候補{}件を準備完了にしますか?", self.candidate_count)
+            }
+            _ => format!(
                 "Mark {} safe candidate{} Ready for this playlist?",
                 self.candidate_count,
                 if self.candidate_count == 1 { "" } else { "s" },
-            )
+            ),
         }
     }
 
     pub fn detail(&self) -> String {
-        if crate::i18n::is_korean() {
-            format!(
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
                 "준비 {}/{} · 로컬 {}/{} · 남을 검토 {} · 누락 {}",
                 self.ready_count,
                 self.total_count,
@@ -1268,9 +1320,17 @@ impl LocalImportAcceptAllConfirm {
                 self.total_count,
                 self.review_left,
                 self.missing_left
-            )
-        } else {
-            format!(
+            ),
+            crate::i18n::Language::Japanese => format!(
+                "準備 {}/{} · ローカル {}/{} · 確認残り {} · 欠落 {}",
+                self.ready_count,
+                self.total_count,
+                self.local_count,
+                self.total_count,
+                self.review_left,
+                self.missing_left
+            ),
+            _ => format!(
                 "Ready {}/{} · Local {}/{} · review left {} · missing {}",
                 self.ready_count,
                 self.total_count,
@@ -1278,7 +1338,7 @@ impl LocalImportAcceptAllConfirm {
                 self.total_count,
                 self.review_left,
                 self.missing_left
-            )
+            ),
         }
     }
 }
@@ -1315,16 +1375,16 @@ impl LocalSection {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Home => t!("Home", "홈"),
-            Self::Tracks => t!("Tracks", "곡"),
-            Self::Albums => t!("Albums", "앨범"),
-            Self::Artists => t!("Artists", "아티스트"),
-            Self::Genres => t!("Genres", "장르"),
-            Self::Folders => t!("Folders", "폴더"),
-            Self::SmartLists => t!("Smart Lists", "스마트 목록"),
-            Self::ScanErrors => t!("Scan Errors", "스캔 오류"),
-            Self::ImportSessions => t!("Import Sessions", "임포트 세션"),
-            Self::Inbox => t!("Inbox", "인박스"),
+            Self::Home => t!("Home", "홈", "ホーム"),
+            Self::Tracks => t!("Tracks", "곡", "曲"),
+            Self::Albums => t!("Albums", "앨범", "アルバム"),
+            Self::Artists => t!("Artists", "아티스트", "アーティスト"),
+            Self::Genres => t!("Genres", "장르", "ジャンル"),
+            Self::Folders => t!("Folders", "폴더", "フォルダー"),
+            Self::SmartLists => t!("Smart Lists", "스마트 목록", "スマートリスト"),
+            Self::ScanErrors => t!("Scan Errors", "스캔 오류", "スキャンエラー"),
+            Self::ImportSessions => t!("Import Sessions", "임포트 세션", "インポートセッション"),
+            Self::Inbox => t!("Inbox", "인박스", "インボックス"),
         }
     }
 

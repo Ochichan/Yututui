@@ -54,7 +54,8 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = t!(
                     "Set right click to Context menu or Disabled before enabling right double-click",
-                    "우더블클릭을 켜려면 먼저 우클릭을 문맥 메뉴 또는 사용 안 함으로 바꾸세요"
+                    "우더블클릭을 켜려면 먼저 우클릭을 문맥 메뉴 또는 사용 안 함으로 바꾸세요",
+                    "先に右クリックをコンテキストメニューまたは無効に変更してください"
                 )
                 .to_owned();
             }
@@ -76,25 +77,30 @@ impl App {
             match st.mousemap.reset_binding(context, gesture) {
                 Ok(()) => {
                     self.status.kind = StatusKind::Info;
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!(
+                    self.status.text = match crate::i18n::current() {
+                        crate::i18n::Language::Korean => format!(
                             "{} · {} 을(를) 기본값으로 되돌림",
                             context.title(),
                             gesture.human_label()
-                        )
-                    } else {
-                        format!(
+                        ),
+                        crate::i18n::Language::Japanese => format!(
+                            "{} · {} をデフォルトに戻しました",
+                            context.title(),
+                            gesture.human_label()
+                        ),
+                        _ => format!(
                             "Reset {} · {} to default",
                             context.title(),
                             gesture.human_label()
-                        )
+                        ),
                     };
                 }
                 Err(MouseBindingError::DirectRightClickConflict { .. }) => {
                     self.status.kind = StatusKind::Error;
                     self.status.text = t!(
                         "Reset right click first, then reset right double-click",
-                        "먼저 우클릭을 초기화한 뒤 우더블클릭을 초기화하세요"
+                        "먼저 우클릭을 초기화한 뒤 우더블클릭을 초기화하세요",
+                        "先に右クリックを、次に右ダブルクリックをリセットしてください"
                     )
                     .to_owned();
                 }

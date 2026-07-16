@@ -177,13 +177,16 @@ impl ThemeConfig {
     pub fn set_override(&mut self, role: ThemeRole, value: &str) -> Result<(), String> {
         self.palette = OnceLock::new();
         let Some(canonical) = normalize_value(value) else {
-            return Err(if crate::i18n::is_korean() {
-                format!(
+            return Err(match crate::i18n::current() {
+                crate::i18n::Language::Korean => format!(
                     "{} 색상이 올바르지 않습니다: #RRGGBB 또는 none 사용",
                     role.label()
-                )
-            } else {
-                format!("Invalid color for {}: use #RRGGBB or none", role.label())
+                ),
+                crate::i18n::Language::Japanese => format!(
+                    "{} の色が正しくありません: #RRGGBB または none を使用",
+                    role.label()
+                ),
+                _ => format!("Invalid color for {}: use #RRGGBB or none", role.label()),
             });
         };
         let preset = self.preset_enum();
@@ -461,91 +464,211 @@ impl ThemeRole {
 
     pub fn label(self) -> &'static str {
         match self {
-            ThemeRole::Background => t!("Background", "배경"),
-            ThemeRole::TextPrimary => t!("Text primary", "기본 텍스트"),
-            ThemeRole::TextMuted => t!("Text muted", "흐린 텍스트"),
-            ThemeRole::TextSubtle => t!("Text subtle", "보조 텍스트"),
-            ThemeRole::TextInverse => t!("Text inverse", "반전 텍스트"),
-            ThemeRole::BorderPrimary => t!("Border primary", "기본 테두리"),
-            ThemeRole::BorderFocused => t!("Border focused", "포커스 테두리"),
-            ThemeRole::BorderMuted => t!("Border muted", "흐린 테두리"),
-            ThemeRole::Accent => t!("Accent", "강조"),
-            ThemeRole::AccentAlt => t!("Accent alt", "보조 강조"),
-            ThemeRole::Success => t!("Success", "성공"),
-            ThemeRole::Warning => t!("Warning", "경고"),
-            ThemeRole::Error => t!("Error", "오류"),
-            ThemeRole::SelectionFg => t!("Selection text", "선택 텍스트"),
-            ThemeRole::SelectionBg => t!("Selection background", "선택 배경"),
-            ThemeRole::SelectionInactiveFg => t!("Inactive selection text", "비활성 선택 텍스트"),
+            ThemeRole::Background => t!("Background", "배경", "背景"),
+            ThemeRole::TextPrimary => t!("Text primary", "기본 텍스트", "基本テキスト"),
+            ThemeRole::TextMuted => t!("Text muted", "흐린 텍스트", "淡色テキスト"),
+            ThemeRole::TextSubtle => t!("Text subtle", "보조 텍스트", "補助テキスト"),
+            ThemeRole::TextInverse => t!("Text inverse", "반전 텍스트", "反転テキスト"),
+            ThemeRole::BorderPrimary => t!("Border primary", "기본 테두리", "基本枠線"),
+            ThemeRole::BorderFocused => t!("Border focused", "포커스 테두리", "フォーカス枠線"),
+            ThemeRole::BorderMuted => t!("Border muted", "흐린 테두리", "淡色枠線"),
+            ThemeRole::Accent => t!("Accent", "강조", "アクセント"),
+            ThemeRole::AccentAlt => t!("Accent alt", "보조 강조", "補助アクセント"),
+            ThemeRole::Success => t!("Success", "성공", "成功"),
+            ThemeRole::Warning => t!("Warning", "경고", "警告"),
+            ThemeRole::Error => t!("Error", "오류", "エラー"),
+            ThemeRole::SelectionFg => t!("Selection text", "선택 텍스트", "選択テキスト"),
+            ThemeRole::SelectionBg => t!("Selection background", "선택 배경", "選択背景"),
+            ThemeRole::SelectionInactiveFg => t!(
+                "Inactive selection text",
+                "비활성 선택 텍스트",
+                "非アクティブ選択テキスト"
+            ),
             ThemeRole::SelectionInactiveBg => {
-                t!("Inactive selection background", "비활성 선택 배경")
+                t!(
+                    "Inactive selection background",
+                    "비활성 선택 배경",
+                    "非アクティブ選択背景"
+                )
             }
-            ThemeRole::GaugeFilled => t!("Seekbar filled", "탐색바 채움"),
-            ThemeRole::GaugeEmpty => t!("Seekbar empty", "탐색바 빈 부분"),
-            ThemeRole::PlayerControl => t!("Player controls", "플레이어 컨트롤"),
-            ThemeRole::PlayerLabel => t!("Player labels", "플레이어 라벨"),
-            ThemeRole::HelpGroup => t!("Help group", "도움말 그룹"),
-            ThemeRole::HelpKey => t!("Help key", "도움말 키"),
-            ThemeRole::HelpAction => t!("Help action", "도움말 동작"),
-            ThemeRole::SettingsGroup => t!("Settings group", "설정 그룹"),
-            ThemeRole::SettingsLabel => t!("Settings label", "설정 라벨"),
-            ThemeRole::SettingsValue => t!("Settings value", "설정 값"),
-            ThemeRole::SettingsValueFocused => t!("Settings focused value", "설정 포커스 값"),
-            ThemeRole::AiUser => t!("DJ Gem user", "DJ Gem 사용자"),
-            ThemeRole::AiAssistant => t!("DJ Gem assistant", "DJ Gem 어시스턴트"),
-            ThemeRole::AiError => t!("DJ Gem error", "DJ Gem 오류"),
-            ThemeRole::AiThinking => t!("DJ Gem thinking", "DJ Gem 생각 중"),
-            ThemeRole::LyricsCurrent => t!("Lyrics current", "현재 가사"),
-            ThemeRole::LyricsDim => t!("Lyrics dim", "흐린 가사"),
+            ThemeRole::GaugeFilled => t!("Seekbar filled", "탐색바 채움", "シークバー(塗り)"),
+            ThemeRole::GaugeEmpty => t!("Seekbar empty", "탐색바 빈 부분", "シークバー(空き)"),
+            ThemeRole::PlayerControl => t!("Player controls", "플레이어 컨트롤", "プレイヤー操作"),
+            ThemeRole::PlayerLabel => t!("Player labels", "플레이어 라벨", "プレイヤーラベル"),
+            ThemeRole::HelpGroup => t!("Help group", "도움말 그룹", "ヘルプグループ"),
+            ThemeRole::HelpKey => t!("Help key", "도움말 키", "ヘルプキー"),
+            ThemeRole::HelpAction => t!("Help action", "도움말 동작", "ヘルプ操作"),
+            ThemeRole::SettingsGroup => t!("Settings group", "설정 그룹", "設定グループ"),
+            ThemeRole::SettingsLabel => t!("Settings label", "설정 라벨", "設定ラベル"),
+            ThemeRole::SettingsValue => t!("Settings value", "설정 값", "設定値"),
+            ThemeRole::SettingsValueFocused => {
+                t!(
+                    "Settings focused value",
+                    "설정 포커스 값",
+                    "設定フォーカス値"
+                )
+            }
+            ThemeRole::AiUser => t!("DJ Gem user", "DJ Gem 사용자", "DJ Gem ユーザー"),
+            ThemeRole::AiAssistant => {
+                t!(
+                    "DJ Gem assistant",
+                    "DJ Gem 어시스턴트",
+                    "DJ Gem アシスタント"
+                )
+            }
+            ThemeRole::AiError => t!("DJ Gem error", "DJ Gem 오류", "DJ Gem エラー"),
+            ThemeRole::AiThinking => t!("DJ Gem thinking", "DJ Gem 생각 중", "DJ Gem 思考中"),
+            ThemeRole::LyricsCurrent => t!("Lyrics current", "현재 가사", "現在の歌詞"),
+            ThemeRole::LyricsDim => t!("Lyrics dim", "흐린 가사", "淡色の歌詞"),
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            ThemeRole::Background => t!("screen and panel background", "화면 및 패널 배경"),
-            ThemeRole::TextPrimary => t!("normal foreground text", "일반 전경 텍스트"),
-            ThemeRole::TextMuted => t!("quiet hints and empty states", "조용한 힌트와 빈 상태"),
-            ThemeRole::TextSubtle => t!("secondary labels", "보조 라벨"),
-            ThemeRole::TextInverse => t!("text drawn on accent fills", "강조 채움 위 텍스트"),
+            ThemeRole::Background => {
+                t!(
+                    "screen and panel background",
+                    "화면 및 패널 배경",
+                    "画面とパネルの背景"
+                )
+            }
+            ThemeRole::TextPrimary => {
+                t!(
+                    "normal foreground text",
+                    "일반 전경 텍스트",
+                    "通常の前景テキスト"
+                )
+            }
+            ThemeRole::TextMuted => t!(
+                "quiet hints and empty states",
+                "조용한 힌트와 빈 상태",
+                "控えめなヒントと空の状態"
+            ),
+            ThemeRole::TextSubtle => t!("secondary labels", "보조 라벨", "補助ラベル"),
+            ThemeRole::TextInverse => t!(
+                "text drawn on accent fills",
+                "강조 채움 위 텍스트",
+                "アクセント塗り上のテキスト"
+            ),
             ThemeRole::BorderPrimary => {
-                t!("main screen and popup borders", "주 화면 및 팝업 테두리")
+                t!(
+                    "main screen and popup borders",
+                    "주 화면 및 팝업 테두리",
+                    "メイン画面とポップアップの枠線"
+                )
             }
             ThemeRole::BorderFocused => {
-                t!("focused input/list borders", "포커스된 입력/목록 테두리")
+                t!(
+                    "focused input/list borders",
+                    "포커스된 입력/목록 테두리",
+                    "フォーカス中の入力/リスト枠線"
+                )
             }
-            ThemeRole::BorderMuted => t!("inactive input/list borders", "비활성 입력/목록 테두리"),
-            ThemeRole::Accent => t!("cyan-style emphasis", "청록 계열 강조"),
-            ThemeRole::AccentAlt => t!("magenta-style emphasis", "자홍 계열 강조"),
-            ThemeRole::Success => t!("positive state", "긍정 상태"),
-            ThemeRole::Warning => t!("warnings and loading", "경고 및 로딩"),
-            ThemeRole::Error => t!("errors", "오류"),
-            ThemeRole::SelectionFg => t!("focused selected row text", "포커스된 선택 행 텍스트"),
+            ThemeRole::BorderMuted => t!(
+                "inactive input/list borders",
+                "비활성 입력/목록 테두리",
+                "非アクティブな入力/リスト枠線"
+            ),
+            ThemeRole::Accent => t!("cyan-style emphasis", "청록 계열 강조", "シアン系の強調"),
+            ThemeRole::AccentAlt => {
+                t!(
+                    "magenta-style emphasis",
+                    "자홍 계열 강조",
+                    "マゼンタ系の強調"
+                )
+            }
+            ThemeRole::Success => t!("positive state", "긍정 상태", "成功状態"),
+            ThemeRole::Warning => t!("warnings and loading", "경고 및 로딩", "警告と読み込み"),
+            ThemeRole::Error => t!("errors", "오류", "エラー"),
+            ThemeRole::SelectionFg => t!(
+                "focused selected row text",
+                "포커스된 선택 행 텍스트",
+                "フォーカス中の選択行テキスト"
+            ),
             ThemeRole::SelectionBg => {
-                t!("focused selected row background", "포커스된 선택 행 배경")
+                t!(
+                    "focused selected row background",
+                    "포커스된 선택 행 배경",
+                    "フォーカス中の選択行背景"
+                )
             }
             ThemeRole::SelectionInactiveFg => {
-                t!("unfocused selected row text", "비포커스 선택 행 텍스트")
+                t!(
+                    "unfocused selected row text",
+                    "비포커스 선택 행 텍스트",
+                    "非フォーカスの選択行テキスト"
+                )
             }
             ThemeRole::SelectionInactiveBg => {
-                t!("unfocused selected row background", "비포커스 선택 행 배경")
+                t!(
+                    "unfocused selected row background",
+                    "비포커스 선택 행 배경",
+                    "非フォーカスの選択行背景"
+                )
             }
-            ThemeRole::GaugeFilled => t!("filled seekbar", "채워진 탐색바"),
-            ThemeRole::GaugeEmpty => t!("empty seekbar", "빈 탐색바"),
-            ThemeRole::PlayerControl => t!("transport button text", "재생 버튼 텍스트"),
-            ThemeRole::PlayerLabel => t!("player status labels", "플레이어 상태 라벨"),
-            ThemeRole::HelpGroup => t!("help section headers", "도움말 섹션 헤더"),
-            ThemeRole::HelpKey => t!("help key column", "도움말 키 열"),
-            ThemeRole::HelpAction => t!("help action names", "도움말 동작 이름"),
-            ThemeRole::SettingsGroup => t!("settings/key group names", "설정/키 그룹 이름"),
-            ThemeRole::SettingsLabel => t!("settings row labels", "설정 행 라벨"),
-            ThemeRole::SettingsValue => t!("settings row values", "설정 행 값"),
-            ThemeRole::SettingsValueFocused => t!("focused settings value", "포커스된 설정 값"),
-            ThemeRole::AiUser => t!("user messages", "사용자 메시지"),
-            ThemeRole::AiAssistant => t!("assistant messages", "어시스턴트 메시지"),
-            ThemeRole::AiError => t!("assistant errors", "어시스턴트 오류"),
-            ThemeRole::AiThinking => t!("assistant thinking", "어시스턴트 생각 중"),
-            ThemeRole::LyricsCurrent => t!("current lyric line", "현재 가사 줄"),
-            ThemeRole::LyricsDim => t!("non-current lyric lines", "그 외 가사 줄"),
+            ThemeRole::GaugeFilled => t!("filled seekbar", "채워진 탐색바", "シークバーの塗り部分"),
+            ThemeRole::GaugeEmpty => t!("empty seekbar", "빈 탐색바", "シークバーの空き部分"),
+            ThemeRole::PlayerControl => {
+                t!(
+                    "transport button text",
+                    "재생 버튼 텍스트",
+                    "再生ボタンのテキスト"
+                )
+            }
+            ThemeRole::PlayerLabel => {
+                t!(
+                    "player status labels",
+                    "플레이어 상태 라벨",
+                    "プレイヤー状態ラベル"
+                )
+            }
+            ThemeRole::HelpGroup => {
+                t!(
+                    "help section headers",
+                    "도움말 섹션 헤더",
+                    "ヘルプセクション見出し"
+                )
+            }
+            ThemeRole::HelpKey => t!("help key column", "도움말 키 열", "ヘルプのキー列"),
+            ThemeRole::HelpAction => t!("help action names", "도움말 동작 이름", "ヘルプの操作名"),
+            ThemeRole::SettingsGroup => t!(
+                "settings/key group names",
+                "설정/키 그룹 이름",
+                "設定/キーのグループ名"
+            ),
+            ThemeRole::SettingsLabel => t!("settings row labels", "설정 행 라벨", "設定行のラベル"),
+            ThemeRole::SettingsValue => t!("settings row values", "설정 행 값", "設定行の値"),
+            ThemeRole::SettingsValueFocused => {
+                t!(
+                    "focused settings value",
+                    "포커스된 설정 값",
+                    "フォーカス中の設定値"
+                )
+            }
+            ThemeRole::AiUser => t!("user messages", "사용자 메시지", "ユーザーメッセージ"),
+            ThemeRole::AiAssistant => {
+                t!(
+                    "assistant messages",
+                    "어시스턴트 메시지",
+                    "アシスタントメッセージ"
+                )
+            }
+            ThemeRole::AiError => t!(
+                "assistant errors",
+                "어시스턴트 오류",
+                "アシスタントのエラー"
+            ),
+            ThemeRole::AiThinking => {
+                t!(
+                    "assistant thinking",
+                    "어시스턴트 생각 중",
+                    "アシスタントの思考中"
+                )
+            }
+            ThemeRole::LyricsCurrent => t!("current lyric line", "현재 가사 줄", "現在の歌詞行"),
+            ThemeRole::LyricsDim => {
+                t!("non-current lyric lines", "그 외 가사 줄", "その他の歌詞行")
+            }
         }
     }
 

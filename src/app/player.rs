@@ -101,7 +101,8 @@ impl App {
     pub(in crate::app) fn show_repeat_streaming_conflict(&mut self) {
         self.status.text = t!(
             "Can't use repeat while autoplay is on",
-            "자동재생 중에는 반복을 켤 수 없어요"
+            "자동재생 중에는 반복을 켤 수 없어요",
+            "自動再生中はリピートをオンにできません"
         )
         .to_owned();
         self.dirty = true;
@@ -111,7 +112,8 @@ impl App {
     pub(in crate::app) fn show_streaming_repeat_conflict(&mut self) {
         self.status.text = t!(
             "Can't use autoplay while repeat is on",
-            "반복 재생 중에는 자동재생을 켤 수 없어요"
+            "반복 재생 중에는 자동재생을 켤 수 없어요",
+            "リピート再生中は自動再生をオンにできません"
         )
         .to_owned();
         self.dirty = true;
@@ -197,7 +199,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Stream resolution failed — updating yt-dlp…",
-                "스트림 해석 실패 — yt-dlp 업데이트 중…"
+                "스트림 해석 실패 — yt-dlp 업데이트 중…",
+                "ストリーム解決に失敗 — yt-dlp 更新中…"
             )
             .to_owned();
             self.dirty = true;
@@ -378,51 +381,71 @@ impl App {
                     // Pre-IPC, an ended video meant audio stayed stranded paused until the
                     // user pressed `v` twice; with EOF observable it reads as a close.
                     self.finish_video_overlay(
-                        t!("Video ended", "영상이 끝났어요"),
+                        t!("Video ended", "영상이 끝났어요", "動画が終了しました"),
                         StatusKind::Info,
                     )
                 }
             }
             VideoEvent::Failed(detail) => {
                 let msg = if detail.is_empty() {
-                    t!("Video playback failed", "영상 재생에 실패했어요").to_owned()
+                    t!(
+                        "Video playback failed",
+                        "영상 재생에 실패했어요",
+                        "動画の再生に失敗しました"
+                    )
+                    .to_owned()
                 } else {
                     format!(
                         "{} ({detail})",
-                        t!("Video playback failed", "영상 재생에 실패했어요")
+                        t!(
+                            "Video playback failed",
+                            "영상 재생에 실패했어요",
+                            "動画の再生に失敗しました"
+                        )
                     )
                 };
                 self.finish_video_overlay(&msg, StatusKind::Error)
             }
-            VideoEvent::Quit => {
-                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
-            }
+            VideoEvent::Quit => self.finish_video_overlay(
+                t!("Video closed", "영상 닫음", "動画を閉じました"),
+                StatusKind::Info,
+            ),
             VideoEvent::Next => self.video_skip(true),
             VideoEvent::Prev => self.video_skip(false),
             VideoEvent::TogglePause => vec![Cmd::VideoTogglePause],
             VideoEvent::Paused(paused) => {
                 self.status.kind = StatusKind::Info;
                 self.status.text = if paused {
-                    t!("Video paused", "영상 일시정지").to_owned()
+                    t!("Video paused", "영상 일시정지", "動画を一時停止").to_owned()
                 } else {
-                    t!("Video playing", "영상 재생 중").to_owned()
+                    t!("Video playing", "영상 재생 중", "動画を再生中").to_owned()
                 };
                 self.dirty = true;
                 Vec::new()
             }
-            VideoEvent::Close => {
-                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
-            }
+            VideoEvent::Close => self.finish_video_overlay(
+                t!("Video closed", "영상 닫음", "動画を閉じました"),
+                StatusKind::Info,
+            ),
             VideoEvent::ToggleFullscreen => {
                 self.status.kind = StatusKind::Info;
-                self.status.text =
-                    t!("Toggling video fullscreen", "영상 전체 화면 전환").to_owned();
+                self.status.text = t!(
+                    "Toggling video fullscreen",
+                    "영상 전체 화면 전환",
+                    "動画の全画面切り替え"
+                )
+                .to_owned();
                 self.dirty = true;
                 vec![Cmd::VideoToggleFullscreen]
             }
             VideoEvent::ToggleMute => {
                 self.status.kind = StatusKind::Info;
-                self.status.text = t!("Toggling video mute", "영상 음소거 전환").to_owned();
+                self.status.text = t!(
+                    "Toggling video mute",
+                    "영상 음소거 전환",
+                    "動画のミュート切り替え"
+                )
+                .to_owned();
                 self.dirty = true;
                 vec![Cmd::VideoToggleMute]
             }
@@ -432,7 +455,10 @@ impl App {
                 if self.video_open() {
                     return Vec::new();
                 }
-                self.finish_video_overlay(t!("Video closed", "영상 닫음"), StatusKind::Info)
+                self.finish_video_overlay(
+                    t!("Video closed", "영상 닫음", "動画を閉じました"),
+                    StatusKind::Info,
+                )
             }
         }
     }
@@ -445,7 +471,7 @@ impl App {
         // signal, repeat/shuffle-aware advance, streaming top-up — so queue semantics
         // never diverge between audio and video continuation.
         let cmds = self.advance_with_outgoing(true, true);
-        self.video_follow_queue(cmds, t!("Next video…", "다음 영상…"))
+        self.video_follow_queue(cmds, t!("Next video…", "다음 영상…", "次の動画…"))
     }
 
     /// The `>`/`<` keys pressed inside the overlay window: move the queue like the
@@ -455,11 +481,14 @@ impl App {
             // Mirror `Action::NextTrack`: a manual skip (ignores repeat-one).
             (
                 self.advance_with_outgoing(false, false),
-                t!("Next video…", "다음 영상…"),
+                t!("Next video…", "다음 영상…", "次の動画…"),
             )
         } else {
             // Mirror `Action::PrevTrack`.
-            (self.previous_track(), t!("Previous video…", "이전 영상…"))
+            (
+                self.previous_track(),
+                t!("Previous video…", "이전 영상…", "前の動画…"),
+            )
         };
         self.video_follow_queue(cmds, status)
     }
@@ -478,7 +507,8 @@ impl App {
         cmds.extend(self.finish_video_overlay(
             t!(
                 "Video queue transition failed",
-                "영상 대기열 전환에 실패했습니다"
+                "영상 대기열 전환에 실패했습니다",
+                "動画キューの切り替えに失敗しました"
             ),
             StatusKind::Error,
         ));
@@ -495,7 +525,11 @@ impl App {
         self.config.streaming.mode = mode;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
-        self.status.text = format!("{}: {}", t!("Streaming", "스트리밍"), mode.label());
+        self.status.text = format!(
+            "{}: {}",
+            t!("Streaming", "스트리밍", "ストリーミング"),
+            mode.label()
+        );
         self.dirty = true;
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
             self.config.clone(),
@@ -761,7 +795,8 @@ impl App {
                     self.status.kind = StatusKind::Info;
                     self.status.text = t!(
                         "Radio recordings appear here while a station plays",
-                        "라디오 방송 중에 녹음 목록이 여기에 표시돼요"
+                        "라디오 방송 중에 녹음 목록이 여기에 표시돼요",
+                        "ラジオ再生中に録音一覧がここに表示されます"
                     )
                     .to_owned();
                 }
@@ -809,7 +844,8 @@ impl App {
                         self.status.kind = StatusKind::Info;
                         self.status.text = t!(
                             "✓ Link copied to clipboard",
-                            "✓ 링크가 클립보드에 복사됐어요"
+                            "✓ 링크가 클립보드에 복사됐어요",
+                            "✓ リンクをクリップボードにコピーしました"
                         )
                         .to_owned();
                         self.dirty = true;
@@ -818,7 +854,8 @@ impl App {
                         // Current track is genuinely local-only — no YouTube origin to share.
                         self.status.text = t!(
                             "This track is local-only — no YouTube link",
-                            "로컬 전용 트랙이라 유튜브 링크가 없어요"
+                            "로컬 전용 트랙이라 유튜브 링크가 없어요",
+                            "ローカル専用の曲のため YouTube リンクがありません"
                         )
                         .to_owned();
                         self.dirty = true;
@@ -842,7 +879,8 @@ impl App {
         debug_assert_eq!(outcome.requested(), 1);
         if outcome.added() == 0 {
             self.status.kind = StatusKind::Error;
-            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.status.text =
+                t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -861,7 +899,8 @@ impl App {
         debug_assert_eq!(outcome.requested(), requested_songs.len());
         if outcome.added() == 0 {
             self.status.kind = StatusKind::Error;
-            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.status.text =
+                t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -892,7 +931,8 @@ impl App {
             debug_assert_eq!(outcome.requested(), requested);
             if outcome.added() == 0 {
                 self.status.kind = StatusKind::Error;
-                self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+                self.status.text =
+                    t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_string();
                 self.dirty = true;
                 return Vec::new();
             }
@@ -908,7 +948,8 @@ impl App {
         };
         if added == 0 {
             self.status.kind = StatusKind::Error;
-            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.status.text =
+                t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -918,22 +959,30 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = if requested == 1 && added == 1 {
             let prefix = if enqueue_next {
-                t!("Added next:", "다음 곡으로 추가:")
+                t!("Added next:", "다음 곡으로 추가:", "次の曲に追加:")
             } else {
-                t!("Added to queue:", "큐에 추가:")
+                t!("Added to queue:", "큐에 추가:", "キューに追加:")
             };
             format!("{prefix} {first_title}")
         } else if enqueue_next {
             format!(
                 "{} {}",
                 added,
-                t!("tracks added next", "곡을 다음 곡으로 추가")
+                t!(
+                    "tracks added next",
+                    "곡을 다음 곡으로 추가",
+                    "曲を次の曲に追加"
+                )
             )
         } else {
             format!(
                 "{} {}",
                 added,
-                t!("tracks added to queue", "곡을 큐에 추가")
+                t!(
+                    "tracks added to queue",
+                    "곡을 큐에 추가",
+                    "曲をキューに追加"
+                )
             )
         };
         self.dirty = true;
@@ -1094,24 +1143,32 @@ impl App {
     pub(in crate::app) fn radio_sync_status_note(&mut self) -> Vec<Cmd> {
         self.status.kind = StatusKind::Info;
         self.status.text = match self.radio_behind_secs() {
-            Some(b) if b <= LIVE_SYNC_THRESHOLD_SECS => {
-                t!("Live: at the live edge", "라이브: 실시간 재생 중").to_owned()
-            }
+            Some(b) if b <= LIVE_SYNC_THRESHOLD_SECS => t!(
+                "Live: at the live edge",
+                "라이브: 실시간 재생 중",
+                "ライブ: リアルタイム再生中"
+            )
+            .to_owned(),
             Some(b) => {
                 let key = self.keymap.label_for_display(
                     crate::keymap::KeyContext::Player,
                     Action::CycleRepeat,
                     self.retro_mode(),
                 );
-                if crate::i18n::is_korean() {
-                    format!("라이브: {}초 뒤처짐 — {key} 키로 다시 맞추기", b as i64)
-                } else {
-                    format!("Live: {}s behind — press {key} to re-sync", b as i64)
+                match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("라이브: {}초 뒤처짐 — {key} 키로 다시 맞추기", b as i64)
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("ライブ: {}秒遅れ — {key} キーで再同期", b as i64)
+                    }
+                    _ => format!("Live: {}s behind — press {key} to re-sync", b as i64),
                 }
             }
             None => t!(
                 "Live: sync state unknown",
-                "라이브: 동기화 상태를 알 수 없어요"
+                "라이브: 동기화 상태를 알 수 없어요",
+                "ライブ: 同期状態が不明です"
             )
             .to_owned(),
         };
@@ -1132,7 +1189,12 @@ impl App {
             && !self.playback.paused
         {
             self.status.kind = StatusKind::Info;
-            self.status.text = t!("Live: at the live edge", "라이브: 실시간 재생 중").to_owned();
+            self.status.text = t!(
+                "Live: at the live edge",
+                "라이브: 실시간 재생 중",
+                "ライブ: リアルタイム再生中"
+            )
+            .to_owned();
             self.dirty = true;
             return Vec::new();
         }

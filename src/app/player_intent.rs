@@ -274,7 +274,8 @@ impl App {
                 }
                 if announce {
                     self.status.kind = StatusKind::Info;
-                    self.status.text = format!("{}: {speed:.1}x", t!("Speed", "재생 속도"));
+                    self.status.text =
+                        format!("{}: {speed:.1}x", t!("Speed", "재생 속도", "再生速度"));
                 }
                 if persist {
                     self.dirty = true;
@@ -304,9 +305,9 @@ impl App {
                 self.status.text = format!(
                     "{}: {}",
                     if persist {
-                        t!("Normalize", "노멀라이즈")
+                        t!("Normalize", "노멀라이즈", "ノーマライズ")
                     } else {
-                        t!("Normalize", "음량 평준화")
+                        t!("Normalize", "음량 평준화", "音量ノーマライズ")
                     },
                     if normalize { "✓" } else { "✗" }
                 );

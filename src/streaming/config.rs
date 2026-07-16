@@ -40,8 +40,8 @@ impl CuratingMode {
     /// A short human label for the settings field.
     pub fn label(self) -> &'static str {
         match self {
-            CuratingMode::YtNative => crate::t!("YT Native", "YT 기본"),
-            CuratingMode::DjGem => crate::t!("DJ Gem", "DJ Gem"),
+            CuratingMode::YtNative => crate::t!("YT Native", "YT 기본", "YT標準"),
+            CuratingMode::DjGem => crate::t!("DJ Gem", "DJ Gem", "DJ Gem"),
         }
     }
 
@@ -83,9 +83,9 @@ impl StreamingMode {
     /// A short human label for the settings field and the player status line.
     pub fn label(self) -> &'static str {
         match self {
-            StreamingMode::Focused => crate::t!("Focused", "집중"),
-            StreamingMode::Balanced => crate::t!("Balanced", "균형"),
-            StreamingMode::Discovery => crate::t!("Discovery", "발견"),
+            StreamingMode::Focused => crate::t!("Focused", "집중", "集中"),
+            StreamingMode::Balanced => crate::t!("Balanced", "균형", "バランス"),
+            StreamingMode::Discovery => crate::t!("Discovery", "발견", "発見"),
         }
     }
 

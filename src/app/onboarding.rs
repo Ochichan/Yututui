@@ -594,7 +594,11 @@ impl App {
     fn back_beginner_step(&mut self) -> Vec<Cmd> {
         let Some(previous) = self.onboarding.step.previous() else {
             self.onboarding.select_primary();
-            self.set_status_info(t!("This is the first step", "첫 번째 단계입니다"));
+            self.set_status_info(t!(
+                "This is the first step",
+                "첫 번째 단계입니다",
+                "最初のステップです"
+            ));
             return Vec::new();
         };
         if self.onboarding.step == BeginnerStep::Finish
@@ -647,7 +651,8 @@ impl App {
         self.onboarding = OnboardingState::default();
         self.set_status_info(t!(
             "Beginner Mode is off · turn it on in Settings to see the tour again",
-            "비기너 모드를 껐어요 · 설정에서 다시 켜면 튜토리얼을 볼 수 있어요"
+            "비기너 모드를 껐어요 · 설정에서 다시 켜면 튜토리얼을 볼 수 있어요",
+            "ビギナーモードをオフにしました · 設定でオンにすると再びツアーを見られます"
         ));
         self.request_native_image_clear();
         vec![self.persist_beginner_config()]
@@ -672,7 +677,8 @@ impl App {
                 self.onboarding = OnboardingState::default();
                 self.set_status_info(t!(
                     "Beginner Mode is off · onboarding complete",
-                    "비기너 모드를 껐어요 · 온보딩을 마쳤습니다"
+                    "비기너 모드를 껐어요 · 온보딩을 마쳤습니다",
+                    "ビギナーモードをオフにしました · オンボーディングを完了しました"
                 ));
                 self.request_native_image_clear();
             }
@@ -681,7 +687,8 @@ impl App {
             self.onboarding = OnboardingState::default();
             self.set_status_info(t!(
                 "Beginner Mode is on · the tour starts next launch",
-                "비기너 모드를 켰어요 · 다음 실행 때 튜토리얼이 시작됩니다"
+                "비기너 모드를 켰어요 · 다음 실행 때 튜토리얼이 시작됩니다",
+                "ビギナーモードをオンにしました · 次回起動時にツアーが始まります"
             ));
         }
     }

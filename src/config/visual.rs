@@ -30,9 +30,17 @@ impl AlbumArtQuality {
     /// Short human label for the Playback settings row.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Standard => t!("Standard · up to 640 px", "표준 · 최대 640 px"),
-            Self::High => t!("High · up to 768 px", "고화질 · 최대 768 px"),
-            Self::Original => t!("Original source", "원본 화질"),
+            Self::Standard => t!(
+                "Standard · up to 640 px",
+                "표준 · 최대 640 px",
+                "標準 · 最大 640 px"
+            ),
+            Self::High => t!(
+                "High · up to 768 px",
+                "고화질 · 최대 768 px",
+                "高画質 · 最大 768 px"
+            ),
+            Self::Original => t!("Original source", "원본 화질", "オリジナル画質"),
         }
     }
 }
@@ -71,9 +79,9 @@ impl VideoOverlay {
     /// Short human label for the status toast.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Compact => t!("top-right · 30%", "우상단 · 30%"),
-            Self::Large => t!("center · 50%", "가운데 · 50%"),
-            Self::Fullscreen => t!("fullscreen", "전체화면"),
+            Self::Compact => t!("top-right · 30%", "우상단 · 30%", "右上 · 30%"),
+            Self::Large => t!("center · 50%", "가운데 · 50%", "中央 · 50%"),
+            Self::Fullscreen => t!("fullscreen", "전체화면", "全画面"),
         }
     }
 
@@ -122,8 +130,8 @@ impl PlayerBarPosition {
     /// Short human label for the Settings row.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Top => t!("Top (classic)", "상단 (클래식)"),
-            Self::Bottom => t!("Bottom (docked)", "하단 (도킹)"),
+            Self::Top => t!("Top (classic)", "상단 (클래식)", "上部 (クラシック)"),
+            Self::Bottom => t!("Bottom (docked)", "하단 (도킹)", "下部 (ドッキング)"),
         }
     }
 }

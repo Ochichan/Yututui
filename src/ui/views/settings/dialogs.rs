@@ -22,7 +22,11 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ⚠ Keybinding conflict ", " ⚠ 단축키 충돌 "))
+        .title(t!(
+            " ⚠ Keybinding conflict ",
+            " ⚠ 단축키 충돌 ",
+            " ⚠ ショートカット競合 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -30,10 +34,10 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     frame.render_widget(block, popup);
 
     let chord = keymap::format_chord_for_display(conflict.chord, app.retro_mode());
-    let where_line = if crate::i18n::is_korean() {
-        format!("{} 화면", conflict.ctx.title())
-    } else {
-        format!("in {}", conflict.ctx.title())
+    let where_line = match crate::i18n::current() {
+        crate::i18n::Language::Korean => format!("{} 화면", conflict.ctx.title()),
+        crate::i18n::Language::Japanese => format!("{} 画面", conflict.ctx.title()),
+        _ => format!("in {}", conflict.ctx.title()),
     };
     let lines = vec![
         Line::from(""),
@@ -42,7 +46,11 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
                 chord,
                 crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(t!(" is already bound to", " 은(는) 이미 사용 중")),
+            Span::raw(t!(
+                " is already bound to",
+                " 은(는) 이미 사용 중",
+                " は既に使用中"
+            )),
         ]),
         Line::from(Span::styled(
             format!(
@@ -59,7 +67,8 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
         Line::from(Span::styled(
             t!(
                 "Binding unchanged · press any key",
-                "단축키 변경 안 됨 · 아무 키나 누르세요"
+                "단축키 변경 안 됨 · 아무 키나 누르세요",
+                "割り当ては変更なし · 任意のキーを押してください"
             ),
             crate::ui::popup_style(app, R::TextMuted),
         )),
@@ -112,12 +121,12 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmSettings,
-            t!(" Confirm (Enter) ", " 확인 (Enter) "),
+            t!(" Confirm (Enter) ", " 확인 (Enter) ", " 確認 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelSettings,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments(

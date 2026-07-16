@@ -62,19 +62,22 @@ pub(in crate::app) fn local_import_session_text(session_id: &str, track_count: u
             .iter()
             .filter(|row| !row.errors.is_empty())
             .count();
-        return if crate::i18n::is_korean() {
-            format!(
+        return match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
                 "{session_id}  (준비 {ready}/{total} · 로컬 {local_files}/{total} · 실패 {failed} · 검토 {review} · 누락 {missing} · 대기 {})",
                 session.counts.pending
-            )
-        } else {
-            format!(
+            ),
+            crate::i18n::Language::Japanese => format!(
+                "{session_id}  (準備 {ready}/{total} · ローカル {local_files}/{total} · 失敗 {failed} · 要確認 {review} · 欠落 {missing} · 保留 {})",
+                session.counts.pending
+            ),
+            _ => format!(
                 "{session_id}  (Ready {ready}/{total} · Local {local_files}/{total} · {failed} failed · {review} review · {missing} missing · {} pending)",
                 session.counts.pending
-            )
+            ),
         };
     }
-    format!("{session_id}  ({track_count} {})", t!("tracks", "곡"))
+    format!("{session_id}  ({track_count} {})", t!("tracks", "곡", "曲"))
 }
 
 pub(in crate::app) fn push_import_session_summary_details(
@@ -96,8 +99,8 @@ pub(in crate::app) fn push_import_session_summary_details(
         .count();
     push_detail_line(
         lines,
-        t!("Rows", "행"),
-        format!("{} {}", session.counts.total, t!("rows", "행")),
+        t!("Rows", "행", "行"),
+        format!("{} {}", session.counts.total, t!("rows", "행", "行")),
     );
     let ready_plan = crate::transfer::review_action::plan_ready_candidates(session_id).ok();
     let ready = ready_plan
@@ -107,12 +110,20 @@ pub(in crate::app) fn push_import_session_summary_details(
     let total = ready_plan
         .as_ref()
         .map_or(session.counts.total, |plan| plan.total_count);
-    push_detail_line(lines, t!("Ready", "준비"), format!("{ready}/{total}"));
-    push_detail_line(lines, t!("Local", "로컬"), format!("{local_files}/{total}"));
-    push_detail_line(lines, t!("Failed", "실패"), failed.to_string());
     push_detail_line(
         lines,
-        t!("Review", "검토"),
+        t!("Ready", "준비", "準備"),
+        format!("{ready}/{total}"),
+    );
+    push_detail_line(
+        lines,
+        t!("Local", "로컬", "ローカル"),
+        format!("{local_files}/{total}"),
+    );
+    push_detail_line(lines, t!("Failed", "실패", "失敗"), failed.to_string());
+    push_detail_line(
+        lines,
+        t!("Review", "검토", "要確認"),
         ready_plan
             .as_ref()
             .map_or(session.counts.ambiguous, |plan| plan.review_left)
@@ -120,7 +131,7 @@ pub(in crate::app) fn push_import_session_summary_details(
     );
     push_detail_line(
         lines,
-        t!("Missing", "누락"),
+        t!("Missing", "누락", "欠落"),
         ready_plan
             .as_ref()
             .map_or(session.counts.not_found, |plan| plan.missing_left)
@@ -128,13 +139,17 @@ pub(in crate::app) fn push_import_session_summary_details(
     );
     push_detail_line(
         lines,
-        t!("Pending", "대기"),
+        t!("Pending", "대기", "保留"),
         session.counts.pending.to_string(),
     );
-    push_detail_line(lines, t!("Source", "원본"), session.source.display());
     push_detail_line(
         lines,
-        t!("Destination", "대상"),
+        t!("Source", "원본", "インポート元"),
+        session.source.display(),
+    );
+    push_detail_line(
+        lines,
+        t!("Destination", "대상", "インポート先"),
         session.destination.display(),
     );
 }
@@ -206,13 +221,22 @@ pub(in crate::app) fn format_bitrate(value: u32) -> String {
 
 pub(in crate::app) fn format_embedded_cover_count(count: usize) -> String {
     if count == 0 {
-        t!("no embedded cover", "내장 커버 없음").to_owned()
+        t!("no embedded cover", "내장 커버 없음", "埋め込みカバーなし").to_owned()
     } else if count == 1 {
-        t!("1 track with embedded cover", "내장 커버 1곡").to_owned()
+        t!(
+            "1 track with embedded cover",
+            "내장 커버 1곡",
+            "埋め込みカバー1曲"
+        )
+        .to_owned()
     } else {
         format!(
             "{count} {}",
-            t!("tracks with embedded cover", "곡에 내장 커버")
+            t!(
+                "tracks with embedded cover",
+                "곡에 내장 커버",
+                "曲に埋め込みカバー"
+            )
         )
     }
 }
@@ -222,16 +246,24 @@ pub(in crate::app) fn format_local_scan_progress(
 ) -> String {
     let mut text = format!(
         "{}: {} {}, {} {}, {} {}",
-        t!("Scanning local music", "로컬 음악 스캔 중"),
+        t!(
+            "Scanning local music",
+            "로컬 음악 스캔 중",
+            "ローカル音楽をスキャン中"
+        ),
         progress.seen,
-        t!("seen", "확인"),
+        t!("seen", "확인", "確認"),
         progress.indexed,
-        t!("indexed", "인덱싱"),
+        t!("indexed", "인덱싱", "インデックス"),
         progress.skipped,
-        t!("skipped", "건너뜀")
+        t!("skipped", "건너뜀", "スキップ")
     );
     if progress.errors > 0 {
-        text.push_str(&format!(", {} {}", progress.errors, t!("errors", "오류")));
+        text.push_str(&format!(
+            ", {} {}",
+            progress.errors,
+            t!("errors", "오류", "エラー")
+        ));
     }
     if let Some(current) = &progress.current {
         text.push_str(" - ");

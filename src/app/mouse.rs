@@ -940,7 +940,8 @@ impl App {
                 open_in_browser(crate::ui::views::about::GITHUB_URL);
                 self.status.text = t!(
                     "Opening GitHub in your browser…",
-                    "브라우저에서 GitHub을 여는 중…"
+                    "브라우저에서 GitHub을 여는 중…",
+                    "ブラウザでGitHubを開いています…"
                 )
                 .to_owned();
                 self.dirty = true;
@@ -952,7 +953,8 @@ impl App {
                 open_in_browser(crate::update::RELEASES_URL);
                 self.status.text = t!(
                     "Opening Releases in your browser…",
-                    "브라우저에서 Releases를 여는 중…"
+                    "브라우저에서 Releases를 여는 중…",
+                    "ブラウザでReleasesを開いています…"
                 )
                 .to_owned();
                 self.dirty = true;
@@ -1201,7 +1203,8 @@ impl App {
                     self.status.kind = StatusKind::Info;
                     self.status.text = t!(
                         "✓ Chat selection copied to clipboard",
-                        "✓ 선택한 채팅이 클립보드에 복사됐어요"
+                        "✓ 선택한 채팅이 클립보드에 복사됐어요",
+                        "✓ 選択したチャットをクリップボードにコピーしました"
                     )
                     .to_owned();
                     self.dirty = true;

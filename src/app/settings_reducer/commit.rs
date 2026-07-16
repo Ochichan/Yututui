@@ -28,8 +28,12 @@ impl App {
                 }
                 self.config.scrobble.lastfm.session_key = None;
                 self.config.scrobble.lastfm.username = None;
-                self.status.text =
-                    t!("Last.fm disconnected", "Last.fm 연결을 해제했어요").to_owned();
+                self.status.text = t!(
+                    "Last.fm disconnected",
+                    "Last.fm 연결을 해제했어요",
+                    "Last.fmの接続を解除しました"
+                )
+                .to_owned();
                 self.status.kind = StatusKind::Info;
                 vec![
                     Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
@@ -81,11 +85,17 @@ impl App {
             crate::i18n::set_language(crate::i18n::Language::English);
             self.status.text = t!(
                 "Retro mode enabled: English + Retro theme",
-                "레트로 모드 켜짐: 영어 + 레트로 테마"
+                "레트로 모드 켜짐: 영어 + 레트로 테마",
+                "レトロモードオン: 英語 + レトロテーマ"
             )
             .to_owned();
         } else {
-            self.status.text = t!("Retro mode disabled", "레트로 모드 꺼짐").to_owned();
+            self.status.text = t!(
+                "Retro mode disabled",
+                "레트로 모드 꺼짐",
+                "レトロモードオフ"
+            )
+            .to_owned();
         }
         self.dirty = true;
     }
@@ -101,7 +111,8 @@ impl App {
         st.capturing = None;
         self.status.text = t!(
             "Keybindings reset to defaults",
-            "단축키를 기본값으로 되돌렸어요"
+            "단축키를 기본값으로 되돌렸어요",
+            "ショートカットをデフォルトに戻しました"
         )
         .to_owned();
         self.dirty = true;
@@ -117,7 +128,8 @@ impl App {
             self.romanization.next_request_id.saturating_add(1);
         self.status.text = t!(
             "Romanized title cache cleared",
-            "로마자 제목 캐시를 삭제했어요"
+            "로마자 제목 캐시를 삭제했어요",
+            "ローマ字タイトルのキャッシュを削除しました"
         )
         .to_owned();
         self.dirty = true;
@@ -190,10 +202,10 @@ impl App {
                 self.theme = st.draft.theme.normalized();
                 let label = role.label();
                 let hex = st.draft.theme.effective_hex(role);
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("{label} 을(를) {hex} 로 설정함")
-                } else {
-                    format!("Set {label} to {hex}")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("{label} 을(를) {hex} 로 설정함"),
+                    crate::i18n::Language::Japanese => format!("{label} を {hex} に設定"),
+                    _ => format!("Set {label} to {hex}"),
                 };
             }
             Err(msg) => {
@@ -338,13 +350,15 @@ impl App {
         // doesn't persist the stale startup value.
         self.config.volume = self.playback.volume;
         self.sync_playback_modes_to_config();
-        self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+        self.status.text =
+            t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
         // Turning "large text" on in a terminal that can't render it deserves the why,
         // not a silent no-op — override the generic saved-toast with the explanation.
         if !self.zoom.supported() && st.draft.big_text && old_zoom <= 100 {
             self.status.text = t!(
                 "Large text saved, but this terminal can't scale text (kitty 0.40+, Windows Terminal, …)",
-                "큰 글자 설정은 저장됐지만 이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)"
+                "큰 글자 설정은 저장됐지만 이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)",
+                "大きな文字の設定は保存されましたが、このターミナルは文字の拡大に対応していません (kitty 0.40+, Windows Terminal など)"
             )
             .to_owned();
         }

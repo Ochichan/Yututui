@@ -265,33 +265,33 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
 
     let session = submenu(
         MenuSubmenuId::Session,
-        crate::t!("Session", "세션"),
+        crate::t!("Session", "세션", "セッション"),
         true,
         vec![daemon_action_item(state, 0), daemon_action_item(state, 1)],
     );
     let playback = submenu(
         MenuSubmenuId::Playback,
-        crate::t!("Playback", "재생"),
+        crate::t!("Playback", "재생", "再生"),
         connected,
         vec![
             item(
-                crate::t!("Seek Back", "뒤로 탐색"),
+                crate::t!("Seek Back", "뒤로 탐색", "シークで戻る"),
                 has_track,
                 Some(MenuAction::SeekBack),
             ),
             item(
-                crate::t!("Seek Forward", "앞으로 탐색"),
+                crate::t!("Seek Forward", "앞으로 탐색", "シークで進む"),
                 has_track,
                 Some(MenuAction::SeekForward),
             ),
             MenuEntry::Separator,
             item(
-                crate::t!("Volume Down", "볼륨 낮추기"),
+                crate::t!("Volume Down", "볼륨 낮추기", "音量を下げる"),
                 connected,
                 Some(MenuAction::VolumeDown),
             ),
             item(
-                crate::t!("Volume Up", "볼륨 높이기"),
+                crate::t!("Volume Up", "볼륨 높이기", "音量を上げる"),
                 connected,
                 Some(MenuAction::VolumeUp),
             ),
@@ -308,23 +308,27 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
         item(state_label(state), false, None),
         MenuEntry::Separator,
         item(
-            crate::t!("Previous", "이전 곡"),
+            crate::t!("Previous", "이전 곡", "前の曲"),
             has_track,
             Some(MenuAction::Previous),
         ),
         item(
-            crate::t!("Play / Pause", "재생 / 일시정지"),
+            crate::t!("Play / Pause", "재생 / 일시정지", "再生 / 一時停止"),
             has_track,
             Some(MenuAction::PlayPause),
         ),
         item(
-            crate::t!("Next", "다음 곡"),
+            crate::t!("Next", "다음 곡", "次の曲"),
             has_track,
             Some(MenuAction::Next),
         ),
         MenuEntry::Separator,
         item(
-            crate::t!("Show Mini Player", "미니플레이어 열기"),
+            crate::t!(
+                "Show Mini Player",
+                "미니플레이어 열기",
+                "ミニプレイヤーを表示"
+            ),
             true,
             Some(MenuAction::ShowMiniPlayer),
         ),
@@ -332,28 +336,28 @@ fn build_menu_with_main_window(state: &TrayState, main_window_available: bool) -
         playback,
         MenuEntry::Separator,
         item(
-            crate::t!("Open Player", "플레이어 열기"),
+            crate::t!("Open Player", "플레이어 열기", "プレイヤーを開く"),
             true,
             Some(MenuAction::OpenTui),
         ),
         item(
-            crate::t!("Open Main Window", "메인 창 열기"),
+            crate::t!("Open Main Window", "메인 창 열기", "メインウィンドウを開く"),
             true,
             Some(MenuAction::OpenMainWindow),
         ),
         item(
-            crate::t!("Open at Login", "로그인 시 열기"),
+            crate::t!("Open at Login", "로그인 시 열기", "ログイン時に起動"),
             true,
             Some(MenuAction::ToggleStartup),
         ),
         MenuEntry::Separator,
         item(
-            crate::t!("Quit Player", "플레이어 종료"),
+            crate::t!("Quit Player", "플레이어 종료", "プレイヤーを終了"),
             connected,
             Some(MenuAction::QuitPlayer),
         ),
         item(
-            crate::t!("Quit Tray", "트레이 종료"),
+            crate::t!("Quit Tray", "트레이 종료", "トレイを終了"),
             true,
             Some(MenuAction::QuitTray),
         ),
@@ -409,14 +413,19 @@ fn is_idle(status: &StatusSnapshot) -> bool {
 
 fn track_label(state: &TrayState) -> String {
     let Some(status) = state.status() else {
-        return crate::t!("YuTuTui! is not running", "YuTuTui!가 실행 중이 아닙니다").to_string();
+        return crate::t!(
+            "YuTuTui! is not running",
+            "YuTuTui!가 실행 중이 아닙니다",
+            "YuTuTui!は実行されていません"
+        )
+        .to_string();
     };
     match (status.artist.as_deref(), status.title.as_deref()) {
         (Some(artist), Some(title)) if !artist.is_empty() && !title.is_empty() => {
             format!("{artist} - {title}")
         }
         (_, Some(title)) if !title.is_empty() => title.to_string(),
-        _ => crate::t!("Nothing playing", "재생 중인 곡 없음").to_string(),
+        _ => crate::t!("Nothing playing", "재생 중인 곡 없음", "再生中の曲なし").to_string(),
     }
 }
 
@@ -429,37 +438,53 @@ fn daemon_action_item(state: &TrayState, index: usize) -> MenuEntry {
     let resume_available = state.resume_available();
     match (daemon_owner, daemon_idle, disconnected, index) {
         (true, _, _, 0) => item(
-            crate::t!("Stop Music Daemon", "음악 데몬 중지"),
+            crate::t!("Stop Music Daemon", "음악 데몬 중지", "音楽デーモンを停止"),
             true,
             Some(MenuAction::StopDaemon),
         ),
         (true, true, _, _) => item(
-            crate::t!("Resume Last Session", "이전 세션 재개"),
+            crate::t!(
+                "Resume Last Session",
+                "이전 세션 재개",
+                "前回のセッションを再開"
+            ),
             true,
             Some(MenuAction::ResumeDaemon),
         ),
         (true, false, _, _) => item(
-            crate::t!("Resume Last Session", "이전 세션 재개"),
+            crate::t!(
+                "Resume Last Session",
+                "이전 세션 재개",
+                "前回のセッションを再開"
+            ),
             false,
             Some(MenuAction::ResumeDaemon),
         ),
         (false, _, true, 0) => item(
-            crate::t!("Start Music Daemon", "음악 데몬 시작"),
+            crate::t!("Start Music Daemon", "음악 데몬 시작", "音楽デーモンを開始"),
             true,
             Some(MenuAction::StartDaemon),
         ),
         (false, _, true, _) => item(
-            crate::t!("Resume Last Session", "이전 세션 재개"),
+            crate::t!(
+                "Resume Last Session",
+                "이전 세션 재개",
+                "前回のセッションを再開"
+            ),
             resume_available,
             Some(MenuAction::ResumeDaemon),
         ),
         (false, _, false, 0) => item(
-            crate::t!("Start Music Daemon", "음악 데몬 시작"),
+            crate::t!("Start Music Daemon", "음악 데몬 시작", "音楽デーモンを開始"),
             false,
             Some(MenuAction::StartDaemon),
         ),
         (false, _, false, _) => item(
-            crate::t!("Resume Last Session", "이전 세션 재개"),
+            crate::t!(
+                "Resume Last Session",
+                "이전 세션 재개",
+                "前回のセッションを再開"
+            ),
             false,
             Some(MenuAction::ResumeDaemon),
         ),
@@ -468,17 +493,21 @@ fn daemon_action_item(state: &TrayState, index: usize) -> MenuEntry {
 
 fn state_label(state: &TrayState) -> String {
     match state {
-        TrayState::Disconnected { .. } => crate::t!("Disconnected", "연결 끊김").to_string(),
+        TrayState::Disconnected { .. } => {
+            crate::t!("Disconnected", "연결 끊김", "未接続").to_string()
+        }
         TrayState::Connected(status) => {
             let owner = match status.owner_mode {
-                InstanceMode::StandaloneTui => crate::t!("Standalone TUI", "독립형 TUI"),
-                InstanceMode::Daemon => crate::t!("Daemon", "데몬"),
+                InstanceMode::StandaloneTui => {
+                    crate::t!("Standalone TUI", "독립형 TUI", "スタンドアロンTUI")
+                }
+                InstanceMode::Daemon => crate::t!("Daemon", "데몬", "デーモン"),
             };
             let state = match state.kind() {
-                TrayStateKind::ConnectedPlaying => crate::t!("Playing", "재생 중"),
-                TrayStateKind::ConnectedPaused => crate::t!("Paused", "일시정지"),
-                TrayStateKind::ConnectedIdle => crate::t!("Idle", "대기 중"),
-                TrayStateKind::Disconnected => crate::t!("Disconnected", "연결 끊김"),
+                TrayStateKind::ConnectedPlaying => crate::t!("Playing", "재생 중", "再生中"),
+                TrayStateKind::ConnectedPaused => crate::t!("Paused", "일시정지", "一時停止"),
+                TrayStateKind::ConnectedIdle => crate::t!("Idle", "대기 중", "待機中"),
+                TrayStateKind::Disconnected => crate::t!("Disconnected", "연결 끊김", "未接続"),
             };
             format!("{owner}: {state}")
         }
@@ -491,9 +520,9 @@ fn autoplay_label(state: &TrayState) -> String {
         .map(|status| status.streaming)
         .unwrap_or(false);
     if on {
-        crate::t!("Autoplay: On", "자동재생: 켬").to_string()
+        crate::t!("Autoplay: On", "자동재생: 켬", "自動再生: オン").to_string()
     } else {
-        crate::t!("Autoplay: Off", "자동재생: 끔").to_string()
+        crate::t!("Autoplay: Off", "자동재생: 끔", "自動再生: オフ").to_string()
     }
 }
 

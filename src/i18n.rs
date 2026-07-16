@@ -95,7 +95,13 @@ impl DjGemLanguage {
     /// reads the same regardless of the active UI language.
     pub fn picker_label(self) -> &'static str {
         match self {
-            DjGemLanguage::Auto => crate::t!("Auto (interface)", "자동 (인터페이스)"),
+            DjGemLanguage::Auto => {
+                crate::t!(
+                    "Auto (interface)",
+                    "자동 (인터페이스)",
+                    "自動 (インターフェース)"
+                )
+            }
             DjGemLanguage::English => "English",
             DjGemLanguage::Korean => "한국어",
             DjGemLanguage::Japanese => "日本語",
@@ -187,13 +193,6 @@ pub fn current() -> Language {
     Language::from_u8(CURRENT.load(Ordering::Relaxed))
 }
 
-/// Whether the active language is Korean. A readable shorthand for `format!`-template sites
-/// that pick a whole translated string with `if`/`match` rather than the [`t!`](crate::t)
-/// macro (which only works when both arms are string literals).
-pub fn is_korean() -> bool {
-    current() == Language::Korean
-}
-
 /// The process-wide *resolved* DJ Gem reply language. Stored resolved (retro already folded to
 /// English, and `Auto` resolved against the UI language in
 /// [`crate::config::Config::effective_dj_gem_language`]) so the AI actor can read it with no
@@ -216,20 +215,14 @@ pub fn dj_gem_language() -> DjGemLanguage {
 /// `&'static str` consts) so the result stays `&'static str` and the macro drops cleanly into
 /// existing `match self => "…"` label functions.
 ///
-/// The two-arm form is TRANSITIONAL (Japanese falls back to English) and is deleted once the
-/// Japanese translation pass lands — do not add new two-arm call sites.
+/// All three arms are REQUIRED — the macro is the completeness gate: a call site missing a
+/// translation fails to compile instead of silently rendering a fallback.
 #[macro_export]
 macro_rules! t {
     ($en:expr, $ko:expr, $ja:expr $(,)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::Korean => $ko,
             $crate::i18n::Language::Japanese => $ja,
-            _ => $en,
-        }
-    };
-    ($en:expr, $ko:expr $(,)?) => {
-        match $crate::i18n::current() {
-            $crate::i18n::Language::Korean => $ko,
             _ => $en,
         }
     };
@@ -322,9 +315,8 @@ mod tests {
         let _guard = lock_for_test();
 
         set_language(Language::Korean);
-        assert!(is_korean());
         assert_eq!(current(), Language::Korean);
-        assert_eq!(t!("Settings", "설정"), "설정");
+        assert_eq!(t!("Settings", "설정", "設定"), "설정");
 
         std::thread::spawn(|| set_language(Language::English))
             .join()
@@ -336,15 +328,11 @@ mod tests {
         );
 
         set_language(Language::Japanese);
-        assert!(!is_korean());
         assert_eq!(current(), Language::Japanese);
         assert_eq!(t!("Settings", "설정", "設定"), "設定");
-        // Transitional two-arm form: Japanese falls back to the English arm.
-        assert_eq!(t!("Settings", "설정"), "Settings");
 
         set_language(Language::English);
-        assert!(!is_korean());
-        assert_eq!(t!("Settings", "설정"), "Settings");
+        assert_eq!(t!("Settings", "설정", "設定"), "Settings");
     }
 
     #[test]

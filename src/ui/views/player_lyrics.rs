@@ -68,11 +68,15 @@ pub(super) fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_empty(frame: &mut Frame, app: &App, area: Rect, dim: Style) {
     let base = if app.lyrics.loading {
-        t!("Searching lyrics", "가사 검색 중")
+        t!("Searching lyrics", "가사 검색 중", "歌詞を検索中")
     } else if app.lyrics.track.is_some() {
-        t!("No synced lyrics found.", "동기화된 가사가 없어요.")
+        t!(
+            "No synced lyrics found.",
+            "동기화된 가사가 없어요.",
+            "同期歌詞が見つかりません。"
+        )
     } else {
-        t!("Fetching lyrics", "가사 가져오는 중")
+        t!("Fetching lyrics", "가사 가져오는 중", "歌詞を取得中")
     };
     let message = if app.lyrics.track.is_some() && !app.lyrics.loading {
         base.to_owned()

@@ -123,21 +123,21 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     // Playlist kind fixes the provider (YouTube playlists), so its tag replaces the
     // source code in the title.
     let tail = if app.search.kind == SearchKind::Playlists {
-        t!("playlists (^P)", "플레이리스트 (^P)").to_owned()
+        t!("playlists (^P)", "플레이리스트 (^P)", "プレイリスト (^P)").to_owned()
     } else {
         current_source.code().to_owned()
     };
     let title = if app.authenticated {
-        if crate::i18n::is_korean() {
-            format!(" 검색 · {tail} ")
-        } else {
-            format!(" Search · {tail} ")
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(" 검색 · {tail} "),
+            crate::i18n::Language::Japanese => format!(" 検索 · {tail} "),
+            _ => format!(" Search · {tail} "),
         }
     } else {
-        if crate::i18n::is_korean() {
-            format!(" 검색 · 익명 · {tail} ")
-        } else {
-            format!(" Search · anonymous · {tail} ")
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(" 검색 · 익명 · {tail} "),
+            crate::i18n::Language::Japanese => format!(" 検索 · 匿名 · {tail} "),
+            _ => format!(" Search · anonymous · {tail} "),
         }
     };
     let block = Block::default()
@@ -237,7 +237,7 @@ fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         app,
         area,
-        t!("Search", "검색"),
+        t!("Search", "검색", "検索"),
         app.theme.style(R::Accent).add_modifier(Modifier::BOLD),
         MouseTarget::SearchSubmit,
     );
@@ -256,7 +256,7 @@ fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         app,
         area,
-        t!("⌕ Filter", "⌕ 필터"),
+        t!("⌕ Filter", "⌕ 필터", "⌕ 絞込"),
         style,
         MouseTarget::SearchFilterOpen,
     );
@@ -308,8 +308,8 @@ fn render_results(
     if app.search.searching {
         // Animated trailing dots while a search is in flight (static ellipsis when off).
         let text = match crate::ui::anim::activity_dots(app) {
-            Some(dots) => format!("{}{dots}", t!("Searching", "검색 중")),
-            None => t!("Searching…", "검색 중…").to_owned(),
+            Some(dots) => format!("{}{dots}", t!("Searching", "검색 중", "検索中")),
+            None => t!("Searching…", "검색 중…", "検索中…").to_owned(),
         };
         let msg = Line::from(text).style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
@@ -458,7 +458,7 @@ fn render_source_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         app,
         area,
         MouseTarget::SearchSourceMenu,
-        t!(" Source ", " 소스 "),
+        t!(" Source ", " 소스 ", " ソース "),
         &rows,
     );
 }
@@ -563,7 +563,11 @@ fn render_filter_popup(
 
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" ⌕ Filter results ", " ⌕ 결과 필터 "))
+        .title(t!(
+            " ⌕ Filter results ",
+            " ⌕ 결과 필터 ",
+            " ⌕ 結果フィルター "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -584,13 +588,15 @@ fn render_filter_popup(
 
     // `filter: <query>█  [k/N]` — the Library filter's visual language, inside the popup.
     let count_hint = if rows_all.is_empty() {
-        t!("  (no matches)", "  (일치 없음)").to_owned()
-    } else if crate::i18n::is_korean() {
-        format!("  [{}/{total}개]", rows_all.len())
+        t!("  (no matches)", "  (일치 없음)", "  (一致なし)").to_owned()
     } else {
-        format!("  [{}/{total}]", rows_all.len())
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("  [{}/{total}개]", rows_all.len()),
+            crate::i18n::Language::Japanese => format!("  [{}/{total}件]", rows_all.len()),
+            _ => format!("  [{}/{total}]", rows_all.len()),
+        }
     };
-    let label = t!("  filter: ", "  필터: ");
+    let label = t!("  filter: ", "  필터: ", "  フィルター: ");
     let input_width = (sections[0].width as usize).saturating_sub(
         UnicodeWidthStr::width(label) + UnicodeWidthStr::width(count_hint.as_str()),
     );
@@ -614,10 +620,17 @@ fn render_filter_popup(
 
     let list_area = sections[1];
     if rows_all.is_empty() {
-        let msg = if crate::i18n::is_korean() {
-            format!("'{}' 와 일치하는 결과가 없어요.", app.search_filter.query)
-        } else {
-            format!("No results match \"{}\".", app.search_filter.query)
+        let msg = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("'{}' 와 일치하는 결과가 없어요.", app.search_filter.query)
+            }
+            crate::i18n::Language::Japanese => {
+                format!(
+                    "「{}」に一致する結果はありません。",
+                    app.search_filter.query
+                )
+            }
+            _ => format!("No results match \"{}\".", app.search_filter.query),
         };
         let msg =
             crate::ui::text::truncate_owned_to_width(format!("  {msg}"), list_area.width as usize);
@@ -708,7 +721,8 @@ fn render_filter_popup(
     frame.render_widget(
         Paragraph::new(t!(
             "↑↓ move · Enter play · Esc close",
-            "↑↓ 이동 · Enter 재생 · Esc 닫기"
+            "↑↓ 이동 · Enter 재생 · Esc 닫기",
+            "↑↓ 移動 · Enter 再生 · Esc 閉じる"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),

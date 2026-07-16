@@ -189,7 +189,8 @@ impl App {
                 let Ok(transition) = transition else {
                     self.status.text = t!(
                         "Can't use repeat while autoplay is on",
-                        "자동재생 중에는 반복을 켤 수 없어요"
+                        "자동재생 중에는 반복을 켤 수 없어요",
+                        "自動再生中はリピートを使えません"
                     )
                     .to_owned();
                     self.dirty = true;
@@ -311,7 +312,8 @@ impl App {
         if self.local_dedicated_mode {
             self.status.text = t!(
                 "Autoplay stays off in Local Deck",
-                "로컬 덱에서는 자동재생이 꺼져 있어요"
+                "로컬 덱에서는 자동재생이 꺼져 있어요",
+                "ローカルデッキでは自動再生はオフのままです"
             )
             .to_owned();
             self.dirty = true;
@@ -333,7 +335,7 @@ impl App {
         self.set_autoplay_streaming(transition.state.autoplay_streaming);
         self.status.text = format!(
             "{}: {}",
-            t!("Autoplay", "자동재생"),
+            t!("Autoplay", "자동재생", "自動再生"),
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;

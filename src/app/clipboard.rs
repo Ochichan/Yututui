@@ -77,37 +77,50 @@ pub(in crate::app) fn spotify_auth_url_status(
     if opened && copied {
         t!(
             "Approve YuTuTui! in the browser (link copied as fallback)",
-            "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+            "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)",
+            "ブラウザで YuTuTui! を承認してください (予備としてリンクをコピーしました)"
         )
         .to_owned()
     } else if opened {
         t!(
             "Approve YuTuTui! in the browser",
-            "브라우저에서 YuTuTui!를 승인해 주세요"
+            "브라우저에서 YuTuTui!를 승인해 주세요",
+            "ブラウザで YuTuTui! を承認してください"
         )
         .to_owned()
     } else if copied {
         t!(
             "Could not open browser; link copied. Paste it manually or run `ytt doctor --verbose`.",
-            "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요."
+            "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요.",
+            "ブラウザを開けません。リンクをコピーしたので手動で貼り付けるか `ytt doctor --verbose` を実行してください。"
         )
         .to_owned()
     } else if let Some(path) = saved_path {
-        if crate::i18n::is_korean() {
-            format!(
-                "브라우저/클립보드 실패. 인증 URL 저장됨: {}",
-                path.display()
-            )
-        } else {
-            format!(
-                "Browser/clipboard failed; auth URL saved to {}",
-                path.display()
-            )
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!(
+                    "브라우저/클립보드 실패. 인증 URL 저장됨: {}",
+                    path.display()
+                )
+            }
+            crate::i18n::Language::Japanese => {
+                format!(
+                    "ブラウザ/クリップボード失敗。認証 URL を保存: {}",
+                    path.display()
+                )
+            }
+            _ => {
+                format!(
+                    "Browser/clipboard failed; auth URL saved to {}",
+                    path.display()
+                )
+            }
         }
     } else {
         t!(
             "Could not open browser or clipboard; run `ytt auth spotify --client-id …`.",
-            "브라우저와 클립보드를 사용할 수 없어요. `ytt auth spotify --client-id …`를 실행해 주세요."
+            "브라우저와 클립보드를 사용할 수 없어요. `ytt auth spotify --client-id …`를 실행해 주세요.",
+            "ブラウザもクリップボードも使えません。`ytt auth spotify --client-id …` を実行してください。"
         )
         .to_owned()
     }

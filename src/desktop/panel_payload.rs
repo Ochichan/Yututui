@@ -320,7 +320,7 @@ fn title_for_state(state: &TrayState, language: Language) -> String {
             language,
             "Nothing playing",
             "재생 중인 곡 없음",
-            "再生中の曲はありません",
+            "再生中の曲なし",
         )
         .to_string(),
     }
