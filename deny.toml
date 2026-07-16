@@ -4,9 +4,29 @@ no-default-features = false
 
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
+# Single source of truth for RUSTSEC exceptions. CI runs advisories against the FULL
+# feature graph (`cargo deny --all-features check advisories`) so optional-feature
+# dependencies are covered too; bans/licenses/sources keep the default graph above.
+# Every entry carries: reachable path, why accepted, removal condition, review date.
+#
+# Nine gtk-rs GTK3 advisories below share one story: unmaintained bindings that enter
+# the graph only via the optional `desktop` feature's LINUX tray backend
+# (tray-icon/tao → libappindicator/muda → gtk3 stack). Shipped releases build the
+# tray companion for macOS/Windows only, which never link GTK. Remove when
+# tray-icon/tao drop GTK3. Review by 2026-10.
 ignore = [
-    # Transitive via lofty 0.24.0. RUSTSEC marks paste unmaintained but lists no safe upgrade.
-    "RUSTSEC-2024-0436",
+    { id = "RUSTSEC-2024-0411", reason = "gdkwayland-sys: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0412", reason = "gdk: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0413", reason = "atk: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0414", reason = "gdkx11-sys: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0415", reason = "gtk: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0416", reason = "atk-sys: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0418", reason = "gdk-sys: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0419", reason = "gtk3-macros: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0420", reason = "gtk-sys: unmaintained gtk3-rs; optional Linux tray path only, not in shipped artifacts" },
+    { id = "RUSTSEC-2024-0429", reason = "glib VariantStrIter unsoundness: same optional Linux tray path; the iterator APIs are never called here. Remove with the gtk3 block. Review 2026-10" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, via glib-macros in the same optional Linux tray path. Remove with the gtk3 block. Review 2026-10" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, via lofty 0.24.0 (tag reading); RUSTSEC lists no safe upgrade. Remove when lofty drops paste. Review 2026-10" },
 ]
 yanked = "warn"
 
