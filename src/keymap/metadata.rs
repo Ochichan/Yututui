@@ -192,7 +192,7 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "cycle_rating",
         "Rate: like / dislike",
         "평가: 좋아요 / 싫어요",
-        "評価: 高く評価 / 低く評価",
+        "高く評価 / 低く評価",
     ),
     (
         Action::OpenLibrary,
@@ -586,7 +586,7 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "toggle_streaming",
         "Toggle autoplay",
         "자동재생 켜기 / 끄기",
-        "自動再生のオン / オフ",
+        "自動再生の切替",
     ),
     (
         Action::ToggleRadioMode,
@@ -628,21 +628,21 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "toggle_animations",
         "Toggle animations",
         "애니메이션 켜기 / 끄기",
-        "アニメーションのオン / オフ",
+        "アニメーション切替",
     ),
     (
         Action::ToggleControlBox,
         "toggle_control_box",
         "Collapse / expand player bar",
         "플레이어 바 접기 / 펼치기",
-        "プレイヤーバーの折りたたみ / 展開",
+        "プレイヤーバー切替",
     ),
     (
         Action::WhyAi,
         "why_ai",
         "Why these DJ Gem picks",
         "DJ Gem 선곡 이유 보기",
-        "DJ Gemの選曲理由を表示",
+        "DJ Gemの選曲理由",
     ),
     (
         Action::IdentifyNowPlaying,
@@ -691,7 +691,7 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
         "toggle_zoom_wheel_lock",
         "Ctrl+wheel zoom lock",
         "Ctrl+휠 확대 잠금",
-        "Ctrl+ホイール拡大ロック",
+        "ホイール拡大ロック",
     ),
     (
         Action::CopyLink,
@@ -788,7 +788,7 @@ impl Action {
                 t!(
                     "Remove current from queue",
                     "현재 곡 큐에서 제거",
-                    "現在の曲をキューから削除"
+                    "現在曲をキュー削除"
                 )
             }
             (KeyContext::Library, Action::Confirm) => {
@@ -865,7 +865,7 @@ impl Action {
                 t!(
                     "Remove selected from queue",
                     "선택 곡 큐에서 제거",
-                    "選択曲をキューから削除"
+                    "選択曲をキュー削除"
                 )
             }
             (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색", "検索"),

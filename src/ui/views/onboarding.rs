@@ -386,7 +386,7 @@ fn coach_copy(app: &App, mini: bool, confirming: bool) -> CoachCopy {
                 t!(
                     "DJ Gem can chat about music and help curate autoplay when an API key is configured. It is optional; Radio and Local Deck are optional advanced modes too.",
                     "DJ Gem은 API 키가 있을 때 음악 대화와 자동재생 큐레이팅을 도와줘요. 선택 기능이며 라디오와 Local Deck도 선택형 고급 모드예요.",
-                    "DJ GemはAPIキーがあると音楽の会話や自動再生のキュレーションを手伝ってくれます。任意の機能で、ラジオとローカルデッキも任意の上級モードです。"
+                    "APIキーを設定すると、DJ Gemが音楽の会話や自動再生のキュレーションを手伝ってくれます。利用は任意で、ラジオとローカルデッキも同じく任意の上級モードです。"
                 )
                 .to_owned()
             } else {
@@ -681,6 +681,16 @@ fn render_coach_buttons(
             },
         ));
         row
+    } else if app.onboarding.step() == BeginnerStep::Language {
+        // Retro variant: the first step has nothing before it, so no Back — just
+        // [Continue] [Skip], matching the keyboard action map (count 2, primary at 0).
+        vec![
+            (OnboardingAction::Primary, primary.to_owned()),
+            (
+                OnboardingAction::Skip,
+                t!("Skip", "건너뛰기", "スキップ").to_owned(),
+            ),
+        ]
     } else {
         vec![
             (
@@ -1309,6 +1319,12 @@ mod tests {
             app.hits
                 .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Primary))
                 .is_some()
+        );
+        assert!(
+            app.hits
+                .rect_of_target(MouseTarget::Onboarding(OnboardingAction::Back))
+                .is_none(),
+            "the first step has no Back button, retro variant included"
         );
         for lang in crate::i18n::Language::CYCLE {
             assert!(

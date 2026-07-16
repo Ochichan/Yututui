@@ -114,7 +114,7 @@ On a new profile, a ten-second hint points to **Search**. Press the displayed se
 
 That's it. Music.
 
-**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, step-by-step walkthrough — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
+**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, nine-step walkthrough — it starts by letting you pick the UI language (English / 한국어 / 日本語) — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
 
 ## Tour
 
@@ -234,7 +234,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Make it yours
 
-14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization.
+14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
 
 > 🖼️ *GIFs coming soon.*
 <!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:
@@ -252,7 +252,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Retro mode
 
-One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art.
+One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art. Retro also pins the UI language to English — CP437 has no CJK glyphs.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/retro.png, delete the "coming soon" line above, then uncomment:
