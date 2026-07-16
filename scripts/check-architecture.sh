@@ -308,7 +308,7 @@ grep -q 'RESOLVER_QUEUE' src/util/backpressure.rs || {
 # fixtures, so inspect through the actual `#[cfg(test)] mod tests` boundary. A standalone
 # test-only helper must not truncate later production code (notably the MPRIS implementation).
 for file in \
-  src/ai/mod.rs \
+  src/ai/actor.rs \
   src/artwork.rs \
   src/lyrics.rs \
   src/transfer/actor.rs \
