@@ -20,6 +20,13 @@ for doc in README.md README.ko.md README.ja.md docs/index.html; do
   [ -f "$doc" ] && public_docs+=("$doc")
 done
 
+# While the crate is publish = false, no user-facing text may suggest the bare
+# crates.io install form (`cargo install yututui`) — it fails; only --git works.
+if grep -q '^publish = false' Cargo.toml &&
+  grep -rnE 'cargo install yututui([^-]|$)' src "${public_docs[@]}"; then
+  fail "crates.io install command suggested while Cargo.toml has publish = false (use --git)"
+fi
+
 if [ "${#public_docs[@]}" -gt 0 ] &&
   grep -nEi 'production[- ]ready|works everywhere|all terminals|stable API|full Windows support' \
     "${public_docs[@]}"; then

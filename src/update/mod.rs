@@ -205,8 +205,11 @@ pub fn update_instructions(method: InstallMethod) -> UpdateInstructions {
             t!("Update with Nix.", "Nix로 업데이트하세요."),
         ),
         InstallMethod::Cargo => (
-            Some("cargo install yututui --force"),
-            t!("Reinstall with cargo.", "cargo로 재설치하세요."),
+            Some("cargo install --git https://github.com/Ochichan/Yututui --force"),
+            t!(
+                "Reinstall from the Git repository with cargo.",
+                "cargo로 Git 저장소에서 재설치하세요."
+            ),
         ),
         InstallMethod::InstallerUnix => (
             None,
