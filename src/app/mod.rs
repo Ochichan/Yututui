@@ -241,11 +241,20 @@ struct NavRepeat {
     last: Option<Instant>,
 }
 
+/// How many 80 ms IME scrub ticks one terminal event arms (640 ms of coverage). Long enough to
+/// out-wait every observed terminal preedit repaint after the triggering activity, short enough
+/// that a static idle screen reaches zero periodic wakeups.
+pub(crate) const IME_SCRUB_BURST_TICKS: u8 = 8;
+
 /// The whole application state.
 pub struct App {
     pub should_quit: bool,
     /// Set whenever visible state changes; the run loop redraws only when true.
     pub dirty: bool,
+    /// Remaining ticks of the event-armed IME scrub burst. Terminal-owned preedit ghosts are
+    /// created by terminal activity, so the owner loop re-arms this on every received terminal
+    /// event and the 80 ms scrub clock parks once it reaches zero (no idle wakeups).
+    ime_scrub_burst: u8,
     pub mode: Mode,
     /// Whether the API client is signed in (vs anonymous: search + public play only).
     pub authenticated: bool,

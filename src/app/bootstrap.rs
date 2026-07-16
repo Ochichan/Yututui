@@ -7,6 +7,9 @@ impl App {
         Self {
             should_quit: false,
             dirty: true,
+            // Launch armed: the first 640 ms behave like the old always-on scrub clock, covering
+            // any preedit ghost left by the shell prompt the app was started from.
+            ime_scrub_burst: IME_SCRUB_BURST_TICKS,
             mode: Mode::Player,
             authenticated: false,
             keymap: KeyMap::default(),

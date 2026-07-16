@@ -90,9 +90,13 @@ fn sync_animation_interval(
 
 const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
 
-/// Permanent low-rate repaint clock for terminal-owned IME preedit text. The select branch is
-/// guarded while an application text field is active, but the clock itself never expires: some
-/// terminals repaint preedit without sending any event that could re-arm a bounded timer.
+/// Low-rate repaint clock for terminal-owned IME preedit text. The select branch is guarded
+/// while an application text field is active and parks entirely once the event-armed burst
+/// ([`app::IME_SCRUB_BURST_TICKS`] × 80 ms) runs out: preedit ghosts are created by terminal
+/// activity, and every received terminal event re-arms the burst. Accepted trade-off (approved
+/// in the CPU-plan UI/UX ledger): a terminal that repaints preedit without emitting any event
+/// keeps its ghost until the next event, in exchange for zero periodic wakeups on an idle
+/// screen — previously this clock woke the process ~12.5×/s forever.
 fn ime_scrub_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(IME_SCRUB_PERIOD);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1179,6 +1183,10 @@ pub async fn run(
                     // virtual grid, so hit-testing (and double-click identity) stay correct
                     // while the UI is scaled.
                     Some(ev) => {
+                        // Terminal activity is what creates terminal-owned preedit ghosts, so
+                        // every received event — even one that translates to no message (focus,
+                        // key release) — re-arms the bounded IME scrub burst.
+                        app.arm_ime_scrub_burst();
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
@@ -1253,6 +1261,7 @@ pub async fn run(
                     continue;
                 },
                 _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
+                    app.consume_ime_scrub_tick();
                     let fast_succeeded = if ime_scrub_requires_full_draw(
                         &app,
                         reducer_turn_unrendered,
