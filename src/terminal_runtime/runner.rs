@@ -746,10 +746,14 @@ pub async fn run(
         // already killed mpv and asked the owner to quit, so only best-effort terminal
         // restore and the exit itself remain. Skipping the persistence flush is deliberate —
         // the owner (and possibly the persist actor) is not responding, and blocking here
-        // would recreate the unkillable hang this fallback exists to break.
+        // would recreate the unkillable hang this fallback exists to break. Restore runs on
+        // a detached thread with a bounded grace for the same reason: if the owner wedged
+        // inside a blocked stdout write (stalled pty), stdout's lock is held and an inline
+        // `tui::restore` would hang this last-resort path too.
         move |code| {
             player::lifetime::kill_mpv_now();
-            tui::restore(hard_exit_mouse);
+            std::thread::spawn(move || tui::restore(hard_exit_mouse));
+            std::thread::sleep(Duration::from_millis(150));
             std::process::exit(code);
         },
     ) {

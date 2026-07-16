@@ -4,8 +4,10 @@
 //! the terminal emulator posts the OS notification, so it's zero-dependency, works on all three
 //! OSes, is attributed to the terminal (not "Script Editor"/"Finder"), already has the terminal's
 //! notification permission, and supports click-to-focus. When the terminal doesn't advertise OSC
-//! support we fall back to a native [`notify-rust`] toast on a background thread (`show()` blocks).
-//! The in-app status toast (set in the recorder reducer) is the final fallback and always shows.
+//! support we fall back to a native [`notify-rust`] toast on a background thread (`show()` blocks)
+//! — except on macOS `panic = "abort"` (release) builds, where the native path is skipped
+//! entirely (see [`emit_native`]). The in-app status toast (set in the recorder reducer) is the
+//! final fallback and always shows.
 //!
 //! Detection is env-based and done once at startup; emission is best-effort and never surfaces an
 //! error to the caller.
