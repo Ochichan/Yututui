@@ -21,8 +21,8 @@ event parser.
   information in crossterm's existing `KeyEvent` representation.
 - Accept the protocol's omitted/default parameters and wait for the final byte when the first
   parameter is omitted.
-- Apply three behavior-neutral lint cleanups in upstream Unix/example code so 0.29.0 remains
-  warning-free under the repository's newer `-D warnings` toolchain.
+- Apply six behavior-neutral lint cleanups in upstream terminal/event/Unix/example code so 0.29.0
+  remains warning-free under the repository's newer `-D warnings` toolchain.
 - Keep the vendored crate's upstream standalone `Cargo.lock` visible to Git.
 - Propagate keyboard-enhancement polling errors instead of retrying forever, keeping terminal
   capability probing bounded and allowing the application to select its conservative fallback.
