@@ -318,11 +318,16 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
     // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
     let zoom = zoom::ZoomHandle::default();
-    let mut terminal = tui::init(mouse, zoom.clone())?;
+    let (mut terminal, keyboard_input_mode) = tui::init(mouse, zoom.clone())?;
     startup.mark("terminal_ready");
     let result = terminal_runtime::run(
         &mut terminal,
-        terminal_runtime::TerminalStartupState::new(cfg, persistent_state, persistence_access),
+        terminal_runtime::TerminalStartupState::new(
+            cfg,
+            persistent_state,
+            persistence_access,
+            keyboard_input_mode,
+        ),
         art_picker,
         remote,
         startup,

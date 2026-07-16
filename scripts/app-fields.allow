@@ -53,6 +53,7 @@ station
 status
 status_text_prev
 streaming
+terminal_keyboard_mode
 theme
 tool_setup
 transfer_running

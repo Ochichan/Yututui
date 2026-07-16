@@ -6,6 +6,7 @@ pub struct TerminalStartupState {
     pub(super) config: crate::config::Config,
     pub(super) persistent: PersistentStartupState,
     pub(super) persistence_access: persist::PersistenceAccess,
+    pub(super) keyboard_input_mode: crate::terminal_keyboard::KeyboardInputMode,
 }
 
 impl TerminalStartupState {
@@ -13,11 +14,13 @@ impl TerminalStartupState {
         config: crate::config::Config,
         persistent: PersistentStartupState,
         persistence_access: persist::PersistenceAccess,
+        keyboard_input_mode: crate::terminal_keyboard::KeyboardInputMode,
     ) -> Self {
         Self {
             config,
             persistent,
             persistence_access,
+            keyboard_input_mode,
         }
     }
 }

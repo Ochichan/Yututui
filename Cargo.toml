@@ -218,12 +218,12 @@ wry = { version = "0.55.1", default-features = false, features = ["transparent"]
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", features = ["tokio"] }
 
-# Local fork of ratatui-image 11.0.6 with the rendering and terminal-detection patches documented
-# in `crates/ratatui-image/PATCHES.md`. A vendored path patch — not a git/crates.io fork — so the
-# source travels with the repo and `cargo install --path .` / the CI build need nothing extra.
-# Re-apply the patches on any bump (grep the fork for `yututui patch`).
+# Local forks travel with the repo so `cargo install --path .` and CI need no external fork.
+# Their narrow patches and upgrade procedures are documented in each crate's `PATCHES.md`.
+# Re-apply the patches on any bump (grep each fork for `yututui patch`).
 [patch.crates-io]
 ratatui-image = { path = "crates/ratatui-image" }
+crossterm = { path = "crates/crossterm" }
 
 [profile.release]
 opt-level = "s"      # optimise for size; revisit "z"/3 after benchmarking

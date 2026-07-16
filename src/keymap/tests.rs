@@ -492,6 +492,52 @@ fn page_and_jump_keys_resolve_in_list_contexts() {
 }
 
 #[test]
+fn legacy_ctrl_backspace_fallback_tracks_effective_keymap() {
+    let ctrl_h = parse_chord("ctrl+h").unwrap();
+
+    let mut km = KeyMap::default();
+    assert!(km.legacy_ctrl_backspace_fallback_active());
+
+    km.rebind(
+        KeyContext::Common,
+        Action::DeleteWord,
+        parse_chord("f8").unwrap(),
+    )
+    .unwrap();
+    assert!(!km.legacy_ctrl_backspace_fallback_active());
+    km.reset(KeyContext::Common, Action::DeleteWord).unwrap();
+    assert!(km.legacy_ctrl_backspace_fallback_active());
+    km.unbind(KeyContext::Common, Action::DeleteWord);
+    assert!(!km.legacy_ctrl_backspace_fallback_active());
+
+    let mut home_remapped = KeyMap::default();
+    home_remapped
+        .rebind(KeyContext::Global, Action::Home, parse_chord("f8").unwrap())
+        .unwrap();
+    assert!(home_remapped.legacy_ctrl_backspace_fallback_active());
+    home_remapped.unbind(KeyContext::Global, Action::Home);
+    assert!(home_remapped.legacy_ctrl_backspace_fallback_active());
+
+    let mut common_claim = KeyMap::default();
+    common_claim
+        .rebind(KeyContext::Global, Action::Home, parse_chord("f8").unwrap())
+        .unwrap();
+    common_claim
+        .rebind(KeyContext::Common, Action::MoveUp, ctrl_h)
+        .unwrap();
+    assert!(!common_claim.legacy_ctrl_backspace_fallback_active());
+
+    let mut global_claim = KeyMap::default();
+    global_claim
+        .rebind(KeyContext::Global, Action::Home, parse_chord("f8").unwrap())
+        .unwrap();
+    global_claim
+        .rebind(KeyContext::Global, Action::ToggleAbout, ctrl_h)
+        .unwrap();
+    assert!(!global_claim.legacy_ctrl_backspace_fallback_active());
+}
+
+#[test]
 fn shift_nav_resolves_to_select_actions() {
     let km = KeyMap::default();
     // Shift+nav lives in Common, so it falls through into the list contexts that act on

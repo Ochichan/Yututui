@@ -208,6 +208,42 @@ describe('App against the demo core', () => {
     expect(field.selectionStart).toBe(0);
   });
 
+  it('keeps Ctrl+Backspace editing distinct from Ctrl+H navigation', async () => {
+    const ctx = assemble();
+    const { container } = render(App, { props: { ctx } });
+    await settle();
+
+    ctx.ui.view = 'search';
+    await settle();
+    const field = container.querySelector<HTMLInputElement>('#search-query')!;
+    await fireEvent.input(field, { target: { value: 'alpha beta' } });
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+
+    const deleteWord = new KeyboardEvent('keydown', {
+      key: 'Backspace',
+      code: 'Backspace',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(deleteWord);
+    expect(deleteWord.defaultPrevented).toBe(true);
+    expect(field.value).toBe('alpha ');
+    expect(ctx.ui.view).toBe('search');
+
+    const home = new KeyboardEvent('keydown', {
+      key: 'h',
+      code: 'KeyH',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(home);
+    expect(home.defaultPrevented).toBe(true);
+    expect(ctx.ui.view).toBe('now');
+  });
+
   it('flushes pending volume when the WebView is hidden', async () => {
     const ctx = assemble();
     const flush = vi.spyOn(ctx.playback, 'flushVolume');

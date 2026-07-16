@@ -543,6 +543,7 @@ pub async fn run(
         config: cfg,
         persistent,
         persistence_access,
+        keyboard_input_mode,
     } = startup_state;
     let persistence_read_only = persistence_access.is_read_only();
     // Resolve every runtime store through the same override-aware roots covered by the writer
@@ -587,6 +588,7 @@ pub async fn run(
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
+    app.terminal_keyboard_mode = keyboard_input_mode;
     if let Some(warning) = cookies_warning {
         app.status.text = warning;
     }

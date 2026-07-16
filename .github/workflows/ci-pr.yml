@@ -53,6 +53,9 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      - name: Vendored crossterm format
+        run: cargo fmt --manifest-path crates/crossterm/Cargo.toml --all --check
+
       - name: Architecture invariants
         run: scripts/check-architecture.sh
 
@@ -64,6 +67,9 @@ jobs:
 
       - name: Vendored ratatui-image patch invariants
         run: scripts/check-ratatui-image-patch.sh
+
+      - name: Vendored crossterm patch invariants
+        run: scripts/check-crossterm-patch.sh
 
       - name: Ensure supply-chain tools
         run: |
@@ -154,8 +160,16 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Vendored crossterm clippy (warnings = errors)
+        run: >-
+          cargo clippy --manifest-path crates/crossterm/Cargo.toml
+          --all-targets --all-features -- -D warnings
+
       - name: Test
         run: cargo test --workspace
+
+      - name: Vendored crossterm test
+        run: cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
 
   windows-optional:
     name: Windows (optional light)

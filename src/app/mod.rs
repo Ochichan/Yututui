@@ -251,6 +251,10 @@ pub struct App {
     pub authenticated: bool,
     /// The resolved keybindings (defaults overlaid with user overrides from config).
     pub keymap: KeyMap,
+    /// How precisely the active terminal reports modified keys. Legacy terminals collapse
+    /// Ctrl+Backspace and Ctrl+H into the same byte, so key routing applies a conservative
+    /// text-edit fallback only in that mode.
+    pub terminal_keyboard_mode: crate::terminal_keyboard::KeyboardInputMode,
     /// The resolved safe mouse gesture bindings (defaults plus persisted overrides).
     pub mousemap: MouseMap,
     /// Resolved color theme (preset plus user overrides).

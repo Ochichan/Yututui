@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    pub(in crate::app) fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+    pub(in crate::app) fn on_key(&mut self, mut k: KeyEvent) -> Vec<Cmd> {
         // Character repeat is opt-in. The translator forwards only lyric-delay mappings, but
         // tests and alternate event sources can call the reducer directly; reject those repeats
         // before they dirty the frame or dismiss a modal that currently owns keyboard input.
@@ -16,11 +16,23 @@ impl App {
         // Some terminals render IME preedit text even in raw alternate-screen apps. Always
         // redraw after a key press so committed Korean jamo used as shortcuts are covered.
         self.dirty = true;
-        let chord = Chord::from(k);
+        let mut chord = Chord::from(k);
         // Ctrl+C always quits, regardless of mode or remapping (a hard safety key that is
         // never part of the keymap, so the user can't lock themselves out).
         if chord == Chord::new(KeyCode::Char('c'), KeyModifiers::CONTROL) {
             return self.quit_app();
+        }
+
+        // The keybinding editor owns the next raw chord. It must run before Home and before
+        // Legacy Ctrl+H normalization so ambiguous terminals record what they actually sent;
+        // Ctrl+C above remains the one non-capturable emergency exit.
+        if self.mode == Mode::Settings
+            && self
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.capturing.is_some())
+        {
+            return self.settings_capture_key(k);
         }
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
@@ -182,6 +194,22 @@ impl App {
             return self.on_key_context_menu(k);
         }
 
+        // Legacy terminals can report both physical Ctrl+Backspace and Ctrl+H as `^H`. While
+        // DeleteWord still owns its default chord, prefer safe editing in a focused text field
+        // and consume the ambiguous report everywhere else. Higher-priority non-editor modals
+        // have already captured it; exact keyboard modes never enter this branch.
+        if self.terminal_keyboard_mode == crate::terminal_keyboard::KeyboardInputMode::Legacy
+            && chord == Chord::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+            && self.keymap.legacy_ctrl_backspace_fallback_active()
+        {
+            if self.in_text_entry() {
+                k.code = KeyCode::Backspace;
+                chord = Chord::from(k);
+            } else {
+                return Vec::new();
+            }
+        }
+
         // The "add to playlist" picker captures the keyboard while open (list nav + the
         // inline name entry) — before Search-Enter and globals so keys can't leak through.
         if self.playlist_picker.is_some() {
@@ -227,21 +255,11 @@ impl App {
             };
         }
 
-        // Home is intentionally a hard global action: it should work even while a text
-        // field or key-capture prompt is focused.
+        // Home is intentionally a hard global action in exact keyboard modes: it works even
+        // while a text field is focused. Settings capture and the Legacy safety alias above
+        // receive first refusal because their raw input would otherwise be lost here.
         if matches!(self.keymap.global_action(chord), Some(Action::Home)) {
             return self.go_home();
-        }
-
-        // The keybinding editor's capture mode grabs the next key verbatim (except Esc),
-        // so it must run before the global/help shortcuts could swallow it.
-        if self.mode == Mode::Settings
-            && self
-                .settings
-                .as_ref()
-                .is_some_and(|s| s.capturing.is_some())
-        {
-            return self.settings_capture_key(k);
         }
 
         // Text zoom is resolved ahead of the overlay blocks below so it keeps working

@@ -10,6 +10,7 @@ impl App {
             mode: Mode::Player,
             authenticated: false,
             keymap: KeyMap::default(),
+            terminal_keyboard_mode: crate::terminal_keyboard::KeyboardInputMode::default(),
             mousemap: MouseMap::default(),
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,

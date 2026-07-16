@@ -177,11 +177,7 @@ fn run_terminal_json() -> i32 {
         image_protocol_override_suggestions,
         zoom_mode: terminal_zoom_mode(term.as_deref(), term_program.as_deref(), wt_session),
         zoom_mode_source: "environment",
-        keyboard_enhancement_supported: terminal_keyboard_hint(
-            term.as_deref(),
-            term_program.as_deref(),
-            wt_session,
-        ),
+        keyboard_enhancement_supported: terminal_keyboard_hint(),
         mouse_capture_configured: true,
         term,
         term_program,
@@ -575,24 +571,8 @@ fn terminal_zoom_mode(
     }
 }
 
-fn terminal_keyboard_hint(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    wt_session: bool,
-) -> Option<bool> {
-    let term = term.unwrap_or_default().to_ascii_lowercase();
-    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
-    if term.contains("kitty")
-        || term.contains("foot")
-        || term.contains("alacritty")
-        || term_program.contains("wezterm")
-        || term_program.contains("ghostty")
-        || wt_session
-    {
-        Some(true)
-    } else {
-        None
-    }
+fn terminal_keyboard_hint() -> Option<bool> {
+    crate::terminal_keyboard::keyboard_input_hint()
 }
 
 fn run_inner(verbose: bool) -> i32 {
@@ -1163,6 +1143,15 @@ mod tests {
         ("WT_SESSION", None),
         ("TERM", None),
         ("TERM_PROGRAM", None),
+        ("TMUX", None),
+        ("STY", None),
+        ("ZELLIJ", None),
+        ("ZELLIJ_SESSION_NAME", None),
+        ("SSH_CONNECTION", None),
+        ("SSH_CLIENT", None),
+        ("SSH_TTY", None),
+        ("YTM_TUI_KEYBOARD_ENHANCEMENT", None),
+        ("YTM_TUI_WIN32_INPUT", None),
     ];
 
     fn with_terminal_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
@@ -1253,20 +1242,21 @@ mod tests {
                 "unknown_probe_required"
             );
             assert_eq!(terminal_zoom_mode(Some("plain"), None, false), "unknown");
-            assert_eq!(
-                terminal_keyboard_hint(Some("foot"), None, false),
-                Some(true)
-            );
-            assert_eq!(
-                terminal_keyboard_hint(Some("xterm"), Some("ghostty"), false),
-                Some(true)
-            );
-            assert_eq!(
-                terminal_keyboard_hint(Some("xterm"), None, true),
-                Some(true)
-            );
         });
 
+        with_terminal_env(&[("TERM", Some("foot"))], || {
+            assert_eq!(terminal_keyboard_hint(), Some(true));
+        });
+        with_terminal_env(
+            &[("TERM", Some("xterm")), ("TERM_PROGRAM", Some("ghostty"))],
+            || assert_eq!(terminal_keyboard_hint(), Some(true)),
+        );
+        with_terminal_env(
+            &[("TERM", Some("xterm")), ("WT_SESSION", Some("1"))],
+            || {
+                assert_eq!(terminal_keyboard_hint(), Some(true));
+            },
+        );
         with_var("YTM_TUI_TEXT_SIZING", Some("false"), || {
             assert_eq!(terminal_zoom_mode(None, None, false), "none_forced");
         });
@@ -1346,11 +1336,18 @@ mod tests {
 
     #[test]
     fn terminal_doctor_marks_unknown_keyboard_support_as_unknown() {
-        assert_eq!(terminal_keyboard_hint(Some("dumb"), None, false), None);
-        assert_eq!(
-            terminal_keyboard_hint(Some("xterm-kitty"), None, false),
-            Some(true)
-        );
+        with_terminal_env(&[("TERM", Some("dumb"))], || {
+            assert_eq!(terminal_keyboard_hint(), None);
+        });
+        with_terminal_env(&[("TERM", Some("xterm-kitty"))], || {
+            assert_eq!(terminal_keyboard_hint(), Some(true));
+        });
+        with_terminal_env(&[("KONSOLE_VERSION", Some("260399"))], || {
+            assert_eq!(terminal_keyboard_hint(), Some(false));
+        });
+        with_terminal_env(&[("KONSOLE_VERSION", Some("260400"))], || {
+            assert_eq!(terminal_keyboard_hint(), Some(true));
+        });
     }
 
     #[test]

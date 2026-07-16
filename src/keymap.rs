@@ -1067,6 +1067,22 @@ impl KeyMap {
             })
     }
 
+    /// Whether an ambiguous legacy `^H` report should stand in for Ctrl+Backspace.
+    ///
+    /// Plain terminals can encode both physical keys as the same byte. Keep that byte reserved
+    /// for safe word deletion only while DeleteWord still has its built-in Ctrl+Backspace chord.
+    /// Remapping/unbinding DeleteWord releases `^H`; remapping Home alone deliberately does not.
+    /// An explicit Common/Global `^H` claim also wins over the compatibility fallback.
+    pub fn legacy_ctrl_backspace_fallback_active(&self) -> bool {
+        let ctrl_backspace = Chord::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        let ctrl_h = Chord::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+
+        self.chord(KeyContext::Common, Action::DeleteWord) == Some(ctrl_backspace)
+            && self.context_action(KeyContext::Common, ctrl_backspace) == Some(Action::DeleteWord)
+            && self.context_action(KeyContext::Common, ctrl_h).is_none()
+            && matches!(self.global_action(ctrl_h), None | Some(Action::Home))
+    }
+
     /// The chord bound to `action` in `ctx`, formatted for the current display mode.
     pub fn label_for_display(&self, ctx: KeyContext, action: Action, retro: bool) -> String {
         let chord = self

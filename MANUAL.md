@@ -42,6 +42,7 @@ supervisor/lease there. The supported scope is in [terminal compatibility](docs/
 
 1. Press **`s`** — a search box opens.
 2. Type a song or artist name, press **`Enter`**. In any text field, **`←`** / **`→`** moves the cursor by one character and **`Ctrl+←`** / **`Ctrl+→`** by one word; **`Backspace`** deletes one character and **`Ctrl+Backspace`** the previous word.
+   On an older or multiplexed terminal that sends `Ctrl+Backspace` and `Ctrl+H` as the same code, YuTuTui! safely reserves that ambiguous code for word deletion (and ignores it outside text fields) while the Delete Word binding is still at its default. See [keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes).
 3. Move down the results with **`↓`**, press **`Enter`** on the one you want.
 
 Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.
