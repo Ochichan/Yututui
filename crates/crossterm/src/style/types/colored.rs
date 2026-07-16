@@ -155,8 +155,20 @@ impl fmt::Display for Colored {
 #[cfg(test)]
 mod tests {
     use crate::style::{Color, Colored};
+    use std::sync::{Mutex, MutexGuard};
+
+    // yututui patch: these upstream tests exercise one process-global color switch in parallel.
+    // Serialize only that shared state while leaving the rest of the crate's tests concurrent.
+    static COLOR_STATE_LOCK: Mutex<()> = Mutex::new(());
+
+    fn color_state_guard() -> MutexGuard<'static, ()> {
+        COLOR_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     fn check_format_color(colored: Colored, expected: &str) {
+        let _guard = color_state_guard();
         Colored::set_ansi_color_disabled(true);
         assert_eq!(colored.to_string(), "");
         Colored::set_ansi_color_disabled(false);
@@ -211,6 +223,8 @@ mod tests {
 
     /// Used for test_parse_ansi_fg and test_parse_ansi_bg
     fn test_parse_ansi(bg_or_fg: impl Fn(Color) -> Colored) {
+        let _guard = color_state_guard();
+        Colored::set_ansi_color_disabled(false);
         /// Formats a re-parses `color` to check the result.
         macro_rules! test {
             ($color:expr) => {
@@ -308,6 +322,10 @@ mod tests {
 
     #[test]
     fn test_no_color() {
+        let _guard = color_state_guard();
+        // yututui patch: initialize the display memo before this test mutates NO_COLOR. Without
+        // this, a parallel formatting test can memoize the temporary value and become flaky.
+        Colored::set_ansi_color_disabled(false);
         std::env::set_var("NO_COLOR", "1");
         assert!(Colored::ansi_color_disabled());
         std::env::set_var("NO_COLOR", "XXX");
