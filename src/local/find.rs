@@ -7,6 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::model::{AudioFormat, LocalAlbumId, LocalArtistId, LocalTrack, LocalTrackId};
 
@@ -294,6 +295,18 @@ impl SearchFields {
     }
 }
 
+/// Build a shared normalized sort key. The empty facet is extremely common (aggregate documents
+/// leave unused sort slots blank; many tracks have no album), so it reuses one static allocation
+/// instead of a fresh `Arc` header per document — the `String::new()` this replaced was free.
+fn sort_key_from(value: &str) -> Arc<str> {
+    static EMPTY: std::sync::OnceLock<Arc<str>> = std::sync::OnceLock::new();
+    if value.is_empty() {
+        Arc::clone(EMPTY.get_or_init(|| Arc::from("")))
+    } else {
+        Arc::from(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TrackSearchData {
     fields: SearchFields,
@@ -301,26 +314,26 @@ struct TrackSearchData {
     modified_at: i64,
     predicates: BTreeSet<LocalFindIs>,
     missing: BTreeSet<LocalFindMissing>,
-    album_sort: String,
-    artist_sort: String,
+    album_sort: Arc<str>,
+    artist_sort: Arc<str>,
     disc_no: Option<u32>,
     track_no: Option<u32>,
-    title_sort: String,
+    title_sort: Arc<str>,
 }
 
 #[derive(Debug, Clone)]
 struct SearchDocument {
     id: LocalFindHitId,
     label: String,
-    label_sort: String,
+    label_sort: Arc<str>,
     secondary: String,
-    secondary_sort: String,
+    secondary_sort: Arc<str>,
     fields: SearchFields,
     track_ids: Vec<LocalTrackId>,
     year: Option<i32>,
     recent: i64,
-    artist_sort: String,
-    album_sort: String,
+    artist_sort: Arc<str>,
+    album_sort: Arc<str>,
     locally_playable_count: usize,
     total_track_count: usize,
 }
@@ -576,13 +589,16 @@ fn track_search_data(track: &LocalTrack, options: &LocalFindCorpusOptions) -> Tr
         modified_at: track.modified_at,
         predicates,
         missing,
-        album_sort: album.unwrap_or_default(),
-        artist_sort: album_artist
-            .or_else(|| artists.first().cloned())
-            .unwrap_or_default(),
+        album_sort: sort_key_from(album.as_deref().unwrap_or_default()),
+        artist_sort: sort_key_from(
+            album_artist
+                .as_deref()
+                .or_else(|| artists.first().map(String::as_str))
+                .unwrap_or_default(),
+        ),
         disc_no: track.disc_no,
         track_no: track.track_no,
-        title_sort: title,
+        title_sort: sort_key_from(&title),
     }
 }
 
@@ -720,25 +736,27 @@ fn build_albums(
             let ids = ordered_ids(group.track_ids, order);
             let (year, recent) = document_stats(&ids, track_data);
             let count = ids.len();
+            let album_sort = sort_key_from(&album_key);
+            let artist_sort = sort_key_from(&artist_key);
             SearchDocument {
                 id: LocalFindHitId::Album(LocalAlbumId::from_parts(
                     &group.display,
                     &group.secondary,
                 )),
                 label: group.display,
-                label_sort: album_key.clone(),
+                label_sort: Arc::clone(&album_sort),
                 secondary: group.secondary,
-                secondary_sort: artist_key.clone(),
+                secondary_sort: Arc::clone(&artist_sort),
                 fields: SearchFields {
-                    albums: vec![album_key.clone()],
-                    album_artists: vec![artist_key.clone()],
+                    albums: vec![album_key],
+                    album_artists: vec![artist_key],
                     ..SearchFields::default()
                 },
                 track_ids: ids,
                 year,
                 recent,
-                artist_sort: artist_key,
-                album_sort: album_key,
+                artist_sort,
+                album_sort,
                 locally_playable_count: count,
                 total_track_count: count,
             }
@@ -781,22 +799,23 @@ fn build_artists(
             let ids = ordered_ids(group.track_ids, order);
             let (year, recent) = document_stats(&ids, track_data);
             let count = ids.len();
+            let artist_sort = sort_key_from(&artist_key);
             SearchDocument {
                 id: LocalFindHitId::Artist(LocalArtistId::from_name(&group.display)),
                 label: group.display,
-                label_sort: artist_key.clone(),
+                label_sort: Arc::clone(&artist_sort),
                 secondary: String::new(),
-                secondary_sort: String::new(),
+                secondary_sort: sort_key_from(""),
                 fields: SearchFields {
                     artists: vec![artist_key.clone()],
-                    album_artists: vec![artist_key.clone()],
+                    album_artists: vec![artist_key],
                     ..SearchFields::default()
                 },
                 track_ids: ids,
                 year,
                 recent,
-                artist_sort: artist_key,
-                album_sort: String::new(),
+                artist_sort,
+                album_sort: sort_key_from(""),
                 locally_playable_count: count,
                 total_track_count: count,
             }
@@ -831,9 +850,9 @@ fn build_genres(
             SearchDocument {
                 id: LocalFindHitId::Genre(genre_key.clone()),
                 label: group.display,
-                label_sort: genre_key.clone(),
+                label_sort: sort_key_from(&genre_key),
                 secondary: String::new(),
-                secondary_sort: String::new(),
+                secondary_sort: sort_key_from(""),
                 fields: SearchFields {
                     genres: vec![genre_key],
                     ..SearchFields::default()
@@ -841,8 +860,8 @@ fn build_genres(
                 track_ids: ids,
                 year,
                 recent,
-                artist_sort: String::new(),
-                album_sort: String::new(),
+                artist_sort: sort_key_from(""),
+                album_sort: sort_key_from(""),
                 locally_playable_count: count,
                 total_track_count: count,
             }
@@ -880,10 +899,10 @@ fn build_folders(
             let path_key = normalize_text(&path_display);
             SearchDocument {
                 id: LocalFindHitId::Folder(path),
-                label_sort: normalize_text(&label),
+                label_sort: sort_key_from(&normalize_text(&label)),
                 label,
                 secondary: path_display,
-                secondary_sort: path_key.clone(),
+                secondary_sort: sort_key_from(&path_key),
                 fields: SearchFields {
                     paths: vec![path_key],
                     ..SearchFields::default()
@@ -891,8 +910,8 @@ fn build_folders(
                 track_ids: ids,
                 year,
                 recent,
-                artist_sort: String::new(),
-                album_sort: String::new(),
+                artist_sort: sort_key_from(""),
+                album_sort: sort_key_from(""),
                 locally_playable_count: count,
                 total_track_count: count,
             }
@@ -908,16 +927,16 @@ fn playlist_document(
     let local_count = projection.locally_playable_count();
     SearchDocument {
         id: LocalFindHitId::Playlist(projection.id),
-        label_sort: normalize_text(&projection.name),
+        label_sort: sort_key_from(&normalize_text(&projection.name)),
         label: projection.name,
         secondary: String::new(),
-        secondary_sort: String::new(),
+        secondary_sort: sort_key_from(""),
         fields: SearchFields::default(),
         track_ids: projection.track_ids,
         year,
         recent,
-        artist_sort: String::new(),
-        album_sort: String::new(),
+        artist_sort: sort_key_from(""),
+        album_sort: sort_key_from(""),
         locally_playable_count: local_count,
         total_track_count: projection.total_track_count,
     }
@@ -1101,6 +1120,27 @@ fn resolve_unique(
         }),
         _ => Some(LocalFindPlaylistEntryResolution::Ambiguous),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn track_documents_share_normalized_sort_keys_with_track_data() {
+    let mut track = LocalTrack::untagged(PathBuf::from("/music/Artist/Album/Track.flac"), 100, 10);
+    track.title = "Track Title".to_owned();
+    track.artist = vec!["Track Artist".to_owned()];
+    track.album = Some("Track Album".to_owned());
+
+    let corpus = LocalFindCorpus::from_tracks(&[track]);
+    let document = corpus.tracks.first().expect("track document");
+    let LocalFindHitId::Track(track_id) = &document.id else {
+        panic!("track document has a track id");
+    };
+    let data = corpus.track_data.get(track_id).expect("track search data");
+
+    assert!(Arc::ptr_eq(&data.title_sort, &document.label_sort));
+    assert!(Arc::ptr_eq(&data.artist_sort, &document.secondary_sort));
+    assert!(Arc::ptr_eq(&data.artist_sort, &document.artist_sort));
+    assert!(Arc::ptr_eq(&data.album_sort, &document.album_sort));
 }
 
 #[cfg(test)]

@@ -18,7 +18,11 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
+// Keep the pre-DJ-actor-split DTO paths source-compatible for callers which still import
+// `app::{AiContext, AiPick, PlaylistInfo}`. Their neutral owner-independent definitions now live
+// in `crate::ai`, but the app facade remains the compatibility boundary.
 use crate::ai::GeminiModel;
+pub use crate::ai::{AiContext, AiPick, PlaylistInfo};
 use crate::api::{ApiMode, Song};
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
@@ -160,12 +164,12 @@ mod streaming_reducer;
 pub(in crate::app) use clipboard::{copy_to_clipboard, spotify_auth_url_status};
 pub use streaming_reducer::StreamingMsg;
 
-/// Autoplay/streaming top-up policy and the play-error breaker threshold — single-sourced
-/// with the headless daemon in [`crate::playback_policy`] so no bound can drift between the
-/// two playback owners. Re-exported so this module's submodules keep resolving the names.
+/// Autoplay/streaming and play-error breaker thresholds used by App reducers. Re-exported so
+/// this module's submodules keep resolving the names; refill admission itself lives in the
+/// owner-neutral [`crate::streaming::plan_autoplay_refill`] planner.
 pub(crate) use crate::playback_policy::{
-    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
-    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
+    AUTOPLAY_MAX_FAILURES, MAX_CONSECUTIVE_PLAY_ERRORS, PlaybackModeAction, PlaybackModeState,
+    STREAMING_FALLBACK_COUNT,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,11 +245,20 @@ struct NavRepeat {
     last: Option<Instant>,
 }
 
+/// How many 80 ms IME scrub ticks one terminal event arms (640 ms of coverage). Long enough to
+/// out-wait every observed terminal preedit repaint after the triggering activity, short enough
+/// that a static idle screen reaches zero periodic wakeups.
+pub(crate) const IME_SCRUB_BURST_TICKS: u8 = 8;
+
 /// The whole application state.
 pub struct App {
     pub should_quit: bool,
     /// Set whenever visible state changes; the run loop redraws only when true.
     pub dirty: bool,
+    /// Remaining ticks of the event-armed IME scrub burst. Terminal-owned preedit ghosts are
+    /// created by terminal activity, so the owner loop re-arms this on every received terminal
+    /// event and the 80 ms scrub clock parks once it reaches zero (no idle wakeups).
+    ime_scrub_burst: u8,
     pub mode: Mode,
     /// Whether the API client is signed in (vs anonymous: search + public play only).
     pub authenticated: bool,
@@ -347,7 +360,7 @@ pub struct App {
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,
     /// The user's local playlists (the DJ Gem playlist tools read/write these).
-    pub playlists: Playlists,
+    pub playlists: Arc<Playlists>,
     /// The active natural-language station profile (explore level + avoided artists), distilled
     /// from a `start_streaming` vibe and persisted. Read live by [`App::build_station_state`].
     pub station: StationStore,
@@ -358,11 +371,11 @@ pub struct App {
 
     // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
-    pub library: Library,
+    pub library: Arc<Library>,
     /// Per-track preference signals (plays/skips/dislikes + raw play log + artist affinity),
     /// persisted separately from the library so `Song`'s shape stays unchanged. Loaded by
     /// `main` after `new`; drives streaming ranking and the ♥/✗ status-line toggles.
-    pub signals: Signals,
+    pub signals: Arc<Signals>,
     /// Listening-session tracking (play count + last-start time) for skip-confidence; reset
     /// after a long idle gap (see [`Session`]).
     session: Session,

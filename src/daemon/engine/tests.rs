@@ -1040,6 +1040,7 @@ async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
 
     engine.streaming = false;
     engine.queue.repeat = crate::queue::Repeat::All;
+    engine.config.repeat = crate::queue::Repeat::All;
     engine.config.autoplay_streaming = Some(false);
     let (response, _, effects) = engine
         .handle_remote(RemoteCommand::Streaming {
@@ -1055,6 +1056,26 @@ async fn remote_repeat_and_streaming_guards_preserve_music_mode_invariant() {
     assert!(effects.is_empty());
     assert!(!engine.streaming);
     assert_eq!(engine.config.autoplay_streaming, Some(false));
+
+    // The AI actor carries a snapshot and can race a repeat change. Its owner-lane backstop must
+    // return a structured rejection with zero effects and preserve every mode/config field.
+    engine.consecutive_streaming_failures = 2;
+    assert!(
+        engine.build_ai_context().repeat_on,
+        "the actor snapshot must preflight the conflict"
+    );
+    let (response, effects) = engine.ai_set_autoplay(true);
+    assert!(!response.ok);
+    assert_eq!(
+        response.reason.as_deref(),
+        Some("incompatible_playback_modes")
+    );
+    assert!(effects.is_empty());
+    assert!(!engine.streaming);
+    assert_eq!(engine.queue.repeat, crate::queue::Repeat::All);
+    assert_eq!(engine.config.repeat, crate::queue::Repeat::All);
+    assert_eq!(engine.config.autoplay_streaming, Some(false));
+    assert_eq!(engine.consecutive_streaming_failures, 2);
 }
 
 #[tokio::test]

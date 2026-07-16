@@ -8,8 +8,7 @@ use std::time::Instant;
 
 use crate::api::Song;
 use crate::playback_policy::{
-    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, STREAMING_FALLBACK_COUNT,
-    STREAMING_POOL_COUNT,
+    AUTOPLAY_MAX_FAILURES, STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
 };
 use crate::signals::{self, Signals};
 use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode};
@@ -38,34 +37,22 @@ impl DaemonEngine {
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
-        if !self.streaming_active() || self.streaming_pending {
-            return Vec::new();
-        }
-        if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {
-            return Vec::new();
-        }
-        if !force
-            && self
-                .last_extend
-                .is_some_and(|t| t.elapsed() < AUTOPLAY_COOLDOWN)
-        {
-            return Vec::new();
-        }
-        let Some(cur) = self.queue.current() else {
+        let Some(refill) = streaming::plan_autoplay_refill(
+            self.streaming_active(),
+            self.streaming_pending,
+            force,
+            self.queue.remaining(),
+            self.last_extend.map(|t| t.elapsed()),
+            self.queue.current(),
+        ) else {
             return Vec::new();
         };
-        if cur.is_radio_station() {
-            return Vec::new();
-        }
-
-        let seed = format!("{} — {}", cur.title, cur.artist);
-        let seed_video_id = cur.video_id.clone();
-        let exclude_ids = self.streaming_exclude_ids(&seed_video_id);
+        let exclude_ids = self.streaming_exclude_ids(&refill.seed_video_id);
         self.last_extend = Some(Instant::now());
         self.streaming_pending = true;
         vec![EngineEffect::StreamingFallback {
-            seed,
-            seed_video_id,
+            seed: refill.seed,
+            seed_video_id: refill.seed_video_id,
             exclude_ids,
             limit: STREAMING_POOL_COUNT,
             mode: self.config.streaming.mode,

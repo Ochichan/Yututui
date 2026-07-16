@@ -133,7 +133,7 @@ fn all_animations_on_render_every_view_without_panic() {
 
     // Content for every effect to chew on.
     let cur = app.queue.current().unwrap().clone();
-    app.library.toggle_favorite(&cur); // liked → heart + burst path
+    app.library_mut().toggle_favorite(&cur); // liked → heart + burst path
     app.lyrics.visible = true;
     app.lyrics.track = Some(TrackLyrics {
         video_id: cur.video_id.clone().into(),
@@ -500,7 +500,7 @@ fn track_change_arms_the_intro_and_suppresses_the_like_burst() {
     // Pre-favorite the *next* track: when it becomes current, the liked flag flips — but as a
     // side effect of the track change, not a fresh like, so no burst.
     let next = app.queue.ordered_iter().nth(1).unwrap().clone();
-    app.library.toggle_favorite(&next);
+    app.library_mut().toggle_favorite(&next);
     app.update(Msg::Resize); // seed anchors (arms the intro for the launch track)
     app.fx.track_intro = None;
     app.queue.next(false);
@@ -512,10 +512,10 @@ fn track_change_arms_the_intro_and_suppresses_the_like_burst() {
     );
     // A real like on the (unchanged) current track *does* burst.
     let cur = app.queue.current().unwrap().clone();
-    app.library.toggle_favorite(&cur); // unlike (it was pre-favorited)
+    app.library_mut().toggle_favorite(&cur); // unlike (it was pre-favorited)
     app.update(Msg::Resize);
     assert!(app.fx.like.is_none(), "unliking never bursts");
-    app.library.toggle_favorite(&cur); // like again
+    app.library_mut().toggle_favorite(&cur); // like again
     app.update(Msg::Resize);
     assert!(app.fx.like.is_some());
 }

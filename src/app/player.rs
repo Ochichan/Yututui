@@ -107,6 +107,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Show the inverse playback-mode rejection: autoplay cannot be enabled while repeat is on.
+    pub(in crate::app) fn show_streaming_repeat_conflict(&mut self) {
+        self.status.text = t!(
+            "Can't use autoplay while repeat is on",
+            "반복 재생 중에는 자동재생을 켤 수 없어요"
+        )
+        .to_owned();
+        self.dirty = true;
+    }
+
     /// Handle an mpv playback error: self-heal a stale-yt-dlp extraction failure
     /// once, otherwise skip the bad track (with a circuit breaker after too many in a
     /// row). Extracted verbatim from the `PlayerMsg::Error` dispatch arm; the
@@ -592,7 +602,7 @@ impl App {
             Action::CycleRating => {
                 if let Some(song) = self.queue.current().cloned() {
                     if song.is_radio_station() {
-                        self.library.toggle_favorite(&song);
+                        self.library_mut().toggle_favorite(&song);
                         self.dirty = true;
                         return vec![Cmd::Persist(PersistCmd::Library)];
                     }
@@ -603,9 +613,13 @@ impl App {
                     match (liked, disliked) {
                         // neutral → like: add to favorites, lift the artist affinity.
                         (false, false) => {
-                            let now_fav = self.library.toggle_favorite(&song);
-                            self.signals
-                                .record_like(&song.video_id, &artist_key, now_fav, now);
+                            let now_fav = self.library_mut().toggle_favorite(&song);
+                            self.signals_mut().record_like(
+                                &song.video_id,
+                                &artist_key,
+                                now_fav,
+                                now,
+                            );
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Like, comp);
                             self.dirty = true;
@@ -617,10 +631,10 @@ impl App {
                         // like → dislike: drop the favorite (undoing its affinity lift) and set
                         // the dislike flag (which pushes the affinity down).
                         (true, _) => {
-                            self.library.toggle_favorite(&song);
-                            self.signals
+                            self.library_mut().toggle_favorite(&song);
+                            self.signals_mut()
                                 .record_like(&song.video_id, &artist_key, false, now);
-                            self.signals
+                            self.signals_mut()
                                 .toggle_dislike(&song.video_id, &artist_key, now);
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Dislike, comp);
@@ -632,7 +646,7 @@ impl App {
                         }
                         // dislike → neutral: clear the flag, restoring the affinity it pushed down.
                         (false, true) => {
-                            self.signals
+                            self.signals_mut()
                                 .toggle_dislike(&song.video_id, &artist_key, now);
                             self.dirty = true;
                             return vec![Cmd::Persist(PersistCmd::Signals)];
@@ -714,17 +728,13 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             Action::CycleRepeat => {
-                // Music-mode invariant: turning repeat on while autoplay streaming is on is
-                // refused (they can't both be on). Off→All is the only transition that enables it.
-                if self
-                    .queue
-                    .repeat
-                    .cycle_blocked_by_streaming(self.autoplay_streaming)
-                {
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::CycleRepeat);
+                let Ok(transition) = transition else {
                     self.show_repeat_streaming_conflict();
                     return Vec::new();
-                }
-                self.queue.cycle_repeat();
+                };
+                self.queue.repeat = transition.state.repeat;
                 self.dirty = true;
                 vec![self.save_playback_modes_cmd()]
             }
@@ -945,13 +955,13 @@ impl App {
         let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
         if full {
-            self.signals
+            self.signals_mut()
                 .record_play(&song.video_id, &artist_key, 1.0, now);
             self.record_session_event(&artist_key, Outcome::FullPlay, 1.0);
         } else {
             let completion = self.playback_completion();
             let scale = self.skip_feedback_scale();
-            self.signals
+            self.signals_mut()
                 .record_skip(&song.video_id, &artist_key, completion, now, scale);
             // A skip below the strong threshold is a near-instant bail — a louder "wrong way"
             // cue for the reranker than an ordinary skip.

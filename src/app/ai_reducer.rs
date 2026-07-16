@@ -313,6 +313,7 @@ impl App {
             search: self.config.effective_search(),
             authenticated: self.authenticated,
             autoplay_streaming: self.autoplay_streaming,
+            repeat_on: self.queue.repeat.is_on(),
         }
     }
 }

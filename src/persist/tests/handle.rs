@@ -26,8 +26,8 @@ fn save_replaces_pending_without_queueing_payloads() {
         crate::playlists::AddResult::Added
     );
 
-    let _ = handle.save(Snapshot::Playlists(created)).unwrap();
-    let _ = handle.save(Snapshot::Playlists(added)).unwrap();
+    let _ = handle.save(Snapshot::Playlists(Arc::new(created))).unwrap();
+    let _ = handle.save(Snapshot::Playlists(Arc::new(added))).unwrap();
 
     assert!(rx.try_recv().is_err(), "save must not enqueue snapshots");
     let guard = lock(&pending);
@@ -41,6 +41,43 @@ fn save_replaces_pending_without_queueing_payloads() {
     assert_eq!(focus.songs.len(), 1);
 }
 
+#[test]
+fn app_library_save_shares_allocation_and_cow_preserves_snapshot() {
+    let handle = detached_test_handle();
+    let mut app = crate::app::App::new(50);
+    let song = crate::api::Song::remote("id0", "Track", "Artist", "3:00");
+
+    let _ = handle
+        .save(Snapshot::Library(Arc::clone(&app.library)))
+        .expect("library snapshot admitted");
+    let captured = {
+        let guard = lock(&handle.pending);
+        let Some(OwnedSnapshot::Library(library)) = guard
+            .get(&StoreKind::Library)
+            .and_then(|operation| operation.snapshot())
+        else {
+            panic!("expected library snapshot");
+        };
+        assert!(
+            Arc::ptr_eq(&app.library, library),
+            "save must retain the app's allocation instead of deep-cloning it"
+        );
+        Arc::clone(library)
+    };
+
+    app.library_mut().record_play(&song);
+
+    assert!(!Arc::ptr_eq(&app.library, &captured));
+    assert!(captured.history.is_empty(), "captured snapshot changed");
+    assert_eq!(
+        app.library
+            .history
+            .front()
+            .map(|song| song.video_id.as_str()),
+        Some("id0")
+    );
+}
+
 fn injected_snapshot(kind: StoreKind, label: &'static str) -> Snapshot {
     Snapshot::Test {
         kind,
@@ -48,6 +85,119 @@ fn injected_snapshot(kind: StoreKind, label: &'static str) -> Snapshot {
         storage_path: None,
         writer: Arc::new(|| Ok(())),
     }
+}
+
+fn failing_snapshot(kind: StoreKind, label: &'static str) -> Snapshot {
+    Snapshot::Test {
+        kind,
+        label,
+        storage_path: None,
+        writer: Arc::new(|| Err(std::io::Error::other("injected target failure"))),
+    }
+}
+
+#[tokio::test]
+async fn targeted_flush_ignores_unrelated_store_failure() {
+    let handle = spawn();
+    let _ = handle
+        .save(failing_snapshot(StoreKind::Config, "unrelated config"))
+        .expect("unrelated failure admitted");
+    let target = handle
+        .save_tracked(injected_snapshot(StoreKind::Playlists, "target playlists"))
+        .expect("target admitted");
+
+    assert_eq!(
+        handle.flush_target(target, Duration::from_secs(1)).await,
+        TargetFlushOutcome::CommittedExact
+    );
+}
+
+#[tokio::test]
+async fn targeted_journal_selection_does_not_journal_unrelated_stores() {
+    let directory = temp_dir("targeted-journal-selection");
+    std::fs::create_dir_all(&directory).expect("create test directory");
+    let unrelated_path = directory.join("config.json");
+    let unrelated_journal = intent_journal_path(&unrelated_path).expect("journal path");
+    let operation = test_operation(
+        StoreKind::Config,
+        journal_order_in_epoch(24, 1, 0xa4),
+        Some(unrelated_path.clone()),
+        Arc::new(|| Ok(())),
+    );
+    let shadow = PanicShadow::new();
+    let operation = publish_pending_operation(&shadow, operation).expect("publish operation");
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
+    lock(&pending).insert_owned(operation);
+
+    journal_pending_operations(&pending, WriteSelection::Store(StoreKind::Playlists)).await;
+    assert!(
+        !unrelated_journal.exists(),
+        "targeted journal selection must not publish an unrelated store"
+    );
+    assert_eq!(
+        lock(&pending)[&StoreKind::Config].publication(),
+        &SnapshotPublication::NeedsJournal
+    );
+
+    clear_store_journal(&unrelated_path);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn newer_exact_commit_makes_an_older_exact_target_superseded() {
+    let handle = spawn();
+    let older = handle
+        .save_tracked(injected_snapshot(StoreKind::Playlists, "older"))
+        .expect("older admitted");
+    assert_eq!(
+        handle.flush_target(older, Duration::from_secs(1)).await,
+        TargetFlushOutcome::CommittedExact
+    );
+    let newer = handle
+        .save_tracked(injected_snapshot(StoreKind::Playlists, "newer"))
+        .expect("newer admitted");
+    assert_eq!(
+        handle.flush_target(newer, Duration::from_secs(1)).await,
+        TargetFlushOutcome::CommittedExact
+    );
+
+    assert_eq!(
+        handle.flush_target(older, Duration::from_secs(1)).await,
+        TargetFlushOutcome::Superseded
+    );
+}
+
+#[tokio::test]
+async fn retained_newer_failure_prevents_false_exact_confirmation() {
+    let handle = spawn();
+    let target = handle
+        .save_tracked(injected_snapshot(StoreKind::Playlists, "committed target"))
+        .expect("target admitted");
+    assert_eq!(
+        handle.flush_target(target, Duration::from_secs(1)).await,
+        TargetFlushOutcome::CommittedExact
+    );
+    let committed_newer = handle
+        .save_tracked(injected_snapshot(
+            StoreKind::Playlists,
+            "committed newer target",
+        ))
+        .expect("newer target admitted");
+    assert_eq!(
+        handle
+            .flush_target(committed_newer, Duration::from_secs(1))
+            .await,
+        TargetFlushOutcome::CommittedExact
+    );
+    handle
+        .save_tracked(failing_snapshot(StoreKind::Playlists, "newer failure"))
+        .expect("newer failure admitted");
+
+    assert_eq!(
+        handle.flush_target(target, Duration::from_secs(1)).await,
+        TargetFlushOutcome::Unconfirmed,
+        "a retained latest write may still overwrite both committed generations later"
+    );
 }
 
 fn detached_test_handle() -> PersistHandle {
@@ -162,7 +312,7 @@ async fn exact_journal_completion_resolves_the_pending_snapshot_once() {
     let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     lock(&pending).insert_owned(operation);
 
-    journal_pending_operations(&pending).await;
+    journal_pending_operations(&pending, WriteSelection::All).await;
     assert_eq!(
         lock(&pending)[&StoreKind::Config].publication(),
         &SnapshotPublication::JournalResolved
@@ -170,7 +320,7 @@ async fn exact_journal_completion_resolves_the_pending_snapshot_once() {
     let journal_path = intent_journal_path(&path).unwrap();
     let first_publication = std::fs::read(&journal_path).unwrap();
 
-    journal_pending_operations(&pending).await;
+    journal_pending_operations(&pending, WriteSelection::All).await;
     assert_eq!(std::fs::read(&journal_path).unwrap(), first_publication);
     clear_store_journal(&path);
     let _ = std::fs::remove_dir_all(directory);
@@ -202,7 +352,7 @@ async fn superseded_completion_resolves_exact_operation_but_stale_does_not_resol
     let old = publish_pending_operation(&shadow, old).unwrap();
     let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
     lock(&pending).insert_owned(old);
-    journal_pending_operations(&pending).await;
+    journal_pending_operations(&pending, WriteSelection::All).await;
     assert_eq!(
         lock(&pending)[&StoreKind::Config].publication(),
         &SnapshotPublication::JournalResolved,

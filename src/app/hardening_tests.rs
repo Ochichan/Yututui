@@ -26,7 +26,7 @@ fn hardening_song(id: &str, title: &str, artist: &str) -> Song {
 
 fn app_with_hardening_favorite() -> App {
     let mut app = App::new(100);
-    app.library.favorites = vec![hardening_song("a", "Lovely", "Billie Eilish")];
+    app.library_mut().favorites = vec![hardening_song("a", "Lovely", "Billie Eilish")];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.library_ui.tab, LibraryTab::Favorites);

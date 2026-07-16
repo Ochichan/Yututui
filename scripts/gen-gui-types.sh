@@ -7,4 +7,5 @@ cd "$(dirname "$0")/.."
 
 # ts-rs resolves each type's `export_to` relative to TS_RS_EXPORT_DIR (default ./bindings);
 # point it at the repo root so `export_to = "gui/src/generated/protocol/"` lands in-tree.
-TS_RS_EXPORT_DIR="$PWD" cargo test --features ts-export --lib export_bindings "$@"
+TS_RS_EXPORT_DIR="$PWD" cargo test -p yututui-core --features ts-export --lib export_bindings "$@"
+TS_RS_EXPORT_DIR="$PWD" cargo test -p yututui --features ts-export --lib export_bindings "$@"

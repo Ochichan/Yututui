@@ -1402,7 +1402,7 @@ fn local_deck_session_snapshot_and_restore_use_local_queue() {
 #[test]
 fn restoring_empty_local_session_does_not_fall_back_to_normal_history() {
     let mut app = App::new(100);
-    app.library.record_play(&songs(1)[0]);
+    app.library_mut().record_play(&songs(1)[0]);
     let cache = crate::session::SessionCache::from_last_mode(crate::session::LastMode::Local);
 
     app.restore_last_session_from_cache(&cache);

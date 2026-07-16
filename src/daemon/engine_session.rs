@@ -24,18 +24,18 @@ impl DaemonEngine {
         match self.last_mode {
             LastMode::Normal => {
                 cache.normal_queue = Some(self.queue.snapshot());
-                cache.radio_queue = self.inactive_radio_queue.clone();
-                cache.local_queue = self.inactive_local_queue.clone();
+                cache.radio_queue = self.inactive_radio_queue.as_deref().cloned();
+                cache.local_queue = self.inactive_local_queue.as_deref().cloned();
             }
             LastMode::Radio => {
                 cache.radio_queue = Some(self.queue.snapshot());
-                cache.normal_queue = self.inactive_normal_queue.clone();
-                cache.local_queue = self.inactive_local_queue.clone();
+                cache.normal_queue = self.inactive_normal_queue.as_deref().cloned();
+                cache.local_queue = self.inactive_local_queue.as_deref().cloned();
             }
             LastMode::Local => {
                 cache.local_queue = Some(self.queue.snapshot());
-                cache.normal_queue = self.inactive_normal_queue.clone();
-                cache.radio_queue = self.inactive_radio_queue.clone();
+                cache.normal_queue = self.inactive_normal_queue.as_deref().cloned();
+                cache.radio_queue = self.inactive_radio_queue.as_deref().cloned();
             }
         }
         cache

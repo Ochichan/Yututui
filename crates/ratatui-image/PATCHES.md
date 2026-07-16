@@ -22,6 +22,8 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
   Yakuake on 26.04 and newer may select Sixel only after DA1 advertises it and the cell-size query
   returns usable dimensions. This is best-effort on 26.04-26.07 because the upstream placement
   cleanup landed for 26.08; users can force `YTM_TUI_IMAGE_PROTOCOL=halfblocks` if fragments linger.
+- An empty local `[workspace]` boundary keeps standalone fork gates independent from yututui's
+  parent workspace while this crate remains excluded from the application workspace members.
 
 All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version

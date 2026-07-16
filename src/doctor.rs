@@ -1336,14 +1336,22 @@ mod tests {
 
     #[test]
     fn terminal_doctor_marks_unknown_keyboard_support_as_unknown() {
+        // Native Windows never negotiates an escape protocol, so the hint is exact there
+        // regardless of the terminal environment (terminal_keyboard::KeyboardInputPlan).
+        let unknown = if cfg!(windows) { Some(true) } else { None };
+        let konsole_old = if cfg!(windows) {
+            Some(true)
+        } else {
+            Some(false)
+        };
         with_terminal_env(&[("TERM", Some("dumb"))], || {
-            assert_eq!(terminal_keyboard_hint(), None);
+            assert_eq!(terminal_keyboard_hint(), unknown);
         });
         with_terminal_env(&[("TERM", Some("xterm-kitty"))], || {
             assert_eq!(terminal_keyboard_hint(), Some(true));
         });
         with_terminal_env(&[("KONSOLE_VERSION", Some("260399"))], || {
-            assert_eq!(terminal_keyboard_hint(), Some(false));
+            assert_eq!(terminal_keyboard_hint(), konsole_old);
         });
         with_terminal_env(&[("KONSOLE_VERSION", Some("260400"))], || {
             assert_eq!(terminal_keyboard_hint(), Some(true));

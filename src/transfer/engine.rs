@@ -12,6 +12,9 @@ use super::checkpoint::ReviewDecision;
 use super::checkpoint::{
     Checkpoint, MatchStats, MatchTrace, ReportCandidate, ReportRow, TrackEntry, TransferReport,
 };
+use super::local_playlist::{
+    LocalPlaylistPatch, LocalPlaylistPatchRow, LocalPlaylistStore, LocalPlaylistStoreError,
+};
 use super::match_cache::TransferMatchCache;
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, SharedYtmMatchState, TrackInput,
@@ -35,6 +38,10 @@ mod reporting;
 use reporting::*;
 mod job_errors;
 use job_errors::*;
+mod local_write;
+#[cfg(test)]
+use local_write::song_for_entry;
+use local_write::write_local;
 mod source;
 mod spotify_sync;
 use source::*;
@@ -164,6 +171,13 @@ impl JobError {
     }
 }
 
+fn local_playlist_job_error(error: LocalPlaylistStoreError) -> JobError {
+    JobError {
+        resumable: error.is_resumable(),
+        error: anyhow::Error::new(error),
+    }
+}
+
 /// The clients a job may need; flows check for what they actually use and fail with a
 /// setup hint otherwise.
 pub struct JobCtx {
@@ -201,6 +215,18 @@ pub async fn run_job(
     ctx: &mut JobCtx,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<TransferReport, JobError> {
+    let mut local_playlists = super::local_playlist::DiskLocalPlaylistStore;
+    run_job_with_store(job_id, spec, resume, ctx, &mut local_playlists, progress).await
+}
+
+pub(crate) async fn run_job_with_store(
+    job_id: String,
+    spec: JobSpec,
+    resume: Option<Checkpoint>,
+    ctx: &mut JobCtx,
+    local_playlists: &mut impl LocalPlaylistStore,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+) -> Result<TransferReport, JobError> {
     let _record_guard = super::session::ImportRecordGuard::try_acquire_if_persistable(&job_id)
         .map_err(|error| JobError::fatal(error.into()))?;
     let started = Instant::now();
@@ -208,10 +234,32 @@ pub async fn run_job(
         spotify.reset_rate_budget();
     }
 
+    let local_snapshot = if matches!(spec.source, TransferSource::LocalPlaylist { .. })
+        || matches!(spec.dest, TransferDest::LocalPlaylist { .. })
+    {
+        Some(
+            local_playlists
+                .snapshot()
+                .await
+                .map_err(local_playlist_job_error)?,
+        )
+    } else {
+        None
+    };
+
     // File exports never match anything — a straight fetch-and-write.
     if let TransferDest::File { path, format } = &spec.dest {
         let (path, format) = (path.clone(), *format);
-        return export_file(&job_id, &spec, ctx, &path, format, started).await;
+        return export_file(
+            &job_id,
+            &spec,
+            ctx,
+            local_snapshot.as_ref(),
+            &path,
+            format,
+            started,
+        )
+        .await;
     }
 
     // Stage 1 — fetch (or resume from the checkpoint's frozen list).
@@ -233,7 +281,7 @@ pub async fn run_job(
         }
         None => {
             let (source_name, entries, skipped_local, source_truncated) =
-                fetch_source(&job_id, &spec, ctx).await?;
+                fetch_source(&job_id, &spec, ctx, local_snapshot.as_ref()).await?;
             let mut cp = Checkpoint::new(job_id.clone(), spec.clone(), entries);
             cp.source_name = Some(source_name.clone());
             cp.dest_name = Some(default_dest_name_for_media(
@@ -256,13 +304,13 @@ pub async fn run_job(
         cp.stage = Stage::Matching;
     }
     if cp.stage == Stage::Matching {
-        match_stage(&mut cp, ctx, progress).await?;
+        match_stage(&mut cp, ctx, local_snapshot.as_ref(), progress).await?;
         cp.stage = Stage::Writing;
         cp.save().map_err(|e| JobError::fatal(e.into()))?;
         save_import_session(&cp);
     }
 
-    let auto_accepted = auto_accept_ambiguous_candidates(&mut cp)?;
+    let auto_accepted = auto_accept_ambiguous_candidates(&mut cp, local_snapshot.as_ref())?;
     let mut report = build_report(&cp, skipped_local);
     report.auto_accepted = auto_accepted;
 
@@ -299,7 +347,15 @@ pub async fn run_job(
     // Stage 3 — write (skipped on dry-run: the checkpoint keeps the matches, and a
     // later `resume` performs exactly the writes).
     if !cp.spec.dry_run {
-        write_stage(&mut cp, ctx, progress, &mut report).await?;
+        write_stage(
+            &mut cp,
+            ctx,
+            local_playlists,
+            local_snapshot.as_ref(),
+            progress,
+            &mut report,
+        )
+        .await?;
         rebuild_report_after_write(&cp, skipped_local, &mut report);
         cp.stage = Stage::Done;
         cp.save().map_err(|e| JobError::fatal(e.into()))?;
@@ -317,6 +373,15 @@ pub async fn write_reviewed_local_job(
     job_id: &str,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<TransferReport, JobError> {
+    let mut local_playlists = super::local_playlist::DiskLocalPlaylistStore;
+    write_reviewed_local_job_with_store(job_id, &mut local_playlists, progress).await
+}
+
+pub(crate) async fn write_reviewed_local_job_with_store(
+    job_id: &str,
+    local_playlists: &mut impl LocalPlaylistStore,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+) -> Result<TransferReport, JobError> {
     let _record_guard = super::session::ImportRecordGuard::try_acquire_if_persistable(job_id)
         .map_err(|error| JobError::fatal(error.into()))?;
     let started = Instant::now();
@@ -328,7 +393,11 @@ pub async fn write_reviewed_local_job(
     }
     cp.spec.dry_run = false;
     cp.stage = Stage::Writing;
-    if let Some(mut keys) = local_destination_keys(&cp) {
+    let local_snapshot = local_playlists
+        .snapshot()
+        .await
+        .map_err(local_playlist_job_error)?;
+    if let Some(mut keys) = local_destination_keys(&cp, Some(&local_snapshot)) {
         enforce_matched_capacity(&mut cp, &mut keys);
     }
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
@@ -341,7 +410,15 @@ pub async fn write_reviewed_local_job(
         search_config: crate::search_source::SearchConfig::default(),
         market: None,
     };
-    write_stage(&mut cp, &mut ctx, progress, &mut report).await?;
+    write_stage(
+        &mut cp,
+        &mut ctx,
+        local_playlists,
+        Some(&local_snapshot),
+        progress,
+        &mut report,
+    )
+    .await?;
     rebuild_report_after_write(&cp, cp.skipped_local, &mut report);
     cp.stage = Stage::Done;
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
@@ -392,6 +469,7 @@ fn ytm_preflight_concurrency() -> usize {
 async fn match_stage(
     cp: &mut Checkpoint,
     ctx: &mut JobCtx,
+    local_snapshot: Option<&crate::playlists::Playlists>,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<(), JobError> {
     // A prior provider defer describes the previous attempt. Keep the aggregate counter,
@@ -427,7 +505,7 @@ async fn match_stage(
         cache_dirty |= cache.retain_compatible_matches(&cfg);
         cache_dirty |= apply_persistent_cache(cp, cache);
     }
-    let mut local_capacity_keys = local_destination_keys(cp);
+    let mut local_capacity_keys = local_destination_keys(cp, local_snapshot);
     if let Some(keys) = local_capacity_keys.as_mut() {
         enforce_matched_capacity(cp, keys);
         if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
@@ -794,12 +872,15 @@ fn enforce_local_capacity_for_committed_entry(
     keys.len() >= capacity
 }
 
-fn auto_accept_ambiguous_candidates(cp: &mut Checkpoint) -> Result<u32, JobError> {
+fn auto_accept_ambiguous_candidates(
+    cp: &mut Checkpoint,
+    local_snapshot: Option<&crate::playlists::Playlists>,
+) -> Result<u32, JobError> {
     let Some(min_score) = cp.spec.auto_accept_ambiguous_min_score else {
         return Ok(0);
     };
     let mut accepted = 0u32;
-    let mut capacity_keys = local_destination_keys(cp);
+    let mut capacity_keys = local_destination_keys(cp, local_snapshot);
     if let Some(keys) = capacity_keys.as_mut() {
         enforce_matched_capacity(cp, keys);
     }
@@ -890,6 +971,8 @@ async fn match_track_spotify(
 async fn write_stage(
     cp: &mut Checkpoint,
     ctx: &mut JobCtx,
+    local_playlists: &mut impl LocalPlaylistStore,
+    local_snapshot: Option<&crate::playlists::Playlists>,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
     report: &mut TransferReport,
 ) -> Result<(), JobError> {
@@ -905,7 +988,16 @@ async fn write_stage(
 
     // The local store needs no network at all — handle it before the client-bound arms.
     if matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
-        return write_local(cp, writes, progress, report);
+        let observed_revision = local_snapshot.map_or(0, crate::playlists::Playlists::revision);
+        return write_local(
+            cp,
+            writes,
+            observed_revision,
+            local_playlists,
+            progress,
+            report,
+        )
+        .await;
     }
 
     match cp.spec.dest.clone() {
@@ -1100,141 +1192,6 @@ fn effective_write_key(entry: &TrackEntry, take_best: bool) -> Option<&str> {
     }
 }
 
-/// Write matches into the app's own playlist store (`playlists.json`): visible in the
-/// TUI Library immediately. Create-or-append by name; the store itself dedupes by
-/// `video_id`, so resumes and re-runs are naturally idempotent.
-fn write_local(
-    cp: &mut Checkpoint,
-    writes: Vec<(usize, String)>,
-    progress: &mut (dyn FnMut(TransferProgress) + Send),
-    report: &mut TransferReport,
-) -> Result<(), JobError> {
-    let name = cp
-        .dest_name
-        .clone()
-        .unwrap_or_else(|| "Imported playlist".to_owned());
-    let mut store = crate::playlists::Playlists::load();
-    let existing_id = find_local_destination(&store, cp).map(|playlist| playlist.id.clone());
-    let key = match existing_id {
-        Some(existing_id) => existing_id,
-        None => store.create(&name).ok_or_else(|| {
-            JobError::fatal(anyhow!("could not create the local playlist `{name}`"))
-        })?,
-    };
-    cp.dest_id = Some(key.clone());
-
-    let pending: Vec<(usize, String)> = writes
-        .into_iter()
-        .filter(|(idx, _)| !cp.tracks[*idx].written)
-        .collect();
-    let total = pending.len() as u32;
-    let mut done = 0u32;
-    let mut progress_counts = WriteProgressCounts::from_checkpoint(cp);
-    let prepared = pending
-        .into_iter()
-        .map(|(idx, video_id)| {
-            let song = song_for_entry(&cp.tracks[idx], &video_id, &cp.job_id, idx as u32 + 1);
-            (idx, song)
-        })
-        .collect::<Vec<_>>();
-    let results = store.add_many(
-        &key,
-        prepared.iter().map(|(_, song)| song.clone()).collect(),
-    );
-    for ((idx, _), result) in prepared.into_iter().zip(results) {
-        match result {
-            crate::playlists::AddResult::Added => {
-                cp.tracks[idx].written = true;
-                report.written += 1;
-            }
-            crate::playlists::AddResult::Duplicate => {
-                cp.tracks[idx].written = true;
-            }
-            crate::playlists::AddResult::Full => {
-                tracing::warn!("local playlist `{name}` is full; track skipped at capacity");
-                cp.tracks[idx].outcome = Some(MatchOutcome::SkippedCapacity);
-                cp.tracks[idx].review_decision = None;
-                record_capacity_skips(&mut cp.match_stats, 1);
-            }
-            crate::playlists::AddResult::NotFound => {
-                return Err(JobError::fatal(anyhow!(
-                    "local playlist `{name}` vanished mid-write"
-                )));
-            }
-        }
-        progress_counts.record_written(1);
-        done += 1;
-        progress(progress_write(
-            cp,
-            done,
-            total,
-            idx,
-            report.auto_accepted,
-            progress_counts,
-        ));
-    }
-    store
-        .save()
-        .map_err(|e| JobError::fatal(anyhow::Error::from(e).context("saving playlists.json")))?;
-    cp.save().map_err(|e| JobError::fatal(e.into()))?;
-    Ok(())
-}
-
-/// Reconstruct a playable `Song` for a write target. The YouTube candidate supplies the
-/// playable key; the source input supplies canonical music metadata so downloaded imports
-/// carry Spotify/CSV album grouping and track ordering into Local Deck.
-fn song_for_entry(entry: &TrackEntry, video_id: &str, job_id: &str, source_order: u32) -> Song {
-    let (matched_title, matched_artist, matched_album, matched_duration_secs) = match &entry.outcome
-    {
-        Some(MatchOutcome::Matched {
-            title,
-            artist,
-            album,
-            duration_secs,
-            ..
-        }) => (title.clone(), artist.clone(), album.clone(), *duration_secs),
-        _ => (None, None, None, None),
-    };
-    let title = if entry.input.title.trim().is_empty() {
-        matched_title.unwrap_or_default()
-    } else {
-        entry.input.title.clone()
-    };
-    let artist = if entry.input.artists.is_empty() {
-        matched_artist.unwrap_or_default()
-    } else {
-        entry.input.artists.join(", ")
-    };
-    let album = entry.input.album.clone().or(matched_album);
-    let duration_secs = entry.input.duration_secs.or(matched_duration_secs);
-    let duration = duration_secs
-        .map(|s| crate::util::format::time(f64::from(s)))
-        .unwrap_or_default();
-    let mut song = Song::from_search(video_id, title, artist, duration, album);
-    song.duration_secs = duration_secs;
-    let album_artist =
-        (!entry.input.album_artists.is_empty()).then(|| entry.input.album_artists.join(", "));
-    song.with_catalog_metadata(
-        album_artist,
-        entry.input.disc_number,
-        entry.input.track_number,
-        entry.input.isrc.clone(),
-        Some(entry.input.source_key.clone()),
-        entry.input.source_url.clone(),
-    )
-    .with_import_metadata(SongImportMetadata {
-        artists: entry.input.artists.clone(),
-        album_artists: entry.input.album_artists.clone(),
-        album_release_date: entry.input.album_release_date.clone(),
-        album_release_date_precision: entry.input.album_release_date_precision.clone(),
-        album_total_tracks: entry.input.album_total_tracks,
-        album_type: entry.input.album_type.clone(),
-        album_art_url: entry.input.album_art_url.clone(),
-        explicit: entry.input.explicit,
-    })
-    .with_import_session(Some(job_id.to_owned()), Some(source_order))
-}
-
 /// Create (once) or find the YTM destination playlist; the id is checkpointed before
 /// the first add so a resume never creates a duplicate.
 async fn ensure_ytm_dest(
@@ -1402,6 +1359,7 @@ async fn export_file(
     job_id: &str,
     spec: &JobSpec,
     ctx: &mut JobCtx,
+    local_snapshot: Option<&crate::playlists::Playlists>,
     path: &std::path::Path,
     format: FileFormat,
     started: Instant,
@@ -1421,9 +1379,8 @@ async fn export_file(
             (title, format!("ytm:{id}"), songs)
         }
         TransferSource::LocalPlaylist { key } => {
-            let store = crate::playlists::Playlists::load();
-            let playlist = store
-                .find(key)
+            let playlist = local_snapshot
+                .and_then(|store| store.find(key))
                 .ok_or_else(|| JobError::fatal(anyhow!("no local playlist named `{key}`")))?;
             (
                 playlist.name.clone(),

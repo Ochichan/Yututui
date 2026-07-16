@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -90,9 +91,13 @@ fn sync_animation_interval(
 
 const IME_SCRUB_PERIOD: Duration = Duration::from_millis(80);
 
-/// Permanent low-rate repaint clock for terminal-owned IME preedit text. The select branch is
-/// guarded while an application text field is active, but the clock itself never expires: some
-/// terminals repaint preedit without sending any event that could re-arm a bounded timer.
+/// Low-rate repaint clock for terminal-owned IME preedit text. The select branch is guarded
+/// while an application text field is active and parks entirely once the event-armed burst
+/// ([`app::IME_SCRUB_BURST_TICKS`] × 80 ms) runs out: preedit ghosts are created by terminal
+/// activity, and every received terminal event re-arms the burst. Accepted trade-off (approved
+/// in the CPU-plan UI/UX ledger): a terminal that repaints preedit without emitting any event
+/// keeps its ghost until the next event, in exchange for zero periodic wakeups on an idle
+/// screen — previously this clock woke the process ~12.5×/s forever.
 fn ime_scrub_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(IME_SCRUB_PERIOD);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -617,8 +622,8 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
-    app.library = library;
-    app.signals = signals;
+    app.library = Arc::new(library);
+    app.signals = Arc::new(signals);
     app.download_store = download_store;
     // Enrich the bare disk scan with each track's remembered
     // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
@@ -642,7 +647,7 @@ pub async fn run(
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
     let playlists_repaired_at_startup = playlist_repair.changed();
-    app.playlists = loaded_playlists;
+    app.playlists = Arc::new(loaded_playlists);
     if playlist_repair.changed() {
         tracing::warn!(?playlist_repair, "playlists file was repaired on load");
         if playlist_repair.truncated() && app.status.text.is_empty() {
@@ -733,9 +738,24 @@ pub async fn run(
     // boundary. The latch remains authoritative even if the compatibility event lane is full.
     let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
+    let hard_exit_mouse = cfg.effective_mouse();
     let mut signal_handlers = match player::lifetime::spawn_signal_handlers(
         shutdown.clone(),
         runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
+        // Second termination signal while the owner loop is wedged: the cooperative path
+        // already killed mpv and asked the owner to quit, so only best-effort terminal
+        // restore and the exit itself remain. Skipping the persistence flush is deliberate —
+        // the owner (and possibly the persist actor) is not responding, and blocking here
+        // would recreate the unkillable hang this fallback exists to break. Restore runs on
+        // a detached thread with a bounded grace for the same reason: if the owner wedged
+        // inside a blocked stdout write (stalled pty), stdout's lock is held and an inline
+        // `tui::restore` would hang this last-resort path too.
+        move |code| {
+            player::lifetime::kill_mpv_now();
+            std::thread::spawn(move || tui::restore(hard_exit_mouse));
+            std::thread::sleep(Duration::from_millis(150));
+            std::process::exit(code);
+        },
     ) {
         Ok(handlers) => handlers,
         Err(error) => {
@@ -1168,6 +1188,10 @@ pub async fn run(
                     // virtual grid, so hit-testing (and double-click identity) stay correct
                     // while the UI is scaled.
                     Some(ev) => {
+                        // Terminal activity is what creates terminal-owned preedit ghosts, so
+                        // every received event — even one that translates to no message (focus,
+                        // key release) — re-arms the bounded IME scrub burst.
+                        app.arm_ime_scrub_burst();
                         let (cs, rs) = zoom.mouse_scale();
                         match input.translate_with_keymap(ev, cs, rs, &app.keymap) {
                             Some(m) => OwnerTurnInput::Local(m),
@@ -1242,6 +1266,7 @@ pub async fn run(
                     continue;
                 },
                 _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
+                    app.consume_ime_scrub_tick();
                     let fast_succeeded = if ime_scrub_requires_full_draw(
                         &app,
                         reducer_turn_unrendered,

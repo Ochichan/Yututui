@@ -389,7 +389,7 @@ fn search_hearts_reserve_a_fixed_slot() {
     app.search.focus = SearchFocus::Results;
     app.search.results = songs(2);
     let fav = app.search.results[0].clone();
-    app.library.toggle_favorite(&fav);
+    app.library_mut().toggle_favorite(&fav);
 
     let buf = render_app_buffer(&app, 80, 24);
     let title_col = |needle: &str| -> usize {

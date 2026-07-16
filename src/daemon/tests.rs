@@ -395,6 +395,29 @@ fn daemon_event_policy_covers_representative_events() {
             lane: EventLane::WorkResult,
         }
     );
+    // Unlike the interactive owner, the daemon has no reducer-side stale slot for AI picks.
+    assert_eq!(
+        DaemonEvent::Ai(crate::ai::AiEvent::StreamingPicks {
+            seed_video_id: "seed".to_owned(),
+            picks: Vec::new(),
+            conf: None,
+        })
+        .policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
+    // The daemon lyrics host already gates work on the current subscriber/track generation.
+    assert_eq!(
+        DaemonEvent::Lyrics(crate::lyrics::LyricsEvent::Result {
+            video_id: "track".to_owned(),
+            lines: Vec::new().into(),
+        })
+        .policy(),
+        EventPolicy::MustDeliver {
+            lane: EventLane::WorkResult,
+        }
+    );
     assert_eq!(
         DaemonEvent::YtdlpHeal {
             video_id: "v".to_owned(),

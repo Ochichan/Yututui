@@ -259,18 +259,58 @@ async fn input_without_a_delivered_timer_does_not_advance_animation() {
 }
 
 #[tokio::test]
-async fn ime_scrub_clock_retains_the_permanent_origin_period() {
-    let mut interval = ime_scrub_interval();
+async fn ime_scrub_clock_parks_after_the_event_armed_burst() {
+    // An earlier revision kept this clock permanent because "some terminals repaint preedit
+    // without sending any event". The CPU-plan UI/UX ledger explicitly approved the reverse
+    // trade-off (event-armed bursts, a rare ghost may persist until the next event), so the
+    // burst is back: this test now pins the burst contract instead of clock permanence.
+    let interval = ime_scrub_interval();
     assert_eq!(IME_SCRUB_PERIOD, Duration::from_millis(80));
     assert_eq!(interval.period(), Duration::from_millis(80));
 
-    // The removed burst stopped after eight ticks. Reaching ten ticks without any event-based
-    // re-arming proves the scrub clock remains capable of repainting terminal-owned preedit.
-    for _ in 0..10 {
-        tokio::time::timeout(Duration::from_millis(250), interval.tick())
-            .await
-            .expect("permanent IME scrub clock must not expire");
+    let mut app = App::new(50);
+    assert!(
+        app.should_scrub_ime_preedit(),
+        "launch starts armed so the first 640 ms match the old always-on clock"
+    );
+    for _ in 0..app::IME_SCRUB_BURST_TICKS {
+        assert!(app.should_scrub_ime_preedit());
+        app.consume_ime_scrub_tick();
     }
+    assert!(
+        !app.should_scrub_ime_preedit(),
+        "an exhausted burst parks the select arm — a static idle screen has zero scrub wakes"
+    );
+
+    // Any terminal event re-arms the full burst.
+    app.arm_ime_scrub_burst();
+    assert!(app.should_scrub_ime_preedit());
+    app.consume_ime_scrub_tick();
+    app.arm_ime_scrub_burst();
+    for _ in 0..app::IME_SCRUB_BURST_TICKS {
+        assert!(app.should_scrub_ime_preedit(), "re-arm resets the counter");
+        app.consume_ime_scrub_tick();
+    }
+    assert!(!app.should_scrub_ime_preedit());
+}
+
+#[test]
+fn ime_scrub_burst_stays_suppressed_by_text_entry_and_survives_it() {
+    let mut app = App::new(50);
+    app.update(Msg::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::NONE,
+    )));
+    // Armed but inside the search editor: the field owns the cursor, so the arm must stay
+    // parked no matter how often events re-arm the burst.
+    app.arm_ime_scrub_burst();
+    assert!(!app.should_scrub_ime_preedit());
+
+    // Leaving text entry (focus off the input) is itself driven by a terminal event; the
+    // runner re-arms on it and the still-live burst may fire again.
+    app.search.focus = crate::app::SearchFocus::Results;
+    app.arm_ime_scrub_burst();
+    assert!(app.should_scrub_ime_preedit());
 }
 
 #[test]

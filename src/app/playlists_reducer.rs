@@ -128,7 +128,7 @@ impl App {
             return Vec::new();
         };
         self.dirty = true;
-        let Some(removed) = self.playlists.delete(&key) else {
+        let Some(removed) = self.playlists_mut().delete(&key) else {
             return Vec::new();
         };
         if self.library_ui.open_playlist.as_deref() == Some(key.as_str()) {
@@ -208,7 +208,7 @@ impl App {
             return Vec::new();
         }
         self.dirty = true;
-        match self.playlists.create(&name) {
+        match self.playlists_mut().create(&name) {
             Some(id) => {
                 self.library_ui.create_input = None;
                 self.library_ui.create_cursor = TextCursor::default();
@@ -407,7 +407,7 @@ impl App {
                 t!("Enter a playlist name", "플레이리스트 이름을 입력하세요").to_string();
             return Vec::new();
         }
-        match self.playlists.create(&name) {
+        match self.playlists_mut().create(&name) {
             Some(id) => {
                 let songs = self
                     .playlist_picker
@@ -434,7 +434,7 @@ impl App {
             .map_or_else(|| key.to_owned(), |p| p.name.clone());
         let (mut added, mut dupes, mut full) = (0usize, 0usize, 0usize);
         for song in songs {
-            match self.playlists.add(key, song) {
+            match self.playlists_mut().add(key, song) {
                 crate::playlists::AddResult::Added => added += 1,
                 crate::playlists::AddResult::Duplicate => dupes += 1,
                 crate::playlists::AddResult::Full => full += 1,

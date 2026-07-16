@@ -1,7 +1,47 @@
 use super::*;
 
 impl PersistHandle {
+    #[cfg(test)]
+    pub(crate) fn detached_for_runtime_test() -> Self {
+        let (tx, rx) = crate::util::backpressure::bounded_channel(
+            crate::util::backpressure::PERSIST_CONTROL_QUEUE,
+        );
+        drop(rx);
+        Self {
+            tx,
+            pending: Arc::new(Mutex::new(PendingQueue::new())),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
+            dirty: Arc::new(Notify::new()),
+            events: Arc::new(Mutex::new(None)),
+            order_source: Arc::new(JournalOrderSource::for_test(1)),
+            panic_shadow: Arc::new(PanicShadow::new()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_pending_for_test(&self, kind: StoreKind) -> bool {
+        lock(&self.pending).contains_key(&kind)
+    }
+
     pub fn save(&self, snapshot: Snapshot) -> crate::util::delivery::DeliveryResult {
+        self.queue_snapshot(snapshot).map(|(receipt, _)| receipt)
+    }
+
+    /// Queue a snapshot and return its exact acceptance identity for targeted confirmation.
+    pub(crate) fn save_tracked(
+        &self,
+        snapshot: Snapshot,
+    ) -> Result<PersistTarget, crate::util::delivery::DeliveryError> {
+        self.queue_snapshot(snapshot).map(|(_, target)| target)
+    }
+
+    fn queue_snapshot(
+        &self,
+        snapshot: Snapshot,
+    ) -> Result<
+        (crate::util::delivery::DeliveryReceipt, PersistTarget),
+        crate::util::delivery::DeliveryError,
+    > {
         if ensure_persistence_writes_allowed().is_err() {
             return Err(crate::util::delivery::DeliveryError::Closed);
         }
@@ -11,19 +51,24 @@ impl PersistHandle {
         }
         let accepted = self.order_source.accept();
         let operation = PendingOperation::save(snapshot, accepted);
+        let target = PersistTarget {
+            kind: operation.kind(),
+            order: operation.order,
+        };
         let operation = publish_pending_operation(&self.panic_shadow, operation)
             .map_err(|PanicShadowSealed| crate::util::delivery::DeliveryError::Closed)?;
         let replaced_existing = pending.insert_owned(operation).is_some();
         drop(pending);
         self.dirty.notify_one();
-        if replaced_existing {
-            Ok(crate::util::delivery::DeliveryReceipt::Coalesced {
+        let receipt = if replaced_existing {
+            crate::util::delivery::DeliveryReceipt::Coalesced {
                 replaced_existing: true,
                 evicted_oldest: false,
-            })
+            }
         } else {
-            Ok(crate::util::delivery::DeliveryReceipt::Enqueued)
-        }
+            crate::util::delivery::DeliveryReceipt::Enqueued
+        };
+        Ok((receipt, target))
     }
 
     /// Atomically close ordinary admission and publish the owner's final snapshots.
@@ -154,6 +199,29 @@ impl PersistHandle {
         match tokio::time::timeout_at(deadline, ack_rx).await {
             Ok(Ok(clean)) => clean,
             _ => false,
+        }
+    }
+
+    /// Confirm only `target` within `budget`, without letting an unrelated store failure decide
+    /// the result. A newer same-store write is reported as supersession, never exact success.
+    pub(crate) async fn flush_target(
+        &self,
+        target: PersistTarget,
+        budget: Duration,
+    ) -> TargetFlushOutcome {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + budget;
+        let message = PersistMsg::FlushTarget {
+            target,
+            ack: ack_tx,
+        };
+        match tokio::time::timeout_at(deadline, self.tx.send(message)).await {
+            Ok(Ok(())) => {}
+            _ => return TargetFlushOutcome::Unconfirmed,
+        }
+        match tokio::time::timeout_at(deadline, ack_rx).await {
+            Ok(Ok(outcome)) => outcome,
+            _ => TargetFlushOutcome::Unconfirmed,
         }
     }
 

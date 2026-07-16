@@ -5,6 +5,10 @@
 
 use tokio::sync::mpsc;
 
+use crate::owner_event_policy::{
+    api_event_policy, download_event_policy, player_event_policy, remote_event_policy,
+    scrobble_event_policy, transfer_event_policy,
+};
 use crate::remote::server::RemoteEvent;
 use crate::util::delivery::{DeliveryResult, OwnerEvent, OwnerEventIngress};
 use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
@@ -52,101 +56,9 @@ pub(super) enum DaemonEvent {
 impl DaemonEvent {
     pub(super) fn policy(&self) -> EventPolicy {
         match self {
-            DaemonEvent::Remote(
-                RemoteEvent::Command(_, _)
-                | RemoteEvent::SessionCommand { .. }
-                | RemoteEvent::SessionSubscribe { .. },
-            ) => EventPolicy::MustReplyOrBusy {
-                lane: Lane::RemoteCommand,
-            },
-            DaemonEvent::Player(event) => match event.unscoped() {
-                crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerTimePos,
-                },
-                crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerDuration,
-                },
-                crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerPaused,
-                },
-                crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerVolume,
-                },
-                crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::WorkResult,
-                    key: Key::PlayerMetadata,
-                },
-                crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerCacheTime,
-                },
-                crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerAudioCodec,
-                },
-                crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerFileFormat,
-                },
-                crate::player::PlayerEvent::AudioDeviceList(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerAudioDeviceList,
-                },
-                crate::player::PlayerEvent::AudioDeviceRefreshFailed(_) => {
-                    EventPolicy::MustDeliver {
-                        lane: Lane::Control,
-                    }
-                }
-                crate::player::PlayerEvent::AudioDeviceChanged(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerAudioDevice,
-                },
-                crate::player::PlayerEvent::CurrentAudioOutput(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::PlayerCurrentAudioOutput,
-                },
-                crate::player::PlayerEvent::AudioDeviceSelectionResult { .. } => {
-                    EventPolicy::MustDeliver {
-                        lane: Lane::Control,
-                    }
-                }
-                crate::player::PlayerEvent::Eof
-                | crate::player::PlayerEvent::Error(_)
-                | crate::player::PlayerEvent::TransportClosed(_)
-                | crate::player::PlayerEvent::CacheEmergency { .. }
-                | crate::player::PlayerEvent::CacheReplacementEmergency { .. } => {
-                    EventPolicy::MustDeliver {
-                        lane: Lane::Control,
-                    }
-                }
-                crate::player::PlayerEvent::FileScoped { .. } => {
-                    unreachable!("daemon audio event was unscoped before policy lookup")
-                }
-            },
-            DaemonEvent::Api(event) => match event {
-                crate::api::ApiEvent::ModeResolved { .. }
-                | crate::api::ApiEvent::TrackResolved { .. }
-                | crate::api::ApiEvent::PlaylistTracks { .. }
-                | crate::api::ApiEvent::PlaylistTracksError { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-                crate::api::ApiEvent::SearchResults { .. }
-                | crate::api::ApiEvent::SearchError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::SearchRequest,
-                },
-                crate::api::ApiEvent::StreamingResults { .. }
-                | crate::api::ApiEvent::StreamingPreflighted { .. }
-                | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::StreamingSeed,
-                },
-                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-            },
+            DaemonEvent::Remote(event) => remote_event_policy(event),
+            DaemonEvent::Player(event) => player_event_policy(event.unscoped()),
+            DaemonEvent::Api(event) => api_event_policy(event),
             DaemonEvent::Media(_) => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -154,48 +66,24 @@ impl DaemonEvent {
                 lane: Lane::Telemetry,
                 key: Key::MediaArtVideo,
             },
-            DaemonEvent::Scrobble(event) => match event {
-                crate::scrobble::ScrobbleEvent::AuthUrl(_)
-                | crate::scrobble::ScrobbleEvent::AuthDone { .. }
-                | crate::scrobble::ScrobbleEvent::AuthFailed(_)
-                | crate::scrobble::ScrobbleEvent::SessionInvalid(_)
-                | crate::scrobble::ScrobbleEvent::QueueDropped { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
-                crate::scrobble::ScrobbleEvent::QueueStalled { .. } => {
-                    EventPolicy::CoalesceLatest {
-                        lane: Lane::Telemetry,
-                        key: Key::ScrobbleQueueStalled,
-                    }
-                }
-            },
+            DaemonEvent::Scrobble(event) => scrobble_event_policy(event),
+            // The daemon lyrics host already gates fetches by subscriber and track generation.
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
-            DaemonEvent::Download(
-                crate::download::DownloadEvent::Progress { .. }
-                | crate::download::DownloadEvent::ImportProgress { .. },
-            ) => EventPolicy::CoalesceLatest {
-                lane: Lane::Telemetry,
-                key: Key::DownloadProgress,
-            },
-            DaemonEvent::Download(_) => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
-            DaemonEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(_)) => {
-                // The actor runs one job at a time, so one static latest slot is sufficient.
-                EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::TransferJob,
-                }
-            }
-            DaemonEvent::Transfer(_) => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
+            DaemonEvent::Download(event) => download_event_policy(event),
+            DaemonEvent::Transfer(event) => transfer_event_policy(event),
             DaemonEvent::Ai(crate::ai::AiEvent::Thinking(_)) => EventPolicy::CoalesceLatest {
                 lane: Lane::Telemetry,
                 key: Key::AiThinking,
             },
+            // The daemon AI host settles its own in-flight request state on the owner lane, so a
+            // terminal pick result must arrive even when its seed is no longer current.
+            DaemonEvent::Ai(crate::ai::AiEvent::StreamingPicks { .. }) => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
             DaemonEvent::Ai(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },

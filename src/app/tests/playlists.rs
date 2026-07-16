@@ -275,9 +275,11 @@ fn switching_tabs_closes_an_opened_playlist() {
 fn backslash_on_the_playlist_root_enqueues_the_whole_playlist() {
     // Playing state, so the enqueue is a pure append (idle enqueues start playback).
     let mut app = app_playing(1, 0);
-    app.playlists.create("Alpha");
-    app.playlists.add("Alpha", fsong("a1", "Song A1", "X"));
-    app.playlists.add("Alpha", fsong("a2", "Song A2", "Y"));
+    app.playlists_mut().create("Alpha");
+    app.playlists_mut()
+        .add("Alpha", fsong("a1", "Song A1", "X"));
+    app.playlists_mut()
+        .add("Alpha", fsong("a2", "Song A2", "Y"));
     open_library_tab(&mut app, LibraryTab::Playlists);
     let before = app.queue.len();
 
@@ -293,7 +295,7 @@ fn playlists_reload_reconciles_a_dangling_drilldown() {
     app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
     assert!(app.library_ui.open_playlist.is_some());
     // Simulate an external rewrite (finished transfer job) that dropped "alpha".
-    app.playlists = crate::playlists::Playlists::default();
+    app.playlists = Arc::new(crate::playlists::Playlists::default());
     app.reconcile_playlists_reload();
     assert!(app.library_ui.open_playlist.is_none());
     assert_eq!(app.library_ui.selected, 0);
@@ -402,7 +404,7 @@ fn picker_esc_backs_out_of_naming_then_closes() {
 #[test]
 fn shift_p_on_the_player_picks_up_the_current_track() {
     let mut app = app_playing(2, 0);
-    app.playlists.create("Mix");
+    app.playlists_mut().create("Mix");
     app.update(Msg::Key(key(KeyCode::Char('P'))));
     let picker = app.playlist_picker.as_ref().expect("picker open");
     assert_eq!(picker.songs[0].video_id, "id0");
@@ -414,7 +416,7 @@ fn shift_p_on_the_player_picks_up_the_current_track() {
 #[test]
 fn p_on_a_search_result_picks_that_result() {
     let mut app = App::new(100);
-    app.playlists.create("Mix");
+    app.playlists_mut().create("Mix");
     app.mode = Mode::Search;
     app.search.results = songs(2);
     app.search.focus = SearchFocus::Results;

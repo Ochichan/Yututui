@@ -210,7 +210,21 @@ impl AiHost {
                 engine.ai_enqueue(songs).await;
                 Vec::new()
             }
-            AiEvent::SetAutoplay(on) => engine.ai_set_autoplay(on),
+            AiEvent::SetAutoplay(on) => {
+                // The actor's AiContext rejects the ordinary conflict before network/queue work;
+                // revalidate on the owner lane for a repeat change that raced that snapshot.
+                let (response, effects) = engine.ai_set_autoplay(on);
+                if let Some(message) = autoplay_rejection_message(&response) {
+                    tracing::warn!(
+                        reason = response.reason.as_deref().unwrap_or("unknown"),
+                        "daemon rejected an AI autoplay mutation"
+                    );
+                    self.projection
+                        .push(AiRoleModel::Assistant, message.to_owned());
+                    publish = true;
+                }
+                effects
+            }
             AiEvent::CreatePlaylist(name) => {
                 engine.ai_create_playlist(&name);
                 Vec::new()
@@ -236,6 +250,21 @@ impl AiHost {
         }
         effects
     }
+}
+
+fn autoplay_rejection_message(response: &RemoteResponse) -> Option<&'static str> {
+    if response.ok {
+        return None;
+    }
+    Some(match response.reason.as_deref() {
+        Some("incompatible_playback_modes") => {
+            "I couldn't start autoplay because repeat is on. Turn repeat off first."
+        }
+        Some("streaming_unavailable_in_local_mode") => {
+            "I couldn't change autoplay while Local Deck is active."
+        }
+        _ => "I couldn't change autoplay.",
+    })
 }
 
 /// Mirrors the TUI transcript cap (`AI_HISTORY_MAX`) while retaining full topic state.
@@ -377,5 +406,18 @@ mod tests {
             Err("ai_disabled")
         ));
         assert!(host.handle.is_none());
+    }
+
+    #[test]
+    fn autoplay_rejection_uses_the_retained_assistant_message_lane() {
+        let response = RemoteResponse::err("incompatible_playback_modes");
+        let message = autoplay_rejection_message(&response).expect("rejection message");
+        let mut state = AiProjection::default();
+        state.push(AiRoleModel::Assistant, message.to_owned());
+
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].role, AiRoleModel::Assistant);
+        assert!(state.messages[0].text.contains("repeat is on"));
+        assert!(autoplay_rejection_message(&RemoteResponse::ok("ok".to_owned())).is_none());
     }
 }

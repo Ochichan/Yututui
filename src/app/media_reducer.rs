@@ -193,14 +193,16 @@ impl App {
                 if self.current_is_radio_stream() {
                     return Vec::new();
                 }
-                if mode.set_blocked_by_streaming(self.autoplay_streaming) {
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::SetRepeat(mode));
+                let Ok(transition) = transition else {
                     self.show_repeat_streaming_conflict();
                     return Vec::new();
-                }
-                if self.queue.repeat == mode {
+                };
+                if !transition.changed {
                     return Vec::new();
                 }
-                self.queue.repeat = mode;
+                self.queue.repeat = transition.state.repeat;
                 self.dirty = true;
                 vec![self.save_playback_modes_cmd()]
             }
@@ -352,7 +354,7 @@ impl App {
         if song.is_radio_station() {
             // Stations only have favorite membership; a dislike has no meaning.
             if like {
-                self.library.toggle_favorite(&song);
+                self.library_mut().toggle_favorite(&song);
                 self.dirty = true;
                 return vec![Cmd::Persist(PersistCmd::Library)];
             }
@@ -366,8 +368,8 @@ impl App {
         if like {
             if liked {
                 // Un-like → neutral (undo the affinity lift).
-                self.library.toggle_favorite(&song);
-                self.signals
+                self.library_mut().toggle_favorite(&song);
+                self.signals_mut()
                     .record_like(&song.video_id, &artist_key, false, now);
                 return vec![
                     Cmd::Persist(PersistCmd::Library),
@@ -375,11 +377,11 @@ impl App {
                 ];
             }
             if disliked {
-                self.signals
+                self.signals_mut()
                     .toggle_dislike(&song.video_id, &artist_key, now);
             }
-            let now_fav = self.library.toggle_favorite(&song);
-            self.signals
+            let now_fav = self.library_mut().toggle_favorite(&song);
+            self.signals_mut()
                 .record_like(&song.video_id, &artist_key, now_fav, now);
             let comp = self.playback_completion();
             self.record_session_event(&artist_key, Outcome::Like, comp);
@@ -390,18 +392,18 @@ impl App {
         } else {
             if disliked {
                 // Un-dislike → neutral.
-                self.signals
+                self.signals_mut()
                     .toggle_dislike(&song.video_id, &artist_key, now);
                 return vec![Cmd::Persist(PersistCmd::Signals)];
             }
             let mut cmds = Vec::new();
             if liked {
-                self.library.toggle_favorite(&song);
-                self.signals
+                self.library_mut().toggle_favorite(&song);
+                self.signals_mut()
                     .record_like(&song.video_id, &artist_key, false, now);
                 cmds.push(Cmd::Persist(PersistCmd::Library));
             }
-            self.signals
+            self.signals_mut()
                 .toggle_dislike(&song.video_id, &artist_key, now);
             let comp = self.playback_completion();
             self.record_session_event(&artist_key, Outcome::Dislike, comp);

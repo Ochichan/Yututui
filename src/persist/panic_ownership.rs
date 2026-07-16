@@ -230,6 +230,10 @@ fn write_panic_delete(
     commit_journal_generation_locked(operation.kind, path, operation.order)
 }
 
+/// Panic-time writes must never panic recursively out of the panic hook, so the whole dispatch is
+/// wrapped in `catch_unwind`. As with `write_operation_caught`, that containment only exists in
+/// unwind builds; under the release `panic = "abort"` profile a nested panic aborts immediately
+/// (which is also the least-bad outcome mid-hook).
 pub(super) fn write_panic_operation(operation: &PanicOperation) -> std::io::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &operation.action {
         PanicAction::Replace { path, bytes } => write_panic_replace(

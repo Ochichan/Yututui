@@ -556,7 +556,12 @@ mod tests {
             kitty.load(std::sync::atomic::Ordering::Relaxed),
             ACTIVE_KEYBOARD_NONE
         );
+        // On Windows the console — not the writer — decides between ANSI bytes and the winapi
+        // fallback (`Command::is_ansi_code_supported`), so a headless runner captures nothing.
+        #[cfg(not(windows))]
         assert_eq!(kitty_output, b"\x1b[<1u");
+        #[cfg(windows)]
+        assert!(kitty_output.is_empty() || kitty_output == b"\x1b[<1u");
 
         let win32 = AtomicU8::new(ACTIVE_KEYBOARD_WIN32);
         let mut win32_output = Vec::new();

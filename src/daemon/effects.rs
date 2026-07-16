@@ -114,6 +114,10 @@ impl DaemonEffectTasks {
         let tx = event_tx.clone();
         let completion_shutdown = shutdown.clone();
         self.tasks.spawn_blocking(move || {
+            // Contain export panics so the Finished event always fires and the requester is never
+            // left waiting on a completion that died. This holds in unwind builds (dev/test);
+            // release builds use `panic = "abort"`, where an export panic aborts the daemon
+            // before this closure can report it.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(export))
                 .unwrap_or_else(|_| {
                     Err("personal-data export worker failed: task panicked".to_owned())

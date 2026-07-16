@@ -16,7 +16,7 @@
 //!   the price of not fsyncing on the UI task; every store here is preference/cache
 //!   data, not payment ledgers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -134,15 +134,16 @@ pub enum PersistEvent {
 type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
 type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
 
-/// Owned copy of one store, taken at send time so the actor never reaches back into
-/// `App`. Writing delegates to the store's own `save()` — same path resolution, same
+/// Immutable snapshot of one store, taken at send time so the actor never reaches back into
+/// `App`. The large app-owned stores use shared ownership; app mutations copy on write while a
+/// snapshot is live. Writing delegates to the store's own `save()` — same path resolution, same
 /// atomic temp-write + fsync + rename.
 pub enum Snapshot {
-    Library(crate::library::Library),
-    Signals(crate::signals::Signals),
+    Library(Arc<crate::library::Library>),
+    Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
     Config(Box<crate::config::Config>),
-    Playlists(crate::playlists::Playlists),
+    Playlists(Arc<crate::playlists::Playlists>),
     Station(crate::station::StationStore),
     RomanizedTitles(crate::romanize::RomanizeCache),
     Session(crate::session::SessionCache),
@@ -222,6 +223,27 @@ impl JournalIntent {
 
 enum PersistMsg {
     Flush(oneshot::Sender<bool>),
+    FlushTarget {
+        target: PersistTarget,
+        ack: oneshot::Sender<TargetFlushOutcome>,
+    },
+}
+
+/// Exact persistence acceptance identity used by owner-mediated transfer commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PersistTarget {
+    kind: StoreKind,
+    order: JournalOrder,
+}
+
+/// Whether this exact target committed, was replaced by a newer same-store operation, or could
+/// not be confirmed. Supersession is deliberately not success: the replacement may not contain
+/// an owner patch which was never installed into live state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TargetFlushOutcome {
+    CommittedExact,
+    Superseded,
+    Unconfirmed,
 }
 
 #[derive(Clone)]
@@ -300,37 +322,100 @@ async fn run_actor(
 ) {
     let mut due: HashMap<StoreKind, tokio::time::Instant> = HashMap::new();
     let mut retries: RetryMap = HashMap::new();
+    let mut completions = CompletionLedger::default();
     loop {
         let next_due = due.values().min().copied();
         tokio::select! {
+            // Flush requests carry caller deadlines. When both control and a coalesced dirty
+            // wake are ready, service the explicit target before ordinary background journaling.
+            biased;
             msg = rx.recv() => match msg {
                 Some(PersistMsg::Flush(ack)) => {
-                    journal_pending_operations(&pending).await;
-                    let clean = write_stores_with_inflight(
-                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, true,
+                    journal_pending_operations(&pending, WriteSelection::All).await;
+                    let clean = write_stores_with_inflight_tracking(
+                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events,
+                        WriteSelection::All, &mut completions,
                     ).await;
                     let _ = ack.send(clean);
                 }
+                Some(PersistMsg::FlushTarget { target, ack }) => {
+                    journal_pending_operations(&pending, WriteSelection::Store(target.kind)).await;
+                    write_stores_with_inflight_tracking(
+                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events,
+                        WriteSelection::Store(target.kind), &mut completions,
+                    ).await;
+                    let latest_accepted = lock(&pending).latest_accepted(&target.kind);
+                    let _ = ack.send(completions.outcome(target, latest_accepted));
+                }
                 // All senders dropped (quit already flushed; this is a backstop).
                 None => {
-                    journal_pending_operations(&pending).await;
-                    write_stores_with_inflight(
-                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, true,
+                    journal_pending_operations(&pending, WriteSelection::All).await;
+                    write_stores_with_inflight_tracking(
+                        &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events,
+                        WriteSelection::All, &mut completions,
                     ).await;
                     break;
                 }
             },
             _ = dirty.notified() => {
-                journal_pending_operations(&pending).await;
+                journal_pending_operations(&pending, WriteSelection::All).await;
                 arm_due_for_pending(&pending, &mut due);
             },
             _ = tokio::time::sleep_until(next_due.unwrap_or_else(tokio::time::Instant::now)),
                 if next_due.is_some() =>
             {
-                write_stores_with_inflight(
-                    &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events, false,
+                write_stores_with_inflight_tracking(
+                    &pending, &inflight, &panic_shadow, &mut due, &mut retries, &events,
+                    WriteSelection::Due, &mut completions,
                 ).await;
             }
+        }
+    }
+}
+
+const COMPLETION_HISTORY_PER_STORE: usize = 256;
+
+#[derive(Default)]
+struct CompletionLedger {
+    frontier: HashMap<StoreKind, JournalOrder>,
+    exact: HashMap<StoreKind, VecDeque<JournalOrder>>,
+}
+
+impl CompletionLedger {
+    fn record(&mut self, kind: StoreKind, order: JournalOrder) {
+        self.frontier
+            .entry(kind)
+            .and_modify(|frontier| *frontier = (*frontier).max(order))
+            .or_insert(order);
+        let exact = self.exact.entry(kind).or_default();
+        exact.push_back(order);
+        while exact.len() > COMPLETION_HISTORY_PER_STORE {
+            exact.pop_front();
+        }
+    }
+
+    fn outcome(
+        &self,
+        target: PersistTarget,
+        latest_accepted: Option<JournalOrder>,
+    ) -> TargetFlushOutcome {
+        let frontier = self.frontier.get(&target.kind).copied();
+        if latest_accepted.is_some_and(|latest| {
+            latest > target.order && frontier.is_none_or(|frontier| latest > frontier)
+        }) {
+            TargetFlushOutcome::Unconfirmed
+        } else if frontier.is_some_and(|frontier| frontier > target.order) {
+            TargetFlushOutcome::Superseded
+        } else if latest_accepted == Some(target.order)
+            && frontier == Some(target.order)
+            && self
+                .exact
+                .get(&target.kind)
+                .is_some_and(|orders| orders.contains(&target.order))
+        {
+            TargetFlushOutcome::CommittedExact
+        } else {
+            TargetFlushOutcome::Unconfirmed
         }
     }
 }
@@ -389,11 +474,15 @@ fn emit_persist_event(events: &EventSinkSlot, event: PersistEvent) {
     }
 }
 
-async fn journal_pending_operations(pending: &SharedPending) {
+async fn journal_pending_operations(pending: &SharedPending, selection: WriteSelection) {
     let intents: Vec<JournalIntent> = {
         let guard = lock(pending);
         guard
             .values()
+            .filter(|operation| match selection {
+                WriteSelection::Store(kind) => operation.kind() == kind,
+                WriteSelection::All | WriteSelection::Due => true,
+            })
             .filter(|operation| operation.publication().needs_journal())
             .filter_map(|operation| operation.journal_intent())
             .collect()
@@ -1149,6 +1238,10 @@ fn write_operation_durable_using(
     Ok(())
 }
 
+/// Run the durable write with the writer's panics downgraded to `io::Error` so the persist actor
+/// survives them and keeps serving later saves. Containment exists only in unwind builds
+/// (dev/test); release builds use `panic = "abort"`, where a writer panic aborts the process
+/// before reaching the `unwrap_or_else` below — there it documents intent, not a guarantee.
 fn write_operation_caught(operation: &PendingOperation) -> std::io::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         write_operation_durable(operation)
@@ -1275,6 +1368,7 @@ async fn write_stores(
 
 /// Apply every due operation. Before ownership leaves `pending`, an immutable equivalent is
 /// published to `inflight`; the panic hook can therefore recover it during blocking-pool waits.
+#[cfg(test)]
 async fn write_stores_with_inflight(
     pending: &SharedPending,
     inflight: &SharedInflight,
@@ -1284,15 +1378,58 @@ async fn write_stores_with_inflight(
     events: &EventSinkSlot,
     all: bool,
 ) -> bool {
+    let mut completions = CompletionLedger::default();
+    write_stores_with_inflight_tracking(
+        pending,
+        inflight,
+        panic_shadow,
+        due,
+        retries,
+        events,
+        if all {
+            WriteSelection::All
+        } else {
+            WriteSelection::Due
+        },
+        &mut completions,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum WriteSelection {
+    All,
+    Due,
+    Store(StoreKind),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_stores_with_inflight_tracking(
+    pending: &SharedPending,
+    inflight: &SharedInflight,
+    panic_shadow: &PanicShadow,
+    due: &mut HashMap<StoreKind, tokio::time::Instant>,
+    retries: &mut RetryMap,
+    events: &EventSinkSlot,
+    selection: WriteSelection,
+    completions: &mut CompletionLedger,
+) -> bool {
     let now = tokio::time::Instant::now();
-    let kinds: Vec<StoreKind> = if all {
-        // Everything dirty, whether or not its deadline armed (flush/backstop path).
-        lock(pending).keys().copied().collect()
-    } else {
-        due.iter()
+    let kinds: Vec<StoreKind> = match selection {
+        WriteSelection::All => {
+            // Everything dirty, whether or not its deadline armed (flush/backstop path).
+            lock(pending).keys().copied().collect()
+        }
+        WriteSelection::Due => due
+            .iter()
             .filter(|(_, deadline)| **deadline <= now)
             .map(|(kind, _)| *kind)
-            .collect()
+            .collect(),
+        WriteSelection::Store(kind) => lock(pending)
+            .contains_key(&kind)
+            .then_some(kind)
+            .into_iter()
+            .collect(),
     };
     for kind in kinds {
         due.remove(&kind);
@@ -1366,6 +1503,7 @@ async fn write_stores_with_inflight(
                 remove_inflight_if_order(inflight, kind, order);
                 panic_shadow.clear_through(kind, order);
                 retries.remove(&operation.kind());
+                completions.record(kind, order);
             }
         }
     }
