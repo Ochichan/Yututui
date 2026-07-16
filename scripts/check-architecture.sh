@@ -486,8 +486,10 @@ grep -q 'restore: Vec<PlayerCmd>' src/app/player_intent.rs || {
 tmp=$(mktemp)
 awk '/^pub struct App \{/{f=1;next} f&&/^\}/{exit}
      f&&/^ *(pub(\([^)]*\))? +)?[a-z_]+ *:/ {gsub(/^ *(pub(\([^)]*\))? +)?/,""); sub(/ *:.*/,""); print}' \
-  src/app/mod.rs | sort -u > "$tmp"
-if extra=$(comm -13 scripts/app-fields.allow "$tmp"); [ -n "$extra" ]; then
+  src/app/mod.rs | LC_ALL=C sort -u > "$tmp"
+# The allowlist is committed in C byte order; pin the comparison locale so `_`-collation
+# differences (e.g. downloads vs download_store under UTF-8 locales) can't misreport fields.
+if extra=$(LC_ALL=C comm -13 scripts/app-fields.allow "$tmp"); [ -n "$extra" ]; then
   echo "error: new flat App field(s) not in scripts/app-fields.allow — group them into a sub-struct or add intentionally:" >&2
   echo "$extra" >&2; fail=1
 fi
