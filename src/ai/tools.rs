@@ -1,8 +1,9 @@
 //! The 13 assistant tools: their Gemini `functionDeclarations` and an async dispatcher.
 //!
-//! Ported from `youtube-music-cli`'s tool layer, adapted to TEA: a tool can't mutate
-//! `App`, so a *mutation* tool emits a [`Msg`] (applied by `update()`) and reports the
-//! intended outcome in its `functionResponse`; a *read* tool answers from the
+//! Ported from `youtube-music-cli`'s tool layer, adapted to the owner architecture: a tool
+//! cannot mutate an owner, so a *mutation* tool emits an [`AiEvent`] through the event sink
+//! for the active owner to reduce, and reports the intended outcome in its `functionResponse`;
+//! a *read* tool answers from the
 //! [`AiContext`] snapshot; *search/resolve* tools shell out to yt-dlp (the same backend
 //! anonymous search uses) and cache `videoId → Song` so later tools can act on bare ids.
 
@@ -10,11 +11,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+use super::{AiContext, AiEvent, EventSink};
 use crate::api::Song;
 use crate::api::ytmusic::{related_tracks_from_source, ytdlp_search};
-use crate::app::AiContext;
-
-use super::{AiEvent, EventSink};
 
 /// Default number of tracks a query resolves to when the model doesn't ask for a count.
 const DEFAULT_RESOLVE: usize = 1;

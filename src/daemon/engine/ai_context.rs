@@ -1,8 +1,7 @@
 //! Read snapshot and owner-lane mutations used by the daemon DJ Gem host.
 
-use crate::ai::GeminiModel;
+use crate::ai::{AiContext, GeminiModel, PlaylistInfo};
 use crate::api::Song;
-use crate::app::{AiContext, PlaylistInfo};
 use crate::playlists::AddResult;
 use crate::remote::proto::ToggleState;
 

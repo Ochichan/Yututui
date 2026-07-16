@@ -11,6 +11,10 @@ use crate::app::{
     AiMsg, App, Cmd, DataCmd, DownloadCmd, Msg, PersonalDataExportCmd, PlayerControl, PlayerMsg,
     ScrobbleCmd, StreamingMsg,
 };
+use crate::owner_event_policy::{
+    api_event_policy, download_event_policy, player_event_policy, remote_event_policy,
+    scrobble_event_policy, transfer_event_policy,
+};
 #[cfg(test)]
 use crate::player::PlayerCmd;
 use crate::player::PlayerHandle;
@@ -32,7 +36,7 @@ use crate::util::delivery::DeliveryError;
 use delivery_reporting::{ActorRejectionRecovery, recover_actor_rejection, report_actor_delivery};
 #[cfg(test)]
 use event_policy::player_msg_policy as app_player_msg_policy;
-use event_policy::{app_msg_policy, player_event_policy, video_event_policy};
+use event_policy::{app_msg_policy, video_event_policy};
 #[cfg(test)]
 use player_delivery::{
     PENDING_PLAYER_CMDS_MAX, PENDING_PLAYER_INTENTS_MAX, PlayerRestartDecision,
@@ -82,6 +86,8 @@ impl RuntimeEvent {
                     lane: Lane::Telemetry,
                     key: Key::AiThinking,
                 },
+                // The interactive reducer owns one in-flight rerank seed and can reject an old
+                // result before it mutates the queue.
                 crate::ai::AiEvent::StreamingPicks { .. } => EventPolicy::DropIfStale {
                     stale_key: Key::StreamingSeed,
                 },
@@ -100,28 +106,7 @@ impl RuntimeEvent {
                     lane: Lane::WorkResult,
                 },
             },
-            RuntimeEvent::Api(event) => match event {
-                crate::api::ApiEvent::ModeResolved { .. }
-                | crate::api::ApiEvent::TrackResolved { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-                crate::api::ApiEvent::SearchResults { .. }
-                | crate::api::ApiEvent::SearchError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::SearchRequest,
-                },
-                crate::api::ApiEvent::PlaylistTracks { .. }
-                | crate::api::ApiEvent::PlaylistTracksError { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-                crate::api::ApiEvent::StreamingResults { .. }
-                | crate::api::ApiEvent::StreamingPreflighted { .. }
-                | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
-                    stale_key: Key::StreamingSeed,
-                },
-                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-            },
+            RuntimeEvent::Api(event) => api_event_policy(event),
             RuntimeEvent::Artwork(_) => EventPolicy::DropIfStale {
                 stale_key: Key::ArtworkVideo,
             },
@@ -129,21 +114,8 @@ impl RuntimeEvent {
                 lane: Lane::Telemetry,
                 key: Key::ArtResize,
             },
-            RuntimeEvent::Download(event) => match event {
-                crate::download::DownloadEvent::Progress { .. }
-                | crate::download::DownloadEvent::ImportProgress { .. } => {
-                    EventPolicy::CoalesceLatest {
-                        lane: Lane::Telemetry,
-                        key: Key::DownloadProgress,
-                    }
-                }
-                crate::download::DownloadEvent::Done { .. }
-                | crate::download::DownloadEvent::ImportDone { .. }
-                | crate::download::DownloadEvent::Error { .. }
-                | crate::download::DownloadEvent::ImportError { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-            },
+            RuntimeEvent::Download(event) => download_event_policy(event),
+            // Interactive lyrics requests are keyed to the currently visible track.
             RuntimeEvent::Lyrics(_) => EventPolicy::DropIfStale {
                 stale_key: Key::LyricsVideo,
             },
@@ -151,13 +123,7 @@ impl RuntimeEvent {
             RuntimeEvent::Persist(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
-            RuntimeEvent::Remote(
-                crate::remote::server::RemoteEvent::Command(_, _)
-                | crate::remote::server::RemoteEvent::SessionCommand { .. }
-                | crate::remote::server::RemoteEvent::SessionSubscribe { .. },
-            ) => EventPolicy::MustReplyOrBusy {
-                lane: Lane::RemoteCommand,
-            },
+            RuntimeEvent::Remote(event) => remote_event_policy(event),
             RuntimeEvent::Video { event, .. } => video_event_policy(event),
             RuntimeEvent::Resolver(
                 crate::resolver::ResolverEvent::Resolved { purpose, .. }
@@ -171,21 +137,7 @@ impl RuntimeEvent {
                 lane: Lane::WorkResult,
                 key: Key::ResolverVideo,
             },
-            RuntimeEvent::Scrobble(event) => match event {
-                crate::scrobble::ScrobbleEvent::AuthUrl(_)
-                | crate::scrobble::ScrobbleEvent::AuthDone { .. }
-                | crate::scrobble::ScrobbleEvent::AuthFailed(_)
-                | crate::scrobble::ScrobbleEvent::SessionInvalid(_)
-                | crate::scrobble::ScrobbleEvent::QueueDropped { .. } => EventPolicy::MustDeliver {
-                    lane: Lane::Control,
-                },
-                crate::scrobble::ScrobbleEvent::QueueStalled { .. } => {
-                    EventPolicy::CoalesceLatest {
-                        lane: Lane::Telemetry,
-                        key: Key::ScrobbleQueueStalled,
-                    }
-                }
-            },
+            RuntimeEvent::Scrobble(event) => scrobble_event_policy(event),
             RuntimeEvent::Signal(_) => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -203,26 +155,7 @@ impl RuntimeEvent {
                 lane: Lane::WorkResult,
                 key: Key::UpdateCheck,
             },
-            RuntimeEvent::Transfer(event) => match event {
-                crate::transfer::actor::TransferEvent::Progress(_) => EventPolicy::CoalesceLatest {
-                    lane: Lane::Telemetry,
-                    key: Key::TransferJob,
-                },
-                crate::transfer::actor::TransferEvent::AuthUrl(_)
-                | crate::transfer::actor::TransferEvent::AuthDone { .. }
-                | crate::transfer::actor::TransferEvent::AuthError(_)
-                | crate::transfer::actor::TransferEvent::Disconnected => EventPolicy::MustDeliver {
-                    lane: Lane::WorkResult,
-                },
-                crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
-                | crate::transfer::actor::TransferEvent::JobDone(_)
-                | crate::transfer::actor::TransferEvent::JobRejected { .. }
-                | crate::transfer::actor::TransferEvent::JobFailed { .. } => {
-                    EventPolicy::MustDeliver {
-                        lane: Lane::WorkResult,
-                    }
-                }
-            },
+            RuntimeEvent::Transfer(event) => transfer_event_policy(event),
             RuntimeEvent::TelemetryWake => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -1407,7 +1340,7 @@ impl RuntimeHandles {
                     seed,
                     seed_video_id.clone(),
                     exclude_ids,
-                    crate::app::STREAMING_POOL_COUNT,
+                    crate::playback_policy::STREAMING_POOL_COUNT,
                     mode,
                     config,
                 ) {

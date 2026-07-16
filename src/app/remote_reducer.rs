@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn streaming_on_forces_refill_even_when_queue_is_not_low() {
         let mut app = six_track_app();
-        assert!(app.queue.remaining() > AUTOPLAY_THRESHOLD);
+        assert!(app.queue.remaining() > crate::playback_policy::AUTOPLAY_THRESHOLD);
 
         let (resp, cmds) = app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::On,

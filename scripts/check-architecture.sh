@@ -9,11 +9,10 @@ actor_files=()
 while IFS= read -r file; do actor_files+=("$file"); done < <(find src/player src/api src/ai src/remote -name '*.rs' -print)
 actor_files+=(src/artwork.rs src/lyrics.rs src/download.rs src/resolver.rs)
 
-# C1: the boundary forbids not just app::Msg but the whole reducer message/command surface —
-# top-level Msg/Cmd and the M3 sub-enums (PlayerMsg/AiMsg/StreamingMsg/…, PersistCmd/…). Leaf
-# actors must stay behind the RuntimeEvent seam and never name a reducer message/command type.
-if matches=$(grep -nE 'crate::app::(Msg|Cmd|[A-Za-z]+Msg|[A-Za-z]+Cmd)|use crate::app::.*Msg|UnboundedSender<Msg>|UnboundedReceiver<Msg>' "${actor_files[@]}" 2>/dev/null); then
-  echo "error: leaf actors must emit domain events, not app::Msg/Cmd:" >&2
+# C1: leaf actors stay below both playback owners. DTOs shared with an actor belong to that
+# actor's neutral domain module, never to the interactive app reducer namespace.
+if matches=$(grep -nE 'crate::app([^[:alnum:]_]|$)|UnboundedSender<Msg>|UnboundedReceiver<Msg>' "${actor_files[@]}" 2>/dev/null); then
+  echo "error: leaf actors must not depend on the app reducer namespace:" >&2
   echo "$matches" >&2
   fail=1
 fi

@@ -1,8 +1,8 @@
 //! The DJ Gem assistant: a multi-turn Gemini function-calling agent that drives playback.
 //!
-//! Mirrors `youtube-music-cli`'s LLM service, adapted to this app's TEA architecture: the
-//! actor can't touch `App`, so tool side-effects flow back as [`AiEvent`]s that
-//! `update()` applies. The model invokes tools (search, play, queue, streaming, playlists);
+//! Mirrors `youtube-music-cli`'s LLM service, adapted to the dual-owner architecture: the
+//! actor cannot touch either owner, so tool side-effects flow back as [`AiEvent`]s for the
+//! active owner to reduce. The model invokes tools (search, play, queue, streaming, playlists);
 //! resolves run inside the actor via yt-dlp; mutations are reported back as intents.
 //!
 //! The loop (`converse`):
@@ -18,11 +18,13 @@
 
 pub mod client;
 mod context;
+mod dto;
 pub mod model;
 mod model_control;
 pub mod tools;
 pub mod usage;
 
+pub use dto::{AiContext, AiPick, PlaylistInfo};
 pub use model::GeminiModel;
 
 use context::context_summary;
@@ -36,7 +38,6 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
-use crate::app::{AiContext, AiPick};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
 use client::{
@@ -1109,8 +1110,6 @@ fn strip_code_fence(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::PlaylistInfo;
-
     fn ctx() -> AiContext {
         AiContext {
             current_track: Some("Song — Artist".to_owned()),

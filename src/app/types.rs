@@ -878,41 +878,6 @@ pub enum AiFocus {
     Suggestions,
 }
 
-/// A local playlist's identity, for the DJ Gem context snapshot (no track payload).
-#[derive(Debug, Clone)]
-pub struct PlaylistInfo {
-    pub id: String,
-    pub name: String,
-    pub count: usize,
-}
-
-/// A read-only snapshot of app state handed to the DJ Gem actor with each prompt, so its
-/// read tools (get_queue, get_user_favorites, …) can answer without touching `App`.
-#[derive(Debug, Clone)]
-pub struct AiContext {
-    /// "Title — Artist" of the current track, if any.
-    pub current_track: Option<String>,
-    /// The currently loaded live radio station, if the current queue item is a station.
-    pub current_radio_station: Option<String>,
-    /// The stream's own now-playing metadata for the current radio station, if mpv has seen it.
-    pub current_radio_now_playing: Option<String>,
-    /// Up to a few upcoming queue entries, "Title — Artist".
-    pub queue_upcoming: Vec<String>,
-    pub queue_len: usize,
-    pub queue_remaining: usize,
-    /// A few recently-played tracks, most-recent first.
-    pub recent_history: Vec<String>,
-    /// A sample of favorited tracks.
-    pub favorites: Vec<String>,
-    /// The user's local playlists (names + counts; tracks fetched on demand).
-    pub playlists: Vec<PlaylistInfo>,
-    /// Search/source settings used by DJ Gem streaming tools.
-    pub search: SearchConfig,
-    /// Whether a YTM cookie is configured (gates authenticated related-tracks).
-    pub authenticated: bool,
-    pub autoplay_streaming: bool,
-}
-
 /// A live radio stream's current ICY/metadata title, as exposed by mpv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamNowPlaying {
@@ -946,15 +911,6 @@ pub struct PendingRerank {
     /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
     /// resolved ordering can be stored on return and replayed for a rapid identical refill.
     pub(crate) cache_key: u64,
-}
-
-/// One reranked pick the DJ Gem returned: the opaque pack `cid` it chose, plus optional explanation
-/// (slot role + reason codes) surfaced by the "Why DJ Gem" overlay.
-#[derive(Debug, Clone)]
-pub struct AiPick {
-    pub cid: String,
-    pub role: Option<String>,
-    pub reasons: Vec<String>,
 }
 
 /// The resolved, human-readable explanation of the last DJ Gem streaming rerank, shown by the "Why DJ Gem"

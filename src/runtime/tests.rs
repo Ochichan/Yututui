@@ -882,7 +882,7 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
 
     let msg = Msg::from(RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks {
         seed_video_id: "seed".to_owned(),
-        picks: vec![crate::app::AiPick {
+        picks: vec![crate::ai::AiPick {
             cid: "c1".to_owned(),
             role: Some("bridge".to_owned()),
             reasons: vec!["tr".to_owned()],

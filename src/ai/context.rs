@@ -1,4 +1,4 @@
-use crate::app::AiContext;
+use super::AiContext;
 
 /// A compact, human-readable snapshot of player state for the model's first turn.
 pub(super) fn context_summary(ctx: &AiContext) -> String {
