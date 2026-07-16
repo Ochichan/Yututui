@@ -325,6 +325,9 @@ async fn run_actor(
     loop {
         let next_due = due.values().min().copied();
         tokio::select! {
+            // Flush requests carry caller deadlines. When both control and a coalesced dirty
+            // wake are ready, service the explicit target before ordinary background journaling.
+            biased;
             msg = rx.recv() => match msg {
                 Some(PersistMsg::Flush(ack)) => {
                     journal_pending_operations(&pending, WriteSelection::All).await;

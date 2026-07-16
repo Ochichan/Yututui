@@ -76,35 +76,33 @@ async fn targeted_flush_ignores_unrelated_store_failure() {
 }
 
 #[tokio::test]
-async fn targeted_flush_does_not_journal_unrelated_stores() {
+async fn targeted_journal_selection_does_not_journal_unrelated_stores() {
     let directory = temp_dir("targeted-journal-selection");
     std::fs::create_dir_all(&directory).expect("create test directory");
     let unrelated_path = directory.join("config.json");
     let unrelated_journal = intent_journal_path(&unrelated_path).expect("journal path");
-    let handle = spawn();
-    let _ = handle
-        .save(Snapshot::Test {
-            kind: StoreKind::Config,
-            label: "unrelated journal candidate",
-            storage_path: Some(unrelated_path),
-            writer: Arc::new(|| Ok(())),
-        })
-        .expect("unrelated snapshot admitted");
-    let target = handle
-        .save_tracked(injected_snapshot(StoreKind::Playlists, "target playlists"))
-        .expect("target admitted");
-
-    assert_eq!(
-        handle.flush_target(target, Duration::from_secs(1)).await,
-        TargetFlushOutcome::CommittedExact
+    let operation = test_operation(
+        StoreKind::Config,
+        journal_order_in_epoch(24, 1, 0xa4),
+        Some(unrelated_path.clone()),
+        Arc::new(|| Ok(())),
     );
+    let shadow = PanicShadow::new();
+    let operation = publish_pending_operation(&shadow, operation).expect("publish operation");
+    let pending: SharedPending = Arc::new(Mutex::new(PendingQueue::new()));
+    lock(&pending).insert_owned(operation);
+
+    journal_pending_operations(&pending, WriteSelection::Store(StoreKind::Playlists)).await;
     assert!(
         !unrelated_journal.exists(),
-        "targeted confirmation must not journal an unrelated store"
+        "targeted journal selection must not publish an unrelated store"
+    );
+    assert_eq!(
+        lock(&pending)[&StoreKind::Config].publication(),
+        &SnapshotPublication::NeedsJournal
     );
 
-    assert!(handle.flush(Duration::from_secs(1)).await);
-    clear_store_journal(&directory.join("config.json"));
+    clear_store_journal(&unrelated_path);
     let _ = std::fs::remove_dir_all(directory);
 }
 
