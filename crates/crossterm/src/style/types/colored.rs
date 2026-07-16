@@ -326,13 +326,17 @@ mod tests {
         // yututui patch: initialize the display memo before this test mutates NO_COLOR. Without
         // this, a parallel formatting test can memoize the temporary value and become flaky.
         Colored::set_ansi_color_disabled(false);
-        std::env::set_var("NO_COLOR", "1");
-        assert!(Colored::ansi_color_disabled());
-        std::env::set_var("NO_COLOR", "XXX");
-        assert!(Colored::ansi_color_disabled());
-        std::env::set_var("NO_COLOR", "");
-        assert!(!Colored::ansi_color_disabled());
-        std::env::remove_var("NO_COLOR");
-        assert!(!Colored::ansi_color_disabled());
+        temp_env::with_vars([("NO_COLOR", Some("1"))], || {
+            assert!(Colored::ansi_color_disabled());
+        });
+        temp_env::with_vars([("NO_COLOR", Some("XXX"))], || {
+            assert!(Colored::ansi_color_disabled());
+        });
+        temp_env::with_vars([("NO_COLOR", Some(""))], || {
+            assert!(!Colored::ansi_color_disabled());
+        });
+        temp_env::with_vars([("NO_COLOR", None::<&str>)], || {
+            assert!(!Colored::ansi_color_disabled());
+        });
     }
 }

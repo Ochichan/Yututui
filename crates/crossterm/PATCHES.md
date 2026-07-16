@@ -27,7 +27,7 @@ event parser.
 - Keep an empty local `[workspace]` boundary so standalone fmt/clippy/test commands do not inherit
   yututui's parent workspace while the fork remains excluded from its members.
 - Serialize the upstream ANSI formatting/round-trip tests around their process-global color flag,
-  and initialize it before the `NO_COLOR` test mutates process state, removing a parallel-test race.
+  and mutate `NO_COLOR` through the shared test environment guard so inherited state is restored.
 - Propagate keyboard-enhancement polling errors instead of retrying forever, keeping terminal
   capability probing bounded and allowing the application to select its conservative fallback.
 
