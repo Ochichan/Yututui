@@ -45,6 +45,24 @@ Windows 直接インストーラ:
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
+<details>
+<summary><b>ダウンロードを検証する</b> <i>（任意）</i></summary>
+
+すべてのリリースに `checksums.txt`（SHA-256）と GitHub のビルド provenance attestation が付きます。
+動いているブランチ（main）ではなく最新リリースに固定したインストーラも使えます:
+
+```sh
+curl -fsSL https://github.com/Ochichan/Yututui/releases/latest/download/install.sh | bash
+
+# チェックサム（成果物と checksums.txt を同じフォルダに置いて）:
+sha256sum -c --ignore-missing checksums.txt        # macOS: shasum -a 256 -c
+
+# Provenance — このリポジトリのリリースワークフローが作った成果物である証明 (GitHub CLI):
+gh attestation verify yututui-linux-x64.tar.gz --repo Ochichan/Yututui
+```
+
+</details>
+
 Windows ではスタートメニューの **YuTuTui!** を選んでください。Tray 補助アプリが
 Windows Terminal を開いて `ytt` を起動し、Tray アイコンの右クリックメニューにも
 **Open Player** があります。`ytt.exe` の直接ダブルクリックにも対応し、終了後も
@@ -514,6 +532,12 @@ ytt tools unpin               # 通常の managed/system 選択に戻す
 アプリ自身の yt-dlp 呼び出しは、既定であなたの yt-dlp 設定ファイルを無視するので、シェルのダウンロード用オプションがパース出力を壊しません。アプリのパース呼び出しにも yt-dlp 設定を使うなら `YTM_YTDLP_USER_CONFIG=1`。mpv の `ytdl_hook` 経由の再生は引き続き yt-dlp 設定に従い、検索・プレイリスト取得・メタデータ・プリフェッチ解決・ダウンロードだけが既定で無視します。
 
 </details>
+
+## セキュリティ
+
+脆弱性を見つけたら、公開 issue ではなく
+[GitHub の非公開脆弱性報告](https://github.com/Ochichan/Yututui/security/advisories/new)を
+使ってください — サポート対象バージョンと成果物の検証方法は [SECURITY.md](SECURITY.md) にあります。
 
 ## 謝辞 & ライセンス
 

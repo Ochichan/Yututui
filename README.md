@@ -45,6 +45,24 @@ Windows direct installer:
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
+<details>
+<summary><b>Verify what you download</b> <i>(optional)</i></summary>
+
+Every release ships `checksums.txt` (SHA-256) and GitHub build-provenance attestations.
+To avoid running an installer fetched from a moving branch, pin it to the latest release:
+
+```sh
+curl -fsSL https://github.com/Ochichan/Yututui/releases/latest/download/install.sh | bash
+
+# Checksums (artifact + checksums.txt in the same directory):
+sha256sum -c --ignore-missing checksums.txt        # macOS: shasum -a 256 -c
+
+# Provenance — proves the artifact came from this repo's release workflow (GitHub CLI):
+gh attestation verify yututui-linux-x64.tar.gz --repo Ochichan/Yututui
+```
+
+</details>
+
 On Windows, launch **YuTuTui!** from the Start Menu. The tray companion opens Windows Terminal
 and starts `ytt` for you; its right-click menu also has **Open Player**. Double-clicking
 `ytt.exe` directly is supported too, and the console stays open after exit so an error is not
@@ -518,6 +536,13 @@ ytt tools unpin               # return to normal managed/system selection
 The app's own yt-dlp calls ignore your yt-dlp config file by default, so options meant for shell downloads do not break parsed output. Set `YTM_YTDLP_USER_CONFIG=1` to re-enable your yt-dlp config for app-parsed calls. Playback through mpv's `ytdl_hook` still honors your yt-dlp config; only search, playlist fetches, metadata, prefetch resolution, and downloads ignore it by default.
 
 </details>
+
+## Security
+
+Found a vulnerability? Please use
+[GitHub private vulnerability reporting](https://github.com/Ochichan/Yututui/security/advisories/new)
+instead of a public issue — supported versions and artifact verification live in
+[SECURITY.md](SECURITY.md).
 
 ## Thanks & license
 

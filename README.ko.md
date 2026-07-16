@@ -45,6 +45,24 @@ Windows 직접 설치:
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
+<details>
+<summary><b>다운로드 검증하기</b> <i>(선택)</i></summary>
+
+모든 릴리스에는 `checksums.txt`(SHA-256)와 GitHub 빌드 provenance attestation이 포함됩니다.
+움직이는 브랜치(main) 대신 최신 릴리스에 고정된 설치 스크립트를 쓸 수도 있어요:
+
+```sh
+curl -fsSL https://github.com/Ochichan/Yututui/releases/latest/download/install.sh | bash
+
+# 체크섬 (산출물과 checksums.txt를 같은 폴더에 두고):
+sha256sum -c --ignore-missing checksums.txt        # macOS: shasum -a 256 -c
+
+# Provenance — 이 저장소의 릴리스 워크플로가 만든 산출물인지 증명 (GitHub CLI):
+gh attestation verify yututui-linux-x64.tar.gz --repo Ochichan/Yututui
+```
+
+</details>
+
 Windows에서는 시작 메뉴의 **YuTuTui!** 를 누르세요. Tray 보조 앱이 Windows Terminal을
 열고 `ytt`를 실행하며, tray 아이콘 우클릭 메뉴에도 **플레이어 열기(Open Player)** 가
 있습니다. `ytt.exe`를 직접 더블클릭해도 되고, 종료 뒤 콘솔이 남아 오류를 읽을 수
@@ -511,6 +529,12 @@ ytt tools unpin               # 기본 managed/system 선택 정책으로 복귀
 앱 자체의 yt-dlp 호출은 기본적으로 여러분의 yt-dlp 설정 파일을 무시하므로, 셸 다운로드용 옵션이 파싱 출력을 깨지 않습니다. 앱 파싱 호출에도 yt-dlp 설정을 쓰려면 `YTM_YTDLP_USER_CONFIG=1`. mpv의 `ytdl_hook`을 통한 재생은 여전히 yt-dlp 설정을 따르고, 검색·플레이리스트 조회·메타데이터·프리페치 해석·다운로드만 기본적으로 무시합니다.
 
 </details>
+
+## 보안
+
+취약점을 찾으셨나요? 공개 이슈 대신
+[GitHub 비공개 취약점 신고](https://github.com/Ochichan/Yututui/security/advisories/new)를
+이용해 주세요 — 지원 버전과 산출물 검증 방법은 [SECURITY.md](SECURITY.md)에 있습니다.
 
 ## 감사 & 라이선스
 
