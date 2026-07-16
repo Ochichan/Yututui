@@ -2,6 +2,9 @@
 name = "yututui"
 version = "1.6.32"
 edition = "2024"
+# Releases are repository-built binaries. The application depends on a private workspace core,
+# so make the existing non-crates.io distribution contract explicit and fail closed on publish.
+publish = false
 description = "A fast terminal UI for YouTube Music — search, radio, synced lyrics, album art, and downloads, driven by mpv and yt-dlp."
 license = "MIT"
 repository = "https://github.com/Ochichan/Yututui"

@@ -38,6 +38,10 @@ if core["publish"] != []:
     raise SystemExit("yututui-core must remain private (publish = false)")
 
 root_package = packages["Cargo.toml"]
+if root_package["publish"] != []:
+    raise SystemExit(
+        "root package must remain private because it depends on private workspace crates"
+    )
 core_dependencies = [
     dependency
     for dependency in root_package["dependencies"]
