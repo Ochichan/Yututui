@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     fn resume_session_commits_last_history_track_only_after_admission() {
         let mut app = App::new(50);
-        app.library
+        app.library_mut()
             .record_play(&Song::remote("id0", "Zero", "A", "3:00"));
         let rev_before = app.queue.rev();
 
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn rejected_resume_history_load_keeps_live_queue_and_playback_state() {
         let mut app = App::new(50);
-        app.library
+        app.library_mut()
             .record_play(&Song::remote("id0", "Zero", "A", "3:00"));
         let rev_before = app.queue.rev();
         let epoch_before = app.playback.position_epoch;
@@ -1069,7 +1069,7 @@ mod tests {
     #[test]
     fn resume_session_uses_already_restored_queue_before_history() {
         let mut app = App::new(50);
-        app.library
+        app.library_mut()
             .record_play(&Song::remote("history", "Old History", "A", "3:00"));
         app.queue.set(
             vec![

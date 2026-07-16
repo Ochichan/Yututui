@@ -1571,7 +1571,7 @@ impl App {
                 // Library shows it now and a later in-app save can't clobber it. (The
                 // app persists its own mutations immediately, so disk is the union — which
                 // also means a just-deleted playlist reappears if the job re-created it.)
-                self.playlists
+                self.playlists_mut()
                     .replace_reloaded(crate::playlists::Playlists::load());
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.

@@ -1026,7 +1026,7 @@ fn empty_index_searches_downloaded_snapshot_and_rebuilds_on_its_revision() {
 fn active_find_proactively_rebuilds_for_playlist_and_option_revisions() {
     let mut app = local_app_before_find();
     open_and_install_corpus(&mut app);
-    assert!(app.playlists.create("Fresh mix").is_some());
+    assert!(app.playlists_mut().create("Fresh mix").is_some());
 
     let playlist_rebuild = app.update(Msg::Resize);
     assert!(matches!(

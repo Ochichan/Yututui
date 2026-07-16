@@ -356,7 +356,7 @@ pub struct App {
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,
     /// The user's local playlists (the DJ Gem playlist tools read/write these).
-    pub playlists: Playlists,
+    pub playlists: Arc<Playlists>,
     /// The active natural-language station profile (explore level + avoided artists), distilled
     /// from a `start_streaming` vibe and persisted. Read live by [`App::build_station_state`].
     pub station: StationStore,
@@ -367,11 +367,11 @@ pub struct App {
 
     // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
-    pub library: Library,
+    pub library: Arc<Library>,
     /// Per-track preference signals (plays/skips/dislikes + raw play log + artist affinity),
     /// persisted separately from the library so `Song`'s shape stays unchanged. Loaded by
     /// `main` after `new`; drives streaming ranking and the ♥/✗ status-line toggles.
-    pub signals: Signals,
+    pub signals: Arc<Signals>,
     /// Listening-session tracking (play count + last-start time) for skip-confidence; reset
     /// after a long idle gap (see [`Session`]).
     session: Session,

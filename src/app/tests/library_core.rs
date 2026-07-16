@@ -12,9 +12,9 @@ fn render_window_ids(app: &App, start: usize, visible: usize) -> Vec<String> {
 fn cached_library_render_windows_match_action_rows() {
     let mut app = App::new(100);
     for song in songs(8) {
-        app.library.record_play(&song);
+        app.library_mut().record_play(&song);
         if song.video_id.ends_with('2') || song.video_id.ends_with('5') {
-            app.library.toggle_favorite(&song);
+            app.library_mut().toggle_favorite(&song);
         }
     }
     app.mode = Mode::Library;
@@ -37,7 +37,7 @@ fn cached_library_render_windows_match_action_rows() {
 #[test]
 fn playlist_render_window_handles_empty_and_small_lists() {
     let mut app = App::new(100);
-    let empty_id = app.playlists.create("Empty").unwrap();
+    let empty_id = app.playlists_mut().create("Empty").unwrap();
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::Playlists;
     app.library_ui.open_playlist = Some(empty_id.clone());
@@ -45,9 +45,9 @@ fn playlist_render_window_handles_empty_and_small_lists() {
     assert_eq!(app.library_rows_len(), 0);
     assert!(app.library_render_window(0, 8).is_empty());
 
-    app.playlists
+    app.playlists_mut()
         .add(&empty_id, fsong("first", "First", "Artist"));
-    app.playlists
+    app.playlists_mut()
         .add(&empty_id, fsong("second", "Second", "Artist"));
     assert_eq!(app.library_rows_len(), 2);
     assert_eq!(
@@ -60,14 +60,14 @@ fn playlist_render_window_handles_empty_and_small_lists() {
 #[test]
 fn playlist_render_window_preserves_filtered_bottom_offsets() {
     let mut app = App::new(100);
-    let playlist_id = app.playlists.create("Window").unwrap();
+    let playlist_id = app.playlists_mut().create("Window").unwrap();
     for i in 0..12 {
         let title = if i % 2 == 0 {
             format!("Keep {i}")
         } else {
             format!("Skip {i}")
         };
-        app.playlists.add(
+        app.playlists_mut().add(
             &playlist_id,
             Song::remote(format!("id{i}"), title, "Artist", "0:10"),
         );
@@ -207,8 +207,8 @@ fn favorite_from_search_results() {
 fn l_opens_library_and_enter_plays_selected() {
     let mut app = app_playing(3, 0);
     // favorites become [id0, id1] (most-recent-first insertion).
-    app.library.toggle_favorite(&songs(2)[1]);
-    app.library.toggle_favorite(&songs(2)[0]);
+    app.library_mut().toggle_favorite(&songs(2)[1]);
+    app.library_mut().toggle_favorite(&songs(2)[0]);
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.mode, Mode::Library);
     assert_eq!(app.library_ui.tab, LibraryTab::All);
@@ -227,8 +227,8 @@ fn other_screens_keep_remapped_confirm_key() {
     // binding, like the Queue window — see `enter_on_library_plays_selected_song...`.)
     let mut app = app_playing(3, 0);
     app.keymap = confirm_on_f5_keymap();
-    app.library.toggle_favorite(&songs(2)[1]);
-    app.library.toggle_favorite(&songs(2)[0]);
+    app.library_mut().toggle_favorite(&songs(2)[1]);
+    app.library_mut().toggle_favorite(&songs(2)[0]);
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.mode, Mode::Library);
     app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
@@ -253,7 +253,7 @@ fn q_closes_library_without_quitting_app() {
 #[test]
 fn library_tab_toggles_and_unfavorite_fixes_selection() {
     let mut app = app_playing(1, 0);
-    app.library.toggle_favorite(&songs(1)[0]); // favorites = [id0]
+    app.library_mut().toggle_favorite(&songs(1)[0]); // favorites = [id0]
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.library_ui.tab, LibraryTab::All);
     app.update(Msg::Key(key(KeyCode::Tab)));

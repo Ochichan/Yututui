@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::Favorites;
@@ -49,8 +49,8 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
 fn library_tabs_mark_favorite_rows_with_a_heart() {
     let song = Song::remote("shared", "Shared Song", "Artist", "0:10");
     let mut app = App::new(100);
-    app.library.record_play(&song);
-    app.library.toggle_favorite(&song);
+    app.library_mut().record_play(&song);
+    app.library_mut().toggle_favorite(&song);
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
 
@@ -70,7 +70,7 @@ fn library_tabs_mark_favorite_rows_with_a_heart() {
 #[test]
 fn library_drag_after_release_starts_a_fresh_range() {
     let mut app = App::new(100);
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("a", "ta", "x", "0:10"),
         Song::remote("b", "tb", "x", "0:10"),
         Song::remote("c", "tc", "x", "0:10"),

@@ -744,7 +744,7 @@ mod tests {
         let mut app = App::new(100);
         let favorite = crate::api::Song::remote("favorite", "Favorite", "Artist", "3:00");
         let other = crate::api::Song::remote("other", "Other", "Artist", "2:00");
-        app.library.toggle_favorite(&favorite);
+        app.library_mut().toggle_favorite(&favorite);
 
         let lookup = app.library.favorite_lookup();
         for song in [&favorite, &other] {

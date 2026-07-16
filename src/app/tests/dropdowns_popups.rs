@@ -315,8 +315,8 @@ fn library_playlist_popups_render_create_picker_and_confirmations() {
     );
 
     app.library_ui.create_input = None;
-    let playlist_id = app.playlists.create("Roadtrip").unwrap();
-    app.playlists
+    let playlist_id = app.playlists_mut().create("Roadtrip").unwrap();
+    app.playlists_mut()
         .add(&playlist_id, Song::remote("a", "A", "Artist", "1:00"));
     app.playlist_picker = Some(PlaylistPicker {
         songs: vec![Song::remote("b", "B", "Artist", "2:00")],

@@ -425,10 +425,12 @@ fn radio_tab_entries_do_not_feed_station_state() {
     let radio_favorite = radio_station("fav-radio");
     let radio_recent = radio_station("recent-radio");
 
-    app.library.favorites.push(normal_favorite);
-    app.library.history.push_front(normal_history);
-    app.library.radio_favorites.push(radio_favorite.clone());
-    app.library.radios.push_front(radio_recent.clone());
+    app.library_mut().favorites.push(normal_favorite);
+    app.library_mut().history.push_front(normal_history);
+    app.library_mut()
+        .radio_favorites
+        .push(radio_favorite.clone());
+    app.library_mut().radios.push_front(radio_recent.clone());
 
     let st = app.build_station_state("id0");
     let normal_fav_artist = crate::signals::normalize_artist("Song Artist");
@@ -445,11 +447,11 @@ fn radio_tab_entries_do_not_feed_station_state() {
 fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
     let mut app = app_playing(1, 0); // current id0 is already in history
     let current = app.queue.current().cloned().unwrap();
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("prev2", "previous two", "artist b", "0:10"));
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("prev1", "previous one", "artist a", "0:10"));
-    app.library.record_play(&current); // current can be present in history; don't duplicate it.
+    app.library_mut().record_play(&current); // current can be present in history; don't duplicate it.
     app.ai.available = true;
     app.autoplay_streaming = true;
 

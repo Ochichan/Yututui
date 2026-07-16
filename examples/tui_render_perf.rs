@@ -924,7 +924,7 @@ fn search_app() -> App {
 fn library_app() -> App {
     let mut app = player_app();
     app.mode = Mode::Library;
-    app.library.favorites = songs(999);
+    app.library_mut().favorites = songs(999);
     app.library_ui.tab = LibraryTab::Favorites;
     app.library_ui.selected = 500;
     app.library_ui.anchor = 500;

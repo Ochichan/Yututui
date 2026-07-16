@@ -14,7 +14,7 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
 
     let mut overflow = App::new(100);
     for i in 0..40 {
-        overflow.library.record_play(&Song::remote(
+        overflow.library_mut().record_play(&Song::remote(
             format!("id{i}"),
             format!("t{i}"),
             "x",
@@ -29,9 +29,9 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
     );
 
     let mut fits = App::new(100);
-    fits.library
+    fits.library_mut()
         .record_play(&Song::remote("a", "ta", "x", "0:10"));
-    fits.library
+    fits.library_mut()
         .record_play(&Song::remote("b", "tb", "x", "0:10"));
     fits.mode = Mode::Library;
     fits.library_ui.tab = LibraryTab::History;
@@ -45,7 +45,7 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
 fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
     let mut app = App::new(100);
     for i in 0..40 {
-        app.library.record_play(&Song::remote(
+        app.library_mut().record_play(&Song::remote(
             format!("id{i}"),
             format!("t{i}"),
             "x",
@@ -77,7 +77,7 @@ fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
 fn dragging_library_scrollbar_moves_the_viewport() {
     let mut app = App::new(100);
     for i in 0..40 {
-        app.library.record_play(&Song::remote(
+        app.library_mut().record_play(&Song::remote(
             format!("id{i}"),
             format!("t{i}"),
             "x",
@@ -182,14 +182,14 @@ fn scrolled_search_rows_keep_absolute_hit_indices() {
 #[test]
 fn filtered_playlist_bottom_window_keeps_absolute_hit_indices() {
     let mut app = App::new(100);
-    let playlist_id = app.playlists.create("Window").unwrap();
+    let playlist_id = app.playlists_mut().create("Window").unwrap();
     for i in 0..40 {
         let title = if i % 2 == 0 {
             format!("Keep {i}")
         } else {
             format!("Skip {i}")
         };
-        app.playlists.add(
+        app.playlists_mut().add(
             &playlist_id,
             Song::remote(format!("id{i}"), title, "Artist", "0:10"),
         );

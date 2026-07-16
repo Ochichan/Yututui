@@ -484,7 +484,7 @@ impl App {
                         .iter()
                         .position(|s| s.video_id == song.video_id)
                     {
-                        self.library.remove_favorite_at(pos);
+                        self.library_mut().remove_favorite_at(pos);
                     }
                 }
                 self.clamp_library_selection();
@@ -499,7 +499,7 @@ impl App {
                         .iter()
                         .position(|s| s.video_id == song.video_id)
                     {
-                        self.library.remove_history_at(pos);
+                        self.library_mut().remove_history_at(pos);
                     }
                 }
                 self.clamp_library_selection();
@@ -509,7 +509,9 @@ impl App {
             LibraryTab::RadioFavorites => {
                 let mut any = false;
                 for song in targets {
-                    any |= self.library.remove_radio_favorite_by_id(&song.video_id);
+                    any |= self
+                        .library_mut()
+                        .remove_radio_favorite_by_id(&song.video_id);
                 }
                 if any {
                     self.clamp_library_selection();
@@ -522,7 +524,7 @@ impl App {
             LibraryTab::Radio => {
                 let mut any = false;
                 for song in targets {
-                    any |= self.library.remove_radio_recent_by_id(&song.video_id);
+                    any |= self.library_mut().remove_radio_recent_by_id(&song.video_id);
                 }
                 if any {
                     self.clamp_library_selection();
@@ -552,7 +554,7 @@ impl App {
                 };
                 let mut any = false;
                 for song in targets {
-                    any |= self.playlists.remove_song(&key, &song.video_id);
+                    any |= self.playlists_mut().remove_song(&key, &song.video_id);
                 }
                 if any {
                     self.clamp_library_selection();

@@ -134,15 +134,16 @@ pub enum PersistEvent {
 type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
 type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
 
-/// Owned copy of one store, taken at send time so the actor never reaches back into
-/// `App`. Writing delegates to the store's own `save()` — same path resolution, same
+/// Immutable snapshot of one store, taken at send time so the actor never reaches back into
+/// `App`. The large app-owned stores use shared ownership; app mutations copy on write while a
+/// snapshot is live. Writing delegates to the store's own `save()` — same path resolution, same
 /// atomic temp-write + fsync + rename.
 pub enum Snapshot {
-    Library(crate::library::Library),
-    Signals(crate::signals::Signals),
+    Library(Arc<crate::library::Library>),
+    Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
     Config(Box<crate::config::Config>),
-    Playlists(crate::playlists::Playlists),
+    Playlists(Arc<crate::playlists::Playlists>),
     Station(crate::station::StationStore),
     RomanizedTitles(crate::romanize::RomanizeCache),
     Session(crate::session::SessionCache),

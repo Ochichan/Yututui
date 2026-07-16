@@ -851,7 +851,7 @@ impl App {
                         None => self.enqueue(song),
                     },
                     ContextCommand::ToggleFavorite if song.youtube_playlist_id().is_none() => {
-                        self.library.toggle_favorite(&song);
+                        self.library_mut().toggle_favorite(&song);
                         vec![Cmd::Persist(PersistCmd::Library)]
                     }
                     ContextCommand::AddToPlaylist if song.youtube_playlist_id().is_none() => {
@@ -907,7 +907,7 @@ impl App {
                     ContextCommand::Enqueue => self.enqueue_many(selected),
                     ContextCommand::ToggleFavorite if selected.len() == 1 => {
                         let rows_before = self.library_len();
-                        self.library.toggle_favorite(&selected[0]);
+                        self.library_mut().toggle_favorite(&selected[0]);
                         // Un-favoriting can remove the row (Favorites/All tab): re-clamp
                         // and drop the now-stale picks; unchanged tabs keep the selection.
                         if self.library_len() != rows_before {

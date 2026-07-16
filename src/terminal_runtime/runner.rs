@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -621,8 +622,8 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
-    app.library = library;
-    app.signals = signals;
+    app.library = Arc::new(library);
+    app.signals = Arc::new(signals);
     app.download_store = download_store;
     // Enrich the bare disk scan with each track's remembered
     // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
@@ -646,7 +647,7 @@ pub async fn run(
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
     let playlists_repaired_at_startup = playlist_repair.changed();
-    app.playlists = loaded_playlists;
+    app.playlists = Arc::new(loaded_playlists);
     if playlist_repair.changed() {
         tracing::warn!(?playlist_repair, "playlists file was repaired on load");
         if playlist_repair.truncated() && app.status.text.is_empty() {

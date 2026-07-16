@@ -489,12 +489,12 @@ fn enrich_downloads_restores_id_from_manifest_then_title_match() {
 
     // Legacy best-effort: an id-less scanned file borrows the id of a remote favorite with the
     // same normalized title.
-    app.library.favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
+    app.library_mut().favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
     let from_title = app.enrich_downloads(vec![bare_local("/tmp/plain.m4a", "my tune")]);
     assert_eq!(from_title[0].youtube_id(), Some("favmatch1234"));
 
     // A *local-only* favorite (no YouTube origin) must NOT be borrowed from.
-    app.library.favorites = vec![bare_local("/tmp/other.m4a", "Lonely")];
+    app.library_mut().favorites = vec![bare_local("/tmp/other.m4a", "Lonely")];
     let unmatched = app.enrich_downloads(vec![bare_local("/tmp/lonely.m4a", "Lonely")]);
     assert_eq!(unmatched[0].youtube_id(), None);
 }
@@ -524,7 +524,7 @@ fn copy_link_recovers_id_from_filename_for_bare_local_track() {
 fn copy_link_recovers_id_via_title_match_against_favorites() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
-    app.library.favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
+    app.library_mut().favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
     app.queue
         .set(vec![bare_local("/tmp/plain.m4a", "My Tune")], 0);
     app.mode = Mode::Player;
@@ -544,7 +544,9 @@ fn copy_link_works_on_all_tab_when_history_holds_a_bare_local_entry() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
     let path = "/tmp/Shared [dQw4w9WgXcQ].m4a";
-    app.library.history.push_front(bare_local(path, "Shared")); // pre-fix play, wins All-tab dedup
+    app.library_mut()
+        .history
+        .push_front(bare_local(path, "Shared")); // pre-fix play, wins All-tab dedup
     app.library_ui.downloaded =
         vec![bare_local(path, "Shared").with_yt_id("dQw4w9WgXcQ".to_owned())];
 
@@ -909,11 +911,11 @@ fn download_done_with_empty_path_does_not_save() {
 #[test]
 fn library_delete_range_removes_from_favorites() {
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     open_library_tab(&mut app, LibraryTab::Favorites);
     // Cursor on row 0, drag-anchor on row 1: the selection spans rows 0..=1 (c, b).
@@ -937,11 +939,11 @@ fn library_delete_range_removes_from_favorites() {
 #[test]
 fn library_delete_range_removes_from_history() {
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("a", "ta", "x", "0:10"));
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("b", "tb", "x", "0:10"));
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("c", "tc", "x", "0:10")); // front->back: c, b, a
     open_library_tab(&mut app, LibraryTab::History);
     app.library_ui.selected = 1;
@@ -964,7 +966,7 @@ fn library_delete_range_removes_from_history() {
 fn library_page_and_jump_keys_move_the_cursor() {
     let mut app = App::new(100);
     for i in 0..30 {
-        app.library.record_play(&Song::remote(
+        app.library_mut().record_play(&Song::remote(
             format!("id{i}"),
             format!("t{i}"),
             "x",
@@ -1020,7 +1022,7 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     // the viewport (normally a render's job) and reads the honored offset back.
     let mut app = App::new(100);
     for i in 0..20 {
-        app.library.record_play(&Song::remote(
+        app.library_mut().record_play(&Song::remote(
             format!("id{i}"),
             format!("t{i}"),
             "x",
@@ -1189,7 +1191,7 @@ fn liststate_select_none_resets_offset_so_keys_columns_must_guard_it() {
 #[test]
 fn library_delete_is_disabled_in_all_tab() {
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.library_ui.tab, LibraryTab::All);
@@ -1201,7 +1203,7 @@ fn library_delete_is_disabled_in_all_tab() {
 #[test]
 fn library_all_dedups_same_title_across_collections() {
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .toggle_favorite(&Song::remote("yt1", "Song", "Artist", "3:00"));
     // A downloaded file named after the same track (`Song.m4a` -> title "Song").
     app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Song.m4a"))];

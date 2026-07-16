@@ -4,7 +4,7 @@ use super::*;
 
 fn app_with_four_favorites() -> App {
     let mut app = App::new(100);
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("a", "ta", "x", "0:10"),
         Song::remote("b", "tb", "x", "0:10"),
         Song::remote("c", "tc", "x", "0:10"),
