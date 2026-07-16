@@ -1,6 +1,6 @@
 1874	src/daemon/engine.rs
 1638	src/app/local.rs
-1591	src/player/lifetime.rs
+975	src/player/lifetime.rs
 1573	src/ui/anim/canvas.rs
 1532	src/terminal_runtime/runner.rs
 1516	src/transfer/engine/album_prefill.rs
