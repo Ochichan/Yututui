@@ -4,6 +4,17 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
     match cmd {
         Cmd::Recorder(_) => Some("recorder"),
         Cmd::UpdateSeen { .. } => Some("update state"),
+        Cmd::Persist(crate::app::PersistCmd::TransferPlaylistCommit(commit))
+            if matches!(
+                &commit.kind,
+                crate::app::TransferPlaylistCommitKind::RestoreThenFail { .. }
+            ) =>
+        {
+            // A previously accepted candidate may already own disk. Let the restore coordinator
+            // retain its waiter until persistence recovers or shutdown's final snapshot wins.
+            None
+        }
+        Cmd::Persist(crate::app::PersistCmd::TransferPlaylistCommit(_)) => Some("transfer state"),
         Cmd::Persist(_) => Some("persistence"),
         Cmd::Local(crate::app::LocalCmd::LoadIndex { .. }) => None,
         Cmd::Local(_) => Some("local import/index"),
@@ -76,6 +87,14 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
         | Cmd::Transfer(crate::transfer::actor::TransferCmd::WriteReviewedLocal { .. })
         | Cmd::Transfer(crate::transfer::actor::TransferCmd::CancelJob) => {
             app.transfer_running = false;
+            Vec::new()
+        }
+        Cmd::Persist(crate::app::PersistCmd::TransferPlaylistCommit(commit)) => {
+            commit.request.respond(Err(
+                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                    "read-only owner rejected playlist commit: {reason}"
+                )),
+            ));
             Vec::new()
         }
         _ => Vec::new(),

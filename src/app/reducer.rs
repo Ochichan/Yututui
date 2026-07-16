@@ -787,8 +787,17 @@ impl App {
                         self.dirty = true;
                         return Vec::new();
                     }
-                    // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
-                    let on = on && self.queue.repeat == crate::queue::Repeat::Off;
+                    // Revalidate the actor's context snapshot on the owner lane: repeat may have
+                    // changed while the AI tool was resolving. Reject visibly and emit no
+                    // persistence/refill work; never silently coerce the requested enable to off.
+                    let transition =
+                        PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                            .transition(PlaybackModeAction::SetStreaming(on));
+                    let Ok(transition) = transition else {
+                        self.show_streaming_repeat_conflict();
+                        return Vec::new();
+                    };
+                    let on = transition.state.autoplay_streaming;
                     self.set_autoplay_streaming(on);
                     self.dirty = true;
                     let mut cmds = vec![self.save_playback_modes_cmd()];
@@ -943,6 +952,9 @@ impl App {
                 }
             },
             Msg::Transfer(event) => return self.on_transfer_event(event),
+            Msg::Data(DataMsg::TransferPlaylistPersisted(result)) => {
+                return self.on_transfer_playlist_persisted(*result.commit, result.persistence);
+            }
         }
         Vec::new()
     }

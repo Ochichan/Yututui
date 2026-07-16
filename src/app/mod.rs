@@ -18,7 +18,11 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
+// Keep the pre-DJ-actor-split DTO paths source-compatible for callers which still import
+// `app::{AiContext, AiPick, PlaylistInfo}`. Their neutral owner-independent definitions now live
+// in `crate::ai`, but the app facade remains the compatibility boundary.
 use crate::ai::GeminiModel;
+pub use crate::ai::{AiContext, AiPick, PlaylistInfo};
 use crate::api::{ApiMode, Song};
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
@@ -160,12 +164,12 @@ mod streaming_reducer;
 pub(in crate::app) use clipboard::{copy_to_clipboard, spotify_auth_url_status};
 pub use streaming_reducer::StreamingMsg;
 
-/// Autoplay/streaming top-up policy and the play-error breaker threshold — single-sourced
-/// with the headless daemon in [`crate::playback_policy`] so no bound can drift between the
-/// two playback owners. Re-exported so this module's submodules keep resolving the names.
+/// Autoplay/streaming and play-error breaker thresholds used by App reducers. Re-exported so
+/// this module's submodules keep resolving the names; refill admission itself lives in the
+/// owner-neutral [`crate::streaming::plan_autoplay_refill`] planner.
 pub(crate) use crate::playback_policy::{
-    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
-    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
+    AUTOPLAY_MAX_FAILURES, MAX_CONSECUTIVE_PLAY_ERRORS, PlaybackModeAction, PlaybackModeState,
+    STREAMING_FALLBACK_COUNT,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

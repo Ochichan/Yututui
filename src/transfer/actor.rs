@@ -12,14 +12,19 @@ use tokio::task::{JoinError, JoinHandle, JoinSet};
 use super::checkpoint::TransferReport;
 use super::engine::JobCtx;
 use super::{
-    JobSpec, TransferDest, TransferProgress, TransferSource, new_job_id, run_job,
-    write_reviewed_local_job,
+    JobSpec, TransferDest, TransferProgress, TransferSource, new_job_id, run_job_with_store,
+    write_reviewed_local_job_with_store,
 };
 use crate::config::Config;
 use crate::spotify::auth;
 use crate::spotify::client::SpotifyClient;
 use crate::util::backpressure::{TRANSFER_CONTROL_QUEUE, TRANSFER_QUEUE, bounded_channel};
 use crate::util::delivery::{DeliveryError, DeliveryReceipt, DeliveryResult};
+
+#[path = "actor/local_playlist.rs"]
+mod local_playlist;
+pub use local_playlist::LocalPlaylistRequest;
+use local_playlist::OwnerLocalPlaylistStore;
 
 pub enum TransferCmd {
     /// Start the PKCE flow with the (possibly unsaved) draft Client ID.
@@ -47,6 +52,9 @@ pub enum TransferEvent {
     Disconnected,
     SpotifyPlaylists(Result<Vec<PickerPlaylist>, String>),
     Progress(TransferProgress),
+    /// Correlated, must-deliver request to the active local-playlist owner. Its reply travels on
+    /// a dedicated oneshot rather than the saturable transfer command queue.
+    LocalPlaylistRequest(LocalPlaylistRequest),
     JobDone(Arc<TransferReport>),
     /// A newly requested job was not admitted because another job still owns the actor.
     /// Unlike a terminal failure, this must not clear the active job's UI guard.
@@ -234,6 +242,7 @@ async fn run_actor(mut channels: ActorChannels, emit: EventSink) {
     let mut auth_task: Option<JoinHandle<TransferEvent>> = None;
     let mut job_task: Option<RunningJob> = None;
     let mut list_tasks = JoinSet::new();
+    let local_request_ids = Arc::new(AtomicU64::new(0));
 
     loop {
         let input = tokio::select! {
@@ -312,12 +321,13 @@ async fn run_actor(mut channels: ActorChannels, emit: EventSink) {
                         Some(already_running_event(job_id))
                     } else {
                         let emit = Arc::clone(&emit);
+                        let local_request_ids = Arc::clone(&local_request_ids);
                         let task_job_id = job_id.clone();
                         job_task = Some(RunningJob {
                             sequence,
                             job_id,
                             task: tokio::spawn(async move {
-                                run_one_job(task_job_id, *spec, emit).await
+                                run_one_job(task_job_id, *spec, emit, local_request_ids).await
                             }),
                         });
                         None
@@ -330,12 +340,13 @@ async fn run_actor(mut channels: ActorChannels, emit: EventSink) {
                         Some(already_running_event(job_id))
                     } else {
                         let emit = Arc::clone(&emit);
+                        let local_request_ids = Arc::clone(&local_request_ids);
                         let task_job_id = job_id.clone();
                         job_task = Some(RunningJob {
                             sequence,
                             job_id,
                             task: tokio::spawn(async move {
-                                run_reviewed_local_write(task_job_id, emit).await
+                                run_reviewed_local_write(task_job_id, emit, local_request_ids).await
                             }),
                         });
                         None
@@ -544,7 +555,11 @@ async fn emit_reliably(
     }
 }
 
-async fn run_reviewed_local_write(job_id: String, emit: EventSink) -> TransferEvent {
+async fn run_reviewed_local_write(
+    job_id: String,
+    emit: EventSink,
+    local_request_ids: Arc<AtomicU64>,
+) -> TransferEvent {
     let mut last_beat: Option<Instant> = None;
     let emit_progress = Arc::clone(&emit);
     let mut progress = move |p: TransferProgress| {
@@ -554,7 +569,8 @@ async fn run_reviewed_local_write(job_id: String, emit: EventSink) -> TransferEv
             let _ = emit_progress(TransferEvent::Progress(p));
         }
     };
-    match write_reviewed_local_job(&job_id, &mut progress).await {
+    let mut local_playlists = OwnerLocalPlaylistStore::new(Arc::clone(&emit), local_request_ids);
+    match write_reviewed_local_job_with_store(&job_id, &mut local_playlists, &mut progress).await {
         Ok(report) => TransferEvent::JobDone(Arc::new(report)),
         Err(error) => TransferEvent::JobFailed {
             job_id,
@@ -612,7 +628,12 @@ async fn list_playlists() -> Result<Vec<PickerPlaylist>, String> {
     Ok(items)
 }
 
-async fn run_one_job(job_id: String, spec: JobSpec, emit: EventSink) -> TransferEvent {
+async fn run_one_job(
+    job_id: String,
+    spec: JobSpec,
+    emit: EventSink,
+    local_request_ids: Arc<AtomicU64>,
+) -> TransferEvent {
     // Fresh config: picks up the cookie/market as they are *now*, not at spawn time.
     let cfg = Config::load();
     let mut ctx = match build_ctx(&spec, &cfg).await {
@@ -635,7 +656,17 @@ async fn run_one_job(job_id: String, spec: JobSpec, emit: EventSink) -> Transfer
             let _ = emit_progress(TransferEvent::Progress(p));
         }
     };
-    match run_job(job_id.clone(), spec, None, &mut ctx, &mut progress).await {
+    let mut local_playlists = OwnerLocalPlaylistStore::new(Arc::clone(&emit), local_request_ids);
+    match run_job_with_store(
+        job_id.clone(),
+        spec,
+        None,
+        &mut ctx,
+        &mut local_playlists,
+        &mut progress,
+    )
+    .await
+    {
         Ok(report) => TransferEvent::JobDone(Arc::new(report)),
         Err(error) => TransferEvent::JobFailed {
             job_id,

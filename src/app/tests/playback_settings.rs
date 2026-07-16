@@ -226,6 +226,59 @@ fn settings_cannot_enable_autoplay_while_repeat_on() {
 }
 
 #[test]
+fn ai_start_streaming_revalidates_repeat_without_mutation_or_effects() {
+    let mut app = app_playing(3, 0);
+    app.queue.repeat = crate::queue::Repeat::All;
+    app.autoplay_streaming = false;
+    app.config.autoplay_streaming = Some(false);
+    app.streaming.consecutive_failures = 2;
+    app.status.text = "before".to_owned();
+    app.dirty = false;
+    assert!(
+        app.build_ai_context().repeat_on,
+        "the actor snapshot must preflight the conflict"
+    );
+
+    let cmds = app.update(Msg::Ai(AiMsg::SetAutoplay(true)));
+
+    assert!(cmds.is_empty(), "rejection emitted persistence/refill work");
+    assert!(!app.autoplay_streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(false));
+    assert_eq!(
+        app.streaming.consecutive_failures, 2,
+        "rejection reset the streaming circuit breaker"
+    );
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
+    assert!(app.dirty, "the rejection toast must redraw");
+    assert!(matches!(
+        app.status.text.as_str(),
+        "Can't use autoplay while repeat is on" | "반복 재생 중에는 자동재생을 켤 수 없어요"
+    ));
+}
+
+#[test]
+fn ai_stop_streaming_recovers_a_legacy_invalid_mode_pair() {
+    let mut app = app_playing(3, 0);
+    app.queue.repeat = crate::queue::Repeat::One;
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    app.streaming.consecutive_failures = 2;
+
+    let cmds = app.update(Msg::Ai(AiMsg::SetAutoplay(false)));
+
+    assert!(!app.autoplay_streaming);
+    assert_eq!(app.config.autoplay_streaming, Some(false));
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
+    assert_eq!(app.streaming.consecutive_failures, 2);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Persist(PersistCmd::Config(config))]
+            if config.autoplay_streaming == Some(false)
+                && config.repeat == crate::queue::Repeat::One
+    ));
+}
+
+#[test]
 fn seek_keys_use_the_configured_interval() {
     let mut app = app_playing(1, 0);
     app.apply_config(&crate::config::Config {

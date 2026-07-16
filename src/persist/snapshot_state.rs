@@ -251,6 +251,9 @@ pub(super) enum SnapshotAdmission {
 pub(super) struct PendingQueue {
     admission: SnapshotAdmission,
     operations: HashMap<StoreKind, ShadowCoveredOperation>,
+    /// Monotonic acceptance frontier retained even after an operation leaves pending. Reading
+    /// this under the same mutex as insertion linearizes targeted confirmation with admission.
+    latest_accepted: HashMap<StoreKind, JournalOrder>,
 }
 
 impl PendingQueue {
@@ -258,6 +261,7 @@ impl PendingQueue {
         Self {
             admission: SnapshotAdmission::Open,
             operations: HashMap::new(),
+            latest_accepted: HashMap::new(),
         }
     }
 
@@ -273,7 +277,15 @@ impl PendingQueue {
         &mut self,
         operation: ShadowCoveredOperation,
     ) -> Option<ShadowCoveredOperation> {
+        self.latest_accepted
+            .entry(operation.kind())
+            .and_modify(|order| *order = (*order).max(operation.order))
+            .or_insert(operation.order);
         self.operations.insert(operation.kind(), operation)
+    }
+
+    pub(super) fn latest_accepted(&self, kind: &StoreKind) -> Option<JournalOrder> {
+        self.latest_accepted.get(kind).copied()
     }
 
     pub(super) fn resolve_journal(&mut self, completion: JournalCompletion) -> bool {
@@ -332,8 +344,9 @@ impl PendingQueue {
         kind: StoreKind,
         operation: PendingOperation,
     ) -> Option<ShadowCoveredOperation> {
-        self.operations
-            .insert(kind, ShadowCoveredOperation::for_test(operation))
+        let operation = ShadowCoveredOperation::for_test(operation);
+        debug_assert_eq!(operation.kind(), kind);
+        self.insert_owned(operation)
     }
 }
 

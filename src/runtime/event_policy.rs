@@ -1,69 +1,6 @@
 use crate::app::{Msg, PlayerMsg, StreamingMsg};
 use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
 
-pub(super) fn player_event_policy(event: &crate::player::PlayerEvent) -> EventPolicy {
-    match event {
-        crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerTimePos,
-        },
-        crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerDuration,
-        },
-        crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerPaused,
-        },
-        crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerVolume,
-        },
-        crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::WorkResult,
-            key: Key::PlayerMetadata,
-        },
-        crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerCacheTime,
-        },
-        crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerAudioCodec,
-        },
-        crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerFileFormat,
-        },
-        crate::player::PlayerEvent::AudioDeviceList(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerAudioDeviceList,
-        },
-        crate::player::PlayerEvent::AudioDeviceRefreshFailed(_)
-        | crate::player::PlayerEvent::AudioDeviceSelectionResult { .. }
-        | crate::player::PlayerEvent::Eof
-        | crate::player::PlayerEvent::Error(_)
-        | crate::player::PlayerEvent::TransportClosed(_)
-        | crate::player::PlayerEvent::CacheEmergency { .. }
-        | crate::player::PlayerEvent::CacheReplacementEmergency { .. } => {
-            EventPolicy::MustDeliver {
-                lane: Lane::Control,
-            }
-        }
-        crate::player::PlayerEvent::AudioDeviceChanged(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerAudioDevice,
-        },
-        crate::player::PlayerEvent::CurrentAudioOutput(_) => EventPolicy::CoalesceLatest {
-            lane: Lane::Telemetry,
-            key: Key::PlayerCurrentAudioOutput,
-        },
-        crate::player::PlayerEvent::FileScoped { .. } => {
-            unreachable!("audio file event was unscoped before policy lookup")
-        }
-    }
-}
-
 pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
     match msg {
         Msg::Quit | Msg::Media(_) => EventPolicy::MustDeliver {
@@ -174,6 +111,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
             | crate::transfer::actor::TransferEvent::AuthError(_)
             | crate::transfer::actor::TransferEvent::Disconnected
             | crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
+            | crate::transfer::actor::TransferEvent::LocalPlaylistRequest(_)
             | crate::transfer::actor::TransferEvent::JobDone(_)
             | crate::transfer::actor::TransferEvent::JobRejected { .. }
             | crate::transfer::actor::TransferEvent::JobFailed { .. },

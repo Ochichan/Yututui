@@ -155,35 +155,22 @@ impl App {
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
         // `streaming_active()` (not the raw preference) so a top-up never fires in dedicated
-        // Radio/Local Deck mode or while a live station plays — the station early-return below
-        // stays as a defensive backstop.
-        if !self.streaming_active() {
-            return Vec::new();
-        }
-        if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {
-            return Vec::new();
-        }
+        // Radio/Local Deck mode or while a live station plays; the shared planner's station
+        // guard stays as a defensive backstop.
         // One refill in flight at a time: the pool fetch (`streaming.pending`) or, when the DJ Gem
         // reranks the fetched pool, that rerank call (`ai_thinking`).
-        if self.streaming.pending || (self.ai.available && self.ai.thinking) {
-            return Vec::new();
-        }
-        let cooled = match self.streaming.last_extend {
-            Some(t) => t.elapsed() >= AUTOPLAY_COOLDOWN,
-            None => true,
-        };
-        if !force && !cooled {
-            return Vec::new();
-        }
-        let Some(cur) = self.queue.current() else {
+        let refill_pending = self.streaming.pending || (self.ai.available && self.ai.thinking);
+        let Some(refill) = streaming::plan_autoplay_refill(
+            self.streaming_active(),
+            refill_pending,
+            force,
+            self.queue.remaining(),
+            self.streaming.last_extend.map(|t| t.elapsed()),
+            self.queue.current(),
+        ) else {
             return Vec::new();
         };
-        if cur.is_radio_station() {
-            return Vec::new();
-        }
-        let seed = format!("{} — {}", cur.title, cur.artist);
-        let seed_video_id = cur.video_id.clone();
-        let exclude_ids = self.streaming_exclude_ids(&seed_video_id);
+        let exclude_ids = self.streaming_exclude_ids(&refill.seed_video_id);
         self.streaming.last_extend = Some(Instant::now());
         self.streaming.pending = true;
         self.status.text = t!(
@@ -193,8 +180,8 @@ impl App {
         .to_owned();
         self.dirty = true;
         vec![Cmd::StreamingFallback {
-            seed,
-            seed_video_id,
+            seed: refill.seed,
+            seed_video_id: refill.seed_video_id,
             exclude_ids,
             mode: self.config.streaming.mode,
             config: self.config.effective_search(),

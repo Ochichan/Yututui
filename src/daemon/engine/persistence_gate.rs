@@ -129,6 +129,36 @@ impl DaemonEngine {
         }
     }
 
+    /// Persist an owner candidate without touching the live daemon store. The caller may swap it
+    /// only after this gate returns success.
+    pub(super) fn persist_transfer_playlists_candidate(
+        &mut self,
+        candidate: &crate::playlists::Playlists,
+    ) -> Result<(), crate::transfer::local_playlist::LocalPlaylistStoreError> {
+        if let Err(error) = current_recovery_status() {
+            return Err(
+                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                    "daemon recovery preflight rejected transfer playlist persistence: {error}"
+                )),
+            );
+        }
+        if self.should_skip_remote_save() {
+            return Err(
+                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(
+                    "daemon persistence gate is read-only for this owner turn",
+                ),
+            );
+        }
+        match save_store(StoreKind::Playlists, || candidate.save()) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let message = format!("failed to save daemon transfer playlists: {error}");
+                self.record_persistence_failure("daemon transfer playlists", error);
+                Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
+            }
+        }
+    }
+
     pub(super) fn save_signals(&mut self, context: &str) {
         if self.should_skip_remote_save() {
             return;

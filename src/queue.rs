@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::Song;
 use serde::{Deserialize, Serialize};
 
+pub use yututui_core::Repeat;
+
 pub(crate) mod mutation;
 pub(crate) use mutation::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
 
@@ -28,55 +30,6 @@ static QUEUE_REV: AtomicU64 = AtomicU64::new(1);
 
 fn next_queue_rev() -> u64 {
     QUEUE_REV.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Repeat mode, cycled by the `r` key.
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "ts-export",
-    ts(export, export_to = "gui/src/generated/protocol/")
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Repeat {
-    #[default]
-    Off,
-    All,
-    One,
-}
-
-impl Repeat {
-    /// The next mode in the Off → All → One → Off cycle.
-    pub fn cycled(self) -> Self {
-        match self {
-            Repeat::Off => Repeat::All,
-            Repeat::All => Repeat::One,
-            Repeat::One => Repeat::Off,
-        }
-    }
-
-    /// Whether any repeat mode is active (i.e. not `Off`). Named so the streaming⇔repeat
-    /// mutual-exclusion invariant reads the same everywhere it is checked — in the App
-    /// reducers and, in lockstep, in `daemon::engine` — instead of a bare `!= Repeat::Off`.
-    pub fn is_on(self) -> bool {
-        self != Repeat::Off
-    }
-
-    /// The streaming⇔repeat mutual-exclusion invariant for a **set-to-`self`** action, in one
-    /// place: refuse turning repeat on while a station / autoplay feed is active. `true` = the
-    /// change must be blocked. Setting repeat Off, or any change while not streaming, is always
-    /// allowed. Used by every OS-widget/`set-property` repeat path (App + daemon) so they can't
-    /// drift. NB: the App passes its raw `autoplay_streaming` preference here, matching today.
-    pub fn set_blocked_by_streaming(self, streaming: bool) -> bool {
-        self.is_on() && streaming
-    }
-
-    /// The same invariant for a **cycle** action (Off→All→One→Off). The only step that turns
-    /// repeat on is Off→All, so the cycle is blocked exactly when it starts from `Off` while
-    /// `streaming`. `true` = block the cycle. Used by both cycle paths (App + daemon).
-    pub fn cycle_blocked_by_streaming(self, streaming: bool) -> bool {
-        self == Repeat::Off && streaming
-    }
 }
 
 /// A bounded play queue with shuffle and repeat.

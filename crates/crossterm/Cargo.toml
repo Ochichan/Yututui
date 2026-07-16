@@ -238,3 +238,6 @@ features = [
     "winerror",
 ]
 optional = true
+
+# yututui patch: remain an independently gated crate beneath the application's workspace root.
+[workspace]

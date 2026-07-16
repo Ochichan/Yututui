@@ -292,7 +292,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
     };
 
     let (name, entries, skipped_local, source_truncated) =
-        fetch_source("job-fetch-file", &spec, &mut ctx)
+        fetch_source("job-fetch-file", &spec, &mut ctx, None)
             .await
             .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
     let _ = std::fs::remove_file(&path);
@@ -343,7 +343,7 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
     };
 
     let (_name, entries, skipped_local, source_truncated) =
-        fetch_source("job-fetch-cap", &spec, &mut ctx)
+        fetch_source("job-fetch-cap", &spec, &mut ctx, None)
             .await
             .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
     let _ = std::fs::remove_file(&path);
@@ -1005,12 +1005,14 @@ async fn run_job_resume_rematch_resets_checkpointed_matches_without_persisting()
         market: None,
     };
     let mut progress = Vec::new();
+    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    let report = run_job(
+    let report = run_job_with_store(
         cp.job_id.clone(),
         resumed_spec,
         Some(cp),
         &mut ctx,
+        &mut local_playlists,
         &mut |p| progress.push(p),
     )
     .await
@@ -1043,7 +1045,7 @@ async fn match_stage_requires_ytm_client_for_unresolved_tracks() {
         market: None,
     };
 
-    let err = match_stage(&mut cp, &mut ctx, &mut |_p| {})
+    let err = match_stage(&mut cp, &mut ctx, None, &mut |_p| {})
         .await
         .expect_err("unresolved YTM match should require a YTM client");
 
@@ -1084,10 +1086,18 @@ async fn write_stage_dedupes_matches_before_missing_client_error() {
     };
     let mut report = build_report(&cp, 0);
     let mut progress = Vec::new();
+    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    let err = write_stage(&mut cp, &mut ctx, &mut |p| progress.push(p), &mut report)
-        .await
-        .expect_err("YTM likes write should require a YTM client");
+    let err = write_stage(
+        &mut cp,
+        &mut ctx,
+        &mut local_playlists,
+        None,
+        &mut |p| progress.push(p),
+        &mut report,
+    )
+    .await
+    .expect_err("YTM likes write should require a YTM client");
 
     assert!(!err.resumable);
     assert!(err.error.to_string().contains("YouTube Music cookie"));
@@ -1222,7 +1232,7 @@ fn fast_auto_accept_promotes_highest_safe_candidates_above_threshold() {
         ],
     );
 
-    let accepted = auto_accept_ambiguous_candidates(&mut cp)
+    let accepted = auto_accept_ambiguous_candidates(&mut cp, None)
         .unwrap_or_else(|err| panic!("auto-accept safe candidates failed: {}", err.error));
 
     assert_eq!(accepted, 2);
@@ -1284,7 +1294,7 @@ fn fast_auto_accept_never_promotes_blocked_or_rejected_candidates() {
         ],
     );
 
-    let accepted = auto_accept_ambiguous_candidates(&mut cp)
+    let accepted = auto_accept_ambiguous_candidates(&mut cp, None)
         .unwrap_or_else(|err| panic!("auto-accept inspection failed: {}", err.error));
 
     assert_eq!(accepted, 1);
@@ -1323,10 +1333,18 @@ async fn write_stage_creates_local_playlist_for_spotify_liked_source() {
     };
     let mut report = build_report(&cp, 0);
     let mut progress = Vec::new();
+    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    write_stage(&mut cp, &mut ctx, &mut |p| progress.push(p), &mut report)
-        .await
-        .unwrap_or_else(|err| panic!("local write should not need service clients: {}", err.error));
+    write_stage(
+        &mut cp,
+        &mut ctx,
+        &mut local_playlists,
+        None,
+        &mut |p| progress.push(p),
+        &mut report,
+    )
+    .await
+    .unwrap_or_else(|err| panic!("local write should not need service clients: {}", err.error));
 
     let store = crate::playlists::Playlists::load();
     let playlist = store
@@ -1393,10 +1411,13 @@ async fn write_reviewed_local_job_writes_ready_rows_idempotently() {
         .save()
         .expect("save completed import session");
     let mut progress = Vec::new();
+    let mut local_playlists = crate::transfer::local_playlist::DiskLocalPlaylistStore;
 
-    let report = write_reviewed_local_job(&job_id, &mut |p| progress.push(p))
-        .await
-        .unwrap_or_else(|err| panic!("reviewed local write failed: {}", err.error));
+    let report = write_reviewed_local_job_with_store(&job_id, &mut local_playlists, &mut |p| {
+        progress.push(p)
+    })
+    .await
+    .unwrap_or_else(|err| panic!("reviewed local write failed: {}", err.error));
 
     assert_eq!(report.written, 2);
     assert_eq!(report.job_id, job_id);
@@ -1454,6 +1475,7 @@ async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
         "job-export",
         &spec,
         &mut ctx,
+        None,
         std::path::Path::new("out.json"),
         FileFormat::Json,
         Instant::now(),

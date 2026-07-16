@@ -181,13 +181,12 @@ impl App {
                 )
             }
             RemoteCommand::CycleRepeat => {
-                // Music-mode invariant: reject turning repeat on while autoplay is on (mirrors
-                // the daemon engine so parity holds). Off→All is the only enabling transition.
-                if self
-                    .queue
-                    .repeat
-                    .cycle_blocked_by_streaming(self.autoplay_streaming)
-                {
+                let transition = PlaybackModeState::new(
+                    self.queue.repeat,
+                    self.autoplay_streaming,
+                )
+                .transition(PlaybackModeAction::CycleRepeat);
+                let Ok(transition) = transition else {
                     self.status.text = t!(
                         "Can't use repeat while autoplay is on",
                         "자동재생 중에는 반복을 켤 수 없어요"
@@ -198,8 +197,8 @@ impl App {
                         RemoteResponse::err("incompatible_playback_modes"),
                         Vec::new(),
                     );
-                }
-                self.queue.cycle_repeat();
+                };
+                self.queue.repeat = transition.state.repeat;
                 self.dirty = true;
                 (
                     RemoteResponse::status(self.status_snapshot()),
@@ -322,21 +321,16 @@ impl App {
             );
         }
         let on = state.resolve(self.autoplay_streaming);
-        // Music-mode invariant: reject the enable without changing playback/config state or
-        // emitting effects. The TUI still surfaces the same localized notice as its key path.
-        if on && self.queue.repeat.is_on() {
-            self.status.text = t!(
-                "Can't use autoplay while repeat is on",
-                "반복 재생 중에는 자동재생을 켤 수 없어요"
-            )
-            .to_owned();
-            self.dirty = true;
+        let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+            .transition(PlaybackModeAction::SetStreaming(on));
+        let Ok(transition) = transition else {
+            self.show_streaming_repeat_conflict();
             return (
                 RemoteResponse::err("incompatible_playback_modes"),
                 Vec::new(),
             );
-        }
-        self.set_autoplay_streaming(on);
+        };
+        self.set_autoplay_streaming(transition.state.autoplay_streaming);
         self.status.text = format!(
             "{}: {}",
             t!("Autoplay", "자동재생"),
@@ -839,7 +833,7 @@ mod tests {
     #[test]
     fn streaming_on_forces_refill_even_when_queue_is_not_low() {
         let mut app = six_track_app();
-        assert!(app.queue.remaining() > AUTOPLAY_THRESHOLD);
+        assert!(app.queue.remaining() > crate::playback_policy::AUTOPLAY_THRESHOLD);
 
         let (resp, cmds) = app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::On,

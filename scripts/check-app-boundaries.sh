@@ -36,7 +36,7 @@ position_hits=$(grep -RInE 'position_epoch[[:space:]]*=|position_epoch\.wrapping
   | grep -Ev 'src/app/mod.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
   | grep -Ev 'src/daemon/engine.rs:[0-9]+:.*fn bump_position_epoch' \
   | grep -Ev 'src/daemon/engine.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
-  | grep -Ev 'src/daemon/parity_tests.rs:[0-9]+:.*position_epoch = 0' \
+  | grep -Ev 'src/daemon/parity_tests/harness.rs:[0-9]+:.*position_epoch = 0' \
   | grep -Ev 'src/media/mod.rs:[0-9]+:[[:space:]]*self\.position_epoch = core_position_epoch;$' \
   | grep -Ev 'src/media/mod.rs:[0-9]+:.*position_epoch \+=' \
   || true)

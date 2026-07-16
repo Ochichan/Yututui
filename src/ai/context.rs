@@ -1,4 +1,4 @@
-use crate::app::AiContext;
+use super::AiContext;
 
 /// A compact, human-readable snapshot of player state for the model's first turn.
 pub(super) fn context_summary(ctx: &AiContext) -> String {
@@ -43,6 +43,10 @@ pub(super) fn context_summary(ctx: &AiContext) -> String {
     summary.push_str(&format!(
         "- Autoplay streaming: {}\n",
         if ctx.autoplay_streaming { "on" } else { "off" }
+    ));
+    summary.push_str(&format!(
+        "- Repeat: {}\n",
+        if ctx.repeat_on { "on" } else { "off" }
     ));
     summary.push_str(&format!(
         "- Signed in: {}\n",

@@ -3,17 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+bash scripts/check-workspace-layout.sh
+
 fail=0
 
 actor_files=()
 while IFS= read -r file; do actor_files+=("$file"); done < <(find src/player src/api src/ai src/remote -name '*.rs' -print)
 actor_files+=(src/artwork.rs src/lyrics.rs src/download.rs src/resolver.rs)
 
-# C1: the boundary forbids not just app::Msg but the whole reducer message/command surface —
-# top-level Msg/Cmd and the M3 sub-enums (PlayerMsg/AiMsg/StreamingMsg/…, PersistCmd/…). Leaf
-# actors must stay behind the RuntimeEvent seam and never name a reducer message/command type.
-if matches=$(grep -nE 'crate::app::(Msg|Cmd|[A-Za-z]+Msg|[A-Za-z]+Cmd)|use crate::app::.*Msg|UnboundedSender<Msg>|UnboundedReceiver<Msg>' "${actor_files[@]}" 2>/dev/null); then
-  echo "error: leaf actors must emit domain events, not app::Msg/Cmd:" >&2
+# C1: leaf actors stay below both playback owners. DTOs shared with an actor belong to that
+# actor's neutral domain module, never to the interactive app reducer namespace.
+if matches=$(grep -nE 'crate::app([^[:alnum:]_]|$)|UnboundedSender<Msg>|UnboundedReceiver<Msg>' "${actor_files[@]}" 2>/dev/null); then
+  echo "error: leaf actors must not depend on the app reducer namespace:" >&2
   echo "$matches" >&2
   fail=1
 fi
@@ -307,7 +308,7 @@ grep -q 'RESOLVER_QUEUE' src/util/backpressure.rs || {
 # fixtures, so inspect through the actual `#[cfg(test)] mod tests` boundary. A standalone
 # test-only helper must not truncate later production code (notably the MPRIS implementation).
 for file in \
-  src/ai/mod.rs \
+  src/ai/actor.rs \
   src/artwork.rs \
   src/lyrics.rs \
   src/transfer/actor.rs \
@@ -485,8 +486,10 @@ grep -q 'restore: Vec<PlayerCmd>' src/app/player_intent.rs || {
 tmp=$(mktemp)
 awk '/^pub struct App \{/{f=1;next} f&&/^\}/{exit}
      f&&/^ *(pub(\([^)]*\))? +)?[a-z_]+ *:/ {gsub(/^ *(pub(\([^)]*\))? +)?/,""); sub(/ *:.*/,""); print}' \
-  src/app/mod.rs | sort -u > "$tmp"
-if extra=$(comm -13 scripts/app-fields.allow "$tmp"); [ -n "$extra" ]; then
+  src/app/mod.rs | LC_ALL=C sort -u > "$tmp"
+# The allowlist is committed in C byte order; pin the comparison locale so `_`-collation
+# differences (e.g. downloads vs download_store under UTF-8 locales) can't misreport fields.
+if extra=$(LC_ALL=C comm -13 scripts/app-fields.allow "$tmp"); [ -n "$extra" ]; then
   echo "error: new flat App field(s) not in scripts/app-fields.allow — group them into a sub-struct or add intentionally:" >&2
   echo "$extra" >&2; fail=1
 fi

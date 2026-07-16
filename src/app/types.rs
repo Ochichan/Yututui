@@ -6,6 +6,34 @@
 
 use super::*;
 
+/// Pending owner-mediated transfer commit. The candidate is intentionally not installed into
+/// live App state until this exact persistence generation is confirmed.
+pub struct TransferPlaylistCommit {
+    pub(crate) request: crate::transfer::actor::LocalPlaylistRequest,
+    pub(crate) owner_base_revision: u64,
+    pub(crate) candidate: crate::playlists::Playlists,
+    pub(crate) kind: TransferPlaylistCommitKind,
+}
+
+pub(crate) enum TransferPlaylistCommitKind {
+    Apply {
+        patch: crate::transfer::local_playlist::LocalPlaylistPatch,
+        outcome: crate::transfer::local_playlist::LocalPlaylistWriteOutcome,
+    },
+    /// Reassert the latest live owner snapshot after a stale transfer candidate reached disk but
+    /// could no longer be safely rebased. The original error is replied only after exact restore.
+    RestoreThenFail {
+        error: crate::transfer::local_playlist::LocalPlaylistStoreError,
+        retry_attempt: u8,
+    },
+}
+
+/// Opaque owner-lane result keeps internal persistence identities out of the public `Msg` shape.
+pub struct TransferPlaylistPersistence {
+    pub(crate) commit: Box<TransferPlaylistCommit>,
+    pub(crate) persistence: crate::persist::TargetFlushOutcome,
+}
+
 pub enum DownloadMsg {
     Progress {
         video_id: String,
@@ -265,6 +293,8 @@ pub enum DataMsg {
     DownloadsScanned(crate::library::DownloadScan),
     /// A portable personal-data export worker event.
     PersonalDataExport(PersonalDataExportMsg),
+    /// Targeted persistence confirmation for an owner-mediated transfer playlist patch.
+    TransferPlaylistPersisted(TransferPlaylistPersistence),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -473,6 +503,9 @@ pub enum PersistCmd {
     Playlists,
     /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
     StationProfile,
+    /// Persist one transfer candidate under an exact target generation. Live playlists stay
+    /// unchanged until the completion returns to the reducer.
+    TransferPlaylistCommit(Box<TransferPlaylistCommit>),
 }
 
 /// Blocking Local Deck work requested by the reducer.
@@ -878,41 +911,6 @@ pub enum AiFocus {
     Suggestions,
 }
 
-/// A local playlist's identity, for the DJ Gem context snapshot (no track payload).
-#[derive(Debug, Clone)]
-pub struct PlaylistInfo {
-    pub id: String,
-    pub name: String,
-    pub count: usize,
-}
-
-/// A read-only snapshot of app state handed to the DJ Gem actor with each prompt, so its
-/// read tools (get_queue, get_user_favorites, …) can answer without touching `App`.
-#[derive(Debug, Clone)]
-pub struct AiContext {
-    /// "Title — Artist" of the current track, if any.
-    pub current_track: Option<String>,
-    /// The currently loaded live radio station, if the current queue item is a station.
-    pub current_radio_station: Option<String>,
-    /// The stream's own now-playing metadata for the current radio station, if mpv has seen it.
-    pub current_radio_now_playing: Option<String>,
-    /// Up to a few upcoming queue entries, "Title — Artist".
-    pub queue_upcoming: Vec<String>,
-    pub queue_len: usize,
-    pub queue_remaining: usize,
-    /// A few recently-played tracks, most-recent first.
-    pub recent_history: Vec<String>,
-    /// A sample of favorited tracks.
-    pub favorites: Vec<String>,
-    /// The user's local playlists (names + counts; tracks fetched on demand).
-    pub playlists: Vec<PlaylistInfo>,
-    /// Search/source settings used by DJ Gem streaming tools.
-    pub search: SearchConfig,
-    /// Whether a YTM cookie is configured (gates authenticated related-tracks).
-    pub authenticated: bool,
-    pub autoplay_streaming: bool,
-}
-
 /// A live radio stream's current ICY/metadata title, as exposed by mpv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamNowPlaying {
@@ -946,15 +944,6 @@ pub struct PendingRerank {
     /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
     /// resolved ordering can be stored on return and replayed for a rapid identical refill.
     pub(crate) cache_key: u64,
-}
-
-/// One reranked pick the DJ Gem returned: the opaque pack `cid` it chose, plus optional explanation
-/// (slot role + reason codes) surfaced by the "Why DJ Gem" overlay.
-#[derive(Debug, Clone)]
-pub struct AiPick {
-    pub cid: String,
-    pub role: Option<String>,
-    pub reasons: Vec<String>,
 }
 
 /// The resolved, human-readable explanation of the last DJ Gem streaming rerank, shown by the "Why DJ Gem"

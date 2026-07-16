@@ -481,18 +481,14 @@ impl App {
                         self.dirty = true;
                         return Vec::new();
                     }
-                    // Music-mode invariant: autoplay and repeat can't both be on. Refuse the
-                    // enable and leave a brief message rather than silently flipping repeat off.
-                    if !self.autoplay_streaming && self.queue.repeat.is_on() {
-                        self.status.text = t!(
-                            "Can't use autoplay while repeat is on",
-                            "반복 재생 중에는 자동재생을 켤 수 없어요"
-                        )
-                        .to_owned();
-                        self.dirty = true;
+                    let transition =
+                        PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                            .transition(PlaybackModeAction::SetStreaming(!self.autoplay_streaming));
+                    let Ok(transition) = transition else {
+                        self.show_streaming_repeat_conflict();
                         return Vec::new();
-                    }
-                    let enabling = !self.autoplay_streaming;
+                    };
+                    let enabling = transition.state.autoplay_streaming;
                     self.set_autoplay_streaming(enabling);
                     self.status.text = format!(
                         "{}: {}",
