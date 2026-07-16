@@ -1,7 +1,5 @@
-2643	src/daemon/engine.rs
-2382	src/api/ytmusic.rs
 2295	src/config.rs
-2106	src/app/settings_reducer.rs
+1874	src/daemon/engine.rs
 1784	src/keymap.rs
 1691	src/ui/views/player.rs
 1638	src/app/local.rs
@@ -21,10 +19,12 @@
 1482	src/app/mouse.rs
 1479	src/api/mod.rs
 1469	src/transfer/engine.rs
+1439	src/api/ytmusic.rs
 1413	src/player/ipc.rs
 1389	src/settings.rs
 1389	src/transfer/matching.rs
 1251	src/tools/ytdlp.rs
+1165	src/app/settings_reducer.rs
 1161	src/daemon/mod.rs
 1090	src/player/ipc/incoming.rs
 1065	src/player/ipc/tests/seek_dispatch.rs
