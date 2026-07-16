@@ -249,73 +249,87 @@ fn session_reconcile_ignores_a_transaction_removed_after_inventory() {
 
 #[test]
 fn every_durable_phase_rolls_forward_to_exactly_one_pair_and_row() {
-    let cases = [
-        (
-            "after-audio",
-            ArtifactMoveKind::ImportDownload,
-            ArtifactMoveFaultPoint::AfterAudioMove,
-        ),
-        (
-            "after-sidecar",
-            ArtifactMoveKind::ImportDownload,
-            ArtifactMoveFaultPoint::AfterSidecarMove,
-        ),
-        (
-            "before-session",
-            ArtifactMoveKind::Organize,
-            ArtifactMoveFaultPoint::BeforeSessionSave,
-        ),
-        (
-            "after-session",
-            ArtifactMoveKind::Organize,
-            ArtifactMoveFaultPoint::AfterSessionSave,
-        ),
-        (
-            "after-import-session",
-            ArtifactMoveKind::ImportDownload,
-            ArtifactMoveFaultPoint::AfterSessionSave,
-        ),
-    ];
+    let data_root = std::env::temp_dir().join(format!(
+        "yututui-artifact-startup-data-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let data_root_value = data_root.to_string_lossy().into_owned();
 
-    for (label, kind, fault) in cases {
-        let fixture = MoveFixture::new(label, kind);
-        let error = commit_with_fault(fixture.request.clone(), fault)
-            .expect_err("fault injection must stop the first commit");
-        assert!(
-            format!("{error:#}").contains("fault injection"),
-            "unexpected injected commit error: {error:#}"
-        );
-        let transaction = fixture.transaction_path();
-        assert!(transaction.is_file(), "fault must retain durable intent");
-        let name = transaction
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("opaque transaction filename");
-        assert_eq!(name.len(), 69);
-        assert!(!name.contains(&fixture.session_id));
-        assert!(!name.contains(&fixture.row_id));
+    // Startup reconciliation deliberately inventories the entire durable registry. Give this
+    // test its own registry so it cannot recover a transaction which a parallel fixture is still
+    // shaping into a legacy/corruption scenario.
+    crate::test_util::env::with_var("YTM_DATA_DIR", Some(&data_root_value), || {
+        let cases = [
+            (
+                "after-audio",
+                ArtifactMoveKind::ImportDownload,
+                ArtifactMoveFaultPoint::AfterAudioMove,
+            ),
+            (
+                "after-sidecar",
+                ArtifactMoveKind::ImportDownload,
+                ArtifactMoveFaultPoint::AfterSidecarMove,
+            ),
+            (
+                "before-session",
+                ArtifactMoveKind::Organize,
+                ArtifactMoveFaultPoint::BeforeSessionSave,
+            ),
+            (
+                "after-session",
+                ArtifactMoveKind::Organize,
+                ArtifactMoveFaultPoint::AfterSessionSave,
+            ),
+            (
+                "after-import-session",
+                ArtifactMoveKind::ImportDownload,
+                ArtifactMoveFaultPoint::AfterSessionSave,
+            ),
+        ];
 
-        let report = reconcile_all_pending().expect("startup reconciliation");
-        assert!(
-            report
-                .warnings
-                .iter()
-                .all(|warning| !warning.contains(name)),
-            "fixture transaction was not recovered: {:?}",
-            report.warnings
-        );
-        fixture.assert_committed_once();
+        for (label, kind, fault) in cases {
+            let fixture = MoveFixture::new(label, kind);
+            let error = commit_with_fault(fixture.request.clone(), fault)
+                .expect_err("fault injection must stop the first commit");
+            assert!(
+                format!("{error:#}").contains("fault injection"),
+                "unexpected injected commit error: {error:#}"
+            );
+            let transaction = fixture.transaction_path();
+            assert!(transaction.is_file(), "fault must retain durable intent");
+            let name = transaction
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("opaque transaction filename");
+            assert_eq!(name.len(), 69);
+            assert!(!name.contains(&fixture.session_id));
+            assert!(!name.contains(&fixture.row_id));
 
-        let retry = reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
-            .expect("retry reconciliation")
-            .expect("durably committed row must be retry success");
-        assert_eq!(
-            std::fs::canonicalize(retry).expect("canonical retry path"),
-            std::fs::canonicalize(&fixture.destination).expect("canonical retry destination")
-        );
-        fixture.assert_committed_once();
-        fixture.cleanup();
-    }
+            let report = reconcile_all_pending().expect("startup reconciliation");
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .all(|warning| !warning.contains(name)),
+                "fixture transaction was not recovered: {:?}",
+                report.warnings
+            );
+            fixture.assert_committed_once();
+
+            let retry = reconcile_row(&fixture.session_id, &fixture.row_id, fixture.source_order)
+                .expect("retry reconciliation")
+                .expect("durably committed row must be retry success");
+            assert_eq!(
+                std::fs::canonicalize(retry).expect("canonical retry path"),
+                std::fs::canonicalize(&fixture.destination).expect("canonical retry destination")
+            );
+            fixture.assert_committed_once();
+            fixture.cleanup();
+        }
+    });
+
+    let _ = std::fs::remove_dir_all(data_root);
 }
 
 #[cfg(unix)]

@@ -7,15 +7,16 @@
 //! and it is the safety net every S1–S6 extraction step runs against: a parity failure
 //! after an extraction means the extraction changed behavior.
 //!
-//! B0 scope and its known limits, on purpose:
-//! - Commands that load a track (`QueuePlay`, `Next` into playback, seeks) need a player
-//!   stub — they join the script with S1, driven via `handle_player_event` on the engine
-//!   side. The B0 script covers the settings/toggle/queue-membership surface.
-//! - `position_epoch` counts and `elapsed_ms` interpolation are normalized out: without
-//!   a player both sit at rest, and epoch *cadence* (not equality) is an S1 concern.
+//! Harness scope and its deliberate normalization:
+//! - The long shared script covers settings/toggle/queue-membership behavior without a live
+//!   player. A focused fake-player matrix covers commands that load or seek a track.
+//! - `position_epoch` and `elapsed_ms` are normalized out of wire-model equality. Epoch cadence
+//!   is asserted separately, including exact zero- and one-bump contracts.
 //! - The baseline is aligned before the script runs (volume and paused-at-rest differ
 //!   by construction today: `App::new(volume)` vs config-seeded engine, `paused: false`
 //!   vs `true` with nothing loaded). The script then must keep them equal.
+
+mod harness;
 
 use std::sync::Arc;
 
@@ -24,189 +25,18 @@ use tokio::sync::oneshot;
 use crate::api::Song;
 use crate::app::{App, Cmd, Msg, PlayerControl, PlayerMsg};
 use crate::config::Config;
-use crate::library::Library;
 use crate::media::MediaCommand;
-use crate::queue::{Queue, QueueSnapshot, Repeat};
+use crate::queue::{Queue, Repeat};
 use crate::remote::proto::{
-    GuiSettingChange, InstanceMode, PlayerModel, QueueModel, RateChange, RemoteCommand,
-    RemoteResponse, RemoteSettingChange, ServerFrame, ToggleState, Topic,
+    RateChange, RemoteCommand, RemoteSettingChange, ServerFrame, ToggleState, Topic,
 };
 use crate::remote::publish;
 use crate::remote::{SessionLine, SessionTuning, test_command_reply, test_register};
 use crate::signals::Signals;
 use crate::station::StationStore;
-use crate::util::delivery::DeliveryReceipt;
 
 use super::engine::{DaemonEngine, EngineEffect, EngineState};
-
-const RNG_SEED: u64 = 20260703;
-
-fn song(id: &str) -> Song {
-    Song::remote(id, format!("title-{id}"), format!("artist-{id}"), "3:45")
-}
-
-fn seed_snapshot() -> QueueSnapshot {
-    let mut queue = Queue::default();
-    queue.set(vec![song("a"), song("b"), song("c"), song("d")], 1);
-    queue.snapshot()
-}
-
-/// Both owners on identical default config + the same restored queue, with the known
-/// baseline differences aligned (see module docs).
-fn hermetic_pair() -> (App, DaemonEngine) {
-    let snap = seed_snapshot();
-
-    let mut engine = DaemonEngine::with_state(
-        EngineState {
-            config: Config::default(),
-            station: StationStore::default(),
-            library: Library::default(),
-            playlists: crate::playlists::Playlists::default(),
-            signals: Signals::default(),
-        },
-        Arc::new(|_event| {}),
-    );
-    engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
-
-    let mut app = App::new(Config::default().volume);
-    app.queue.restore_snapshot(snap);
-    // Shuffle policy is under test; shuffle *randomness* is not. Same seed both sides
-    // so the shared script's ToggleShuffle draws identical permutations.
-    app.queue.seed_rng(RNG_SEED);
-    // The engine starts paused with nothing loaded; the App's transport defaults to
-    // unpaused-at-rest. Align the baseline — keeping them equal afterwards is the
-    // script's job (and S1's, permanently).
-    app.playback.paused = true;
-
-    (app, engine)
-}
-
-/// Construct both owners as a fresh process from one persisted config + queue snapshot.
-/// Unlike [`hermetic_pair`], this deliberately runs the App's startup config projection so
-/// tests can exercise raw-vs-effective settings restored from disk without first toggling them
-/// (which would itself start an autoplay request).
-fn hermetic_pair_from_config(config: Config, snap: QueueSnapshot) -> (App, DaemonEngine) {
-    let mut engine = DaemonEngine::with_state(
-        EngineState {
-            config: config.clone(),
-            station: StationStore::default(),
-            library: Library::default(),
-            playlists: crate::playlists::Playlists::default(),
-            signals: Signals::default(),
-        },
-        Arc::new(|_event| {}),
-    );
-    engine.restore_queue_snapshot(snap.clone(), RNG_SEED);
-
-    let mut app = App::new(config.volume);
-    app.apply_config(&config);
-    app.queue.restore_snapshot(snap);
-    app.queue.seed_rng(RNG_SEED);
-    app.playback.paused = true;
-
-    (app, engine)
-}
-
-/// Admit every two-phase player intent emitted by a reducer turn, including intents emitted by
-/// an accepted commit. Other side effects remain outside this state-projection parity harness.
-fn admit_app_player_intents(app: &mut App, commands: Vec<Cmd>) {
-    let _ = admit_app_player_intents_collect(app, commands);
-}
-
-/// Admit a complete player-intent chain and retain every non-player effect emitted by its
-/// accepted commits. Mode-switch parity needs this projection because the effective autoplay
-/// check happens only after the target mode has committed.
-fn admit_app_player_intents_collect(app: &mut App, commands: Vec<Cmd>) -> Vec<Cmd> {
-    let mut pending = std::collections::VecDeque::from(commands);
-    let mut effects = Vec::new();
-    while let Some(command) = pending.pop_front() {
-        match command {
-            Cmd::PlayerControl(PlayerControl::Intent(intent)) => {
-                pending.extend(crate::runtime::player_delivery::settle_player_intent(
-                    app,
-                    *intent,
-                    Ok(DeliveryReceipt::Enqueued),
-                ));
-            }
-            effect => effects.push(effect),
-        }
-    }
-    effects
-}
-
-/// Apply one command to the App through its real path (`Msg::Remote` → `apply_remote`) and
-/// deterministically model a player lane that accepts every typed intent.
-fn app_apply(app: &mut App, cmd: RemoteCommand) -> RemoteResponse {
-    app_apply_with_cmds(app, cmd).0
-}
-
-fn app_apply_with_cmds(app: &mut App, cmd: RemoteCommand) -> (RemoteResponse, Vec<Cmd>) {
-    let (tx, mut rx) = oneshot::channel();
-    let commands = app.update(Msg::Remote(cmd, tx.into()));
-    let commands = if commands
-        .iter()
-        .any(|command| matches!(command, Cmd::PlayerControl(PlayerControl::Intent(_))))
-    {
-        admit_app_player_intents(app, commands);
-        Vec::new()
-    } else {
-        commands
-    };
-    (
-        rx.try_recv()
-            .expect("remote reply is ready after accepted player intents settle"),
-        commands,
-    )
-}
-
-fn models_of(view: &publish::CoreView<'_>) -> (PlayerModel, QueueModel) {
-    (publish::player_model(view), publish::queue_model(view))
-}
-
-/// Strip the fields that legitimately differ across owners in a hermetic B0 harness.
-fn normalize(player: &mut PlayerModel, queue: &mut QueueModel) {
-    player.owner_mode = InstanceMode::StandaloneTui;
-    player.position_epoch = 0;
-    player.elapsed_ms = None;
-    // Owner-global rev counters are process-wide; two live queues in one test process
-    // never share values. Contents equality is the contract here.
-    queue.rev = 0;
-}
-
-fn assert_parity(step: &str, app: &App, engine: &DaemonEngine) {
-    let (mut app_player, mut app_queue) = models_of(&app.core_view());
-    let (mut eng_player, mut eng_queue) = models_of(&engine.core_view());
-    normalize(&mut app_player, &mut app_queue);
-    normalize(&mut eng_player, &mut eng_queue);
-    assert_eq!(app_player, eng_player, "PlayerModel diverged after {step}");
-    assert_eq!(app_queue, eng_queue, "QueueModel diverged after {step}");
-}
-
-async fn engine_with_modes(repeat: Repeat, streaming: bool) -> DaemonEngine {
-    let (_, mut engine) = hermetic_pair();
-    if streaming {
-        let (response, shutdown, _) = engine
-            .handle_remote(RemoteCommand::Streaming {
-                state: ToggleState::On,
-            })
-            .await;
-        assert!(response.ok && !shutdown, "test setup must enable streaming");
-    }
-    let mut snapshot = seed_snapshot();
-    snapshot.repeat = repeat;
-    engine.restore_queue_snapshot(snapshot, RNG_SEED);
-    engine
-}
-
-fn gui_repeat(repeat: Repeat) -> RemoteCommand {
-    RemoteCommand::Apply {
-        change: GuiSettingChange {
-            group: "playback".to_owned(),
-            field: "repeat".to_owned(),
-            value: serde_json::to_value(repeat).unwrap(),
-        },
-    }
-}
+use harness::*;
 
 /// The B0 shared command script: settings, toggles, and queue membership — everything
 /// both owners serve today without a live player.
@@ -302,6 +132,15 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
 
     for (index, cmd) in b0_script().into_iter().enumerate() {
         let step = format!("step {index}: {cmd:?}");
+        let class = command_parity_class(&cmd);
+        assert!(
+            matches!(
+                class,
+                CommandParityClass::SharedStableEpoch | CommandParityClass::SharedMayRebase
+            ),
+            "{step}: B0 script contains a non-shared command ({class:?})"
+        );
+        let epochs_before = PositionEpochs::capture(&app, &engine);
 
         let (app_resp, app_cmds) = app_apply_with_cmds(&mut app, cmd.clone());
         let (engine_resp, shutdown, engine_effects) = engine.handle_remote(cmd).await;
@@ -322,8 +161,120 @@ async fn shared_script_keeps_app_and_engine_projections_equal() {
                 "{step}: daemon rejection emitted effects"
             );
         }
+        epochs_before.assert_delta(&step, PositionEpochs::capture(&app, &engine), 0);
 
         assert_parity(&step, &app, &engine);
+    }
+}
+
+#[test]
+fn command_classifier_pins_shared_and_owner_boundary_exceptions() {
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SetVolume { percent: 50 }),
+        CommandParityClass::SharedStableEpoch
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SeekForward),
+        CommandParityClass::SharedMayRebase
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::RunSearch {
+            ticket: 7,
+            query: "query".to_owned(),
+            source: crate::search_source::SearchSource::Youtube,
+        }),
+        CommandParityClass::StandaloneRejected
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::ExportPersonalData {
+            directory: "/tmp".to_owned(),
+        }),
+        CommandParityClass::BothOwnerLoopIntercepted
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::Quit),
+        CommandParityClass::OwnerSpecific
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SetSetting {
+            change: RemoteSettingChange::RadioMode {
+                state: ToggleState::Toggle,
+            },
+        }),
+        CommandParityClass::OwnerSpecific
+    );
+}
+
+#[tokio::test]
+async fn shared_transport_commands_pin_position_epoch_cadence() {
+    type CommandFactory = fn(u64) -> RemoteCommand;
+
+    let cases: [(&str, CommandFactory, u64); 10] = [
+        ("toggle pause", |_| RemoteCommand::TogglePause, 0),
+        ("seek back", |_| RemoteCommand::SeekBack, 1),
+        ("seek forward", |_| RemoteCommand::SeekForward, 1),
+        ("absolute seek", |_| RemoteCommand::SeekTo { ms: 90_000 }, 1),
+        ("next", |_| RemoteCommand::Next, 1),
+        ("previous", |_| RemoteCommand::Prev, 1),
+        (
+            "queue play",
+            |_| RemoteCommand::QueuePlay { position: 2 },
+            1,
+        ),
+        (
+            "revision-checked queue play",
+            |expected_rev| RemoteCommand::QueuePlayIfRevision {
+                position: 2,
+                expected_rev,
+            },
+            1,
+        ),
+        (
+            "current queue remove",
+            |_| RemoteCommand::QueueRemove { position: 1 },
+            1,
+        ),
+        (
+            "revision-checked current queue remove",
+            |expected_rev| RemoteCommand::QueueRemoveIfRevision {
+                position: 1,
+                expected_rev,
+            },
+            1,
+        ),
+    ];
+
+    for (step, command, expected_delta) in cases {
+        let (mut app, mut engine) = hermetic_pair();
+        app.install_seek_parity_state("b", 30.0, 225.0);
+        let _engine_player = engine.install_seek_parity_player("b", 30.0, 225.0);
+        let epochs_before = PositionEpochs::capture(&app, &engine);
+
+        let app_command = command(app.core_view().queue.rev());
+        let engine_command = command(engine.core_view().queue.rev());
+        assert_eq!(
+            command_parity_class(&app_command),
+            CommandParityClass::SharedMayRebase,
+            "{step}: transport matrix command was misclassified"
+        );
+
+        let app_response = app_apply(&mut app, app_command);
+        let (engine_response, shutdown, engine_effects) =
+            engine.handle_remote(engine_command).await;
+
+        assert!(!shutdown, "{step}: shared command requested shutdown");
+        assert_eq!(app_response.ok, engine_response.ok, "{step}: ok diverged");
+        assert_eq!(
+            app_response.reason, engine_response.reason,
+            "{step}: reason diverged"
+        );
+        assert!(app_response.ok, "{step}: command was not admitted");
+        assert!(
+            engine_effects.is_empty(),
+            "{step}: unexpected daemon effect"
+        );
+        epochs_before.assert_delta(step, PositionEpochs::capture(&app, &engine), expected_delta);
+        assert_parity(step, &app, &engine);
     }
 }
 
@@ -725,6 +676,7 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
     let engine_before = serde_json::to_value(engine.core_view().queue.snapshot()).unwrap();
     let app_rev_before = app.core_view().queue.rev();
     let engine_rev_before = engine.core_view().queue.rev();
+    let stale_epochs = PositionEpochs::capture(&app, &engine);
 
     let command = RemoteCommand::QueuePlayIfRevision {
         position: 2,
@@ -747,6 +699,11 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
     );
     assert_eq!(app.core_view().queue.rev(), app_rev_before);
     assert_eq!(engine.core_view().queue.rev(), engine_rev_before);
+    stale_epochs.assert_delta(
+        "stale revision-checked play",
+        PositionEpochs::capture(&app, &engine),
+        0,
+    );
     assert_parity("stale revision-checked play", &app, &engine);
 
     // A fresh revision must pass the optimistic-concurrency gate and reach the shared queue
@@ -755,6 +712,7 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
     let app_rev = app.core_view().queue.rev();
     let engine_rev = engine.core_view().queue.rev();
     let invalid_position = app.core_view().queue.len();
+    let invalid_epochs = PositionEpochs::capture(&app, &engine);
     let app_resp = app_apply(
         &mut app,
         RemoteCommand::QueuePlayIfRevision {
@@ -774,6 +732,11 @@ async fn revision_checked_queue_play_rejects_stale_without_owner_mutation() {
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_eq!(app.core_view().queue.rev(), app_rev);
     assert_eq!(engine.core_view().queue.rev(), engine_rev);
+    invalid_epochs.assert_delta(
+        "fresh revision-checked play validation",
+        PositionEpochs::capture(&app, &engine),
+        0,
+    );
     assert_parity("fresh revision-checked play validation", &app, &engine);
 }
 
