@@ -221,6 +221,12 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
         }),
 
         "start_streaming" => {
+            // Reject from the owner snapshot before resolving related tracks or emitting ANY
+            // mutation. The owner reducer revalidates too, covering a mode change while this AI
+            // turn is in flight.
+            if deps.ctx.repeat_on {
+                return json!({ "started": false, "error": "repeat_is_on" });
+            }
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
@@ -548,6 +554,7 @@ mod tests {
             search: crate::search_source::SearchConfig::default(),
             authenticated: false,
             autoplay_streaming: false,
+            repeat_on: false,
         }
     }
 
@@ -641,5 +648,43 @@ mod tests {
             rx.try_recv().unwrap(),
             AiEvent::SetAutoplay(false)
         ));
+    }
+
+    #[tokio::test]
+    async fn start_streaming_rejects_repeat_before_network_or_events() {
+        let mut ctx = ctx();
+        ctx.repeat_on = true;
+        let mut cache = HashMap::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit = sink(tx);
+        let mut side = false;
+        let mut deps = ToolDeps {
+            ctx: &ctx,
+            cache: &mut cache,
+            emit: &emit,
+            side_effected: &mut side,
+        };
+
+        let result = execute_tool(
+            "start_streaming",
+            &json!({
+                "seed": "must-not-resolve",
+                "explore": "wide",
+                "avoid_artists": ["Example"]
+            }),
+            &mut deps,
+        )
+        .await;
+
+        assert_eq!(result, json!({ "started": false, "error": "repeat_is_on" }));
+        assert!(!side, "a rejected tool must not claim a side effect");
+        assert!(
+            cache.is_empty(),
+            "a rejected tool must not resolve/cache tracks"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected tool emitted an owner event"
+        );
     }
 }

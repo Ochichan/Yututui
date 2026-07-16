@@ -107,6 +107,16 @@ impl App {
         self.dirty = true;
     }
 
+    /// Show the inverse playback-mode rejection: autoplay cannot be enabled while repeat is on.
+    pub(in crate::app) fn show_streaming_repeat_conflict(&mut self) {
+        self.status.text = t!(
+            "Can't use autoplay while repeat is on",
+            "반복 재생 중에는 자동재생을 켤 수 없어요"
+        )
+        .to_owned();
+        self.dirty = true;
+    }
+
     /// Handle an mpv playback error: self-heal a stale-yt-dlp extraction failure
     /// once, otherwise skip the bad track (with a circuit breaker after too many in a
     /// row). Extracted verbatim from the `PlayerMsg::Error` dispatch arm; the
@@ -714,17 +724,13 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             Action::CycleRepeat => {
-                // Music-mode invariant: turning repeat on while autoplay streaming is on is
-                // refused (they can't both be on). Off→All is the only transition that enables it.
-                if self
-                    .queue
-                    .repeat
-                    .cycle_blocked_by_streaming(self.autoplay_streaming)
-                {
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::CycleRepeat);
+                let Ok(transition) = transition else {
                     self.show_repeat_streaming_conflict();
                     return Vec::new();
-                }
-                self.queue.cycle_repeat();
+                };
+                self.queue.repeat = transition.state.repeat;
                 self.dirty = true;
                 vec![self.save_playback_modes_cmd()]
             }

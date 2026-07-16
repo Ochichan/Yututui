@@ -164,7 +164,8 @@ pub use streaming_reducer::StreamingMsg;
 /// this module's submodules keep resolving the names; refill admission itself lives in the
 /// owner-neutral [`crate::streaming::plan_autoplay_refill`] planner.
 pub(crate) use crate::playback_policy::{
-    AUTOPLAY_MAX_FAILURES, MAX_CONSECUTIVE_PLAY_ERRORS, STREAMING_FALLBACK_COUNT,
+    AUTOPLAY_MAX_FAILURES, MAX_CONSECUTIVE_PLAY_ERRORS, PlaybackModeAction, PlaybackModeState,
+    STREAMING_FALLBACK_COUNT,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

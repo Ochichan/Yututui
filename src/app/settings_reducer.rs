@@ -620,19 +620,15 @@ impl App {
                     self.dirty = true;
                     return Vec::new();
                 }
-                // Music-mode invariant: can't enable autoplay while repeat is on.
-                let repeat_on = self.queue.repeat.is_on();
-                if !self.settings_mut().draft.autoplay_streaming && repeat_on {
-                    self.status.text = t!(
-                        "Can't use autoplay while repeat is on",
-                        "반복 재생 중에는 자동재생을 켤 수 없어요"
-                    )
-                    .to_owned();
-                    self.dirty = true;
+                let current = self.settings_mut().draft.autoplay_streaming;
+                let transition = PlaybackModeState::new(self.queue.repeat, current)
+                    .transition(PlaybackModeAction::SetStreaming(!current));
+                let Ok(transition) = transition else {
+                    self.show_streaming_repeat_conflict();
                     return Vec::new();
-                }
+                };
                 let s = self.settings_mut();
-                s.draft.autoplay_streaming = !s.draft.autoplay_streaming;
+                s.draft.autoplay_streaming = transition.state.autoplay_streaming;
                 Vec::new()
             }
             Field::CuratingMode => {

@@ -62,20 +62,20 @@ impl Repeat {
         self != Repeat::Off
     }
 
-    /// The streaming⇔repeat mutual-exclusion invariant for a **set-to-`self`** action, in one
-    /// place: refuse turning repeat on while a station / autoplay feed is active. `true` = the
-    /// change must be blocked. Setting repeat Off, or any change while not streaming, is always
-    /// allowed. Used by every OS-widget/`set-property` repeat path (App + daemon) so they can't
-    /// drift. NB: the App passes its raw `autoplay_streaming` preference here, matching today.
+    /// Compatibility query for callers that only need to know whether a set request would be
+    /// rejected. The canonical rule lives in [`crate::playback_policy::PlaybackModeState`].
     pub fn set_blocked_by_streaming(self, streaming: bool) -> bool {
-        self.is_on() && streaming
+        crate::playback_policy::PlaybackModeState::new(self, streaming)
+            .transition(crate::playback_policy::PlaybackModeAction::SetRepeat(self))
+            .is_err()
     }
 
-    /// The same invariant for a **cycle** action (Off→All→One→Off). The only step that turns
-    /// repeat on is Off→All, so the cycle is blocked exactly when it starts from `Off` while
-    /// `streaming`. `true` = block the cycle. Used by both cycle paths (App + daemon).
+    /// Compatibility query for a repeat cycle. New owner code should consume the full pure
+    /// transition so the accepted next state and rejection decision cannot be separated.
     pub fn cycle_blocked_by_streaming(self, streaming: bool) -> bool {
-        self == Repeat::Off && streaming
+        crate::playback_policy::PlaybackModeState::new(self, streaming)
+            .transition(crate::playback_policy::PlaybackModeAction::CycleRepeat)
+            .is_err()
     }
 }
 

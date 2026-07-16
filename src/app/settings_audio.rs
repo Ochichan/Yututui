@@ -730,12 +730,14 @@ mod tests {
     #[test]
     fn settings_save_admits_speed_and_filter_then_closes_and_persists_once() {
         let mut app = app_with_settings();
+        app.streaming.consecutive_failures = 2;
         {
             let draft = &mut app.settings.as_deref_mut().unwrap().draft;
             draft.speed = 1.4;
             draft.eq_preset = EqPreset::BassBoost;
             draft.eq_bands = EqPreset::BassBoost.gains();
             draft.normalize = true;
+            draft.autoplay_streaming = true;
         }
         let cmds = app.close_settings();
         let commands: Vec<&PlayerCmd> = cmds.iter().flat_map(Cmd::player_commands).collect();
@@ -773,6 +775,12 @@ mod tests {
         assert!(app.audio.normalize);
         assert_eq!(app.config.speed, Some(1.4));
         assert_eq!(app.config.normalize, Some(true));
+        assert!(app.autoplay_streaming);
+        assert_eq!(app.config.autoplay_streaming, Some(true));
+        assert_eq!(
+            app.streaming.consecutive_failures, 2,
+            "the post-admission commit must not reset the streaming breaker"
+        );
         assert_eq!(
             follow_ups
                 .iter()
@@ -786,6 +794,12 @@ mod tests {
                 .flat_map(Cmd::player_commands)
                 .next()
                 .is_none()
+        );
+        assert!(
+            follow_ups
+                .iter()
+                .all(|cmd| !matches!(cmd, Cmd::StreamingFallback { .. })),
+            "Settings save must not start a refill from the commit boundary"
         );
     }
 

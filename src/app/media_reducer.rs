@@ -193,14 +193,16 @@ impl App {
                 if self.current_is_radio_stream() {
                     return Vec::new();
                 }
-                if mode.set_blocked_by_streaming(self.autoplay_streaming) {
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::SetRepeat(mode));
+                let Ok(transition) = transition else {
                     self.show_repeat_streaming_conflict();
                     return Vec::new();
-                }
-                if self.queue.repeat == mode {
+                };
+                if !transition.changed {
                     return Vec::new();
                 }
-                self.queue.repeat = mode;
+                self.queue.repeat = transition.state.repeat;
                 self.dirty = true;
                 vec![self.save_playback_modes_cmd()]
             }

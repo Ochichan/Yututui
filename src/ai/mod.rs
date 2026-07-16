@@ -1128,6 +1128,7 @@ mod tests {
             search: crate::search_source::SearchConfig::default(),
             authenticated: true,
             autoplay_streaming: false,
+            repeat_on: false,
         }
     }
 

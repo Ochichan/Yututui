@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::api::Song;
-use crate::app::{App, Cmd, Msg, PlayerControl, PlayerMsg};
+use crate::app::{AiMsg, App, Cmd, Msg, PlayerControl, PlayerMsg};
 use crate::config::Config;
 use crate::media::MediaCommand;
 use crate::queue::{Queue, Repeat};
@@ -903,6 +903,94 @@ async fn daemon_conflict_disables_remain_allowed() {
         assert!(status.streaming);
         assert_eq!(status.repeat, Repeat::Off);
     }
+}
+
+#[tokio::test]
+async fn ai_autoplay_revalidation_rejects_and_recovers_in_lockstep() {
+    let (mut app, _) = hermetic_pair();
+    app.queue.repeat = Repeat::All;
+    app.config.repeat = Repeat::All;
+    app.autoplay_streaming = false;
+    app.config.autoplay_streaming = Some(false);
+    app.status.text = "before".to_owned();
+    app.dirty = false;
+    let mut engine = engine_with_modes(Repeat::All, false).await;
+
+    let app_effects = app.update(Msg::Ai(AiMsg::SetAutoplay(true)));
+    let (engine_response, engine_effects) = engine.ai_set_autoplay(true);
+
+    assert!(app_effects.is_empty(), "App rejection emitted effects");
+    assert!(!engine_response.ok);
+    assert_eq!(
+        engine_response.reason.as_deref(),
+        Some("incompatible_playback_modes")
+    );
+    assert!(
+        engine_effects.is_empty(),
+        "daemon rejection emitted effects"
+    );
+    assert!(!app.autoplay_streaming);
+    assert!(matches!(
+        app.status.text.as_str(),
+        "Can't use autoplay while repeat is on" | "반복 재생 중에는 자동재생을 켤 수 없어요"
+    ));
+    assert!(app.dirty, "App rejection toast did not request redraw");
+    assert_parity("AI autoplay repeat rejection", &app, &engine);
+
+    // A legacy invalid state can still recover by disabling streaming through the same action.
+    let (mut app, _) = hermetic_pair();
+    app.queue.repeat = Repeat::One;
+    app.config.repeat = Repeat::One;
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    let mut engine = engine_with_modes(Repeat::One, true).await;
+
+    let app_effects = app.update(Msg::Ai(AiMsg::SetAutoplay(false)));
+    let (engine_response, engine_effects) = engine.ai_set_autoplay(false);
+
+    assert!(engine_response.ok);
+    assert!(engine_effects.is_empty());
+    assert!(
+        app_effects
+            .iter()
+            .all(|effect| { matches!(effect, Cmd::Persist(crate::app::PersistCmd::Config(_))) })
+    );
+    assert!(!app.autoplay_streaming);
+    assert_eq!(app.queue.repeat, Repeat::One);
+    assert_parity("AI autoplay legacy disable", &app, &engine);
+}
+
+#[tokio::test]
+async fn legacy_all_plus_streaming_cycle_to_one_preserves_shipped_owner_semantics() {
+    let (mut app, _) = hermetic_pair();
+    app.queue.repeat = Repeat::All;
+    app.config.repeat = Repeat::All;
+    app.autoplay_streaming = true;
+    app.config.autoplay_streaming = Some(true);
+    let mut engine = engine_with_modes(Repeat::All, true).await;
+
+    let (app_response, app_effects) = app_apply_with_cmds(&mut app, RemoteCommand::CycleRepeat);
+    let (engine_response, shutdown, engine_effects) =
+        engine.handle_remote(RemoteCommand::CycleRepeat).await;
+
+    assert!(app_response.ok && engine_response.ok && !shutdown);
+    assert!(engine_effects.is_empty());
+    assert!(matches!(
+        app_effects.as_slice(),
+        [Cmd::Persist(crate::app::PersistCmd::Config(config))]
+            if config.repeat == Repeat::One && config.autoplay_streaming == Some(true)
+    ));
+    assert_eq!(app.queue.repeat, Repeat::One);
+    assert!(app.autoplay_streaming);
+    assert_eq!(engine.status().repeat, Repeat::One);
+    assert!(engine.status().settings.autoplay_streaming);
+    assert_eq!(engine.core_view().config.repeat, Repeat::One);
+    assert_eq!(
+        engine.core_view().config.autoplay_streaming,
+        Some(true),
+        "daemon cycle did not persist the legacy-compatible state"
+    );
+    assert_parity("legacy All+streaming cycle", &app, &engine);
 }
 
 #[tokio::test]

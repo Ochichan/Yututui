@@ -38,6 +38,7 @@ impl DaemonEngine {
             search: self.config.effective_search(),
             authenticated: self.config.effective_cookie().is_some(),
             autoplay_streaming: self.streaming,
+            repeat_on: self.queue.repeat.is_on(),
         }
     }
 
@@ -112,13 +113,18 @@ impl DaemonEngine {
         response
     }
 
-    pub(in crate::daemon) fn ai_set_autoplay(&mut self, on: bool) -> Vec<EngineEffect> {
+    /// Revalidate an AI `start_streaming`/`stop_streaming` event on the daemon owner lane.
+    /// The response lets [`crate::daemon::ai_host`] surface a structured rejection through its
+    /// retained assistant-message projection; effects remain owner-owned.
+    pub(in crate::daemon) fn ai_set_autoplay(
+        &mut self,
+        on: bool,
+    ) -> (crate::remote::proto::RemoteResponse, Vec<EngineEffect>) {
         self.set_streaming(if on {
             ToggleState::On
         } else {
             ToggleState::Off
         })
-        .1
     }
 
     pub(in crate::daemon) fn ai_create_playlist(&mut self, name: &str) {

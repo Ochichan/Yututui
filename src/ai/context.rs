@@ -45,6 +45,10 @@ pub(super) fn context_summary(ctx: &AiContext) -> String {
         if ctx.autoplay_streaming { "on" } else { "off" }
     ));
     summary.push_str(&format!(
+        "- Repeat: {}\n",
+        if ctx.repeat_on { "on" } else { "off" }
+    ));
+    summary.push_str(&format!(
         "- Signed in: {}\n",
         if ctx.authenticated {
             "yes"

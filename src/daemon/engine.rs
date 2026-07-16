@@ -53,7 +53,9 @@ use transport::TransportRecoveryState;
 // `crate::playback_policy`, so a threshold can't drift between the two playback owners.
 #[cfg(test)]
 use crate::playback_policy::{AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, STREAMING_POOL_COUNT};
-use crate::playback_policy::{MAX_CONSECUTIVE_PLAY_ERRORS, VOLUME_MAX, VOLUME_STEP};
+use crate::playback_policy::{
+    MAX_CONSECUTIVE_PLAY_ERRORS, PlaybackModeAction, PlaybackModeState, VOLUME_MAX, VOLUME_STEP,
+};
 #[cfg(test)]
 use crate::streaming::CandidateSource;
 
@@ -538,16 +540,17 @@ impl DaemonEngine {
                 RemoteResponse::status(self.status())
             }
             RemoteCommand::CycleRepeat => {
-                // Music-mode invariant (mirrors the App reducer for parity): reject turning
-                // repeat on while autoplay streaming is on. Off→All is the only enabling step.
-                if self.queue.repeat.cycle_blocked_by_streaming(self.streaming) {
-                    RemoteResponse::err("incompatible_playback_modes")
-                } else {
-                    self.queue.cycle_repeat();
-                    self.config.repeat = self.queue.repeat;
-                    self.save_config("daemon repeat setting");
-                    self.save_session();
-                    RemoteResponse::status(self.status())
+                let transition = PlaybackModeState::new(self.queue.repeat, self.streaming)
+                    .transition(PlaybackModeAction::CycleRepeat);
+                match transition {
+                    Ok(transition) => {
+                        self.queue.repeat = transition.state.repeat;
+                        self.config.repeat = self.queue.repeat;
+                        self.save_config("daemon repeat setting");
+                        self.save_session();
+                        RemoteResponse::status(self.status())
+                    }
+                    Err(_) => RemoteResponse::err("incompatible_playback_modes"),
                 }
             }
             RemoteCommand::QueuePlay { position }
@@ -1301,14 +1304,17 @@ impl DaemonEngine {
                 // Live-radio parity with the TUI: these UI slots are reinterpreted as live-sync
                 // controls, so OS widgets must not mutate shuffle/repeat while a station plays.
                 // Music-mode invariant: an OS widget can't enable repeat while streaming is on.
-                if !self.current_is_radio_stream()
-                    && self.queue.repeat != mode
-                    && !mode.set_blocked_by_streaming(self.streaming)
-                {
-                    self.queue.repeat = mode;
-                    self.config.repeat = mode;
-                    self.save_config("daemon repeat setting");
-                    self.save_session();
+                if !self.current_is_radio_stream() {
+                    let transition = PlaybackModeState::new(self.queue.repeat, self.streaming)
+                        .transition(PlaybackModeAction::SetRepeat(mode));
+                    if let Ok(transition) = transition
+                        && transition.changed
+                    {
+                        self.queue.repeat = transition.state.repeat;
+                        self.config.repeat = transition.state.repeat;
+                        self.save_config("daemon repeat setting");
+                        self.save_session();
+                    }
                 }
             }
             MediaCommand::SetVolume(v) => {
@@ -1866,14 +1872,15 @@ impl DaemonEngine {
             );
         }
         let on = state.resolve(self.streaming);
-        // Mirror the App reducer exactly and preserve the caller's intent as a structured error.
-        if on && self.queue.repeat.is_on() {
+        let transition = PlaybackModeState::new(self.queue.repeat, self.streaming)
+            .transition(PlaybackModeAction::SetStreaming(on));
+        let Ok(transition) = transition else {
             return (
                 RemoteResponse::err("incompatible_playback_modes"),
                 Vec::new(),
             );
-        }
-        self.streaming = on;
+        };
+        self.streaming = transition.state.autoplay_streaming;
         self.config.autoplay_streaming = Some(self.streaming);
         if self.streaming {
             self.consecutive_streaming_failures = 0;

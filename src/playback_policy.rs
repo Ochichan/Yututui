@@ -49,11 +49,99 @@ pub const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 /// for the whole process lifetime; a reset costs at most one extra self-heal per track.
 pub const HEAL_ATTEMPTED_MAX: usize = 512;
 
+// --- Playback-mode transitions ----------------------------------------------
+
+/// The owner-neutral portion of playback mode state.
+///
+/// The App and daemon deliberately keep separate playback owners. Passing only these two
+/// values through a pure transition keeps their shared repeat/streaming rule in one place while
+/// leaving persistence, localized notices, responses, and refill effects with the owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackModeState {
+    pub repeat: Repeat,
+    /// The saved music-mode preference, not mode-projected effective streaming. Local/Radio
+    /// guards remain owner policy outside this core.
+    pub autoplay_streaming: bool,
+}
+
+impl PlaybackModeState {
+    pub const fn new(repeat: Repeat, autoplay_streaming: bool) -> Self {
+        Self {
+            repeat,
+            autoplay_streaming,
+        }
+    }
+
+    /// Apply one playback-mode request without performing owner side effects.
+    ///
+    /// Rejection is action-specific so this extraction preserves the shipped recovery semantics:
+    /// cycling is blocked only for the enabling `Off` → `All` step; an already-invalid legacy
+    /// `All + streaming` state may still cycle to `One`, then to `Off`. Explicit set requests
+    /// reject an on-target while the other mode is on, and either mode can still be disabled.
+    pub fn transition(
+        self,
+        action: PlaybackModeAction,
+    ) -> Result<PlaybackModeTransition, PlaybackModeTransitionError> {
+        let state = match action {
+            PlaybackModeAction::CycleRepeat => {
+                if self.repeat == Repeat::Off && self.autoplay_streaming {
+                    return Err(PlaybackModeTransitionError::IncompatiblePlaybackModes);
+                }
+                Self::new(self.repeat.cycled(), self.autoplay_streaming)
+            }
+            PlaybackModeAction::SetRepeat(repeat) => {
+                if repeat.is_on() && self.autoplay_streaming {
+                    return Err(PlaybackModeTransitionError::IncompatiblePlaybackModes);
+                }
+                Self::new(repeat, self.autoplay_streaming)
+            }
+            PlaybackModeAction::SetStreaming(streaming) => {
+                if streaming && self.repeat.is_on() {
+                    return Err(PlaybackModeTransitionError::IncompatiblePlaybackModes);
+                }
+                Self::new(self.repeat, streaming)
+            }
+        };
+
+        Ok(PlaybackModeTransition {
+            changed: state != self,
+            state,
+        })
+    }
+}
+
+// Config seeding/session restoration and the empty-stream circuit breaker are recovery paths,
+// not user/API playback-mode actions. They intentionally stay outside this transition model:
+// seeding uses `streaming_enabled_with_repeat`, while a breaker may force autoplay off without
+// producing action-owned responses, toasts, persistence, or refill effects here.
+
+/// A user/API request that can change the mutually-exclusive playback modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackModeAction {
+    CycleRepeat,
+    SetRepeat(Repeat),
+    SetStreaming(bool),
+}
+
+/// The accepted result of a pure playback-mode transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackModeTransition {
+    pub state: PlaybackModeState,
+    pub changed: bool,
+}
+
+/// Why a playback-mode transition was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackModeTransitionError {
+    IncompatiblePlaybackModes,
+}
+
 /// Resolve the mutually-exclusive "autoplay-streaming vs repeat" invariant when **seeding**
 /// playback state from config. The two can never both be on; a legacy or hand-edited config
 /// may still carry both flags, so the more deliberate `repeat` wins and streaming is
-/// dropped. Returns the effective streaming flag. (Interactive set/cycle actions are guarded
-/// separately by `Repeat::{set,cycle}_blocked_by_streaming`, which live on `Repeat`.)
+/// dropped. Returns the effective streaming flag. Interactive set/cycle actions go through
+/// [`PlaybackModeState::transition`]; the similarly named `Repeat` queries are compatibility
+/// wrappers around that canonical transition.
 pub fn streaming_enabled_with_repeat(autoplay_streaming: bool, repeat: Repeat) -> bool {
     autoplay_streaming && !repeat.is_on()
 }
@@ -125,6 +213,113 @@ pub fn clamp_seek_target(pos: f64, duration: Option<f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Expected {
+        Accepted(PlaybackModeState, bool),
+        Incompatible,
+    }
+
+    #[test]
+    fn playback_mode_transition_truth_table_is_exhaustive() {
+        use PlaybackModeAction::{CycleRepeat, SetRepeat, SetStreaming};
+        use Repeat::{All, Off, One};
+
+        const fn accepted(repeat: Repeat, streaming: bool, changed: bool) -> Expected {
+            Expected::Accepted(PlaybackModeState::new(repeat, streaming), changed)
+        }
+
+        // Each row covers every action for one of the 3 repeat × 2 streaming input states.
+        // Keeping this table explicit makes legacy-invalid inputs part of the contract too.
+        let rows = [
+            (
+                PlaybackModeState::new(Off, false),
+                [
+                    accepted(All, false, true),
+                    accepted(Off, false, false),
+                    accepted(All, false, true),
+                    accepted(One, false, true),
+                    accepted(Off, false, false),
+                    accepted(Off, true, true),
+                ],
+            ),
+            (
+                PlaybackModeState::new(All, false),
+                [
+                    accepted(One, false, true),
+                    accepted(Off, false, true),
+                    accepted(All, false, false),
+                    accepted(One, false, true),
+                    accepted(All, false, false),
+                    Expected::Incompatible,
+                ],
+            ),
+            (
+                PlaybackModeState::new(One, false),
+                [
+                    accepted(Off, false, true),
+                    accepted(Off, false, true),
+                    accepted(All, false, true),
+                    accepted(One, false, false),
+                    accepted(One, false, false),
+                    Expected::Incompatible,
+                ],
+            ),
+            (
+                PlaybackModeState::new(Off, true),
+                [
+                    Expected::Incompatible,
+                    accepted(Off, true, false),
+                    Expected::Incompatible,
+                    Expected::Incompatible,
+                    accepted(Off, false, true),
+                    accepted(Off, true, false),
+                ],
+            ),
+            (
+                PlaybackModeState::new(All, true),
+                [
+                    accepted(One, true, true),
+                    accepted(Off, true, true),
+                    Expected::Incompatible,
+                    Expected::Incompatible,
+                    accepted(All, false, true),
+                    Expected::Incompatible,
+                ],
+            ),
+            (
+                PlaybackModeState::new(One, true),
+                [
+                    accepted(Off, true, true),
+                    accepted(Off, true, true),
+                    Expected::Incompatible,
+                    Expected::Incompatible,
+                    accepted(One, false, true),
+                    Expected::Incompatible,
+                ],
+            ),
+        ];
+        let actions = [
+            CycleRepeat,
+            SetRepeat(Off),
+            SetRepeat(All),
+            SetRepeat(One),
+            SetStreaming(false),
+            SetStreaming(true),
+        ];
+
+        for (state, expected) in rows {
+            for (action, expected) in actions.into_iter().zip(expected) {
+                let actual = match state.transition(action) {
+                    Ok(result) => Expected::Accepted(result.state, result.changed),
+                    Err(PlaybackModeTransitionError::IncompatiblePlaybackModes) => {
+                        Expected::Incompatible
+                    }
+                };
+                assert_eq!(actual, expected, "state={state:?}, action={action:?}");
+            }
+        }
+    }
 
     #[test]
     fn clamp_seek_target_bounds_unknown_duration_and_respects_known() {

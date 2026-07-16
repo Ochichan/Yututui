@@ -97,14 +97,22 @@ impl DaemonEngine {
             },
             ("playback", "repeat") => {
                 match serde_json::from_value::<crate::queue::Repeat>(value.clone()) {
-                    // Music-mode invariant: can't enable repeat while autoplay streaming is on.
-                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => (
-                        RemoteResponse::err("incompatible_playback_modes"),
-                        Vec::new(),
-                    ),
                     Ok(repeat) => {
-                        self.queue.repeat = repeat;
-                        self.config.repeat = repeat;
+                        let transition = crate::playback_policy::PlaybackModeState::new(
+                            self.queue.repeat,
+                            self.streaming,
+                        )
+                        .transition(
+                            crate::playback_policy::PlaybackModeAction::SetRepeat(repeat),
+                        );
+                        let Ok(transition) = transition else {
+                            return (
+                                RemoteResponse::err("incompatible_playback_modes"),
+                                Vec::new(),
+                            );
+                        };
+                        self.queue.repeat = transition.state.repeat;
+                        self.config.repeat = transition.state.repeat;
                         self.save_config("daemon repeat setting");
                         self.save_session();
                         ok(self)

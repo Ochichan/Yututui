@@ -35,6 +35,10 @@ pub struct AiContext {
     /// Whether a YTM cookie is configured (gates authenticated related-tracks).
     pub authenticated: bool,
     pub autoplay_streaming: bool,
+    /// Whether repeat is currently enabled. Mutation tools use this snapshot to reject an
+    /// incompatible `start_streaming` before doing network or queue work; owners revalidate on
+    /// reduction in case playback mode changed while the AI turn was in flight.
+    pub repeat_on: bool,
 }
 
 /// One reranked pick the DJ Gem returned: the opaque pack `cid` it chose, plus optional
