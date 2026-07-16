@@ -733,9 +733,20 @@ pub async fn run(
     // boundary. The latch remains authoritative even if the compatibility event lane is full.
     let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
+    let hard_exit_mouse = cfg.effective_mouse();
     let mut signal_handlers = match player::lifetime::spawn_signal_handlers(
         shutdown.clone(),
         runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
+        // Second termination signal while the owner loop is wedged: the cooperative path
+        // already killed mpv and asked the owner to quit, so only best-effort terminal
+        // restore and the exit itself remain. Skipping the persistence flush is deliberate —
+        // the owner (and possibly the persist actor) is not responding, and blocking here
+        // would recreate the unkillable hang this fallback exists to break.
+        move |code| {
+            player::lifetime::kill_mpv_now();
+            tui::restore(hard_exit_mouse);
+            std::process::exit(code);
+        },
     ) {
         Ok(handlers) => handlers,
         Err(error) => {
