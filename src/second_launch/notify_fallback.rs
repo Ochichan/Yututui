@@ -19,7 +19,9 @@ pub fn notify_already_running(instance: Option<&InstanceFile>, focused: bool) {
             return;
         }
     }
-    crate::notify::emit_native_notification("YuTuTui!", &body);
+    // Blocking on purpose: the process exits right after this, and a detached notify
+    // thread would be killed before the toast reaches the OS.
+    crate::notify::emit_native_notification_blocking("YuTuTui!", &body);
 }
 
 /// "already running in <where>" with a best-effort location. Pure and tested.

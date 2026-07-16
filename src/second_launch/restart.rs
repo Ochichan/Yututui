@@ -42,7 +42,13 @@ pub enum RestartResult {
 }
 
 pub async fn restart_into_primary(old: Option<&InstanceFile>) -> RestartResult {
-    restart_with_budget(old, RestartBudget::default()).await
+    // The caller's snapshot predates the chooser, which can sit for its whole timeout —
+    // the primary may have handed over in the meantime. Quit targets whatever currently
+    // owns the socket, so the exit wait must track the CURRENT owner's pid, not the
+    // snapshot's (a long-gone pid degrades the wait to nothing while the real owner is
+    // still flushing). The stale snapshot remains the fallback location hint only.
+    let fresh = crate::remote::endpoint::read_current_instance().ok();
+    restart_with_budget(fresh.as_ref().or(old), RestartBudget::default()).await
 }
 
 async fn restart_with_budget(old: Option<&InstanceFile>, budget: RestartBudget) -> RestartResult {

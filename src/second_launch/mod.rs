@@ -86,10 +86,16 @@ pub async fn handle_already_running() -> Outcome {
             Outcome::Exit
         }
         SecondLaunchUx::FocusAndNotify => {
-            let focused = run_focus(instance.as_ref());
-            // Always notify: even a successful silent focus should tell the user why no
-            // new player appeared. Keep the stderr notice too — it may be a log file.
-            notify_fallback::notify_already_running(instance.as_ref(), focused);
+            // Fully-redirected launches are also (false, false, false) — a cron job or
+            // systemd unit must keep the old inert contract, not steal focus and toast.
+            // A GUI launcher always runs inside a graphical session; on unix that means
+            // DISPLAY/WAYLAND_DISPLAY is set (macOS aside, where Aqua needs no env).
+            if has_gui_session() {
+                let focused = run_focus(instance.as_ref());
+                // Always notify: even a successful silent focus should tell the user why
+                // no new player appeared. Keep the stderr notice too — it may be a log.
+                notify_fallback::notify_already_running(instance.as_ref(), focused);
+            }
             eprintln!("{ALREADY_RUNNING_NOTICE}");
             Outcome::Exit
         }
@@ -97,12 +103,31 @@ pub async fn handle_already_running() -> Outcome {
     }
 }
 
+fn has_gui_session() -> bool {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+        set("DISPLAY") || set("WAYLAND_DISPLAY")
+    }
+    #[cfg(any(not(unix), target_os = "macos"))]
+    {
+        true
+    }
+}
+
 async fn run_chooser(instance: Option<&InstanceFile>) -> Outcome {
-    let choice = tokio::task::spawn_blocking(|| chooser::prompt(chooser::CHOOSER_TIMEOUT))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or(chooser::Choice::Quit);
+    let owner = match instance.map(|instance| instance.mode) {
+        Some(crate::remote::proto::InstanceMode::Daemon) => chooser::OwnerKind::Daemon,
+        // A TUI owner or an unreadable descriptor: offer the full menu (focus degrades
+        // gracefully to the printed notice when there is nothing to focus).
+        _ => chooser::OwnerKind::Tui,
+    };
+    let choice =
+        tokio::task::spawn_blocking(move || chooser::prompt(chooser::CHOOSER_TIMEOUT, owner))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(chooser::Choice::Quit);
     match choice {
         chooser::Choice::Focus => {
             if run_focus(instance) {

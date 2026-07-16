@@ -23,8 +23,16 @@ pub enum Choice {
     Quit,
 }
 
+/// Who owns the primary socket. A headless daemon has no terminal to focus, and quitting
+/// it kills a background service — the menu must say so instead of pretending it's a TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerKind {
+    Tui,
+    Daemon,
+}
+
 /// Key → choice, `None` keeps polling. Pure so the mapping is testable without a tty.
-pub fn map_key(key: KeyEvent) -> Option<Choice> {
+pub fn map_key(key: KeyEvent, owner: OwnerKind) -> Option<Choice> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
             KeyCode::Char('c') | KeyCode::Char('C') => Some(Choice::Quit),
@@ -32,7 +40,11 @@ pub fn map_key(key: KeyEvent) -> Option<Choice> {
         };
     }
     match key.code {
-        KeyCode::Enter => Some(Choice::Focus),
+        // With a daemon owner there is nothing to focus; Enter stays the safe default.
+        KeyCode::Enter => Some(match owner {
+            OwnerKind::Tui => Choice::Focus,
+            OwnerKind::Daemon => Choice::Quit,
+        }),
         KeyCode::Char('r') | KeyCode::Char('R') => Some(Choice::Restart),
         KeyCode::Char('n') | KeyCode::Char('N') => Some(Choice::NewInstance),
         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => Some(Choice::Quit),
@@ -59,29 +71,53 @@ impl Drop for RawModeGuard {
 /// Render the menu and block for a decision. Timeout and read errors quit.
 ///
 /// Blocking by design — call from `spawn_blocking`, never on a runtime worker.
-pub fn prompt(timeout: Duration) -> std::io::Result<Choice> {
-    println!(
-        "{}",
-        t!(
-            "YuTuTui! is already running.",
-            "YuTuTui!가 이미 실행 중입니다."
-        )
-    );
-    println!();
-    println!(
-        "{}",
-        t!(
-            "  [Enter] Switch to the running player",
-            "  [Enter] 실행 중인 플레이어로 전환"
-        )
-    );
-    println!(
-        "{}",
-        t!(
-            "  [r]     Restart here (quit the running player and take over)",
-            "  [r]     여기서 다시 시작 (실행 중인 플레이어를 종료하고 인계)"
-        )
-    );
+/// Accepted exposure: the terminal sits in raw mode for up to the whole timeout, and an
+/// external SIGTERM/SIGKILL during that window leaves the shell raw (no signal hooks
+/// exist this early). Same class as any pre-`tui::init` kill, just a longer window.
+pub fn prompt(timeout: Duration, owner: OwnerKind) -> std::io::Result<Choice> {
+    match owner {
+        OwnerKind::Tui => {
+            println!(
+                "{}",
+                t!(
+                    "YuTuTui! is already running.",
+                    "YuTuTui!가 이미 실행 중입니다."
+                )
+            );
+            println!();
+            println!(
+                "{}",
+                t!(
+                    "  [Enter] Switch to the running player",
+                    "  [Enter] 실행 중인 플레이어로 전환"
+                )
+            );
+            println!(
+                "{}",
+                t!(
+                    "  [r]     Restart here (quit the running player and take over)",
+                    "  [r]     여기서 다시 시작 (실행 중인 플레이어를 종료하고 인계)"
+                )
+            );
+        }
+        OwnerKind::Daemon => {
+            println!(
+                "{}",
+                t!(
+                    "YuTuTui! is already running as a background daemon.",
+                    "YuTuTui!가 이미 백그라운드 데몬으로 실행 중입니다."
+                )
+            );
+            println!();
+            println!(
+                "{}",
+                t!(
+                    "  [r]     Stop the background daemon and play here instead",
+                    "  [r]     백그라운드 데몬을 종료하고 여기서 재생"
+                )
+            );
+        }
+    }
     println!(
         "{}",
         t!(
@@ -102,7 +138,7 @@ pub fn prompt(timeout: Duration) -> std::io::Result<Choice> {
         if crossterm::event::poll(POLL_TICK.min(remaining))? {
             match crossterm::event::read()? {
                 Event::Key(key) if key.is_press() => {
-                    if let Some(choice) = map_key(key) {
+                    if let Some(choice) = map_key(key, owner) {
                         // Terminate the countdown line before cooked-mode output resumes.
                         println!("\r");
                         return Ok(choice);
@@ -138,24 +174,52 @@ mod tests {
 
     #[test]
     fn keys_map_to_choices_and_unknown_keys_keep_polling() {
-        assert_eq!(map_key(key(KeyCode::Enter)), Some(Choice::Focus));
-        assert_eq!(map_key(key(KeyCode::Char('r'))), Some(Choice::Restart));
-        assert_eq!(map_key(key(KeyCode::Char('R'))), Some(Choice::Restart));
-        assert_eq!(map_key(key(KeyCode::Char('n'))), Some(Choice::NewInstance));
-        assert_eq!(map_key(key(KeyCode::Char('N'))), Some(Choice::NewInstance));
-        assert_eq!(map_key(key(KeyCode::Char('q'))), Some(Choice::Quit));
-        assert_eq!(map_key(key(KeyCode::Char('Q'))), Some(Choice::Quit));
-        assert_eq!(map_key(key(KeyCode::Esc)), Some(Choice::Quit));
+        let tui = OwnerKind::Tui;
+        assert_eq!(map_key(key(KeyCode::Enter), tui), Some(Choice::Focus));
+        assert_eq!(map_key(key(KeyCode::Char('r')), tui), Some(Choice::Restart));
+        assert_eq!(map_key(key(KeyCode::Char('R')), tui), Some(Choice::Restart));
         assert_eq!(
-            map_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            map_key(key(KeyCode::Char('n')), tui),
+            Some(Choice::NewInstance)
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('N')), tui),
+            Some(Choice::NewInstance)
+        );
+        assert_eq!(map_key(key(KeyCode::Char('q')), tui), Some(Choice::Quit));
+        assert_eq!(map_key(key(KeyCode::Char('Q')), tui), Some(Choice::Quit));
+        assert_eq!(map_key(key(KeyCode::Esc), tui), Some(Choice::Quit));
+        assert_eq!(
+            map_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                tui
+            ),
             Some(Choice::Quit)
         );
-        assert_eq!(map_key(key(KeyCode::Char('x'))), None);
-        assert_eq!(map_key(key(KeyCode::Tab)), None);
+        assert_eq!(map_key(key(KeyCode::Char('x')), tui), None);
+        assert_eq!(map_key(key(KeyCode::Tab), tui), None);
         // A modified letter is not a plain choice key.
         assert_eq!(
-            map_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            map_key(
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                tui
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn daemon_owner_makes_enter_the_safe_quit_never_a_kill() {
+        let daemon = OwnerKind::Daemon;
+        assert_eq!(map_key(key(KeyCode::Enter), daemon), Some(Choice::Quit));
+        // Stopping the daemon stays an explicit, spelled-out keypress.
+        assert_eq!(
+            map_key(key(KeyCode::Char('r')), daemon),
+            Some(Choice::Restart)
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('n')), daemon),
+            Some(Choice::NewInstance)
         );
     }
 }

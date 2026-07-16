@@ -325,10 +325,12 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // The primary owner must hold one process-wide writer lease before Config::load can migrate
     // anything. A deliberate secondary player remains available, but only as strict read-only;
     // normal owners and mutating CLI paths fail rather than accepting state a newer epoch discards.
-    // A restart takeover retries briefly: the old owner's lease provably dies with its process
-    // (we already waited for pid exit), but the OS can lag releasing the lock file.
+    // A restart takeover retries for a few seconds: the restart sequence waits for the
+    // owner's pid to exit when the descriptor names one, but a stale/foreign descriptor
+    // degrades that wait to a fixed grace — the flock lease is then the only arbiter, and
+    // the old owner may still be flushing behind its already-released socket.
     let persistence_access = if via_restart {
-        initialize_interactive_persistence_with_retry(read_only, 3)?
+        initialize_interactive_persistence_with_retry(read_only, 10)?
     } else {
         initialize_interactive_persistence(read_only)?
     };
