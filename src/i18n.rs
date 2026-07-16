@@ -2,11 +2,11 @@
 //!
 //! A single process-wide language (set once at startup from [`crate::config::Config`], and
 //! again whenever the user changes the Settings → General language dropdown) drives a
-//! [`t!`](crate::t) macro that returns the right `&'static str`. Keeping both the English and
-//! Korean strings side-by-side at each call site keeps translations reviewable and — crucially
-//! — avoids threading a language parameter through every `label()`/render function. The few
-//! `format!` sites that can't wrap a string literal pick a whole translated string with
-//! [`is_korean`] instead.
+//! [`t!`](crate::t) macro that returns the right `&'static str`. Keeping the English, Korean,
+//! and Japanese strings side-by-side at each call site keeps translations reviewable and —
+//! crucially — avoids threading a language parameter through every `label()`/render function.
+//! The few `format!` sites that can't wrap a string literal pick a whole translated string by
+//! matching on [`current`] instead.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -22,11 +22,12 @@ pub enum Language {
     #[default]
     English,
     Korean,
+    Japanese,
 }
 
 impl Language {
     /// All languages in the settings dropdown order.
-    pub const CYCLE: [Language; 2] = [Language::English, Language::Korean];
+    pub const CYCLE: [Language; 3] = [Language::English, Language::Korean, Language::Japanese];
 
     /// The language's own native name, shown in the settings dropdown. Never translated —
     /// each language names itself the same way regardless of the active UI language.
@@ -34,6 +35,7 @@ impl Language {
         match self {
             Language::English => "English",
             Language::Korean => "한국어",
+            Language::Japanese => "日本語",
         }
     }
 
@@ -52,6 +54,7 @@ impl Language {
     fn from_u8(v: u8) -> Self {
         match v {
             1 => Language::Korean,
+            2 => Language::Japanese,
             _ => Language::English,
         }
     }
@@ -208,12 +211,22 @@ pub fn dj_gem_language() -> DjGemLanguage {
     DjGemLanguage::from_u8(DJ_GEM.load(Ordering::Relaxed))
 }
 
-/// Pick a `&'static str` by the active language: `t!("English text", "한국어 텍스트")`. Returns
-/// the English arm for any non-Korean language. Both arms must be string literals (or
+/// Pick a `&'static str` by the active language:
+/// `t!("English text", "한국어 텍스트", "日本語テキスト")`. All arms must be string literals (or
 /// `&'static str` consts) so the result stays `&'static str` and the macro drops cleanly into
 /// existing `match self => "…"` label functions.
+///
+/// The two-arm form is TRANSITIONAL (Japanese falls back to English) and is deleted once the
+/// Japanese translation pass lands — do not add new two-arm call sites.
 #[macro_export]
 macro_rules! t {
+    ($en:expr, $ko:expr, $ja:expr $(,)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::Korean => $ko,
+            $crate::i18n::Language::Japanese => $ja,
+            _ => $en,
+        }
+    };
     ($en:expr, $ko:expr $(,)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::Korean => $ko,
@@ -268,21 +281,39 @@ mod tests {
             serde_json::to_string(&Language::Korean).unwrap(),
             "\"korean\""
         );
+        assert_eq!(
+            serde_json::to_string(&Language::Japanese).unwrap(),
+            "\"japanese\""
+        );
         let back: Language = serde_json::from_str("\"english\"").unwrap();
         assert_eq!(back, Language::English);
+        let back: Language = serde_json::from_str("\"japanese\"").unwrap();
+        assert_eq!(back, Language::Japanese);
     }
 
     #[test]
     fn cycle_wraps_both_ways() {
         assert_eq!(Language::English.cycled(true), Language::Korean);
-        assert_eq!(Language::Korean.cycled(true), Language::English); // wraps
-        assert_eq!(Language::English.cycled(false), Language::Korean); // wraps back
+        assert_eq!(Language::Korean.cycled(true), Language::Japanese);
+        assert_eq!(Language::Japanese.cycled(true), Language::English); // wraps
+        assert_eq!(Language::English.cycled(false), Language::Japanese); // wraps back
+        assert_eq!(Language::Japanese.cycled(false), Language::Korean);
     }
 
     #[test]
     fn native_names_are_self_describing() {
         assert_eq!(Language::English.native_name(), "English");
         assert_eq!(Language::Korean.native_name(), "한국어");
+        assert_eq!(Language::Japanese.native_name(), "日本語");
+    }
+
+    #[test]
+    fn language_u8_mapping_round_trips() {
+        // The process-wide global is an `AtomicU8`; every variant must survive the
+        // `as u8` / `from_u8` round-trip the setter/getter rely on.
+        for lang in Language::CYCLE {
+            assert_eq!(Language::from_u8(lang as u8), lang);
+        }
     }
 
     #[test]
@@ -303,6 +334,13 @@ mod tests {
             Language::Korean,
             "a concurrent config application must not change this test's render language"
         );
+
+        set_language(Language::Japanese);
+        assert!(!is_korean());
+        assert_eq!(current(), Language::Japanese);
+        assert_eq!(t!("Settings", "설정", "設定"), "設定");
+        // Transitional two-arm form: Japanese falls back to the English arm.
+        assert_eq!(t!("Settings", "설정"), "Settings");
 
         set_language(Language::English);
         assert!(!is_korean());

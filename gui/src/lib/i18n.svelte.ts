@@ -9,10 +9,11 @@
 
 import en from '../i18n/en.json';
 import ko from '../i18n/ko.json';
+import ja from '../i18n/ja.json';
 
 type Catalog = Record<string, string>;
 
-const CATALOGS: Record<string, Catalog> = { en: en as Catalog, ko: ko as Catalog };
+const CATALOGS: Record<string, Catalog> = { en: en as Catalog, ko: ko as Catalog, ja: ja as Catalog };
 const FALLBACK = 'en';
 
 class I18n {
@@ -47,4 +48,5 @@ export const t = i18n.t;
 export const LANGUAGES: Array<{ code: string; label: string }> = [
   { code: 'en', label: 'English' },
   { code: 'ko', label: '한국어' },
+  { code: 'ja', label: '日本語' },
 ];
