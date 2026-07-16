@@ -32,6 +32,11 @@ if default_members != {"Cargo.toml"}:
 for vendored in ("crates/crossterm/Cargo.toml", "crates/ratatui-image/Cargo.toml"):
     if vendored in members:
         raise SystemExit(f"vendored fork must remain excluded from the workspace: {vendored}")
+    with open(os.path.join(root, vendored), encoding="utf-8") as manifest:
+        if "\n[workspace]\n" not in manifest.read():
+            raise SystemExit(
+                f"excluded vendored fork needs a standalone [workspace] boundary: {vendored}"
+            )
 
 core = packages["crates/yututui-core/Cargo.toml"]
 if core["publish"] != []:

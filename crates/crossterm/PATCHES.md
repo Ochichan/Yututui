@@ -24,6 +24,8 @@ event parser.
 - Apply six behavior-neutral lint cleanups in upstream terminal/event/Unix/example code so 0.29.0
   remains warning-free under the repository's newer `-D warnings` toolchain.
 - Keep the vendored crate's upstream standalone `Cargo.lock` visible to Git.
+- Keep an empty local `[workspace]` boundary so standalone fmt/clippy/test commands do not inherit
+  yututui's parent workspace while the fork remains excluded from its members.
 - Propagate keyboard-enhancement polling errors instead of retrying forever, keeping terminal
   capability probing bounded and allowing the application to select its conservative fallback.
 
