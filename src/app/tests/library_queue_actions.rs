@@ -6,9 +6,9 @@ fn enter_on_library_plays_selected_song_keeping_the_queue() {
     let mut app = app_playing(2, 0);
     let before_len = app.queue.len();
     // Library has a couple of history tracks; open it and select the top one.
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("lib0", "Lib Zero", "A", "3:00"));
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("lib1", "Lib One", "B", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -36,7 +36,7 @@ fn backslash_on_library_enqueues_selected_song_without_interrupting() {
     let mut app = app_playing(2, 0);
     let before_len = app.queue.len();
     let playing = app.prefetch.loaded_video_id.clone();
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -56,7 +56,7 @@ fn backslash_on_library_enqueues_selected_song_without_interrupting() {
 #[test]
 fn enqueue_defaults_to_appending_at_the_queue_end() {
     let mut app = app_playing(3, 0);
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -79,7 +79,7 @@ fn enqueue_defaults_to_appending_at_the_queue_end() {
 fn enqueue_next_setting_inserts_after_the_current_track() {
     let mut app = app_playing(3, 0);
     app.config.enqueue_next = Some(true);
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -102,7 +102,7 @@ fn enqueue_next_setting_inserts_after_the_current_track() {
 #[test]
 fn enter_on_library_drag_selection_plays_all_selected_tracks() {
     let mut app = app_playing(2, 0);
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("f0", "F0", "A", "3:00"),
         Song::remote("f1", "F1", "B", "3:00"),
         Song::remote("f2", "F2", "C", "3:00"),
@@ -133,7 +133,7 @@ fn enter_on_library_drag_selection_plays_all_selected_tracks() {
 fn backslash_on_library_drag_selection_enqueues_all_selected_tracks() {
     let mut app = app_playing(2, 0);
     let playing = app.prefetch.loaded_video_id.clone();
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("f0", "F0", "A", "3:00"),
         Song::remote("f1", "F1", "B", "3:00"),
         Song::remote("f2", "F2", "C", "3:00"),
@@ -160,7 +160,7 @@ fn backslash_on_library_drag_selection_enqueues_all_selected_tracks() {
 fn a_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     // A 2-track queue is already playing id0/id1.
     let mut app = app_playing(2, 0);
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("f0", "F0", "A", "3:00"),
         Song::remote("f1", "F1", "B", "3:00"),
         Song::remote("f2", "F2", "C", "3:00"),

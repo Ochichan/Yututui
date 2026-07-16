@@ -78,7 +78,7 @@ impl App {
         } else {
             self.status.text.clear();
         }
-        self.library.record_play(&song);
+        self.library_mut().record_play(&song);
         if !song.is_radio_station() {
             self.note_session_activity();
         }

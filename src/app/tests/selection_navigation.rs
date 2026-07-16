@@ -168,7 +168,7 @@ fn library_delete_cell_context_menu_can_add_that_row_to_the_queue() {
     let playing = app.prefetch.loaded_video_id.clone();
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::Favorites;
-    app.library.favorites = vec![Song::remote("fav0", "Favorite Zero", "A", "3:00")];
+    app.library_mut().favorites = vec![Song::remote("fav0", "Favorite Zero", "A", "3:00")];
 
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::LibraryDel(0));

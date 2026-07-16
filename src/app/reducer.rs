@@ -829,7 +829,7 @@ impl App {
                     ];
                 }
                 AiMsg::CreatePlaylist(name) => {
-                    if self.playlists.create(&name).is_some() {
+                    if self.playlists_mut().create(&name).is_some() {
                         self.dirty = true;
                         return vec![Cmd::Persist(PersistCmd::Playlists)];
                     }
@@ -838,7 +838,7 @@ impl App {
                     let mut any = false;
                     for song in songs {
                         if matches!(
-                            self.playlists.add(&playlist, song),
+                            self.playlists_mut().add(&playlist, song),
                             crate::playlists::AddResult::Added
                         ) {
                             any = true;

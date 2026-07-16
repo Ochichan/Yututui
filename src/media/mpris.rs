@@ -165,7 +165,11 @@ async fn apply_item(
             apply_snapshot_event(server, state, event.snapshot, event.changes).await;
         }
         DeliveryItem::Progress(progress) => {
-            progress.apply_to(&mut state.lock().unwrap());
+            progress.apply_to(
+                &mut state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
     }
 }
@@ -181,7 +185,9 @@ async fn apply_snapshot_event(
 
     // Install event A before emitting any facet of A. The receiver does not
     // expose B until this call returns, preserving logical order.
-    *state.lock().unwrap() = snapshot;
+    *state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
     if !properties.is_empty()
         && let Err(e) = server.properties_changed(properties).await
     {
@@ -190,7 +196,10 @@ async fn apply_snapshot_event(
     if seeked {
         // Match origin timing: interpolate after PropertiesChanged completes
         // while state still contains this exact event.
-        let position = state.lock().unwrap().position_now();
+        let position = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .position_now();
         if let Err(e) = server
             .emit(Signal::Seeked {
                 position: Time::from_micros((position * 1e6) as i64),
@@ -238,7 +247,10 @@ struct Player {
 
 impl Player {
     fn snapshot(&self) -> MediaSnapshot {
-        self.state.lock().unwrap().clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn send_fdo(&self, cmd: MediaCommand) -> fdo::Result<()> {

@@ -281,7 +281,7 @@ impl LocalFindCorpus {
             return Some(3);
         }
         let phrase = terms.join(" ");
-        if document.label_sort == phrase {
+        if document.label_sort.as_ref() == phrase.as_str() {
             return Some(0);
         }
         if document.label_sort.starts_with(&phrase) {

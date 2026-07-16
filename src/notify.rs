@@ -4,8 +4,10 @@
 //! the terminal emulator posts the OS notification, so it's zero-dependency, works on all three
 //! OSes, is attributed to the terminal (not "Script Editor"/"Finder"), already has the terminal's
 //! notification permission, and supports click-to-focus. When the terminal doesn't advertise OSC
-//! support we fall back to a native [`notify-rust`] toast on a background thread (`show()` blocks).
-//! The in-app status toast (set in the recorder reducer) is the final fallback and always shows.
+//! support we fall back to a native [`notify-rust`] toast on a background thread (`show()` blocks)
+//! — except on macOS `panic = "abort"` (release) builds, where the native path is skipped
+//! entirely (see [`emit_native`]). The in-app status toast (set in the recorder reducer) is the
+//! final fallback and always shows.
 //!
 //! Detection is env-based and done once at startup; emission is best-effort and never surfaces an
 //! error to the caller.
@@ -100,9 +102,19 @@ fn sanitize(s: &str) -> String {
 }
 
 /// Native OS toast via `notify-rust`, off the caller's thread (`show()` blocks on every OS) and
-/// inside `catch_unwind` (the macOS `NSUserNotification` backend can panic on some OS versions —
-/// contain it so a failed notification can never take down the TUI). Best-effort.
+/// inside `catch_unwind`. The macOS `NSUserNotification` backend can panic on some OS versions;
+/// `catch_unwind` contains that only in unwind builds (dev/test) — release builds compile with
+/// `panic = "abort"`, where a panic on this spawned thread aborts the whole process. Abort builds
+/// therefore skip the macOS native toast entirely: the TUI recording path still shows its in-app
+/// status toast (set unconditionally in the recorder reducer), and the desktop-shell path
+/// degrades to its log line. Best-effort.
 fn emit_native(title: String, body: String) {
+    #[cfg(all(target_os = "macos", panic = "abort"))]
+    {
+        let _ = (title, body);
+        return;
+    }
+    #[cfg(not(all(target_os = "macos", panic = "abort")))]
     std::thread::spawn(move || {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut n = notify_rust::Notification::new();

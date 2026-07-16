@@ -96,9 +96,9 @@ impl App {
     fn personal_export_sources(&self, config: Config) -> PersonalDataExportSources {
         PersonalDataExportSources {
             config,
-            library: self.library.clone(),
-            playlists: self.playlists.clone(),
-            signals: self.signals.clone(),
+            library: self.library.as_ref().clone(),
+            playlists: self.playlists.as_ref().clone(),
+            signals: self.signals.as_ref().clone(),
             station: self.station.clone(),
         }
     }
@@ -348,7 +348,7 @@ mod tests {
         let mut app = App::new(100);
         let mut song = Song::remote("track", "Track", "Artist", "1:00");
         song.artists = vec![String::new(); NESTED_TEXT_ITEMS_LIMIT + 1];
-        app.playlists.playlists.push(Playlist {
+        app.playlists_mut().playlists.push(Playlist {
             id: "nested".to_owned(),
             name: "Nested".to_owned(),
             songs: vec![song],
@@ -368,7 +368,7 @@ mod tests {
         let _guard = crate::i18n::lock_for_test();
         let mut app = App::new(100);
         app.open_settings();
-        app.playlists.playlists.push(Playlist {
+        app.playlists_mut().playlists.push(Playlist {
             id: "too-large".to_owned(),
             name: "Too large".to_owned(),
             songs: vec![Song::remote("track", "Track", "Artist", "1:00"); PLAYLIST_TRACK_LIMIT + 1],

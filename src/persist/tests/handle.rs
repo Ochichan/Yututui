@@ -26,8 +26,8 @@ fn save_replaces_pending_without_queueing_payloads() {
         crate::playlists::AddResult::Added
     );
 
-    let _ = handle.save(Snapshot::Playlists(created)).unwrap();
-    let _ = handle.save(Snapshot::Playlists(added)).unwrap();
+    let _ = handle.save(Snapshot::Playlists(Arc::new(created))).unwrap();
+    let _ = handle.save(Snapshot::Playlists(Arc::new(added))).unwrap();
 
     assert!(rx.try_recv().is_err(), "save must not enqueue snapshots");
     let guard = lock(&pending);
@@ -39,6 +39,43 @@ fn save_replaces_pending_without_queueing_payloads() {
     };
     let focus = playlists.find("Focus").expect("focus playlist");
     assert_eq!(focus.songs.len(), 1);
+}
+
+#[test]
+fn app_library_save_shares_allocation_and_cow_preserves_snapshot() {
+    let handle = detached_test_handle();
+    let mut app = crate::app::App::new(50);
+    let song = crate::api::Song::remote("id0", "Track", "Artist", "3:00");
+
+    let _ = handle
+        .save(Snapshot::Library(Arc::clone(&app.library)))
+        .expect("library snapshot admitted");
+    let captured = {
+        let guard = lock(&handle.pending);
+        let Some(OwnedSnapshot::Library(library)) = guard
+            .get(&StoreKind::Library)
+            .and_then(|operation| operation.snapshot())
+        else {
+            panic!("expected library snapshot");
+        };
+        assert!(
+            Arc::ptr_eq(&app.library, library),
+            "save must retain the app's allocation instead of deep-cloning it"
+        );
+        Arc::clone(library)
+    };
+
+    app.library_mut().record_play(&song);
+
+    assert!(!Arc::ptr_eq(&app.library, &captured));
+    assert!(captured.history.is_empty(), "captured snapshot changed");
+    assert_eq!(
+        app.library
+            .history
+            .front()
+            .map(|song| song.video_id.as_str()),
+        Some("id0")
+    );
 }
 
 fn injected_snapshot(kind: StoreKind, label: &'static str) -> Snapshot {

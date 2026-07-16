@@ -62,7 +62,8 @@ impl App {
             crate::app::TransferPlaylistCommit {
                 request,
                 owner_base_revision: self.playlists.revision(),
-                candidate: self.playlists.clone(),
+                // Detach from the shared Arc: the commit protocol owns its candidate outright.
+                candidate: (*self.playlists).clone(),
                 kind: crate::app::TransferPlaylistCommitKind::RestoreThenFail {
                     error,
                     retry_attempt,
@@ -107,7 +108,7 @@ impl App {
                         self.plan_transfer_playlist_commit(request, patch, true)
                     }
                     TargetFlushOutcome::CommittedExact => {
-                        self.playlists = candidate;
+                        self.playlists = std::sync::Arc::new(candidate);
                         self.reconcile_playlists_reload();
                         self.dirty = true;
                         request.respond(Ok(
@@ -270,7 +271,7 @@ impl App {
                     crate::transfer::local_playlist::LocalPlaylistOwnerRequest::Snapshot => {
                         request.respond(Ok(
                             crate::transfer::local_playlist::LocalPlaylistOwnerReply::Snapshot(
-                                self.playlists.clone(),
+                                (*self.playlists).clone(),
                             ),
                         ));
                         Vec::new()
@@ -424,9 +425,12 @@ mod tests {
     fn exact_revision_race_rebases_on_latest_live_store_before_installing() {
         let mut app = App::new(50);
         let (stale_commit, mut reply) = begin(&mut app, 2);
-        let destination = app.playlists.create("Transfer").expect("owner playlist");
+        let destination = app
+            .playlists_mut()
+            .create("Transfer")
+            .expect("owner playlist");
         assert_eq!(
-            app.playlists.add(
+            app.playlists_mut().add(
                 &destination,
                 crate::api::Song::remote("owner-row", "Owner Row", "Artist", "3:00"),
             ),
@@ -474,9 +478,12 @@ mod tests {
     fn superseded_target_replans_against_latest_live_store_without_replying() {
         let mut app = App::new(50);
         let (stale_commit, mut reply) = begin(&mut app, 3);
-        let destination = app.playlists.create("Transfer").expect("owner playlist");
+        let destination = app
+            .playlists_mut()
+            .create("Transfer")
+            .expect("owner playlist");
         assert_eq!(
-            app.playlists.add(
+            app.playlists_mut().add(
                 &destination,
                 crate::api::Song::remote("owner-row", "Owner Row", "Artist", "3:00"),
             ),
@@ -549,7 +556,7 @@ mod tests {
         ] {
             let mut app = App::new(50);
             let destination = app
-                .playlists
+                .playlists_mut()
                 .create("Ephemeral Destination")
                 .expect("owner destination");
             let owner_revision = app.playlists.revision();
@@ -571,7 +578,7 @@ mod tests {
                     }],
                 },
             );
-            app.playlists
+            app.playlists_mut()
                 .delete(&destination)
                 .expect("concurrent owner delete");
 

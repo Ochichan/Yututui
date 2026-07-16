@@ -530,7 +530,7 @@ fn empty_queue_resume_restores_history_only_after_admission() {
     use crate::util::delivery::DeliveryReceipt;
 
     let mut app = App::new(100);
-    app.library
+    app.library_mut()
         .record_play(&Song::remote("history", "History", "A", "3:00"));
     let history_len = app.library.history.len();
     let rev = app.queue.rev();
@@ -576,7 +576,7 @@ fn rejected_empty_queue_resume_keeps_history_seed_uncommitted() {
         (DeliveryError::Closed, "player_unavailable"),
     ] {
         let mut app = App::new(100);
-        app.library
+        app.library_mut()
             .record_play(&Song::remote("history", "History", "A", "3:00"));
         let history_len = app.library.history.len();
         let rev = app.queue.rev();

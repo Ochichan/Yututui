@@ -408,7 +408,7 @@ impl App {
             Some(Action::Favorite) => {
                 if let Some(song) = self.selected_library_song() {
                     let rows_before = self.library_len();
-                    self.library.toggle_favorite(&song);
+                    self.library_mut().toggle_favorite(&song);
                     // Un-favoriting can remove the row (Favorites/All tab): re-clamp and
                     // drop the now-stale picks. Tabs where the row list is unchanged
                     // (e.g. History) keep the selection.

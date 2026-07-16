@@ -1363,7 +1363,7 @@ fn streaming_exclude_ids_matches_across_owners() {
 
     let mut app = App::new(Config::default().volume);
     app.queue.restore_snapshot(snap);
-    app.library = library;
+    app.library = Arc::new(library);
 
     let mut app_ids = app.streaming_exclude_ids("seed-x");
     let mut eng_ids = engine.streaming_exclude_ids("seed-x");

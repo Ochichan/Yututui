@@ -175,7 +175,7 @@ pub(super) fn confirm_on_f5_keymap() -> KeyMap {
 
 pub(super) fn app_with_three_favorites() -> App {
     let mut app = app_playing(2, 0);
-    app.library.favorites = vec![
+    app.library_mut().favorites = vec![
         Song::remote("f0", "F0", "A", "3:00"),
         Song::remote("f1", "F1", "B", "3:00"),
         Song::remote("f2", "F2", "C", "3:00"),
@@ -418,7 +418,7 @@ pub(super) fn fsong(id: &str, title: &str, artist: &str) -> Song {
 /// Opens the Favorites tab with the given favorites (set directly for a deterministic order).
 pub(super) fn app_with_favorites(favs: Vec<Song>) -> App {
     let mut app = App::new(100);
-    app.library.favorites = favs;
+    app.library_mut().favorites = favs;
     app.update(Msg::Key(key(KeyCode::Char('l')))); // open library (All)
     app.update(Msg::Key(key(KeyCode::Tab))); // All -> Favorites
     assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
@@ -798,11 +798,13 @@ pub(super) fn choose_context_menu_item(app: &mut App, index: usize) -> Vec<Cmd> 
 
 pub(super) fn app_with_playlists() -> App {
     let mut app = App::new(100);
-    app.playlists.create("Alpha");
-    app.playlists.add("Alpha", fsong("a1", "Song A1", "X"));
-    app.playlists.add("Alpha", fsong("a2", "Song A2", "Y"));
-    app.playlists.create("Beta");
-    app.playlists.add("Beta", fsong("b1", "Song B1", "Z"));
+    app.playlists_mut().create("Alpha");
+    app.playlists_mut()
+        .add("Alpha", fsong("a1", "Song A1", "X"));
+    app.playlists_mut()
+        .add("Alpha", fsong("a2", "Song A2", "Y"));
+    app.playlists_mut().create("Beta");
+    app.playlists_mut().add("Beta", fsong("b1", "Song B1", "Z"));
     open_library_tab(&mut app, LibraryTab::Playlists);
     app
 }
@@ -812,7 +814,7 @@ pub(super) fn app_with_picker_fixture() -> App {
         fsong("s1", "Song One", "A"),
         fsong("s2", "Song Two", "B"),
     ]);
-    app.playlists.create("Mix");
+    app.playlists_mut().create("Mix");
     app
 }
 

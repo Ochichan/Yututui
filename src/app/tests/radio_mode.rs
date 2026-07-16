@@ -360,7 +360,7 @@ fn persisted_radio_theme_survives_restart_into_radio_session() {
 
     let mut app = App::new(100);
     app.apply_config(&cfg);
-    app.library.record_play(&radio_station("latest"));
+    app.library_mut().record_play(&radio_station("latest"));
     app.restore_last_session_from_library(true);
 
     assert!(app.radio_dedicated_mode);

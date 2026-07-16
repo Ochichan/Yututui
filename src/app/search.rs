@@ -366,7 +366,7 @@ impl App {
                         if song.youtube_playlist_id().is_some() {
                             return self.playlist_row_hint();
                         }
-                        self.library.toggle_favorite(&song);
+                        self.library_mut().toggle_favorite(&song);
                         self.dirty = true;
                         return vec![Cmd::Persist(PersistCmd::Library)];
                     }
@@ -766,7 +766,7 @@ impl App {
                 Vec::new()
             }
             PlaylistIntent::Import => {
-                let Some(id) = self.playlists.create(&title) else {
+                let Some(id) = self.playlists_mut().create(&title) else {
                     self.status.text = t!(
                         "Could not create the playlist (name in use or limit reached)",
                         "플레이리스트를 만들 수 없어요 (이름 중복 또는 한도 초과)"
@@ -777,7 +777,7 @@ impl App {
                 let mut added = 0usize;
                 for song in songs {
                     if matches!(
-                        self.playlists.add(&id, song),
+                        self.playlists_mut().add(&id, song),
                         crate::playlists::AddResult::Added
                     ) {
                         added += 1;

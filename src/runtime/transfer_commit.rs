@@ -47,8 +47,9 @@ async fn persist_transfer_playlist_commit(
         tokio::time::sleep(restore_retry_delay(attempt)).await;
     }
     let restore = restore_attempt.is_some();
+    let candidate = std::sync::Arc::new(commit.candidate.clone());
     let target = loop {
-        match persist.save_tracked(Snapshot::Playlists(commit.candidate.clone())) {
+        match persist.save_tracked(Snapshot::Playlists(candidate.clone())) {
             Ok(target) => break target,
             Err(error) if restore => {
                 // A prior candidate may already be durable. Never release the checkpoint waiter

@@ -654,7 +654,22 @@ impl App {
         }
     }
 
+    /// Whether the owner loop's IME scrub arm may run this turn. Text entry always suppresses it
+    /// (the focused editor owns the cursor there); outside text entry it runs only while the
+    /// event-armed burst is live, so a static idle screen has zero scrub wakeups.
     pub fn should_scrub_ime_preedit(&self) -> bool {
-        !self.in_text_entry()
+        !self.in_text_entry() && self.ime_scrub_burst > 0
+    }
+
+    /// Re-arm the IME scrub burst. The owner loop calls this for every received terminal event
+    /// (keys, focus changes, resize, paste — including events that translate to no message):
+    /// terminal activity is what creates terminal-owned preedit ghosts.
+    pub fn arm_ime_scrub_burst(&mut self) {
+        self.ime_scrub_burst = super::IME_SCRUB_BURST_TICKS;
+    }
+
+    /// Account one delivered scrub tick; at zero the select arm parks until the next event.
+    pub fn consume_ime_scrub_tick(&mut self) {
+        self.ime_scrub_burst = self.ime_scrub_burst.saturating_sub(1);
     }
 }

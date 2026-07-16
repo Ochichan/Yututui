@@ -41,16 +41,16 @@ fn session_snapshot_preserves_local_mode_queue() {
     let mut engine = tests::engine_with_queue(&["local-a", "local-b"]);
     engine.last_mode = LastMode::Local;
     engine.queue.next(false);
-    engine.inactive_normal_queue = Some({
+    engine.inactive_normal_queue = Some(Arc::new({
         let mut queue = Queue::default();
         queue.set(vec![song("normal")], 0);
         queue.snapshot()
-    });
-    engine.inactive_radio_queue = Some({
+    }));
+    engine.inactive_radio_queue = Some(Arc::new({
         let mut queue = Queue::default();
         queue.set(vec![tests::radio_station("radio")], 0);
         queue.snapshot()
-    });
+    }));
 
     let cache = engine.session_cache_snapshot();
 

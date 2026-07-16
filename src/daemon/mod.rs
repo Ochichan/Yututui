@@ -241,18 +241,26 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // before the out-of-band latch and guardian revocation path exist.
     let shutdown = crate::player::lifetime::ShutdownLatch::new();
     let signal_event_tx = event_tx.clone();
-    let mut signal_handlers =
-        match crate::player::lifetime::spawn_signal_handlers(shutdown.clone(), move |_| {
+    let mut signal_handlers = match crate::player::lifetime::spawn_signal_handlers(
+        shutdown.clone(),
+        move |_| {
             // Compatibility/observability event only: the owner loop waits on `shutdown`
             // directly, so saturation here cannot delay teardown.
             record_daemon_event(&signal_event_tx, DaemonEvent::Signal);
-        }) {
-            Ok(handlers) => handlers,
-            Err(error) => {
-                eprintln!("ytt daemon: failed to register termination signals: {error}");
-                return EXIT_TRANSPORT;
-            }
-        };
+        },
+        // Second termination signal while the owner loop is wedged: mpv was already killed by
+        // the cooperative path; there is no terminal to restore, so just refuse to hang.
+        |code| {
+            crate::player::lifetime::kill_mpv_now();
+            std::process::exit(code);
+        },
+    ) {
+        Ok(handlers) => handlers,
+        Err(error) => {
+            eprintln!("ytt daemon: failed to register termination signals: {error}");
+            return EXIT_TRANSPORT;
+        }
+    };
     let mut engine = match await_owner_handler(
         &shutdown,
         engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {

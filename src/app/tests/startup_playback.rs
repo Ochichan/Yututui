@@ -23,8 +23,8 @@ fn space_toggles_pause_and_emits_cmd() {
 #[test]
 fn restores_last_history_track_without_autoplaying() {
     let mut app = App::new(100);
-    app.library.record_play(&songs(2)[0]);
-    app.library.record_play(&songs(2)[1]);
+    app.library_mut().record_play(&songs(2)[0]);
+    app.library_mut().record_play(&songs(2)[1]);
     app.restore_last_played_from_library();
     assert_eq!(app.queue.len(), 1);
     assert_eq!(current(&app), "id1");
@@ -35,7 +35,7 @@ fn restores_last_history_track_without_autoplaying() {
 #[test]
 fn play_loads_restored_history_track() {
     let mut app = App::new(100);
-    app.library.record_play(&songs(1)[0]);
+    app.library_mut().record_play(&songs(1)[0]);
     app.restore_last_played_from_library();
     let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
     assert_loads_video(&cmds, "id0");
@@ -54,7 +54,7 @@ fn play_loads_restored_history_track() {
 #[test]
 fn autoplay_on_start_plays_restored_track_when_enabled() {
     let mut app = App::new(100);
-    app.library.record_play(&songs(1)[0]);
+    app.library_mut().record_play(&songs(1)[0]);
     app.restore_last_played_from_library();
     app.config.autoplay_on_start = Some(true);
     // The launch trigger loads the restored track and starts it (no key press).
@@ -75,7 +75,7 @@ fn autoplay_on_start_plays_restored_track_when_enabled() {
 #[test]
 fn autoplay_on_start_is_noop_when_disabled() {
     let mut app = App::new(100);
-    app.library.record_play(&songs(1)[0]);
+    app.library_mut().record_play(&songs(1)[0]);
     app.restore_last_played_from_library();
     // Default (opt-in off): the trigger does nothing; the track stays paused and unloaded.
     assert!(!app.config.effective_autoplay_on_start());
@@ -88,8 +88,8 @@ fn autoplay_on_start_is_noop_when_disabled() {
 #[test]
 fn restores_radio_session_mode_and_last_station_without_autoplaying() {
     let mut app = App::new(100);
-    app.library.record_play(&radio_station("older"));
-    app.library.record_play(&radio_station("latest"));
+    app.library_mut().record_play(&radio_station("older"));
+    app.library_mut().record_play(&radio_station("latest"));
 
     app.restore_last_session_from_library(true);
 
@@ -117,8 +117,8 @@ fn restores_cached_radio_mode_even_without_recent_station() {
 #[test]
 fn restores_normal_session_mode_from_song_history() {
     let mut app = App::new(100);
-    app.library.record_play(&radio_station("station"));
-    app.library.record_play(&songs(1)[0]);
+    app.library_mut().record_play(&radio_station("station"));
+    app.library_mut().record_play(&songs(1)[0]);
 
     app.restore_last_session_from_library(false);
 

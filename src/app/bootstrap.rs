@@ -7,6 +7,9 @@ impl App {
         Self {
             should_quit: false,
             dirty: true,
+            // Launch armed: the first 640 ms behave like the old always-on scrub clock, covering
+            // any preedit ghost left by the shell prompt the app was started from.
+            ime_scrub_burst: IME_SCRUB_BURST_TICKS,
             mode: Mode::Player,
             authenticated: false,
             keymap: KeyMap::default(),
@@ -61,7 +64,7 @@ impl App {
             romanization: RomanizationRuntime::default(),
             streaming: StreamingRuntime::default(),
             consecutive_play_errors: 0,
-            playlists: Playlists::default(),
+            playlists: Arc::new(Playlists::default()),
             station: StationStore::default(),
             search: SearchState {
                 input: String::new(),
@@ -77,8 +80,8 @@ impl App {
                 searching: false,
                 request_id: 0,
             },
-            library: Library::default(),
-            signals: Signals::default(),
+            library: Arc::new(Library::default()),
+            signals: Arc::new(Signals::default()),
             session: Session::default(),
             library_ui: LibraryView::default(),
             library_rows_cache: RefCell::new(None),

@@ -6,11 +6,11 @@ use super::*;
 /// directly behind `Arc` would make every snapshot non-`Sync`. Admission moves only its serialized
 /// `entries` state into a DTO; every other variant is moved unchanged without cloning.
 pub(super) enum OwnedSnapshot {
-    Library(crate::library::Library),
-    Signals(crate::signals::Signals),
+    Library(Arc<crate::library::Library>),
+    Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
     Config(Box<crate::config::Config>),
-    Playlists(crate::playlists::Playlists),
+    Playlists(Arc<crate::playlists::Playlists>),
     Station(crate::station::StationStore),
     RomanizedTitles(crate::romanize::RomanizePersistSnapshot),
     Session(crate::session::SessionCache),
@@ -70,14 +70,14 @@ impl OwnedSnapshot {
 
     pub(super) fn write(&self) -> std::io::Result<()> {
         match self {
-            Self::Library(value) => value.save(),
-            Self::Signals(value) => value.save(),
+            Self::Library(value) => value.as_ref().save(),
+            Self::Signals(value) => value.as_ref().save(),
             Self::Downloads(value) => value.save(),
             Self::Config(value) => match crate::config::config_path() {
                 Some(path) => crate::persist::write_store_json(&path, value.as_ref()),
                 None => Ok(()),
             },
-            Self::Playlists(value) => value.save(),
+            Self::Playlists(value) => value.as_ref().save(),
             Self::Station(value) => value.save(),
             Self::RomanizedTitles(value) => value.save(),
             Self::Session(value) => value.save(),
@@ -103,11 +103,11 @@ impl OwnedSnapshot {
 
     pub(super) fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
         match self {
-            Self::Library(value) => serde_json::to_vec_pretty(value),
-            Self::Signals(value) => serde_json::to_vec_pretty(value),
+            Self::Library(value) => serde_json::to_vec_pretty(value.as_ref()),
+            Self::Signals(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Downloads(value) => serde_json::to_vec_pretty(value),
             Self::Config(value) => serde_json::to_vec_pretty(value),
-            Self::Playlists(value) => serde_json::to_vec_pretty(value),
+            Self::Playlists(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Station(value) => serde_json::to_vec_pretty(value),
             Self::RomanizedTitles(value) => serde_json::to_vec_pretty(value),
             Self::Session(value) => serde_json::to_vec_pretty(value),

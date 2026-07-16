@@ -225,7 +225,7 @@ impl App {
                 t!("Already in music favorites", "이미 음악 즐겨찾기에 있어요").to_owned();
             return Vec::new();
         }
-        self.library.toggle_favorite(&song);
+        self.library_mut().toggle_favorite(&song);
         self.status.text = if crate::i18n::is_korean() {
             format!("음악 즐겨찾기에 저장: {} — {}", song.title, song.artist)
         } else {

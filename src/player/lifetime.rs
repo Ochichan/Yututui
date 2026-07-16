@@ -396,6 +396,49 @@ where
     emit(SignalEvent::Quit);
 }
 
+/// Escalation state for the termination-signal task: the first signal starts the cooperative
+/// shutdown, every later one demands a hard exit.
+enum SignalPhase {
+    Cooperative,
+    Escalated,
+}
+
+/// Advance the two-phase signal lifecycle, shared by the Unix and Windows handlers and factored
+/// out of the stream wiring so escalation ordering is unit-testable.
+///
+/// The first signal runs the cooperative path (latch + mpv kill + owner Quit event) and returns
+/// `None`. That path depends on the owner loop actually observing the latch; if the owner is
+/// wedged (deadlock, a blocked call), the process would otherwise ignore every later signal —
+/// tokio keeps its low-level handlers installed, so once nothing consumes the streams the
+/// signals are swallowed and only SIGKILL remains. A repeat signal therefore returns
+/// `Some(exit_code)` and the caller must hard-exit.
+fn advance_signal_phase<F>(
+    phase: &mut SignalPhase,
+    shutdown: &ShutdownLatch,
+    emit: &F,
+    name: &str,
+    exit_code: i32,
+) -> Option<i32>
+where
+    F: Fn(SignalEvent),
+{
+    match phase {
+        SignalPhase::Cooperative => {
+            tracing::info!("received {name}");
+            request_signal_shutdown(shutdown, emit);
+            *phase = SignalPhase::Escalated;
+            None
+        }
+        SignalPhase::Escalated => {
+            tracing::warn!(
+                exit_code,
+                "received {name} while cooperative shutdown was pending; forcing exit"
+            );
+            Some(exit_code)
+        }
+    }
+}
+
 /// Atomically take the recorded pid (leaving 0), so we kill it at most once.
 #[cfg(test)]
 fn take_mpv_pid() -> Option<u32> {
@@ -461,13 +504,20 @@ pub fn install_panic_hook() {
 /// Spawn a task that waits for any termination signal, kills mpv, and asks the main
 /// loop to quit. Keyboard Ctrl+C is handled as a key event (raw mode swallows SIGINT),
 /// so these cover external `kill`s and terminal/SSH disconnects (SIGHUP).
+///
+/// `hard_exit` is the last-resort escape for a wedged owner loop: it runs only when a second
+/// termination signal arrives while the cooperative shutdown is still pending, receives the
+/// shell-convention exit code (`128 + signum` on Unix), and must not return (terminate the
+/// process after any best-effort cleanup such as terminal restore).
 #[cfg(unix)]
-pub fn spawn_signal_handlers<F>(
+pub fn spawn_signal_handlers<F, H>(
     shutdown: ShutdownLatch,
     emit: F,
+    hard_exit: H,
 ) -> std::io::Result<crate::util::background_task::BackgroundTask>
 where
     F: Fn(SignalEvent) + Send + Sync + 'static,
+    H: FnOnce(i32) + Send + 'static,
 {
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -480,24 +530,34 @@ where
     Ok(crate::util::background_task::BackgroundTask::spawn(
         "termination signal handlers",
         async move {
-            tokio::select! {
-                _ = hup.recv() => tracing::info!("received SIGHUP"),
-                _ = term.recv() => tracing::info!("received SIGTERM"),
-                _ = int.recv() => tracing::info!("received SIGINT"),
+            let mut phase = SignalPhase::Cooperative;
+            let mut hard_exit = Some(hard_exit);
+            loop {
+                let (name, code) = tokio::select! {
+                    _ = hup.recv() => ("SIGHUP", 129),
+                    _ = term.recv() => ("SIGTERM", 143),
+                    _ = int.recv() => ("SIGINT", 130),
+                };
+                if let Some(code) = advance_signal_phase(&mut phase, &shutdown, &emit, name, code)
+                    && let Some(exit) = hard_exit.take()
+                {
+                    exit(code);
+                    return;
+                }
             }
-
-            request_signal_shutdown(&shutdown, &emit);
         },
     ))
 }
 
 #[cfg(windows)]
-pub fn spawn_signal_handlers<F>(
+pub fn spawn_signal_handlers<F, H>(
     shutdown: ShutdownLatch,
     emit: F,
+    hard_exit: H,
 ) -> std::io::Result<crate::util::background_task::BackgroundTask>
 where
     F: Fn(SignalEvent) + Send + Sync + 'static,
+    H: FnOnce(i32) + Send + 'static,
 {
     use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown};
 
@@ -516,14 +576,25 @@ where
     Ok(crate::util::background_task::BackgroundTask::spawn(
         "termination signal handlers",
         async move {
-            tokio::select! {
-                _ = ctrl_c.recv() => {}
-                _ = ctrl_break.recv() => {}
-                _ = ctrl_close.recv() => {}
-                _ = ctrl_logoff.recv() => {}
-                _ = ctrl_shutdown.recv() => {}
+            let mut phase = SignalPhase::Cooperative;
+            let mut hard_exit = Some(hard_exit);
+            loop {
+                // Windows has no `128 + signum` convention; report every forced exit as 130
+                // (the interrupt code shells already associate with a cancelled console app).
+                let name = tokio::select! {
+                    _ = ctrl_c.recv() => "CTRL_C",
+                    _ = ctrl_break.recv() => "CTRL_BREAK",
+                    _ = ctrl_close.recv() => "CTRL_CLOSE",
+                    _ = ctrl_logoff.recv() => "CTRL_LOGOFF",
+                    _ = ctrl_shutdown.recv() => "CTRL_SHUTDOWN",
+                };
+                if let Some(code) = advance_signal_phase(&mut phase, &shutdown, &emit, name, 130)
+                    && let Some(exit) = hard_exit.take()
+                {
+                    exit(code);
+                    return;
+                }
             }
-            request_signal_shutdown(&shutdown, &emit);
         },
     ))
 }
@@ -912,6 +983,39 @@ mod tests {
             "yututui-lifetime-{name}-{}-{suffix}",
             std::process::id()
         ))
+    }
+
+    #[tokio::test]
+    async fn signal_phase_escalates_to_hard_exit_only_on_a_repeat_signal() {
+        // `request_signal_shutdown` touches the global media registry via `kill_mpv_now`.
+        let _pid_guard = lock_mpv_pid_for_test().await;
+        let shutdown = ShutdownLatch::new();
+        let emit_count = std::cell::Cell::new(0usize);
+        let emit = |_: SignalEvent| emit_count.set(emit_count.get() + 1);
+        let mut phase = SignalPhase::Cooperative;
+
+        // First signal: cooperative shutdown only — latch trips, owner is asked to quit,
+        // and no hard exit is demanded.
+        assert_eq!(
+            advance_signal_phase(&mut phase, &shutdown, &emit, "SIGTERM", 143),
+            None
+        );
+        assert!(shutdown.is_triggered());
+        assert_eq!(emit_count.get(), 1);
+
+        // Any repeat signal escalates with its own exit code and must not re-run the
+        // cooperative path.
+        assert_eq!(
+            advance_signal_phase(&mut phase, &shutdown, &emit, "SIGINT", 130),
+            Some(130)
+        );
+        assert_eq!(emit_count.get(), 1);
+        assert_eq!(
+            advance_signal_phase(&mut phase, &shutdown, &emit, "SIGHUP", 129),
+            Some(129)
+        );
+        assert_eq!(emit_count.get(), 1);
+        reset_media_registry_for_test();
     }
 
     #[tokio::test]

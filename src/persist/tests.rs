@@ -1032,9 +1032,9 @@ fn queued_saves_are_latest_wins_without_extending_deadline() {
         crate::playlists::AddResult::Added
     );
 
-    queue_pending_save(&pending, &mut due, Snapshot::Playlists(created));
+    queue_pending_save(&pending, &mut due, Snapshot::Playlists(Arc::new(created)));
     let first_due = due[&StoreKind::Playlists];
-    queue_pending_save(&pending, &mut due, Snapshot::Playlists(added));
+    queue_pending_save(&pending, &mut due, Snapshot::Playlists(Arc::new(added)));
 
     assert_eq!(due[&StoreKind::Playlists], first_due);
     let guard = lock(&pending);

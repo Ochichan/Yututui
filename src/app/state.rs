@@ -7,6 +7,26 @@
 use super::*;
 use crate::lyrics::LyricDelay;
 
+impl App {
+    /// Mutate the library with copy-on-write. If persistence still holds the last snapshot,
+    /// this clones the store once so that snapshot remains immutable.
+    pub fn library_mut(&mut self) -> &mut Library {
+        Arc::make_mut(&mut self.library)
+    }
+
+    /// Mutate playlists with copy-on-write. If persistence still holds the last snapshot,
+    /// this clones the store once so that snapshot remains immutable.
+    pub fn playlists_mut(&mut self) -> &mut Playlists {
+        Arc::make_mut(&mut self.playlists)
+    }
+
+    /// Mutate preference signals with copy-on-write. If persistence still holds the last
+    /// snapshot, this clones the store once so that snapshot remains immutable.
+    pub fn signals_mut(&mut self) -> &mut Signals {
+        Arc::make_mut(&mut self.signals)
+    }
+}
+
 /// Live audio-processing settings: the active EQ preset and its per-band gains, loudness
 /// normalization, and the seek step. The in-session working copy mpv's filter chain is built
 /// from — distinct from the persisted defaults in [`Config`].
