@@ -20,12 +20,13 @@ impl App {
     /// keymap so remapping "toggle help" updates the hint in lock-step.
     pub fn help_footer(&self) -> String {
         format!(
-            "{}  keybindings",
+            "{}  {}",
             self.keymap.label_for_display(
                 KeyContext::Global,
                 Action::ToggleHelp,
                 self.retro_mode()
-            )
+            ),
+            crate::t!("keybindings", "단축키", "ショートカット")
         )
     }
 

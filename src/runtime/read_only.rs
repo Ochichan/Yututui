@@ -99,10 +99,14 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
         }
         _ => Vec::new(),
     };
-    app.set_status_error(if crate::i18n::is_korean() {
-        format!("읽기 전용 보조 인스턴스: {component} 변경 거부 — {reason}")
-    } else {
-        format!("Read-only secondary: {component} change rejected — {reason}")
+    app.set_status_error(match crate::i18n::current() {
+        crate::i18n::Language::Korean => {
+            format!("읽기 전용 보조 인스턴스: {component} 변경 거부 — {reason}")
+        }
+        crate::i18n::Language::Japanese => {
+            format!("読み取り専用セカンダリ: {component} の変更を拒否 — {reason}")
+        }
+        _ => format!("Read-only secondary: {component} change rejected — {reason}"),
     });
     follow_ups
 }

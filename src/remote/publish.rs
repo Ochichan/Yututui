@@ -795,6 +795,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
             language: match c.language {
                 crate::i18n::Language::English => "en".to_string(),
                 crate::i18n::Language::Korean => "ko".to_string(),
+                crate::i18n::Language::Japanese => "ja".to_string(),
             },
             mouse: c.mouse.unwrap_or(true),
             album_art: c.album_art.unwrap_or(false),

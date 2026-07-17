@@ -77,12 +77,12 @@ impl SettingsTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingsTab::General => t!("General", "일반"),
-            SettingsTab::Playback => t!("Playback", "재생"),
-            SettingsTab::Keys => t!("Hotkeys", "핫키"),
-            SettingsTab::Graphics => t!("Graphics", "그래픽"),
-            SettingsTab::Ai => t!("DJ Gem", "DJ Gem"),
-            SettingsTab::Accounts => t!("Accounts", "계정"),
+            SettingsTab::General => t!("General", "일반", "全般"),
+            SettingsTab::Playback => t!("Playback", "재생", "再生"),
+            SettingsTab::Keys => t!("Hotkeys", "핫키", "ホットキー"),
+            SettingsTab::Graphics => t!("Graphics", "그래픽", "グラフィック"),
+            SettingsTab::Ai => t!("DJ Gem", "DJ Gem", "DJ Gem"),
+            SettingsTab::Accounts => t!("Accounts", "계정", "アカウント"),
         }
     }
 
@@ -250,33 +250,63 @@ impl SettingsTab {
                 // 9 = the 8 Now-Playing controls + the radio-only recording entry. When not
                 // in radio mode, `SettingsState::sections` decrements this back to 8 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
-                (t!("Now Playing", "현재 재생"), 9),
-                (t!("Audio backend", "오디오 백엔드"), 3),
-                (t!("EQ", "EQ"), eq::BANDS + 2),
+                (t!("Now Playing", "현재 재생", "再生中"), 9),
+                (
+                    t!("Audio backend", "오디오 백엔드", "オーディオバックエンド"),
+                    3,
+                ),
+                (t!("EQ", "EQ", "EQ"), eq::BANDS + 2),
             ],
             // Animation sections and the fields within each are ordered by average resource
             // usage under typical use, lightest first (the user-facing sorting contract).
             SettingsTab::Graphics => vec![
-                (t!("Theme", "테마"), 3),
-                (t!("Colors", "색상"), ThemeRole::ALL.len()),
-                (t!("Animation controls", "애니메이션 제어"), 3),
-                (t!("Event feedback", "이벤트 피드백"), 7),
-                (t!("Interface motion", "인터페이스 동작"), 7),
-                (t!("Now playing", "현재 재생"), 11),
-                (t!("Ambient canvas", "배경 캔버스"), 9),
-                (t!("Canvas showpieces", "캔버스 쇼피스"), 6),
+                (t!("Theme", "테마", "テーマ"), 3),
+                (t!("Colors", "색상", "カラー"), ThemeRole::ALL.len()),
+                (
+                    t!(
+                        "Animation controls",
+                        "애니메이션 제어",
+                        "アニメーション制御"
+                    ),
+                    3,
+                ),
+                (
+                    t!("Event feedback", "이벤트 피드백", "イベントフィードバック"),
+                    7,
+                ),
+                (
+                    t!(
+                        "Interface motion",
+                        "인터페이스 동작",
+                        "インターフェース動作"
+                    ),
+                    7,
+                ),
+                (t!("Now playing", "현재 재생", "再生中"), 11),
+                (t!("Ambient canvas", "배경 캔버스", "背景キャンバス"), 9),
+                (
+                    t!("Canvas showpieces", "캔버스 쇼피스", "キャンバス演出"),
+                    6,
+                ),
             ],
             SettingsTab::Accounts => vec![
                 ("Last.fm", 3),
                 ("ListenBrainz", 2),
                 ("Spotify", 5),
-                (t!("Scrobbling", "스크로블링"), 1),
+                (t!("Scrobbling", "스크로블링", "スクロブル"), 1),
             ],
             // Separate the chat/assistant config from the autoplay + curation trio so the
             // "Autoplay / Curating mode / Curating style" group reads as one intuitive unit.
             SettingsTab::Ai => vec![
-                (t!("Assistant", "어시스턴트"), 6),
-                (t!("Autoplay & curation", "자동재생 · 큐레이팅"), 3),
+                (t!("Assistant", "어시스턴트", "アシスタント"), 6),
+                (
+                    t!(
+                        "Autoplay & curation",
+                        "자동재생 · 큐레이팅",
+                        "自動再生 · キュレーション"
+                    ),
+                    3,
+                ),
             ],
             _ => Vec::new(),
         }
@@ -482,58 +512,113 @@ pub enum SettingsConfirm {
 impl SettingsConfirm {
     pub fn title(self) -> &'static str {
         match self {
-            SettingsConfirm::RetroMode => t!(" Confirm retro mode ", " 레트로 모드 확인 "),
+            SettingsConfirm::RetroMode => {
+                t!(
+                    " Confirm retro mode ",
+                    " 레트로 모드 확인 ",
+                    " レトロモードの確認 "
+                )
+            }
             SettingsConfirm::ResetKeybindings => {
-                t!(" Confirm reset keybindings ", " 단축키 초기화 확인 ")
+                t!(
+                    " Confirm reset keybindings ",
+                    " 단축키 초기화 확인 ",
+                    " ショートカット初期化の確認 "
+                )
             }
             SettingsConfirm::ResetAll => {
-                t!(" Confirm reset all settings ", " 모든 설정 초기화 확인 ")
+                t!(
+                    " Confirm reset all settings ",
+                    " 모든 설정 초기화 확인 ",
+                    " 全設定初期化の確認 "
+                )
             }
             SettingsConfirm::ClearRomanizedTitleCache => {
-                t!(" Confirm clear title cache ", " 제목 캐시 삭제 확인 ")
+                t!(
+                    " Confirm clear title cache ",
+                    " 제목 캐시 삭제 확인 ",
+                    " キャッシュ削除の確認 "
+                )
             }
             SettingsConfirm::LastfmDisconnect => {
-                t!(" Confirm Last.fm disconnect ", " Last.fm 연결 해제 확인 ")
+                t!(
+                    " Confirm Last.fm disconnect ",
+                    " Last.fm 연결 해제 확인 ",
+                    " Last.fm 連携解除の確認 "
+                )
             }
             SettingsConfirm::SpotifyDisconnect => {
-                t!(" Confirm Spotify disconnect ", " Spotify 연결 해제 확인 ")
+                t!(
+                    " Confirm Spotify disconnect ",
+                    " Spotify 연결 해제 확인 ",
+                    " Spotify 連携解除の確認 "
+                )
             }
-            SettingsConfirm::EditApiKey => t!(" Edit API key ", " API 키 수정 확인 "),
+            SettingsConfirm::EditApiKey => {
+                t!(
+                    " Edit API key ",
+                    " API 키 수정 확인 ",
+                    " APIキー編集の確認 "
+                )
+            }
         }
     }
 
     pub fn prompt(self, enabling: bool) -> &'static str {
         match self {
             SettingsConfirm::RetroMode if enabling => {
-                t!("Enable Retro mode?", "레트로 모드를 켤까요?")
+                t!(
+                    "Enable Retro mode?",
+                    "레트로 모드를 켤까요?",
+                    "レトロモードをオンにしますか?"
+                )
             }
-            SettingsConfirm::RetroMode => t!("Disable Retro mode?", "레트로 모드를 끌까요?"),
+            SettingsConfirm::RetroMode => t!(
+                "Disable Retro mode?",
+                "레트로 모드를 끌까요?",
+                "レトロモードをオフにしますか?"
+            ),
             SettingsConfirm::ResetKeybindings => {
                 t!(
                     "Reset every keybinding to default?",
-                    "모든 단축키를 기본값으로 되돌릴까요?"
+                    "모든 단축키를 기본값으로 되돌릴까요?",
+                    "すべてのショートカットを初期化しますか?"
                 )
             }
             SettingsConfirm::ResetAll => {
                 t!(
                     "Restore every setting to its default?",
-                    "모든 설정을 기본값으로 되돌릴까요?"
+                    "모든 설정을 기본값으로 되돌릴까요?",
+                    "すべての設定を初期化しますか?"
                 )
             }
             SettingsConfirm::ClearRomanizedTitleCache => {
                 t!(
                     "Clear the romanized title cache?",
-                    "로마자 제목 캐시를 삭제할까요?"
+                    "로마자 제목 캐시를 삭제할까요?",
+                    "ローマ字タイトルキャッシュを削除しますか?"
                 )
             }
             SettingsConfirm::LastfmDisconnect => {
-                t!("Disconnect Last.fm?", "Last.fm 연결을 해제할까요?")
+                t!(
+                    "Disconnect Last.fm?",
+                    "Last.fm 연결을 해제할까요?",
+                    "Last.fmの連携を解除しますか?"
+                )
             }
             SettingsConfirm::SpotifyDisconnect => {
-                t!("Disconnect Spotify?", "Spotify 연결을 해제할까요?")
+                t!(
+                    "Disconnect Spotify?",
+                    "Spotify 연결을 해제할까요?",
+                    "Spotifyの連携を解除しますか?"
+                )
             }
             SettingsConfirm::EditApiKey => {
-                t!("Edit the Gemini API key?", "Gemini API 키를 수정할까요?")
+                t!(
+                    "Edit the Gemini API key?",
+                    "Gemini API 키를 수정할까요?",
+                    "Gemini APIキーを編集しますか?"
+                )
             }
         }
     }
@@ -542,35 +627,43 @@ impl SettingsConfirm {
         match self {
             SettingsConfirm::RetroMode if enabling => t!(
                 "This switches the UI to English and the Retro theme.",
-                "UI가 영어와 레트로 테마로 전환됩니다."
+                "UI가 영어와 레트로 테마로 전환됩니다.",
+                "UIが英語とレトロテーマに切り替わります。"
             ),
             SettingsConfirm::RetroMode => t!(
                 "Theme and language stay as they are until changed.",
-                "테마와 언어는 직접 바꾸기 전까지 유지됩니다."
+                "테마와 언어는 직접 바꾸기 전까지 유지됩니다.",
+                "テーマと言語は変更するまでそのまま維持されます。"
             ),
             SettingsConfirm::ResetKeybindings => t!(
                 "The edited keymap will be replaced in this settings draft.",
-                "현재 설정 초안의 단축키가 모두 교체됩니다."
+                "현재 설정 초안의 단축키가 모두 교체됩니다.",
+                "編集中のショートカットがすべて置き換わります。"
             ),
             SettingsConfirm::ResetAll => t!(
                 "Keybindings, theme, language, and API key included.",
-                "단축키, 테마, 언어, API 키 포함."
+                "단축키, 테마, 언어, API 키 포함.",
+                "ショートカット、テーマ、言語、APIキーを含みます。"
             ),
             SettingsConfirm::ClearRomanizedTitleCache => t!(
                 "Only generated title/artist overlays are removed.",
-                "생성된 제목/아티스트 표시 캐시만 삭제됩니다."
+                "생성된 제목/아티스트 표시 캐시만 삭제됩니다.",
+                "生成されたタイトル/アーティスト表示のキャッシュのみ削除されます。"
             ),
             SettingsConfirm::LastfmDisconnect => t!(
                 "Scrobbling stops; queued scrobbles are kept until you reconnect.",
-                "스크로블이 중단됩니다. 대기 중 스크로블은 재연결까지 보관돼요."
+                "스크로블이 중단됩니다. 대기 중 스크로블은 재연결까지 보관돼요.",
+                "スクロブルが停止します。待機中のスクロブルは再連携まで保持されます。"
             ),
             SettingsConfirm::SpotifyDisconnect => t!(
                 "Removes the saved token; the Client ID stays configured.",
-                "저장된 토큰이 삭제됩니다. 클라이언트 ID는 유지돼요."
+                "저장된 토큰이 삭제됩니다. 클라이언트 ID는 유지돼요.",
+                "保存されたトークンが削除されます。クライアントIDは維持されます。"
             ),
             SettingsConfirm::EditApiKey => t!(
                 "The field clears for a fresh key; leave it empty to keep the current one.",
-                "새 키 입력을 위해 칸이 비워져요. 비워두면 기존 키가 유지돼요."
+                "새 키 입력을 위해 칸이 비워져요. 비워두면 기존 키가 유지돼요.",
+                "新しいキー入力のため欄が空になります。空のままなら現在のキーが維持されます。"
             ),
         }
     }
@@ -706,7 +799,7 @@ impl SettingsDraft {
             Field::BeginnerMode => toggle_str(self.beginner_mode),
             Field::RadioRecording => self.recording_mode.label(),
             // Each language names itself, so this value is the same regardless of the active
-            // UI language (English / 한국어).
+            // UI language (English / 한국어 / 日本語).
             Field::Language => self.language.native_name().to_owned(),
             Field::SearchSource => self.search.source.label().to_owned(),
             Field::StreamingSource => self
@@ -717,24 +810,33 @@ impl SettingsDraft {
             Field::SearchYoutube => toggle_str(self.search.youtube),
             Field::SearchSoundCloud => toggle_str(self.search.soundcloud),
             Field::SearchAudius => toggle_str(self.search.audius),
-            Field::AudiusAppName => self
-                .search
-                .audius_app_name
-                .clone()
-                .unwrap_or_else(|| t!("(default: yututui)", "(기본값: yututui)").to_owned()),
+            Field::AudiusAppName => self.search.audius_app_name.clone().unwrap_or_else(|| {
+                t!(
+                    "(default: yututui)",
+                    "(기본값: yututui)",
+                    "(デフォルト: yututui)"
+                )
+                .to_owned()
+            }),
             Field::SearchJamendo => toggle_str(self.search.jamendo),
             Field::JamendoClientId => self
                 .search
                 .jamendo_client_id
                 .clone()
-                .unwrap_or_else(|| t!("(none)", "(없음)").to_owned()),
+                .unwrap_or_else(|| t!("(none)", "(없음)", "(なし)").to_owned()),
             Field::SearchInternetArchive => toggle_str(self.search.internet_archive),
             Field::SearchRadioBrowser => toggle_str(self.search.radio_browser),
             Field::CookiesFile => {
                 if self.cookies_file.is_empty() {
                     default_cookies_file()
-                        .map(|p| format!("({}: {})", t!("default", "기본값"), display_path(&p)))
-                        .unwrap_or_else(|| t!("(none)", "(없음)").to_owned())
+                        .map(|p| {
+                            format!(
+                                "({}: {})",
+                                t!("default", "기본값", "デフォルト"),
+                                display_path(&p)
+                            )
+                        })
+                        .unwrap_or_else(|| t!("(none)", "(없음)", "(なし)").to_owned())
                 } else {
                     self.cookies_file.clone()
                 }
@@ -743,7 +845,7 @@ impl SettingsDraft {
                 if self.download_dir.is_empty() {
                     format!(
                         "({}: {})",
-                        t!("default", "기본값"),
+                        t!("default", "기본값", "デフォルト"),
                         display_path(&default_download_dir())
                     )
                 } else {
@@ -753,7 +855,7 @@ impl SettingsDraft {
             Field::LocalIncludeDownloadDir => toggle_str(self.local_include_download_dir),
             Field::LocalMusicRoot => {
                 if self.local_music_root.is_empty() {
-                    t!("(none)", "(없음)").to_owned()
+                    t!("(none)", "(없음)", "(なし)").to_owned()
                 } else {
                     self.local_music_root.clone()
                 }
@@ -773,7 +875,7 @@ impl SettingsDraft {
             // Buttons, not values: these rows show how to trigger them.
             Field::ExportPersonalData => PersonalDataExportStatus::Idle.value_display(),
             Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
-                t!("↵ press Enter", "↵ Enter로 실행").to_owned()
+                t!("↵ press Enter", "↵ Enter로 실행", "↵ Enterで実行").to_owned()
             }
             Field::Gapless => toggle_str(self.gapless),
             Field::MediaControls => toggle_str(self.media_controls),
@@ -785,10 +887,10 @@ impl SettingsDraft {
             Field::AudioMpvDevice => audio_optional_display(&self.audio_mpv_device),
             Field::LongFormSeekOptimization => match self.long_form_seek_optimization {
                 LongFormSeekOptimization::Auto => {
-                    t!("Auto (experimental)", "자동 (실험적)").to_owned()
+                    t!("Auto (experimental)", "자동 (실험적)", "自動 (実験的)").to_owned()
                 }
-                LongFormSeekOptimization::Off => t!("Off", "끔").to_owned(),
-                LongFormSeekOptimization::On => t!("On", "켬").to_owned(),
+                LongFormSeekOptimization::Off => t!("Off", "끔", "オフ").to_owned(),
+                LongFormSeekOptimization::On => t!("On", "켬", "オン").to_owned(),
             },
             Field::AudioMpvCacheForward => {
                 cache_display(&self.audio_mpv_cache_forward, MPV_CACHE_FORWARD_DEFAULT)
@@ -808,7 +910,12 @@ impl SettingsDraft {
             // the (preserved-underneath) picked value that retro would ignore.
             Field::DjGemLanguage => {
                 if self.retro_mode {
-                    t!("English (Retro mode)", "영어 (레트로 모드)").to_owned()
+                    t!(
+                        "English (Retro mode)",
+                        "영어 (레트로 모드)",
+                        "英語 (レトロモード)"
+                    )
+                    .to_owned()
                 } else {
                     self.dj_gem_language.picker_label().to_owned()
                 }
@@ -875,31 +982,47 @@ impl SettingsDraft {
             // is the at-rest summary.
             Field::ApiKey => {
                 if self.gemini_api_key.trim().is_empty() {
-                    t!("(none)", "(없음)").to_owned()
+                    t!("(none)", "(없음)", "(なし)").to_owned()
                 } else {
-                    t!("***configured***", "***저장됨***").to_owned()
+                    t!("***configured***", "***저장됨***", "***設定済み***").to_owned()
                 }
             }
             Field::LastfmEnabled => toggle_str(self.lastfm_enabled),
             // The Connect button doubles as the connection status line.
             Field::LastfmConnect => {
                 if self.lastfm_session_key.trim().is_empty() {
-                    t!("↵ connect in browser", "↵ Enter로 브라우저 연결").to_owned()
+                    t!(
+                        "↵ connect in browser",
+                        "↵ Enter로 브라우저 연결",
+                        "↵ ブラウザで連携"
+                    )
+                    .to_owned()
                 } else if self.lastfm_username.trim().is_empty() {
-                    t!("connected · ↵ disconnect", "연결됨 · ↵ 연결 해제").to_owned()
-                } else if crate::i18n::is_korean() {
-                    format!("{} 연결됨 · ↵ 연결 해제", self.lastfm_username)
+                    t!(
+                        "connected · ↵ disconnect",
+                        "연결됨 · ↵ 연결 해제",
+                        "連携済み · ↵ 連携解除"
+                    )
+                    .to_owned()
                 } else {
-                    format!("connected as {} · ↵ disconnect", self.lastfm_username)
+                    match crate::i18n::current() {
+                        Language::Korean => {
+                            format!("{} 연결됨 · ↵ 연결 해제", self.lastfm_username)
+                        }
+                        Language::Japanese => {
+                            format!("{} として連携済み · ↵ 連携解除", self.lastfm_username)
+                        }
+                        _ => format!("connected as {} · ↵ disconnect", self.lastfm_username),
+                    }
                 }
             }
             Field::LastfmLoveSync => toggle_str(self.lastfm_love_sync),
             Field::ListenBrainzEnabled => toggle_str(self.listenbrainz_enabled),
             Field::ListenBrainzToken => {
                 if self.listenbrainz_token.trim().is_empty() {
-                    t!("(none)", "(없음)").to_owned()
+                    t!("(none)", "(없음)", "(なし)").to_owned()
                 } else {
-                    t!("***configured***", "***저장됨***").to_owned()
+                    t!("***configured***", "***저장됨***", "***設定済み***").to_owned()
                 }
             }
             Field::ScrobbleLocalFiles => toggle_str(self.scrobble_local_files),
@@ -907,7 +1030,8 @@ impl SettingsDraft {
                 if self.spotify_client_id.trim().is_empty() {
                     t!(
                         "(none — create an app at developer.spotify.com)",
-                        "(없음 — developer.spotify.com에서 앱 생성)"
+                        "(없음 — developer.spotify.com에서 앱 생성)",
+                        "(なし — developer.spotify.comでアプリ作成)"
                     )
                     .to_owned()
                 } else {
@@ -918,7 +1042,7 @@ impl SettingsDraft {
                 if self.spotify_redirect_port.trim().is_empty() {
                     format!(
                         "({}: {})",
-                        t!("default", "기본값"),
+                        t!("default", "기본값", "デフォルト"),
                         crate::config::SPOTIFY_REDIRECT_PORT_DEFAULT
                     )
                 } else {
@@ -927,25 +1051,43 @@ impl SettingsDraft {
             }
             Field::SpotifyConnect => {
                 if !self.spotify_connected {
-                    t!("↵ connect in browser", "↵ Enter로 브라우저 연결").to_owned()
+                    t!(
+                        "↵ connect in browser",
+                        "↵ Enter로 브라우저 연결",
+                        "↵ ブラウザで連携"
+                    )
+                    .to_owned()
                 } else if self.spotify_stale {
                     t!(
                         "needs reconnect · ↵ reconnect in browser",
-                        "재연결 필요 · ↵ Enter로 브라우저 재연결"
+                        "재연결 필요 · ↵ Enter로 브라우저 재연결",
+                        "再連携が必要 · ↵ ブラウザで再連携"
                     )
                     .to_owned()
                 } else if self.spotify_username.trim().is_empty() {
-                    t!("connected · ↵ disconnect", "연결됨 · ↵ 연결 해제").to_owned()
-                } else if crate::i18n::is_korean() {
-                    format!("{} 연결됨 · ↵ 연결 해제", self.spotify_username)
+                    t!(
+                        "connected · ↵ disconnect",
+                        "연결됨 · ↵ 연결 해제",
+                        "連携済み · ↵ 連携解除"
+                    )
+                    .to_owned()
                 } else {
-                    format!("connected as {} · ↵ disconnect", self.spotify_username)
+                    match crate::i18n::current() {
+                        Language::Korean => {
+                            format!("{} 연결됨 · ↵ 연결 해제", self.spotify_username)
+                        }
+                        Language::Japanese => {
+                            format!("{} として連携済み · ↵ 連携解除", self.spotify_username)
+                        }
+                        _ => format!("connected as {} · ↵ disconnect", self.spotify_username),
+                    }
                 }
             }
             Field::SpotifyImportMode => self.spotify_import_mode.label().to_owned(),
             Field::SpotifyImport => t!(
                 "↵ pick a playlist (↵ again cancels a running import)",
-                "↵ 플레이리스트 선택 (실행 중엔 ↵로 취소)"
+                "↵ 플레이리스트 선택 (실행 중엔 ↵로 취소)",
+                "↵ プレイリスト選択 (実行中は↵でキャンセル)"
             )
             .to_owned(),
         }
@@ -983,7 +1125,7 @@ impl SettingsDraft {
     pub fn apply_to(&self, cfg: &mut Config) {
         cfg.beginner_mode = self.beginner_mode;
         if self.beginner_mode && self.restart_beginner_tutorial {
-            cfg.beginner_tutorial = BeginnerTutorialProgress::welcome();
+            cfg.beginner_tutorial = BeginnerTutorialProgress::start();
         }
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);

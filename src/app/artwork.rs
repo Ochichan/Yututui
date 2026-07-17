@@ -575,9 +575,13 @@ impl App {
         self.status.text = format!(
             "{}: {}",
             if radio {
-                t!("Animations (Radio)", "애니메이션(라디오)")
+                t!(
+                    "Animations (Radio)",
+                    "애니메이션(라디오)",
+                    "アニメーション(ラジオ)"
+                )
             } else {
-                t!("Animations", "애니메이션")
+                t!("Animations", "애니메이션", "アニメーション")
             },
             if on { "✓" } else { "✗" }
         );

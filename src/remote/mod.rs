@@ -31,7 +31,7 @@ pub(crate) use sessions::{
     SessionLine, SessionTuning, SubscribeIngress, test_command_reply, test_register,
 };
 
-pub use server::{BindOutcome, RemoteReply, RemoteServer, bind_or_detect};
+pub use server::{BindOutcome, RemoteReply, RemoteServer, await_primary_release, bind_or_detect};
 pub(crate) use settlement::{WireSettlement, WireSettlements};
 
 const QUICK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);

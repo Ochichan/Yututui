@@ -110,7 +110,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Local Find is refreshing; try again in a moment",
-            "로컬 찾기를 새로 고치는 중입니다. 잠시 후 다시 시도하세요"
+            "로컬 찾기를 새로 고치는 중입니다. 잠시 후 다시 시도하세요",
+            "ローカル検索を更新中です。しばらくしてからもう一度お試しください"
         )
         .to_owned();
         self.dirty = true;
@@ -663,7 +664,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "This result has no playable local tracks",
-                "이 결과에는 재생 가능한 로컬 곡이 없습니다"
+                "이 결과에는 재생 가능한 로컬 곡이 없습니다",
+                "この結果には再生可能なローカル曲がありません"
             )
             .to_owned();
             self.dirty = true;
@@ -811,8 +813,12 @@ impl App {
     ) -> Vec<Cmd> {
         if ids.is_empty() {
             self.status.kind = StatusKind::Error;
-            self.status.text =
-                t!("No playable local tracks", "재생 가능한 로컬 곡이 없습니다").to_owned();
+            self.status.text = t!(
+                "No playable local tracks",
+                "재생 가능한 로컬 곡이 없습니다",
+                "再生可能なローカル曲がありません"
+            )
+            .to_owned();
             self.dirty = true;
             return Vec::new();
         }
@@ -824,7 +830,8 @@ impl App {
         };
         if accepted_count == 0 {
             self.status.kind = StatusKind::Error;
-            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_owned();
+            self.status.text =
+                t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_owned();
             self.dirty = true;
             return Vec::new();
         }
@@ -856,7 +863,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Local Find changed — review the refreshed results",
-                "로컬 찾기 결과가 바뀌었습니다 — 새 결과를 확인하세요"
+                "로컬 찾기 결과가 바뀌었습니다 — 새 결과를 확인하세요",
+                "ローカル検索の結果が変わりました — 新しい結果を確認してください"
             )
             .to_owned();
             self.dirty = true;
@@ -871,7 +879,8 @@ impl App {
             };
             if capacity == 0 {
                 self.status.kind = StatusKind::Error;
-                self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_owned();
+                self.status.text =
+                    t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_owned();
                 self.dirty = true;
                 return Vec::new();
             }
@@ -882,7 +891,8 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
                 "Queue changed — review the updated capacity",
-                "큐가 바뀌었습니다 — 갱신된 용량을 확인하세요"
+                "큐가 바뀌었습니다 — 갱신된 용량을 확인하세요",
+                "キューが変わりました — 更新された容量を確認してください"
             )
             .to_owned();
             self.dirty = true;

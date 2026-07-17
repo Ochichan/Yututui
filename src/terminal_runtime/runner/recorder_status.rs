@@ -9,20 +9,29 @@ pub(super) fn recorder_capacity_blocked_status(
             .first()
             .map(String::as_str)
             .unwrap_or("recovery inventory could not be verified");
-        if crate::i18n::is_korean() {
-            format!("자동 녹음 일시 중지: 복구 저장 목록을 확인할 수 없음 — {detail}")
-        } else {
-            format!("Automatic recording paused: recovery inventory is uncertain — {detail}")
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("자동 녹음 일시 중지: 복구 저장 목록을 확인할 수 없음 — {detail}")
+            }
+            crate::i18n::Language::Japanese => {
+                format!("自動録音一時停止: 復旧保存リストを確認できません — {detail}")
+            }
+            _ => format!("Automatic recording paused: recovery inventory is uncertain — {detail}"),
         }
-    } else if crate::i18n::is_korean() {
-        format!(
-            "자동 녹음 일시 중지: 저장 대기 {}개 / {}바이트",
-            report.pending, report.pending_bytes
-        )
     } else {
-        format!(
-            "Automatic recording paused: {} pending / {} bytes",
-            report.pending, report.pending_bytes
-        )
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
+                "자동 녹음 일시 중지: 저장 대기 {}개 / {}바이트",
+                report.pending, report.pending_bytes
+            ),
+            crate::i18n::Language::Japanese => format!(
+                "自動録音一時停止: 保存待ち{}件 / {}バイト",
+                report.pending, report.pending_bytes
+            ),
+            _ => format!(
+                "Automatic recording paused: {} pending / {} bytes",
+                report.pending, report.pending_bytes
+            ),
+        }
     }
 }

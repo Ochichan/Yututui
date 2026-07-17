@@ -16,3 +16,6 @@ Icon=yututui
 Categories=AudioVideo;Audio;Player;
 Keywords=youtube;music;player;tui;terminal;
 StartupNotify=false
+# Desktop Entry spec 1.5 hint: shells shouldn't offer "New Window" — a second launch
+# routes to the running player via the in-app second-launch chooser instead.
+SingleMainWindow=true

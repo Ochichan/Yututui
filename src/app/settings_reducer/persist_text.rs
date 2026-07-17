@@ -21,7 +21,8 @@ impl App {
             Field::CookiesFile => {
                 self.config.cookies_file =
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::AudiusAppName => {
                 self.config.search.audius_app_name = settings::blank_to_none(&value);
@@ -29,7 +30,8 @@ impl App {
                     st.draft.search.audius_app_name = self.config.search.audius_app_name.clone();
                     st.draft.search = st.draft.search.clone().normalized();
                 }
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::JamendoClientId => {
                 self.config.search.jamendo_client_id = settings::blank_to_none(&value);
@@ -38,7 +40,8 @@ impl App {
                         self.config.search.jamendo_client_id.clone();
                     st.draft.search = st.draft.search.clone().normalized();
                 }
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::DownloadDir => {
                 let old_dir = self.config.effective_download_dir();
@@ -53,7 +56,8 @@ impl App {
                 if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
                     cmds.extend(self.request_local_scan(false));
                 }
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::LocalMusicRoot => {
                 let recursive = self
@@ -66,28 +70,33 @@ impl App {
                 if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
                     cmds.extend(self.request_local_scan(false));
                 }
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::AudioMpvOutput => {
                 self.config.audio.mpv.output = settings::blank_to_none(&value);
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::AudioMpvDevice => {
                 self.config
                     .audio
                     .mpv
                     .set_manual_device(settings::blank_to_none(&value));
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::AudioMpvCacheForward => {
                 let mpv = &mut self.config.audio.mpv;
                 mpv.set_cache_forward(settings::blank_to_none(&value));
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::AudioMpvCacheBack => {
                 let mpv = &mut self.config.audio.mpv;
                 mpv.set_cache_back(settings::blank_to_none(&value));
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::ApiKey => {
                 let old_key = self.config.gemini_api_key.clone();
@@ -118,22 +127,30 @@ impl App {
                     });
                     cmds.extend(self.request_current_surfaces_romanization());
                 }
-                self.status.text = t!("API key saved", "API 키를 저장했어요").to_owned();
+                self.status.text = t!(
+                    "API key saved",
+                    "API 키를 저장했어요",
+                    "APIキーを保存しました"
+                )
+                .to_owned();
             }
             Field::ListenBrainzToken => {
                 self.config.scrobble.listenbrainz.token = settings::blank_to_none(&value);
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
                 cmds.push(Cmd::Scrobble(ScrobbleCmd::Reconfigure(Box::new(
                     self.config.scrobble_settings(),
                 ))));
             }
             Field::SpotifyClientId => {
                 self.config.spotify.client_id = settings::blank_to_none(&value);
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::SpotifyRedirectPort => {
                 self.config.spotify.redirect_port = value.trim().parse::<u16>().ok();
-                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text =
+                    t!("Settings saved", "설정을 저장했어요", "設定を保存しました").to_owned();
             }
             Field::ThemeColor(_) => return Vec::new(),
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).

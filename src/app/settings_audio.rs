@@ -329,7 +329,8 @@ impl App {
                 }
                 self.status.text = t!(
                     "All settings reset to defaults",
-                    "모든 설정을 기본값으로 되돌렸어요"
+                    "모든 설정을 기본값으로 되돌렸어요",
+                    "すべての設定をデフォルトに戻しました"
                 )
                 .to_owned();
             }

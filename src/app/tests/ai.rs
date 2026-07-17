@@ -251,7 +251,8 @@ fn dragging_ai_transcript_rows_copies_selection() {
         app.status.text,
         t!(
             "✓ Chat selection copied to clipboard",
-            "✓ 선택한 채팅이 클립보드에 복사됐어요"
+            "✓ 선택한 채팅이 클립보드에 복사됐어요",
+            "✓ 選択したチャットをクリップボードにコピーしました"
         )
     );
 }

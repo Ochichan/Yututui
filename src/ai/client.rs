@@ -289,7 +289,8 @@ impl GeminiError {
         let key_help = || {
             crate::t!(
                 "The Gemini API key was rejected — check it in Settings.",
-                "Gemini API 키가 거부됐어요 — 설정에서 키를 확인해 주세요."
+                "Gemini API 키가 거부됐어요 — 설정에서 키를 확인해 주세요.",
+                "Gemini APIキーが拒否されました — 設定でキーを確認してください。"
             )
             .to_owned()
         };
@@ -297,27 +298,32 @@ impl GeminiError {
             GeminiError::Auth => key_help(),
             GeminiError::ModelNotFound => crate::t!(
                 "That Gemini model isn't available — pick another in Settings.",
-                "이 Gemini 모델은 사용할 수 없어요 — 설정에서 다른 모델을 골라 주세요."
+                "이 Gemini 모델은 사용할 수 없어요 — 설정에서 다른 모델을 골라 주세요.",
+                "このGeminiモデルは利用できません — 設定で別のモデルを選んでください。"
             )
             .to_owned(),
             GeminiError::RateLimited => crate::t!(
                 "Gemini is rate-limiting us — try again in a moment.",
-                "요청이 너무 잦아요 — 잠시 후 다시 시도해 주세요."
+                "요청이 너무 잦아요 — 잠시 후 다시 시도해 주세요.",
+                "リクエストが多すぎます — しばらくしてからもう一度お試しください。"
             )
             .to_owned(),
             GeminiError::Server(_) => crate::t!(
                 "Gemini had a server hiccup — try again shortly.",
-                "Gemini 서버 오류예요 — 잠시 후 다시 시도해 주세요."
+                "Gemini 서버 오류예요 — 잠시 후 다시 시도해 주세요.",
+                "Geminiサーバーエラーです — しばらくしてからもう一度お試しください。"
             )
             .to_owned(),
             GeminiError::Network(_) => crate::t!(
                 "Couldn't reach Gemini — check your network.",
-                "Gemini에 연결하지 못했어요 — 네트워크를 확인해 주세요."
+                "Gemini에 연결하지 못했어요 — 네트워크를 확인해 주세요.",
+                "Geminiに接続できません — ネットワークを確認してください。"
             )
             .to_owned(),
             GeminiError::Decode(_) => crate::t!(
                 "Couldn't parse Gemini's reply.",
-                "Gemini 응답을 해석하지 못했어요."
+                "Gemini 응답을 해석하지 못했어요.",
+                "Geminiの応答を解析できませんでした。"
             )
             .to_owned(),
             GeminiError::Http(raw) => {
@@ -325,8 +331,11 @@ impl GeminiError {
                 if raw.contains("API_KEY_INVALID") || raw.contains("API key not valid") {
                     return key_help();
                 }
-                let rejected =
-                    crate::t!("Gemini rejected the request", "Gemini가 요청을 거부했어요");
+                let rejected = crate::t!(
+                    "Gemini rejected the request",
+                    "Gemini가 요청을 거부했어요",
+                    "Geminiがリクエストを拒否しました"
+                );
                 match http_error_detail(raw) {
                     Some(detail) => format!("{rejected} ({detail})"),
                     None => format!("{rejected}."),

@@ -9,6 +9,7 @@ on:
   push:
     branches: [main, master]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       run_windows:
@@ -34,7 +35,7 @@ jobs:
     # Match debian-ts custom labels; OS/arch come from the runner automatically.
     runs-on: [self-hosted, debian, yututui]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Persist cargo target dir
         run: |
@@ -46,8 +47,9 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          toolchain: stable
           components: rustfmt, clippy
 
       - name: Format
@@ -73,27 +75,20 @@ jobs:
 
       - name: Ensure supply-chain tools
         run: |
-          command -v cargo-audit >/dev/null || cargo install --locked cargo-audit
-          command -v cargo-deny >/dev/null || cargo install --locked cargo-deny
+          # Pinned so a runner-cached older/newer binary can't change what the gate means.
+          want="0.19.6"
+          have="$(cargo deny --version 2>/dev/null | awk '{print $2}')" || have=""
+          [ "$have" = "$want" ] || cargo install --locked cargo-deny --version "$want"
 
-      - name: RustSec audit
-        run: |
-          cargo audit --deny warnings \
-            --ignore RUSTSEC-2024-0411 \
-            --ignore RUSTSEC-2024-0412 \
-            --ignore RUSTSEC-2024-0413 \
-            --ignore RUSTSEC-2024-0414 \
-            --ignore RUSTSEC-2024-0415 \
-            --ignore RUSTSEC-2024-0416 \
-            --ignore RUSTSEC-2024-0418 \
-            --ignore RUSTSEC-2024-0419 \
-            --ignore RUSTSEC-2024-0420 \
-            --ignore RUSTSEC-2024-0429 \
-            --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2024-0370
+      # RUSTSEC exceptions live in deny.toml [advisories].ignore — the single source
+      # of truth (the old cargo-audit step duplicated them as --ignore flags).
+      # --all-features widens ONLY this advisory scan to optional-feature deps
+      # (desktop tray stack); bans/licenses/sources keep the default graph.
+      - name: RustSec advisories (full feature graph)
+        run: cargo deny --all-features check advisories
 
       - name: Dependency policy
-        run: cargo deny check
+        run: cargo deny check bans licenses sources
 
       - name: GUI frontend (typecheck, test, build)
         run: |
@@ -122,8 +117,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/dependency-review-action@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5
         with:
           fail-on-severity: high
 
@@ -133,7 +128,7 @@ jobs:
     # Match debian-ts custom labels; OS/arch come from the runner automatically.
     runs-on: [self-hosted, debian, yututui]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Persist cargo target dir
         run: |
@@ -145,9 +140,10 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
-          components: clippy
+          toolchain: stable
+          components: clippy, llvm-tools-preview
 
       - name: Install Linux system dependencies
         run: |
@@ -171,6 +167,16 @@ jobs:
       - name: Vendored crossterm test
         run: cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
 
+      # Advisory while the number proves stable (81.99% on 2026-07-16, threshold 80);
+      # flip to enforcing by dropping continue-on-error after a release cycle.
+      - name: Core coverage (advisory)
+        continue-on-error: true
+        run: |
+          want="0.8.5"
+          have="$(cargo llvm-cov --version 2>/dev/null | awk '{print $2}')" || have=""
+          [ "$have" = "$want" ] || cargo install --locked cargo-llvm-cov --version "$want"
+          bash scripts/coverage-core.sh
+
   windows-optional:
     name: Windows (optional light)
     # Label/dispatch gated so offline Windows PCs never block merge. Keep expressions
@@ -183,11 +189,12 @@ jobs:
     runs-on: [self-hosted, windows, x64, yututui]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          toolchain: stable
           components: clippy
 
       - name: Clippy (warnings = errors)
@@ -209,7 +216,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, yututui]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Persist cargo target dir
         run: |
@@ -220,8 +227,9 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
+          toolchain: stable
           components: clippy
 
       - name: Clippy (warnings = errors)

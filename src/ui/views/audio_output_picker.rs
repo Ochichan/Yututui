@@ -30,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" Audio output ", " 오디오 출력 "))
+        .title(t!(" Audio output ", " 오디오 출력 ", " オーディオ出力 "))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -62,11 +62,16 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .is_some_and(|picker| picker.applying)
     {
-        t!("Applying selection…", "선택을 적용하는 중…").to_owned()
+        t!(
+            "Applying selection…",
+            "선택을 적용하는 중…",
+            "選択を適用中…"
+        )
+        .to_owned()
     } else if app.audio_devices.loading {
         format!(
             "{}{}",
-            t!("Detecting devices", "장치 탐지 중"),
+            t!("Detecting devices", "장치 탐지 중", "デバイスを検出中"),
             crate::ui::anim::activity_dots(app).unwrap_or("…")
         )
     } else {
@@ -76,10 +81,10 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter(|device| !device.name.eq_ignore_ascii_case("auto"))
             .count();
-        if crate::i18n::is_korean() {
-            format!("출력 {count}개 · 기본값 사용 가능")
-        } else {
-            format!("{count} outputs · default available")
+        match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("출력 {count}개 · 기본값 사용 가능"),
+            crate::i18n::Language::Japanese => format!("出力 {count}件 · デフォルト利用可"),
+            _ => format!("{count} outputs · default available"),
         }
     };
     frame.render_widget(
@@ -136,9 +141,9 @@ fn render_rows(frame: &mut Frame, app: &App, rows: &[crate::app::AudioOutputRow]
             row.label.clone()
         };
         let badge = if row_current {
-            t!("[now] ", "[현재] ")
+            t!("[now] ", "[현재] ", "[現在] ")
         } else if row_saved {
-            t!("[saved] ", "[저장] ")
+            t!("[saved] ", "[저장] ", "[保存] ")
         } else {
             ""
         };
@@ -200,16 +205,22 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .is_some_and(|picker| picker.editing_manual);
     let hint = if editing {
-        t!("Enter apply · Esc return", "Enter 적용 · Esc 돌아가기")
+        t!(
+            "Enter apply · Esc return",
+            "Enter 적용 · Esc 돌아가기",
+            "Enter 適用 · Esc 戻る"
+        )
     } else if area.width < 50 {
         t!(
             "↑↓ choose · Enter · r refresh · Esc",
-            "↑↓ 선택 · Enter · r 새로고침 · Esc"
+            "↑↓ 선택 · Enter · r 새로고침 · Esc",
+            "↑↓ 選択 · Enter · r 更新 · Esc"
         )
     } else {
         t!(
             "↑↓ choose · Enter apply · r refresh · Esc close",
-            "↑↓ 선택 · Enter 적용 · r 새로고침 · Esc 닫기"
+            "↑↓ 선택 · Enter 적용 · r 새로고침 · Esc 닫기",
+            "↑↓ 選択 · Enter 適用 · r 更新 · Esc 閉じる"
         )
     };
     frame.render_widget(
@@ -225,7 +236,7 @@ fn render_hint(frame: &mut Frame, app: &App, area: Rect) {
 
 fn manual_editor_label(app: &App, picker: &crate::app::AudioOutputPicker, width: usize) -> String {
     let caret = crate::ui::anim::caret_char(app);
-    let prefix = format!("{} ", t!("Device ID:", "장치 ID:"));
+    let prefix = format!("{} ", t!("Device ID:", "장치 ID:", "デバイス ID:"));
     let prefix_width = UnicodeWidthStr::width(prefix.as_str());
     if prefix_width < width {
         let cursor = picker.manual_cursor.byte_index(&picker.manual_input);

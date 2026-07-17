@@ -194,7 +194,8 @@ pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
             attempts: Vec::new(),
             message: crate::t!(
                 "The YuTuTui! player executable was not found. Reinstall YuTuTui! or run `ytt doctor`.",
-                "YuTuTui! 플레이어 실행 파일을 찾지 못했습니다. YuTuTui!를 다시 설치하거나 `ytt doctor`를 실행하세요."
+                "YuTuTui! 플레이어 실행 파일을 찾지 못했습니다. YuTuTui!를 다시 설치하거나 `ytt doctor`를 실행하세요.",
+                "YuTuTui!プレイヤーの実行ファイルが見つかりませんでした。YuTuTui!を再インストールするか、`ytt doctor`を実行してください。"
             )
             .to_owned(),
         });
@@ -244,12 +245,17 @@ pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
     } else {
         "YuTuTui!가 터미널을 열지 못했습니다. 터미널을 열고 `ytt`를 실행하세요."
     };
+    let japanese = if cfg!(target_os = "windows") {
+        "YuTuTui!はターミナルを開けませんでした。Windows Terminalをインストールするか、ターミナルで`ytt`を実行してください。"
+    } else {
+        "YuTuTui!はターミナルを開けませんでした。ターミナルを開いて`ytt`を実行してください。"
+    };
     Err(LaunchError {
         attempts,
-        message: if crate::i18n::is_korean() {
-            korean.to_owned()
-        } else {
-            english.to_owned()
+        message: match crate::i18n::current() {
+            crate::i18n::Language::Korean => korean.to_owned(),
+            crate::i18n::Language::Japanese => japanese.to_owned(),
+            _ => english.to_owned(),
         },
     })
 }

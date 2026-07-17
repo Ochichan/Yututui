@@ -223,6 +223,7 @@ fn beginner_coach_actions_fit_the_full_minimum_and_mini_only_offers_skip() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
     app.config.beginner_mode = true;
+    app.config.beginner_tutorial.next_step = "welcome".to_owned();
     app.prepare_beginner_onboarding(true);
 
     let _ = render_app_buffer(&app, 32, 14);
@@ -247,6 +248,37 @@ fn beginner_coach_actions_fit_the_full_minimum_and_mini_only_offers_skip() {
         );
     }
     assert!(full_regions.iter().all(|region| {
+        let rect = region.rect;
+        rect.width > 0 && rect.height > 0 && rect.right() <= 32 && rect.bottom() <= 14
+    }));
+
+    // The Language step's wider 4-button row must also fit the full-tier minimum.
+    let mut language_app = app_playing(1, 0);
+    language_app.config.beginner_mode = true;
+    language_app.prepare_beginner_onboarding(true);
+    let _ = render_app_buffer(&language_app, 32, 14);
+    let language_regions = language_app
+        .hits
+        .regions()
+        .iter()
+        .filter(|region| matches!(region.target, MouseTarget::Onboarding(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    for action in [
+        OnboardingAction::Noop,
+        OnboardingAction::ChooseLanguage(crate::i18n::Language::English),
+        OnboardingAction::ChooseLanguage(crate::i18n::Language::Korean),
+        OnboardingAction::ChooseLanguage(crate::i18n::Language::Japanese),
+        OnboardingAction::Skip,
+    ] {
+        assert!(
+            language_regions
+                .iter()
+                .any(|region| region.target == MouseTarget::Onboarding(action)),
+            "minimum full layout omitted {action:?}: {language_regions:?}"
+        );
+    }
+    assert!(language_regions.iter().all(|region| {
         let rect = region.rect;
         rect.width > 0 && rect.height > 0 && rect.right() <= 32 && rect.bottom() <= 14
     }));

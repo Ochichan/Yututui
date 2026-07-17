@@ -27,7 +27,8 @@ impl App {
             self.audio_output_selection_failed(
                 t!(
                     "An audio output change is already in progress",
-                    "오디오 출력 변경이 이미 진행 중입니다"
+                    "오디오 출력 변경이 이미 진행 중입니다",
+                    "オーディオ出力の変更がすでに進行中です"
                 )
                 .to_owned(),
             );
@@ -41,7 +42,12 @@ impl App {
         ) && target.is_none()
         {
             self.audio_output_selection_failed(
-                t!("Enter a valid device ID", "올바른 장치 ID를 입력하세요").to_owned(),
+                t!(
+                    "Enter a valid device ID",
+                    "올바른 장치 ID를 입력하세요",
+                    "有効なデバイス ID を入力してください"
+                )
+                .to_owned(),
             );
             return Vec::new();
         }
@@ -119,7 +125,8 @@ impl App {
             "{}: {error}",
             t!(
                 "Could not refresh audio outputs",
-                "오디오 출력 목록을 새로 고치지 못했습니다"
+                "오디오 출력 목록을 새로 고치지 못했습니다",
+                "オーディオ出力の一覧を更新できませんでした"
             )
         );
         self.dirty = true;
@@ -201,7 +208,8 @@ impl App {
                 "{}: {error}",
                 t!(
                     "Could not change audio output",
-                    "오디오 출력을 변경하지 못했습니다"
+                    "오디오 출력을 변경하지 못했습니다",
+                    "オーディオ出力を変更できませんでした"
                 )
             );
             self.dirty = true;
@@ -218,7 +226,8 @@ impl App {
                     picker.error = Some(
                         t!(
                             "Saved output is unavailable; using the system default for this session",
-                            "저장된 출력을 찾을 수 없어 이번 세션에는 시스템 기본값을 사용합니다"
+                            "저장된 출력을 찾을 수 없어 이번 세션에는 시스템 기본값을 사용합니다",
+                            "保存された出力が見つからないため、このセッションはシステムのデフォルトを使用します"
                         )
                         .to_owned(),
                     );
@@ -226,7 +235,8 @@ impl App {
                 self.status.kind = StatusKind::Error;
                 self.status.text = t!(
                     "Saved audio output unavailable; using system default for this session",
-                    "저장된 오디오 출력을 찾을 수 없어 이번 세션에는 시스템 기본값을 사용합니다"
+                    "저장된 오디오 출력을 찾을 수 없어 이번 세션에는 시스템 기본값을 사용합니다",
+                    "保存されたオーディオ出力が見つからないため、このセッションはシステムのデフォルトを使用します"
                 )
                 .to_owned();
                 self.dirty = true;
@@ -267,7 +277,11 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = format!(
             "{}: {label}",
-            t!("Audio output changed", "오디오 출력을 변경했습니다")
+            t!(
+                "Audio output changed",
+                "오디오 출력을 변경했습니다",
+                "オーディオ出力を変更しました"
+            )
         );
         self.dirty = true;
         vec![Cmd::Persist(PersistCmd::Config(Box::new(
@@ -283,7 +297,8 @@ impl App {
                 "{}: {}",
                 t!(
                     "Audio output change was interrupted",
-                    "오디오 출력 변경이 중단되었습니다"
+                    "오디오 출력 변경이 중단되었습니다",
+                    "オーディオ出力の変更が中断されました"
                 ),
                 crate::util::sanitize::sanitize_error_text(reason)
             ));
@@ -309,7 +324,7 @@ fn configured_audio_device(app: &App) -> Option<String> {
 
 fn audio_output_label(app: &App, target: Option<&str>) -> String {
     let Some(target) = target else {
-        return t!("System default", "시스템 기본값").to_owned();
+        return t!("System default", "시스템 기본값", "システムのデフォルト").to_owned();
     };
     app.audio_devices
         .devices

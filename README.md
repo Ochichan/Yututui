@@ -24,7 +24,9 @@ Public beta: stable enough for daily use, still moving fast.
 
 ## Install
 
-Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
+The package-manager commands (brew, scoop, nix, yay) install `ytt` **and** its helpers
+(mpv, yt-dlp, ffmpeg) in one go. The direct installer and the source build install `ytt`
+only — they check for the helpers and tell you what's missing.
 
 | OS | One command |
 | --- | --- |
@@ -44,6 +46,24 @@ Windows direct installer:
 ```powershell
 irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
+
+<details>
+<summary><b>Verify what you download</b> <i>(optional)</i></summary>
+
+Every release ships `checksums.txt` (SHA-256) and GitHub build-provenance attestations.
+To avoid running an installer fetched from a moving branch, pin it to the latest release:
+
+```sh
+curl -fsSL https://github.com/Ochichan/Yututui/releases/latest/download/install.sh | bash
+
+# Checksums (artifact + checksums.txt in the same directory):
+sha256sum -c --ignore-missing checksums.txt        # macOS: shasum -a 256 -c
+
+# Provenance — proves the artifact came from this repo's release workflow (GitHub CLI):
+gh attestation verify yututui-linux-x64.tar.gz --repo Ochichan/Yututui
+```
+
+</details>
 
 On Windows, launch **YuTuTui!** from the Start Menu. The tray companion opens Windows Terminal
 and starts `ytt` for you; its right-click menu also has **Open Player**. Double-clicking
@@ -114,7 +134,7 @@ On a new profile, a ten-second hint points to **Search**. Press the displayed se
 
 That's it. Music.
 
-**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, step-by-step walkthrough — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
+**New to terminals?** Switch on **Beginner Mode** (Settings → General) and the next launch adds an interactive, nine-step walkthrough — it starts by letting you pick the UI language (English / 한국어 / 日本語) — plus the [friendly manual](MANUAL.md) covers every mode at your own pace.
 
 ## Tour
 
@@ -234,7 +254,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Make it yours
 
-14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization.
+14 themes with all 34 color roles hex-editable, 40 animations — from shooting stars and a spinning ASCII donut up to full-canvas showpieces (fireworks, Game of Life, pipes, plasma) — a 10-band EQ with presets, your pick of audio-output device, plus loudness normalization. The UI itself speaks English, 한국어 and 日本語 — Settings → General → **Language** cycles through all three.
 
 > 🖼️ *GIFs coming soon.*
 <!-- 📸 TO FILL: add docs/media/themes.gif, delete the "coming soon" line above, then uncomment:
@@ -252,7 +272,7 @@ Media keys, macOS Control Center, Windows SMTC + tray mini player, Linux MPRIS, 
 
 ### Retro mode
 
-One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art.
+One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH session — album art included, as honest ASCII art. Retro also pins the UI language to English — CP437 has no CJK glyphs.
 
 > 🖼️ *Screenshot coming soon.*
 <!-- 📸 TO FILL: add docs/media/retro.png, delete the "coming soon" line above, then uncomment:
@@ -518,6 +538,13 @@ ytt tools unpin               # return to normal managed/system selection
 The app's own yt-dlp calls ignore your yt-dlp config file by default, so options meant for shell downloads do not break parsed output. Set `YTM_YTDLP_USER_CONFIG=1` to re-enable your yt-dlp config for app-parsed calls. Playback through mpv's `ytdl_hook` still honors your yt-dlp config; only search, playlist fetches, metadata, prefetch resolution, and downloads ignore it by default.
 
 </details>
+
+## Security
+
+Found a vulnerability? Please use
+[GitHub private vulnerability reporting](https://github.com/Ochichan/Yututui/security/advisories/new)
+instead of a public issue — supported versions and artifact verification live in
+[SECURITY.md](SECURITY.md).
 
 ## Thanks & license
 

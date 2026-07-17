@@ -403,6 +403,7 @@ async fn retiring_guard_cannot_unlink_a_fast_successor() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     crate::util::safe_fs::write_private_atomic_json(&descriptor, &old_identity).unwrap();
     let endpoint_lease = Arc::new(EndpointLease::new(
@@ -432,6 +433,7 @@ async fn retiring_guard_cannot_unlink_a_fast_successor() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     crate::util::safe_fs::write_private_atomic_json(&descriptor, &successor_identity).unwrap();
 
@@ -474,6 +476,7 @@ async fn late_guard_cleanup_preserves_a_rebound_successor_inode() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     crate::util::safe_fs::write_private_atomic_json(&descriptor, &old_identity).unwrap();
     let endpoint_lease = Arc::new(EndpointLease::new(
@@ -515,6 +518,7 @@ async fn late_guard_cleanup_preserves_a_rebound_successor_inode() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     crate::util::safe_fs::write_private_atomic_json(&descriptor, &successor_identity).unwrap();
 
@@ -560,6 +564,7 @@ async fn repeated_accept_failures_self_revoke_the_published_endpoint() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     endpoint_lease.publish_instance_at(descriptor.clone(), old_identity);
     let mut guard = InstanceGuard {
@@ -628,6 +633,7 @@ async fn failed_accept_owner_cannot_overwrite_or_unlink_a_fast_successor() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     crate::util::safe_fs::write_private_atomic_json(&descriptor, &successor_identity).unwrap();
 
@@ -639,6 +645,7 @@ async fn failed_accept_owner_cannot_overwrite_or_unlink_a_fast_successor() {
         mode: InstanceMode::StandaloneTui,
         protocol_version: PROTOCOL_VERSION,
         capabilities: Vec::new(),
+        host_terminal: None,
     };
     // Production publication is serialized by the lease. Since failure already won, this call
     // must not overwrite the successor descriptor, and inode matching must preserve its socket.

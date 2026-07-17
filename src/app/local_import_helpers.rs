@@ -30,23 +30,28 @@ pub(in crate::app) fn import_session_row_status_detail(
     match row.status {
         ImportSessionRowStatus::Pending => Some(t!(
             "matching is still running, or the import was interrupted before this row was processed",
-            "매칭 중이거나 이 행 처리 전에 가져오기가 중단됐어요"
+            "매칭 중이거나 이 행 처리 전에 가져오기가 중단됐어요",
+            "マッチング中か、この行の処理前にインポートが中断されました"
         )),
         ImportSessionRowStatus::Matched if !row.written => Some(t!(
             "Ready; downloading is a separate step",
-            "준비 완료; 다운로드는 별도 단계예요"
+            "준비 완료; 다운로드는 별도 단계예요",
+            "準備完了; ダウンロードは別のステップです"
         )),
         ImportSessionRowStatus::Ambiguous => Some(t!(
             "review candidate scores; A mark all ready, a accept, s search",
-            "후보 점수를 확인하세요; A 전체 준비, a 수락, s 검색"
+            "후보 점수를 확인하세요; A 전체 준비, a 수락, s 검색",
+            "候補スコアを確認してください; A 全件準備, a 承認, s 検索"
         )),
         ImportSessionRowStatus::NotFound => Some(t!(
             "no usable YouTube Music candidate was found",
-            "사용 가능한 YouTube Music 후보를 찾지 못했어요"
+            "사용 가능한 YouTube Music 후보를 찾지 못했어요",
+            "使用できるYouTube Music候補が見つかりませんでした"
         )),
         ImportSessionRowStatus::SkippedCapacity => Some(t!(
             "the destination playlist reached its track limit",
-            "대상 플레이리스트가 곡 수 제한에 도달했어요"
+            "대상 플레이리스트가 곡 수 제한에 도달했어요",
+            "対象のプレイリストが曲数の上限に達しました"
         )),
         _ => None,
     }
@@ -76,7 +81,7 @@ pub(in crate::app) fn path_is_import_inbox(path: &std::path::Path) -> bool {
 
 pub(in crate::app) fn import_session_row_artist(row: &ImportSessionRow) -> String {
     if row.artists.is_empty() {
-        t!("Local file", "로컬 파일").to_owned()
+        t!("Local file", "로컬 파일", "ローカルファイル").to_owned()
     } else {
         row.artists.join(", ")
     }

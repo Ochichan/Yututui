@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title(format!(
             " {} · {} ",
-            t!("Color", "색상"),
+            t!("Color", "색상", "色"),
             picker.role.label()
         ))
         .border_style(crate::ui::popup_style(app, R::BorderFocused))
@@ -71,11 +71,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_grid(frame, app, picker, grid);
     if help.height > 0 {
         let hint = if help.width < 40 {
-            t!("arrows · Enter apply · Esc", "방향키 · Enter 적용 · Esc")
+            t!(
+                "arrows · Enter apply · Esc",
+                "방향키 · Enter 적용 · Esc",
+                "矢印キー · Enter 適用 · Esc"
+            )
         } else {
             t!(
                 "arrows/wheel · Enter/click apply · Esc/outside cancel",
-                "방향키/휠 · Enter/클릭 적용 · Esc/바깥 취소"
+                "방향키/휠 · Enter/클릭 적용 · Esc/바깥 취소",
+                "矢印/ホイール · Enter/クリック 適用 · Esc/外側 取消"
             )
         };
         frame.render_widget(
@@ -108,7 +113,7 @@ fn render_current(frame: &mut Frame, app: &App, picker: &ColorPickerState, area:
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(if selected { "> " } else { "  " }, label_style),
-            Span::styled(t!("Current ", "현재 "), label_style),
+            Span::styled(t!("Current ", "현재 ", "現在 "), label_style),
             swatch,
             Span::raw(" "),
             Span::styled(picker.current().to_owned(), label_style),

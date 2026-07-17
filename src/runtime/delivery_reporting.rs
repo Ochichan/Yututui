@@ -15,7 +15,11 @@ pub(super) fn report_actor_delivery(
             tracing::warn!(component, %error, "actor command was not accepted");
             app.set_status_error(format!(
                 "{}: {error}",
-                crate::t!("Background service is busy", "백그라운드 서비스가 바쁩니다")
+                crate::t!(
+                    "Background service is busy",
+                    "백그라운드 서비스가 바쁩니다",
+                    "バックグラウンドサービスがビジー状態です"
+                )
             ));
             false
         }

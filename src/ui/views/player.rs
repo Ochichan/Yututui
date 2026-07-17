@@ -121,7 +121,10 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
 
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(format!(" {} {pos}/{total} ", t!("Queue", "대기열")))
+        .title(format!(
+            " {} {pos}/{total} ",
+            t!("Queue", "대기열", "キュー")
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::BorderPrimary))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -648,12 +651,12 @@ pub fn render_radio_mode_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmRadioMode,
-            t!(" Confirm (Enter) ", " 확인 (Enter) "),
+            t!(" Confirm (Enter) ", " 확인 (Enter) ", " 確認 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
             MouseTarget::CancelRadioMode,
-            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+            t!(" Cancel (Esc) ", " 취소 (Esc) ", " キャンセル (Esc) "),
         ),
     ];
     buttons::render_segments_with_hit_height(

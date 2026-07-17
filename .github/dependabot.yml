@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions in .github/workflows/ current (the `# vN` comments
+# next to each pin tell dependabot the intended track). Cargo deps are intentionally
+# NOT managed here: cargo-deny gates advisories/bans in CI and lockfile bumps are
+# done deliberately per release.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

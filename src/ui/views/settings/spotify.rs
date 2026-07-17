@@ -146,7 +146,11 @@ pub(in crate::ui::views) fn render_spotify_import_mode_dropdown_popup(
 
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" Spotify import mode ", " Spotify 가져오기 모드 "))
+        .title(t!(
+            " Spotify import mode ",
+            " Spotify 가져오기 모드 ",
+            " Spotifyインポートモード "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -199,7 +203,8 @@ pub(in crate::ui::views) fn render_spotify_import_mode_dropdown_popup(
     frame.render_widget(
         Paragraph::new(t!(
             "↑↓ choose · Enter save · Esc close",
-            "↑↓ 선택 · Enter 저장 · Esc 닫기"
+            "↑↓ 선택 · Enter 저장 · Esc 닫기",
+            "↑↓ 選択 · Enter 保存 · Esc 閉じる"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
@@ -220,7 +225,11 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" Import from Spotify ", " Spotify에서 가져오기 "))
+        .title(t!(
+            " Import from Spotify ",
+            " Spotify에서 가져오기 ",
+            " Spotifyからインポート "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -242,15 +251,17 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(vec![
             Line::from(t!(
                 "Destination: Library > Playlists",
-                "대상: Library > Playlists"
+                "대상: Library > Playlists",
+                "取り込み先: Library > Playlists"
             )),
             Line::from(format!(
                 "{}: {} · {}",
-                t!("Mode", "모드"),
+                t!("Mode", "모드", "モード"),
                 import_mode.label(),
                 t!(
                     "change in Settings > Accounts",
-                    "Settings > Accounts에서 변경"
+                    "Settings > Accounts에서 변경",
+                    "Settings > Accountsで変更"
                 )
             )),
         ])
@@ -302,7 +313,8 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(t!(
             "↑/↓ select · Enter import · Esc close · or click",
-            "↑/↓ 선택 · Enter 가져오기 · Esc 닫기 · 클릭 가능"
+            "↑/↓ 선택 · Enter 가져오기 · Esc 닫기 · 클릭 가능",
+            "↑/↓ 選択 · Enter インポート · Esc 閉じる · クリック可"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),

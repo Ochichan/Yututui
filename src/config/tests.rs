@@ -60,7 +60,7 @@ fn load_from_preserves_unloadable_config_before_defaulting() {
     std::fs::remove_file(&path).unwrap();
     let fresh = recovery::load_from_path_with_legacy(&path, None);
     assert!(fresh.beginner_mode);
-    assert_eq!(fresh.beginner_tutorial, BeginnerTutorialProgress::welcome());
+    assert_eq!(fresh.beginner_tutorial, BeginnerTutorialProgress::start());
     assert!(path.exists());
     let installed: Config = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert!(installed.beginner_mode);
@@ -533,7 +533,7 @@ fn beginner_mode_is_opt_in_only_for_genuinely_fresh_profiles() {
     assert!(!defaults.beginner_mode);
     assert_eq!(
         defaults.beginner_tutorial,
-        BeginnerTutorialProgress::welcome()
+        BeginnerTutorialProgress::start()
     );
 
     for marker in [None, Some(true), Some(false)] {
@@ -1097,4 +1097,57 @@ fn effective_dj_gem_language_resolves_retro_auto_and_concrete() {
         ..Config::default()
     };
     assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::English);
+}
+
+#[test]
+fn peek_saved_language_never_writes_and_mirrors_effective_language() {
+    let dir = std::env::temp_dir().join(format!("ytm-lang-peek-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    let peek = storage::peek_saved_language_at;
+
+    // Missing file → English, and the peek must not create it.
+    assert_eq!(peek(&path), Language::English);
+    assert!(!path.exists(), "a peek must never write a config file");
+
+    // Saved Korean → Korean.
+    std::fs::write(&path, r#"{"language":"korean"}"#).unwrap();
+    assert_eq!(peek(&path), Language::Korean);
+
+    // Retro mode forces English, mirroring `Config::effective_language`.
+    std::fs::write(&path, r#"{"language":"korean","retro_mode":true}"#).unwrap();
+    assert_eq!(peek(&path), Language::English);
+
+    // Corrupt JSON and oversize files degrade to English without touching the file
+    // (unlike `Config::load`, which would set the file aside and rewrite it).
+    std::fs::write(&path, "{not json").unwrap();
+    assert_eq!(peek(&path), Language::English);
+    std::fs::write(&path, "x".repeat(2 * 1024 * 1024)).unwrap();
+    assert_eq!(peek(&path), Language::English);
+    assert_eq!(std::fs::read(&path).unwrap().len(), 2 * 1024 * 1024);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn japanese_language_round_trips_and_retro_pins_english() {
+    // Serde tag + config round-trip for the third UI language.
+    let cfg = Config {
+        language: Language::Japanese,
+        ..Config::default()
+    };
+    let json = serde_json::to_string(&cfg).unwrap();
+    assert!(json.contains("\"language\":\"japanese\""));
+    let back: Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.language, Language::Japanese);
+    assert_eq!(back.effective_language(), Language::Japanese);
+
+    // Retro mode pins the UI to English regardless of the persisted choice.
+    let cfg = Config {
+        language: Language::Japanese,
+        retro_mode: true,
+        ..Config::default()
+    };
+    assert_eq!(cfg.effective_language(), Language::English);
 }

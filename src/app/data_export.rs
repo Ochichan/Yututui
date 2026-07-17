@@ -123,12 +123,14 @@ impl App {
         let remote_message = format!(
             "personal-data export is too large or complex to copy safely while ytt is running: {detail}. Close the running ytt instance, then run `ytt data export`, or reduce the saved metadata."
         );
-        let status = if crate::i18n::is_korean() {
-            format!(
+        let status = match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!(
                 "실행 중 복사하기에는 개인 데이터가 너무 크거나 복잡합니다. 실행 중인 ytt를 닫은 뒤 `ytt data export`를 실행하거나 저장된 메타데이터를 줄이세요. ({detail})"
-            )
-        } else {
-            remote_message.clone()
+            ),
+            crate::i18n::Language::Japanese => format!(
+                "実行中にコピーするには個人データが大きすぎるか複雑すぎます。実行中のyttを閉じてから `ytt data export` を実行するか、保存済みメタデータを減らしてください。({detail})"
+            ),
+            _ => remote_message.clone(),
         };
 
         if let Some(settings) = self.settings.as_mut() {
@@ -159,7 +161,8 @@ impl App {
                     "{}: {error}",
                     t!(
                         "Could not find the Downloads folder",
-                        "다운로드 폴더를 찾을 수 없음"
+                        "다운로드 폴더를 찾을 수 없음",
+                        "ダウンロードフォルダーが見つかりません"
                     )
                 ));
                 Vec::new()
@@ -194,7 +197,12 @@ impl App {
         if let Some(settings) = self.settings.as_mut() {
             settings.personal_data_export = PersonalDataExportStatus::Exporting;
         }
-        self.status.text = t!("Exporting personal data…", "개인 데이터를 내보내는 중…").to_owned();
+        self.status.text = t!(
+            "Exporting personal data…",
+            "개인 데이터를 내보내는 중…",
+            "個人データをエクスポート中…"
+        )
+        .to_owned();
         self.status.kind = StatusKind::Info;
         self.dirty = true;
         let sources = self.personal_export_sources(config);
@@ -232,16 +240,19 @@ impl App {
                 if let Some(settings) = self.settings.as_mut() {
                     settings.personal_data_export = PersonalDataExportStatus::Succeeded;
                 }
-                self.status.text = if crate::i18n::is_korean() {
-                    format!(
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!(
                         "내보내기 완료: {} · 인증정보/미디어 제외 · 청취 기록이 포함된 개인 파일",
                         path.display()
-                    )
-                } else {
-                    format!(
+                    ),
+                    crate::i18n::Language::Japanese => format!(
+                        "エクスポート完了: {} · 認証情報/メディア除外 · 聴取履歴を含む個人ファイル",
+                        path.display()
+                    ),
+                    _ => format!(
                         "Exported: {} · credentials/media omitted · private listening history included",
                         path.display()
-                    )
+                    ),
                 };
                 self.status.kind = StatusKind::Info;
             }
@@ -251,7 +262,11 @@ impl App {
                 }
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Personal-data export failed", "개인 데이터 내보내기 실패"),
+                    t!(
+                        "Personal-data export failed",
+                        "개인 데이터 내보내기 실패",
+                        "個人データのエクスポートに失敗"
+                    ),
                     crate::util::sanitize::sanitize_error_text(error)
                 );
                 self.status.kind = StatusKind::Error;

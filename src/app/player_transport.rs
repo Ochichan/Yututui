@@ -23,7 +23,8 @@ impl App {
                 "{} ({})",
                 t!(
                     "Disk cache safety limit reached; player stopped safely",
-                    "디스크 캐시 안전 한도에 도달해 플레이어를 안전하게 중지했습니다"
+                    "디스크 캐시 안전 한도에 도달해 플레이어를 안전하게 중지했습니다",
+                    "ディスクキャッシュの安全上限に達したためプレイヤーを安全に停止しました"
                 ),
                 reason.id()
             );
@@ -82,7 +83,8 @@ impl App {
             "{} ({})",
             t!(
                 "Disk cache safety limit reached; resuming in memory",
-                "디스크 캐시 안전 한도에 도달해 메모리 모드로 재개합니다"
+                "디스크 캐시 안전 한도에 도달해 메모리 모드로 재개합니다",
+                "ディスクキャッシュの安全上限に達したためメモリモードで再開します"
             ),
             reason.id()
         );
@@ -152,7 +154,8 @@ impl App {
             "{}: {reason}",
             t!(
                 "Player disconnected; restarting",
-                "플레이어 연결이 끊어져 다시 시작합니다"
+                "플레이어 연결이 끊어져 다시 시작합니다",
+                "プレイヤーの接続が切れたため再起動します"
             )
         );
 
@@ -174,7 +177,8 @@ impl App {
                     "{}: {}",
                     t!(
                         "Player restarted, but the current track cannot be reloaded",
-                        "플레이어를 다시 시작했지만 현재 곡을 불러올 수 없습니다"
+                        "플레이어를 다시 시작했지만 현재 곡을 불러올 수 없습니다",
+                        "プレイヤーを再起動しましたが現在の曲を読み込めません"
                     ),
                     crate::util::sanitize::sanitize_error_text(error.to_string())
                 );

@@ -20,14 +20,14 @@ use crate::t;
 /// as-is in both languages.)
 fn nav_label(mode: Mode, radio_mode: bool, local_mode: bool) -> &'static str {
     match mode {
-        Mode::Player if radio_mode => t!("Radio ", "라 디 오"),
-        Mode::Player => t!("Player", "플레이어"),
+        Mode::Player if radio_mode => t!("Radio ", "라 디 오", "ラ  ジ  オ"),
+        Mode::Player => t!("Player", "플레이어", "プレイヤー"),
         // Keep the Search tab's display width stable while Local Deck swaps its meaning.
-        Mode::Search if local_mode => t!("Find  ", "찾기"),
-        Mode::Search => t!("Search", "검색"),
-        Mode::Library => t!("Library", "라이브러리"),
-        Mode::Settings => t!("Settings", "설정"),
-        Mode::Ai => t!("DJ Gem", "DJ Gem"),
+        Mode::Search if local_mode => t!("Find  ", "찾기", "探す"),
+        Mode::Search => t!("Search", "검색", "検索"),
+        Mode::Library => t!("Library", "라이브러리", "ライブラリ"),
+        Mode::Settings => t!("Settings", "설정", "設定"),
+        Mode::Ai => t!("DJ Gem", "DJ Gem", "DJ Gem"),
     }
 }
 use crate::keymap::Action;
@@ -643,9 +643,9 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     // CP437 has no mouse glyph, and a `?` icon reads as a second help hint — retro mode
     // drops the icon and keeps the plain word.
     let mouse_label = if app.retro_mode() {
-        t!("mouse", "마우스").to_owned()
+        t!("mouse", "마우스", "マウス").to_owned()
     } else {
-        format!("🖱 {}", t!("mouse", "마우스"))
+        format!("🖱 {}", t!("mouse", "마우스", "マウス"))
     };
     let mut segs = vec![
         Seg::button(MouseTarget::Global(Action::ToggleHelp), key_label.as_str()),
@@ -774,6 +774,14 @@ mod tests {
             text_width(nav_label(Mode::Player, true, false)),
             text_width("플레이어")
         );
+
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        assert_eq!(nav_label(Mode::Player, false, false), "プレイヤー");
+        assert_eq!(nav_label(Mode::Player, true, false), "ラ  ジ  オ");
+        assert_eq!(
+            text_width(nav_label(Mode::Player, true, false)),
+            text_width("プレイヤー")
+        );
         crate::i18n::set_language(crate::i18n::Language::English);
     }
 
@@ -794,6 +802,14 @@ mod tests {
         assert_eq!(
             text_width(nav_label(Mode::Search, false, true)),
             text_width("검색")
+        );
+
+        crate::i18n::set_language(crate::i18n::Language::Japanese);
+        assert_eq!(nav_label(Mode::Search, false, false), "検索");
+        assert_eq!(nav_label(Mode::Search, false, true), "探す");
+        assert_eq!(
+            text_width(nav_label(Mode::Search, false, true)),
+            text_width("検索")
         );
         crate::i18n::set_language(crate::i18n::Language::English);
     }

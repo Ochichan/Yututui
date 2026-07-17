@@ -448,7 +448,8 @@ impl App {
                         self.status.kind = StatusKind::Info;
                         self.status.text = t!(
                             "No DJ Gem streaming picks to explain yet.",
-                            "아직 설명할 DJ Gem 라디오 선곡이 없어요."
+                            "아직 설명할 DJ Gem 라디오 선곡이 없어요.",
+                            "説明できるDJ Gemの選曲はまだありません。"
                         )
                         .to_owned();
                     }
@@ -464,7 +465,8 @@ impl App {
                     if self.local_dedicated_mode {
                         self.status.text = t!(
                             "Autoplay stays off in Local Deck",
-                            "로컬 덱에서는 자동재생이 꺼져 있어요"
+                            "로컬 덱에서는 자동재생이 꺼져 있어요",
+                            "ローカルデッキでは自動再生はオフのままです"
                         )
                         .to_owned();
                         self.dirty = true;
@@ -475,7 +477,8 @@ impl App {
                     if self.radio_dedicated_mode {
                         self.status.text = t!(
                             "Autoplay stays off in Radio mode",
-                            "라디오 모드에서는 자동재생이 꺼져 있어요"
+                            "라디오 모드에서는 자동재생이 꺼져 있어요",
+                            "ラジオモードでは自動再生はオフのままです"
                         )
                         .to_owned();
                         self.dirty = true;
@@ -492,7 +495,7 @@ impl App {
                     self.set_autoplay_streaming(enabling);
                     self.status.text = format!(
                         "{}: {}",
-                        t!("Autoplay", "자동재생"),
+                        t!("Autoplay", "자동재생", "自動再生"),
                         if enabling { "✓" } else { "✗" }
                     );
                     self.dirty = true;

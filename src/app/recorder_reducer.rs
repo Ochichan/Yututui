@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use super::*;
 
+use crate::i18n::Language;
 use crate::player::PlayerCmd;
 use crate::recorder::barrier::CommandBarrier;
 use crate::recorder::job::RecorderJob;
@@ -198,10 +199,10 @@ impl App {
         if let Err(error) = self.recorder.ensure_owner_active() {
             tracing::warn!(%error, "could not activate recorder owner namespace");
             self.status.kind = StatusKind::Error;
-            self.status.text = if crate::i18n::is_korean() {
-                format!("녹음 임시 저장소를 준비하지 못했어요: {error}")
-            } else {
-                format!("Could not prepare recording storage: {error}")
+            self.status.text = match crate::i18n::current() {
+                Language::Korean => format!("녹음 임시 저장소를 준비하지 못했어요: {error}"),
+                Language::Japanese => format!("録音の一時保存領域を準備できませんでした: {error}"),
+                _ => format!("Could not prepare recording storage: {error}"),
             };
             self.dirty = true;
             return false;
@@ -404,10 +405,14 @@ impl App {
             self.recorder.execution_blocked = true;
             self.recorder.restart_unblock_pending = true;
             self.status.kind = StatusKind::Error;
-            self.status.text = if crate::i18n::is_korean() {
-                format!("녹음을 중지했어요. 플레이어를 다시 시작합니다: {detail}")
-            } else {
-                format!("Recording paused; restarting the player: {detail}")
+            self.status.text = match crate::i18n::current() {
+                Language::Korean => {
+                    format!("녹음을 중지했어요. 플레이어를 다시 시작합니다: {detail}")
+                }
+                Language::Japanese => {
+                    format!("録音を停止しました。プレイヤーを再起動します: {detail}")
+                }
+                _ => format!("Recording paused; restarting the player: {detail}"),
             };
             return recovery;
         }
@@ -901,7 +906,8 @@ impl App {
             self.status.kind = StatusKind::Error;
             self.status.text = t!(
                 "This track is still recording",
-                "이 트랙은 아직 녹음 중이에요"
+                "이 트랙은 아직 녹음 중이에요",
+                "この曲はまだ録音中です"
             )
             .to_owned();
             self.dirty = true;
@@ -928,20 +934,25 @@ impl App {
             }
             self.status.kind = StatusKind::Error;
             self.status.text = match track.state {
-                RecordingState::Saved => {
-                    t!("This recording is already saved", "이미 저장된 녹음이에요")
-                }
+                RecordingState::Saved => t!(
+                    "This recording is already saved",
+                    "이미 저장된 녹음이에요",
+                    "この録音は保存済みです"
+                ),
                 RecordingState::SaveRequested | RecordingState::AutomaticSaveRetrying => t!(
                     "This save is already requested and being prepared",
-                    "이 저장 요청은 이미 준비 중이에요"
+                    "이 저장 요청은 이미 준비 중이에요",
+                    "この保存は既にリクエスト済みで準備中です"
                 ),
                 RecordingState::SavePending => t!(
                     "This save is already accepted",
-                    "이 저장 요청은 이미 접수됐어요"
+                    "이 저장 요청은 이미 접수됐어요",
+                    "この保存は既に受付済みです"
                 ),
                 _ => t!(
                     "This recording cannot be saved",
-                    "이 녹음은 저장할 수 없어요"
+                    "이 녹음은 저장할 수 없어요",
+                    "この録音は保存できません"
                 ),
             }
             .to_owned();
@@ -978,10 +989,14 @@ impl App {
                 self.recorder.capacity_probe_pending = false;
                 self.clear_live_recorder_health();
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    "저장 대기 중인 녹음을 버렸어요. 자동 녹음을 다시 시작합니다".to_owned()
-                } else {
-                    "Discarded the blocked recording; automatic recording resumed".to_owned()
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => {
+                        "저장 대기 중인 녹음을 버렸어요. 자동 녹음을 다시 시작합니다".to_owned()
+                    }
+                    Language::Japanese => {
+                        "保存待ちの録音を破棄しました。自動録音を再開します".to_owned()
+                    }
+                    _ => "Discarded the blocked recording; automatic recording resumed".to_owned(),
                 };
                 self.dirty = true;
                 let mut cmds = vec![Cmd::Recorder(RecorderJob::Discard {
@@ -993,10 +1008,16 @@ impl App {
             }
             if recording_save_pending(&self.recorder.history[pos]) {
                 self.status.kind = StatusKind::Error;
-                self.status.text = if crate::i18n::is_korean() {
-                    "저장이 이미 접수되어 지금은 원본을 버릴 수 없어요".to_owned()
-                } else {
-                    "This save is already accepted; its source cannot be discarded yet".to_owned()
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => {
+                        "저장이 이미 접수되어 지금은 원본을 버릴 수 없어요".to_owned()
+                    }
+                    Language::Japanese => {
+                        "保存が既に受け付けられているため、まだ元ファイルを破棄できません"
+                            .to_owned()
+                    }
+                    _ => "This save is already accepted; its source cannot be discarded yet"
+                        .to_owned(),
                 };
                 self.dirty = true;
                 return Vec::new();
@@ -1035,10 +1056,10 @@ impl App {
             Some(p) => crate::util::browser::open_path(&p),
             None => {
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    "재생하려면 먼저 저장하세요".to_owned()
-                } else {
-                    "Save the track first to play it".to_owned()
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => "재생하려면 먼저 저장하세요".to_owned(),
+                    Language::Japanese => "再生するには先に保存してください".to_owned(),
+                    _ => "Save the track first to play it".to_owned(),
                 };
                 self.dirty = true;
             }
@@ -1095,10 +1116,10 @@ impl App {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let (title, body) = if crate::i18n::is_korean() {
-                        ("녹음 저장됨".to_owned(), name.clone())
-                    } else {
-                        ("Recording saved".to_owned(), name.clone())
+                    let (title, body) = match crate::i18n::current() {
+                        Language::Korean => ("녹음 저장됨".to_owned(), name.clone()),
+                        Language::Japanese => ("録音を保存しました".to_owned(), name.clone()),
+                        _ => ("Recording saved".to_owned(), name.clone()),
                     };
                     // In-app toast (always visible in the terminal) + a real desktop notification
                     // (OSC / native, resolved in the main loop). The toast is the final fallback.
@@ -1109,10 +1130,18 @@ impl App {
                 if let Some(warning) = durability_warning {
                     tracing::warn!(recording = %final_path.display(), %warning, "recording committed with durability warning");
                     self.status.kind = StatusKind::Error;
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("녹음은 저장됐지만 내구성 확인에 실패했어요: {warning}")
-                    } else {
-                        format!("Recording saved, but durability could not be confirmed: {warning}")
+                    self.status.text = match crate::i18n::current() {
+                        Language::Korean => {
+                            format!("녹음은 저장됐지만 내구성 확인에 실패했어요: {warning}")
+                        }
+                        Language::Japanese => {
+                            format!(
+                                "録音は保存されましたが、永続性を確認できませんでした: {warning}"
+                            )
+                        }
+                        _ => format!(
+                            "Recording saved, but durability could not be confirmed: {warning}"
+                        ),
                     };
                     self.remember_recorder_health(self.status.text.clone(), true);
                 }
@@ -1138,10 +1167,12 @@ impl App {
                 // A peer removed the exact journal while holding the same destination lock. Keep
                 // the optimistic Saved state and never offer a duplicate retry.
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    "녹음 저장은 다른 복구 작업에서 이미 완료됐어요".to_owned()
-                } else {
-                    "Recording save was already completed by another recovery worker".to_owned()
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => "녹음 저장은 다른 복구 작업에서 이미 완료됐어요".to_owned(),
+                    Language::Japanese => "録音の保存は別の復旧処理で既に完了しています".to_owned(),
+                    _ => {
+                        "Recording save was already completed by another recovery worker".to_owned()
+                    }
                 };
                 self.dirty = true;
                 cmds.extend(self.recorder_capacity_available(id, capacity_available, true));
@@ -1163,10 +1194,14 @@ impl App {
                 // Keep the accepted/recovery-owned state: the original intent still owns this
                 // source and will retry at startup. Re-enabling Save would create a second intent.
                 self.status.kind = StatusKind::Error;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("녹음 저장이 지연됐어요(다음 시작 때 복구): {error}")
-                } else {
-                    format!("Recording save deferred until startup recovery: {error}")
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => {
+                        format!("녹음 저장이 지연됐어요(다음 시작 때 복구): {error}")
+                    }
+                    Language::Japanese => {
+                        format!("録音の保存を延期しました(次回起動時に復旧): {error}")
+                    }
+                    _ => format!("Recording save deferred until startup recovery: {error}"),
                 };
                 self.remember_recorder_health(self.status.text.clone(), true);
                 self.dirty = true;
@@ -1202,23 +1237,36 @@ impl App {
                     cmds.extend(self.recorder_teardown());
                 }
                 self.status.kind = StatusKind::Error;
-                self.status.text = if crate::i18n::is_korean() {
-                    if automatic {
-                        format!(
-                            "자동 녹음을 일시 중지했어요. 저장 준비 실패: {error} (원본: {})",
-                            source.as_deref().unwrap_or("알 수 없음")
-                        )
-                    } else {
-                        format!("녹음 저장 실패: {error}")
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => {
+                        if automatic {
+                            format!(
+                                "자동 녹음을 일시 중지했어요. 저장 준비 실패: {error} (원본: {})",
+                                source.as_deref().unwrap_or("알 수 없음")
+                            )
+                        } else {
+                            format!("녹음 저장 실패: {error}")
+                        }
                     }
-                } else {
-                    if automatic {
-                        format!(
-                            "Automatic recording paused; could not prepare save: {error} (source: {})",
-                            source.as_deref().unwrap_or("unknown")
-                        )
-                    } else {
-                        format!("Recording save failed: {error}")
+                    Language::Japanese => {
+                        if automatic {
+                            format!(
+                                "自動録音を一時停止しました。保存の準備に失敗: {error} (元ファイル: {})",
+                                source.as_deref().unwrap_or("不明")
+                            )
+                        } else {
+                            format!("録音の保存に失敗しました: {error}")
+                        }
+                    }
+                    _ => {
+                        if automatic {
+                            format!(
+                                "Automatic recording paused; could not prepare save: {error} (source: {})",
+                                source.as_deref().unwrap_or("unknown")
+                            )
+                        } else {
+                            format!("Recording save failed: {error}")
+                        }
                     }
                 };
                 if automatic || blocked_owner {
@@ -1248,14 +1296,16 @@ impl App {
                 self.recorder.capacity_owner_settled = false;
                 self.recorder.capacity_probe_pending = false;
                 self.status.kind = StatusKind::Error;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!(
+                self.status.text = match crate::i18n::current() {
+                    Language::Korean => format!(
                         "자동 녹음을 일시 중지했어요: 저장 대기 {pending_count}개 / {pending_bytes}바이트"
-                    )
-                } else {
-                    format!(
+                    ),
+                    Language::Japanese => format!(
+                        "自動録音を一時停止しました: 保存待ち{pending_count}件 / {pending_bytes}バイト"
+                    ),
+                    _ => format!(
                         "Automatic recording paused: {pending_count} pending / {pending_bytes} bytes"
-                    )
+                    ),
                 };
                 self.remember_recorder_health(self.status.text.clone(), false);
                 self.dirty = true;

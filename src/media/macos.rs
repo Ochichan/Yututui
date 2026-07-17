@@ -122,10 +122,10 @@ impl Backend {
             });
             // Like/dislike mirror the TUI's `f` rating cycle onto the OS surface.
             let like = c.likeCommand();
-            like.setLocalizedTitle(&NSString::from_str(t!("Like", "좋아요")));
+            like.setLocalizedTitle(&NSString::from_str(t!("Like", "좋아요", "高く評価")));
             register(&like, sink, |_| Some(MediaCommand::Like));
             let dislike = c.dislikeCommand();
-            dislike.setLocalizedTitle(&NSString::from_str(t!("Dislike", "싫어요")));
+            dislike.setLocalizedTitle(&NSString::from_str(t!("Dislike", "싫어요", "低く評価")));
             register(&dislike, sink, |_| Some(MediaCommand::Dislike));
 
             // Explicitly unsupported (spec M-5): skip/seek-interval commands would

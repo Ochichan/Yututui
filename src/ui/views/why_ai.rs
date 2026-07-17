@@ -32,10 +32,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let title = match explain.conf {
         Some(c) => format!(
             " {} · {:.0}% ",
-            t!("Why these DJ Gem picks", "DJ Gem 선곡 이유"),
+            t!(
+                "Why these DJ Gem picks",
+                "DJ Gem 선곡 이유",
+                "DJ Gem選曲の理由"
+            ),
             (c * 100.0).round()
         ),
-        None => format!(" {} ", t!("Why these DJ Gem picks", "DJ Gem 선곡 이유")),
+        None => format!(
+            " {} ",
+            t!(
+                "Why these DJ Gem picks",
+                "DJ Gem 선곡 이유",
+                "DJ Gem選曲の理由"
+            )
+        ),
     };
     let block = Block::default()
         .title(title)
@@ -52,10 +63,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let close_key =
         app.keymap
             .label_for_display(KeyContext::Global, Action::WhyAi, app.retro_mode());
-    let hint = if crate::i18n::is_korean() {
-        format!("{close_key} / Esc 닫기")
-    } else {
-        format!("{close_key} / Esc to close")
+    let hint = match crate::i18n::current() {
+        crate::i18n::Language::Korean => format!("{close_key} / Esc 닫기"),
+        crate::i18n::Language::Japanese => format!("{close_key} / Esc で閉じる"),
+        _ => format!("{close_key} / Esc to close"),
     };
     frame.render_widget(
         Paragraph::new(Line::from(hint))
@@ -88,7 +99,7 @@ fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::St
             Span::styled(track, track_style),
         ]));
         let reasons = if p.reasons.is_empty() {
-            t!("(no reasons given)", "(이유 없음)").to_owned()
+            t!("(no reasons given)", "(이유 없음)", "(理由なし)").to_owned()
         } else {
             p.reasons
                 .iter()
@@ -110,12 +121,12 @@ fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::St
 /// Human-readable slot-role label (the model returns terse codes).
 fn role_label(role: &str) -> &str {
     match role {
-        "core" => t!("core", "핵심"),
-        "bridge" => t!("bridge", "연결"),
-        "adjacent" => t!("adjacent", "인접"),
-        "discovery" => t!("discovery", "발견"),
-        "stabilizer" => t!("stabilizer", "안정"),
-        "recovery" => t!("recovery", "회복"),
+        "core" => t!("core", "핵심", "中核"),
+        "bridge" => t!("bridge", "연결", "連結"),
+        "adjacent" => t!("adjacent", "인접", "隣接"),
+        "discovery" => t!("discovery", "발견", "発見"),
+        "stabilizer" => t!("stabilizer", "안정", "安定"),
+        "recovery" => t!("recovery", "회복", "回復"),
         other => other,
     }
 }
@@ -123,13 +134,13 @@ fn role_label(role: &str) -> &str {
 /// Human-readable evidence-code label (matches the score codes in the candidate pack).
 fn reason_label(code: &str) -> &str {
     match code {
-        "co" => t!("co-occurrence", "동시청취"),
-        "tr" => t!("transition", "전환"),
-        "u" => t!("your affinity", "선호"),
-        "nov" => t!("novelty", "새로움"),
-        "cont" => t!("continuation", "연속성"),
-        "comp" => t!("completion", "완청"),
-        "m" => t!("official music", "공식음원"),
+        "co" => t!("co-occurrence", "동시청취", "同時聴取"),
+        "tr" => t!("transition", "전환", "遷移"),
+        "u" => t!("your affinity", "선호", "好み"),
+        "nov" => t!("novelty", "새로움", "新しさ"),
+        "cont" => t!("continuation", "연속성", "連続性"),
+        "comp" => t!("completion", "완청", "完聴"),
+        "m" => t!("official music", "공식음원", "公式音源"),
         other => other,
     }
 }

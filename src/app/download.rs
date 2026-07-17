@@ -26,7 +26,7 @@ impl App {
         if song.is_local() {
             self.status.text = format!(
                 "{}: {}",
-                t!("Already local", "이미 로컬에 있음"),
+                t!("Already local", "이미 로컬에 있음", "既にローカルに存在"),
                 song.title
             );
             self.dirty = true;
@@ -34,7 +34,7 @@ impl App {
         }
         self.status.text = format!(
             "{}: {} — {}",
-            t!("Downloading", "다운로드 중"),
+            t!("Downloading", "다운로드 중", "ダウンロード中"),
             song.title,
             song.artist
         );
@@ -85,7 +85,12 @@ impl App {
         self.dirty = true;
         if batch.is_empty() {
             self.status.kind = StatusKind::Info;
-            self.status.text = t!("Nothing to download", "다운로드할 곡이 없음").to_string();
+            self.status.text = t!(
+                "Nothing to download",
+                "다운로드할 곡이 없음",
+                "ダウンロードする曲なし"
+            )
+            .to_string();
             return Vec::new();
         }
         self.library_ui.confirm_download = Some(batch);
@@ -110,15 +115,15 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = format!(
                 "{}: {accepted_count}",
-                t!("Queued for download", "다운로드 대기")
+                t!("Queued for download", "다운로드 대기", "ダウンロード待機")
             );
         } else {
             self.library_ui.confirm_download = Some(deferred);
             self.status.kind = StatusKind::Error;
             self.status.text = format!(
                 "{}: {accepted_count}; {}: {deferred_count}",
-                t!("Queued for download", "다운로드 대기"),
-                t!("Waiting for retry", "재시도 대기")
+                t!("Queued for download", "다운로드 대기", "ダウンロード待機"),
+                t!("Waiting for retry", "재시도 대기", "再試行待機")
             );
         }
         self.downloads.pending.extend(accepted);
@@ -235,7 +240,7 @@ impl App {
             self.add_downloaded_track(local);
         }
         self.status.kind = StatusKind::Info;
-        self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
+        self.status.text = format!("{}: {path}", t!("Saved", "저장됨", "保存済み"));
         self.dirty = true;
         let mut commands = self.pump_downloads();
         if let Some(session_id) = import_session_id {
@@ -271,7 +276,10 @@ impl App {
             .remove(&tracking_key)
             .and_then(|song| song.import_session_id);
         self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
-        self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
+        self.status.text = format!(
+            "{}: {error}",
+            t!("Download failed", "다운로드 실패", "ダウンロード失敗")
+        );
         self.dirty = true;
         let mut commands = self.pump_downloads();
         if let Some(session_id) = import_session_id {
@@ -340,13 +348,21 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 self.status.text = format!(
                     "{} {session_id}: {} {}, {} {}, {} {}",
-                    t!("Organized import session", "임포트 세션 정리됨"),
+                    t!(
+                        "Organized import session",
+                        "임포트 세션 정리됨",
+                        "インポートセッション整理済み"
+                    ),
                     report.moved_count,
-                    t!("moved", "이동됨"),
+                    t!("moved", "이동됨", "移動済み"),
                     report.already_count,
-                    t!("already", "이미 정리됨"),
+                    t!("already", "이미 정리됨", "整理済み"),
                     report.skipped_count,
-                    t!("failed; retry from Local Deck", "실패; 로컬 덱에서 재시도")
+                    t!(
+                        "failed; retry from Local Deck",
+                        "실패; 로컬 덱에서 재시도",
+                        "失敗; ローカルデッキで再試行"
+                    )
                 );
                 self.dirty = true;
                 commands
@@ -358,11 +374,13 @@ impl App {
                     "{}: {error:#}. {}",
                     t!(
                         "Automatic import organize did not finish; artifacts remain recoverable",
-                        "임포트 자동 정리가 완료되지 않음; 파일은 복구 가능한 상태로 유지됨"
+                        "임포트 자동 정리가 완료되지 않음; 파일은 복구 가능한 상태로 유지됨",
+                        "インポート自動整理が未完了; ファイルは復元可能な状態で保持"
                     ),
                     t!(
                         "Select the session in Local Deck and press m to retry",
-                        "로컬 덱에서 세션을 선택하고 m을 눌러 재시도하세요"
+                        "로컬 덱에서 세션을 선택하고 m을 눌러 재시도하세요",
+                        "ローカルデッキでセッションを選択し、mを押して再試行してください"
                     )
                 );
                 self.dirty = true;

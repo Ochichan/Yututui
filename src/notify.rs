@@ -112,29 +112,46 @@ fn emit_native(title: String, body: String) {
     #[cfg(all(target_os = "macos", panic = "abort"))]
     {
         let _ = (title, body);
-        return;
     }
     #[cfg(not(all(target_os = "macos", panic = "abort")))]
-    std::thread::spawn(move || {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut n = notify_rust::Notification::new();
-            n.appname("YuTuTui!").summary(&title).body(&body);
-            #[cfg(target_os = "windows")]
-            {
-                // Attribute the toast to us (matches the SMTC registration) instead of PowerShell.
-                n.app_id(crate::media::identity::APP_USER_MODEL_ID);
-            }
-            let _ = n.show();
-        }));
-    });
+    std::thread::spawn(move || show_native(&title, &body));
+}
+
+#[cfg(not(all(target_os = "macos", panic = "abort")))]
+fn show_native(title: &str, body: &str) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut n = notify_rust::Notification::new();
+        n.appname("YuTuTui!").summary(title).body(body);
+        #[cfg(target_os = "windows")]
+        {
+            // Attribute the toast to us (matches the SMTC registration) instead of PowerShell.
+            n.app_id(crate::media::identity::APP_USER_MODEL_ID);
+        }
+        let _ = n.show();
+    }));
 }
 
 /// Emit a native desktop toast without terminal capability detection. Desktop-shell commands use
 /// this path when no WebView is visible, so a rejected tray-menu action never disappears into the
 /// log. Best-effort and non-blocking, like the recording notification fallback above.
+/// Note the macOS abort-build gap documented on [`emit_native`] — macOS callers that must be
+/// heard in release builds need their own `osascript` fallback.
 #[cfg(feature = "desktop")]
 pub(crate) fn emit_native_notification(title: &str, body: &str) {
     emit_native(title.to_owned(), body.to_owned());
+}
+
+/// Like [`emit_native_notification`] but delivered on the calling thread: `show()` completes
+/// (or fails) before this returns. The second-launch no-tty path uses this because it exits
+/// the process immediately afterwards — a detached notify thread would be killed before the
+/// D-Bus/WinRT round-trip finishes and the toast would silently vanish.
+pub(crate) fn emit_native_notification_blocking(title: &str, body: &str) {
+    #[cfg(all(target_os = "macos", panic = "abort"))]
+    {
+        let _ = (title, body);
+    }
+    #[cfg(not(all(target_os = "macos", panic = "abort")))]
+    show_native(title, body);
 }
 
 #[cfg(test)]

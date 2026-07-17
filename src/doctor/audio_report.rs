@@ -5,7 +5,7 @@ use crate::{config, i18n};
 pub(super) fn run(verbose: bool) -> i32 {
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
-    let kr = i18n::is_korean();
+    let lang = i18n::current();
     super::init_tools_sync(&cfg);
 
     let status = crate::player::backend::runtime_status(&cfg);
@@ -14,10 +14,10 @@ pub(super) fn run(verbose: bool) -> i32 {
 
     println!(
         "{}",
-        if kr {
-            "오디오 백엔드"
-        } else {
-            "Audio backend"
+        match lang {
+            i18n::Language::Korean => "오디오 백엔드",
+            i18n::Language::Japanese => "オーディオバックエンド",
+            _ => "Audio backend",
         }
     );
     println!("  backend: {backend}");
@@ -34,15 +34,15 @@ pub(super) fn run(verbose: bool) -> i32 {
     );
     println!(
         "  {}: {}",
-        if kr {
-            "mpv 수명 보호"
-        } else {
-            "mpv lifetime protection"
+        match lang {
+            i18n::Language::Korean => "mpv 수명 보호",
+            i18n::Language::Japanese => "mpvライフタイム保護",
+            _ => "mpv lifetime protection",
         },
         mpv_lifetime_report(
             status.mpv_lifetime_supported,
             status.mpv_lifetime_error.as_deref(),
-            kr
+            lang
         )
     );
     match (
@@ -83,16 +83,23 @@ pub(super) fn run(verbose: bool) -> i32 {
         } else {
             status.extra_args_count.to_string()
         },
-        if kr {
-            " · config `audio.mpv.extra_args` (재시작 후 적용)"
-        } else {
-            " · config `audio.mpv.extra_args` (next launch)"
+        match lang {
+            i18n::Language::Korean => " · config `audio.mpv.extra_args` (재시작 후 적용)",
+            i18n::Language::Japanese => " · config `audio.mpv.extra_args` (再起動後に適用)",
+            _ => " · config `audio.mpv.extra_args` (next launch)",
         }
     );
 
     if verbose {
         println!();
-        println!("{}", if kr { "기능" } else { "Capabilities" });
+        println!(
+            "{}",
+            match lang {
+                i18n::Language::Korean => "기능",
+                i18n::Language::Japanese => "機能",
+                _ => "Capabilities",
+            }
+        );
         println!("  gapless: {}", yes_no(status.caps.supports_gapless));
         println!("  eq: {}", yes_no(status.caps.supports_eq));
         println!(
@@ -117,25 +124,39 @@ fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
-pub(super) fn mpv_lifetime_report(supported: bool, error: Option<&str>, kr: bool) -> String {
+pub(super) fn mpv_lifetime_report(
+    supported: bool,
+    error: Option<&str>,
+    lang: i18n::Language,
+) -> String {
     if supported {
         if cfg!(unix) {
-            if kr {
-                "준비됨 · heartbeat guardian + 상속 IPC lease (mpv 0.33 이상)".to_owned()
-            } else {
-                "ready · heartbeat guardian + inherited IPC lease (mpv 0.33+)".to_owned()
+            match lang {
+                i18n::Language::Korean => {
+                    "준비됨 · heartbeat guardian + 상속 IPC lease (mpv 0.33 이상)".to_owned()
+                }
+                i18n::Language::Japanese => {
+                    "準備完了 · heartbeat guardian + 継承IPC lease (mpv 0.33以上)".to_owned()
+                }
+                _ => "ready · heartbeat guardian + inherited IPC lease (mpv 0.33+)".to_owned(),
             }
-        } else if kr {
-            "준비됨 · heartbeat guardian + Windows Job Object".to_owned()
         } else {
-            "ready · heartbeat guardian + Windows Job Object".to_owned()
+            match lang {
+                i18n::Language::Korean => {
+                    "준비됨 · heartbeat guardian + Windows Job Object".to_owned()
+                }
+                i18n::Language::Japanese => {
+                    "準備完了 · heartbeat guardian + Windows Job Object".to_owned()
+                }
+                _ => "ready · heartbeat guardian + Windows Job Object".to_owned(),
+            }
         }
     } else {
         let reason = error.unwrap_or("mpv lifetime protection unavailable");
-        if kr {
-            format!("사용 불가 · {reason}")
-        } else {
-            format!("unavailable · {reason}")
+        match lang {
+            i18n::Language::Korean => format!("사용 불가 · {reason}"),
+            i18n::Language::Japanese => format!("利用不可 · {reason}"),
+            _ => format!("unavailable · {reason}"),
         }
     }
 }
@@ -150,14 +171,18 @@ mod tests {
 
     #[test]
     fn mpv_lifetime_report_distinguishes_ready_and_unusable() {
-        let ready = mpv_lifetime_report(true, None, false);
+        let ready = mpv_lifetime_report(true, None, crate::i18n::Language::English);
         if cfg!(unix) {
             assert!(ready.contains("inherited IPC lease (mpv 0.33+)"));
         } else {
             assert!(ready.contains("Windows Job Object"));
         }
         assert_eq!(
-            mpv_lifetime_report(false, Some("probe rejected"), false),
+            mpv_lifetime_report(
+                false,
+                Some("probe rejected"),
+                crate::i18n::Language::English
+            ),
             "unavailable · probe rejected"
         );
     }

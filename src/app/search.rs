@@ -649,18 +649,28 @@ impl App {
     pub(in crate::app) fn set_query_reject_status(&mut self, reason: QueryRejectReason) {
         self.status.kind = StatusKind::Error;
         self.status.text = match reason {
-            QueryRejectReason::Empty => {
-                t!("Search query is empty", "검색어가 비어 있음").to_owned()
-            }
-            QueryRejectReason::TooLong { max } if max == MAX_FILTER_QUERY_BYTES => {
-                t!("Filter query is too long", "필터 검색어가 너무 김").to_owned()
-            }
-            QueryRejectReason::TooLong { .. } => {
-                t!("Search query is too long", "검색어가 너무 김").to_owned()
-            }
+            QueryRejectReason::Empty => t!(
+                "Search query is empty",
+                "검색어가 비어 있음",
+                "検索語が空です"
+            )
+            .to_owned(),
+            QueryRejectReason::TooLong { max } if max == MAX_FILTER_QUERY_BYTES => t!(
+                "Filter query is too long",
+                "필터 검색어가 너무 김",
+                "フィルター検索語が長すぎます"
+            )
+            .to_owned(),
+            QueryRejectReason::TooLong { .. } => t!(
+                "Search query is too long",
+                "검색어가 너무 김",
+                "検索語が長すぎます"
+            )
+            .to_owned(),
             QueryRejectReason::ForbiddenChar => t!(
                 "Unsupported character in query",
-                "검색어에 지원하지 않는 문자가 있음"
+                "검색어에 지원하지 않는 문자가 있음",
+                "検索語に使用できない文字があります"
             )
             .to_owned(),
         };
@@ -675,10 +685,13 @@ impl App {
         };
         self.status.kind = StatusKind::Info;
         self.status.text = match self.search.kind {
-            SearchKind::Songs => t!("Search: songs", "검색: 곡").to_owned(),
-            SearchKind::Playlists => {
-                t!("Search: YouTube playlists", "검색: 유튜브 플레이리스트").to_owned()
-            }
+            SearchKind::Songs => t!("Search: songs", "검색: 곡", "検索: 曲").to_owned(),
+            SearchKind::Playlists => t!(
+                "Search: YouTube playlists",
+                "검색: 유튜브 플레이리스트",
+                "検索: YouTubeプレイリスト"
+            )
+            .to_owned(),
         };
         self.dirty = true;
         Vec::new()
@@ -695,7 +708,12 @@ impl App {
             return Vec::new();
         };
         self.status.kind = StatusKind::Info;
-        self.status.text = t!("Fetching playlist…", "플레이리스트 불러오는 중…").to_owned();
+        self.status.text = t!(
+            "Fetching playlist…",
+            "플레이리스트 불러오는 중…",
+            "プレイリストを読み込み中…"
+        )
+        .to_owned();
         self.dirty = true;
         vec![Cmd::FetchPlaylistTracks {
             playlist_id: id.to_owned(),
@@ -709,7 +727,8 @@ impl App {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Playlist row: Enter plays, \\ enqueues, p imports",
-            "플레이리스트 행: Enter 재생, \\ 큐 추가, p 가져오기"
+            "플레이리스트 행: Enter 재생, \\ 큐 추가, p 가져오기",
+            "プレイリスト行: Enter 再生, \\ キュー追加, p インポート"
         )
         .to_owned();
         self.dirty = true;
@@ -729,7 +748,8 @@ impl App {
         if songs.is_empty() {
             self.status.text = t!(
                 "Playlist is empty or unavailable",
-                "플레이리스트가 비어 있거나 사용할 수 없어요"
+                "플레이리스트가 비어 있거나 사용할 수 없어요",
+                "プレイリストが空か利用できません"
             )
             .to_owned();
             return Vec::new();
@@ -738,10 +758,14 @@ impl App {
             PlaylistIntent::Play => {
                 // Mirror `AiMsg::PlayTracks`: replace the queue and start at the top.
                 let requested_len = songs.len();
-                let status = if crate::i18n::is_korean() {
-                    format!("플레이리스트 재생: {title} ({requested_len}곡)")
-                } else {
-                    format!("Playing playlist: {title} ({requested_len} tracks)")
+                let status = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("플레이리스트 재생: {title} ({requested_len}곡)")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("プレイリストを再生: {title} ({requested_len}曲)")
+                    }
+                    _ => format!("Playing playlist: {title} ({requested_len} tracks)"),
                 };
                 let mut cmds = self.replace_queue_and_load(
                     songs,
@@ -758,10 +782,12 @@ impl App {
             PlaylistIntent::Enqueue => {
                 let added = self.queue.extend(songs);
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("{added}곡을 대기열에 추가함")
-                } else {
-                    format!("Queued {added} track(s)")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("{added}곡을 대기열에 추가함"),
+                    crate::i18n::Language::Japanese => {
+                        format!("{added}曲をキューに追加しました")
+                    }
+                    _ => format!("Queued {added} track(s)"),
                 };
                 Vec::new()
             }
@@ -769,7 +795,8 @@ impl App {
                 let Some(id) = self.playlists_mut().create(&title) else {
                     self.status.text = t!(
                         "Could not create the playlist (name in use or limit reached)",
-                        "플레이리스트를 만들 수 없어요 (이름 중복 또는 한도 초과)"
+                        "플레이리스트를 만들 수 없어요 (이름 중복 또는 한도 초과)",
+                        "プレイリストを作成できません (名前の重複または上限超過)"
                     )
                     .to_owned();
                     return Vec::new();
@@ -784,10 +811,14 @@ impl App {
                     }
                 }
                 self.status.kind = StatusKind::Info;
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("플레이리스트 가져옴: {title} ({added}곡)")
-                } else {
-                    format!("Imported playlist: {title} ({added} tracks)")
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => {
+                        format!("플레이리스트 가져옴: {title} ({added}곡)")
+                    }
+                    crate::i18n::Language::Japanese => {
+                        format!("プレイリストをインポート: {title} ({added}曲)")
+                    }
+                    _ => format!("Imported playlist: {title} ({added} tracks)"),
                 };
                 vec![Cmd::Persist(PersistCmd::Playlists)]
             }
@@ -821,7 +852,11 @@ impl App {
             self.dropdowns.search_source_open = false;
         }
         self.status.kind = StatusKind::Info;
-        self.status.text = format!("{}: {}", t!("Search source", "검색 소스"), source.label());
+        self.status.text = format!(
+            "{}: {}",
+            t!("Search source", "검색 소스", "検索ソース"),
+            source.label()
+        );
         self.dirty = true;
         if self.radio_dedicated_mode {
             Vec::new()

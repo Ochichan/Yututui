@@ -636,10 +636,11 @@ pub async fn run(
     if scan_truncated {
         app.status.text = format!(
             "{} {scan_limit} {}",
-            crate::t!("Showing first", "처음"),
+            crate::t!("Showing first", "처음", "先頭"),
             crate::t!(
                 "download files; more are hidden",
-                "개 다운로드 파일만 표시됨; 일부는 숨김"
+                "개 다운로드 파일만 표시됨; 일부는 숨김",
+                "件のダウンロードファイルのみ表示; 一部は非表示"
             )
         );
     }
@@ -656,12 +657,13 @@ pub async fn run(
                 "{} ({} {}, {} {})",
                 crate::t!(
                     "Saved playlists repaired",
-                    "저장된 플레이리스트를 정리했어요"
+                    "저장된 플레이리스트를 정리했어요",
+                    "保存済みプレイリストを修復しました"
                 ),
                 playlist_repair.playlists_removed,
-                crate::t!("lists removed", "개 목록 제거"),
+                crate::t!("lists removed", "개 목록 제거", "件のリストを削除"),
                 playlist_repair.songs_removed,
-                crate::t!("tracks removed", "곡 제거")
+                crate::t!("tracks removed", "곡 제거", "曲を削除")
             );
         }
     }
@@ -674,10 +676,14 @@ pub async fn run(
     if let Some(reason) = persistence_access.read_only_reason() {
         tracing::warn!(%reason, "secondary player is running with read-only persistence");
         app.status.kind = app::StatusKind::Error;
-        app.status.text = if crate::i18n::is_korean() {
-            format!("보조 인스턴스 — 변경사항이 저장되지 않습니다: {reason}")
-        } else {
-            format!("Secondary instance — changes are not saved: {reason}")
+        app.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("보조 인스턴스 — 변경사항이 저장되지 않습니다: {reason}")
+            }
+            crate::i18n::Language::Japanese => {
+                format!("セカンダリインスタンス — 変更は保存されません: {reason}")
+            }
+            _ => format!("Secondary instance — changes are not saved: {reason}"),
         };
         // Keep the first-frame warning persistent rather than arming the ordinary toast expiry.
         app.dirty = true;
@@ -1005,26 +1011,33 @@ pub async fn run(
                 "recording crash recovery completed with warnings"
             );
             app.status.kind = app::StatusKind::Error;
-            app.status.text = if crate::i18n::is_korean() {
-                format!(
+            app.status.text = match crate::i18n::current() {
+                crate::i18n::Language::Korean => format!(
                     "녹음 복구: {}개 복구, {}개 대기 — {}",
                     report.recovered, report.pending, report.warnings[0]
-                )
-            } else {
-                format!(
+                ),
+                crate::i18n::Language::Japanese => format!(
+                    "録音復旧: {}件復旧, {}件待機 — {}",
+                    report.recovered, report.pending, report.warnings[0]
+                ),
+                _ => format!(
                     "Recording recovery: {} recovered, {} pending — {}",
                     report.recovered, report.pending, report.warnings[0]
-                )
+                ),
             };
             app.recorder.health_warning = Some(app.status.text.clone());
             app.recorder.health_sticky = true;
             app.dirty = true;
         } else if report.recovered > 0 {
             app.status.kind = app::StatusKind::Info;
-            app.status.text = if crate::i18n::is_korean() {
-                format!("중단된 녹음 저장 {}개를 복구했어요", report.recovered)
-            } else {
-                format!("Recovered {} interrupted recording saves", report.recovered)
+            app.status.text = match crate::i18n::current() {
+                crate::i18n::Language::Korean => {
+                    format!("중단된 녹음 저장 {}개를 복구했어요", report.recovered)
+                }
+                crate::i18n::Language::Japanese => {
+                    format!("中断された録音保存を{}件復旧しました", report.recovered)
+                }
+                _ => format!("Recovered {} interrupted recording saves", report.recovered),
             };
             app.dirty = true;
         }

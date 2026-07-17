@@ -13,7 +13,8 @@ impl App {
         st.spotify_import_mode_dropdown = Some(st.draft.spotify_import_mode.index());
         self.status.text = t!(
             "Choose how Spotify imports write Library playlists",
-            "Spotify 가져오기가 Library 플레이리스트를 쓰는 방식을 선택하세요"
+            "Spotify 가져오기가 Library 플레이리스트를 쓰는 방식을 선택하세요",
+            "SpotifyインポートがLibraryプレイリストへ書き込む方式を選択してください"
         )
         .to_owned();
         self.status.kind = StatusKind::Info;
@@ -31,7 +32,11 @@ impl App {
         st.spotify_import_mode_dropdown = None;
         self.status.text = format!(
             "{}: {}",
-            t!("Spotify import mode", "Spotify 가져오기 모드"),
+            t!(
+                "Spotify import mode",
+                "Spotify 가져오기 모드",
+                "Spotifyインポートモード"
+            ),
             mode.label()
         );
         self.status.kind = StatusKind::Info;
@@ -181,14 +186,22 @@ impl App {
             cache_mode: crate::transfer::TransferCacheMode::Use,
             rematch: false,
         };
-        self.status.text = if crate::i18n::is_korean() {
-            format!(
-                "가져오는 중: {} · 모드: {}",
-                item.label,
-                import_mode.label()
-            )
-        } else {
-            format!("Importing: {} · mode: {}", item.label, import_mode.label())
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!(
+                    "가져오는 중: {} · 모드: {}",
+                    item.label,
+                    import_mode.label()
+                )
+            }
+            crate::i18n::Language::Japanese => {
+                format!(
+                    "インポート中: {} · モード: {}",
+                    item.label,
+                    import_mode.label()
+                )
+            }
+            _ => format!("Importing: {} · mode: {}", item.label, import_mode.label()),
         };
         self.status.kind = StatusKind::Info;
         vec![Cmd::Transfer(

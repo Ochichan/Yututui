@@ -31,7 +31,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::render_popup_background(frame, app, popup_rect);
 
     let block = Block::default()
-        .title(t!(" Radio recording ", " 라디오 녹음 "))
+        .title(t!(" Radio recording ", " 라디오 녹음 ", " ラジオ録音 "))
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -50,17 +50,17 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             false,
         )
     } else if d.recording_dir.trim().is_empty() {
-        t!("(default)", "(기본값)").to_owned()
+        t!("(default)", "(기본값)", "(デフォルト)").to_owned()
     } else {
         d.recording_dir.clone()
     };
     let entries: Vec<(String, String)> = vec![
         (
-            t!("Mode", "모드").to_owned(),
+            t!("Mode", "모드", "モード").to_owned(),
             format!("< {} >", d.recording_mode.label()),
         ),
         (
-            t!("Min duration", "최소 길이").to_owned(),
+            t!("Min duration", "최소 길이", "最小の長さ").to_owned(),
             slider_str(
                 &bar(
                     d.recording_min_seconds as f64,
@@ -71,7 +71,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ),
         (
-            t!("Max duration", "최대 길이").to_owned(),
+            t!("Max duration", "최대 길이", "最大の長さ").to_owned(),
             slider_str(
                 &bar(
                     d.recording_max_seconds as f64,
@@ -81,9 +81,12 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
                 &format!("{} min", d.recording_max_seconds / 60),
             ),
         ),
-        (t!("Output folder", "저장 폴더").to_owned(), dir_display),
         (
-            t!("Keep recent", "최근 보관").to_owned(),
+            t!("Output folder", "저장 폴더", "保存フォルダー").to_owned(),
+            dir_display,
+        ),
+        (
+            t!("Keep recent", "최근 보관", "保持件数").to_owned(),
             slider_str(
                 &bar(
                     d.recording_past_tracks as f64,
@@ -94,7 +97,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ),
         (
-            t!("Notifications", "알림").to_owned(),
+            t!("Notifications", "알림", "通知").to_owned(),
             if d.recording_notify {
                 "[x]".to_owned()
             } else {
@@ -102,7 +105,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             },
         ),
         (
-            t!("Browse recordings…", "녹음 목록 보기…").to_owned(),
+            t!("Browse recordings…", "녹음 목록 보기…", "録音一覧を表示…").to_owned(),
             "\u{21b5}".to_owned(),
         ),
     ];
@@ -175,12 +178,14 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
     let help = if popup.editing_dir {
         t!(
             "Type a folder \u{b7} Enter done \u{b7} Esc cancel",
-            "폴더 입력 \u{b7} Enter 완료 \u{b7} Esc 취소"
+            "폴더 입력 \u{b7} Enter 완료 \u{b7} Esc 취소",
+            "フォルダー入力 \u{b7} Enter 完了 \u{b7} Esc キャンセル"
         )
     } else {
         t!(
             "\u{2191}/\u{2193} \u{b7} \u{2190}/\u{2192} change \u{b7} Enter \u{b7} Esc close",
-            "\u{2191}/\u{2193} \u{b7} \u{2190}/\u{2192} 변경 \u{b7} Enter \u{b7} Esc 닫기"
+            "\u{2191}/\u{2193} \u{b7} \u{2190}/\u{2192} 변경 \u{b7} Enter \u{b7} Esc 닫기",
+            "\u{2191}/\u{2193} \u{b7} \u{2190}/\u{2192} 変更 \u{b7} Enter \u{b7} Esc 閉じる"
         )
     };
     frame.render_widget(
@@ -203,7 +208,7 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(seg) = app.recorder.current.as_ref() {
         items.push((
             format!("\u{25cf} {}", seg_display(seg)),
-            t!("Recording\u{2026}", "녹음 중\u{2026}").to_owned(),
+            t!("Recording\u{2026}", "녹음 중\u{2026}", "録音中\u{2026}").to_owned(),
         ));
     }
     for t in app.recorder.history.iter() {
@@ -227,7 +232,11 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
     browser.rect.set(Some(popup));
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
-        .title(t!(" Radio recordings ", " 라디오 녹음 목록 "))
+        .title(t!(
+            " Radio recordings ",
+            " 라디오 녹음 목록 ",
+            " ラジオ録音一覧 "
+        ))
         .borders(Borders::ALL)
         .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
@@ -238,9 +247,13 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
 
     if items.is_empty() {
         frame.render_widget(
-            Paragraph::new(t!("No recordings yet.", "아직 녹음이 없어요."))
-                .alignment(Alignment::Center)
-                .style(crate::ui::popup_style(app, R::TextMuted)),
+            Paragraph::new(t!(
+                "No recordings yet.",
+                "아직 녹음이 없어요.",
+                "まだ録音がありません。"
+            ))
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextMuted)),
             rows[0],
         );
     } else {
@@ -280,7 +293,8 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(t!(
             "\u{2191}/\u{2193} \u{b7} s save \u{b7} d discard \u{b7} Enter play \u{b7} Esc close",
-            "\u{2191}/\u{2193} \u{b7} s 저장 \u{b7} d 삭제 \u{b7} Enter 재생 \u{b7} Esc 닫기"
+            "\u{2191}/\u{2193} \u{b7} s 저장 \u{b7} d 삭제 \u{b7} Enter 재생 \u{b7} Esc 닫기",
+            "\u{2191}/\u{2193} \u{b7} s 保存 \u{b7} d 破棄 \u{b7} Enter 再生 \u{b7} Esc 閉じる"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
