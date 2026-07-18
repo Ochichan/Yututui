@@ -570,33 +570,26 @@ impl App {
                     },
                 )
             }
-            Action::SeekBack => self.player_intent(
-                "seek_relative",
-                PlayerCmd::SeekRelative(-self.audio.seek_seconds),
-                PlayerCommit::Seek {
-                    optimistic_position: None,
-                },
-            ),
-            Action::SeekForward => self.player_intent(
-                "seek_relative",
-                PlayerCmd::SeekRelative(self.audio.seek_seconds),
-                PlayerCommit::Seek {
-                    optimistic_position: None,
-                },
-            ),
-            Action::VolUp => {
-                let volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
+            Action::SeekBack | Action::SeekForward => {
+                let delta = if matches!(action, Action::SeekBack) {
+                    -self.audio.seek_seconds
+                } else {
+                    self.audio.seek_seconds
+                };
                 self.player_intent(
-                    "set_volume",
-                    PlayerCmd::SetVolume(volume),
-                    PlayerCommit::Volume {
-                        volume,
-                        pre_mute_volume: None,
+                    "seek_relative",
+                    PlayerCmd::SeekRelative(delta),
+                    PlayerCommit::Seek {
+                        optimistic_position: None,
                     },
                 )
             }
-            Action::VolDown => {
-                let volume = (self.playback.volume - VOLUME_STEP).max(0);
+            Action::VolUp | Action::VolDown => {
+                let volume = match action {
+                    Action::VolUp => (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX),
+                    Action::VolDown => (self.playback.volume - VOLUME_STEP).max(0),
+                    _ => unreachable!(),
+                };
                 self.player_intent(
                     "set_volume",
                     PlayerCmd::SetVolume(volume),
