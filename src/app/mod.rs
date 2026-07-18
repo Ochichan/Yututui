@@ -126,6 +126,7 @@ mod lyrics_mouse;
 mod media_reducer;
 mod mode_transition;
 mod mouse;
+mod mouse_routing;
 pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;

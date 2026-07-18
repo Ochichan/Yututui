@@ -112,6 +112,777 @@ impl App {
         self.detect_lyrics_fx();
     }
 
+    fn handle_remote(
+        &mut self,
+        cmd: crate::remote::proto::RemoteCommand,
+        reply: crate::remote::server::RemoteReply,
+    ) -> Vec<Cmd> {
+        if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory } = cmd {
+            return self.start_personal_export(PathBuf::from(directory), Some(reply));
+        }
+        let deferred = Self::remote_reply_plan(&cmd);
+        let (resp, mut cmds) = self.apply_remote(cmd);
+        // Admission-sensitive success snapshots wait for their player intent, while a
+        // command rejected during validation (for example an empty resume session) must
+        // preserve its explicit error instead of being replaced by a fake status reply.
+        let response = if resp.ok {
+            deferred.unwrap_or(RemoteReplyPlan::Fixed(Box::new(resp)))
+        } else {
+            RemoteReplyPlan::Fixed(Box::new(resp))
+        };
+        if let Err((reply, response)) = Self::attach_remote_reply(&mut cmds, reply, response) {
+            let _ = reply.send(self.resolve_remote_reply(response));
+        }
+        cmds
+    }
+
+    fn handle_api_mode_resolved(&mut self, mode: ApiMode, had_cookie: bool) -> Vec<Cmd> {
+        self.authenticated = mode == ApiMode::Authenticated;
+        if mode == ApiMode::Anonymous && had_cookie {
+            self.status.text = crate::t!(
+                "Cookie rejected — anonymous mode (search & play only)",
+                "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)",
+                "Cookieが拒否されました — 匿名モード (検索·再生のみ)"
+            )
+            .to_owned();
+        }
+        self.dirty = true;
+        let results = self.search.results.clone();
+        self.request_romanization_for_songs(&results)
+    }
+
+    fn handle_status_tick(&mut self) -> Vec<Cmd> {
+        // Transient status expires back to the recorder's persistent recovery/
+        // backpressure condition. That condition clears only when its exact source is
+        // settled or explicitly discarded, never merely because three seconds elapsed.
+        if matches!(self.status.set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
+            if let Some(warning) = self.recorder.health_warning.as_ref() {
+                if self.status.text != *warning {
+                    self.status.kind = StatusKind::Error;
+                    self.status.text.clone_from(warning);
+                    self.dirty = true;
+                } else {
+                    self.status.set_at = None;
+                }
+            } else {
+                self.status.text.clear();
+                self.dirty = true;
+            }
+        }
+        if self.expire_lyrics_delay_osd(Instant::now()) {
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    fn handle_player(&mut self, pm: PlayerMsg) -> Vec<Cmd> {
+        match pm {
+            PlayerMsg::TimePos(t) => {
+                // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
+                // reach the interpolation clock, the OS media session, or the seekbar gauge.
+                let t = crate::playback_policy::norm_position(t);
+                let now = Instant::now();
+                self.playback.time_pos = Some(t);
+                self.playback.time_pos_at = Some(now);
+                // Real progress means the current track opened and is playing, so the
+                // auto-skip streak is broken — clear it.
+                if t > 0.0 {
+                    self.consecutive_play_errors = 0;
+                }
+                // Keep the whole-second anchor current in every mode, but only redraw when
+                // the Player view that renders the scalar is visible. Navigation back to the
+                // Player already requests a frame, which reads the latest stored position.
+                let sec = t as i64;
+                if sec != self.anim.last_shown_sec {
+                    self.anim.last_shown_sec = sec;
+                    if matches!(self.mode, Mode::Player) {
+                        self.dirty = true;
+                    }
+                    tracing::debug!(time_pos = t, "progress");
+                }
+            }
+            PlayerMsg::Duration(d) => {
+                self.playback.duration = d.map(crate::playback_policy::norm_duration);
+                self.dirty = true;
+            }
+            PlayerMsg::CacheTime(t) => {
+                let t = t.map(crate::playback_policy::norm_position);
+                let had = self.playback.cache_time.is_some();
+                self.playback.cache_time = t;
+                self.playback.cache_time_at = t.map(|_| Instant::now());
+                // Track whole seconds and Some↔None transitions in every mode. Only the
+                // Player renders the live-sync state, and returning there requests a frame.
+                let sec = t.map_or(-1, |v| v as i64);
+                if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
+                    self.anim.last_shown_cache_sec = sec;
+                    if matches!(self.mode, Mode::Player) {
+                        self.dirty = true;
+                    }
+                }
+            }
+            PlayerMsg::AudioCodec(codec) => {
+                // Passthrough container hint for the recorder; no redraw needed.
+                self.playback.audio_codec = codec;
+            }
+            PlayerMsg::FileFormat(format) => {
+                self.playback.file_format = format;
+            }
+            PlayerMsg::AudioDeviceList(devices) => {
+                return self.on_audio_device_list(devices);
+            }
+            PlayerMsg::AudioDeviceRefreshFailed(error) => {
+                return self.on_audio_device_refresh_failed(error);
+            }
+            PlayerMsg::AudioDeviceChanged(device) => {
+                return self.on_audio_device_changed(device);
+            }
+            PlayerMsg::CurrentAudioOutput(output) => {
+                return self.on_current_audio_output(output);
+            }
+            PlayerMsg::AudioDeviceSelectionResult {
+                correlation_id,
+                device,
+                result,
+            } => {
+                return self.finish_audio_device_selection(correlation_id, device, result);
+            }
+            PlayerMsg::Paused(p) => {
+                self.playback.paused = p;
+                self.dirty = true;
+            }
+            PlayerMsg::Volume(v) => {
+                // A non-finite report is ignored (leave the current level) rather than
+                // muting (`NaN.round() as i64` == 0) or storing a garbage level.
+                if let Some(volume) = crate::playback_policy::norm_volume_event(v) {
+                    self.playback.volume = volume;
+                    self.dirty = true;
+                    tracing::info!(volume = self.playback.volume, "volume");
+                }
+            }
+            PlayerMsg::Metadata(metadata) => {
+                let parsed = self.queue.current().cloned().and_then(|song| {
+                    if !song.is_radio_station() {
+                        return None;
+                    }
+                    let station_label = self.display_song_label(&song);
+                    stream_metadata::parse_stream_now_playing(
+                        &metadata,
+                        &[song.title.as_str(), station_label.as_str()],
+                    )
+                });
+                if self.playback.stream_now_playing != parsed {
+                    self.playback.stream_now_playing = parsed.clone();
+                    self.dirty = true;
+                    // Rotate the recorder first (finalize the ended track, start the next),
+                    // then let the overlay re-populate from the fresh ICY title (a
+                    // favorite-resolve in flight for the old title is now stale).
+                    let mut cmds = self.recorder_on_title(parsed.as_ref());
+                    cmds.extend(self.on_stream_title_changed());
+                    return cmds;
+                }
+            }
+            PlayerMsg::Eof => {
+                tracing::info!("track ended (eof)");
+                // The just-finished track played to its end → a full-play signal, then advance.
+                return self.advance_with_outgoing(true, true);
+            }
+            PlayerMsg::VideoOverlay { generation, event } => {
+                return self.on_video_overlay_event(generation, event);
+            }
+            PlayerMsg::Error(e) => return self.on_player_error(e),
+            PlayerMsg::TransportClosed(reason) => {
+                self.audio_output_transport_closed(&reason);
+                return self.recover_player_transport(reason);
+            }
+            PlayerMsg::CacheEmergency {
+                position_secs,
+                paused,
+                reason,
+            } => {
+                return self.recover_cache_emergency(position_secs, paused, reason);
+            }
+            PlayerMsg::CacheReplacementEmergency { reason } => {
+                return self.recover_cache_replacement_emergency(reason);
+            }
+            PlayerMsg::IntentAdmitted(commit) => {
+                return self.commit_player_intent(commit);
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_ytdlp_heal_result(&mut self, video_id: String, updated: bool) -> Vec<Cmd> {
+        if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
+            return Vec::new(); // stale: the user already moved on
+        }
+        let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+        if updated && still_current {
+            // A fresh binary landed. Resolve a direct URL with it (StreamingMsg::Resolved
+            // below finishes the retry); Msg::ResolveFailed ends the heal.
+            let watch_url = self.queue.current().and_then(Song::prefetch_target);
+            if let Some(watch_url) = watch_url {
+                return vec![Cmd::ResolveForSelfHeal {
+                    video_id,
+                    watch_url,
+                }];
+            }
+        }
+        // No update available / track changed — give up on this heal and skip
+        // like the plain error path would have.
+        self.heal.pending_video_id = None;
+        if !still_current {
+            return Vec::new();
+        }
+        self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        let mut cmds = if self.queue.peek_next().is_some() {
+            self.advance(false)
+        } else {
+            Vec::new()
+        };
+        self.status.kind = StatusKind::Error;
+        self.status.text = t!(
+            "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+            "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+            "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
+        )
+        .to_owned();
+        Self::attach_track_commit_status(&mut cmds, StatusKind::Error, self.status.text.clone());
+        self.dirty = true;
+        cmds
+    }
+
+    fn handle_resolve_failed(&mut self, video_id: String) -> Vec<Cmd> {
+        // Only meaningful while a self-heal retry waits on this exact resolve;
+        // ordinary prefetch failures were already logged by the resolver.
+        if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
+            return Vec::new();
+        }
+        self.heal.pending_video_id = None;
+        if self.queue.current().is_none_or(|s| s.video_id != video_id) {
+            return Vec::new();
+        }
+        self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        let mut cmds = if self.queue.peek_next().is_some() {
+            self.advance(false)
+        } else {
+            Vec::new()
+        };
+        self.status.kind = StatusKind::Error;
+        self.status.text = t!(
+            "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+            "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
+            "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
+        )
+        .to_owned();
+        Self::attach_track_commit_status(&mut cmds, StatusKind::Error, self.status.text.clone());
+        self.dirty = true;
+        cmds
+    }
+
+    fn handle_search_results(
+        &mut self,
+        request_id: u64,
+        query: String,
+        songs: Vec<Song>,
+        timed_out: bool,
+    ) -> Vec<Cmd> {
+        // Drop results from a superseded search: a slow older response must never
+        // overwrite a newer one, even after the newer one already cleared `searching`.
+        // The request id is authoritative — comparing the live `input`/`source` would
+        // wrongly reject the current search's results the moment the user types more
+        // (or changes the source) without submitting, since those change without a
+        // new request.
+        if request_id != self.search.request_id {
+            return Vec::new();
+        }
+        self.search.searching = false;
+        // The filter popup indexes into the rows it opened over; a fresh result
+        // set makes those stale, so it closes rather than filtering the new list.
+        self.search_filter.close();
+        if songs.is_empty() {
+            self.status.text = match crate::i18n::current() {
+                crate::i18n::Language::Korean => format!("\"{query}\" 검색 결과 없음"),
+                crate::i18n::Language::Japanese => format!("「{query}」の検索結果なし"),
+                _ => format!("No results for \"{query}\""),
+            };
+            self.search.results.clear();
+            self.search.selected = 0;
+            self.collapse_search_selection();
+        } else {
+            // A partial result set (the operation deadline dropped a slow source) gets a
+            // subtle note so it doesn't read as the complete set; a full result clears it.
+            self.status.text = if timed_out {
+                t!(
+                    "Some sources timed out",
+                    "일부 소스 시간 초과",
+                    "一部ソースがタイムアウト"
+                )
+                .to_string()
+            } else {
+                String::new()
+            };
+            self.search.results = songs;
+            self.search.selected = 0;
+            self.collapse_search_selection();
+            self.bridges.search_scroll.reset();
+            self.search.focus = SearchFocus::Results;
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn handle_search_error(&mut self, request_id: u64, error: String) -> Vec<Cmd> {
+        // Same stale-guard as SearchResults: a failed older search must not clear the
+        // status or `searching` flag of a newer one still in flight.
+        if request_id != self.search.request_id {
+            return Vec::new();
+        }
+        self.search.searching = false;
+        self.status.text = format!("{}: {error}", t!("Search error", "검색 오류", "検索エラー"));
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn handle_downloads_scanned(&mut self, scan: crate::library::DownloadScan) -> Vec<Cmd> {
+        self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
+        let truncated = scan.truncated;
+        let limit = scan.limit;
+        let downloaded = self.enrich_downloads(scan.songs);
+        let romanize_cmds = self.request_romanization_for_songs(&downloaded);
+        self.library_ui.downloaded = downloaded;
+        let len = self.library_len();
+        if self.library_ui.selected >= len {
+            self.library_ui.selected = len.saturating_sub(1);
+        }
+        if truncated {
+            self.status.text = format!(
+                "{} {limit} {}",
+                t!("Showing first", "처음", "最初の"),
+                t!(
+                    "download files; more are hidden",
+                    "개 다운로드 파일만 표시됨; 일부는 숨김",
+                    "件のダウンロードファイルのみ表示; 残りは非表示"
+                )
+            );
+        }
+        self.dirty = true;
+        romanize_cmds
+    }
+
+    fn handle_lyrics_result(
+        &mut self,
+        video_id: String,
+        lines: std::sync::Arc<[LyricLine]>,
+    ) -> Vec<Cmd> {
+        // Ignore stale results for a track we've already skipped past.
+        if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+            self.lyrics.loading = false;
+            self.lyrics.initial_osd_pending = !lines.is_empty();
+            if lines.is_empty() {
+                self.lyrics.delay_osd_until = None;
+            }
+            self.lyrics.track = Some(TrackLyrics {
+                video_id: video_id.into(),
+                lines,
+            });
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    fn handle_artwork_result(
+        &mut self,
+        video_id: String,
+        quality: Option<crate::config::AlbumArtQuality>,
+        image: Option<DynamicImage>,
+    ) -> Vec<Cmd> {
+        // Drop results for a track we've already skipped past, and remote results that
+        // belong to the same track's previous quality selection.
+        let current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+        let current_quality = quality.is_none_or(|q| q == self.config.album_art_quality);
+        if current && current_quality {
+            self.art.loading = false;
+            self.set_artwork(video_id, image);
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    fn handle_download(&mut self, message: DownloadMsg) -> Vec<Cmd> {
+        match message {
+            DownloadMsg::Progress { video_id, percent } => {
+                self.apply_download_progress(video_id, percent);
+            }
+            DownloadMsg::ImportProgress { context, percent } => {
+                self.apply_download_progress(context.tracking_key(), percent);
+            }
+            DownloadMsg::Done { video_id, path } => {
+                return self.apply_download_done(video_id, path);
+            }
+            DownloadMsg::ImportDone { context, path } => {
+                return self.apply_download_done(context.tracking_key(), path);
+            }
+            DownloadMsg::Error { video_id, error } => {
+                return self.apply_download_error(video_id, error);
+            }
+            DownloadMsg::ImportError { context, error } => {
+                return self.apply_download_error(context.tracking_key(), error);
+            }
+            DownloadMsg::Rejected {
+                tracking_key,
+                error,
+            } => return self.apply_download_error(tracking_key, error),
+            DownloadMsg::DirError { error } => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!(
+                        "Download directory update failed",
+                        "다운로드 폴더 변경 실패",
+                        "ダウンロードフォルダーの変更に失敗"
+                    )
+                );
+                self.dirty = true;
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_persist_failed(
+        &mut self,
+        store: crate::persist::StoreKind,
+        error: String,
+    ) -> Vec<Cmd> {
+        self.status.kind = StatusKind::Error;
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => {
+                format!("저장 실패 ({}): {error}", store.label())
+            }
+            crate::i18n::Language::Japanese => {
+                format!("保存に失敗 ({}): {error}", store.label())
+            }
+            _ => format!("Save failed ({}): {error}", store.label()),
+        };
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn handle_streaming(&mut self, sm: StreamingMsg) -> Vec<Cmd> {
+        match sm {
+            StreamingMsg::Resolved {
+                video_id,
+                stream_url,
+                self_heal,
+            } => {
+                let healing =
+                    self_heal && self.heal.pending_video_id.as_deref() == Some(video_id.as_str());
+                if !healing && !self.prefetch.enabled() {
+                    tracing::debug!(
+                        video_id = %video_id,
+                        "dropping resolved stream while prefetch is paused"
+                    );
+                    return Vec::new();
+                }
+                // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
+                self.prefetch.resolved.insert(video_id.clone(), stream_url);
+                // A pending self-heal retry: the freshly-updated yt-dlp resolved the
+                // failed track — reload it now through the direct CDN URL just cached
+                // (bypassing the session mpv's stale spawn-time ytdl_hook).
+                if healing {
+                    if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                        return self.reload_healed_track(video_id);
+                    }
+                    // The user moved on while resolution was in flight. No player command is
+                    // needed, so this stale background result can retire immediately.
+                    self.heal.pending_video_id = None;
+                }
+            }
+            StreamingMsg::Results {
+                seed_video_id,
+                candidates,
+            } => {
+                self.streaming.pending = false;
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                    // With a key + reranker enabled, hand the model a diverse local shortlist to
+                    // reorder (ids only); otherwise rank the pool purely locally. Either way the
+                    // pool went through scoring + MMR + cooldown — never taken verbatim.
+                    if self.ai.available && self.config.streaming.ai.enabled {
+                        return self.start_ai_rerank(&seed_video_id, candidates);
+                    }
+                    let picks = self.plan_local_streaming(&seed_video_id, candidates);
+                    return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
+                } else {
+                    self.dirty = true;
+                }
+            }
+            StreamingMsg::Preflighted {
+                seed_video_id,
+                songs,
+            } => {
+                self.streaming.pending = false;
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                    return self.extend_queue_from_streaming(songs);
+                }
+                self.dirty = true;
+            }
+            StreamingMsg::AiPicks {
+                seed_video_id,
+                picks,
+                conf,
+            } => return self.on_streaming_ai_picks(seed_video_id, picks, conf),
+            StreamingMsg::Error {
+                seed_video_id,
+                error,
+            } => {
+                self.streaming.pending = false;
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                    return self.note_streaming_failure(format!(
+                        "{}: {error}",
+                        t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")
+                    ));
+                } else {
+                    self.dirty = true;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_ai(&mut self, am: AiMsg) -> Vec<Cmd> {
+        match am {
+            AiMsg::Thinking(on) => {
+                self.ai.thinking = on;
+                self.bridges.ai_transcript_scroll.scroll_to_end();
+                self.dirty = true;
+            }
+            AiMsg::Chat(text) => {
+                // Skip empty replies (e.g. a silent autoplay top-up that only ran tools).
+                if !text.trim().is_empty() {
+                    self.push_ai_message(AiRole::Ai, text);
+                    self.dirty = true;
+                }
+            }
+            AiMsg::Error(text) => {
+                self.ai.thinking = false;
+                self.push_ai_message(AiRole::Error, text);
+                self.dirty = true;
+            }
+            AiMsg::PlayTracks(songs) => {
+                if !songs.is_empty() {
+                    return self.replace_queue_and_load(
+                        songs,
+                        0,
+                        None,
+                        QueueReplacementOptions {
+                            romanize_all: true,
+                            ..QueueReplacementOptions::default()
+                        },
+                    );
+                }
+            }
+            AiMsg::Enqueue(songs) => {
+                return self.extend_queue_from_streaming(songs);
+            }
+            AiMsg::Suggestions(songs) => {
+                let cmds = self.request_romanization_for_songs(&songs);
+                self.ai.suggestions = songs;
+                self.ai.suggestions_selected = 0;
+                self.bridges.ai_scroll.reset();
+                self.dirty = true;
+                return cmds;
+            }
+            AiMsg::SetAutoplay(on) => {
+                if self.local_dedicated_mode {
+                    self.status.text = t!(
+                        "Autoplay stays off in Local Deck",
+                        "로컬 덱에서는 자동재생이 꺼져 있어요",
+                        "ローカルデッキでは自動再生はオフのままです"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                // Revalidate the actor's context snapshot on the owner lane: repeat may have
+                // changed while the AI tool was resolving. Reject visibly and emit no
+                // persistence/refill work; never silently coerce the requested enable to off.
+                let transition = PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                    .transition(PlaybackModeAction::SetStreaming(on));
+                let Ok(transition) = transition else {
+                    self.show_streaming_repeat_conflict();
+                    return Vec::new();
+                };
+                let on = transition.state.autoplay_streaming;
+                self.set_autoplay_streaming(on);
+                self.dirty = true;
+                let mut cmds = vec![self.save_playback_modes_cmd()];
+                if on {
+                    // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
+                    cmds.extend(self.maybe_autoplay_extend());
+                }
+                return cmds;
+            }
+            AiMsg::SetStationProfile {
+                query,
+                explore,
+                avoid_artists,
+            } => {
+                // Distill the vibe into engine knobs the local streaming can actually act on:
+                // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
+                // live in `build_station_state`). Persist both so the station survives a restart.
+                let profile = crate::station::StationProfile::from_intent(
+                    &query,
+                    explore.as_deref(),
+                    &avoid_artists,
+                );
+                self.config.streaming.mode = profile.explore.to_mode();
+                self.station.active = Some(profile);
+                self.dirty = true;
+                return vec![
+                    Cmd::Persist(PersistCmd::StationProfile),
+                    Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
+                ];
+            }
+            AiMsg::CreatePlaylist(name) => {
+                if self.playlists_mut().create(&name).is_some() {
+                    self.dirty = true;
+                    return vec![Cmd::Persist(PersistCmd::Playlists)];
+                }
+            }
+            AiMsg::AddToPlaylist { playlist, songs } => {
+                let mut any = false;
+                for song in songs {
+                    if matches!(
+                        self.playlists_mut().add(&playlist, song),
+                        crate::playlists::AddResult::Added
+                    ) {
+                        any = true;
+                    }
+                }
+                if any {
+                    self.dirty = true;
+                    return vec![Cmd::Persist(PersistCmd::Playlists)];
+                }
+            }
+            AiMsg::PlayPlaylist(key) => {
+                if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
+                    && !songs.is_empty()
+                {
+                    return self.replace_queue_and_load(
+                        songs,
+                        0,
+                        None,
+                        QueueReplacementOptions {
+                            romanize_all: true,
+                            ..QueueReplacementOptions::default()
+                        },
+                    );
+                }
+            }
+            AiMsg::StationPatch {
+                down_artists,
+                boost_artists,
+            } => {
+                // The off-path feedback summary landed (possibly empty on failure) — always clear
+                // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
+                // into the active station and persist only when the avoid list actually changed.
+                self.streaming.feedback_in_flight = false;
+                if let Some(profile) = self.station.active.as_mut()
+                    && profile.apply_feedback(&down_artists, &boost_artists)
+                {
+                    self.dirty = true;
+                    return vec![Cmd::Persist(PersistCmd::StationProfile)];
+                }
+            }
+            AiMsg::RomanizedTitles {
+                request_id,
+                keys,
+                entries,
+            } => {
+                return self.apply_romanized_titles(request_id, keys, entries);
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_update_checked(&mut self, status: crate::update::UpdateStatus) -> Vec<Cmd> {
+        let mut cmds = Vec::new();
+        // One-time status toast + desktop notification the first time a newer
+        // release is accepted by the reducer. The persistent surfaces — About
+        // notice + brand dot — read `update_status` directly on every frame.
+        if status.available && status.first_seen {
+            self.status.kind = StatusKind::Info;
+            self.status.text = match crate::i18n::current() {
+                crate::i18n::Language::Korean => {
+                    format!("새 버전 v{} 사용 가능 — About(F1)", status.latest_display())
+                }
+                crate::i18n::Language::Japanese => {
+                    format!(
+                        "新バージョン v{} が利用可能 — About(F1)",
+                        status.latest_display()
+                    )
+                }
+                _ => format!(
+                    "Update available: v{} — see About (F1)",
+                    status.latest_display()
+                ),
+            };
+            self.dirty = true;
+            let instructions = crate::update::update_instructions(status.method);
+            let action = instructions.command.unwrap_or(instructions.note);
+            cmds.push(Cmd::DesktopNotify {
+                title: format!("YuTuTui! v{} available", status.latest_display()),
+                body: format!(
+                    "Latest: v{} (current: v{}). {action}",
+                    status.latest_display(),
+                    status.current
+                ),
+            });
+            cmds.push(Cmd::UpdateSeen {
+                tag: status.latest.clone(),
+            });
+        }
+        self.overlays.update_status = Some(status);
+        cmds
+    }
+
+    fn handle_tools(&mut self, event: crate::tools::ToolsEvent) -> Vec<Cmd> {
+        match event {
+            crate::tools::ToolsEvent::Progress { channel, percent } => {
+                self.status.kind = StatusKind::Info;
+                let label = channel.label();
+                let head = t!(
+                    "Downloading yt-dlp",
+                    "yt-dlp 다운로드 중",
+                    "yt-dlpをダウンロード中"
+                );
+                self.status.text = match percent {
+                    Some(p) => format!("{head} ({label})… {p}%"),
+                    None => format!("{head} ({label})…"),
+                };
+                self.dirty = true;
+            }
+            crate::tools::ToolsEvent::Installed { version } => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = match crate::i18n::current() {
+                    crate::i18n::Language::Korean => format!("yt-dlp {version} 준비 완료"),
+                    crate::i18n::Language::Japanese => format!("yt-dlp {version} 準備完了"),
+                    _ => format!("yt-dlp {version} ready"),
+                };
+                self.dirty = true;
+            }
+            crate::tools::ToolsEvent::Failed { error } => {
+                // A failed background refresh of a *working* setup stays log-only
+                // (check_and_update already traced it); only an app with no usable
+                // yt-dlp at all needs the user's attention.
+                if crate::tools::ytdlp_selection().is_none() {
+                    tracing::warn!(%error, "yt-dlp setup requires attention");
+                    self.show_tool_setup(ToolSetupContext::Startup, vec!["yt-dlp"]);
+                }
+            }
+        }
+        Vec::new()
+    }
+
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
         if self.tool_setup.is_some()
             && matches!(
@@ -187,27 +958,7 @@ impl App {
                 self.dirty = true;
             }
             Msg::Quit => self.should_quit = true,
-            Msg::Remote(cmd, reply) => {
-                if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory } = cmd {
-                    return self.start_personal_export(PathBuf::from(directory), Some(reply));
-                }
-                let deferred = Self::remote_reply_plan(&cmd);
-                let (resp, mut cmds) = self.apply_remote(cmd);
-                // Admission-sensitive success snapshots wait for their player intent, while a
-                // command rejected during validation (for example an empty resume session) must
-                // preserve its explicit error instead of being replaced by a fake status reply.
-                let response = if resp.ok {
-                    deferred.unwrap_or(RemoteReplyPlan::Fixed(Box::new(resp)))
-                } else {
-                    RemoteReplyPlan::Fixed(Box::new(resp))
-                };
-                if let Err((reply, response)) =
-                    Self::attach_remote_reply(&mut cmds, reply, response)
-                {
-                    let _ = reply.send(self.resolve_remote_reply(response));
-                }
-                return cmds;
-            }
+            Msg::Remote(cmd, reply) => return self.handle_remote(cmd, reply),
             Msg::Data(DataMsg::PersonalDataExport(PersonalDataExportMsg::Finished {
                 result,
                 reply,
@@ -221,42 +972,9 @@ impl App {
             }
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
             Msg::ApiModeResolved { mode, had_cookie } => {
-                self.authenticated = mode == ApiMode::Authenticated;
-                if mode == ApiMode::Anonymous && had_cookie {
-                    self.status.text = crate::t!(
-                        "Cookie rejected — anonymous mode (search & play only)",
-                        "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)",
-                        "Cookieが拒否されました — 匿名モード (検索·再生のみ)"
-                    )
-                    .to_owned();
-                }
-                self.dirty = true;
-                let results = self.search.results.clone();
-                return self.request_romanization_for_songs(&results);
+                return self.handle_api_mode_resolved(mode, had_cookie);
             }
-            Msg::StatusTick => {
-                // Transient status expires back to the recorder's persistent recovery/
-                // backpressure condition. That condition clears only when its exact source is
-                // settled or explicitly discarded, never merely because three seconds elapsed.
-                if matches!(self.status.set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
-                    if let Some(warning) = self.recorder.health_warning.as_ref() {
-                        if self.status.text != *warning {
-                            self.status.kind = StatusKind::Error;
-                            self.status.text.clone_from(warning);
-                            self.dirty = true;
-                        } else {
-                            self.status.set_at = None;
-                        }
-                    } else {
-                        self.status.text.clear();
-                        self.dirty = true;
-                    }
-                }
-                if self.expire_lyrics_delay_osd(Instant::now()) {
-                    self.dirty = true;
-                }
-                return Vec::new();
-            }
+            Msg::StatusTick => return self.handle_status_tick(),
             Msg::LyricsTick => {
                 if self.lyrics_tick_at(Instant::now()) {
                     self.dirty = true;
@@ -271,138 +989,7 @@ impl App {
                 self.focused = f;
                 self.dirty = true;
             }
-            Msg::Player(pm) => match pm {
-                PlayerMsg::TimePos(t) => {
-                    // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
-                    // reach the interpolation clock, the OS media session, or the seekbar gauge.
-                    let t = crate::playback_policy::norm_position(t);
-                    let now = Instant::now();
-                    self.playback.time_pos = Some(t);
-                    self.playback.time_pos_at = Some(now);
-                    // Real progress means the current track opened and is playing, so the
-                    // auto-skip streak is broken — clear it.
-                    if t > 0.0 {
-                        self.consecutive_play_errors = 0;
-                    }
-                    // Keep the whole-second anchor current in every mode, but only redraw when
-                    // the Player view that renders the scalar is visible. Navigation back to the
-                    // Player already requests a frame, which reads the latest stored position.
-                    let sec = t as i64;
-                    if sec != self.anim.last_shown_sec {
-                        self.anim.last_shown_sec = sec;
-                        if matches!(self.mode, Mode::Player) {
-                            self.dirty = true;
-                        }
-                        tracing::debug!(time_pos = t, "progress");
-                    }
-                }
-                PlayerMsg::Duration(d) => {
-                    self.playback.duration = d.map(crate::playback_policy::norm_duration);
-                    self.dirty = true;
-                }
-                PlayerMsg::CacheTime(t) => {
-                    let t = t.map(crate::playback_policy::norm_position);
-                    let had = self.playback.cache_time.is_some();
-                    self.playback.cache_time = t;
-                    self.playback.cache_time_at = t.map(|_| Instant::now());
-                    // Track whole seconds and Some↔None transitions in every mode. Only the
-                    // Player renders the live-sync state, and returning there requests a frame.
-                    let sec = t.map_or(-1, |v| v as i64);
-                    if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
-                        self.anim.last_shown_cache_sec = sec;
-                        if matches!(self.mode, Mode::Player) {
-                            self.dirty = true;
-                        }
-                    }
-                }
-                PlayerMsg::AudioCodec(codec) => {
-                    // Passthrough container hint for the recorder; no redraw needed.
-                    self.playback.audio_codec = codec;
-                }
-                PlayerMsg::FileFormat(format) => {
-                    self.playback.file_format = format;
-                }
-                PlayerMsg::AudioDeviceList(devices) => {
-                    return self.on_audio_device_list(devices);
-                }
-                PlayerMsg::AudioDeviceRefreshFailed(error) => {
-                    return self.on_audio_device_refresh_failed(error);
-                }
-                PlayerMsg::AudioDeviceChanged(device) => {
-                    return self.on_audio_device_changed(device);
-                }
-                PlayerMsg::CurrentAudioOutput(output) => {
-                    return self.on_current_audio_output(output);
-                }
-                PlayerMsg::AudioDeviceSelectionResult {
-                    correlation_id,
-                    device,
-                    result,
-                } => {
-                    return self.finish_audio_device_selection(correlation_id, device, result);
-                }
-                PlayerMsg::Paused(p) => {
-                    self.playback.paused = p;
-                    self.dirty = true;
-                }
-                PlayerMsg::Volume(v) => {
-                    // A non-finite report is ignored (leave the current level) rather than
-                    // muting (`NaN.round() as i64` == 0) or storing a garbage level.
-                    if let Some(volume) = crate::playback_policy::norm_volume_event(v) {
-                        self.playback.volume = volume;
-                        self.dirty = true;
-                        tracing::info!(volume = self.playback.volume, "volume");
-                    }
-                }
-                PlayerMsg::Metadata(metadata) => {
-                    let parsed = self.queue.current().cloned().and_then(|song| {
-                        if !song.is_radio_station() {
-                            return None;
-                        }
-                        let station_label = self.display_song_label(&song);
-                        stream_metadata::parse_stream_now_playing(
-                            &metadata,
-                            &[song.title.as_str(), station_label.as_str()],
-                        )
-                    });
-                    if self.playback.stream_now_playing != parsed {
-                        self.playback.stream_now_playing = parsed.clone();
-                        self.dirty = true;
-                        // Rotate the recorder first (finalize the ended track, start the next),
-                        // then let the overlay re-populate from the fresh ICY title (a
-                        // favorite-resolve in flight for the old title is now stale).
-                        let mut cmds = self.recorder_on_title(parsed.as_ref());
-                        cmds.extend(self.on_stream_title_changed());
-                        return cmds;
-                    }
-                }
-                PlayerMsg::Eof => {
-                    tracing::info!("track ended (eof)");
-                    // The just-finished track played to its end → a full-play signal, then advance.
-                    return self.advance_with_outgoing(true, true);
-                }
-                PlayerMsg::VideoOverlay { generation, event } => {
-                    return self.on_video_overlay_event(generation, event);
-                }
-                PlayerMsg::Error(e) => return self.on_player_error(e),
-                PlayerMsg::TransportClosed(reason) => {
-                    self.audio_output_transport_closed(&reason);
-                    return self.recover_player_transport(reason);
-                }
-                PlayerMsg::CacheEmergency {
-                    position_secs,
-                    paused,
-                    reason,
-                } => {
-                    return self.recover_cache_emergency(position_secs, paused, reason);
-                }
-                PlayerMsg::CacheReplacementEmergency { reason } => {
-                    return self.recover_cache_replacement_emergency(reason);
-                }
-                PlayerMsg::IntentAdmitted(commit) => {
-                    return self.commit_player_intent(commit);
-                }
-            },
+            Msg::Player(pm) => return self.handle_player(pm),
             Msg::RecordingTick => {
                 return self.recorder_on_tick();
             }
@@ -425,559 +1012,47 @@ impl App {
                 self.dirty = true;
             }
             Msg::YtdlpHealResult { video_id, updated } => {
-                if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
-                    return Vec::new(); // stale: the user already moved on
-                }
-                let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
-                if updated && still_current {
-                    // A fresh binary landed. Resolve a direct URL with it (StreamingMsg::Resolved
-                    // below finishes the retry); Msg::ResolveFailed ends the heal.
-                    let watch_url = self.queue.current().and_then(Song::prefetch_target);
-                    if let Some(watch_url) = watch_url {
-                        return vec![Cmd::ResolveForSelfHeal {
-                            video_id,
-                            watch_url,
-                        }];
-                    }
-                }
-                // No update available / track changed — give up on this heal and skip
-                // like the plain error path would have.
-                self.heal.pending_video_id = None;
-                if !still_current {
-                    return Vec::new();
-                }
-                self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
-                let mut cmds = if self.queue.peek_next().is_some() {
-                    self.advance(false)
-                } else {
-                    Vec::new()
-                };
-                self.status.kind = StatusKind::Error;
-                self.status.text = t!(
-                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
-                    "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
-                )
-                .to_owned();
-                Self::attach_track_commit_status(
-                    &mut cmds,
-                    StatusKind::Error,
-                    self.status.text.clone(),
-                );
-                self.dirty = true;
-                return cmds;
+                return self.handle_ytdlp_heal_result(video_id, updated);
             }
-            Msg::ResolveFailed { video_id } => {
-                // Only meaningful while a self-heal retry waits on this exact resolve;
-                // ordinary prefetch failures were already logged by the resolver.
-                if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
-                    return Vec::new();
-                }
-                self.heal.pending_video_id = None;
-                if self.queue.current().is_none_or(|s| s.video_id != video_id) {
-                    return Vec::new();
-                }
-                self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
-                let mut cmds = if self.queue.peek_next().is_some() {
-                    self.advance(false)
-                } else {
-                    Vec::new()
-                };
-                self.status.kind = StatusKind::Error;
-                self.status.text = t!(
-                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀",
-                    "⚠ ストリーム解決に失敗 (yt-dlpが古い可能性) — スキップ"
-                )
-                .to_owned();
-                Self::attach_track_commit_status(
-                    &mut cmds,
-                    StatusKind::Error,
-                    self.status.text.clone(),
-                );
-                self.dirty = true;
-                return cmds;
-            }
+            Msg::ResolveFailed { video_id } => return self.handle_resolve_failed(video_id),
             Msg::SearchResults {
                 request_id,
                 query,
                 songs,
                 timed_out,
                 ..
-            } => {
-                // Drop results from a superseded search: a slow older response must never
-                // overwrite a newer one, even after the newer one already cleared `searching`.
-                // The request id is authoritative — comparing the live `input`/`source` would
-                // wrongly reject the current search's results the moment the user types more
-                // (or changes the source) without submitting, since those change without a
-                // new request.
-                if request_id != self.search.request_id {
-                    return Vec::new();
-                }
-                self.search.searching = false;
-                // The filter popup indexes into the rows it opened over; a fresh result
-                // set makes those stale, so it closes rather than filtering the new list.
-                self.search_filter.close();
-                if songs.is_empty() {
-                    self.status.text = match crate::i18n::current() {
-                        crate::i18n::Language::Korean => format!("\"{query}\" 검색 결과 없음"),
-                        crate::i18n::Language::Japanese => format!("「{query}」の検索結果なし"),
-                        _ => format!("No results for \"{query}\""),
-                    };
-                    self.search.results.clear();
-                    self.search.selected = 0;
-                    self.collapse_search_selection();
-                } else {
-                    // A partial result set (the operation deadline dropped a slow source) gets a
-                    // subtle note so it doesn't read as the complete set; a full result clears it.
-                    self.status.text = if timed_out {
-                        t!(
-                            "Some sources timed out",
-                            "일부 소스 시간 초과",
-                            "一部ソースがタイムアウト"
-                        )
-                        .to_string()
-                    } else {
-                        String::new()
-                    };
-                    self.search.results = songs;
-                    self.search.selected = 0;
-                    self.collapse_search_selection();
-                    self.bridges.search_scroll.reset();
-                    self.search.focus = SearchFocus::Results;
-                }
-                self.dirty = true;
-            }
+            } => return self.handle_search_results(request_id, query, songs, timed_out),
             Msg::SearchError {
                 request_id, error, ..
-            } => {
-                // Same stale-guard as SearchResults: a failed older search must not clear the
-                // status or `searching` flag of a newer one still in flight.
-                if request_id != self.search.request_id {
-                    return Vec::new();
-                }
-                self.search.searching = false;
-                self.status.text =
-                    format!("{}: {error}", t!("Search error", "검색 오류", "検索エラー"));
-                self.dirty = true;
-            }
+            } => return self.handle_search_error(request_id, error),
             Msg::Data(DataMsg::DownloadsScanned(scan)) => {
-                self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
-                let truncated = scan.truncated;
-                let limit = scan.limit;
-                let downloaded = self.enrich_downloads(scan.songs);
-                let romanize_cmds = self.request_romanization_for_songs(&downloaded);
-                self.library_ui.downloaded = downloaded;
-                let len = self.library_len();
-                if self.library_ui.selected >= len {
-                    self.library_ui.selected = len.saturating_sub(1);
-                }
-                if truncated {
-                    self.status.text = format!(
-                        "{} {limit} {}",
-                        t!("Showing first", "처음", "最初の"),
-                        t!(
-                            "download files; more are hidden",
-                            "개 다운로드 파일만 표시됨; 일부는 숨김",
-                            "件のダウンロードファイルのみ表示; 残りは非表示"
-                        )
-                    );
-                }
-                self.dirty = true;
-                return romanize_cmds;
+                return self.handle_downloads_scanned(scan);
             }
             Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
-                // Ignore stale results for a track we've already skipped past.
-                if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                    self.lyrics.loading = false;
-                    self.lyrics.initial_osd_pending = !lines.is_empty();
-                    if lines.is_empty() {
-                        self.lyrics.delay_osd_until = None;
-                    }
-                    self.lyrics.track = Some(TrackLyrics {
-                        video_id: video_id.into(),
-                        lines,
-                    });
-                    self.dirty = true;
-                }
+                return self.handle_lyrics_result(video_id, lines);
             }
             Msg::ArtworkResult {
                 video_id,
                 quality,
                 image,
-            } => {
-                // Drop results for a track we've already skipped past, and remote results that
-                // belong to the same track's previous quality selection.
-                let current = self.queue.current().is_some_and(|s| s.video_id == video_id);
-                let current_quality = quality.is_none_or(|q| q == self.config.album_art_quality);
-                if current && current_quality {
-                    self.art.loading = false;
-                    self.set_artwork(video_id, image);
-                    self.dirty = true;
-                }
-            }
+            } => return self.handle_artwork_result(video_id, quality, image),
             Msg::ArtworkResized(response) => self.apply_artwork_resize(response),
-            Msg::Download(message) => match message {
-                DownloadMsg::Progress { video_id, percent } => {
-                    self.apply_download_progress(video_id, percent);
-                }
-                DownloadMsg::ImportProgress { context, percent } => {
-                    self.apply_download_progress(context.tracking_key(), percent);
-                }
-                DownloadMsg::Done { video_id, path } => {
-                    return self.apply_download_done(video_id, path);
-                }
-                DownloadMsg::ImportDone { context, path } => {
-                    return self.apply_download_done(context.tracking_key(), path);
-                }
-                DownloadMsg::Error { video_id, error } => {
-                    return self.apply_download_error(video_id, error);
-                }
-                DownloadMsg::ImportError { context, error } => {
-                    return self.apply_download_error(context.tracking_key(), error);
-                }
-                DownloadMsg::Rejected {
-                    tracking_key,
-                    error,
-                } => return self.apply_download_error(tracking_key, error),
-                DownloadMsg::DirError { error } => {
-                    self.status.kind = StatusKind::Error;
-                    self.status.text = format!(
-                        "{}: {error}",
-                        t!(
-                            "Download directory update failed",
-                            "다운로드 폴더 변경 실패",
-                            "ダウンロードフォルダーの変更に失敗"
-                        )
-                    );
-                    self.dirty = true;
-                }
-            },
+            Msg::Download(message) => return self.handle_download(message),
             Msg::DownloadsDeleted {
                 root,
                 deleted,
                 failed,
             } => return self.apply_deleted_downloads(root, deleted, failed),
             Msg::PersistFailed { store, error } => {
-                self.status.kind = StatusKind::Error;
-                self.status.text = match crate::i18n::current() {
-                    crate::i18n::Language::Korean => {
-                        format!("저장 실패 ({}): {error}", store.label())
-                    }
-                    crate::i18n::Language::Japanese => {
-                        format!("保存に失敗 ({}): {error}", store.label())
-                    }
-                    _ => format!("Save failed ({}): {error}", store.label()),
-                };
-                self.dirty = true;
+                return self.handle_persist_failed(store, error);
             }
-            Msg::Streaming(sm) => match sm {
-                StreamingMsg::Resolved {
-                    video_id,
-                    stream_url,
-                    self_heal,
-                } => {
-                    let healing = self_heal
-                        && self.heal.pending_video_id.as_deref() == Some(video_id.as_str());
-                    if !healing && !self.prefetch.enabled() {
-                        tracing::debug!(
-                            video_id = %video_id,
-                            "dropping resolved stream while prefetch is paused"
-                        );
-                        return Vec::new();
-                    }
-                    // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
-                    self.prefetch.resolved.insert(video_id.clone(), stream_url);
-                    // A pending self-heal retry: the freshly-updated yt-dlp resolved the
-                    // failed track — reload it now through the direct CDN URL just cached
-                    // (bypassing the session mpv's stale spawn-time ytdl_hook).
-                    if healing {
-                        if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                            return self.reload_healed_track(video_id);
-                        }
-                        // The user moved on while resolution was in flight. No player command is
-                        // needed, so this stale background result can retire immediately.
-                        self.heal.pending_video_id = None;
-                    }
-                }
-                StreamingMsg::Results {
-                    seed_video_id,
-                    candidates,
-                } => {
-                    self.streaming.pending = false;
-                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                        // With a key + reranker enabled, hand the model a diverse local shortlist to
-                        // reorder (ids only); otherwise rank the pool purely locally. Either way the
-                        // pool went through scoring + MMR + cooldown — never taken verbatim.
-                        if self.ai.available && self.config.streaming.ai.enabled {
-                            return self.start_ai_rerank(&seed_video_id, candidates);
-                        }
-                        let picks = self.plan_local_streaming(&seed_video_id, candidates);
-                        return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
-                    } else {
-                        self.dirty = true;
-                    }
-                }
-                StreamingMsg::Preflighted {
-                    seed_video_id,
-                    songs,
-                } => {
-                    self.streaming.pending = false;
-                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                        return self.extend_queue_from_streaming(songs);
-                    }
-                    self.dirty = true;
-                }
-                StreamingMsg::AiPicks {
-                    seed_video_id,
-                    picks,
-                    conf,
-                } => return self.on_streaming_ai_picks(seed_video_id, picks, conf),
-                StreamingMsg::Error {
-                    seed_video_id,
-                    error,
-                } => {
-                    self.streaming.pending = false;
-                    if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                        return self.note_streaming_failure(format!(
-                            "{}: {error}",
-                            t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")
-                        ));
-                    } else {
-                        self.dirty = true;
-                    }
-                }
-            },
+            Msg::Streaming(sm) => return self.handle_streaming(sm),
             // --- DJ Gem assistant intents ---------------------------------------
-            Msg::Ai(am) => match am {
-                AiMsg::Thinking(on) => {
-                    self.ai.thinking = on;
-                    self.bridges.ai_transcript_scroll.scroll_to_end();
-                    self.dirty = true;
-                }
-                AiMsg::Chat(text) => {
-                    // Skip empty replies (e.g. a silent autoplay top-up that only ran tools).
-                    if !text.trim().is_empty() {
-                        self.push_ai_message(AiRole::Ai, text);
-                        self.dirty = true;
-                    }
-                }
-                AiMsg::Error(text) => {
-                    self.ai.thinking = false;
-                    self.push_ai_message(AiRole::Error, text);
-                    self.dirty = true;
-                }
-                AiMsg::PlayTracks(songs) => {
-                    if !songs.is_empty() {
-                        return self.replace_queue_and_load(
-                            songs,
-                            0,
-                            None,
-                            QueueReplacementOptions {
-                                romanize_all: true,
-                                ..QueueReplacementOptions::default()
-                            },
-                        );
-                    }
-                }
-                AiMsg::Enqueue(songs) => {
-                    return self.extend_queue_from_streaming(songs);
-                }
-                AiMsg::Suggestions(songs) => {
-                    let cmds = self.request_romanization_for_songs(&songs);
-                    self.ai.suggestions = songs;
-                    self.ai.suggestions_selected = 0;
-                    self.bridges.ai_scroll.reset();
-                    self.dirty = true;
-                    return cmds;
-                }
-                AiMsg::SetAutoplay(on) => {
-                    if self.local_dedicated_mode {
-                        self.status.text = t!(
-                            "Autoplay stays off in Local Deck",
-                            "로컬 덱에서는 자동재생이 꺼져 있어요",
-                            "ローカルデッキでは自動再生はオフのままです"
-                        )
-                        .to_owned();
-                        self.dirty = true;
-                        return Vec::new();
-                    }
-                    // Revalidate the actor's context snapshot on the owner lane: repeat may have
-                    // changed while the AI tool was resolving. Reject visibly and emit no
-                    // persistence/refill work; never silently coerce the requested enable to off.
-                    let transition =
-                        PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
-                            .transition(PlaybackModeAction::SetStreaming(on));
-                    let Ok(transition) = transition else {
-                        self.show_streaming_repeat_conflict();
-                        return Vec::new();
-                    };
-                    let on = transition.state.autoplay_streaming;
-                    self.set_autoplay_streaming(on);
-                    self.dirty = true;
-                    let mut cmds = vec![self.save_playback_modes_cmd()];
-                    if on {
-                        // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
-                        cmds.extend(self.maybe_autoplay_extend());
-                    }
-                    return cmds;
-                }
-                AiMsg::SetStationProfile {
-                    query,
-                    explore,
-                    avoid_artists,
-                } => {
-                    // Distill the vibe into engine knobs the local streaming can actually act on:
-                    // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
-                    // live in `build_station_state`). Persist both so the station survives a restart.
-                    let profile = crate::station::StationProfile::from_intent(
-                        &query,
-                        explore.as_deref(),
-                        &avoid_artists,
-                    );
-                    self.config.streaming.mode = profile.explore.to_mode();
-                    self.station.active = Some(profile);
-                    self.dirty = true;
-                    return vec![
-                        Cmd::Persist(PersistCmd::StationProfile),
-                        Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
-                    ];
-                }
-                AiMsg::CreatePlaylist(name) => {
-                    if self.playlists_mut().create(&name).is_some() {
-                        self.dirty = true;
-                        return vec![Cmd::Persist(PersistCmd::Playlists)];
-                    }
-                }
-                AiMsg::AddToPlaylist { playlist, songs } => {
-                    let mut any = false;
-                    for song in songs {
-                        if matches!(
-                            self.playlists_mut().add(&playlist, song),
-                            crate::playlists::AddResult::Added
-                        ) {
-                            any = true;
-                        }
-                    }
-                    if any {
-                        self.dirty = true;
-                        return vec![Cmd::Persist(PersistCmd::Playlists)];
-                    }
-                }
-                AiMsg::PlayPlaylist(key) => {
-                    if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
-                        && !songs.is_empty()
-                    {
-                        return self.replace_queue_and_load(
-                            songs,
-                            0,
-                            None,
-                            QueueReplacementOptions {
-                                romanize_all: true,
-                                ..QueueReplacementOptions::default()
-                            },
-                        );
-                    }
-                }
-                AiMsg::StationPatch {
-                    down_artists,
-                    boost_artists,
-                } => {
-                    // The off-path feedback summary landed (possibly empty on failure) — always clear
-                    // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
-                    // into the active station and persist only when the avoid list actually changed.
-                    self.streaming.feedback_in_flight = false;
-                    if let Some(profile) = self.station.active.as_mut()
-                        && profile.apply_feedback(&down_artists, &boost_artists)
-                    {
-                        self.dirty = true;
-                        return vec![Cmd::Persist(PersistCmd::StationProfile)];
-                    }
-                }
-                AiMsg::RomanizedTitles {
-                    request_id,
-                    keys,
-                    entries,
-                } => {
-                    return self.apply_romanized_titles(request_id, keys, entries);
-                }
-            },
+            Msg::Ai(am) => return self.handle_ai(am),
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
-            Msg::UpdateChecked(status) => {
-                let mut cmds = Vec::new();
-                // One-time status toast + desktop notification the first time a newer
-                // release is accepted by the reducer. The persistent surfaces — About
-                // notice + brand dot — read `update_status` directly on every frame.
-                if status.available && status.first_seen {
-                    self.status.kind = StatusKind::Info;
-                    self.status.text = match crate::i18n::current() {
-                        crate::i18n::Language::Korean => {
-                            format!("새 버전 v{} 사용 가능 — About(F1)", status.latest_display())
-                        }
-                        crate::i18n::Language::Japanese => {
-                            format!(
-                                "新バージョン v{} が利用可能 — About(F1)",
-                                status.latest_display()
-                            )
-                        }
-                        _ => format!(
-                            "Update available: v{} — see About (F1)",
-                            status.latest_display()
-                        ),
-                    };
-                    self.dirty = true;
-                    let instructions = crate::update::update_instructions(status.method);
-                    let action = instructions.command.unwrap_or(instructions.note);
-                    cmds.push(Cmd::DesktopNotify {
-                        title: format!("YuTuTui! v{} available", status.latest_display()),
-                        body: format!(
-                            "Latest: v{} (current: v{}). {action}",
-                            status.latest_display(),
-                            status.current
-                        ),
-                    });
-                    cmds.push(Cmd::UpdateSeen {
-                        tag: status.latest.clone(),
-                    });
-                }
-                self.overlays.update_status = Some(status);
-                return cmds;
-            }
-            Msg::Tools(event) => match event {
-                crate::tools::ToolsEvent::Progress { channel, percent } => {
-                    self.status.kind = StatusKind::Info;
-                    let label = channel.label();
-                    let head = t!(
-                        "Downloading yt-dlp",
-                        "yt-dlp 다운로드 중",
-                        "yt-dlpをダウンロード中"
-                    );
-                    self.status.text = match percent {
-                        Some(p) => format!("{head} ({label})… {p}%"),
-                        None => format!("{head} ({label})…"),
-                    };
-                    self.dirty = true;
-                }
-                crate::tools::ToolsEvent::Installed { version } => {
-                    self.status.kind = StatusKind::Info;
-                    self.status.text = match crate::i18n::current() {
-                        crate::i18n::Language::Korean => format!("yt-dlp {version} 준비 완료"),
-                        crate::i18n::Language::Japanese => format!("yt-dlp {version} 準備完了"),
-                        _ => format!("yt-dlp {version} ready"),
-                    };
-                    self.dirty = true;
-                }
-                crate::tools::ToolsEvent::Failed { error } => {
-                    // A failed background refresh of a *working* setup stays log-only
-                    // (check_and_update already traced it); only an app with no usable
-                    // yt-dlp at all needs the user's attention.
-                    if crate::tools::ytdlp_selection().is_none() {
-                        tracing::warn!(%error, "yt-dlp setup requires attention");
-                        self.show_tool_setup(ToolSetupContext::Startup, vec!["yt-dlp"]);
-                    }
-                }
-            },
+            Msg::UpdateChecked(status) => return self.handle_update_checked(status),
+            Msg::Tools(event) => return self.handle_tools(event),
             Msg::Transfer(event) => return self.on_transfer_event(event),
             Msg::Data(DataMsg::TransferPlaylistPersisted(result)) => {
                 return self.on_transfer_playlist_persisted(*result.commit, result.persistence);

@@ -13,7 +13,7 @@ use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{
     InstanceMode, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, StatusSnapshot,
 };
-use crate::remote::server::{self, BindOutcome, RemoteEvent};
+use crate::remote::server::RemoteEvent;
 use crate::remote::{LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY};
 use crate::util::process::{self, ProcessProfile};
 
@@ -30,6 +30,7 @@ mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 mod personal_export;
+mod serve_setup;
 mod shutdown_drain;
 mod transfer_host;
 
@@ -41,6 +42,7 @@ use events::{DaemonEvent, DaemonEventSender, emit_daemon_event, record_daemon_ev
 #[cfg(test)]
 use events::{DaemonTelemetrySlot, emit_daemon_callback_result};
 use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
+use serve_setup::transport_or_return;
 use shutdown_drain::drain_daemon_shutdown_ingress;
 
 const EXIT_OK: i32 = 0;
@@ -144,17 +146,13 @@ pub fn run_cli(args: &[String]) -> i32 {
 
     // Callback actors apply bounded backpressure when both owner-delivery lanes are full.
     // Keep the owner schedulable while Tokio replaces a `block_in_place` producer worker.
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("ytt daemon: could not start runtime: {e}");
-            return EXIT_TRANSPORT;
-        }
-    };
+    let rt = transport_or_return!(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build(),
+        "could not start runtime: "
+    );
     rt.block_on(run_command(command))
 }
 
@@ -211,27 +209,12 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // Own the public endpoint first, then the complete persistence root set, before any loader,
     // orphan reaper, logger, or actor can touch disk. An early lease/recovery failure drops the
     // unstarted server and removes its endpoint through RemoteServer's identity-safe cleanup.
-    let server = match server::bind_or_detect(false).await {
-        BindOutcome::AlreadyRunning => {
-            eprintln!("ytt daemon: YuTuTui! is already running.");
-            return EXIT_USAGE;
-        }
-        BindOutcome::Unavailable => {
-            eprintln!("ytt daemon: could not bind remote control socket.");
-            return EXIT_TRANSPORT;
-        }
-        BindOutcome::Bound(server) => *server,
-    }
-    .with_instance_metadata(InstanceMode::Daemon, daemon_capabilities());
-    if let Err(error) = crate::persist::initialize_persistence_writer(false) {
-        eprintln!("ytt daemon: {error}");
-        return EXIT_TRANSPORT;
-    }
-    if let Err(error) = crate::persist::ensure_startup_recovery_coherent() {
-        eprintln!("ytt daemon: {error}");
-        return EXIT_TRANSPORT;
-    }
-    let (raw_event_tx, mut event_rx) = crate::util::backpressure::bounded_channel::<DaemonEvent>(
+    let server = match serve_setup::bind_endpoint().await {
+        Ok(server) => server,
+        Err(exit) => return exit,
+    };
+    transport_or_return!(serve_setup::initialize_persistence());
+    let (raw_event_tx, event_rx) = crate::util::backpressure::bounded_channel::<DaemonEvent>(
         crate::util::backpressure::DAEMON_EVENT_QUEUE,
     );
     let event_tx = DaemonEventSender::new(raw_event_tx);
@@ -240,42 +223,14 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // the saved queue, so there must be no startup interval in which SIGTERM/SIGHUP can arrive
     // before the out-of-band latch and guardian revocation path exist.
     let shutdown = crate::player::lifetime::ShutdownLatch::new();
-    let signal_event_tx = event_tx.clone();
-    let mut signal_handlers = match crate::player::lifetime::spawn_signal_handlers(
-        shutdown.clone(),
-        move |_| {
-            // Compatibility/observability event only: the owner loop waits on `shutdown`
-            // directly, so saturation here cannot delay teardown.
-            record_daemon_event(&signal_event_tx, DaemonEvent::Signal);
-        },
-        // Second termination signal while the owner loop is wedged: mpv was already killed by
-        // the cooperative path; there is no terminal to restore, so just refuse to hang.
-        |code| {
-            crate::player::lifetime::kill_mpv_now();
-            std::process::exit(code);
-        },
-    ) {
-        Ok(handlers) => handlers,
-        Err(error) => {
-            eprintln!("ytt daemon: failed to register termination signals: {error}");
-            return EXIT_TRANSPORT;
-        }
+    let signal_handlers = transport_or_return!(
+        serve_setup::spawn_signals(&event_tx, &shutdown),
+        "failed to register termination signals: "
+    );
+    let Some(engine) = serve_setup::start_engine(resume, player_event_tx, &shutdown).await else {
+        return EXIT_OK;
     };
-    let mut engine = match await_owner_handler(
-        &shutdown,
-        engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
-            record_daemon_event(&player_event_tx, DaemonEvent::Player(event));
-        }),
-    )
-    .await
-    {
-        Some(Ok(engine)) => engine,
-        Some(Err(e)) => {
-            eprintln!("ytt daemon: {e}");
-            return EXIT_TRANSPORT;
-        }
-        None => return EXIT_OK,
-    };
+    let engine = transport_or_return!(engine);
     if resume && engine.status().title.is_none() {
         eprintln!("ytt daemon: resume rejected: session_empty");
         return EXIT_USAGE;
@@ -290,21 +245,21 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     });
 
     let remote_event_tx = event_tx.clone();
-    let (mut remote_guard, session_hub) = server.start(move |event| {
+    let (remote_guard, session_hub) = server.start(move |event| {
         emit_daemon_event(&remote_event_tx, DaemonEvent::Remote(event)).is_ok()
     });
     let mut publisher = crate::remote::publish::Publisher::new(session_hub);
     let download_runtime = engine.download_runtime();
-    let mut downloads_host = downloads_host::DownloadsHost::spawn(
+    let downloads_host = downloads_host::DownloadsHost::spawn(
         event_tx.clone(),
         download_runtime.dir,
         download_runtime.cookies_file,
         download_runtime.max_concurrent,
     );
     publisher.publish_downloads(downloads_host.models());
-    let mut transfer_host = transfer_host::TransferHost::spawn(event_tx.clone());
+    let transfer_host = transfer_host::TransferHost::spawn(event_tx.clone());
     transfer_host.publish(&mut publisher);
-    let mut ai_host = ai_host::AiHost::new(event_tx.clone());
+    let ai_host = ai_host::AiHost::new(event_tx.clone());
     ai_host.publish(&engine, &mut publisher);
 
     // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
@@ -318,7 +273,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let media_art_tx = event_tx.clone();
     let media_session_allowed = std::env::var_os("YTM_NO_MEDIA_SESSION").is_none();
     let media_enabled = daemon_media_enabled(&engine, media_session_allowed);
-    let mut media = crate::media::MediaSession::new_cancellable(
+    let media = crate::media::MediaSession::new_cancellable(
         media_enabled,
         move |cmd, callback_cancellation| {
             let event = DaemonEvent::Media(cmd);
@@ -345,9 +300,51 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // Config is read at daemon start — reconnecting via `ytt auth lastfm` needs a daemon
     // restart, which the CLI prints as a hint.
     let scrobble_event_tx = event_tx.clone();
-    let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
+    let scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
         record_daemon_event(&scrobble_event_tx, DaemonEvent::Scrobble(event));
     });
+
+    run_owner_loop(
+        event_rx,
+        event_tx,
+        shutdown,
+        signal_handlers,
+        engine,
+        _log_guard,
+        api,
+        remote_guard,
+        publisher,
+        downloads_host,
+        transfer_host,
+        ai_host,
+        media_session_allowed,
+        media,
+        scrobble,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_owner_loop(
+    mut event_rx: tokio::sync::mpsc::Receiver<DaemonEvent>,
+    event_tx: DaemonEventSender,
+    shutdown: crate::player::lifetime::ShutdownLatch,
+    mut signal_handlers: crate::util::background_task::BackgroundTask,
+    mut engine: engine::DaemonEngine,
+    // Dropped between `api` and `engine` (params drop in reverse declaration order), matching
+    // the pre-extraction local declaration order so destructor-time tracing still races the
+    // log writer shutdown identically.
+    _log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    api: crate::api::ApiHandle,
+    mut remote_guard: crate::remote::server::InstanceGuard,
+    mut publisher: crate::remote::publish::Publisher,
+    mut downloads_host: downloads_host::DownloadsHost,
+    mut transfer_host: transfer_host::TransferHost,
+    mut ai_host: ai_host::AiHost,
+    media_session_allowed: bool,
+    mut media: crate::media::MediaSession,
+    mut scrobble: crate::scrobble::ScrobbleHandle,
+) -> i32 {
     let mut lyrics_host = lyrics_host::LyricsHost::spawn(event_tx.clone());
     let mut published_playlists_rev = None;
     let mut published_library_invalidations = engine.library_invalidations();

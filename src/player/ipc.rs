@@ -25,6 +25,7 @@ use super::{
 use crate::player::long_form_seek::{CacheAction, CacheEffectiveState};
 
 mod actor_exit;
+mod actor_handlers;
 mod audio_output;
 mod resume;
 mod wire;
@@ -655,24 +656,17 @@ pub(crate) async fn run_actor(
         let pending_terminal_contract = earliest_terminal_contract(&state);
         let audio_device_selection_deadline = state.audio_output.tokio_deadline();
         tokio::select! {
-            cmd = cmd_rx.recv(), if command_backlog.len() < LOAD_VALIDATION_BACKLOG_CAPACITY => match cmd {
-                None => {
-                    if let Some(validation) = validating_load.take() {
-                        validation.task.abort();
-                    }
-                    break ActorExit::CommandChannelClosed;
-                }
-                Some(cmd) => {
-                    interactive_burst_gate.observe_command(&cmd, Instant::now());
-                    if !supersede_pending_load_boundary(&cmd, &mut pending_load_boundary) {
-                        accept_actor_command(
-                            &mut state,
-                            cmd,
-                            &mut validating_load,
-                            &mut command_backlog,
-                            &mut seek_flight,
-                        );
-                    }
+            cmd = cmd_rx.recv(), if command_backlog.len() < LOAD_VALIDATION_BACKLOG_CAPACITY => {
+                if let Some(exit) = actor_handlers::handle_command(
+                    cmd,
+                    &mut state,
+                    &mut validating_load,
+                    &mut pending_load_boundary,
+                    &mut command_backlog,
+                    &mut seek_flight,
+                    &mut interactive_burst_gate,
+                ) {
+                    break exit;
                 }
             },
             validation = async {
@@ -681,90 +675,30 @@ pub(crate) async fn run_actor(
                     .expect("validation branch is guarded")
                     .task;
                 task.await
-            }, if validating_load.is_some() => {
-                let pending = validating_load
-                    .take()
-                    .expect("completed validation remains installed");
-                let validated = match validation {
-                    Ok(result) => result,
-                    Err(error) => LoadValidationOutcome::Rejected(format!(
-                        "playback destination validation task failed: {error}"
-                    )),
-                };
-                let boundary = finish_load_validation(&emit, &mut state, pending, validated);
-                if boundary
-                    .as_ref()
-                    .is_some_and(PendingLoadBoundary::wait_for_cache_reset)
-                {
-                    cache_reset_pending = true;
-                }
-                pending_load_boundary = boundary;
-            },
+            }, if validating_load.is_some() => actor_handlers::handle_validation(
+                validation,
+                &emit,
+                &mut state,
+                &mut validating_load,
+                &mut pending_load_boundary,
+                &mut cache_reset_pending,
+            ),
             // Bounded read (shared with the remote protocol): a well-behaved mpv sends tiny
             // JSON lines, so a line past the cap means a broken/hostile endpoint — tear down
             // rather than let one line grow memory without limit.
-            read = crate::util::io::read_bounded_line(&mut reader, &mut line, MPV_IPC_MAX_LINE) => match read {
-                Ok(crate::util::io::BoundedLine::Eof) => {
-                    break transport_exit_or_shutdown(
-                        &cmd_rx,
-                        &intentional_close,
-                        ActorExit::Eof,
-                    );
-                }
-                Err(error) => {
-                    break transport_exit_or_shutdown(
-                        &cmd_rx,
-                        &intentional_close,
-                        ActorExit::Read(error),
-                    );
-                }
-                Ok(crate::util::io::BoundedLine::TooLarge) => {
-                    break transport_exit_or_shutdown(
-                        &cmd_rx,
-                        &intentional_close,
-                        ActorExit::OversizedLine,
-                    );
-                }
-                Ok(crate::util::io::BoundedLine::Line) => {
-                    let text = String::from_utf8_lossy(&line);
-                    dispatch_incoming(&text, &emit, &mut state);
-                    if let Some(selection) = state.audio_output.followup.take()
-                        && let Err(error) = audio_output::perform_followup(
-                            &conn,
-                            &emit,
-                            &mut state,
-                            &mut request_id,
-                            selection,
-                        ).await
-                    {
-                        break transport_exit_or_shutdown(
-                            &cmd_rx,
-                            &intentional_close,
-                            ActorExit::Write {
-                                operation: "audio device command",
-                                error,
-                            },
-                        );
-                    }
-                    if let Some(failure) = state.terminal_failure.take() {
-                        break transport_exit_or_shutdown(
-                            &cmd_rx,
-                            &intentional_close,
-                            failure,
-                        );
-                    }
-                    if let Some(observation) = state.seek_observation.take()
-                        && let Some(completed) = observe_seek_flight(
-                            &mut seek_flight,
-                            observation,
-                            state.active_file_generation,
-                    )
-                    {
-                        finish_seek_flight(&emit, &mut state, completed);
-                    }
-                    // Keep a partial frame across cancellation of the read branch by a ready
-                    // command. Clear only after a complete newline-delimited frame was handled.
-                    line.clear();
+            read = crate::util::io::read_bounded_line(&mut reader, &mut line, MPV_IPC_MAX_LINE) => {
+                if let Some(exit) = actor_handlers::handle_read(
+                    read,
+                    &conn,
+                    &cmd_rx,
+                    &emit,
+                    &intentional_close,
+                    &mut state,
+                    &mut request_id,
+                    &mut seek_flight,
+                    &mut line,
+                ).await {
+                    break exit;
                 }
             },
             _ = async {
@@ -773,122 +707,54 @@ pub(crate) async fn run_actor(
                     .expect("timeout branch is guarded")
                     .wake_deadline();
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            }, if seek_flight.is_some() => {
-                if let Some(completed) = take_settled_seek_flight(
-                    &mut seek_flight,
-                    Instant::now(),
-                ) {
-                    finish_seek_flight(&emit, &mut state, completed);
-                    continue;
-                }
-                let timed_out = seek_flight
-                    .take()
-                    .expect("timed out seek flight remains installed");
-                tracing::warn!(
-                    sequence = timed_out.sequence,
-                    request_id = timed_out.request_id,
-                    file_generation = timed_out.file_generation,
-                    timeout_ms = INTERACTIVE_SEEK_TIMEOUT.as_millis() as u64,
-                    "seek completion became ambiguous; recycling player"
-                );
-                break transport_exit_or_shutdown(
-                    &cmd_rx,
-                    &intentional_close,
-                    ActorExit::SeekCausalityLost,
-                );
+            }, if seek_flight.is_some() => match actor_handlers::handle_seek_timeout(
+                &cmd_rx,
+                &emit,
+                &intentional_close,
+                &mut state,
+                &mut seek_flight,
+            ) {
+                Ok(()) => continue,
+                Err(exit) => break exit,
             },
             _ = async {
                 let deadline = resume_terminal_deadline
                     .expect("resume terminal branch is guarded");
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-            }, if resume_terminal_deadline.is_some() => {
-                if state.resume.telemetry_is_source_recovery() {
-                    super::diagnostics::source_recovery_outcome(
-                        super::diagnostics::SourceRecoveryOutcome::ResumeRejected,
-                    );
-                }
-                tracing::warn!(
-                    file_generation = state.issued_file_generation,
-                    timeout_ms = RESUME_POSITION_TERMINAL_TIMEOUT.as_millis() as u64,
-                    "resume seek completed without a correlated position; recycling player"
-                );
-                break transport_exit_or_shutdown(
+            }, if resume_terminal_deadline.is_some() => break actor_handlers::handle_resume_timeout(
                     &cmd_rx,
                     &intentional_close,
-                    ActorExit::SeekCausalityLost,
-                );
-            },
+                    &state,
+                ),
             _ = async {
                 let deadline = audio_device_selection_deadline
                     .expect("audio device timeout branch is guarded");
                 tokio::time::sleep_until(deadline).await;
-            }, if audio_device_selection_deadline.is_some() => {
-                audio_output::timeout(&mut state, &emit);
-            },
+            }, if audio_device_selection_deadline.is_some() => actor_handlers::handle_audio_timeout(
+                &mut state,
+                &emit,
+            ),
             _ = async {
                 let contract = pending_terminal_contract
                     .expect("internal terminal branch is guarded");
                 tokio::time::sleep_until(
                     tokio::time::Instant::from_std(contract.deadline),
                 ).await;
-            }, if pending_terminal_contract.is_some() => {
-                let contract = pending_terminal_contract
-                    .expect("expired internal terminal contract remains captured");
-                tracing::warn!(
-                    operation = contract.operation,
-                    timeout_ms = INTERNAL_COMMAND_REPLY_TIMEOUT.as_millis() as u64,
-                    "internal recovery command timed out; recycling player"
-                );
-                let failure = expired_terminal_failure(&state, Instant::now())
-                    .expect("selected internal terminal deadline has expired");
-                break transport_exit_or_shutdown(&cmd_rx, &intentional_close, failure);
-            },
+            }, if pending_terminal_contract.is_some() => break actor_handlers::handle_terminal_timeout(
+                pending_terminal_contract,
+                &cmd_rx,
+                &intentional_close,
+                &state,
+            ),
             _ = cache_watchdog.tick() => {
-                let (actions, watchdog_needed, rate_sampling_needed) = match state.cache.as_mut() {
-                    Some(cache) => (
-                        cache.expire_requests(),
-                        cache.watchdog_needed(),
-                        cache.rate_sampling_needed(),
-                    ),
-                    None => (Vec::new(), false, false),
-                };
-                state.cache_actions.extend(actions);
-                poll_cache_persistence(&mut state);
-                publish_cache_status(&mut state);
-                if state.audio_output.is_idle()
-                    && rate_sampling_needed
-                    && let Err(error) = dispatch_cache_speed_query(
-                        &conn,
-                        &mut state,
-                        &mut request_id,
-                    ).await
-                {
-                    break transport_exit_or_shutdown(
-                        &cmd_rx,
-                        &intentional_close,
-                        ActorExit::Write {
-                            operation: "cache rate sample",
-                            error,
-                        },
-                    );
-                }
-                if state.audio_output.is_idle()
-                    && watchdog_needed
-                    && let Err(error) = dispatch_file_cache_query(
-                        &conn,
-                        &mut state,
-                        &mut request_id,
-                    ).await
-                {
-                    tracing::error!(%error, "managed cache watchdog IPC write failed");
-                    break transport_exit_or_shutdown(
-                        &cmd_rx,
-                        &intentional_close,
-                        cache_io_failure_exit(
-                            &state,
-                            crate::player::long_form_seek::CacheReason::PropertyVerificationFailed,
-                        ),
-                    );
+                if let Some(exit) = actor_handlers::handle_cache_watchdog(
+                    &conn,
+                    &cmd_rx,
+                    &intentional_close,
+                    &mut state,
+                    &mut request_id,
+                ).await {
+                    break exit;
                 }
             },
             _ = async {
@@ -906,7 +772,7 @@ pub(crate) async fn run_actor(
                     .resume
                     .front_command()
                     .or_else(|| command_backlog.front())
-                    .is_some_and(PlayerCmd::is_interactive_seek) => {},
+                    .is_some_and(PlayerCmd::is_interactive_seek) => actor_handlers::handle_debounce_ready(),
             // Give the read side a scheduling point between queued command writes so replies and
             // lifecycle events cannot be starved by a full actor backlog.
             _ = tokio::task::yield_now(), if validating_load.is_none()
@@ -915,7 +781,7 @@ pub(crate) async fn run_actor(
                 && seek_flight.is_none()
                 && state.audio_output.is_idle()
                 && next_command_ready
-                && !command_backlog.is_empty() => {},
+                && !command_backlog.is_empty() => actor_handlers::handle_dispatch_yield(),
         }
     };
 
