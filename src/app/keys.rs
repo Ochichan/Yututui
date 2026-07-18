@@ -272,140 +272,8 @@ impl App {
             return self.zoom_step(matches!(action, Action::TextZoomIn));
         }
 
-        // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it,
-        // and the navigation keys scroll the sheet (it rarely fits whole on small grids).
-        if self.overlays.help_visible {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            if self.scroll_help_overlay(chord) {
-                return Vec::new();
-            }
-            let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
-                || k.code == KeyCode::Esc
-                || matches!(
-                    self.keymap.action(KeyContext::Common, chord),
-                    Some(Action::Back)
-                );
-            if close {
-                self.overlays.help_visible = false;
-                self.dirty = true;
-            }
-            return Vec::new();
-        }
-
-        // The mouse cheat-sheet is opened by a mouse-only footer icon. While up, swallow input;
-        // Esc / Back dismiss it, Quit still works, and the navigation keys scroll it.
-        if self.overlays.mouse_help_visible {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            if self.scroll_help_overlay(chord) {
-                return Vec::new();
-            }
-            let close = k.code == KeyCode::Esc
-                || matches!(
-                    self.keymap.action(KeyContext::Common, chord),
-                    Some(Action::Back)
-                );
-            if close {
-                self.overlays.mouse_help_visible = false;
-                self.dirty = true;
-            }
-            return Vec::new();
-        }
-
-        // The About card behaves like the help overlay: while it's up, swallow input; its own
-        // toggle (F1) / Esc / Back dismiss it, and Quit still works.
-        if self.overlays.about_visible {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleAbout))
-                || k.code == KeyCode::Esc
-                || matches!(
-                    self.keymap.action(KeyContext::Common, chord),
-                    Some(Action::Back)
-                );
-            if close {
-                self.overlays.about_visible = false;
-                self.dirty = true;
-            }
-            return Vec::new();
-        }
-
-        // The "what's playing" identify overlay is modal: its own remappable actions
-        // (`KeyContext::NowPlaying` — favorite / ask DJ Gem, listed in the cheat sheet
-        // and editable in Settings › Keys) work, its toggle (`i`) / Esc / Enter / Back
-        // close it, Quit still works, and everything else is swallowed so nothing leaks
-        // into the player underneath.
-        if self.overlays.now_playing_overlay.is_some() {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            match self.keymap.context_action(KeyContext::NowPlaying, chord) {
-                Some(Action::NowPlayingFavorite) => return self.now_playing_favorite(),
-                Some(Action::NowPlayingAskAi) => return self.now_playing_ask_ai(),
-                _ => {}
-            }
-            let close = matches!(
-                self.keymap.action(KeyContext::Player, chord),
-                Some(Action::IdentifyNowPlaying)
-            ) || k.code == KeyCode::Esc
-                || k.code == KeyCode::Enter
-                || matches!(
-                    self.keymap.action(KeyContext::Common, chord),
-                    Some(Action::Back)
-                );
-            if close {
-                self.close_now_playing_overlay();
-            }
-            return Vec::new();
-        }
-
-        // The recordings browser (Decide-mode save/discard/play) is modal wherever it opens —
-        // over the player, or on top of the recording-settings popup. Quit still works; its own
-        // keys (↑/↓, s/d/Enter) act on the selected track; its toggle / Esc / Back close it.
-        if self.overlays.recordings_browser.is_some() {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            return self.recordings_browser_key(k);
-        }
-
-        if self.overlays.audio_output_picker.is_some() {
-            return self.audio_output_picker_key(k);
-        }
-
-        // The recording-settings popup renders as a top-level overlay (`ui::mod`), so it must
-        // capture input here too — not only inside Settings-mode dispatch. Otherwise a global
-        // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the
-        // popup painting on top. Quit still works; the recordings browser (checked above) can
-        // still open on top of it; everything else routes to its own handler.
-        if self.overlays.recording_settings.is_some() {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            return self.recording_settings_key(k);
-        }
-
-        // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
-        // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
-        if self.overlays.why_ai_visible {
-            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                return self.quit_app();
-            }
-            let close = matches!(self.keymap.global_action(chord), Some(Action::WhyAi))
-                || k.code == KeyCode::Esc
-                || matches!(
-                    self.keymap.action(KeyContext::Common, chord),
-                    Some(Action::Back)
-                );
-            if close {
-                self.overlays.why_ai_visible = false;
-                self.dirty = true;
-            }
-            return Vec::new();
+        if let Some(cmds) = self.route_modal_key_contexts(k, chord) {
+            return cmds;
         }
 
         // Local Deck owns Shift+A/`A` for import accept-all and, outside import review rows,
@@ -421,98 +289,8 @@ impl App {
             return self.on_key_local(k);
         }
 
-        // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
-        // a focused text field — so `?` types into the search box but opens help elsewhere,
-        // while Ctrl-based globals (streaming) keep working everywhere as before.
-        if !(self.in_text_entry() && chord.is_typeable())
-            && let Some(action) = self.keymap.global_action(chord)
-        {
-            match action {
-                Action::ToggleHelp => {
-                    self.overlays.help_visible = true;
-                    self.bridges.help_scroll.reset();
-                    self.dirty = true;
-                    return Vec::new();
-                }
-                Action::ToggleAbout => {
-                    self.overlays.about_visible = true;
-                    self.dirty = true;
-                    return Vec::new();
-                }
-                Action::WhyAi => {
-                    // Only worth an overlay if a prior DJ Gem rerank left something to explain;
-                    // otherwise nudge the user with a transient note instead of an empty card.
-                    if self.streaming.last_explain.is_some() {
-                        self.overlays.why_ai_visible = true;
-                    } else {
-                        self.status.kind = StatusKind::Info;
-                        self.status.text = t!(
-                            "No DJ Gem streaming picks to explain yet.",
-                            "아직 설명할 DJ Gem 라디오 선곡이 없어요.",
-                            "説明できるDJ Gemの選曲はまだありません。"
-                        )
-                        .to_owned();
-                    }
-                    self.dirty = true;
-                    return Vec::new();
-                }
-                Action::ToggleAnimations => return self.toggle_animations(),
-                Action::ToggleControlBox => return self.toggle_control_box(),
-                Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
-                Action::ToggleStreaming => {
-                    // Local Deck is deliberately offline. Preserve the normal-mode preference so
-                    // it resumes on exit, but never let a Local key press rewrite that preference.
-                    if self.local_dedicated_mode {
-                        self.status.text = t!(
-                            "Autoplay stays off in Local Deck",
-                            "로컬 덱에서는 자동재생이 꺼져 있어요",
-                            "ローカルデッキでは自動再生はオフのままです"
-                        )
-                        .to_owned();
-                        self.dirty = true;
-                        return Vec::new();
-                    }
-                    // Radio mode: autoplay is meaningless — keep whatever the stored preference
-                    // is (so it survives the round-trip) and just say why nothing changed.
-                    if self.radio_dedicated_mode {
-                        self.status.text = t!(
-                            "Autoplay stays off in Radio mode",
-                            "라디오 모드에서는 자동재생이 꺼져 있어요",
-                            "ラジオモードでは自動再生はオフのままです"
-                        )
-                        .to_owned();
-                        self.dirty = true;
-                        return Vec::new();
-                    }
-                    let transition =
-                        PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
-                            .transition(PlaybackModeAction::SetStreaming(!self.autoplay_streaming));
-                    let Ok(transition) = transition else {
-                        self.show_streaming_repeat_conflict();
-                        return Vec::new();
-                    };
-                    let enabling = transition.state.autoplay_streaming;
-                    self.set_autoplay_streaming(enabling);
-                    self.status.text = format!(
-                        "{}: {}",
-                        t!("Autoplay", "자동재생", "自動再生"),
-                        if enabling { "✓" } else { "✗" }
-                    );
-                    self.dirty = true;
-                    let mut cmds = vec![self.save_playback_modes_cmd()];
-                    // Kick off the top-up now (not at end-of-track) so a low/single-song queue
-                    // has the next tracks queued before the current one ends — no silent gap.
-                    if enabling {
-                        cmds.extend(self.maybe_autoplay_extend());
-                    }
-                    return cmds;
-                }
-                Action::Quit => {
-                    return self.quit_app();
-                }
-                Action::Home => return self.go_home(),
-                _ => {}
-            }
+        if let Some(cmds) = self.route_global_key_context(chord) {
+            return cmds;
         }
 
         // The queue window is a player overlay that captures the keyboard while open (after
@@ -545,6 +323,248 @@ impl App {
             return self.navigate_to(Mode::Search);
         }
 
+        self.route_mode_key_context(k)
+    }
+
+    fn route_modal_key_contexts(&mut self, k: KeyEvent, chord: Chord) -> Option<Vec<Cmd>> {
+        // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it,
+        // and the navigation keys scroll the sheet (it rarely fits whole on small grids).
+        if self.overlays.help_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            if self.scroll_help_overlay(chord) {
+                return Some(Vec::new());
+            }
+            let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
+                || k.code == KeyCode::Esc
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.overlays.help_visible = false;
+                self.dirty = true;
+            }
+            return Some(Vec::new());
+        }
+
+        // The mouse cheat-sheet is opened by a mouse-only footer icon. While up, swallow input;
+        // Esc / Back dismiss it, Quit still works, and the navigation keys scroll it.
+        if self.overlays.mouse_help_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            if self.scroll_help_overlay(chord) {
+                return Some(Vec::new());
+            }
+            let close = k.code == KeyCode::Esc
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.overlays.mouse_help_visible = false;
+                self.dirty = true;
+            }
+            return Some(Vec::new());
+        }
+
+        // The About card behaves like the help overlay: while it's up, swallow input; its own
+        // toggle (F1) / Esc / Back dismiss it, and Quit still works.
+        if self.overlays.about_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleAbout))
+                || k.code == KeyCode::Esc
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.overlays.about_visible = false;
+                self.dirty = true;
+            }
+            return Some(Vec::new());
+        }
+
+        // The "what's playing" identify overlay is modal: its own remappable actions
+        // (`KeyContext::NowPlaying` — favorite / ask DJ Gem, listed in the cheat sheet
+        // and editable in Settings › Keys) work, its toggle (`i`) / Esc / Enter / Back
+        // close it, Quit still works, and everything else is swallowed so nothing leaks
+        // into the player underneath.
+        if self.overlays.now_playing_overlay.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            match self.keymap.context_action(KeyContext::NowPlaying, chord) {
+                Some(Action::NowPlayingFavorite) => return Some(self.now_playing_favorite()),
+                Some(Action::NowPlayingAskAi) => return Some(self.now_playing_ask_ai()),
+                _ => {}
+            }
+            let close = matches!(
+                self.keymap.action(KeyContext::Player, chord),
+                Some(Action::IdentifyNowPlaying)
+            ) || k.code == KeyCode::Esc
+                || k.code == KeyCode::Enter
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.close_now_playing_overlay();
+            }
+            return Some(Vec::new());
+        }
+
+        // The recordings browser (Decide-mode save/discard/play) is modal wherever it opens —
+        // over the player, or on top of the recording-settings popup. Quit still works; its own
+        // keys (↑/↓, s/d/Enter) act on the selected track; its toggle / Esc / Back close it.
+        if self.overlays.recordings_browser.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            return Some(self.recordings_browser_key(k));
+        }
+
+        if self.overlays.audio_output_picker.is_some() {
+            return Some(self.audio_output_picker_key(k));
+        }
+
+        // The recording-settings popup renders as a top-level overlay (`ui::mod`), so it must
+        // capture input here too — not only inside Settings-mode dispatch. Otherwise a global
+        // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the
+        // popup painting on top. Quit still works; the recordings browser (checked above) can
+        // still open on top of it; everything else routes to its own handler.
+        if self.overlays.recording_settings.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            return Some(self.recording_settings_key(k));
+        }
+
+        // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
+        // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
+        if self.overlays.why_ai_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return Some(self.quit_app());
+            }
+            let close = matches!(self.keymap.global_action(chord), Some(Action::WhyAi))
+                || k.code == KeyCode::Esc
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.overlays.why_ai_visible = false;
+                self.dirty = true;
+            }
+            return Some(Vec::new());
+        }
+
+        None
+    }
+
+    fn route_global_key_context(&mut self, chord: Chord) -> Option<Vec<Cmd>> {
+        // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
+        // a focused text field — so `?` types into the search box but opens help elsewhere,
+        // while Ctrl-based globals (streaming) keep working everywhere as before.
+        if !(self.in_text_entry() && chord.is_typeable())
+            && let Some(action) = self.keymap.global_action(chord)
+        {
+            match action {
+                Action::ToggleHelp => {
+                    self.overlays.help_visible = true;
+                    self.bridges.help_scroll.reset();
+                    self.dirty = true;
+                    return Some(Vec::new());
+                }
+                Action::ToggleAbout => {
+                    self.overlays.about_visible = true;
+                    self.dirty = true;
+                    return Some(Vec::new());
+                }
+                Action::WhyAi => {
+                    // Only worth an overlay if a prior DJ Gem rerank left something to explain;
+                    // otherwise nudge the user with a transient note instead of an empty card.
+                    if self.streaming.last_explain.is_some() {
+                        self.overlays.why_ai_visible = true;
+                    } else {
+                        self.status.kind = StatusKind::Info;
+                        self.status.text = t!(
+                            "No DJ Gem streaming picks to explain yet.",
+                            "아직 설명할 DJ Gem 라디오 선곡이 없어요.",
+                            "説明できるDJ Gemの選曲はまだありません。"
+                        )
+                        .to_owned();
+                    }
+                    self.dirty = true;
+                    return Some(Vec::new());
+                }
+                Action::ToggleAnimations => return Some(self.toggle_animations()),
+                Action::ToggleControlBox => return Some(self.toggle_control_box()),
+                Action::ToggleZoomWheelLock => return Some(self.toggle_zoom_wheel_lock()),
+                Action::ToggleStreaming => {
+                    // Local Deck is deliberately offline. Preserve the normal-mode preference so
+                    // it resumes on exit, but never let a Local key press rewrite that preference.
+                    if self.local_dedicated_mode {
+                        self.status.text = t!(
+                            "Autoplay stays off in Local Deck",
+                            "로컬 덱에서는 자동재생이 꺼져 있어요",
+                            "ローカルデッキでは自動再生はオフのままです"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                        return Some(Vec::new());
+                    }
+                    // Radio mode: autoplay is meaningless — keep whatever the stored preference
+                    // is (so it survives the round-trip) and just say why nothing changed.
+                    if self.radio_dedicated_mode {
+                        self.status.text = t!(
+                            "Autoplay stays off in Radio mode",
+                            "라디오 모드에서는 자동재생이 꺼져 있어요",
+                            "ラジオモードでは自動再生はオフのままです"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                        return Some(Vec::new());
+                    }
+                    let transition =
+                        PlaybackModeState::new(self.queue.repeat, self.autoplay_streaming)
+                            .transition(PlaybackModeAction::SetStreaming(!self.autoplay_streaming));
+                    let Ok(transition) = transition else {
+                        self.show_streaming_repeat_conflict();
+                        return Some(Vec::new());
+                    };
+                    let enabling = transition.state.autoplay_streaming;
+                    self.set_autoplay_streaming(enabling);
+                    self.status.text = format!(
+                        "{}: {}",
+                        t!("Autoplay", "자동재생", "自動再生"),
+                        if enabling { "✓" } else { "✗" }
+                    );
+                    self.dirty = true;
+                    let mut cmds = vec![self.save_playback_modes_cmd()];
+                    // Kick off the top-up now (not at end-of-track) so a low/single-song queue
+                    // has the next tracks queued before the current one ends — no silent gap.
+                    if enabling {
+                        cmds.extend(self.maybe_autoplay_extend());
+                    }
+                    return Some(cmds);
+                }
+                Action::Quit => {
+                    return Some(self.quit_app());
+                }
+                Action::Home => return Some(self.go_home()),
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn route_mode_key_context(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {

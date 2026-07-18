@@ -815,273 +815,323 @@ impl App {
                 rows,
                 video_ids,
                 filter_row,
-            } => {
-                let Some((&first, &last)) = rows.first().zip(rows.last()) else {
-                    return self.context_target_stale();
-                };
-                let valid_filter = filter_row.is_none_or(|row| {
-                    self.search_filter.open
-                        && self.search_filter.matches.get(row).copied() == Some(first)
-                });
-                // Identity snapshot: every targeted row must still hold the song it did
-                // when the menu opened.
-                let songs: Vec<Song> = rows
-                    .iter()
-                    .filter_map(|&i| self.search.results.get(i).cloned())
-                    .collect();
-                if songs.len() != rows.len()
-                    || !songs
-                        .iter()
-                        .map(|s| s.video_id.as_str())
-                        .eq(video_ids.iter().map(String::as_str))
-                    || !valid_filter
-                {
-                    return self.context_target_stale();
-                }
-                if songs.len() > 1 {
-                    self.search.picked = rows.iter().copied().collect();
-                    self.search.selected = last;
-                    self.search.anchor = first;
-                    self.search.focus = SearchFocus::Results;
-                    self.dirty = true;
-                    // Multi targets are built from song rows only; keep the filter as a
-                    // guard against a hypothetically stale playlist row sneaking in.
-                    let songs: Vec<Song> = songs
-                        .into_iter()
-                        .filter(|s| s.youtube_playlist_id().is_none())
-                        .collect();
-                    if songs.is_empty() {
-                        return Vec::new();
-                    }
-                    return match command {
-                        ContextCommand::Activate | ContextCommand::PlayNow => {
-                            self.play_now_many(songs)
-                        }
-                        ContextCommand::Enqueue => self.enqueue_many(songs),
-                        ContextCommand::AddToPlaylist => {
-                            self.open_playlist_picker(songs);
-                            Vec::new()
-                        }
-                        ContextCommand::Download => self.open_confirm_download(songs),
-                        _ => Vec::new(),
-                    };
-                }
-                let index = first;
-                let Some(song) = songs.into_iter().next() else {
-                    return self.context_target_stale();
-                };
-                self.search.selected = index;
-                self.collapse_search_selection();
-                self.search.focus = SearchFocus::Results;
-                self.dirty = true;
-                match command {
-                    ContextCommand::Activate | ContextCommand::PlayNow => {
-                        if filter_row.is_some() {
-                            self.search_filter.close();
-                        }
-                        self.activate_search_index(index)
-                    }
-                    ContextCommand::Enqueue => match song.youtube_playlist_id() {
-                        Some(_) => {
-                            self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue)
-                        }
-                        None => self.enqueue(song),
-                    },
-                    ContextCommand::ToggleFavorite if song.youtube_playlist_id().is_none() => {
-                        self.library_mut().toggle_favorite(&song);
-                        vec![Cmd::Persist(PersistCmd::Library)]
-                    }
-                    ContextCommand::AddToPlaylist if song.youtube_playlist_id().is_none() => {
-                        self.open_playlist_picker(vec![song]);
-                        Vec::new()
-                    }
-                    ContextCommand::Download if song.youtube_playlist_id().is_none() => {
-                        self.start_download(song)
-                    }
-                    ContextCommand::ImportPlaylist if song.youtube_playlist_id().is_some() => {
-                        self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import)
-                    }
-                    _ => Vec::new(),
-                }
-            }
+            } => self.execute_search_context_command(rows, video_ids, filter_row, command),
             ContextTarget::LibrarySongs {
                 rows,
                 video_ids,
                 tab,
                 open_playlist,
-            } => {
-                if self.effective_library_tab() != tab
-                    || self.library_ui.open_playlist != open_playlist
-                {
-                    return self.context_target_stale();
-                }
-                let Some((&first, &last)) = rows.first().zip(rows.last()) else {
-                    return self.context_target_stale();
-                };
-                let songs = self.library_songs();
-                let selected: Vec<Song> =
-                    rows.iter().filter_map(|&i| songs.get(i).cloned()).collect();
-                if selected.len() != rows.len()
-                    || !selected
-                        .iter()
-                        .map(|song| song.video_id.as_str())
-                        .eq(video_ids.iter().map(String::as_str))
-                {
-                    return self.context_target_stale();
-                }
-                if rows.len() > 1 {
-                    self.library_ui.picked = rows.iter().copied().collect();
-                } else {
-                    self.library_ui.picked.clear();
-                }
-                self.library_ui.selected = last;
-                self.library_ui.anchor = first;
-                self.dirty = true;
-                match command {
-                    ContextCommand::Activate | ContextCommand::PlayNow => {
-                        self.play_now_many(selected)
-                    }
-                    ContextCommand::Enqueue => self.enqueue_many(selected),
-                    ContextCommand::ToggleFavorite if selected.len() == 1 => {
-                        let rows_before = self.library_len();
-                        self.library_mut().toggle_favorite(&selected[0]);
-                        // Un-favoriting can remove the row (Favorites/All tab): re-clamp
-                        // and drop the now-stale picks; unchanged tabs keep the selection.
-                        if self.library_len() != rows_before {
-                            self.clamp_library_selection();
-                        }
-                        vec![Cmd::Persist(PersistCmd::Library)]
-                    }
-                    ContextCommand::AddToPlaylist => {
-                        self.open_playlist_picker(selected);
-                        Vec::new()
-                    }
-                    ContextCommand::Download => match selected.as_slice() {
-                        [song] => self.start_download(song.clone()),
-                        _ => self.open_confirm_download(selected),
-                    },
-                    ContextCommand::Remove if tab != LibraryTab::All => {
-                        self.library_delete_selection()
-                    }
-                    _ => Vec::new(),
-                }
-            }
+            } => self.execute_library_songs_context_command(
+                rows,
+                video_ids,
+                tab,
+                open_playlist,
+                command,
+            ),
             ContextTarget::LibraryPlaylist { index, playlist_id } => {
-                if !self.playlists_root()
-                    || self
-                        .filtered_playlists()
-                        .get(index)
-                        .is_none_or(|playlist| playlist.id != playlist_id)
-                {
-                    return self.context_target_stale();
-                }
-                self.library_ui.selected = index;
-                self.library_ui.anchor = index;
-                self.dirty = true;
-                match command {
-                    ContextCommand::Activate | ContextCommand::OpenPlaylist => {
-                        self.open_selected_playlist()
-                    }
-                    ContextCommand::PlayNow => self.play_selected_playlist(),
-                    ContextCommand::Enqueue => self.enqueue_selected_playlist(),
-                    ContextCommand::Download => {
-                        let songs = self
-                            .selected_root_playlist()
-                            .map(|playlist| playlist.songs.clone())
-                            .unwrap_or_default();
-                        self.open_confirm_download(songs)
-                    }
-                    ContextCommand::Remove => {
-                        self.request_playlist_delete(index);
-                        Vec::new()
-                    }
-                    _ => Vec::new(),
-                }
+                self.execute_library_playlist_context_command(index, playlist_id, command)
             }
             ContextTarget::Queue {
                 lo,
                 hi,
                 revision,
                 video_ids,
-            } => {
-                let ids_match = self
-                    .queue
-                    .ordered_iter()
-                    .skip(lo)
-                    .take(hi - lo + 1)
-                    .map(|song| song.video_id.as_str())
-                    .eq(video_ids.iter().map(String::as_str));
-                if self.queue.rev() != revision || !ids_match {
-                    return self.context_target_stale();
-                }
-                self.queue_popup.cursor = hi;
-                self.queue_popup.anchor = lo;
-                self.dirty = true;
-                match command {
-                    ContextCommand::Activate
-                    | ContextCommand::PlayNow
-                    | ContextCommand::PlayFromHere => self.queue_popup_play(lo),
-                    ContextCommand::Remove => self.remove_queue_range(lo, hi),
-                    _ => Vec::new(),
-                }
-            }
+            } => self.execute_queue_context_command(lo, hi, revision, video_ids, command),
             ContextTarget::Local {
                 index,
                 row,
                 song_ids,
                 download_ids,
-            } => {
-                let current_song_ids = Self::context_song_ids(self.local_songs_for_row(&row));
-                let current_download_ids =
-                    Self::context_song_ids(self.local_downloadable_songs_for_row(&row));
-                if self.local_visible_rows().get(index) != Some(&row)
-                    || current_song_ids != song_ids
-                    || current_download_ids != download_ids
-                {
-                    return self.context_target_stale();
-                }
-                self.local_mode.ui.selected = index;
-                self.local_mode.ui.anchor = index;
-                self.dirty = true;
-                match command {
-                    ContextCommand::Activate | ContextCommand::PlayNow => {
-                        self.local_row_activate(index)
-                    }
-                    ContextCommand::Enqueue => self.local_enqueue_row_index(index),
-                    ContextCommand::Download => self.local_download_selected(),
-                    _ => Vec::new(),
-                }
-            }
+            } => self.execute_local_context_command(index, row, song_ids, download_ids, command),
             ContextTarget::LocalFind {
                 index,
                 generation,
                 id,
                 drill_source,
-            } => {
-                if self.mode != Mode::Search
-                    || self.active_search_surface() != ActiveSearchSurface::Local
-                    || generation != self.local_find_action_generation()
-                    || !self.local_find_visible_revision_is_current()
-                    || self.local_find_stable_id_at(index)
-                        != Some((id.clone(), drill_source.clone()))
-                {
-                    return self.context_target_stale();
-                }
-                self.local_find_select(index, generation);
-                self.local_mode.find.focus = LocalFindFocus::Results;
-                self.dirty = true;
-                let command_row = matches!(id, crate::local::find::LocalFindHitId::Command(_));
-                match command {
-                    ContextCommand::Activate => self.local_find_activate_index(index, generation),
-                    ContextCommand::PlayNow if !command_row => {
-                        self.local_find_play_index(index, generation)
-                    }
-                    ContextCommand::Enqueue if !command_row => {
-                        self.local_find_enqueue_index(index, generation)
-                    }
-                    _ => Vec::new(),
-                }
+            } => self.execute_local_find_context_command(
+                index,
+                generation,
+                id,
+                drill_source,
+                command,
+            ),
+        }
+    }
+
+    fn execute_search_context_command(
+        &mut self,
+        rows: Vec<usize>,
+        video_ids: Vec<String>,
+        filter_row: Option<usize>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        let Some((&first, &last)) = rows.first().zip(rows.last()) else {
+            return self.context_target_stale();
+        };
+        let valid_filter = filter_row.is_none_or(|row| {
+            self.search_filter.open && self.search_filter.matches.get(row).copied() == Some(first)
+        });
+        // Identity snapshot: every targeted row must still hold the song it did
+        // when the menu opened.
+        let songs: Vec<Song> = rows
+            .iter()
+            .filter_map(|&i| self.search.results.get(i).cloned())
+            .collect();
+        if songs.len() != rows.len()
+            || !songs
+                .iter()
+                .map(|s| s.video_id.as_str())
+                .eq(video_ids.iter().map(String::as_str))
+            || !valid_filter
+        {
+            return self.context_target_stale();
+        }
+        if songs.len() > 1 {
+            self.search.picked = rows.iter().copied().collect();
+            self.search.selected = last;
+            self.search.anchor = first;
+            self.search.focus = SearchFocus::Results;
+            self.dirty = true;
+            // Multi targets are built from song rows only; keep the filter as a
+            // guard against a hypothetically stale playlist row sneaking in.
+            let songs: Vec<Song> = songs
+                .into_iter()
+                .filter(|s| s.youtube_playlist_id().is_none())
+                .collect();
+            if songs.is_empty() {
+                return Vec::new();
             }
+            return match command {
+                ContextCommand::Activate | ContextCommand::PlayNow => self.play_now_many(songs),
+                ContextCommand::Enqueue => self.enqueue_many(songs),
+                ContextCommand::AddToPlaylist => {
+                    self.open_playlist_picker(songs);
+                    Vec::new()
+                }
+                ContextCommand::Download => self.open_confirm_download(songs),
+                _ => Vec::new(),
+            };
+        }
+        let index = first;
+        let Some(song) = songs.into_iter().next() else {
+            return self.context_target_stale();
+        };
+        self.search.selected = index;
+        self.collapse_search_selection();
+        self.search.focus = SearchFocus::Results;
+        self.dirty = true;
+        match command {
+            ContextCommand::Activate | ContextCommand::PlayNow => {
+                if filter_row.is_some() {
+                    self.search_filter.close();
+                }
+                self.activate_search_index(index)
+            }
+            ContextCommand::Enqueue => match song.youtube_playlist_id() {
+                Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue),
+                None => self.enqueue(song),
+            },
+            ContextCommand::ToggleFavorite if song.youtube_playlist_id().is_none() => {
+                self.library_mut().toggle_favorite(&song);
+                vec![Cmd::Persist(PersistCmd::Library)]
+            }
+            ContextCommand::AddToPlaylist if song.youtube_playlist_id().is_none() => {
+                self.open_playlist_picker(vec![song]);
+                Vec::new()
+            }
+            ContextCommand::Download if song.youtube_playlist_id().is_none() => {
+                self.start_download(song)
+            }
+            ContextCommand::ImportPlaylist if song.youtube_playlist_id().is_some() => {
+                self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_library_songs_context_command(
+        &mut self,
+        rows: Vec<usize>,
+        video_ids: Vec<String>,
+        tab: LibraryTab,
+        open_playlist: Option<String>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        if self.effective_library_tab() != tab || self.library_ui.open_playlist != open_playlist {
+            return self.context_target_stale();
+        }
+        let Some((&first, &last)) = rows.first().zip(rows.last()) else {
+            return self.context_target_stale();
+        };
+        let songs = self.library_songs();
+        let selected: Vec<Song> = rows.iter().filter_map(|&i| songs.get(i).cloned()).collect();
+        if selected.len() != rows.len()
+            || !selected
+                .iter()
+                .map(|song| song.video_id.as_str())
+                .eq(video_ids.iter().map(String::as_str))
+        {
+            return self.context_target_stale();
+        }
+        if rows.len() > 1 {
+            self.library_ui.picked = rows.iter().copied().collect();
+        } else {
+            self.library_ui.picked.clear();
+        }
+        self.library_ui.selected = last;
+        self.library_ui.anchor = first;
+        self.dirty = true;
+        match command {
+            ContextCommand::Activate | ContextCommand::PlayNow => self.play_now_many(selected),
+            ContextCommand::Enqueue => self.enqueue_many(selected),
+            ContextCommand::ToggleFavorite if selected.len() == 1 => {
+                let rows_before = self.library_len();
+                self.library_mut().toggle_favorite(&selected[0]);
+                // Un-favoriting can remove the row (Favorites/All tab): re-clamp
+                // and drop the now-stale picks; unchanged tabs keep the selection.
+                if self.library_len() != rows_before {
+                    self.clamp_library_selection();
+                }
+                vec![Cmd::Persist(PersistCmd::Library)]
+            }
+            ContextCommand::AddToPlaylist => {
+                self.open_playlist_picker(selected);
+                Vec::new()
+            }
+            ContextCommand::Download => match selected.as_slice() {
+                [song] => self.start_download(song.clone()),
+                _ => self.open_confirm_download(selected),
+            },
+            ContextCommand::Remove if tab != LibraryTab::All => self.library_delete_selection(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_library_playlist_context_command(
+        &mut self,
+        index: usize,
+        playlist_id: String,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        if !self.playlists_root()
+            || self
+                .filtered_playlists()
+                .get(index)
+                .is_none_or(|playlist| playlist.id != playlist_id)
+        {
+            return self.context_target_stale();
+        }
+        self.library_ui.selected = index;
+        self.library_ui.anchor = index;
+        self.dirty = true;
+        match command {
+            ContextCommand::Activate | ContextCommand::OpenPlaylist => {
+                self.open_selected_playlist()
+            }
+            ContextCommand::PlayNow => self.play_selected_playlist(),
+            ContextCommand::Enqueue => self.enqueue_selected_playlist(),
+            ContextCommand::Download => {
+                let songs = self
+                    .selected_root_playlist()
+                    .map(|playlist| playlist.songs.clone())
+                    .unwrap_or_default();
+                self.open_confirm_download(songs)
+            }
+            ContextCommand::Remove => {
+                self.request_playlist_delete(index);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_queue_context_command(
+        &mut self,
+        lo: usize,
+        hi: usize,
+        revision: u64,
+        video_ids: Vec<String>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        let ids_match = self
+            .queue
+            .ordered_iter()
+            .skip(lo)
+            .take(hi - lo + 1)
+            .map(|song| song.video_id.as_str())
+            .eq(video_ids.iter().map(String::as_str));
+        if self.queue.rev() != revision || !ids_match {
+            return self.context_target_stale();
+        }
+        self.queue_popup.cursor = hi;
+        self.queue_popup.anchor = lo;
+        self.dirty = true;
+        match command {
+            ContextCommand::Activate | ContextCommand::PlayNow | ContextCommand::PlayFromHere => {
+                self.queue_popup_play(lo)
+            }
+            ContextCommand::Remove => self.remove_queue_range(lo, hi),
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_local_context_command(
+        &mut self,
+        index: usize,
+        row: crate::local::LocalRowId,
+        song_ids: Vec<(String, Option<PathBuf>)>,
+        download_ids: Vec<(String, Option<PathBuf>)>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        let current_song_ids = Self::context_song_ids(self.local_songs_for_row(&row));
+        let current_download_ids =
+            Self::context_song_ids(self.local_downloadable_songs_for_row(&row));
+        if self.local_visible_rows().get(index) != Some(&row)
+            || current_song_ids != song_ids
+            || current_download_ids != download_ids
+        {
+            return self.context_target_stale();
+        }
+        self.local_mode.ui.selected = index;
+        self.local_mode.ui.anchor = index;
+        self.dirty = true;
+        match command {
+            ContextCommand::Activate | ContextCommand::PlayNow => self.local_row_activate(index),
+            ContextCommand::Enqueue => self.local_enqueue_row_index(index),
+            ContextCommand::Download => self.local_download_selected(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn execute_local_find_context_command(
+        &mut self,
+        index: usize,
+        generation: u64,
+        id: crate::local::find::LocalFindHitId,
+        drill_source: Option<crate::local::find::LocalFindHitId>,
+        command: ContextCommand,
+    ) -> Vec<Cmd> {
+        if self.mode != Mode::Search
+            || self.active_search_surface() != ActiveSearchSurface::Local
+            || generation != self.local_find_action_generation()
+            || !self.local_find_visible_revision_is_current()
+            || self.local_find_stable_id_at(index) != Some((id.clone(), drill_source.clone()))
+        {
+            return self.context_target_stale();
+        }
+        self.local_find_select(index, generation);
+        self.local_mode.find.focus = LocalFindFocus::Results;
+        self.dirty = true;
+        let command_row = matches!(id, crate::local::find::LocalFindHitId::Command(_));
+        match command {
+            ContextCommand::Activate => self.local_find_activate_index(index, generation),
+            ContextCommand::PlayNow if !command_row => {
+                self.local_find_play_index(index, generation)
+            }
+            ContextCommand::Enqueue if !command_row => {
+                self.local_find_enqueue_index(index, generation)
+            }
+            _ => Vec::new(),
         }
     }
 

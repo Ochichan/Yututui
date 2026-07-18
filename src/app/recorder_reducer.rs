@@ -1072,257 +1072,311 @@ impl App {
         ev: crate::recorder::job::RecorderEvent,
     ) -> Vec<Cmd> {
         use crate::recorder::job::RecorderEvent;
-        let mut cmds = Vec::new();
+        let cmds = Vec::new();
         match ev {
             RecorderEvent::TransitionResolved {
                 transition_id,
                 close,
                 open,
-            } => return self.resolve_recorder_transition(transition_id, close, open),
-            RecorderEvent::SaveAccepted { id } => {
-                if let Some(track) = self
-                    .recorder
-                    .history
-                    .iter_mut()
-                    .find(|track| track.id == id)
-                    && matches!(
-                        track.state,
-                        RecordingState::SaveRequested | RecordingState::AutomaticSaveRetrying
-                    )
-                {
-                    track.state = RecordingState::SavePending;
-                    track.save_request = None;
-                    self.dirty = true;
-                }
-            }
+            } => self.resolve_recorder_transition(transition_id, close, open),
+            RecorderEvent::SaveAccepted { id } => self.handle_recorder_save_accepted(id, cmds),
             RecorderEvent::Saved {
                 id,
                 final_path,
                 recovery_owned,
                 durability_warning,
                 capacity_available,
-            } => {
-                if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
-                    track.state = if recovery_owned {
-                        RecordingState::SavePending
-                    } else {
-                        RecordingState::Saved
-                    };
-                    track.final_path = Some(final_path.clone());
-                    track.save_request = None;
-                }
-                if self.config.recording.notify && !recovery_owned {
-                    let name = final_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let (title, body) = match crate::i18n::current() {
-                        Language::Korean => ("녹음 저장됨".to_owned(), name.clone()),
-                        Language::Japanese => ("録音を保存しました".to_owned(), name.clone()),
-                        _ => ("Recording saved".to_owned(), name.clone()),
-                    };
-                    // In-app toast (always visible in the terminal) + a real desktop notification
-                    // (OSC / native, resolved in the main loop). The toast is the final fallback.
-                    self.status.kind = StatusKind::Info;
-                    self.status.text = format!("{title}: {name}");
-                    cmds.push(Cmd::DesktopNotify { title, body });
-                }
-                if let Some(warning) = durability_warning {
-                    tracing::warn!(recording = %final_path.display(), %warning, "recording committed with durability warning");
-                    self.status.kind = StatusKind::Error;
-                    self.status.text = match crate::i18n::current() {
-                        Language::Korean => {
-                            format!("녹음은 저장됐지만 내구성 확인에 실패했어요: {warning}")
-                        }
-                        Language::Japanese => {
-                            format!(
-                                "録音は保存されましたが、永続性を確認できませんでした: {warning}"
-                            )
-                        }
-                        _ => format!(
-                            "Recording saved, but durability could not be confirmed: {warning}"
-                        ),
-                    };
-                    self.remember_recorder_health(self.status.text.clone(), true);
-                }
-                self.dirty = true;
-                cmds.extend(self.recorder_capacity_available(
-                    id,
-                    capacity_available,
-                    !recovery_owned,
-                ));
-            }
+            } => self.handle_recorder_saved(
+                id,
+                final_path,
+                recovery_owned,
+                durability_warning,
+                capacity_available,
+                cmds,
+            ),
             RecorderEvent::AlreadySettled {
                 id,
                 capacity_available,
-            } => {
-                if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
-                    track.state = RecordingState::Saved;
-                    track.save_request = None;
-                }
-                tracing::info!(
-                    recording_id = id,
-                    "stale recording worker observed peer settlement"
-                );
-                // A peer removed the exact journal while holding the same destination lock. Keep
-                // the optimistic Saved state and never offer a duplicate retry.
-                self.status.kind = StatusKind::Info;
-                self.status.text = match crate::i18n::current() {
-                    Language::Korean => "녹음 저장은 다른 복구 작업에서 이미 완료됐어요".to_owned(),
-                    Language::Japanese => "録音の保存は別の復旧処理で既に完了しています".to_owned(),
-                    _ => {
-                        "Recording save was already completed by another recovery worker".to_owned()
-                    }
-                };
-                self.dirty = true;
-                cmds.extend(self.recorder_capacity_available(id, capacity_available, true));
-            }
+            } => self.handle_recorder_already_settled(id, capacity_available, cmds),
             RecorderEvent::SaveDeferred { id, error } => {
-                if let Some(track) = self
-                    .recorder
-                    .history
-                    .iter_mut()
-                    .find(|track| track.id == id)
-                    && matches!(
-                        track.state,
-                        RecordingState::SaveRequested | RecordingState::AutomaticSaveRetrying
-                    )
-                {
-                    track.state = RecordingState::SavePending;
-                    track.save_request = None;
-                }
-                // Keep the accepted/recovery-owned state: the original intent still owns this
-                // source and will retry at startup. Re-enabling Save would create a second intent.
-                self.status.kind = StatusKind::Error;
-                self.status.text = match crate::i18n::current() {
-                    Language::Korean => {
-                        format!("녹음 저장이 지연됐어요(다음 시작 때 복구): {error}")
-                    }
-                    Language::Japanese => {
-                        format!("録音の保存を延期しました(次回起動時に復旧): {error}")
-                    }
-                    _ => format!("Recording save deferred until startup recovery: {error}"),
-                };
-                self.remember_recorder_health(self.status.text.clone(), true);
-                self.dirty = true;
+                self.handle_recorder_save_deferred(id, error, cmds)
             }
             RecorderEvent::SaveFailed {
                 id,
                 error,
                 automatic,
-            } => {
-                let blocked_owner = self.recorder.capacity_blocked_id == Some(id);
-                if self.recorder.capacity_retry_id == Some(id) {
-                    self.recorder.capacity_retry_id = None;
-                }
-                let source = self
-                    .recorder
-                    .history
-                    .iter()
-                    .find(|track| track.id == id)
-                    .map(|track| track.temp_path.display().to_string());
-                if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
-                    track.state = if automatic || blocked_owner {
-                        RecordingState::AutomaticSaveBlocked
-                    } else {
-                        RecordingState::Recorded
-                    };
-                    track.save_request = None;
-                }
-                if automatic || blocked_owner {
-                    self.recorder.capacity_blocked = true;
-                    self.recorder.capacity_blocked_id = Some(id);
-                    self.recorder.capacity_owner_settled = false;
-                    self.recorder.capacity_probe_pending = false;
-                    cmds.extend(self.recorder_teardown());
-                }
-                self.status.kind = StatusKind::Error;
-                self.status.text = match crate::i18n::current() {
-                    Language::Korean => {
-                        if automatic {
-                            format!(
-                                "자동 녹음을 일시 중지했어요. 저장 준비 실패: {error} (원본: {})",
-                                source.as_deref().unwrap_or("알 수 없음")
-                            )
-                        } else {
-                            format!("녹음 저장 실패: {error}")
-                        }
-                    }
-                    Language::Japanese => {
-                        if automatic {
-                            format!(
-                                "自動録音を一時停止しました。保存の準備に失敗: {error} (元ファイル: {})",
-                                source.as_deref().unwrap_or("不明")
-                            )
-                        } else {
-                            format!("録音の保存に失敗しました: {error}")
-                        }
-                    }
-                    _ => {
-                        if automatic {
-                            format!(
-                                "Automatic recording paused; could not prepare save: {error} (source: {})",
-                                source.as_deref().unwrap_or("unknown")
-                            )
-                        } else {
-                            format!("Recording save failed: {error}")
-                        }
-                    }
-                };
-                if automatic || blocked_owner {
-                    self.remember_recorder_health(self.status.text.clone(), false);
-                }
-                self.dirty = true;
-            }
+            } => self.handle_recorder_save_failed(id, error, automatic, cmds),
             RecorderEvent::CapacityBlocked {
                 id,
                 pending_count,
                 pending_bytes,
-            } => {
-                if let Some(track) = self
-                    .recorder
-                    .history
-                    .iter_mut()
-                    .find(|track| track.id == id)
-                {
-                    track.state = RecordingState::AutomaticSaveBlocked;
-                    track.save_request = None;
-                }
-                if self.recorder.capacity_retry_id == Some(id) {
-                    self.recorder.capacity_retry_id = None;
-                }
-                self.recorder.capacity_blocked = true;
-                self.recorder.capacity_blocked_id = Some(id);
-                self.recorder.capacity_owner_settled = false;
-                self.recorder.capacity_probe_pending = false;
-                self.status.kind = StatusKind::Error;
-                self.status.text = match crate::i18n::current() {
-                    Language::Korean => format!(
-                        "자동 녹음을 일시 중지했어요: 저장 대기 {pending_count}개 / {pending_bytes}바이트"
-                    ),
-                    Language::Japanese => format!(
-                        "自動録音を一時停止しました: 保存待ち{pending_count}件 / {pending_bytes}バイト"
-                    ),
-                    _ => format!(
-                        "Automatic recording paused: {pending_count} pending / {pending_bytes} bytes"
-                    ),
-                };
-                self.remember_recorder_health(self.status.text.clone(), false);
-                self.dirty = true;
-                cmds.extend(self.recorder_teardown());
-            }
+            } => self.handle_recorder_capacity_blocked(id, pending_count, pending_bytes, cmds),
             RecorderEvent::CapacityProbed {
                 owner_id,
                 capacity_available,
-            } => {
-                if self.recorder.capacity_blocked_id == Some(owner_id)
-                    && self.recorder.capacity_owner_settled
-                {
-                    self.recorder.capacity_probe_pending = false;
-                    if capacity_available {
-                        cmds.extend(self.release_recorder_capacity());
-                    }
+            } => self.handle_recorder_capacity_probed(owner_id, capacity_available, cmds),
+        }
+    }
+
+    fn handle_recorder_save_accepted(&mut self, id: u64, cmds: Vec<Cmd>) -> Vec<Cmd> {
+        if let Some(track) = self
+            .recorder
+            .history
+            .iter_mut()
+            .find(|track| track.id == id)
+            && matches!(
+                track.state,
+                RecordingState::SaveRequested | RecordingState::AutomaticSaveRetrying
+            )
+        {
+            track.state = RecordingState::SavePending;
+            track.save_request = None;
+            self.dirty = true;
+        }
+        cmds
+    }
+
+    fn handle_recorder_saved(
+        &mut self,
+        id: u64,
+        final_path: PathBuf,
+        recovery_owned: bool,
+        durability_warning: Option<String>,
+        capacity_available: bool,
+        mut cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
+            track.state = if recovery_owned {
+                RecordingState::SavePending
+            } else {
+                RecordingState::Saved
+            };
+            track.final_path = Some(final_path.clone());
+            track.save_request = None;
+        }
+        if self.config.recording.notify && !recovery_owned {
+            let name = final_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let (title, body) = match crate::i18n::current() {
+                Language::Korean => ("녹음 저장됨".to_owned(), name.clone()),
+                Language::Japanese => ("録音を保存しました".to_owned(), name.clone()),
+                _ => ("Recording saved".to_owned(), name.clone()),
+            };
+            // In-app toast (always visible in the terminal) + a real desktop notification
+            // (OSC / native, resolved in the main loop). The toast is the final fallback.
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!("{title}: {name}");
+            cmds.push(Cmd::DesktopNotify { title, body });
+        }
+        if let Some(warning) = durability_warning {
+            tracing::warn!(recording = %final_path.display(), %warning, "recording committed with durability warning");
+            self.status.kind = StatusKind::Error;
+            self.status.text = match crate::i18n::current() {
+                Language::Korean => {
+                    format!("녹음은 저장됐지만 내구성 확인에 실패했어요: {warning}")
                 }
+                Language::Japanese => {
+                    format!("録音は保存されましたが、永続性を確認できませんでした: {warning}")
+                }
+                _ => format!("Recording saved, but durability could not be confirmed: {warning}"),
+            };
+            self.remember_recorder_health(self.status.text.clone(), true);
+        }
+        self.dirty = true;
+        cmds.extend(self.recorder_capacity_available(id, capacity_available, !recovery_owned));
+        cmds
+    }
+
+    fn handle_recorder_already_settled(
+        &mut self,
+        id: u64,
+        capacity_available: bool,
+        mut cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
+            track.state = RecordingState::Saved;
+            track.save_request = None;
+        }
+        tracing::info!(
+            recording_id = id,
+            "stale recording worker observed peer settlement"
+        );
+        // A peer removed the exact journal while holding the same destination lock. Keep
+        // the optimistic Saved state and never offer a duplicate retry.
+        self.status.kind = StatusKind::Info;
+        self.status.text = match crate::i18n::current() {
+            Language::Korean => "녹음 저장은 다른 복구 작업에서 이미 완료됐어요".to_owned(),
+            Language::Japanese => "録音の保存は別の復旧処理で既に完了しています".to_owned(),
+            _ => "Recording save was already completed by another recovery worker".to_owned(),
+        };
+        self.dirty = true;
+        cmds.extend(self.recorder_capacity_available(id, capacity_available, true));
+        cmds
+    }
+
+    fn handle_recorder_save_deferred(
+        &mut self,
+        id: u64,
+        error: String,
+        cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        if let Some(track) = self
+            .recorder
+            .history
+            .iter_mut()
+            .find(|track| track.id == id)
+            && matches!(
+                track.state,
+                RecordingState::SaveRequested | RecordingState::AutomaticSaveRetrying
+            )
+        {
+            track.state = RecordingState::SavePending;
+            track.save_request = None;
+        }
+        // Keep the accepted/recovery-owned state: the original intent still owns this
+        // source and will retry at startup. Re-enabling Save would create a second intent.
+        self.status.kind = StatusKind::Error;
+        self.status.text = match crate::i18n::current() {
+            Language::Korean => {
+                format!("녹음 저장이 지연됐어요(다음 시작 때 복구): {error}")
+            }
+            Language::Japanese => {
+                format!("録音の保存を延期しました(次回起動時に復旧): {error}")
+            }
+            _ => format!("Recording save deferred until startup recovery: {error}"),
+        };
+        self.remember_recorder_health(self.status.text.clone(), true);
+        self.dirty = true;
+        cmds
+    }
+
+    fn handle_recorder_save_failed(
+        &mut self,
+        id: u64,
+        error: String,
+        automatic: bool,
+        mut cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        let blocked_owner = self.recorder.capacity_blocked_id == Some(id);
+        if self.recorder.capacity_retry_id == Some(id) {
+            self.recorder.capacity_retry_id = None;
+        }
+        let source = self
+            .recorder
+            .history
+            .iter()
+            .find(|track| track.id == id)
+            .map(|track| track.temp_path.display().to_string());
+        if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
+            track.state = if automatic || blocked_owner {
+                RecordingState::AutomaticSaveBlocked
+            } else {
+                RecordingState::Recorded
+            };
+            track.save_request = None;
+        }
+        if automatic || blocked_owner {
+            self.recorder.capacity_blocked = true;
+            self.recorder.capacity_blocked_id = Some(id);
+            self.recorder.capacity_owner_settled = false;
+            self.recorder.capacity_probe_pending = false;
+            cmds.extend(self.recorder_teardown());
+        }
+        self.status.kind = StatusKind::Error;
+        self.status.text = match crate::i18n::current() {
+            Language::Korean => {
+                if automatic {
+                    format!(
+                        "자동 녹음을 일시 중지했어요. 저장 준비 실패: {error} (원본: {})",
+                        source.as_deref().unwrap_or("알 수 없음")
+                    )
+                } else {
+                    format!("녹음 저장 실패: {error}")
+                }
+            }
+            Language::Japanese => {
+                if automatic {
+                    format!(
+                        "自動録音を一時停止しました。保存の準備に失敗: {error} (元ファイル: {})",
+                        source.as_deref().unwrap_or("不明")
+                    )
+                } else {
+                    format!("録音の保存に失敗しました: {error}")
+                }
+            }
+            _ => {
+                if automatic {
+                    format!(
+                        "Automatic recording paused; could not prepare save: {error} (source: {})",
+                        source.as_deref().unwrap_or("unknown")
+                    )
+                } else {
+                    format!("Recording save failed: {error}")
+                }
+            }
+        };
+        if automatic || blocked_owner {
+            self.remember_recorder_health(self.status.text.clone(), false);
+        }
+        self.dirty = true;
+        cmds
+    }
+
+    fn handle_recorder_capacity_blocked(
+        &mut self,
+        id: u64,
+        pending_count: usize,
+        pending_bytes: u64,
+        mut cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        if let Some(track) = self
+            .recorder
+            .history
+            .iter_mut()
+            .find(|track| track.id == id)
+        {
+            track.state = RecordingState::AutomaticSaveBlocked;
+            track.save_request = None;
+        }
+        if self.recorder.capacity_retry_id == Some(id) {
+            self.recorder.capacity_retry_id = None;
+        }
+        self.recorder.capacity_blocked = true;
+        self.recorder.capacity_blocked_id = Some(id);
+        self.recorder.capacity_owner_settled = false;
+        self.recorder.capacity_probe_pending = false;
+        self.status.kind = StatusKind::Error;
+        self.status.text = match crate::i18n::current() {
+            Language::Korean => format!(
+                "자동 녹음을 일시 중지했어요: 저장 대기 {pending_count}개 / {pending_bytes}바이트"
+            ),
+            Language::Japanese => format!(
+                "自動録音を一時停止しました: 保存待ち{pending_count}件 / {pending_bytes}バイト"
+            ),
+            _ => format!(
+                "Automatic recording paused: {pending_count} pending / {pending_bytes} bytes"
+            ),
+        };
+        self.remember_recorder_health(self.status.text.clone(), false);
+        self.dirty = true;
+        cmds.extend(self.recorder_teardown());
+        cmds
+    }
+
+    fn handle_recorder_capacity_probed(
+        &mut self,
+        owner_id: u64,
+        capacity_available: bool,
+        mut cmds: Vec<Cmd>,
+    ) -> Vec<Cmd> {
+        if self.recorder.capacity_blocked_id == Some(owner_id)
+            && self.recorder.capacity_owner_settled
+        {
+            self.recorder.capacity_probe_pending = false;
+            if capacity_available {
+                cmds.extend(self.release_recorder_capacity());
             }
         }
         cmds
