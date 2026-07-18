@@ -801,3 +801,16 @@ fn freq_labels_read_naturally() {
     assert_eq!(freq_label(5), "1 kHz");
     assert_eq!(freq_label(9), "16 kHz");
 }
+
+#[test]
+fn value_display_covers_every_field_of_every_tab() {
+    // The display split routes each Field to a per-section helper that ends in
+    // `unreachable!` — a misrouted variant would panic at settings render time.
+    // Walk every tab's full field list so routing drift fails here, not in the TUI.
+    let draft = base_draft();
+    for tab in SettingsTab::ALL {
+        for field in tab.fields() {
+            let _ = draft.value_display(field);
+        }
+    }
+}

@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    pub(super) fn on_any_scrollbar_press(
+    pub(in crate::app) fn on_any_scrollbar_press(
         &mut self,
         target: &MouseTarget,
         rect: Rect,
@@ -16,7 +16,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_scrollbar_press(
+    pub(in crate::app) fn on_scrollbar_press(
         &mut self,
         surface: ScrollSurface,
         rect: Rect,

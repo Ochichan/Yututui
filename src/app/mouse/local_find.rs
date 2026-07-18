@@ -44,7 +44,11 @@ impl App {
     }
 
     /// `Some` means a Local Find modal owned and consumed this click.
-    pub(super) fn local_find_mouse_modal(&mut self, col: u16, row: u16) -> Option<Vec<Cmd>> {
+    pub(in crate::app) fn local_find_mouse_modal(
+        &mut self,
+        col: u16,
+        row: u16,
+    ) -> Option<Vec<Cmd>> {
         if self.local_mode.find.pending_rebuild_confirm {
             let commands = match self.mouse_target_at(col, row) {
                 Some(
@@ -94,7 +98,7 @@ impl App {
         })
     }
 
-    pub(super) fn on_local_find_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
+    pub(in crate::app) fn on_local_find_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         let live =
             self.mode == Mode::Search && self.active_search_surface() == ActiveSearchSurface::Local;
         match target {

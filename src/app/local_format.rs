@@ -1,8 +1,11 @@
 //! Local Deck formatting and row helper functions.
 
 use super::App;
+use super::local_import_helpers::*;
+use super::types::ImportReviewAction;
 use crate::api::Song;
 use crate::t;
+use crate::transfer::session::{ImportSessionRow, ImportSessionRowStatus};
 
 pub(in crate::app) fn push_local_scan_root(
     roots: &mut Vec<crate::local::LocalScanRoot>,
@@ -308,5 +311,303 @@ pub(in crate::app) fn format_local_duration_ms(ms: u64) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}")
     } else {
         format!("{minutes}:{seconds:02}")
+    }
+}
+
+pub(in crate::app) fn push_import_session_row_metadata_details(
+    lines: &mut Vec<String>,
+    session_id: &str,
+    source_order: u32,
+    row: &ImportSessionRow,
+) {
+    push_detail_line(
+        lines,
+        t!("Import session", "임포트 세션", "インポートセッション"),
+        session_id,
+    );
+    push_detail_line(lines, t!("Row", "행", "行"), format!("#{source_order}"));
+    push_detail_line(
+        lines,
+        t!("Status", "상태", "状態"),
+        import_session_row_status_label(row),
+    );
+    if let Some(detail) = import_session_row_status_detail(row) {
+        push_detail_line(
+            lines,
+            t!("Status detail", "상태 설명", "状態の説明"),
+            detail,
+        );
+    }
+    push_detail_line(lines, t!("Title", "제목", "タイトル"), row.title.clone());
+    push_detail_line(
+        lines,
+        t!("Artist", "아티스트", "アーティスト"),
+        import_session_row_artist(row),
+    );
+    if let Some(album) = row.album.clone() {
+        push_detail_line(lines, t!("Album", "앨범", "アルバム"), album);
+    }
+    if !row.album_artists.is_empty() {
+        push_detail_line(
+            lines,
+            t!("Album artist", "앨범 아티스트", "アルバムアーティスト"),
+            row.album_artists.join(", "),
+        );
+    }
+    if let Some(release_date) = row.album_release_date.clone() {
+        push_detail_line(
+            lines,
+            t!("Release date", "발매일", "リリース日"),
+            release_date,
+        );
+    }
+    if let Some(number) = format_disc_track(row.disc_number, row.track_number) {
+        push_detail_line(lines, t!("Track", "트랙", "トラック"), number);
+    }
+    if let Some(duration) = row.duration_secs {
+        push_detail_line(
+            lines,
+            t!("Duration", "길이", "再生時間"),
+            format_local_duration_ms(u64::from(duration) * 1000),
+        );
+    }
+    if let Some(isrc) = row.isrc.clone() {
+        push_detail_line(lines, "ISRC", isrc);
+    }
+    if let Some(explicit) = row.explicit {
+        push_detail_line(
+            lines,
+            t!("Explicit", "Explicit", "Explicit"),
+            yes_no(explicit),
+        );
+    }
+    push_detail_line(
+        lines,
+        t!("Source", "원본", "ソース"),
+        row.source_key.clone(),
+    );
+    if let Some(url) = row
+        .source_url
+        .as_deref()
+        .filter(|url| *url != row.source_key)
+    {
+        push_detail_line(lines, t!("Source URL", "원본 URL", "ソースURL"), url);
+    }
+    if let Some(display) = row.selected_display.clone() {
+        push_detail_line(lines, t!("Selected", "선택", "選択"), display);
+    } else if let Some(key) = row.selected_key.clone() {
+        push_detail_line(lines, t!("Selected", "선택", "選択"), key);
+    }
+    if let Some(score) = import_session_row_selected_score(row) {
+        push_detail_line(lines, t!("Score", "점수", "スコア"), format_score(score));
+    }
+    if matches!(&row.status, ImportSessionRowStatus::NotFound) && !row.search_queries.is_empty() {
+        push_detail_line(
+            lines,
+            t!("Tried queries", "시도한 검색어", "試した検索語"),
+            row.search_queries.join(" | "),
+        );
+    }
+    if let Some(reason) = row.reject_reason.clone() {
+        push_detail_line(
+            lines,
+            t!("Top rejection", "주요 거부 이유", "主な拒否理由"),
+            reason,
+        );
+    }
+    push_detail_line(
+        lines,
+        t!("Decision", "결정", "決定"),
+        import_session_review_decision_label(row.review_decision.as_ref()),
+    );
+    push_detail_line(
+        lines,
+        t!("Download", "다운로드", "ダウンロード"),
+        import_session_download_label(row),
+    );
+    for (index, candidate) in row.candidates.iter().take(5).enumerate() {
+        let number = index + 1;
+        push_detail_line(
+            lines,
+            &format!("Candidate {number}"),
+            format_candidate(candidate),
+        );
+        if let Some(breakdown) = candidate.score_breakdown.as_ref() {
+            push_detail_line(
+                lines,
+                &format!("Score detail {number}"),
+                format_score_breakdown(breakdown),
+            );
+        }
+    }
+    if row.candidates.len() > 5 {
+        push_detail_line(
+            lines,
+            t!("Candidates", "후보", "候補"),
+            format!("+{} more", row.candidates.len() - 5),
+        );
+    }
+    if let Some(path) = row.local_path.clone() {
+        push_detail_line(
+            lines,
+            t!("Path", "경로", "パス"),
+            path.display().to_string(),
+        );
+    }
+}
+
+pub(in crate::app) fn push_import_session_row_diagnostic_details(
+    lines: &mut Vec<String>,
+    row: &ImportSessionRow,
+) {
+    for warning in &row.warnings {
+        push_detail_line(lines, t!("Warning", "경고", "警告"), warning);
+    }
+    for error in &row.errors {
+        push_detail_line(lines, t!("Error", "오류", "エラー"), error);
+    }
+}
+
+pub(in crate::app) fn local_import_record_missing_text() -> &'static str {
+    t!(
+        "No saved import record exists; imported songs were left unchanged.",
+        "저장된 임포트 기록이 없습니다. 임포트한 곡은 변경하지 않았습니다.",
+        "保存されたインポート記録はありません。インポートした曲は変更していません。"
+    )
+}
+
+pub(in crate::app) fn import_review_in_progress_text(session_id: &str) -> String {
+    format!(
+        "{}: {session_id}",
+        t!(
+            "Import review already in progress",
+            "임포트 검토 진행 중",
+            "インポートレビュー進行中"
+        )
+    )
+}
+
+pub(in crate::app) fn import_review_progress_text(
+    action: ImportReviewAction,
+    source_order: u32,
+) -> String {
+    format!(
+        "{} #{}...",
+        import_review_action_progress_label(action),
+        source_order
+    )
+}
+
+pub(in crate::app) fn import_review_action_progress_label(
+    action: ImportReviewAction,
+) -> &'static str {
+    match action {
+        ImportReviewAction::AcceptFirst => {
+            t!(
+                "Accepting import row",
+                "임포트 행 수락 중",
+                "インポート行を承認中"
+            )
+        }
+        ImportReviewAction::ChooseNext => {
+            t!(
+                "Selecting import candidate",
+                "임포트 후보 선택 중",
+                "インポート候補を選択中"
+            )
+        }
+        ImportReviewAction::Reject => t!(
+            "Rejecting import row",
+            "임포트 행 거부 중",
+            "インポート行を拒否中"
+        ),
+        ImportReviewAction::Skip => t!(
+            "Skipping import row",
+            "임포트 행 건너뛰는 중",
+            "インポート行をスキップ中"
+        ),
+    }
+}
+
+pub(in crate::app) fn local_ready_status_text(
+    ready_count: u32,
+    total_count: u32,
+    local_count: u32,
+) -> String {
+    use crate::i18n::Language;
+    match crate::i18n::current() {
+        Language::Korean => {
+            format!("준비 {ready_count}/{total_count} · 로컬 {local_count}/{total_count}")
+        }
+        Language::Japanese => {
+            format!("準備 {ready_count}/{total_count} · ローカル {local_count}/{total_count}")
+        }
+        _ => format!("Ready {ready_count}/{total_count} · Local {local_count}/{total_count}"),
+    }
+}
+
+pub(in crate::app) fn import_review_success_text(
+    action: ImportReviewAction,
+    summary: &crate::transfer::review_action::ReviewActionSummary,
+) -> String {
+    match action {
+        ImportReviewAction::AcceptFirst => match &summary.display {
+            Some(display) => format!(
+                "{} #{}: {display}",
+                t!(
+                    "Accepted import row",
+                    "임포트 행 수락",
+                    "インポート行を承認"
+                ),
+                summary.source_order
+            ),
+            None => format!(
+                "{} #{}",
+                t!(
+                    "Accepted import row",
+                    "임포트 행 수락",
+                    "インポート行を承認"
+                ),
+                summary.source_order
+            ),
+        },
+        ImportReviewAction::ChooseNext => match &summary.display {
+            Some(display) => format!(
+                "{} #{}: {display}",
+                t!(
+                    "Selected import candidate",
+                    "임포트 후보 선택",
+                    "インポート候補を選択"
+                ),
+                summary.source_order
+            ),
+            None => format!(
+                "{} #{}",
+                t!(
+                    "Selected import candidate",
+                    "임포트 후보 선택",
+                    "インポート候補を選択"
+                ),
+                summary.source_order
+            ),
+        },
+        ImportReviewAction::Reject => format!(
+            "{} #{}",
+            t!(
+                "Rejected import row",
+                "임포트 행 거부",
+                "インポート行を拒否"
+            ),
+            summary.source_order
+        ),
+        ImportReviewAction::Skip => format!(
+            "{} #{}",
+            t!(
+                "Skipped import row",
+                "임포트 행 건너뜀",
+                "インポート行をスキップ"
+            ),
+            summary.source_order
+        ),
     }
 }
