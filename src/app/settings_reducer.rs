@@ -548,9 +548,9 @@ impl App {
             | Field::ListenBrainzEnabled
             | Field::ScrobbleLocalFiles => {
                 let s = self.settings_mut();
-                if let Some(flag) = draft_toggle_flag(field, &mut s.draft) {
-                    *flag = !*flag;
-                }
+                let flag = draft_toggle_flag(field, &mut s.draft)
+                    .expect("field listed in the toggle arm but missing from draft_toggle_flag");
+                *flag = !*flag;
                 Vec::new()
             }
             Field::SearchSource => {
