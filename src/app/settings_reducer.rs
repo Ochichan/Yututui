@@ -31,6 +31,31 @@ fn spotify_row_state(token_client_id: Option<&str>, cfg_client_id: &str) -> (boo
     (connected, stale, effective)
 }
 
+fn draft_toggle_flag(field: Field, draft: &mut SettingsDraft) -> Option<&mut bool> {
+    Some(match field {
+        Field::Mouse => &mut draft.mouse,
+        Field::AlbumArt => &mut draft.album_art,
+        Field::MediaControls => &mut draft.media_controls,
+        Field::AutoContinueVideos => &mut draft.auto_continue_videos,
+        Field::UpdateCheck => &mut draft.update_check_enabled,
+        Field::LocalIncludeDownloadDir => &mut draft.local_include_download_dir,
+        Field::LocalMusicRootRecursive => &mut draft.local_music_root_recursive,
+        Field::AutoplayOnStart => &mut draft.autoplay_on_start,
+        Field::EnqueueNext => &mut draft.enqueue_next,
+        Field::Gapless => &mut draft.gapless,
+        Field::BigText => &mut draft.big_text,
+        Field::MouseWheelVolume => &mut draft.mouse_wheel_volume,
+        Field::AnimPauseUnfocused => &mut draft.animations.pause_unfocused,
+        Field::AiEnabled => &mut draft.ai_enabled,
+        Field::RomanizedTitles => &mut draft.romanized_titles,
+        Field::LastfmEnabled => &mut draft.lastfm_enabled,
+        Field::LastfmLoveSync => &mut draft.lastfm_love_sync,
+        Field::ListenBrainzEnabled => &mut draft.listenbrainz_enabled,
+        Field::ScrobbleLocalFiles => &mut draft.scrobble_local_files,
+        _ => return None,
+    })
+}
+
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -503,49 +528,29 @@ impl App {
                 }
                 Vec::new()
             }
-            Field::Mouse => {
+            Field::Mouse
+            | Field::AlbumArt
+            | Field::MediaControls
+            | Field::AutoContinueVideos
+            | Field::UpdateCheck
+            | Field::LocalIncludeDownloadDir
+            | Field::LocalMusicRootRecursive
+            | Field::AutoplayOnStart
+            | Field::EnqueueNext
+            | Field::Gapless
+            | Field::BigText
+            | Field::MouseWheelVolume
+            | Field::AnimPauseUnfocused
+            | Field::AiEnabled
+            | Field::RomanizedTitles
+            | Field::LastfmEnabled
+            | Field::LastfmLoveSync
+            | Field::ListenBrainzEnabled
+            | Field::ScrobbleLocalFiles => {
                 let s = self.settings_mut();
-                s.draft.mouse = !s.draft.mouse;
-                Vec::new()
-            }
-            Field::AlbumArt => {
-                let s = self.settings_mut();
-                s.draft.album_art = !s.draft.album_art;
-                Vec::new()
-            }
-            Field::MediaControls => {
-                let s = self.settings_mut();
-                s.draft.media_controls = !s.draft.media_controls;
-                Vec::new()
-            }
-            Field::AutoContinueVideos => {
-                let s = self.settings_mut();
-                s.draft.auto_continue_videos = !s.draft.auto_continue_videos;
-                Vec::new()
-            }
-            Field::UpdateCheck => {
-                let s = self.settings_mut();
-                s.draft.update_check_enabled = !s.draft.update_check_enabled;
-                Vec::new()
-            }
-            Field::LocalIncludeDownloadDir => {
-                let s = self.settings_mut();
-                s.draft.local_include_download_dir = !s.draft.local_include_download_dir;
-                Vec::new()
-            }
-            Field::LocalMusicRootRecursive => {
-                let s = self.settings_mut();
-                s.draft.local_music_root_recursive = !s.draft.local_music_root_recursive;
-                Vec::new()
-            }
-            Field::AutoplayOnStart => {
-                let s = self.settings_mut();
-                s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
-                Vec::new()
-            }
-            Field::EnqueueNext => {
-                let s = self.settings_mut();
-                s.draft.enqueue_next = !s.draft.enqueue_next;
+                if let Some(flag) = draft_toggle_flag(field, &mut s.draft) {
+                    *flag = !*flag;
+                }
                 Vec::new()
             }
             Field::SearchSource => {
@@ -617,11 +622,6 @@ impl App {
             }
             Field::RetroMode => {
                 self.settings_request_confirm(SettingsConfirm::RetroMode);
-                Vec::new()
-            }
-            Field::Gapless => {
-                let s = self.settings_mut();
-                s.draft.gapless = !s.draft.gapless;
                 Vec::new()
             }
             Field::AutoplayStreaming => {
@@ -807,16 +807,6 @@ impl App {
                 // Stored only — affects the next seek key, nothing to push to mpv now.
                 Vec::new()
             }
-            Field::BigText => {
-                let s = self.settings_mut();
-                s.draft.big_text = !s.draft.big_text;
-                Vec::new()
-            }
-            Field::MouseWheelVolume => {
-                let s = self.settings_mut();
-                s.draft.mouse_wheel_volume = !s.draft.mouse_wheel_volume;
-                Vec::new()
-            }
             Field::AnimFps => {
                 let s = self.settings_mut();
                 let next = (i32::from(s.draft.animations.fps)
@@ -830,26 +820,11 @@ impl App {
                 // rate when Settings closes (it reads `config.animations.effective_fps()`).
                 Vec::new()
             }
-            Field::AnimPauseUnfocused => {
-                let s = self.settings_mut();
-                s.draft.animations.pause_unfocused = !s.draft.animations.pause_unfocused;
-                Vec::new()
-            }
             Field::EqPreset => self.settings_preview_eq_preset(dir),
             Field::Band(i) => self.settings_preview_band(i, dir),
             Field::GeminiModel => {
                 let s = self.settings_mut();
                 s.draft.gemini_model = s.draft.gemini_model.cycled(dir >= 0);
-                Vec::new()
-            }
-            Field::AiEnabled => {
-                let s = self.settings_mut();
-                s.draft.ai_enabled = !s.draft.ai_enabled;
-                Vec::new()
-            }
-            Field::RomanizedTitles => {
-                let s = self.settings_mut();
-                s.draft.romanized_titles = !s.draft.romanized_titles;
                 Vec::new()
             }
             Field::ThemePreset => {
@@ -925,26 +900,6 @@ impl App {
                 if let Some(flag) = field.anim_flag(&mut s.draft.animations) {
                     *flag = !*flag;
                 }
-                Vec::new()
-            }
-            Field::LastfmEnabled => {
-                let s = self.settings_mut();
-                s.draft.lastfm_enabled = !s.draft.lastfm_enabled;
-                Vec::new()
-            }
-            Field::LastfmLoveSync => {
-                let s = self.settings_mut();
-                s.draft.lastfm_love_sync = !s.draft.lastfm_love_sync;
-                Vec::new()
-            }
-            Field::ListenBrainzEnabled => {
-                let s = self.settings_mut();
-                s.draft.listenbrainz_enabled = !s.draft.listenbrainz_enabled;
-                Vec::new()
-            }
-            Field::ScrobbleLocalFiles => {
-                let s = self.settings_mut();
-                s.draft.scrobble_local_files = !s.draft.scrobble_local_files;
                 Vec::new()
             }
             Field::CookiesFile
