@@ -106,6 +106,7 @@ pub use ai_reducer::AiMsg;
 mod audio_output;
 mod audio_output_picker;
 pub use audio_output_picker::*;
+mod artist;
 mod artwork;
 mod clipboard;
 mod context_menu;
@@ -337,6 +338,9 @@ pub struct App {
     /// Search results-filter popup state: open flag, live query, cursor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`SearchFilterPopup`]).
     pub search_filter: SearchFilterPopup,
+    /// The artist detail screen's state, present only while [`Mode::Artist`] is active
+    /// (see [`ArtistPageState`]).
+    pub artist: Option<ArtistPageState>,
 
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.

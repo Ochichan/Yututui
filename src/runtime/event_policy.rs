@@ -88,6 +88,8 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::Recorder(_)
         | Msg::PlaylistTracks { .. }
         | Msg::PlaylistTracksError { .. }
+        | Msg::ArtistPage { .. }
+        | Msg::ArtistPageError { .. }
         | Msg::DownloadsDeleted { .. }
         | Msg::Local(_)
         | Msg::Download(

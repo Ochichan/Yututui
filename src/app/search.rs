@@ -46,11 +46,11 @@ impl App {
     }
 
     /// The multi-selected result *songs*, only when more than one row is effectively
-    /// selected. Playlist rows are skipped — every per-track bulk action (play, enqueue,
-    /// playlist, download) is undefined for them — but as long as any song remains the
-    /// selection stays authoritative (a mixed pick of one song + playlist rows must act
-    /// on that song, not fall back to whatever the cursor row is). `None` means "use the
-    /// single-row path".
+    /// selected. Playlist and artist rows are skipped — every per-track bulk action
+    /// (play, enqueue, playlist, download) is undefined for them — but as long as any
+    /// song remains the selection stays authoritative (a mixed pick of one song +
+    /// playlist rows must act on that song, not fall back to whatever the cursor row
+    /// is). `None` means "use the single-row path".
     pub(in crate::app) fn multi_selected_search_songs(&self) -> Option<Vec<Song>> {
         if self.search_selection_indices().len() <= 1 {
             return None;
@@ -58,7 +58,9 @@ impl App {
         let songs: Vec<Song> = self
             .selected_search_songs()
             .into_iter()
-            .filter(|song| song.youtube_playlist_id().is_none())
+            .filter(|song| {
+                song.youtube_playlist_id().is_none() && song.youtube_artist_id().is_none()
+            })
             .collect();
         if songs.is_empty() { None } else { Some(songs) }
     }
@@ -280,10 +282,14 @@ impl App {
                 // own window over the list).
                 Some(Action::SearchFilter) => self.open_search_filter(),
                 // `\` adds the highlighted result — or the whole multi-selection — to the
-                // queue without interrupting playback. A playlist row appends its track list.
+                // queue without interrupting playback. A playlist row appends its track
+                // list; an artist row appends the artist's songs playlist.
                 Some(Action::Enqueue) => match self.multi_selected_search_songs() {
                     Some(songs) => self.enqueue_many(songs),
                     None => match self.selected_search_song() {
+                        Some(song) if song.youtube_artist_id().is_some() => {
+                            self.fetch_artist(&song, crate::api::ArtistIntent::Enqueue)
+                        }
                         Some(song) => match song.youtube_playlist_id() {
                             Some(_) => self
                                 .fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue),
@@ -363,6 +369,9 @@ impl App {
                 // Favorite the highlighted result (♥ appears on the row).
                 Some(Action::Favorite) => {
                     if let Some(song) = self.selected_search_song() {
+                        if song.youtube_artist_id().is_some() {
+                            return self.artist_row_hint();
+                        }
                         if song.youtube_playlist_id().is_some() {
                             return self.playlist_row_hint();
                         }
@@ -377,6 +386,7 @@ impl App {
                 Some(Action::Download) => match self.multi_selected_search_songs() {
                     Some(songs) => self.open_confirm_download(songs),
                     None => match self.selected_search_song() {
+                        Some(song) if song.youtube_artist_id().is_some() => self.artist_row_hint(),
                         Some(song) if song.youtube_playlist_id().is_some() => {
                             self.playlist_row_hint()
                         }
@@ -385,13 +395,17 @@ impl App {
                     },
                 },
                 // `p` opens the add-to-playlist picker for the highlighted result or the
-                // multi-selection. A playlist row instead imports it as a local playlist.
+                // multi-selection. A playlist row instead imports it as a local playlist;
+                // an artist row imports the artist's songs playlist.
                 Some(Action::AddToPlaylist) => {
                     if let Some(songs) = self.multi_selected_search_songs() {
                         self.open_playlist_picker(songs);
                         return Vec::new();
                     }
                     if let Some(song) = self.selected_search_song() {
+                        if song.youtube_artist_id().is_some() {
+                            return self.fetch_artist(&song, crate::api::ArtistIntent::Import);
+                        }
                         if song.youtube_playlist_id().is_some() {
                             return self
                                 .fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import);
@@ -459,6 +473,9 @@ impl App {
         self.collapse_search_selection();
         self.search.focus = SearchFocus::Results;
         self.dirty = true;
+        if song.youtube_artist_id().is_some() {
+            return self.fetch_artist(&song, crate::api::ArtistIntent::Open);
+        }
         match song.youtube_playlist_id() {
             Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Play),
             None => self.play_now(song),
@@ -627,10 +644,16 @@ impl App {
         self.search.request_id = self.search.request_id.wrapping_add(1);
         let request_id = self.search.request_id;
         self.status.text.clear();
-        // Playlist kind is YouTube-only (no other provider has a playlist catalog),
-        // so it bypasses the source selection entirely.
+        // Playlist/artist kinds are YouTube-only (no other provider has those catalogs),
+        // so they bypass the source selection entirely.
         if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
             return vec![Cmd::SearchPlaylists {
+                request_id,
+                query: q,
+            }];
+        }
+        if self.search.kind == SearchKind::Artists && !self.radio_dedicated_mode {
+            return vec![Cmd::SearchArtists {
                 request_id,
                 query: q,
             }];
@@ -677,11 +700,13 @@ impl App {
         self.dirty = true;
     }
 
-    /// `Ctrl+P`: flip the search box between tracks and public YouTube playlists.
+    /// `Ctrl+P`: cycle the search box between tracks, public YouTube playlists, and
+    /// YouTube Music artists.
     pub(in crate::app) fn toggle_search_kind(&mut self) -> Vec<Cmd> {
         self.search.kind = match self.search.kind {
             SearchKind::Songs => SearchKind::Playlists,
-            SearchKind::Playlists => SearchKind::Songs,
+            SearchKind::Playlists => SearchKind::Artists,
+            SearchKind::Artists => SearchKind::Songs,
         };
         self.status.kind = StatusKind::Info;
         self.status.text = match self.search.kind {
@@ -690,6 +715,12 @@ impl App {
                 "Search: YouTube playlists",
                 "검색: 유튜브 플레이리스트",
                 "検索: YouTubeプレイリスト"
+            )
+            .to_owned(),
+            SearchKind::Artists => t!(
+                "Search: YouTube artists",
+                "검색: 유튜브 아티스트",
+                "検索: YouTubeアーティスト"
             )
             .to_owned(),
         };
@@ -722,8 +753,47 @@ impl App {
         }]
     }
 
+    /// Kick the page fetch for an artist row; `intent` decides what happens when it
+    /// arrives (`Open` → the artist detail screen, `Enqueue`/`Import` → the artist's
+    /// songs playlist through [`Msg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
+    pub(in crate::app) fn fetch_artist(
+        &mut self,
+        row: &Song,
+        intent: crate::api::ArtistIntent,
+    ) -> Vec<Cmd> {
+        let Some(id) = row.youtube_artist_id() else {
+            return Vec::new();
+        };
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Fetching artist…",
+            "아티스트 불러오는 중…",
+            "アーティストを読み込み中…"
+        )
+        .to_owned();
+        self.dirty = true;
+        vec![Cmd::FetchArtist {
+            channel_id: id.to_owned(),
+            title: row.title.clone(),
+            intent,
+        }]
+    }
+
+    /// Status hint for per-track actions that don't apply to an artist row.
+    fn artist_row_hint(&mut self) -> Vec<Cmd> {
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Artist row: Enter opens, \\ enqueues, p imports",
+            "아티스트 행: Enter 열기, \\ 큐 추가, p 가져오기",
+            "アーティスト行: Enter 開く, \\ キュー追加, p インポート"
+        )
+        .to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
     /// Status hint for per-track actions that don't apply to a playlist row.
-    fn playlist_row_hint(&mut self) -> Vec<Cmd> {
+    pub(in crate::app) fn playlist_row_hint(&mut self) -> Vec<Cmd> {
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
             "Playlist row: Enter plays, \\ enqueues, p imports",

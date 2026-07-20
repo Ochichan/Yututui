@@ -42,6 +42,7 @@ impl App {
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
             search_filter: SearchFilterPopup::default(),
+            artist: None,
             config: Config::default(),
             onboarding: OnboardingState::default(),
             tool_setup: None,

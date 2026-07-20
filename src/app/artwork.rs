@@ -231,6 +231,13 @@ impl App {
                         && self.ai.focus == AiFocus::Suggestions
                         && !self.ai.suggestions.is_empty())
             }
+            Mode::Artist => {
+                a.selection
+                    && self
+                        .artist
+                        .as_ref()
+                        .is_some_and(|st| !st.section_rows().is_empty())
+            }
         }
     }
 

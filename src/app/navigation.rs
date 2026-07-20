@@ -157,6 +157,11 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // Leaving the artist screen by any navigation drops its state — it is re-fetched
+        // fresh from a Search artist row, never resumed.
+        if self.mode == Mode::Artist {
+            self.artist = None;
+        }
         match mode {
             Mode::Player => self.mode = Mode::Player,
             Mode::Search if self.active_search_surface() == ActiveSearchSurface::Local => {
@@ -184,6 +189,9 @@ impl App {
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),
+            // Not a nav destination: the artist screen opens only via a Search artist
+            // row ([`Self::on_artist_page`]), which needs page data this path lacks.
+            Mode::Artist => {}
         }
         self.dirty = true;
         Vec::new()

@@ -286,6 +286,10 @@ impl From<RuntimeEvent> for Msg {
                 crate::api::ApiEvent::PlaylistTracksError { title, error } => {
                     Msg::PlaylistTracksError { title, error }
                 }
+                crate::api::ApiEvent::ArtistPage { page } => Msg::ArtistPage { page },
+                crate::api::ApiEvent::ArtistPageError { title, error } => {
+                    Msg::ArtistPageError { title, error }
+                }
                 crate::api::ApiEvent::StreamingResults {
                     request_id,
                     seed_video_id,

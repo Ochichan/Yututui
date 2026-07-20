@@ -105,6 +105,7 @@ pub(crate) enum ContextCommand {
     Download,
     ImportPlaylist,
     OpenPlaylist,
+    OpenArtist,
     Remove,
 }
 
@@ -185,6 +186,9 @@ impl ContextMenuItem {
             .to_owned(),
             ContextCommand::OpenPlaylist => {
                 t!("Open playlist", "플레이리스트 열기", "プレイリストを開く").to_owned()
+            }
+            ContextCommand::OpenArtist => {
+                t!("Open artist", "아티스트 열기", "アーティストを開く").to_owned()
             }
             ContextCommand::Remove if count > 1 => {
                 format!(
@@ -531,21 +535,21 @@ impl App {
                 };
                 let song = self.search.results.get(index)?;
                 // A click inside the current multi-selection targets the whole selection;
-                // playlist rows keep their dedicated single-row menu, and any playlist
+                // playlist/artist rows keep their dedicated single-row menu, and any such
                 // rows inside the selection are dropped here so the "(N)" labels count
                 // exactly the songs the commands will act on.
                 let selection = self.search_selection_indices();
                 let rows = if selection.len() > 1
                     && selection.contains(&index)
                     && song.youtube_playlist_id().is_none()
+                    && song.youtube_artist_id().is_none()
                 {
                     let songs_only: Vec<usize> = selection
                         .into_iter()
                         .filter(|&i| {
-                            self.search
-                                .results
-                                .get(i)
-                                .is_some_and(|s| s.youtube_playlist_id().is_none())
+                            self.search.results.get(i).is_some_and(|s| {
+                                s.youtube_playlist_id().is_none() && s.youtube_artist_id().is_none()
+                            })
                         })
                         .collect();
                     if songs_only.len() > 1 {
@@ -715,6 +719,12 @@ impl App {
             ContextTarget::Search {
                 rows, video_ids, ..
             } => match rows.first().and_then(|&i| self.search.results.get(i)) {
+                Some(song)
+                    if video_ids.first() == Some(&song.video_id)
+                        && song.youtube_artist_id().is_some() =>
+                {
+                    vec![C::OpenArtist, C::Enqueue, C::ImportPlaylist]
+                }
                 Some(song)
                     if video_ids.first() == Some(&song.video_id)
                         && song.youtube_playlist_id().is_some() =>
@@ -893,10 +903,10 @@ impl App {
             self.search.focus = SearchFocus::Results;
             self.dirty = true;
             // Multi targets are built from song rows only; keep the filter as a
-            // guard against a hypothetically stale playlist row sneaking in.
+            // guard against a hypothetically stale playlist/artist row sneaking in.
             let songs: Vec<Song> = songs
                 .into_iter()
-                .filter(|s| s.youtube_playlist_id().is_none())
+                .filter(|s| s.youtube_playlist_id().is_none() && s.youtube_artist_id().is_none())
                 .collect();
             if songs.is_empty() {
                 return Vec::new();
@@ -920,27 +930,33 @@ impl App {
         self.collapse_search_selection();
         self.search.focus = SearchFocus::Results;
         self.dirty = true;
+        let is_song_row =
+            song.youtube_playlist_id().is_none() && song.youtube_artist_id().is_none();
         match command {
-            ContextCommand::Activate | ContextCommand::PlayNow => {
+            ContextCommand::Activate | ContextCommand::PlayNow | ContextCommand::OpenArtist => {
                 if filter_row.is_some() {
                     self.search_filter.close();
                 }
                 self.activate_search_index(index)
             }
+            ContextCommand::Enqueue if song.youtube_artist_id().is_some() => {
+                self.fetch_artist(&song, crate::api::ArtistIntent::Enqueue)
+            }
             ContextCommand::Enqueue => match song.youtube_playlist_id() {
                 Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue),
                 None => self.enqueue(song),
             },
-            ContextCommand::ToggleFavorite if song.youtube_playlist_id().is_none() => {
+            ContextCommand::ToggleFavorite if is_song_row => {
                 self.library_mut().toggle_favorite(&song);
                 vec![Cmd::Persist(PersistCmd::Library)]
             }
-            ContextCommand::AddToPlaylist if song.youtube_playlist_id().is_none() => {
+            ContextCommand::AddToPlaylist if is_song_row => {
                 self.open_playlist_picker(vec![song]);
                 Vec::new()
             }
-            ContextCommand::Download if song.youtube_playlist_id().is_none() => {
-                self.start_download(song)
+            ContextCommand::Download if is_song_row => self.start_download(song),
+            ContextCommand::ImportPlaylist if song.youtube_artist_id().is_some() => {
+                self.fetch_artist(&song, crate::api::ArtistIntent::Import)
             }
             ContextCommand::ImportPlaylist if song.youtube_playlist_id().is_some() => {
                 self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import)

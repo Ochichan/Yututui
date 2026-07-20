@@ -942,3 +942,22 @@ async fn streaming_preflight_dedupes_and_tops_up_from_fallback_without_metadata_
         vec!["TAfHyXrULiM", "dQw4w9WgXcQ"]
     );
 }
+
+#[test]
+fn artist_row_parts_builds_a_ytar_row() {
+    let song = artist_row_parts(
+        "Some Artist".to_owned(),
+        Some("1M subscribers".to_owned()),
+        "UCabc123",
+    );
+    assert_eq!(song.video_id, "ytar:UCabc123");
+    assert_eq!(song.youtube_artist_id(), Some("UCabc123"));
+    assert_eq!(song.youtube_playlist_id(), None);
+    assert_eq!(song.title, "Some Artist");
+    assert!(song.artist.is_empty());
+    // The subscriber count rides in the duration slot (rows render it in parentheses).
+    assert_eq!(song.duration, "1M subscribers");
+
+    let bare = artist_row_parts("X".to_owned(), None, "UCx");
+    assert!(bare.duration.is_empty());
+}

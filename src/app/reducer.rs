@@ -1101,6 +1101,14 @@ impl App {
                 self.status.text = format!("{title}: {error}");
                 self.dirty = true;
             }
+            Msg::ArtistPage { page } => {
+                return self.on_artist_page(page);
+            }
+            Msg::ArtistPageError { title, error } => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!("{title}: {error}");
+                self.dirty = true;
+            }
             Msg::YtdlpHealResult { video_id, updated } => {
                 return self.handle_ytdlp_heal_result(video_id, updated);
             }

@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::BrowserToken;
-use ytmapi_rs::common::{VideoID, YoutubeID};
+use ytmapi_rs::common::{AlbumID, ArtistChannelID, VideoID, YoutubeID};
+use ytmapi_rs::query::GetArtistQuery;
 
-use super::{PlayableRef, Song};
+use super::{ArtistPage, PlayableRef, Song};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
@@ -93,6 +94,9 @@ const PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const PLAYLIST_JSON_MAX: usize = 8 * 1024 * 1024;
 /// Cap imported/enqueued playlist tracks at the local-playlist song cap.
 const PLAYLIST_TRACKS_MAX: usize = 999;
+/// Rows for the artist screen's top-songs fallback (public yt-dlp search by artist
+/// name, used when the artist page — notably the anonymous one — has no songs shelf).
+const ARTIST_FALLBACK_SONGS: usize = 15;
 
 #[cfg(test)]
 static TEST_YTDLP_PROGRAM: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
@@ -369,6 +373,95 @@ impl YtMusicApi {
         ytdlp_playlist_search(query).await
     }
 
+    /// Search YouTube Music artists by name. Authenticated innertube answers first;
+    /// anonymous or degraded sessions use the shared anonymous innertube client (artist
+    /// search is not login-gated, and yt-dlp has no artist catalog to fall back to).
+    pub async fn search_artists(&self, query: &str) -> Result<Vec<Song>> {
+        if let YtMusicApi::Browser(client) = self
+            && !auth_search_degraded()
+        {
+            match client.search_artists(query).await {
+                Ok(results) if !results.is_empty() => {
+                    return Ok(results.into_iter().map(artist_row).collect());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(error = %error, "innertube artist search failed; trying anonymous");
+                }
+            }
+        }
+        let client = transfer_api::anonymous_ytmusic_client().await?;
+        let results = client
+            .search_artists(query)
+            .await
+            .context("anonymous YouTube Music artist search failed")?;
+        Ok(results.into_iter().map(artist_row).collect())
+    }
+
+    /// An artist's browse page (top songs + album/single rows). Same client selection as
+    /// [`Self::search_artists`]: authenticated innertube first, anonymous fallback.
+    pub async fn artist_page(&self, channel_id: &str) -> Result<ArtistPage> {
+        let mut page = 'fetched: {
+            if let YtMusicApi::Browser(client) = self
+                && !auth_search_degraded()
+            {
+                match client
+                    .get_artist(GetArtistQuery::new(ArtistChannelID::from_raw(channel_id)))
+                    .await
+                {
+                    Ok(artist) => break 'fetched artist_page_rows(channel_id, artist),
+                    Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(error = %error, "innertube artist page failed; trying anonymous");
+                    }
+                }
+            }
+            let client = transfer_api::anonymous_ytmusic_client().await?;
+            let artist = client
+                .get_artist(GetArtistQuery::new(ArtistChannelID::from_raw(channel_id)))
+                .await
+                .context("fetching the YouTube Music artist page failed")?;
+            artist_page_rows(channel_id, artist)
+        };
+        // The anonymous artist page carries no songs shelf (albums only), so approximate
+        // the section with the same public yt-dlp search the anonymous song search uses.
+        // Best-effort: an albums-only page is still worth showing.
+        if page.songs.is_empty() && !page.name.is_empty() {
+            match ytdlp_search(&page.name, ARTIST_FALLBACK_SONGS).await {
+                Ok(songs) => page.songs = songs,
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(error = %error, "artist top-songs fallback search failed");
+                }
+            }
+        }
+        Ok(page)
+    }
+
+    /// An album's tracks via its `MPRE…` browse id — artist-page album rows carry these
+    /// (the public playlist id only exists once the album page is opened). Innertube-only:
+    /// yt-dlp cannot browse albums.
+    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Song>> {
+        if let YtMusicApi::Browser(client) = self
+            && !auth_search_degraded()
+        {
+            match client.get_album(AlbumID::from_raw(album_id)).await {
+                Ok(album) => return Ok(album_track_rows(album)),
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(error = %error, "innertube album fetch failed; trying anonymous");
+                }
+            }
+        }
+        let client = transfer_api::anonymous_ytmusic_client().await?;
+        let album = client
+            .get_album(AlbumID::from_raw(album_id))
+            .await
+            .context("fetching the YouTube Music album failed")?;
+        Ok(album_track_rows(album))
+    }
+
     /// A remote playlist's playable tracks. Authenticated sessions ask innertube (rich
     /// album/duration metadata); anonymous sessions — or an innertube miss — use a flat
     /// yt-dlp extraction of the public playlist page.
@@ -376,6 +469,11 @@ impl YtMusicApi {
         let raw = playlist_id
             .strip_prefix(super::PLAYLIST_ID_PREFIX)
             .unwrap_or(playlist_id);
+        // Artist-page album rows ride the `ytpl:` machinery with their browse id; those
+        // resolve through the album endpoint, not the playlist one.
+        if raw.starts_with("MPRE") {
+            return self.album_tracks(raw).await;
+        }
         if matches!(self, YtMusicApi::Browser(_)) {
             match self.playlist_tracks_full(raw).await {
                 Ok(songs) if !songs.is_empty() => return Ok(songs),
@@ -793,6 +891,113 @@ fn playlist_row(result: ytmapi_rs::parse::SearchResultPlaylist) -> Option<Song> 
         author,
         extra,
     ))
+}
+
+/// Map one innertube artist search result to a `ytar:` row. The subscriber count rides
+/// in the duration slot (rows render it in parentheses).
+fn artist_row(result: ytmapi_rs::parse::SearchResultArtist) -> Song {
+    artist_row_parts(
+        result.artist,
+        result.subscribers,
+        result.browse_id.get_raw(),
+    )
+}
+
+/// The [`artist_row`] mapping over plain fields (ytmapi's result structs are
+/// `#[non_exhaustive]`, so tests construct rows through this instead).
+fn artist_row_parts(name: String, subscribers: Option<String>, channel_id: &str) -> Song {
+    Song::remote(
+        format!("{}{channel_id}", super::ARTIST_ID_PREFIX),
+        name,
+        String::new(),
+        subscribers.unwrap_or_default(),
+    )
+}
+
+/// Trim an innertube artist page down to what the detail screen shows: top songs as
+/// playable track rows (play counts in the duration slot) and albums + singles as
+/// `ytpl:` rows over their `MPRE…` browse ids (release year in the duration slot).
+fn artist_page_rows(channel_id: &str, artist: ytmapi_rs::parse::GetArtist) -> ArtistPage {
+    let name = artist.name;
+    let songs = artist
+        .top_releases
+        .songs
+        .as_ref()
+        .map(|songs| {
+            songs
+                .results
+                .iter()
+                .map(|song| {
+                    let artists = song
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Song::from_search(
+                        song.video_id.get_raw(),
+                        song.title.clone(),
+                        if artists.is_empty() {
+                            name.clone()
+                        } else {
+                            artists
+                        },
+                        song.plays.clone(),
+                        Some(song.album.name.clone()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let albums = artist
+        .top_releases
+        .albums
+        .iter()
+        .chain(artist.top_releases.singles.iter())
+        .flat_map(|section| section.results.iter())
+        .map(|album| {
+            Song::remote(
+                format!("{}{}", super::PLAYLIST_ID_PREFIX, album.album_id.get_raw()),
+                album.title.clone(),
+                name.clone(),
+                album.year.clone(),
+            )
+        })
+        .collect();
+    ArtistPage {
+        channel_id: channel_id.to_owned(),
+        name,
+        subscribers: artist.subscribers,
+        songs,
+        albums,
+        songs_playlist_id: artist
+            .top_releases
+            .songs
+            .map(|songs| songs.browse_id.get_raw().to_owned()),
+    }
+}
+
+/// An album's track list → playable rows (artist column = the album's artists).
+fn album_track_rows(album: ytmapi_rs::parse::GetAlbum) -> Vec<Song> {
+    let artist = album
+        .artists
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    album
+        .tracks
+        .into_iter()
+        .map(|track| {
+            Song::from_search(
+                track.video_id.get_raw(),
+                track.title,
+                artist.clone(),
+                track.duration,
+                Some(album.title.clone()),
+            )
+        })
+        .collect()
 }
 
 /// Anonymous playlist search: YouTube's own results page with the playlist-type filter

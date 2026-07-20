@@ -99,6 +99,19 @@ impl RuntimeHandles {
                     );
                 }
             }
+            Cmd::SearchArtists { request_id, query } => {
+                if let Err(error) = self.api_handle.search_artists(request_id, query) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::SearchError {
+                            request_id,
+                            source: crate::search_source::SearchSource::Youtube,
+                            error: error.to_string(),
+                        },
+                    );
+                }
+            }
             Cmd::FetchPlaylistTracks {
                 playlist_id,
                 title,
@@ -112,6 +125,25 @@ impl RuntimeHandles {
                     self.reduce_owner_msg(
                         app,
                         Msg::PlaylistTracksError {
+                            title,
+                            error: error.to_string(),
+                        },
+                    );
+                }
+            }
+            Cmd::FetchArtist {
+                channel_id,
+                title,
+                intent,
+            } => {
+                if let Err(error) = self
+                    .api_handle
+                    .artist_page(channel_id, title.clone(), intent)
+                {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.reduce_owner_msg(
+                        app,
+                        Msg::ArtistPageError {
                             title,
                             error: error.to_string(),
                         },

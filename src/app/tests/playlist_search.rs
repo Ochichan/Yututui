@@ -19,7 +19,9 @@ fn ctrl_p_toggles_playlist_search_kind_and_routes_submit() {
     );
     assert!(app.search.searching);
 
-    // Toggling back restores ordinary source-routed search.
+    // Cycling on (through Artists) restores ordinary source-routed search.
+    app.update(Msg::Key(ctrl(KeyCode::Char('p'))));
+    assert_eq!(app.search.kind, SearchKind::Artists);
     app.update(Msg::Key(ctrl(KeyCode::Char('p'))));
     assert_eq!(app.search.kind, SearchKind::Songs);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));

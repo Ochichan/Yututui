@@ -11,6 +11,25 @@ use crate::search_source::SearchSource;
 /// `"ytpl:<playlist id>"`. Never sent to the wire; strip via [`Song::youtube_playlist_id`].
 pub const PLAYLIST_ID_PREFIX: &str = "ytpl:";
 
+/// Marker prefix for *artist* rows in search results — their `video_id` is
+/// `"ytar:<channel id>"`. Never sent to the wire; strip via [`Song::youtube_artist_id`].
+pub const ARTIST_ID_PREFIX: &str = "ytar:";
+
+/// An artist's browse page, trimmed to what the TUI shows: top songs plus album/single
+/// rows (the latter as `ytpl:` playlist rows, playable via the playlist machinery).
+#[derive(Debug, Clone)]
+pub struct ArtistPage {
+    pub channel_id: String,
+    pub name: String,
+    pub subscribers: Option<String>,
+    /// Top songs — ordinary playable track rows.
+    pub songs: Vec<Song>,
+    /// Albums and singles as `ytpl:` rows.
+    pub albums: Vec<Song>,
+    /// The artist's full "Songs" playlist, when the page exposes one.
+    pub songs_playlist_id: Option<String>,
+}
+
 pub const MAX_TITLE_CHARS: usize = 300;
 pub const MAX_ARTIST_CHARS: usize = 200;
 pub const MAX_ALBUM_CHARS: usize = 200;
@@ -30,6 +49,7 @@ fn is_definitely_non_video_youtube_ref(id: &str) -> bool {
         return false;
     }
     let known_prefix = id.starts_with(PLAYLIST_ID_PREFIX)
+        || id.starts_with(ARTIST_ID_PREFIX)
         || id.starts_with("UC")
         || id.starts_with("UU")
         || id.starts_with("PL")
@@ -521,6 +541,12 @@ impl Song {
     /// [`PLAYLIST_ID_PREFIX`]); `None` for ordinary tracks.
     pub fn youtube_playlist_id(&self) -> Option<&str> {
         self.video_id.strip_prefix(PLAYLIST_ID_PREFIX)
+    }
+
+    /// The YouTube Music channel id when this row is an artist search result (see
+    /// [`ARTIST_ID_PREFIX`]); `None` for ordinary tracks.
+    pub fn youtube_artist_id(&self) -> Option<&str> {
+        self.video_id.strip_prefix(ARTIST_ID_PREFIX)
     }
 
     /// A shareable public URL for this track, if it has a YouTube origin.

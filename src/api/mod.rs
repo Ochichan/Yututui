@@ -17,15 +17,16 @@ pub use crate::playback_target::{
 };
 pub use actor::spawn;
 pub use domain::{
-    MAX_ALBUM_CHARS, MAX_ARTIST_CHARS, MAX_DURATION_CHARS, MAX_ORIGIN_URL_CHARS,
-    MAX_PROVIDER_ID_CHARS, MAX_TITLE_CHARS, PLAYLIST_ID_PREFIX, PlayableRef, Song,
-    SongImportMetadata, is_youtube_video_id, sanitize_album, sanitize_artist, sanitize_duration,
-    sanitize_metadata_text, sanitize_provider_id, sanitize_title,
+    ARTIST_ID_PREFIX, ArtistPage, MAX_ALBUM_CHARS, MAX_ARTIST_CHARS, MAX_DURATION_CHARS,
+    MAX_ORIGIN_URL_CHARS, MAX_PROVIDER_ID_CHARS, MAX_TITLE_CHARS, PLAYLIST_ID_PREFIX, PlayableRef,
+    Song, SongImportMetadata, is_youtube_video_id, sanitize_album, sanitize_artist,
+    sanitize_duration, sanitize_metadata_text, sanitize_provider_id, sanitize_title,
 };
 pub(crate) use gui_search::gui_search_row_id;
 pub use gui_search::{GUI_SEARCH_ROW_ID_MAX_BYTES, GuiSearchGroup, GuiSearchRequestId};
 pub use protocol::{
-    ApiCmd, ApiCommandKind, ApiEnqueueError, ApiEvent, ApiHandle, ApiMode, PlaylistIntent,
+    ApiCmd, ApiCommandKind, ApiEnqueueError, ApiEvent, ApiHandle, ApiMode, ArtistIntent,
+    PlaylistIntent,
 };
 
 #[cfg(test)]

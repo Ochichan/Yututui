@@ -5,6 +5,7 @@ use tokio::sync::mpsc::{Sender, error::TrySendError};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 
+use super::domain::ArtistPage;
 use super::{GuiSearchGroup, GuiSearchRequestId, Song};
 
 /// Which auth mode the live API client ended up in.
@@ -22,6 +23,17 @@ pub enum PlaylistIntent {
     /// Append the playlist's tracks to the queue.
     Enqueue,
     /// Save the playlist as a local playlist (named after it).
+    Import,
+}
+
+/// What the reducer wants done with an artist row once its page arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtistIntent {
+    /// Open the artist detail screen.
+    Open,
+    /// Append the artist's songs playlist to the queue.
+    Enqueue,
+    /// Save the artist's songs playlist as a local playlist (named after the artist).
     Import,
 }
 
@@ -72,12 +84,23 @@ pub enum ApiCmd {
     /// playlist catalog here). Results return as ordinary [`ApiEvent::SearchResults`]
     /// rows whose ids carry [`crate::api::PLAYLIST_ID_PREFIX`].
     SearchPlaylists { request_id: u64, query: String },
+    /// Search YouTube Music artists by name (YouTube-only). Results return as ordinary
+    /// [`ApiEvent::SearchResults`] rows whose ids carry [`crate::api::ARTIST_ID_PREFIX`].
+    SearchArtists { request_id: u64, query: String },
     /// Fetch a remote playlist's full track list; `title` and `intent` ride along so the
     /// reducer knows what to do with the answer.
     PlaylistTracks {
         playlist_id: String,
         title: String,
         intent: PlaylistIntent,
+    },
+    /// Fetch an artist's page. `Open` answers as [`ApiEvent::ArtistPage`]; `Enqueue`/`Import`
+    /// chain into the artist's songs playlist and answer as [`ApiEvent::PlaylistTracks`],
+    /// reusing the playlist-row reducer path.
+    ArtistPage {
+        channel_id: String,
+        title: String,
+        intent: ArtistIntent,
     },
 }
 
@@ -89,7 +112,9 @@ pub enum ApiCommandKind {
     StreamingPreflight,
     ResolveTrack,
     SearchPlaylists,
+    SearchArtists,
     PlaylistTracks,
+    ArtistPage,
 }
 
 impl ApiCommandKind {
@@ -101,7 +126,9 @@ impl ApiCommandKind {
             ApiCommandKind::StreamingPreflight => "streaming preflight",
             ApiCommandKind::ResolveTrack => "track resolve",
             ApiCommandKind::SearchPlaylists => "playlist search",
+            ApiCommandKind::SearchArtists => "artist search",
             ApiCommandKind::PlaylistTracks => "playlist tracks",
+            ApiCommandKind::ArtistPage => "artist page",
         }
     }
 
@@ -110,10 +137,12 @@ impl ApiCommandKind {
             ApiCommandKind::Search
             | ApiCommandKind::GuiSearch
             | ApiCommandKind::ResolveTrack
-            | ApiCommandKind::SearchPlaylists => ApiLane::Interactive,
+            | ApiCommandKind::SearchPlaylists
+            | ApiCommandKind::SearchArtists => ApiLane::Interactive,
             ApiCommandKind::Streaming
             | ApiCommandKind::StreamingPreflight
-            | ApiCommandKind::PlaylistTracks => ApiLane::Bulk,
+            | ApiCommandKind::PlaylistTracks
+            | ApiCommandKind::ArtistPage => ApiLane::Bulk,
         }
     }
 }
@@ -166,7 +195,9 @@ impl ApiCmd {
             ApiCmd::StreamingPreflight { .. } => ApiCommandKind::StreamingPreflight,
             ApiCmd::ResolveTrack { .. } => ApiCommandKind::ResolveTrack,
             ApiCmd::SearchPlaylists { .. } => ApiCommandKind::SearchPlaylists,
+            ApiCmd::SearchArtists { .. } => ApiCommandKind::SearchArtists,
             ApiCmd::PlaylistTracks { .. } => ApiCommandKind::PlaylistTracks,
+            ApiCmd::ArtistPage { .. } => ApiCommandKind::ArtistPage,
         }
     }
 }
@@ -219,6 +250,15 @@ pub enum ApiEvent {
     },
     /// Fetching a remote playlist's tracks failed.
     PlaylistTracksError {
+        title: String,
+        error: String,
+    },
+    /// An artist's page, answering [`ApiCmd::ArtistPage`] with [`ArtistIntent::Open`].
+    ArtistPage {
+        page: ArtistPage,
+    },
+    /// Fetching an artist's page (or its songs playlist) failed.
+    ArtistPageError {
         title: String,
         error: String,
     },
@@ -363,6 +403,30 @@ impl ApiHandle {
     ) -> Result<(), ApiEnqueueError> {
         self.enqueue(ApiCmd::PlaylistTracks {
             playlist_id: playlist_id.into(),
+            title: title.into(),
+            intent,
+        })
+    }
+
+    pub fn search_artists(
+        &self,
+        request_id: u64,
+        query: impl Into<String>,
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::SearchArtists {
+            request_id,
+            query: query.into(),
+        })
+    }
+
+    pub fn artist_page(
+        &self,
+        channel_id: impl Into<String>,
+        title: impl Into<String>,
+        intent: ArtistIntent,
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::ArtistPage {
+            channel_id: channel_id.into(),
             title: title.into(),
             intent,
         })

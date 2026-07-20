@@ -804,7 +804,9 @@ impl DaemonEngine {
             | ApiEvent::SearchResults { .. }
             | ApiEvent::SearchError { .. }
             | ApiEvent::PlaylistTracks { .. }
-            | ApiEvent::PlaylistTracksError { .. } => Vec::new(),
+            | ApiEvent::PlaylistTracksError { .. }
+            | ApiEvent::ArtistPage { .. }
+            | ApiEvent::ArtistPageError { .. } => Vec::new(),
         }
     }
 

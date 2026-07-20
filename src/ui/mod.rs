@@ -64,6 +64,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Mode::Library => views::library::render(frame, app, area),
             Mode::Settings => views::settings::render(frame, app, area),
             Mode::Ai => views::ai::render(frame, app, area),
+            Mode::Artist => views::artist::render(frame, app, area),
         }
         // The docked control box's `eq:`/`streaming:` dropdowns, on every screen that shows
         // the box. The Player screen keeps its own in-view calls (legacy z-order: dropdowns

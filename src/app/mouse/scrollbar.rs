@@ -126,6 +126,8 @@ impl App {
             ScrollSurface::Search => &self.bridges.search_scroll,
             ScrollSurface::LocalFind => &self.bridges.local_find_scroll,
             ScrollSurface::SearchFilter => &self.search_filter.scroll,
+            ScrollSurface::ArtistSongs => return self.artist.as_ref().map(|st| &st.songs_scroll),
+            ScrollSurface::ArtistAlbums => return self.artist.as_ref().map(|st| &st.albums_scroll),
             ScrollSurface::AiTranscript => &self.bridges.ai_transcript_scroll,
             ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
             ScrollSurface::Settings => &self.bridges.settings_scroll,
@@ -147,6 +149,12 @@ impl App {
             ScrollSurface::Search => self.search.results.len(),
             ScrollSurface::LocalFind => self.local_find_rows_len(),
             ScrollSurface::SearchFilter => self.search_filter.matches.len(),
+            ScrollSurface::ArtistSongs => {
+                return self.artist.as_ref().map(|st| st.page.songs.len());
+            }
+            ScrollSurface::ArtistAlbums => {
+                return self.artist.as_ref().map(|st| st.page.albums.len());
+            }
             ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
             ScrollSurface::Settings => self.settings_field_display_len()?,
