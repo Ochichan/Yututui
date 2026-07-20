@@ -717,6 +717,10 @@ async fn run_owner_loop(
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
+        // Queue/session/settings mutations can invalidate an in-flight autoplay request even
+        // when the seed id still exists. Settle that owner generation before publishing this
+        // turn so a later pool/preflight result cannot mutate the replacement session.
+        engine.reconcile_pending_streaming_request();
         // Reconcile the persisted live setting on every owner turn so GUI/remote changes tear
         // down or create the platform generation before this turn's snapshot is published.
         let media_enabled = daemon_media_enabled(&engine, media_session_allowed);
@@ -783,6 +787,7 @@ async fn run_owner_loop(
             publisher.publish_library_invalidated();
             published_library_invalidations = library_invalidations;
         }
+        engine.reconcile_why_gem();
         let why_gem_rev = engine.why_gem_rev();
         if published_why_gem_rev != Some(why_gem_rev) {
             publisher.publish_why_gem(engine.why_gem_ids());

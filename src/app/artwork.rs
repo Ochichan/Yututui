@@ -600,7 +600,10 @@ impl App {
             | flag(self.queue_popup.open, ART_OVERLAY_QUEUE_BIT)
             | flag(self.overlays.help_visible, ART_OVERLAY_HELP_BIT)
             | flag(self.overlays.about_visible, ART_OVERLAY_ABOUT_BIT)
-            | flag(self.overlays.why_ai_visible, ART_OVERLAY_WHY_AI_BIT)
+            | flag(
+                self.overlays.why_gem_video_id.is_some(),
+                ART_OVERLAY_WHY_AI_BIT,
+            )
             | flag(
                 self.overlays.key_conflict.is_some(),
                 ART_OVERLAY_KEY_CONFLICT_BIT,

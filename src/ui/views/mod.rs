@@ -16,6 +16,7 @@ pub mod onboarding;
 pub mod player;
 mod player_layout;
 mod player_lyrics;
+mod queue_actions;
 pub mod search;
 pub mod settings;
 pub mod why_ai;

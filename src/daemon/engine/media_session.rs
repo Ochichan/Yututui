@@ -156,9 +156,12 @@ impl DaemonEngine {
                         });
                     let previous = self.queue.snapshot();
                     if self.queue.play_now(song) {
-                        if let Err(e) = self.load_current_or_restore_queue(previous).await {
-                            self.last_error = Some(e.to_string());
-                            self.stop_playback();
+                        match self.load_current_or_restore_queue(previous).await {
+                            Ok(()) => self.forget_why_gem_picks([id.as_str()]),
+                            Err(error) => {
+                                self.last_error = Some(error.to_string());
+                                self.stop_playback();
+                            }
                         }
                         effects.extend(self.maybe_autoplay_extend());
                     }

@@ -228,6 +228,121 @@ macro_rules! t {
     };
 }
 
+/// Localized copy for the per-track WhyGem card.
+///
+/// The wire model deliberately keeps compact, language-neutral slot/role/reason codes. Keeping
+/// their presentation here gives the TUI one trust boundary: known values become full localized
+/// copy, while unknown model output can be omitted instead of reaching the terminal verbatim.
+pub mod why_gem {
+    /// Card title and keymap action label.
+    pub fn title() -> &'static str {
+        crate::t!("Why this pick", "이 곡을 고른 이유", "この曲を選んだ理由")
+    }
+
+    /// Label before the recommendation source.
+    pub fn origin_label() -> &'static str {
+        crate::t!("Source", "선곡 출처", "選曲元")
+    }
+
+    /// Label before an optional DJ Gem role.
+    pub fn role_label() -> &'static str {
+        crate::t!("Role", "역할", "役割")
+    }
+
+    /// Label before an optional model confidence percentage.
+    pub fn confidence_label() -> &'static str {
+        crate::t!("Confidence", "확신도", "確信度")
+    }
+
+    /// Info toast shown when the contextual queue/current track has no recommendation provenance.
+    pub fn no_provenance() -> &'static str {
+        crate::t!(
+            "No recommendation reason is available for this track.",
+            "이 곡에는 추천 이유가 없습니다.",
+            "この曲にはおすすめ理由がありません。"
+        )
+    }
+
+    /// Human copy for a stable WhyGem source slot.
+    ///
+    /// `StreamingMode` currently serializes with title-case variant names, while older callers
+    /// and fixtures may use lowercase wire names. Both forms intentionally render identically.
+    /// An unknown slot is still recommendation provenance, but is not trusted as terminal copy;
+    /// it falls back to the generic DJ Gem source.
+    pub fn origin(slot: &str) -> &'static str {
+        match slot {
+            "Focused" | "focused" => {
+                crate::t!("Focused station", "집중 스테이션", "集中ステーション")
+            }
+            "Balanced" | "balanced" => {
+                crate::t!("Balanced station", "균형 스테이션", "バランスステーション")
+            }
+            "Discovery" | "discovery" => crate::t!(
+                "Discovery station",
+                "발견 스테이션",
+                "ディスカバリーステーション"
+            ),
+            "DJ Gem" | "dj_gem" => "DJ Gem",
+            _ => crate::t!("DJ Gem recommendation", "DJ Gem 추천", "DJ Gemのおすすめ"),
+        }
+    }
+
+    /// Localized model role, or `None` when a model returned an unknown value.
+    pub fn role(role: &str) -> Option<&'static str> {
+        Some(match role {
+            "core" => crate::t!("Core", "핵심", "中核"),
+            "bridge" => crate::t!("Bridge", "연결", "橋渡し"),
+            "adjacent" => crate::t!("Adjacent", "인접", "近接"),
+            "discovery" => crate::t!("Discovery", "발견", "発見"),
+            "stabilizer" => crate::t!("Stabilizer", "안정", "安定"),
+            "recovery" => crate::t!("Recovery", "회복", "回復"),
+            _ => return None,
+        })
+    }
+
+    /// Full localized sentence for one model evidence code.
+    pub fn reason(code: &str) -> Option<&'static str> {
+        Some(match code {
+            "co" => crate::t!(
+                "It often appears alongside what you have been listening to.",
+                "최근 들은 곡과 함께 자주 재생되는 곡이에요.",
+                "最近聴いた曲と一緒によく再生される曲です。"
+            ),
+            "tr" => crate::t!(
+                "It makes a smooth transition from the current track.",
+                "현재 곡에서 자연스럽게 이어지는 곡이에요.",
+                "現在の曲から自然につながる曲です。"
+            ),
+            "u" => crate::t!(
+                "It matches your listening preferences.",
+                "평소 감상 취향과 잘 맞는 곡이에요.",
+                "普段のリスニング傾向に合う曲です。"
+            ),
+            "nov" => crate::t!(
+                "It adds something new without straying too far.",
+                "취향에서 너무 벗어나지 않으면서 새로움을 더해요.",
+                "好みから離れすぎず、新鮮さを加える曲です。"
+            ),
+            "cont" => crate::t!(
+                "It continues the current source naturally.",
+                "현재 추천 흐름을 자연스럽게 이어 가는 곡이에요.",
+                "現在のおすすめの流れを自然に引き継ぐ曲です。"
+            ),
+            "comp" => crate::t!(
+                "You tend to listen through tracks like this.",
+                "비슷한 곡을 끝까지 듣는 경향이 있어요.",
+                "このような曲を最後まで聴く傾向があります。"
+            ),
+            "m" => crate::t!(
+                "It is a strongly verified official music release.",
+                "공식 음악 콘텐츠라는 근거가 충분한 곡이에요.",
+                "公式音楽コンテンツである根拠が十分な曲です。"
+            ),
+            _ => return None,
+        })
+    }
+}
+
 /// Serializes tests that explicitly select a language and installs a scoped per-thread value.
 ///
 /// Reducer tests that exercise config application can publish the configured language through
@@ -333,6 +448,28 @@ mod tests {
 
         set_language(Language::English);
         assert_eq!(t!("Settings", "설정", "設定"), "Settings");
+    }
+
+    #[test]
+    fn why_gem_catalog_localizes_known_codes_and_rejects_unknown_model_copy() {
+        let _guard = lock_for_test();
+
+        set_language(Language::Korean);
+        assert_eq!(why_gem::title(), "이 곡을 고른 이유");
+        assert_eq!(why_gem::origin("Balanced"), "균형 스테이션");
+        assert_eq!(why_gem::role("bridge"), Some("연결"));
+        assert_eq!(
+            why_gem::reason("tr"),
+            Some("현재 곡에서 자연스럽게 이어지는 곡이에요.")
+        );
+
+        set_language(Language::Japanese);
+        assert_eq!(why_gem::origin_label(), "選曲元");
+        assert_eq!(why_gem::confidence_label(), "確信度");
+        assert_eq!(why_gem::role("recovery"), Some("回復"));
+
+        assert_eq!(why_gem::role("model-invented-role"), None);
+        assert_eq!(why_gem::reason("model-invented-reason"), None);
     }
 
     #[test]

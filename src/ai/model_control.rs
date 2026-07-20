@@ -186,7 +186,7 @@ mod tests {
         let (handle, mut rx, mut model_rx) = test_handle(1, GeminiModel::FlashLite);
         assert!(
             handle
-                .rerank("queued".to_owned(), "work".to_owned())
+                .rerank(1, "queued".to_owned(), "work".to_owned())
                 .is_ok()
         );
         assert_eq!(
@@ -211,14 +211,14 @@ mod tests {
 
         assert!(matches!(rx.try_recv(), Ok(AiCmd::Rerank { .. })));
         assert_eq!(
-            handle.rerank("later".to_owned(), "work".to_owned()),
+            handle.rerank(2, "later".to_owned(), "work".to_owned()),
             Err(DeliveryError::Busy),
             "free queue capacity must not let work overtake the pending model"
         );
         assert_eq!(model_rx.take_latest(), GeminiModel::Latest);
         assert!(
             handle
-                .rerank("after".to_owned(), "apply".to_owned())
+                .rerank(3, "after".to_owned(), "apply".to_owned())
                 .is_ok()
         );
     }
@@ -230,7 +230,7 @@ mod tests {
         drop(model_rx);
 
         assert_eq!(
-            handle.rerank("closed".to_owned(), "work".to_owned()),
+            handle.rerank(4, "closed".to_owned(), "work".to_owned()),
             Err(DeliveryError::Closed)
         );
         assert_eq!(
@@ -238,7 +238,7 @@ mod tests {
             Err(DeliveryError::Closed)
         );
         assert_eq!(
-            handle.rerank("still".to_owned(), "closed".to_owned()),
+            handle.rerank(5, "still".to_owned(), "closed".to_owned()),
             Err(DeliveryError::Closed),
             "a rejected model update must not create a phantom Busy state"
         );

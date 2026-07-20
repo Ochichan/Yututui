@@ -640,9 +640,9 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
     (
         Action::WhyAi,
         "why_ai",
-        "Why these DJ Gem picks",
-        "DJ Gem 선곡 이유 보기",
-        "DJ Gemの選曲理由",
+        "Why this pick",
+        "이 곡을 고른 이유",
+        "この曲を選んだ理由",
     ),
     (
         Action::IdentifyNowPlaying,

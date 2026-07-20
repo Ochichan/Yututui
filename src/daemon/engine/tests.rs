@@ -50,6 +50,8 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         test_player_starts: VecDeque::new(),
         streaming: false,
         streaming_pending: false,
+        streaming_request_seq: 0,
+        pending_streaming_request: None,
         last_extend: None,
         consecutive_streaming_failures: 0,
         last_error: None,
@@ -68,8 +70,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         session_events: VecDeque::new(),
         media_art: None,
         gui_search_index: GuiSearchIndex::default(),
-        why_gem: Vec::new(),
-        why_gem_rev: 0,
+        why_gem: crate::why_gem::WhyGemLedger::default(),
         accounts_rev: 0,
         spotify_user: None,
         video_overlay: None,
@@ -1121,85 +1122,6 @@ async fn media_commands_ignore_invalid_or_disabled_operations() {
     assert!(effects.is_empty());
     assert!(engine.loaded_video_id.is_none());
     assert_eq!(engine.transport_recovery, TransportRecoveryState::Shutdown);
-}
-
-#[tokio::test]
-async fn api_streaming_events_extend_clear_pending_and_trip_circuit_breaker() {
-    let mut engine = engine_with_queue(&["seed"]);
-    engine.loaded_video_id = Some("seed".to_owned());
-    engine.streaming = true;
-    engine.streaming_pending = true;
-    engine.consecutive_streaming_failures = 2;
-
-    let additions = vec![song("fresh-a"), song("fresh-b")];
-    let effects = engine
-        .handle_api_event(ApiEvent::StreamingPreflighted {
-            seed_video_id: "seed".to_owned(),
-            songs: additions,
-        })
-        .await;
-    assert!(effects.is_empty());
-    assert!(!engine.streaming_pending);
-    assert_eq!(engine.consecutive_streaming_failures, 0);
-    assert!(
-        engine
-            .queue
-            .ordered_iter()
-            .any(|song| song.video_id == "fresh-a")
-    );
-
-    engine.streaming_pending = true;
-    let effects = engine
-        .handle_api_event(ApiEvent::StreamingResults {
-            seed_video_id: "not-in-queue".to_owned(),
-            candidates: vec![(song("ignored"), CandidateSource::YtdlpStreaming)],
-        })
-        .await;
-    assert!(effects.is_empty());
-    assert!(!engine.streaming_pending);
-    assert!(
-        !engine
-            .queue
-            .ordered_iter()
-            .any(|song| song.video_id == "ignored")
-    );
-
-    for idx in 0..AUTOPLAY_MAX_FAILURES {
-        engine.streaming = true;
-        engine
-            .handle_api_event(ApiEvent::StreamingError {
-                seed_video_id: "seed".to_owned(),
-                error: format!("failure-{idx}"),
-            })
-            .await;
-    }
-    assert!(!engine.streaming);
-    assert_eq!(engine.config.autoplay_streaming, Some(false));
-    assert!(
-        engine
-            .last_error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("autoplay streaming failed")
-    );
-
-    for inert in [
-        ApiEvent::TrackResolved {
-            seq: 1,
-            result: Ok(Vec::new()),
-        },
-        ApiEvent::SearchError {
-            request_id: 1,
-            source: crate::search_source::SearchSource::Youtube,
-            error: "offline".to_owned(),
-        },
-        ApiEvent::PlaylistTracksError {
-            title: "mix".to_owned(),
-            error: "private".to_owned(),
-        },
-    ] {
-        assert!(engine.handle_api_event(inert).await.is_empty());
-    }
 }
 
 #[test]

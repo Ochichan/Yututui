@@ -346,10 +346,13 @@ impl DaemonEngine {
         }
         let previous = self.queue.snapshot();
         self.queue.set(songs, 0);
-        self.load_current_or_restore_queue(previous)
-            .await
-            .map(|_| RemoteResponse::status(self.status()))
-            .unwrap_or_else(|error| RemoteResponse::err(error.reason()))
+        match self.load_current_or_restore_queue(previous).await {
+            Ok(()) => {
+                self.clear_why_gem();
+                RemoteResponse::status(self.status())
+            }
+            Err(error) => RemoteResponse::err(error.reason()),
+        }
     }
 
     async fn gui_enqueue_songs(&mut self, songs: Vec<Song>) -> RemoteResponse {
@@ -359,6 +362,7 @@ impl DaemonEngine {
         if !self.queue.has_capacity_for(songs.len()) {
             return RemoteResponse::err("queue_full");
         }
+        let video_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
         let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
@@ -372,12 +376,15 @@ impl DaemonEngine {
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
-            return self
-                .load_current_or_restore_queue(previous)
-                .await
-                .map(|_| RemoteResponse::status(self.status()))
-                .unwrap_or_else(|error| RemoteResponse::err(error.reason()));
+            return match self.load_current_or_restore_queue(previous).await {
+                Ok(()) => {
+                    self.forget_why_gem_picks(video_ids.iter().map(String::as_str));
+                    RemoteResponse::status(self.status())
+                }
+                Err(error) => RemoteResponse::err(error.reason()),
+            };
         }
+        self.forget_why_gem_picks(video_ids.iter().map(String::as_str));
         self.save_session();
         RemoteResponse::status(self.status())
     }
@@ -540,7 +547,7 @@ mod tests {
         engine.record_why_gem(
             "a".to_owned(),
             WhyGemModel {
-                slot: "balanced".to_owned(),
+                slot: "Balanced".to_owned(),
                 reasons: Vec::new(),
                 confidence: None,
             },
@@ -551,12 +558,177 @@ mod tests {
         let hit = engine.gui_fetch_why_gem("a");
         assert!(hit.ok);
         match hit.data {
-            Some(ResponseData::WhyGem(model)) => assert_eq!(model.slot, "balanced"),
+            Some(ResponseData::WhyGem(model)) => assert_eq!(model.slot, "Balanced"),
             other => panic!("expected why-gem data, got {other:?}"),
         }
         let miss = engine.gui_fetch_why_gem("zzz");
         assert!(miss.ok);
         assert!(miss.data.is_none(), "unknown track answers with no data");
+    }
+
+    #[test]
+    fn why_gem_reconcile_keeps_duplicate_video_until_its_last_queue_row_leaves() {
+        let mut engine = engine();
+        engine.queue.set(
+            vec![
+                song("a", "A1", "Alpha"),
+                song("a", "A2", "Alpha"),
+                song("b", "B", "Beta"),
+            ],
+            0,
+        );
+        engine.record_why_gem_picks(
+            "Balanced",
+            &[
+                song("a", "A", "Alpha"),
+                song("b", "B", "Beta"),
+                song("gone", "Gone", "Ghost"),
+            ],
+        );
+
+        engine.reconcile_why_gem();
+        assert_eq!(engine.why_gem_ids(), vec!["a", "b"]);
+
+        engine.queue.remove_at(0);
+        engine.reconcile_why_gem();
+        assert!(engine.why_gem_ids().contains(&"a".to_owned()));
+
+        engine.queue.remove_at(0);
+        engine.reconcile_why_gem();
+        assert_eq!(engine.why_gem_ids(), vec!["b"]);
+    }
+
+    #[tokio::test]
+    async fn manual_enqueue_of_the_same_video_forgets_stale_recommendation() {
+        let mut engine = engine();
+        engine.queue.set(vec![song("seed", "Seed", "Artist")], 0);
+        engine.loaded_video_id = Some("seed".to_owned());
+        engine.record_why_gem_picks("Balanced", &[song("dup", "Old", "Artist")]);
+
+        let response = engine
+            .gui_enqueue_songs(vec![song("dup", "Manual", "Artist")])
+            .await;
+
+        assert!(response.ok);
+        assert!(!engine.why_gem_ids().contains(&"dup".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn manual_queue_replacement_clears_only_after_player_admission() {
+        let mut accepted = engine();
+        accepted.queue.set(vec![song("old", "Old", "Artist")], 0);
+        accepted.loaded_video_id = Some("old".to_owned());
+        accepted.record_why_gem_picks("Balanced", &[song("old", "Old", "Artist")]);
+        let _player_rx = super::super::tests::install_accepting_player(&mut accepted);
+
+        let response = accepted
+            .gui_replace_queue(vec![song("new", "New", "Artist")])
+            .await;
+        assert!(response.ok);
+        assert!(accepted.why_gem_ids().is_empty());
+
+        let mut rejected = engine();
+        rejected.queue.set(vec![song("old", "Old", "Artist")], 0);
+        rejected.loaded_video_id = Some("old".to_owned());
+        rejected.record_why_gem_picks("Balanced", &[song("old", "Old", "Artist")]);
+        let player_rx = super::super::tests::install_accepting_player(&mut rejected);
+        drop(player_rx);
+
+        let response = rejected
+            .gui_replace_queue(vec![song("new", "New", "Artist")])
+            .await;
+        assert!(!response.ok);
+        assert_eq!(rejected.why_gem_ids(), vec!["old"]);
+        assert_eq!(
+            rejected.queue.current().map(|song| song.video_id.as_str()),
+            Some("old")
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_recommendation_extension_loads_first_pick_before_recording_its_origin() {
+        use crate::remote::proto::ResponseData;
+
+        let mut engine = engine();
+        engine.config.streaming.mode = crate::streaming::StreamingMode::Discovery;
+        engine.consecutive_streaming_failures = 2;
+        let _player_rx = super::super::tests::install_accepting_player(&mut engine);
+
+        engine
+            .extend_queue_from_streaming(vec![song("first", "First", "Artist")])
+            .await;
+
+        assert_eq!(engine.queue.video_ids().collect::<Vec<_>>(), ["first"]);
+        assert_eq!(
+            engine.queue.current().map(|song| song.video_id.as_str()),
+            Some("first")
+        );
+        assert_eq!(engine.loaded_video_id.as_deref(), Some("first"));
+        assert_eq!(engine.consecutive_streaming_failures, 0);
+        match engine.gui_fetch_why_gem("first").data {
+            Some(ResponseData::WhyGem(model)) => assert_eq!(model.slot, "Discovery"),
+            other => panic!("expected why-gem data, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_idle_recommendation_restores_queue_ledger_counter_and_session_projection() {
+        let mut engine = engine();
+        engine
+            .queue
+            .set(vec![song("queued", "Queued", "Artist")], 0);
+        engine.record_why_gem_picks("Balanced", &[song("kept", "Kept", "Artist")]);
+        engine.consecutive_streaming_failures = 2;
+        let before_session = serde_json::to_value(engine.session_cache_snapshot()).unwrap();
+        let before_why_gem_rev = engine.why_gem_rev();
+        let before_why_gem_ids = engine.why_gem_ids();
+        let player_rx = super::super::tests::install_accepting_player(&mut engine);
+        drop(player_rx);
+
+        engine
+            .extend_queue_from_streaming(vec![song("rejected", "Rejected", "Artist")])
+            .await;
+
+        assert_eq!(engine.queue.video_ids().collect::<Vec<_>>(), ["queued"]);
+        assert_eq!(
+            engine.queue.current().map(|song| song.video_id.as_str()),
+            Some("queued")
+        );
+        assert_eq!(engine.loaded_video_id, None);
+        assert_eq!(engine.why_gem_rev(), before_why_gem_rev);
+        assert_eq!(engine.why_gem_ids(), before_why_gem_ids);
+        assert_eq!(engine.consecutive_streaming_failures, 2);
+        assert_eq!(
+            serde_json::to_value(engine.session_cache_snapshot()).unwrap(),
+            before_session
+        );
+        assert!(engine.library.history.is_empty());
+        assert!(engine.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn recommendation_extension_records_only_the_capacity_accepted_prefix() {
+        let mut engine = engine();
+        engine.config.streaming.mode = crate::streaming::StreamingMode::Discovery;
+        let fill = (0..998)
+            .map(|index| song(&format!("fill-{index}"), "Fill", "Artist"))
+            .collect();
+        engine.queue.set(fill, 0);
+        engine.loaded_video_id = engine.queue.current().map(|song| song.video_id.clone());
+
+        engine
+            .extend_queue_from_streaming(vec![
+                song("accepted", "Accepted", "Artist"),
+                song("rejected", "Rejected", "Artist"),
+            ])
+            .await;
+
+        assert!(engine.why_gem_ids().contains(&"accepted".to_owned()));
+        assert!(!engine.why_gem_ids().contains(&"rejected".to_owned()));
+        let Some(ResponseData::WhyGem(model)) = engine.gui_fetch_why_gem("accepted").data else {
+            panic!("accepted recommendation should expose its why-gem origin");
+        };
+        assert_eq!(model.slot, "Discovery");
     }
 
     #[tokio::test]

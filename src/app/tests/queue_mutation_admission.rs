@@ -118,9 +118,13 @@ fn idle_enqueue_busy_and_closed_leave_append_retryable_and_commit_once() {
 fn play_now_partial_capacity_and_romanization_commit_only_after_admission() {
     let mut app = app_playing(998, 0);
     app.config.romanized_titles = Some(true);
+    app.why_gem.upsert(
+        "id500".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+    );
     let requested = vec![
         Song::remote("cap00000001", "첫 번째", "가수", "3:00"),
-        Song::remote("cap00000002", "두 번째", "가수", "3:00"),
+        Song::remote("id500", "두 번째", "가수", "3:00"),
         Song::remote("cap00000003", "세 번째", "가수", "3:00"),
     ];
     let before_rev = app.queue.rev();
@@ -145,8 +149,12 @@ fn play_now_partial_capacity_and_romanization_commit_only_after_admission() {
     assert_eq!(app.queue.len(), 999);
     assert_eq!(current(&app), "cap00000001");
     assert!(app.queue.video_ids().any(|id| id == "cap00000001"));
-    assert!(!app.queue.video_ids().any(|id| id == "cap00000002"));
+    assert_eq!(app.queue.video_ids().filter(|id| *id == "id500").count(), 1);
     assert!(!app.queue.video_ids().any(|id| id == "cap00000003"));
+    assert!(
+        app.why_gem.contains("id500"),
+        "a cap-rejected duplicate must not erase the existing queue row's provenance"
+    );
     assert_ne!(app.queue.rev(), before_rev);
     assert_eq!(app.playback.position_epoch, before_epoch + 1);
     assert!(

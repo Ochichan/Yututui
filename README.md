@@ -177,7 +177,7 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 ### DJ Gem streaming
 
-**`Ctrl+R`** builds an endless station around what you're hearing — **`w`** explains, in plain language, why it picked each song.
+**`Ctrl+R`** builds an endless station around what you're hearing. Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. Press **`w`** with the queue open to explain its selected row; anywhere else, it explains the current track. The card always names the recommendation source and, when DJ Gem supplied them, adds its role, plain-language reasons and confidence. Picks made without model detail show the source alone.
 
 > 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/djgem.gif, delete the "coming soon" line above, then uncomment:
@@ -326,6 +326,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `Backspace` / `Ctrl+Backspace` | Delete a character / previous word in a text field |
 | `Ctrl+H` | Return to the Player (on legacy ambiguous terminals, the safe text-edit fallback takes priority) |
 | `Ctrl+R` | DJ Gem streaming |
+| `w` | Explain the selected queue recommendation, or the current track |
 | `g` | DJ Gem assistant |
 | `o` | Settings |
 | `Ctrl+Q` | Quit |

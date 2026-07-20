@@ -92,10 +92,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.overlays.about_visible {
         views::about::render(frame, app, area);
     }
-    // The "Why DJ Gem" card explains the last DJ Gem streaming refill (`w`); also drawn on top.
-    if app.overlays.why_ai_visible {
-        views::why_ai::render(frame, app, area);
-    }
+    // The per-track WhyGem card is a modal over whichever surface selected its queue item.
+    views::why_ai::render(frame, app, area);
     // The "what's playing" identify card (radio): the result + favorite / ask-DJ Gem
     // actions. Below the mode confirmations so those stay on top.
     if app.overlays.now_playing_overlay.is_some() {

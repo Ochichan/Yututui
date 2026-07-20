@@ -40,6 +40,7 @@ impl App {
     }
 
     fn seed_restored_queue(&mut self, song: Song) {
+        self.clear_why_gem();
         self.queue.set(vec![song], 0);
         self.seed_restored_playback_state();
     }
@@ -78,6 +79,9 @@ impl App {
     /// Restore an exact queue snapshot when one exists; fall back to the legacy library-history
     /// restore path for old session files.
     pub fn restore_last_session_from_cache(&mut self, cache: &crate::session::SessionCache) {
+        // WhyGem is deliberately session-only; restored queue IDs must never inherit rationale
+        // from an earlier in-process queue or from the persisted session cache.
+        self.clear_why_gem();
         self.radio_mode.normal_mode_queue = cache.normal_queue.clone();
         self.radio_mode.radio_mode_queue = cache.radio_queue.clone();
         self.local_mode.normal_mode_queue = cache.normal_queue.clone();

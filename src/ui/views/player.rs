@@ -16,6 +16,7 @@ use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 use super::player_layout::calculate_player_filler_layout;
+use super::queue_actions;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -149,8 +150,6 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
     let sel_lo = app.queue_popup.cursor.min(app.queue_popup.anchor);
     let sel_hi = app.queue_popup.cursor.max(app.queue_popup.anchor);
 
-    const DEL_W: u16 = 2; // "✗ " click target on the right edge
-    let body_w = list.width.saturating_sub(DEL_W) as usize;
     for (vis, (i, song)) in app
         .queue
         .ordered_iter()
@@ -176,6 +175,8 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         };
         let title = app.display_title(song);
         let artist = app.display_artist(song);
+        let actions_w = queue_actions::reserved_width(app, &song.video_id);
+        let body_w = list.width.saturating_sub(actions_w) as usize;
         let text = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{:>3} {title} — {artist}", i + 1),
             body_w.saturating_sub(1),
@@ -204,29 +205,18 @@ pub(in crate::ui) fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect
         };
         frame.render_widget(Paragraph::new(Line::from(text).style(base)), row);
 
-        // Trailing ✗ delete button, kept on the row's highlight when selected.
-        let del_x = row.x + row.width.saturating_sub(DEL_W);
-        let del_rect = Rect {
-            x: del_x,
-            y,
-            width: DEL_W,
-            height: 1,
-        };
-        let mut del_style = app.theme.style(R::Error);
-        if selected {
-            del_style = del_style.bg(app.theme.color(R::SelectionBg));
-        }
-        frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
-        app.register_mouse_button(del_rect, MouseTarget::QueueDel(i));
+        let actions_w = queue_actions::render(frame, app, row, i, &song.video_id, selected);
 
-        // The row body (everything left of the ✗) selects / jumps to the track.
+        // The row body (everything left of its trailing actions) selects / jumps to the track.
         let body_rect = Rect {
             x: row.x,
             y,
-            width: row.width.saturating_sub(DEL_W),
+            width: row.width.saturating_sub(actions_w),
             height: 1,
         };
-        app.register_mouse_button(body_rect, MouseTarget::QueueRow(i));
+        if !body_rect.is_empty() {
+            app.register_mouse_button(body_rect, MouseTarget::QueueRow(i));
+        }
     }
 
     // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.

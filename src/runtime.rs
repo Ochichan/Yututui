@@ -218,10 +218,12 @@ impl From<RuntimeEvent> for Msg {
                 }
                 crate::ai::AiEvent::PlayPlaylist(key) => Msg::Ai(AiMsg::PlayPlaylist(key)),
                 crate::ai::AiEvent::StreamingPicks {
+                    request_id,
                     seed_video_id,
                     picks,
                     conf,
                 } => Msg::Streaming(StreamingMsg::AiPicks {
+                    request_id,
                     seed_video_id,
                     picks,
                     conf,
@@ -285,23 +287,29 @@ impl From<RuntimeEvent> for Msg {
                     Msg::PlaylistTracksError { title, error }
                 }
                 crate::api::ApiEvent::StreamingResults {
+                    request_id,
                     seed_video_id,
                     candidates,
                 } => Msg::Streaming(StreamingMsg::Results {
+                    request_id,
                     seed_video_id,
                     candidates,
                 }),
                 crate::api::ApiEvent::StreamingPreflighted {
+                    request_id,
                     seed_video_id,
                     songs,
                 } => Msg::Streaming(StreamingMsg::Preflighted {
+                    request_id,
                     seed_video_id,
                     songs,
                 }),
                 crate::api::ApiEvent::StreamingError {
+                    request_id,
                     seed_video_id,
                     error,
                 } => Msg::Streaming(StreamingMsg::Error {
+                    request_id,
                     seed_video_id,
                     error,
                 }),

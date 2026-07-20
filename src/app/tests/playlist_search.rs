@@ -105,13 +105,21 @@ fn playlist_tracks_play_replaces_the_queue() {
 fn playlist_tracks_enqueue_appends_to_the_queue() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
+    app.why_gem.upsert(
+        "id1".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+    );
     app.update(Msg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Enqueue,
-        songs: vec![Song::remote("zzz11111111", "t", "a", "0:10")],
+        songs: vec![Song::remote("id1", "t", "a", "0:10")],
     });
     assert_eq!(app.queue.len(), 3);
     assert_eq!(current(&app), "id0", "current track is untouched");
+    assert!(
+        !app.why_gem.contains("id1"),
+        "a manually enqueued duplicate must not inherit recommendation provenance"
+    );
 }
 
 #[test]

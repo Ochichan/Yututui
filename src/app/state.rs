@@ -590,22 +590,29 @@ pub struct StreamingRuntime {
     /// True while the streaming candidate-pool fetch is in flight (both the DJ Gem and non-DJ Gem paths
     /// fetch the same pool first).
     pub pending: bool,
+    /// Exact generation of the candidate-pool request represented by [`Self::pending`].
+    pub(crate) pending_pool_request_id: Option<u64>,
+    /// Queue membership/order snapshot at refill start. Any admitted manual mutation invalidates
+    /// the entire chain even when it leaves the same seed video id present.
+    pub(crate) pending_queue_revision: Option<u64>,
     /// An DJ Gem rerank handed off to the assistant actor, awaiting its `StreamingMsg::AiPicks`. Holds
     /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
     pub pending_rerank: Option<PendingRerank>,
     /// Consecutive empty streaming extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
-    /// The last DJ Gem rerank's resolved explanation (picks → role + reasons + confidence), stashed
-    /// when `StreamingMsg::AiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
-    /// were chosen. `None` until the first DJ Gem rerank lands.
-    pub last_explain: Option<StreamingAiExplain>,
+    /// Detailed per-video provenance carried across the asynchronous metadata-preflight boundary.
+    /// It is consumed only by the matching seed result and discarded on stale/error paths.
+    pub(crate) pending_why_gem: Option<super::why_gem::PendingWhyGemBatch>,
+    /// Monotonic owner-local generation carried through one complete refill chain (candidate pool,
+    /// optional DJ Gem rerank, and metadata preflight). Every async response must match it.
+    pub(crate) next_request_id: u64,
     /// Ordered recent listening outcomes (plays / skips / likes / dislikes), newest at the back,
     /// bounded to the last [`SESSION_EVENTS_CAP`]. Drives the reranker's recovery context.
     pub session_events: std::collections::VecDeque<SessionEvent>,
-    /// TTL cache of resolved DJ Gem rerank orderings, keyed by [`streaming::ai_cache_key`]. Each value is
-    /// the DJ Gem's chosen `video_id` ordering plus when it was stored; a rapid identical refill
-    /// replays it instead of spending another call. Pruned by TTL on every insert (stays tiny).
-    pub ai_cache: HashMap<u64, (Vec<String>, Instant)>,
+    /// TTL cache of resolved DJ Gem rerank orderings and their normalized per-pick provenance,
+    /// keyed by [`streaming::ai_cache_key`]. A rapid identical refill can therefore reproduce the
+    /// same WhyGem card without another model call. Pruned by TTL on every insert (stays tiny).
+    pub(crate) ai_cache: HashMap<u64, (Vec<super::why_gem::WhyGemPick>, Instant)>,
     /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so streaming refills don't
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
@@ -845,6 +852,10 @@ pub struct Interaction {
     /// double-click arrives so the second press cannot be reinterpreted by a newly opened popup
     /// or click through after the first press closes it.
     pub(in crate::app) color_picker_click: Option<(u16, u16)>,
+    /// Coordinates of a WhyGem-opening or WhyGem-owned press. Retained across button-up so the
+    /// translator's paired double-click cannot close a newly opened card or activate the surface
+    /// exposed by an outside-dismiss press.
+    pub(in crate::app) why_gem_click: Option<(u16, u16)>,
     /// Multi-selection hidden by the latest plain Search/Library row press while the input
     /// translator waits to learn whether that press is the first half of a double-click.
     pub(in crate::app) pending_double_click_selection: Option<PendingDoubleClickSelection>,
@@ -1214,10 +1225,15 @@ pub struct Overlays {
     /// Result of the background app-update check (`None` until it completes / when disabled).
     /// When `available`, the About card shows an upgrade notice and the nav brand gets a dot.
     pub update_status: Option<crate::update::UpdateStatus>,
-    /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
-    /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
-    /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
-    pub why_ai_visible: bool,
+    /// The video id whose per-track WhyGem card is open. `None` means closed. Queue-row and
+    /// Now Playing affordances set the exact target; Esc / `w` / Back dismiss it.
+    pub why_gem_video_id: Option<String>,
+    /// Play-order index selected when the card opened. Provenance remains shared by video id,
+    /// while this occurrence pointer keeps duplicate rows' displayed title/artist exact.
+    pub(crate) why_gem_queue_index: Option<usize>,
+    /// Queue revision paired with `why_gem_queue_index`. Any membership/order mutation closes the
+    /// card rather than silently retargeting an indistinguishable duplicate occurrence.
+    pub(crate) why_gem_queue_revision: Option<u64>,
     /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
     /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
     pub now_playing_overlay: Option<NowPlayingOverlay>,

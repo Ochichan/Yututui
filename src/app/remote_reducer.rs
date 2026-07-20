@@ -359,6 +359,9 @@ impl App {
                 })
             }
             RemoteSettingChange::StreamingMode { value } => {
+                if self.config.streaming.mode != value {
+                    self.cancel_pending_streaming_recommendation();
+                }
                 self.config.streaming.mode = value;
                 self.status.text = format!("Curating style: {}", value.label());
                 self.dirty = true;
@@ -373,6 +376,9 @@ impl App {
             RemoteSettingChange::StreamingSource { value } => {
                 let search = self.config.effective_search();
                 let source = search.normalized_streaming_source(value);
+                if self.config.search.streaming_source != source {
+                    self.cancel_pending_streaming_recommendation();
+                }
                 self.config.search.streaming_source = source;
                 self.status.text = format!("Streaming source: {}", source.label());
                 self.dirty = true;
@@ -435,8 +441,8 @@ impl App {
                 self.config.ai_enabled = Some(value);
                 if !value {
                     self.ai.available = false;
-                    self.ai.thinking = false;
-                    self.streaming.pending_rerank = None;
+                    self.cancel_pending_streaming_recommendation();
+                    self.streaming.ai_cache.clear();
                 }
                 self.status.text = format!("DJ Gem: {}", if value { "on" } else { "off" });
                 self.dirty = true;
@@ -878,24 +884,37 @@ mod tests {
         let mut app = two_track_app();
         app.autoplay_streaming = true;
         app.ai.available = true;
+        let pending = app.force_autoplay_extend();
+        assert!(
+            pending
+                .iter()
+                .any(|cmd| matches!(cmd, Cmd::StreamingFallback { .. }))
+        );
 
         let (resp, _) = app.apply_remote(RemoteCommand::SetSetting {
             change: RemoteSettingChange::AiEnabled { value: false },
         });
         assert!(resp.ok);
         assert!(!app.ai.available);
+        assert!(!app.streaming.pending);
+        assert!(app.streaming.pending_pool_request_id.is_none());
+        assert!(app.streaming.pending_queue_revision.is_none());
 
-        let before = app.queue.len();
+        app.streaming.pending = true;
+        app.streaming.pending_pool_request_id = Some(2);
+        app.streaming.pending_queue_revision = Some(app.queue.rev());
         let cmds = app.update(StreamingMsg::Results {
+            request_id: 2,
             seed_video_id: "id0".to_owned(),
             candidates: vec![(
-                Song::remote("cand1", "Candidate", "B", "3:00"),
+                Song::remote("cand1", "Candidate", "C", "3:00"),
                 CandidateSource::YtdlpStreaming,
             )],
         });
 
         assert!(cmds.iter().all(|cmd| !matches!(cmd, Cmd::AiRerank { .. })));
-        assert!(app.queue.len() > before);
+        assert!(app.streaming.pending_rerank.is_none());
+        assert!(!app.ai.thinking);
     }
 
     #[test]
@@ -1389,6 +1408,35 @@ mod tests {
         cmds.extend(follow_ups);
         assert_eq!(app.queue.len(), 1);
         assert_eq!(app.queue.current().unwrap().video_id, "id1");
+    }
+
+    #[test]
+    fn non_current_remove_replaces_a_stale_refill_in_the_same_owner_turn() {
+        let mut app = two_track_app();
+        app.autoplay_streaming = true;
+        let old = app.force_autoplay_extend();
+        let old_request_id = old
+            .iter()
+            .find_map(|cmd| match cmd {
+                Cmd::StreamingFallback { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .expect("initial refill generation");
+
+        let (response, cmds) = app.apply_remote(RemoteCommand::QueueRemove { position: 1 });
+
+        assert!(response.ok);
+        assert_eq!(app.queue.len(), 1);
+        let new_request_id = cmds
+            .iter()
+            .find_map(|cmd| match cmd {
+                Cmd::StreamingFallback { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .expect("same-turn replacement refill");
+        assert_ne!(new_request_id, old_request_id);
+        assert_eq!(app.streaming.pending_pool_request_id, Some(new_request_id));
+        assert_eq!(app.streaming.pending_queue_revision, Some(app.queue.rev()));
     }
 
     #[test]

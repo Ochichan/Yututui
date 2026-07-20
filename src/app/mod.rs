@@ -147,6 +147,7 @@ pub use track_transition::TrackTransitionPlan;
 mod video_transition;
 pub use video_transition::{VideoFinishPlan, VideoOpenPlan};
 pub(in crate::app) mod prefetch;
+mod why_gem;
 pub use player::PlayerMsg;
 mod playlists_reducer;
 mod queue;
@@ -357,6 +358,9 @@ pub struct App {
     /// Streaming autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
     /// and the empty-extend circuit-breaker counter.
     pub streaming: StreamingRuntime,
+    /// Session-only per-video provenance for recommendation-added queue tracks. The shared
+    /// ledger implementation keeps App and daemon lifecycle semantics in lockstep.
+    pub(crate) why_gem: crate::why_gem::WhyGemLedger<crate::remote::proto::WhyGemModel>,
     /// Consecutive mpv playback errors with no track playing in between, for the
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,

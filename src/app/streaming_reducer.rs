@@ -20,6 +20,7 @@ pub enum StreamingMsg {
     /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
     /// weight provenance and prefer the better source on dedup.
     Results {
+        request_id: u64,
         seed_video_id: String,
         candidates: Vec<(Song, CandidateSource)>,
     },
@@ -27,11 +28,20 @@ pub enum StreamingMsg {
     /// last gate before enqueueing; it can drop risky public-YouTube candidates and top up from
     /// fallback picks.
     Preflighted {
+        request_id: u64,
         seed_video_id: String,
         songs: Vec<Song>,
     },
+    /// A final metadata-preflight request could not be admitted to the API actor. Kept separate
+    /// from pool-fetch errors so only the exact pending generation can be settled.
+    PreflightError {
+        request_id: u64,
+        seed_video_id: String,
+        error: String,
+    },
     /// The non-DJ Gem streaming fallback failed to fetch related tracks.
     Error {
+        request_id: u64,
         seed_video_id: String,
         error: String,
     },
@@ -39,6 +49,7 @@ pub enum StreamingMsg {
     /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
     /// against the shortlist, and tops up from the local pick.
     AiPicks {
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<AiPick>,
         /// The model's self-reported confidence in [0,1], if it returned one.
@@ -58,12 +69,11 @@ impl App {
     /// the `StreamingMsg::AiPicks` dispatch arm.
     pub(in crate::app) fn on_streaming_ai_picks(
         &mut self,
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<AiPick>,
         conf: Option<f32>,
     ) -> Vec<Cmd> {
-        self.ai.thinking = false;
-        self.dirty = true;
         // Only consume `pending_rerank` when this result is for it (a stale/duplicate
         // message for some other seed leaves the current rerank untouched). When it does
         // match but the seed is no longer queued (the user skipped/cleared mid-think),
@@ -72,9 +82,13 @@ impl App {
             .streaming
             .pending_rerank
             .as_ref()
-            .is_some_and(|p| p.seed_video_id == seed_video_id);
-        if ours
-            && let Some(pending) = self.streaming.pending_rerank.take()
+            .is_some_and(|p| p.request_id == request_id && p.seed_video_id == seed_video_id);
+        if !ours {
+            return Vec::new();
+        }
+        self.ai.thinking = false;
+        self.dirty = true;
+        if let Some(pending) = self.streaming.pending_rerank.take()
             && self.streaming_active()
             && self.queue.contains_video_id(&seed_video_id)
         {
@@ -85,12 +99,11 @@ impl App {
                     "streaming DJ Gem rerank confidence"
                 );
             }
-            // Resolve the model's opaque cids back to real tracks once, keeping its order. A
-            // cid that isn't in the pack (a hallucinated id) is dropped here; `merge_ai_picks`
-            // then re-validates against the shortlist and tops up from the local pick. The
-            // same resolution feeds the "Why DJ Gem" overlay (title + role + reasons), which must
-            // outlive the `pending_rerank` we're about to drop.
-            let resolved: Vec<(String, ExplainPick)> = picks
+            // Resolve the model's opaque cids back to real tracks once, keeping its order. A cid
+            // that is not in the pack is dropped here; the resolved pick metadata travels with
+            // the id until the final queue-admission boundary.
+            let mut resolved_ids = HashSet::new();
+            let resolved: Vec<(String, AiPick)> = picks
                 .iter()
                 .filter_map(|p| {
                     let vid = pending
@@ -99,14 +112,9 @@ impl App {
                         .find(|m| m.cid == p.cid)?
                         .video_id
                         .clone();
-                    let song = pending.shortlist.iter().find(|s| s.video_id == vid)?;
-                    let pick = ExplainPick {
-                        title: self.display_title(song).into_owned(),
-                        artist: self.display_artist(song).into_owned(),
-                        role: p.role.clone(),
-                        reasons: p.reasons.clone(),
-                    };
-                    Some((vid, pick))
+                    (resolved_ids.insert(vid.clone())
+                        && pending.shortlist.iter().any(|s| s.video_id == vid))
+                    .then(|| (vid, p.clone()))
                 })
                 .collect();
             let ids: Vec<String> = resolved.iter().map(|(vid, _)| vid.clone()).collect();
@@ -114,17 +122,26 @@ impl App {
                 resolved.iter().map(|(_, pick)| pick.role.clone()).collect();
             let recipe_ok =
                 streaming::ai_roles_match_recipe(&roles, pending.mode, &self.config.streaming);
+            let normalized_conf = conf
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0));
             let effective_conf = if recipe_ok {
-                conf
+                normalized_conf
             } else {
-                Some(conf.unwrap_or(0.35).min(0.40))
+                Some(normalized_conf.unwrap_or(0.35).min(0.40))
             };
-            if !resolved.is_empty() {
-                self.streaming.last_explain = Some(StreamingAiExplain {
-                    conf: effective_conf,
-                    picks: resolved.into_iter().map(|(_, p)| p).collect(),
-                });
-            }
+            let ai_slots =
+                streaming::ai_slots_for_confidence(self.config.streaming.ai.picks, effective_conf);
+            let detailed: Vec<why_gem::WhyGemPick> = resolved
+                .iter()
+                .take(ai_slots)
+                .map(|(video_id, pick)| {
+                    why_gem::WhyGemPick::new(
+                        video_id.clone(),
+                        why_gem::model_from_ai_pick(pick, effective_conf),
+                    )
+                })
+                .collect();
             let picks = streaming::merge_ai_picks_with_confidence(
                 &ids,
                 &pending.shortlist,
@@ -135,10 +152,17 @@ impl App {
             // Cache the validated ordering so a rapid identical refill replays it without a
             // second call. Skip empty results (a failed rerank) so the next refill retries.
             if !ids.is_empty() && recipe_ok && effective_conf.unwrap_or(0.0) >= 0.45 {
-                self.ai_cache_store(pending.cache_key, ids);
+                self.ai_cache_store(pending.cache_key, detailed.clone());
             }
-            return self.extend_sanitized_streaming(&seed_video_id, picks, &pending.local_pick);
+            return self.extend_sanitized_streaming_with_details(
+                request_id,
+                &seed_video_id,
+                picks,
+                &pending.local_pick,
+                detailed,
+            );
         }
+        self.cancel_pending_streaming_recommendation();
         Vec::new()
     }
 
@@ -154,25 +178,42 @@ impl App {
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
+        // Queue mutations can call this again in the same owner turn, before the top-level
+        // reducer's post-dispatch reconciliation. Retire that stale generation first so it does
+        // not block the replacement request. A canceled in-flight request also gets this one
+        // chance to bypass its own cooldown; the ordinary queue-length gate still applies.
+        let replaced_stale_refill = self.reconcile_pending_streaming_recommendation();
         // `streaming_active()` (not the raw preference) so a top-up never fires in dedicated
         // Radio/Local Deck mode or while a live station plays; the shared planner's station
         // guard stays as a defensive backstop.
         // One refill in flight at a time: the pool fetch (`streaming.pending`) or, when the DJ Gem
         // reranks the fetched pool, that rerank call (`ai_thinking`).
-        let refill_pending = self.streaming.pending || (self.ai.available && self.ai.thinking);
+        let refill_pending = self.streaming.pending
+            || self.streaming.pending_rerank.is_some()
+            || self.streaming.pending_why_gem.is_some()
+            || self.streaming.pending_queue_revision.is_some()
+            || (self.ai.available && self.ai.thinking);
         let Some(refill) = streaming::plan_autoplay_refill(
             self.streaming_active(),
             refill_pending,
             force,
             self.queue.remaining(),
-            self.streaming.last_extend.map(|t| t.elapsed()),
+            if replaced_stale_refill {
+                None
+            } else {
+                self.streaming.last_extend.map(|t| t.elapsed())
+            },
             self.queue.current(),
         ) else {
             return Vec::new();
         };
         let exclude_ids = self.streaming_exclude_ids(&refill.seed_video_id);
+        self.streaming.next_request_id = self.streaming.next_request_id.wrapping_add(1).max(1);
+        let request_id = self.streaming.next_request_id;
         self.streaming.last_extend = Some(Instant::now());
         self.streaming.pending = true;
+        self.streaming.pending_pool_request_id = Some(request_id);
+        self.streaming.pending_queue_revision = Some(self.queue.rev());
         self.status.text = t!(
             "Autoplay: finding related tracks",
             "자동재생: 관련 곡을 찾는 중",
@@ -181,6 +222,7 @@ impl App {
         .to_owned();
         self.dirty = true;
         vec![Cmd::StreamingFallback {
+            request_id,
             seed: refill.seed,
             seed_video_id: refill.seed_video_id,
             exclude_ids,
@@ -195,6 +237,7 @@ impl App {
     /// command. If the pool yields no rerankable shortlist, it enqueues the local pick directly.
     pub(in crate::app) fn start_ai_rerank(
         &mut self,
+        request_id: u64,
         seed_video_id: &str,
         mut candidates: Vec<(Song, CandidateSource)>,
     ) -> Vec<Cmd> {
@@ -231,14 +274,14 @@ impl App {
         if shortlist.is_empty() {
             // Nothing to rerank → fall straight to the local pick (itself possibly empty, which
             // trips the circuit breaker via `extend_queue_from_streaming`).
-            return self.extend_sanitized_streaming(seed_video_id, local_pick, &[]);
+            return self.extend_sanitized_streaming(request_id, seed_video_id, local_pick, &[]);
         }
         // Smart gate: skip the DJ Gem call when the local pick is already confident and the listener
         // isn't skipping — saves the spend + latency. `smart_gate=false` restores always-on DJ Gem.
         let skip_streak = self.streaming_skip_streak();
         if !streaming::should_call_ai(&shortlist, skip_streak, &self.config.streaming) {
             tracing::debug!(skip_streak, "streaming DJ Gem gated → confident local pick");
-            return self.extend_sanitized_streaming(seed_video_id, local_pick, &[]);
+            return self.extend_sanitized_streaming(request_id, seed_video_id, local_pick, &[]);
         }
         // Result cache: a rapid identical refill (same seed artist, mode, recent ids, and candidate
         // set) replays the last resolved ordering instead of spending another call. Keyed on the
@@ -266,8 +309,9 @@ impl App {
             profile_version: profile.profile_version,
             prompt_recipe_hash: recipe_hash,
         });
-        if let Some(cached_ids) = self.ai_cache_lookup(cache_key) {
+        if let Some(cached) = self.ai_cache_lookup(cache_key) {
             tracing::debug!("streaming DJ Gem cache hit → replaying cached order");
+            let cached_ids: Vec<String> = cached.iter().map(|pick| pick.video_id.clone()).collect();
             let shortlist_songs: Vec<Song> = shortlist.iter().map(|c| c.song.clone()).collect();
             let merged = streaming::merge_ai_picks(
                 &cached_ids,
@@ -275,12 +319,19 @@ impl App {
                 &local_pick,
                 self.config.streaming.ai.picks,
             );
-            return self.extend_sanitized_streaming(seed_video_id, merged, &local_pick);
+            return self.extend_sanitized_streaming_with_details(
+                request_id,
+                seed_video_id,
+                merged,
+                &local_pick,
+                cached,
+            );
         }
         let (prompt, cid_map) =
             self.ai_rerank_prompt(seed_video_id, &shortlist, st.mode, recovery_line.as_deref());
         let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
         self.streaming.pending_rerank = Some(PendingRerank {
+            request_id,
             seed_video_id: seed_video_id.to_owned(),
             mode: st.mode,
             shortlist: shortlist_songs,
@@ -297,13 +348,14 @@ impl App {
         .to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {
+            request_id,
             seed_video_id: seed_video_id.to_owned(),
             prompt,
         }]
     }
 
     /// A cached DJ Gem rerank ordering for `key`, if one is stored and still within [`AI_CACHE_TTL`].
-    fn ai_cache_lookup(&self, key: u64) -> Option<Vec<String>> {
+    fn ai_cache_lookup(&self, key: u64) -> Option<Vec<why_gem::WhyGemPick>> {
         self.streaming
             .ai_cache
             .get(&key)
@@ -312,11 +364,11 @@ impl App {
     }
 
     /// Store a resolved DJ Gem rerank ordering, pruning expired entries first so the map stays tiny.
-    pub(in crate::app) fn ai_cache_store(&mut self, key: u64, ids: Vec<String>) {
+    pub(in crate::app) fn ai_cache_store(&mut self, key: u64, picks: Vec<why_gem::WhyGemPick>) {
         self.streaming
             .ai_cache
             .retain(|_, (_, at)| at.elapsed() < AI_CACHE_TTL);
-        self.streaming.ai_cache.insert(key, (ids, Instant::now()));
+        self.streaming.ai_cache.insert(key, (picks, Instant::now()));
     }
 
     /// The compact, evidence-rich rerank prompt plus the `cid → video_id` map for resolving the
@@ -529,35 +581,75 @@ impl App {
     }
 
     pub(in crate::app) fn extend_queue_from_streaming(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        let origin = why_gem::streaming_origin_model(self.config.streaming.mode);
+        let models = why_gem::models_for_songs(&songs, &[], &origin);
+        self.extend_queue_with_why_gem(songs, models, true)
+    }
+
+    pub(in crate::app) fn extend_queue_from_dj_gem(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        if songs.is_empty() {
+            return Vec::new();
+        }
+        let origin = why_gem::dj_gem_origin_model();
+        let models = why_gem::models_for_songs(&songs, &[], &origin);
+        self.extend_queue_with_why_gem(songs, models, false)
+    }
+
+    pub(in crate::app) fn extend_queue_with_preflight_why_gem(
+        &mut self,
+        songs: Vec<Song>,
+        models: Vec<why_gem::WhyGemPick>,
+    ) -> Vec<Cmd> {
+        self.extend_queue_with_why_gem(songs, models, true)
+    }
+
+    fn extend_queue_with_why_gem(
+        &mut self,
+        songs: Vec<Song>,
+        models: Vec<why_gem::WhyGemPick>,
+        streaming_refill: bool,
+    ) -> Vec<Cmd> {
         let queued_songs = songs.clone();
-        let added = self.queue.extend(songs);
+        let requested = songs.len();
+        let was_idle = self.prefetch.loaded_video_id.is_none();
+        let (added, mut idle_plan) = if was_idle {
+            let (plan, outcome) = self.queue.prepare_idle_enqueue(songs);
+            debug_assert_eq!(outcome.requested(), requested);
+            (outcome.added(), Some(plan))
+        } else {
+            (self.queue.extend(songs), None)
+        };
         if added == 0 {
-            return self.note_streaming_failure(
-                t!(
-                    "Autoplay found no new tracks",
-                    "자동재생이 새 곡을 찾지 못했어요",
-                    "自動再生で新しい曲が見つかりませんでした"
+            return if streaming_refill {
+                self.cancel_pending_streaming_recommendation();
+                self.note_streaming_failure(
+                    t!(
+                        "Autoplay found no new tracks",
+                        "자동재생이 새 곡을 찾지 못했어요",
+                        "自動再生で新しい曲が見つかりませんでした"
+                    )
+                    .to_owned(),
                 )
-                .to_owned(),
+            } else {
+                self.status.kind = StatusKind::Error;
+                self.status.text =
+                    t!("Queue is full", "큐가 가득 찼어요", "キューがいっぱいです").to_owned();
+                self.dirty = true;
+                Vec::new()
+            };
+        }
+        let accepted_models: Vec<why_gem::WhyGemPick> = models.into_iter().take(added).collect();
+        if let Some(plan) = idle_plan.take() {
+            return self.load_prepared_recommendation_queue_mutation(
+                plan,
+                queued_songs,
+                accepted_models,
+                added,
+                streaming_refill,
             );
         }
-        self.streaming.consecutive_failures = 0;
-        self.status.text = match crate::i18n::current() {
-            crate::i18n::Language::Korean => format!("{added}곡을 대기열에 추가함"),
-            crate::i18n::Language::Japanese => format!("{added}曲をキューに追加しました"),
-            _ => format!("Queued {added} track(s)"),
-        };
-        // A successful top-up is a positive confirmation, not an error — render it green.
-        self.status.kind = StatusKind::Info;
-        self.dirty = true;
-        // If the seed track ended before this refill landed (e.g. a 1-song queue with streaming
-        // on), the player is idle — pick up the freshly queued track so playback resumes
-        // instead of staying stopped at the finished song.
-        if self.prefetch.loaded_video_id.is_none() && self.queue.remaining() > 0 {
-            let mut cmds = self.advance(true);
-            cmds.extend(self.request_romanization_for_songs(&queued_songs));
-            return cmds;
-        }
+        self.commit_recommendation_queue_success(added, streaming_refill);
+        self.upsert_why_gem_picks(&accepted_models);
         // Still playing: pre-resolve the now-known next track's stream so the EOF→next hop is
         // instant (mirrors load_song's peek-next prefetch).
         let mut cmds = self.request_romanization_for_songs(&queued_songs);
@@ -576,6 +668,52 @@ impl App {
         cmds
     }
 
+    /// Project a successful recommendation append. Idle refills call this only from their
+    /// admitted player transition; direct appends call it immediately after the queue mutation.
+    pub(in crate::app) fn commit_recommendation_queue_success(
+        &mut self,
+        added: usize,
+        streaming_refill: bool,
+    ) {
+        if streaming_refill {
+            self.streaming.consecutive_failures = 0;
+        }
+        self.status.text = match crate::i18n::current() {
+            crate::i18n::Language::Korean => format!("{added}곡을 대기열에 추가함"),
+            crate::i18n::Language::Japanese => format!("{added}曲をキューに追加しました"),
+            _ => format!("Queued {added} track(s)"),
+        };
+        self.status.kind = StatusKind::Info;
+        self.dirty = true;
+    }
+
+    /// Invalidate every async stage of the current autoplay refill. The actors may still deliver
+    /// their already-admitted work, but the generation checks at each reducer boundary will drop
+    /// those responses without consuming a newer same-seed request.
+    pub(in crate::app) fn cancel_pending_streaming_recommendation(&mut self) {
+        self.streaming.pending = false;
+        self.streaming.pending_pool_request_id = None;
+        self.streaming.pending_queue_revision = None;
+        let canceled_rerank = self.streaming.pending_rerank.take().is_some();
+        self.streaming.pending_why_gem = None;
+        if canceled_rerank {
+            self.ai.thinking = false;
+        }
+    }
+
+    /// Cancel an autoplay chain whose exact queue snapshot no longer exists. Returns whether a
+    /// request was retired so a same-turn replacement can ignore only that request's cooldown.
+    pub(in crate::app) fn reconcile_pending_streaming_recommendation(&mut self) -> bool {
+        let stale = self
+            .streaming
+            .pending_queue_revision
+            .is_some_and(|revision| revision != self.queue.rev());
+        if stale {
+            self.cancel_pending_streaming_recommendation();
+        }
+        stale
+    }
+
     /// Set autoplay-streaming, resetting the failure circuit-breaker whenever it is (re)enabled
     /// so a stale count left over from a previous auto-disable can't immediately trip it off
     /// again. The single home all three enable sites (key toggle, remote, DJ-Gem) route through,
@@ -584,6 +722,8 @@ impl App {
         self.autoplay_streaming = on;
         if on {
             self.streaming.consecutive_failures = 0;
+        } else {
+            self.cancel_pending_streaming_recommendation();
         }
     }
 
@@ -595,7 +735,7 @@ impl App {
             if self.streaming.consecutive_failures >= AUTOPLAY_MAX_FAILURES {
                 self.autoplay_streaming = false;
                 disabled = true;
-                self.streaming.pending = false;
+                self.cancel_pending_streaming_recommendation();
                 self.status.text = t!(
                     "Autoplay stopped (no related tracks found)",
                     "자동재생을 멈췄어요 (관련 곡을 찾지 못함)",
@@ -659,9 +799,27 @@ impl App {
 
     pub(in crate::app) fn extend_sanitized_streaming(
         &mut self,
+        request_id: u64,
         seed_video_id: &str,
         songs: Vec<Song>,
         fallback: &[Song],
+    ) -> Vec<Cmd> {
+        self.extend_sanitized_streaming_with_details(
+            request_id,
+            seed_video_id,
+            songs,
+            fallback,
+            Vec::new(),
+        )
+    }
+
+    pub(in crate::app) fn extend_sanitized_streaming_with_details(
+        &mut self,
+        request_id: u64,
+        seed_video_id: &str,
+        songs: Vec<Song>,
+        fallback: &[Song],
+        detailed: Vec<why_gem::WhyGemPick>,
     ) -> Vec<Cmd> {
         let sanitized = streaming::sanitize_final_picks(
             songs,
@@ -677,6 +835,12 @@ impl App {
                 &self.config.streaming,
             )
         {
+            self.streaming.pending_why_gem = Some(why_gem::PendingWhyGemBatch {
+                request_id,
+                seed_video_id: seed_video_id.to_owned(),
+                mode: self.config.streaming.mode,
+                detailed,
+            });
             self.streaming.pending = true;
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
@@ -687,6 +851,7 @@ impl App {
             .to_owned();
             self.dirty = true;
             return vec![Cmd::StreamingPreflight {
+                request_id,
                 seed_video_id: seed_video_id.to_owned(),
                 picks: sanitized,
                 fallback: fallback.to_vec(),
@@ -694,7 +859,13 @@ impl App {
                 config: self.config.streaming.clone(),
             }];
         }
-        self.extend_queue_from_streaming(sanitized)
+        self.streaming.pending_why_gem = None;
+        if detailed.is_empty() {
+            return self.extend_queue_from_streaming(sanitized);
+        }
+        let origin = why_gem::streaming_origin_model(self.config.streaming.mode);
+        let models = why_gem::models_for_songs(&sanitized, &detailed, &origin);
+        self.extend_queue_with_why_gem(sanitized, models, true)
     }
 
     fn augment_streaming_candidates(

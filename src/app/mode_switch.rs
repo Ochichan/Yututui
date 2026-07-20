@@ -44,7 +44,7 @@ impl App {
         self.search.source = search.normalized_source(self.search.source);
         if self.radio_dedicated_mode {
             self.dropdowns.search_source_open = false;
-            self.overlays.why_ai_visible = false;
+            self.close_why_gem();
         }
     }
 

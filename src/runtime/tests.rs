@@ -576,7 +576,10 @@ fn rejected_ai_rerank_schedules_empty_result_fallback() {
 
     let event = recover_actor_rejection(
         &mut app,
-        ActorRejectionRecovery::AiRerank("seed".to_owned()),
+        ActorRejectionRecovery::AiRerank {
+            request_id: 19,
+            seed_video_id: "seed".to_owned(),
+        },
     )
     .expect("rerank rejection must schedule the reducer's local fallback");
 
@@ -584,6 +587,7 @@ fn rejected_ai_rerank_schedules_empty_result_fallback() {
     assert!(matches!(
         event,
         Msg::Streaming(StreamingMsg::AiPicks {
+            request_id: 19,
             seed_video_id,
             picks,
             conf: None,
@@ -599,6 +603,7 @@ fn runtime_event_kind_and_telemetry_slots_are_stable() {
     );
     assert_eq!(
         RuntimeEvent::Api(crate::api::ApiEvent::StreamingError {
+            request_id: 23,
             seed_video_id: "seed".to_owned(),
             error: "e".to_owned(),
         })
@@ -779,6 +784,7 @@ fn app_message_policy_covers_backpressure_lanes() {
     );
     assert_eq!(
         app_msg_policy(&Msg::Streaming(StreamingMsg::Error {
+            request_id: 29,
             seed_video_id: "seed".to_owned(),
             error: "empty".to_owned(),
         })),
@@ -881,6 +887,7 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
     ));
 
     let msg = Msg::from(RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks {
+        request_id: 31,
         seed_video_id: "seed".to_owned(),
         picks: vec![crate::ai::AiPick {
             cid: "c1".to_owned(),
@@ -892,6 +899,7 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
     assert!(matches!(
         msg,
         Msg::Streaming(StreamingMsg::AiPicks {
+            request_id: 31,
             seed_video_id,
             picks,
             conf: Some(conf),
@@ -1201,10 +1209,12 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
     ));
     assert!(matches!(
         Msg::from(RuntimeEvent::Api(crate::api::ApiEvent::StreamingResults {
+            request_id: 37,
             seed_video_id: "seed".to_owned(),
             candidates: vec![(song("cand1234567"), crate::streaming::CandidateSource::YtdlpStreaming)],
         })),
         Msg::Streaming(StreamingMsg::Results {
+            request_id: 37,
             seed_video_id,
             candidates,
         }) if seed_video_id == "seed"
@@ -1213,11 +1223,13 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
     ));
     assert!(matches!(
         Msg::from(RuntimeEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
+            request_id: 77,
             seed_video_id: "seed".to_owned(),
             songs: vec![song("pre12345678")],
         })),
-        Msg::Streaming(StreamingMsg::Preflighted { seed_video_id, songs })
-            if seed_video_id == "seed" && songs[0].video_id == "pre12345678"
+        Msg::Streaming(StreamingMsg::Preflighted { request_id, seed_video_id, songs })
+            if request_id == 77 && seed_video_id == "seed"
+                && songs[0].video_id == "pre12345678"
     ));
 
     for (event, assert_msg) in [

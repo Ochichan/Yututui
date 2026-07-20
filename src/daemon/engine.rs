@@ -41,6 +41,10 @@ mod remote_dispatch;
 mod streaming;
 mod transport;
 
+use self::streaming::PendingStreamingRequest;
+#[cfg(test)]
+use self::streaming::StreamingRequestStage;
+
 #[path = "engine_session.rs"]
 mod engine_session;
 
@@ -84,6 +88,7 @@ pub(crate) struct EngineState {
 #[derive(Debug)]
 pub enum EngineEffect {
     StreamingFallback {
+        request_id: u64,
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
@@ -92,6 +97,7 @@ pub enum EngineEffect {
         config: SearchConfig,
     },
     StreamingPreflight {
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<Song>,
         fallback: Vec<Song>,
@@ -153,7 +159,11 @@ pub struct DaemonEngine {
     #[cfg(test)]
     test_player_starts: VecDeque<PlayerRuntime>,
     streaming: bool,
+    /// Compatibility projection for status/tests. The owner correlation record below is the
+    /// source of truth; this bit is updated only through the streaming request helpers.
     streaming_pending: bool,
+    streaming_request_seq: u64,
+    pending_streaming_request: Option<PendingStreamingRequest>,
     last_extend: Option<Instant>,
     consecutive_streaming_failures: u8,
     last_error: Option<String>,
@@ -183,9 +193,8 @@ pub struct DaemonEngine {
     /// Per-session/page rows addressable by `play_tracks`/`enqueue_tracks`, hard-bounded by the
     /// remote session cap so reloads and reconnects cannot grow owner memory indefinitely.
     gui_search_index: GuiSearchIndex,
-    /// v1 why-gem provenance: pick origin per video id (bounded; see ai_context.rs).
-    why_gem: Vec<(String, crate::remote::proto::WhyGemModel)>,
-    why_gem_rev: u64,
+    /// Session-only WhyGem provenance shared with the TUI's lifecycle policy.
+    why_gem: crate::why_gem::WhyGemLedger<crate::remote::proto::WhyGemModel>,
     /// `accounts` topic revision + the transfer actor's live Spotify display name.
     accounts_rev: u64,
     spotify_user: Option<String>,
@@ -345,6 +354,8 @@ impl DaemonEngine {
             #[cfg(test)]
             test_player_starts: VecDeque::new(),
             streaming_pending: false,
+            streaming_request_seq: 0,
+            pending_streaming_request: None,
             last_extend: None,
             consecutive_streaming_failures: 0,
             last_error: None,
@@ -363,8 +374,7 @@ impl DaemonEngine {
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: GuiSearchIndex::default(),
-            why_gem: Vec::new(),
-            why_gem_rev: 0,
+            why_gem: crate::why_gem::WhyGemLedger::default(),
             accounts_rev: 0,
             spotify_user: None,
             video_overlay: None,
@@ -388,6 +398,9 @@ impl DaemonEngine {
     /// Test-only mode seeding through the same persisted enum the daemon restores at startup.
     #[cfg(test)]
     pub(crate) fn restore_last_mode_for_test(&mut self, mode: LastMode) {
+        if self.last_mode != mode {
+            self.cancel_pending_streaming_request();
+        }
         self.last_mode = mode;
     }
 
@@ -584,14 +597,18 @@ impl DaemonEngine {
         if !self.queue.has_capacity_for(songs.len()) {
             return RemoteResponse::err("queue_full");
         }
+        let manual_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
         let previous = self.queue.snapshot();
         let expected = songs.len();
         let added = self.queue.play_now_many(songs);
         debug_assert_eq!(added, expected, "queue capacity was preflighted");
-        self.load_current_or_restore_queue(previous)
-            .await
-            .map(|_| RemoteResponse::status(self.status()))
-            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+        match self.load_current_or_restore_queue(previous).await {
+            Ok(()) => {
+                self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
+                RemoteResponse::status(self.status())
+            }
+            Err(error) => RemoteResponse::err(error.reason()),
+        }
     }
 
     async fn enqueue_tracks(
@@ -609,6 +626,7 @@ impl DaemonEngine {
         if !self.queue.has_capacity_for(songs.len()) {
             return RemoteResponse::err("queue_full");
         }
+        let manual_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
         let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
@@ -622,12 +640,15 @@ impl DaemonEngine {
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
-            return self
-                .load_current_or_restore_queue(previous)
-                .await
-                .map(|_| RemoteResponse::status(self.status()))
-                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+            return match self.load_current_or_restore_queue(previous).await {
+                Ok(()) => {
+                    self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
+                    RemoteResponse::status(self.status())
+                }
+                Err(error) => RemoteResponse::err(error.reason()),
+            };
         }
+        self.forget_why_gem_picks(manual_ids.iter().map(String::as_str));
         self.save_session();
         RemoteResponse::status(self.status())
     }
@@ -774,40 +795,9 @@ impl DaemonEngine {
             // Intercepted by the host loop (index + `search` topic push) before it
             // reaches the engine; defensive no-op if it ever lands here.
             ApiEvent::GuiSearchCompleted { .. } => Vec::new(),
-            ApiEvent::StreamingResults {
-                seed_video_id,
-                candidates,
-            } => {
-                self.streaming_pending = false;
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                    let picks = self.plan_local_streaming(&seed_video_id, candidates);
-                    self.extend_sanitized_streaming(&seed_video_id, picks, &[])
-                        .await
-                } else {
-                    Vec::new()
-                }
-            }
-            ApiEvent::StreamingPreflighted {
-                seed_video_id,
-                songs,
-            } => {
-                self.streaming_pending = false;
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                    self.extend_queue_from_streaming(songs).await
-                } else {
-                    Vec::new()
-                }
-            }
-            ApiEvent::StreamingError {
-                seed_video_id,
-                error,
-            } => {
-                self.streaming_pending = false;
-                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                    self.note_streaming_failure(format!("autoplay streaming failed: {error}"));
-                }
-                Vec::new()
-            }
+            event @ (ApiEvent::StreamingResults { .. }
+            | ApiEvent::StreamingPreflighted { .. }
+            | ApiEvent::StreamingError { .. }) => self.handle_streaming_api_event(event).await,
             // Playlist search/import is a TUI-only flow; the daemon never issues those
             // commands, so their answers are inert here.
             ApiEvent::ModeResolved { .. }
@@ -974,6 +964,8 @@ impl DaemonEngine {
     }
 
     fn restore_session_cache(&mut self, cache: SessionCache) {
+        self.cancel_pending_streaming_request();
+        self.clear_why_gem();
         self.last_mode = cache.last_mode;
         let active_queue = cache.active_queue().cloned();
         self.inactive_normal_queue = cache.normal_queue.map(Arc::new);
@@ -1120,14 +1112,18 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
+        let manual_id = song.video_id.clone();
         let previous = self.queue.snapshot();
         if !self.queue.play_now(song) {
             return RemoteResponse::err("queue_full");
         }
-        self.load_current_or_restore_queue(previous)
-            .await
-            .map(|_| RemoteResponse::status(self.status()))
-            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+        match self.load_current_or_restore_queue(previous).await {
+            Ok(()) => {
+                self.forget_why_gem_picks([manual_id.as_str()]);
+                RemoteResponse::status(self.status())
+            }
+            Err(error) => RemoteResponse::err(error.reason()),
+        }
     }
 
     async fn search_and_enqueue(&mut self, query: String) -> RemoteResponse {
@@ -1139,6 +1135,7 @@ impl DaemonEngine {
             Ok(None) => return RemoteResponse::err("no_results"),
             Err(()) => return RemoteResponse::err("search_error"),
         };
+        let manual_id = song.video_id.clone();
         let previous = self.queue.snapshot();
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
@@ -1153,12 +1150,15 @@ impl DaemonEngine {
         if was_idle {
             self.queue
                 .goto(old_len.min(self.queue.len().saturating_sub(1)));
-            return self
-                .load_current_or_restore_queue(previous)
-                .await
-                .map(|_| RemoteResponse::status(self.status()))
-                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+            return match self.load_current_or_restore_queue(previous).await {
+                Ok(()) => {
+                    self.forget_why_gem_picks([manual_id.as_str()]);
+                    RemoteResponse::status(self.status())
+                }
+                Err(error) => RemoteResponse::err(error.reason()),
+            };
         }
+        self.forget_why_gem_picks([manual_id.as_str()]);
         self.save_session();
         RemoteResponse::status(self.status())
     }
@@ -1273,7 +1273,7 @@ impl DaemonEngine {
         if self.streaming {
             self.consecutive_streaming_failures = 0;
         } else {
-            self.streaming_pending = false;
+            self.cancel_pending_streaming_request();
         }
         self.save_config("daemon autoplay streaming setting");
         let effects = if self.streaming {
@@ -1292,6 +1292,9 @@ impl DaemonEngine {
                 ToggleState::Off
             }),
             RemoteSettingChange::StreamingMode { value } => {
+                if self.config.streaming.mode != value {
+                    self.cancel_pending_streaming_request();
+                }
                 self.config.streaming.mode = value;
                 self.save_config("daemon streaming mode setting");
                 let effects = if self.streaming {
@@ -1303,7 +1306,11 @@ impl DaemonEngine {
             }
             RemoteSettingChange::StreamingSource { value } => {
                 let search = self.config.effective_search();
-                self.config.search.streaming_source = search.normalized_streaming_source(value);
+                let value = search.normalized_streaming_source(value);
+                if self.config.effective_search().streaming_source != value {
+                    self.cancel_pending_streaming_request();
+                }
+                self.config.search.streaming_source = value;
                 self.save_config("daemon streaming source setting");
                 let effects = if self.streaming {
                     self.force_autoplay_extend()
@@ -1570,6 +1577,8 @@ mod gui_search_tests;
 mod local_mode_tests;
 #[cfg(test)]
 mod persistence_gate_tests;
+#[cfg(test)]
+mod streaming_request_tests;
 #[cfg(test)]
 pub(in crate::daemon) mod tests;
 #[cfg(test)]

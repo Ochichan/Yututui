@@ -444,9 +444,9 @@ impl App {
             return Some(self.recording_settings_key(k));
         }
 
-        // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
-        // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
-        if self.overlays.why_ai_visible {
+        // The per-track WhyGem card behaves like the About card: while it is up, swallow input;
+        // its own toggle (`w`) / Esc / Back dismiss it, and Quit still works.
+        if self.overlays.why_gem_video_id.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return Some(self.quit_app());
             }
@@ -457,8 +457,7 @@ impl App {
                     Some(Action::Back)
                 );
             if close {
-                self.overlays.why_ai_visible = false;
-                self.dirty = true;
+                self.close_why_gem();
             }
             return Some(Vec::new());
         }
@@ -486,20 +485,7 @@ impl App {
                     return Some(Vec::new());
                 }
                 Action::WhyAi => {
-                    // Only worth an overlay if a prior DJ Gem rerank left something to explain;
-                    // otherwise nudge the user with a transient note instead of an empty card.
-                    if self.streaming.last_explain.is_some() {
-                        self.overlays.why_ai_visible = true;
-                    } else {
-                        self.status.kind = StatusKind::Info;
-                        self.status.text = t!(
-                            "No DJ Gem streaming picks to explain yet.",
-                            "아직 설명할 DJ Gem 라디오 선곡이 없어요.",
-                            "説明できるDJ Gemの選曲はまだありません。"
-                        )
-                        .to_owned();
-                    }
-                    self.dirty = true;
+                    self.open_selected_why_gem();
                     return Some(Vec::new());
                 }
                 Action::ToggleAnimations => return Some(self.toggle_animations()),

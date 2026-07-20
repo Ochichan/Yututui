@@ -275,6 +275,7 @@ where
                 emit(event);
             }
             ApiCmd::Streaming {
+                request_id,
                 seed,
                 seed_video_id,
                 exclude_ids,
@@ -412,12 +413,14 @@ where
                     };
                     tracing::warn!(seed = %seed, %error, "streaming search yielded nothing");
                     ApiEvent::StreamingError {
+                        request_id,
                         seed_video_id,
                         error,
                     }
                 } else {
                     tracing::info!(count = candidates.len(), seed = %seed, "streaming results");
                     ApiEvent::StreamingResults {
+                        request_id,
                         seed_video_id,
                         candidates,
                     }
@@ -425,6 +428,7 @@ where
                 emit(event);
             }
             ApiCmd::StreamingPreflight {
+                request_id,
                 seed_video_id,
                 picks,
                 fallback,
@@ -434,6 +438,7 @@ where
                 let songs =
                     ytmusic::preflight_streaming_picks(picks, fallback, mode, &config).await;
                 emit(ApiEvent::StreamingPreflighted {
+                    request_id,
                     seed_video_id,
                     songs,
                 });

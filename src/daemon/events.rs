@@ -139,13 +139,24 @@ impl DaemonEvent {
             | DaemonEvent::Api(crate::api::ApiEvent::SearchError { request_id, .. }) => {
                 Some(DaemonTelemetrySlot::StaleSearch(*request_id))
             }
-            DaemonEvent::Api(crate::api::ApiEvent::StreamingResults { seed_video_id, .. })
-            | DaemonEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
-                seed_video_id, ..
+            DaemonEvent::Api(crate::api::ApiEvent::StreamingResults {
+                request_id,
+                seed_video_id,
+                ..
             })
-            | DaemonEvent::Api(crate::api::ApiEvent::StreamingError { seed_video_id, .. }) => {
-                Some(DaemonTelemetrySlot::StaleStreaming(seed_video_id.clone()))
-            }
+            | DaemonEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
+                request_id,
+                seed_video_id,
+                ..
+            })
+            | DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                request_id,
+                seed_video_id,
+                ..
+            }) => Some(DaemonTelemetrySlot::StaleStreaming(
+                *request_id,
+                seed_video_id.clone(),
+            )),
             _ => match self.policy() {
                 EventPolicy::CoalesceLatest { key, .. } => Some(DaemonTelemetrySlot::Static(key)),
                 _ => None,
@@ -162,7 +173,7 @@ pub(crate) enum DaemonTelemetrySlot {
     MediaArt(String),
     DownloadProgress(String),
     StaleSearch(u64),
-    StaleStreaming(String),
+    StaleStreaming(u64, String),
 }
 
 impl OwnerEvent for DaemonEvent {

@@ -44,6 +44,7 @@ pub enum ApiCmd {
         config: SearchConfig,
     },
     Streaming {
+        request_id: u64,
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
@@ -52,6 +53,7 @@ pub enum ApiCmd {
         config: SearchConfig,
     },
     StreamingPreflight {
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<Song>,
         fallback: Vec<Song>,
@@ -190,14 +192,17 @@ pub enum ApiEvent {
         error: String,
     },
     StreamingResults {
+        request_id: u64,
         seed_video_id: String,
         candidates: Vec<(Song, CandidateSource)>,
     },
     StreamingPreflighted {
+        request_id: u64,
         seed_video_id: String,
         songs: Vec<Song>,
     },
     StreamingError {
+        request_id: u64,
         seed_video_id: String,
         error: String,
     },
@@ -283,8 +288,12 @@ impl ApiHandle {
         })
     }
 
+    // This actor-boundary method mirrors the typed command field-for-field so correlation and
+    // seed context cannot be accidentally dropped at call sites.
+    #[allow(clippy::too_many_arguments)]
     pub fn streaming(
         &self,
+        request_id: u64,
         seed: impl Into<String>,
         seed_video_id: impl Into<String>,
         exclude_ids: Vec<String>,
@@ -293,6 +302,7 @@ impl ApiHandle {
         config: SearchConfig,
     ) -> Result<(), ApiEnqueueError> {
         self.enqueue(ApiCmd::Streaming {
+            request_id,
             seed: seed.into(),
             seed_video_id: seed_video_id.into(),
             exclude_ids,
@@ -304,6 +314,7 @@ impl ApiHandle {
 
     pub fn streaming_preflight(
         &self,
+        request_id: u64,
         seed_video_id: impl Into<String>,
         picks: Vec<Song>,
         fallback: Vec<Song>,
@@ -311,6 +322,7 @@ impl ApiHandle {
         config: StreamingConfig,
     ) -> Result<(), ApiEnqueueError> {
         self.enqueue(ApiCmd::StreamingPreflight {
+            request_id,
             seed_video_id: seed_video_id.into(),
             picks,
             fallback,

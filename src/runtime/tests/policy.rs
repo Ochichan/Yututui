@@ -116,6 +116,7 @@ fn runtime_event_policy_covers_representative_events() {
     );
     assert_eq!(
         RuntimeEvent::Api(crate::api::ApiEvent::StreamingError {
+            request_id: 5,
             seed_video_id: "seed".to_owned(),
             error: "nope".to_owned(),
         })
@@ -183,6 +184,7 @@ fn runtime_event_policy_covers_leaf_event_classes() {
     );
     assert_policy(
         RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks {
+            request_id: 7,
             seed_video_id: "seed".to_owned(),
             picks: Vec::new(),
             conf: None,

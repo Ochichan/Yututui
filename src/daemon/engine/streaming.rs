@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use crate::api::Song;
+use crate::api::{ApiEvent, Song};
 use crate::playback_policy::{
     AUTOPLAY_MAX_FAILURES, STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
 };
@@ -15,7 +15,76 @@ use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode}
 
 use super::{DaemonEngine, DaemonOutcome, EngineEffect};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StreamingRequestStage {
+    Pool,
+    Preflight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingStreamingRequest {
+    pub(super) request_id: u64,
+    seed_video_id: String,
+    mode: StreamingMode,
+    source: crate::search_source::SearchSource,
+    queue_rev: u64,
+    owner_mode: crate::session::LastMode,
+    pub(super) stage: StreamingRequestStage,
+}
+
 impl DaemonEngine {
+    pub(super) async fn handle_streaming_api_event(
+        &mut self,
+        event: ApiEvent,
+    ) -> Vec<EngineEffect> {
+        match event {
+            ApiEvent::StreamingResults {
+                request_id,
+                seed_video_id,
+                candidates,
+            } => {
+                let Some(pending) = self.take_streaming_request(
+                    request_id,
+                    &seed_video_id,
+                    StreamingRequestStage::Pool,
+                ) else {
+                    return Vec::new();
+                };
+                let picks = self.plan_local_streaming(&seed_video_id, candidates);
+                self.extend_sanitized_streaming(pending, picks, &[]).await
+            }
+            ApiEvent::StreamingPreflighted {
+                request_id,
+                seed_video_id,
+                songs,
+            } => {
+                let Some(pending) = self.take_streaming_request(
+                    request_id,
+                    &seed_video_id,
+                    StreamingRequestStage::Preflight,
+                ) else {
+                    return Vec::new();
+                };
+                let slot = Self::streaming_mode_slot(pending.mode);
+                self.extend_queue_from_picks(songs, slot).await
+            }
+            ApiEvent::StreamingError {
+                request_id,
+                seed_video_id,
+                error,
+            } => {
+                if self
+                    .take_streaming_request_for_error(request_id, &seed_video_id)
+                    .is_some()
+                {
+                    self.note_streaming_failure(format!("autoplay streaming failed: {error}"));
+                }
+                Vec::new()
+            }
+            _ => unreachable!("non-streaming API event reached streaming reducer"),
+        }
+    }
+
     /// Effective autoplay state. `streaming` remains the user's saved normal-mode preference;
     /// Local Deck (and the existing dedicated Radio boundary) suppresses network top-ups without
     /// rewriting it.
@@ -37,6 +106,7 @@ impl DaemonEngine {
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
+        self.reconcile_pending_streaming_request();
         let Some(refill) = streaming::plan_autoplay_refill(
             self.streaming_active(),
             self.streaming_pending,
@@ -48,16 +118,119 @@ impl DaemonEngine {
             return Vec::new();
         };
         let exclude_ids = self.streaming_exclude_ids(&refill.seed_video_id);
+        let config = self.config.effective_search();
+        let request_id = self.begin_streaming_request(
+            refill.seed_video_id.clone(),
+            self.config.streaming.mode,
+            config.streaming_source,
+        );
         self.last_extend = Some(Instant::now());
-        self.streaming_pending = true;
         vec![EngineEffect::StreamingFallback {
+            request_id,
             seed: refill.seed,
             seed_video_id: refill.seed_video_id,
             exclude_ids,
             limit: STREAMING_POOL_COUNT,
             mode: self.config.streaming.mode,
-            config: self.config.effective_search(),
+            config,
         }]
+    }
+
+    fn begin_streaming_request(
+        &mut self,
+        seed_video_id: String,
+        mode: StreamingMode,
+        source: crate::search_source::SearchSource,
+    ) -> u64 {
+        self.streaming_request_seq = self.streaming_request_seq.saturating_add(1);
+        let request_id = self.streaming_request_seq;
+        self.pending_streaming_request = Some(PendingStreamingRequest {
+            request_id,
+            seed_video_id,
+            mode,
+            source,
+            queue_rev: self.queue.rev(),
+            owner_mode: self.last_mode,
+            stage: StreamingRequestStage::Pool,
+        });
+        self.streaming_pending = true;
+        request_id
+    }
+
+    pub(in crate::daemon) fn cancel_pending_streaming_request(&mut self) {
+        self.pending_streaming_request = None;
+        self.streaming_pending = false;
+    }
+
+    fn pending_streaming_request_is_current(&self, pending: &PendingStreamingRequest) -> bool {
+        self.streaming_active()
+            && self.queue.rev() == pending.queue_rev
+            && self.last_mode == pending.owner_mode
+            && self.config.streaming.mode == pending.mode
+            && self.config.effective_search().streaming_source == pending.source
+            && self.queue.contains_video_id(&pending.seed_video_id)
+    }
+
+    /// Owner-turn reconciliation makes queue/mode/session mutations cancel an in-flight result
+    /// even when the replacement queue happens to contain the same seed id.
+    pub(in crate::daemon) fn reconcile_pending_streaming_request(&mut self) {
+        let stale = self
+            .pending_streaming_request
+            .as_ref()
+            .is_some_and(|pending| !self.pending_streaming_request_is_current(pending));
+        if stale {
+            self.cancel_pending_streaming_request();
+        } else {
+            self.streaming_pending = self.pending_streaming_request.is_some();
+        }
+    }
+
+    pub(super) fn take_streaming_request(
+        &mut self,
+        request_id: u64,
+        seed_video_id: &str,
+        stage: StreamingRequestStage,
+    ) -> Option<PendingStreamingRequest> {
+        let pending = self.pending_streaming_request.as_ref()?;
+        if pending.request_id != request_id
+            || pending.seed_video_id != seed_video_id
+            || pending.stage != stage
+        {
+            return None;
+        }
+        if !self.pending_streaming_request_is_current(pending) {
+            self.cancel_pending_streaming_request();
+            return None;
+        }
+
+        let pending = self
+            .pending_streaming_request
+            .take()
+            .expect("streaming request was present");
+        self.streaming_pending = false;
+        Some(pending)
+    }
+
+    pub(super) fn take_streaming_request_for_error(
+        &mut self,
+        request_id: u64,
+        seed_video_id: &str,
+    ) -> Option<PendingStreamingRequest> {
+        let pending = self.pending_streaming_request.as_ref()?;
+        if pending.request_id != request_id || pending.seed_video_id != seed_video_id {
+            return None;
+        }
+        if !self.pending_streaming_request_is_current(pending) {
+            self.cancel_pending_streaming_request();
+            return None;
+        }
+
+        let pending = self
+            .pending_streaming_request
+            .take()
+            .expect("streaming request was present");
+        self.streaming_pending = false;
+        Some(pending)
     }
 
     pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
@@ -93,77 +266,99 @@ impl DaemonEngine {
 
     pub(super) async fn extend_sanitized_streaming(
         &mut self,
-        seed_video_id: &str,
+        mut pending: PendingStreamingRequest,
         songs: Vec<Song>,
         fallback: &[Song],
     ) -> Vec<EngineEffect> {
-        let sanitized = streaming::sanitize_final_picks(
-            songs,
-            fallback,
-            self.config.streaming.mode,
-            &self.config.streaming,
-        );
+        let sanitized =
+            streaming::sanitize_final_picks(songs, fallback, pending.mode, &self.config.streaming);
         if !sanitized.is_empty()
             && streaming::final_preflight_needed(
                 &sanitized,
                 fallback,
-                self.config.streaming.mode,
+                pending.mode,
                 &self.config.streaming,
             )
         {
+            pending.stage = StreamingRequestStage::Preflight;
+            let request_id = pending.request_id;
+            let seed_video_id = pending.seed_video_id.clone();
+            let mode = pending.mode;
+            self.pending_streaming_request = Some(pending);
             self.streaming_pending = true;
             return vec![EngineEffect::StreamingPreflight {
-                seed_video_id: seed_video_id.to_owned(),
+                request_id,
+                seed_video_id,
                 picks: sanitized,
                 fallback: fallback.to_vec(),
-                mode: self.config.streaming.mode,
+                mode,
                 config: self.config.streaming.clone(),
             }];
         }
-        self.extend_queue_from_streaming(sanitized).await
+        let slot = Self::streaming_mode_slot(pending.mode);
+        self.extend_queue_from_picks(sanitized, slot).await
     }
 
+    #[cfg(test)]
     pub(super) async fn extend_queue_from_streaming(
         &mut self,
         songs: Vec<Song>,
     ) -> Vec<EngineEffect> {
-        let slot = self.streaming_mode_slot();
-        self.extend_queue_from_picks(songs, &slot).await
+        let slot = Self::streaming_mode_slot(self.config.streaming.mode);
+        self.extend_queue_from_picks(songs, slot).await
     }
 
-    /// Queue extension with why-gem pick provenance: one recording pass, labeled by the
-    /// caller's slot (autoplay = the streaming mode's wire name; the DJ Gem chat labels
-    /// its own enqueues). Recording candidates that dedup out is harmless — provenance
-    /// only lights the "why?" affordance on rows that actually exist.
+    /// Queue extension with WhyGem provenance. Queue capacity decides the accepted prefix;
+    /// rejected candidates never become fetchable explanations.
     pub(super) async fn extend_queue_from_picks(
         &mut self,
         songs: Vec<Song>,
         slot: &str,
     ) -> Vec<EngineEffect> {
-        self.record_why_gem_picks(slot, &songs);
+        let video_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
+        let old_len = self.queue.len();
+        let was_idle = self.loaded_video_id.is_none();
+        let previous = was_idle.then(|| self.queue.snapshot());
         let added = self.queue.extend(songs);
         if added == 0 {
             self.note_streaming_failure("autoplay streaming found no new tracks".to_owned());
             return Vec::new();
         }
-        self.consecutive_streaming_failures = 0;
-        self.save_session();
-        if self.loaded_video_id.is_none() && self.queue.remaining() > 0 {
-            self.queue.next(false);
-            if let Err(e) = self.load_current().await {
-                self.last_error = Some(e.to_string());
-                self.stop_playback();
+
+        // An idle queue must admit the first newly appended track to the player before any
+        // recommendation provenance or success bookkeeping becomes observable. In particular,
+        // an empty queue already selects its first appended row; calling `next` would either skip
+        // that row or (for a single pick) fail to load anything at all.
+        if was_idle {
+            self.queue
+                .goto(old_len.min(self.queue.len().saturating_sub(1)));
+            if self
+                .load_current_or_restore_queue(
+                    previous.expect("idle streaming extension captured a queue snapshot"),
+                )
+                .await
+                .is_err()
+            {
+                return Vec::new();
             }
+        }
+
+        self.record_why_gem_ids(slot, video_ids.into_iter().take(added));
+        self.consecutive_streaming_failures = 0;
+        if !was_idle {
+            self.save_session();
         }
         Vec::new()
     }
 
-    /// The autoplay slot label for why-gem provenance: the streaming mode's wire name.
-    fn streaming_mode_slot(&self) -> String {
-        serde_json::to_value(self.config.streaming.mode)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "autoplay".to_owned())
+    /// The local streaming origin shown by WhyGem. Gemini reason roles remain lower-case;
+    /// this source label intentionally follows the user-facing mode names.
+    pub(super) fn streaming_mode_slot(mode: StreamingMode) -> &'static str {
+        match mode {
+            StreamingMode::Focused => "Focused",
+            StreamingMode::Balanced => "Balanced",
+            StreamingMode::Discovery => "Discovery",
+        }
     }
 
     pub(super) fn note_streaming_failure(&mut self, status: String) {
@@ -173,7 +368,7 @@ impl DaemonEngine {
                 self.consecutive_streaming_failures.saturating_add(1);
             if self.consecutive_streaming_failures >= AUTOPLAY_MAX_FAILURES {
                 self.streaming = false;
-                self.streaming_pending = false;
+                self.cancel_pending_streaming_request();
                 self.config.autoplay_streaming = Some(false);
                 self.save_config("daemon streaming circuit-breaker");
             }

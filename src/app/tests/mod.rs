@@ -73,4 +73,5 @@ mod track_transitions;
 mod transport_recovery;
 mod update;
 mod video;
+mod why_gem_mouse;
 mod zoom_retro_nav;

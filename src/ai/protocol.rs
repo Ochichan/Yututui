@@ -17,6 +17,7 @@ pub enum AiCmd {
     /// One-shot streaming rerank over a local candidate pack (the autoplay path); the model picks
     /// opaque cids the reducer resolves back to tracks.
     Rerank {
+        request_id: u64,
         seed_video_id: String,
         prompt: String,
     },
@@ -52,6 +53,7 @@ pub enum AiEvent {
     },
     PlayPlaylist(String),
     StreamingPicks {
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<AiPick>,
         conf: Option<f32>,
