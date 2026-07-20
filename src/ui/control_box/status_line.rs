@@ -37,6 +37,7 @@ pub(super) fn status_line_parts_with_labels_reusing(
     push_playback_state(&mut parts, app, labels, minimal, retro);
     push_queue_position(&mut parts, app, labels, gap, retro);
     push_rating(&mut parts, app, labels, gap, retro);
+    push_why_gem(&mut parts, app, labels, gap, retro);
     // Shuffle and repeat are both always shown as click toggles, and every state of each keeps
     // one display width, so the line's layout never shifts as they toggle or appear. Each
     // carries its media glyph — `<key>:🔀` shuffle, `<key>:🔁`/`<key>:🔂` repeat — or a padded cross when
@@ -68,6 +69,42 @@ pub(super) fn status_line_parts_with_labels_reusing(
     push_download_tag(&mut parts, app, gap, minimal);
 
     parts
+}
+
+/// Per-track provenance for the current queue item. The compact chip is deliberately ASCII:
+/// ambiguous-width symbols would move every click target that follows it on CJK terminals.
+fn push_why_gem(
+    parts: &mut StatusLineParts,
+    app: &App,
+    labels: StatusLabelTier,
+    gap: &'static str,
+    retro: bool,
+) {
+    let Some(song) = app.queue.current() else {
+        return;
+    };
+    if app.why_gem_for(&song.video_id).is_none() {
+        return;
+    }
+
+    parts.push((None, Cow::Borrowed(gap)));
+    let text = if labels.beginner() {
+        beginner_control_label(
+            app,
+            labels,
+            KeyContext::Global,
+            Action::WhyAi,
+            if retro {
+                "Why"
+            } else {
+                crate::i18n::why_gem::title()
+            },
+            None,
+        )
+    } else {
+        "WHY?".to_owned()
+    };
+    parts.push((Some(MouseTarget::Global(Action::WhyAi)), Cow::Owned(text)));
 }
 
 /// The playback state (`▸ playing` / `‖ paused`), shrunk to its one-cell glyph in the

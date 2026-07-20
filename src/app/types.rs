@@ -439,6 +439,7 @@ pub enum Cmd {
     },
     /// Ask the anonymous API/search actor for related tracks to keep streaming going without DJ Gem.
     StreamingFallback {
+        request_id: u64,
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
@@ -448,6 +449,7 @@ pub enum Cmd {
     /// Ask the API actor to run a final metadata preflight on streaming picks before enqueueing.
     /// Only risky candidates trigger full yt-dlp extraction; clean picks pass through.
     StreamingPreflight {
+        request_id: u64,
         seed_video_id: String,
         picks: Vec<Song>,
         fallback: Vec<Song>,
@@ -457,6 +459,7 @@ pub enum Cmd {
     /// Hand a local candidate shortlist to the DJ Gem actor to rerank (ids only). The result
     /// returns as [`StreamingMsg::AiPicks`]; failure degrades to the stashed local pick.
     AiRerank {
+        request_id: u64,
         seed_video_id: String,
         prompt: String,
     },
@@ -650,6 +653,9 @@ pub enum MouseTarget {
     Onboarding(OnboardingAction),
     Global(Action),
     Player(Action),
+    /// Inert coverage for the open per-track WhyGem card; outside clicks close it while clicks
+    /// inside are consumed without reaching the covered queue/player surface.
+    WhyGemCard,
     /// A visible synced-lyric row. The owning track ID and original LRC index make stale frame
     /// targets fail closed instead of seeking a newly loaded track.
     LyricsLine {
@@ -778,6 +784,8 @@ pub enum MouseTarget {
     /// A row in the open queue window, by order position. Single-click selects; double-click
     /// jumps playback to it.
     QueueRow(usize),
+    /// The per-track WhyGem affordance on a queue-window row.
+    QueueWhyGem(usize),
     /// The `✗` delete button on a queue-window row, by order position.
     QueueDel(usize),
     /// The `✗` delete button on a Library list row, by row index in the current tab.
@@ -936,6 +944,7 @@ impl StreamNowPlaying {
 /// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
 /// the engine produced, used to top up any slots the DJ Gem left empty.
 pub struct PendingRerank {
+    pub(crate) request_id: u64,
     pub(crate) seed_video_id: String,
     pub(crate) mode: StreamingMode,
     pub(crate) shortlist: Vec<Song>,
@@ -946,30 +955,6 @@ pub struct PendingRerank {
     /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
     /// resolved ordering can be stored on return and replayed for a rapid identical refill.
     pub(crate) cache_key: u64,
-}
-
-/// The resolved, human-readable explanation of the last DJ Gem streaming rerank, shown by the "Why DJ Gem"
-/// overlay (the `w` key). Built when [`StreamingMsg::AiPicks`] resolves — the model's opaque cids are
-/// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
-/// overlay can render it long after the pending rerank has been consumed.
-#[derive(Debug, Clone, Default)]
-pub struct StreamingAiExplain {
-    /// The model's self-reported confidence in [0,1], if any.
-    pub(crate) conf: Option<f32>,
-    /// The picks the model chose, in its best-first order (hallucinated cids already dropped).
-    pub(crate) picks: Vec<ExplainPick>,
-}
-
-/// One resolved pick in a [`StreamingAiExplain`]: the track it landed on plus the model's stated
-/// slot role and reason codes.
-#[derive(Debug, Clone)]
-pub(crate) struct ExplainPick {
-    pub(crate) title: String,
-    pub(crate) artist: String,
-    /// The model's slot role for this pick (core/bridge/adjacent/discovery/…), if it gave one.
-    pub(crate) role: Option<String>,
-    /// The model's reason codes (the evidence scores it leaned on, e.g. `tr`, `u`).
-    pub(crate) reasons: Vec<String>,
 }
 
 /// One ordered listening-session outcome (newest pushed to the back of

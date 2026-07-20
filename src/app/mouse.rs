@@ -125,6 +125,10 @@ impl App {
 
     /// Double-click activates a list row; other targets retain single-click behavior.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.interaction.why_gem_click.take() == Some((col, row)) {
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.beginner_coach_hit(col, row) {
             return Vec::new();
         }
@@ -142,6 +146,7 @@ impl App {
             || self.overlays.context_menu.is_some()
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
+            || self.overlays.why_gem_video_id.is_some()
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
@@ -221,6 +226,12 @@ impl App {
 
     /// Extend the active pointer gesture while preserving its original surface.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // An outside press closes WhyGem immediately, but that press still owns the pointer
+        // gesture. Keep consuming its subsequent drag events so the newly exposed queue/list
+        // cannot move underneath the dismissed modal before button-up.
+        if self.overlays.why_gem_video_id.is_some() || self.interaction.why_gem_click.is_some() {
+            return Vec::new();
+        }
         if self.beginner_coach_hit(col, row) {
             return Vec::new();
         }
@@ -333,6 +344,11 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
+        if self.overlays.why_gem_video_id.is_some() {
+            self.cancel_seekbar_scrub();
+            self.interaction.ai_transcript_drag = None;
+            return Vec::new();
+        }
         let seek_cmds = self.commit_seekbar_scrub();
 
         if let Some(drag) = self.interaction.ai_transcript_drag.take() {
@@ -394,6 +410,9 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
+        if self.overlays.why_gem_video_id.is_some() {
+            return Vec::new();
+        }
         if self.local_find_mouse_scroll_modal(up, MOUSE_SCROLL_LINES) {
             return Vec::new();
         }

@@ -57,7 +57,11 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
     );
     app.overlays.about_visible = false;
 
-    app.overlays.why_ai_visible = true;
+    app.why_gem.upsert(
+        "id0".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+    );
+    app.open_why_gem_at(0);
     assert!(
         app.animation_active(),
         "Why-DJ Gem overlay should not pause the background animation"

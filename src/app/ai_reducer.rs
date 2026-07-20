@@ -257,12 +257,15 @@ impl App {
             .suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         let requested_songs = self.ai.suggestions.clone();
+        let origin = super::why_gem::dj_gem_origin_model();
+        let why_gem = super::why_gem::models_for_songs(&requested_songs, &[], &origin);
         self.replace_queue_and_load(
             requested_songs,
             start,
             None,
             QueueReplacementOptions {
                 romanize_all: true,
+                why_gem: Some(why_gem),
                 ..QueueReplacementOptions::default()
             },
         )

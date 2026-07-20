@@ -15,7 +15,15 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
         app.overlays.about_visible = open;
     }
     fn set_why_ai(app: &mut App, open: bool) {
-        app.overlays.why_ai_visible = open;
+        if open {
+            app.why_gem.upsert(
+                "id0".to_owned(),
+                why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+            );
+            app.open_why_gem_at(0);
+        } else {
+            app.close_why_gem();
+        }
     }
 
     for (name, set_open) in [
@@ -327,26 +335,17 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 25));
 
     let mut why = app_playing(2, 0);
-    why.streaming.last_explain = Some(StreamingAiExplain {
-        conf: Some(0.82),
-        picks: vec![
-            ExplainPick {
-                title: "Bridge Track".to_owned(),
-                artist: "Some Artist".to_owned(),
-                role: Some("bridge".to_owned()),
-                reasons: vec!["tr".to_owned()],
-            },
-            ExplainPick {
-                title: "Core Track".to_owned(),
-                artist: "Another Artist".to_owned(),
-                role: Some("core".to_owned()),
-                reasons: vec![],
-            },
-        ],
-    });
-    why.overlays.why_ai_visible = true;
+    why.why_gem.upsert(
+        "id0".to_owned(),
+        crate::remote::proto::WhyGemModel {
+            slot: "bridge".to_owned(),
+            reasons: vec!["tr".to_owned()],
+            confidence: serde_json::Number::from_f64(0.82),
+        },
+    );
+    why.open_why_gem_at(0);
     let buf = render_app_buffer(&why, modal_area.width, modal_area.height);
-    assert_opaque_rect(&buf, centered_fixed(modal_area, 72, 9));
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 68, 9));
 
     let mut conflict = app_playing(1, 0);
     conflict.overlays.key_conflict = Some(Conflict {

@@ -213,6 +213,7 @@ impl DaemonEngine {
                 ) {
                     return (self.reject_player_command(error), false, effects);
                 }
+                self.cancel_pending_streaming_request();
                 self.config = defaults;
                 self.save_config("daemon settings reset");
                 RemoteResponse::ok("settings reset".to_string())

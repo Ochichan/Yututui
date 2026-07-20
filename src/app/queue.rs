@@ -57,6 +57,7 @@ impl App {
             crate::queue::QueueRemovalPlayback::Unchanged => {
                 self.queue.commit_mutation(mutation);
                 self.commit_queue_removal_ui(outcome.popup_cursor());
+                self.reconcile_why_gem();
                 self.dirty = true;
                 Vec::new()
             }

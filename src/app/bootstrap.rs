@@ -63,6 +63,7 @@ impl App {
             },
             romanization: RomanizationRuntime::default(),
             streaming: StreamingRuntime::default(),
+            why_gem: crate::why_gem::WhyGemLedger::default(),
             consecutive_play_errors: 0,
             playlists: Arc::new(Playlists::default()),
             station: StationStore::default(),

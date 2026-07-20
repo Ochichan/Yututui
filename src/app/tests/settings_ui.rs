@@ -531,9 +531,20 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
         CuratingMode::YtNative
     );
     assert!(app.status.text.contains("Curating mode:"));
+    app.autoplay_streaming = true;
+    app.settings.as_mut().unwrap().draft.autoplay_streaming = true;
+    let refill = app.force_autoplay_extend();
+    assert!(
+        refill
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::StreamingFallback { .. }))
+    );
     // Close → the AI rerank flag is now off.
     let cmds = update_and_admit(&mut app, Msg::Key(key(KeyCode::Esc)));
     assert!(!app.config.streaming.ai.enabled);
+    assert!(!app.streaming.pending);
+    assert!(app.streaming.pending_pool_request_id.is_none());
+    assert!(app.streaming.pending_queue_revision.is_none());
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))

@@ -62,14 +62,16 @@ fn ai_handle_sends_each_command_without_mutating_payloads() {
 
     assert!(
         handle
-            .rerank("seed-video".to_owned(), "CANDS...".to_owned())
+            .rerank(17, "seed-video".to_owned(), "CANDS...".to_owned())
             .is_ok()
     );
     match rx.try_recv().unwrap() {
         AiCmd::Rerank {
+            request_id,
             seed_video_id,
             prompt,
         } => {
+            assert_eq!(request_id, 17);
             assert_eq!(seed_video_id, "seed-video");
             assert_eq!(prompt, "CANDS...");
         }

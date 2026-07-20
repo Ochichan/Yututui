@@ -165,7 +165,7 @@ const SEED_ROWS: SeedRow[] = [
   ['global', 'toggle_about', 'About YuTuTui!', 'f1'],
   ['global', 'toggle_animations', 'Toggle animations', 'A'],
   ['global', 'toggle_control_box', 'Collapse / expand player bar', 'B'],
-  ['global', 'why_ai', 'Why these DJ Gem picks', 'w'],
+  ['global', 'why_ai', 'Why this pick', 'w'],
   ['global', 'text_zoom_in', 'Text size up', 'ctrl+='],
   ['global', 'text_zoom_out', 'Text size down', 'ctrl+-'],
   ['global', 'toggle_zoom_wheel_lock', 'Ctrl+wheel zoom lock', 'ctrl+l'],

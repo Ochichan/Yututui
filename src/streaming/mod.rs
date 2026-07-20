@@ -265,17 +265,23 @@ pub fn merge_ai_picks_with_confidence(
     n: usize,
     conf: Option<f32>,
 ) -> Vec<Song> {
-    let ai_slots = match conf {
-        Some(c) if c < 0.45 => n.div_ceil(3),
-        Some(c) if c < 0.75 => n.div_ceil(2),
-        _ => n,
-    };
+    let ai_slots = ai_slots_for_confidence(n, conf);
     let ai_first = merge_ai_picks(ids, shortlist, local_pick, ai_slots);
     if ai_first.len() >= n {
         return ai_first;
     }
     let ai_ids: Vec<String> = ai_first.iter().map(|s| s.video_id.clone()).collect();
     merge_ai_picks(&ai_ids, shortlist, local_pick, n)
+}
+
+/// Number of final positions the model is allowed to own at a confidence level. Callers carrying
+/// per-pick provenance use this same boundary so local top-ups are never mislabeled as model picks.
+pub fn ai_slots_for_confidence(n: usize, conf: Option<f32>) -> usize {
+    match conf {
+        Some(c) if c < 0.45 => n.div_ceil(3),
+        Some(c) if c < 0.75 => n.div_ceil(2),
+        _ => n,
+    }
 }
 
 /// Last synchronous safety pass before streaming picks are appended to the queue. The scoring pass

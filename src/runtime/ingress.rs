@@ -17,7 +17,8 @@ pub(crate) enum RuntimeTelemetrySlot {
     StaleLyrics(String),
     StaleResolver(String),
     StaleSearch(u64),
-    StaleStreaming(String),
+    StaleStreamingRequest(u64, String),
+    StaleStreamingResolved(String),
     StaleTrackResolve(u64),
     TransferProgress(String),
     VideoPaused(u64),
@@ -64,9 +65,14 @@ impl RuntimeEvent {
             RuntimeEvent::App(msg) => {
                 app_stale_slot(msg).or_else(|| static_policy_slot(app_msg_policy(msg)))
             }
-            RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks { seed_video_id, .. }) => {
-                Some(RuntimeTelemetrySlot::StaleStreaming(seed_video_id.clone()))
-            }
+            RuntimeEvent::Ai(crate::ai::AiEvent::StreamingPicks {
+                request_id,
+                seed_video_id,
+                ..
+            }) => Some(RuntimeTelemetrySlot::StaleStreamingRequest(
+                *request_id,
+                seed_video_id.clone(),
+            )),
             RuntimeEvent::Api(event) => api_stale_slot(event),
             RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result { video_id, .. }) => {
                 Some(RuntimeTelemetrySlot::StaleArtwork(video_id.clone()))
@@ -126,11 +132,24 @@ fn api_stale_slot(event: &crate::api::ApiEvent) -> Option<RuntimeTelemetrySlot> 
         | crate::api::ApiEvent::SearchError { request_id, .. } => {
             Some(RuntimeTelemetrySlot::StaleSearch(*request_id))
         }
-        crate::api::ApiEvent::StreamingResults { seed_video_id, .. }
-        | crate::api::ApiEvent::StreamingPreflighted { seed_video_id, .. }
-        | crate::api::ApiEvent::StreamingError { seed_video_id, .. } => {
-            Some(RuntimeTelemetrySlot::StaleStreaming(seed_video_id.clone()))
+        crate::api::ApiEvent::StreamingResults {
+            request_id,
+            seed_video_id,
+            ..
         }
+        | crate::api::ApiEvent::StreamingPreflighted {
+            request_id,
+            seed_video_id,
+            ..
+        }
+        | crate::api::ApiEvent::StreamingError {
+            request_id,
+            seed_video_id,
+            ..
+        } => Some(RuntimeTelemetrySlot::StaleStreamingRequest(
+            *request_id,
+            seed_video_id.clone(),
+        )),
         _ => None,
     }
 }
@@ -149,16 +168,39 @@ fn app_stale_slot(msg: &Msg) -> Option<RuntimeTelemetrySlot> {
         Msg::Streaming(StreamingMsg::Resolved {
             self_heal: true, ..
         }) => None,
-        Msg::Streaming(streaming) => {
-            let seed_video_id = match streaming {
-                StreamingMsg::Resolved { video_id, .. } => video_id,
-                StreamingMsg::Results { seed_video_id, .. }
-                | StreamingMsg::Preflighted { seed_video_id, .. }
-                | StreamingMsg::Error { seed_video_id, .. }
-                | StreamingMsg::AiPicks { seed_video_id, .. } => seed_video_id,
-            };
-            Some(RuntimeTelemetrySlot::StaleStreaming(seed_video_id.clone()))
-        }
+        Msg::Streaming(StreamingMsg::Resolved { video_id, .. }) => Some(
+            RuntimeTelemetrySlot::StaleStreamingResolved(video_id.clone()),
+        ),
+        Msg::Streaming(
+            StreamingMsg::Results {
+                request_id,
+                seed_video_id,
+                ..
+            }
+            | StreamingMsg::Preflighted {
+                request_id,
+                seed_video_id,
+                ..
+            }
+            | StreamingMsg::PreflightError {
+                request_id,
+                seed_video_id,
+                ..
+            }
+            | StreamingMsg::Error {
+                request_id,
+                seed_video_id,
+                ..
+            }
+            | StreamingMsg::AiPicks {
+                request_id,
+                seed_video_id,
+                ..
+            },
+        ) => Some(RuntimeTelemetrySlot::StaleStreamingRequest(
+            *request_id,
+            seed_video_id.clone(),
+        )),
         Msg::TrackResolved { seq, .. } => Some(RuntimeTelemetrySlot::StaleTrackResolve(*seq)),
         _ => None,
     }

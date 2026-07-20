@@ -25,6 +25,8 @@ use beginner::StatusLabelTier;
 mod status_glyphs;
 mod status_line;
 use status_line::status_line_parts_with_labels_reusing;
+#[cfg(test)]
+mod why_gem_tests;
 
 /// Render the control block into four caller-provided single-height rows — the Player
 /// view's legacy top layout passes its own `rows[1]/[3]/[5]/[7]`, so the output is
@@ -341,6 +343,10 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
             if fits(&parts) {
                 return (buttons::text_width(gap), parts);
             }
+            parts = without_optional_why_gem(parts);
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
         }
         (1, parts)
     } else {
@@ -357,9 +363,28 @@ fn fitted_status_line_parts(app: &App, width: u16, animated: bool) -> (u16, Stat
             if fits(&parts) {
                 return (buttons::text_width(gap), parts);
             }
+            parts = without_optional_why_gem(parts);
+            if fits(&parts) {
+                return (buttons::text_width(gap), parts);
+            }
         }
         (1, parts)
     }
+}
+
+/// The WhyGem chip is supplementary. On the final responsive tier it yields its own label and
+/// preceding gap before established transport controls are allowed to run off-screen.
+fn without_optional_why_gem(mut parts: StatusLineParts) -> StatusLineParts {
+    if let Some(index) = parts
+        .iter()
+        .position(|(target, _)| matches!(target, Some(MouseTarget::Global(Action::WhyAi))))
+    {
+        parts.remove(index);
+        if index > 0 && parts[index - 1].0.is_none() {
+            parts.remove(index - 1);
+        }
+    }
+    parts
 }
 
 /// Build the transport status-line as `(target, text)` segments from app state — split out

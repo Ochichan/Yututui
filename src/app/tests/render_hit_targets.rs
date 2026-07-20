@@ -681,9 +681,13 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.overlays.about_visible = true;
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_ABOUT_BIT);
     app.overlays.about_visible = false;
-    app.overlays.why_ai_visible = true;
+    app.why_gem.upsert(
+        "id0".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+    );
+    app.open_why_gem_at(0);
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_WHY_AI_BIT);
-    app.overlays.why_ai_visible = false;
+    app.close_why_gem();
     app.show_tool_setup(ToolSetupContext::Startup, vec!["mpv"]);
     assert_eq!(app.art_overlay_mask(), ART_OVERLAY_TOOL_SETUP_BIT);
     app.tool_setup = None;

@@ -1183,6 +1183,7 @@ fn local_deck_switch_stops_playback_and_restores_cached_queues() {
     app.playback.paused = false;
     app.streaming.pending = true;
     app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
         seed_video_id: "id1".to_owned(),
         shortlist: Vec::new(),
         local_pick: Vec::new(),

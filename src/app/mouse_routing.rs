@@ -25,9 +25,22 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.context_menu_click = None;
         self.interaction.color_picker_click = None;
+        self.interaction.why_gem_click = None;
         self.interaction.pending_double_click_selection = None;
         if let Some(cmds) = self.audio_output_picker_mouse_click(col, row) {
             return cmds;
+        }
+        // WhyGem is a true modal. Its inert card region consumes inside clicks; clicking anywhere
+        // outside closes the card and is also consumed, so the covered queue/player never acts.
+        if self.overlays.why_gem_video_id.is_some() {
+            self.interaction.why_gem_click = Some((col, row));
+            if !matches!(
+                self.mouse_target_at(col, row),
+                Some(MouseTarget::WhyGemCard)
+            ) {
+                self.close_why_gem();
+            }
+            return Vec::new();
         }
         // The context menu is a small modal: a row click executes it, while every outside
         // click closes and is consumed so it can never activate the covered surface.
@@ -342,9 +355,15 @@ impl App {
                     rect,
                 }) => return self.on_scrollbar_press(ScrollSurface::Queue, rect, row),
                 Some(MouseButtonRegion {
-                    target: t @ (MouseTarget::QueueRow(_) | MouseTarget::QueueDel(_)),
+                    target:
+                        t @ (MouseTarget::QueueRow(_)
+                        | MouseTarget::QueueWhyGem(_)
+                        | MouseTarget::QueueDel(_)),
                     ..
                 }) => {
+                    if matches!(&t, MouseTarget::QueueWhyGem(_)) {
+                        self.interaction.why_gem_click = Some((col, row));
+                    }
                     return self.on_mouse_target(t);
                 }
                 _ => return Vec::new(),
@@ -356,6 +375,9 @@ impl App {
             }
             if matches!(region.target, MouseTarget::SettingsColorSwatch(_)) {
                 self.interaction.color_picker_click = Some((col, row));
+            }
+            if matches!(&region.target, MouseTarget::Global(Action::WhyAi)) {
+                self.interaction.why_gem_click = Some((col, row));
             }
             // Ctrl/Cmd+click on a list row toggles it in/out of the multi-selection.
             if multi && let MouseTarget::ListRow(i) = region.target {
@@ -415,6 +437,7 @@ impl App {
             | MouseTarget::ToolSetupRetry
             | MouseTarget::ToolSetupLater) => self.activate_tool_setup(target),
             MouseTarget::Onboarding(action) => self.activate_onboarding(action),
+            MouseTarget::WhyGemCard => Vec::new(),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;
@@ -426,6 +449,10 @@ impl App {
             MouseTarget::Global(Action::ToggleAnimations) => self.toggle_animations(),
             // The ▲/▼ at the right of the footer hint — same handler as the `B` shortcut.
             MouseTarget::Global(Action::ToggleControlBox) => self.toggle_control_box(),
+            MouseTarget::Global(Action::WhyAi) => {
+                self.open_selected_why_gem();
+                Vec::new()
+            }
             MouseTarget::Global(_) => Vec::new(),
             MouseTarget::Player(action) if self.player_controls_live() => {
                 self.on_player_action(action)
@@ -677,6 +704,11 @@ impl App {
                 Vec::new()
             }
             MouseTarget::QueueRow(_) => Vec::new(),
+            MouseTarget::QueueWhyGem(i) if self.queue_popup.open => {
+                self.open_why_gem_at(i);
+                Vec::new()
+            }
+            MouseTarget::QueueWhyGem(_) => Vec::new(),
             // The `✗` button on a queue row removes just that track.
             MouseTarget::QueueDel(i) if self.queue_popup.open => self.remove_queue_range(i, i),
             MouseTarget::QueueDel(_) => Vec::new(),

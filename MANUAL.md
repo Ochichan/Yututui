@@ -94,6 +94,7 @@ the window grows again. Nothing to configure; it just follows the window.
 | `Shift+L` | Lyrics, synced to the music; click a visible line to seek there |
 | `z` / `Shift+Z` | Show lyrics 0.1s earlier / later |
 | `v` | Music video in a floating window |
+| `w` | Explain the selected queue recommendation, or the current track |
 | `Ctrl+Q` | Quit |
 
 When synced lyrics load, **`[ − 0.0s + ]`** appears at the lower right for three seconds. After it folds to **`[±]`**, click the handle to reopen it for three seconds; **`−/+`** fine-tunes the lyrics earlier / later in 0.1-second steps. Clicking any visible lyric line seeks to its synced position.
@@ -114,8 +115,10 @@ On any song, press **`d`**: it's saved as a proper music file (cover art and tit
 
 DJ Gem is the app's built-in music brain. It's optional and needs a free Gemini API key from Google — everything else in the app works without it.
 
-- **Endless station:** press **`Ctrl+R`** and it keeps the queue filled with songs that fit what you're hearing. Press **`w`** and it explains, in plain language, why it picked each one.
+- **Endless station:** press **`Ctrl+R`** and it keeps the queue filled with songs that fit what you're hearing.
 - **Ask in words:** press **`g`** and type things like *"play some quiet piano"* or *"make me a rainy-day playlist"* — it can build the playlist right into your Library.
+
+Recommended tracks carry a clickable **`?`** in the queue and beside Now Playing. With the queue open, **`w`** explains the selected row; otherwise it explains the current track. The card always shows where the recommendation came from. When DJ Gem supplied model detail it also shows the track's role, plain-language reasons and optional confidence; local station picks and other recommendations without that detail show their source alone.
 
 To switch it on: get a free Gemini API key from Google, then paste it in **Settings → DJ Gem** and enable it.
 

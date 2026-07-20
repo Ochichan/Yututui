@@ -511,18 +511,22 @@ impl RuntimeHandles {
                 }
             }
             Cmd::AiRerank {
+                request_id,
                 seed_video_id,
                 prompt,
             } => {
                 let recovery_seed = seed_video_id.clone();
                 let result = self.ai_handle.as_ref().map_or_else(
                     || Err(crate::util::delivery::DeliveryError::Closed),
-                    |handle| handle.rerank(seed_video_id, prompt),
+                    |handle| handle.rerank(request_id, seed_video_id, prompt),
                 );
                 if !report_actor_delivery(app, "ai.rerank", result)
                     && let Some(msg) = recover_actor_rejection(
                         app,
-                        ActorRejectionRecovery::AiRerank(recovery_seed),
+                        ActorRejectionRecovery::AiRerank {
+                            request_id,
+                            seed_video_id: recovery_seed,
+                        },
                     )
                 {
                     self.reduce_owner_msg(app, msg);
@@ -562,6 +566,7 @@ impl RuntimeHandles {
                 }
             }
             Cmd::StreamingFallback {
+                request_id,
                 seed,
                 seed_video_id,
                 exclude_ids,
@@ -569,6 +574,7 @@ impl RuntimeHandles {
                 config,
             } => {
                 if let Err(error) = self.api_handle.streaming(
+                    request_id,
                     seed,
                     seed_video_id.clone(),
                     exclude_ids,
@@ -580,6 +586,7 @@ impl RuntimeHandles {
                     self.reduce_owner_msg(
                         app,
                         Msg::Streaming(StreamingMsg::Error {
+                            request_id,
                             seed_video_id,
                             error: error.to_string(),
                         }),
@@ -587,6 +594,7 @@ impl RuntimeHandles {
                 }
             }
             Cmd::StreamingPreflight {
+                request_id,
                 seed_video_id,
                 picks,
                 fallback,
@@ -594,6 +602,7 @@ impl RuntimeHandles {
                 config,
             } => {
                 if let Err(error) = self.api_handle.streaming_preflight(
+                    request_id,
                     seed_video_id.clone(),
                     picks,
                     fallback,
@@ -603,7 +612,8 @@ impl RuntimeHandles {
                     tracing::warn!(%error, "api command enqueue failed");
                     self.reduce_owner_msg(
                         app,
-                        Msg::Streaming(StreamingMsg::Error {
+                        Msg::Streaming(StreamingMsg::PreflightError {
+                            request_id,
                             seed_video_id,
                             error: error.to_string(),
                         }),

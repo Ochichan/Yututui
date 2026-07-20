@@ -47,8 +47,14 @@ impl DaemonEngine {
     }
 
     pub(in crate::daemon) async fn ai_play_tracks(&mut self, songs: Vec<Song>) {
-        self.record_why_gem_picks("DJ Gem", &songs);
-        let _ = self.gui_replace_queue(songs).await;
+        let video_ids: Vec<String> = songs.iter().map(|song| song.video_id.clone()).collect();
+        let response = self.gui_replace_queue(songs).await;
+        if response.ok {
+            self.record_why_gem_ids(
+                "DJ Gem",
+                video_ids.into_iter().take(crate::why_gem::WHY_GEM_MAX),
+            );
+        }
     }
 
     pub(in crate::daemon) async fn ai_enqueue(&mut self, songs: Vec<Song>) {
@@ -59,55 +65,70 @@ impl DaemonEngine {
     /// chat ("DJ Gem") or the autoplay streaming mode — with whatever the pick context
     /// carried. Reasons/confidence generation is deliberately out of scope; unknown
     /// tracks answer `fetch_why_gem` with no data (the GUI's null path).
+    #[cfg(test)]
     pub(in crate::daemon) fn record_why_gem_picks(&mut self, slot: &str, songs: &[Song]) {
-        for song in songs {
-            self.record_why_gem(
-                song.video_id.clone(),
-                crate::remote::proto::WhyGemModel {
-                    slot: slot.to_owned(),
-                    reasons: Vec::new(),
-                    confidence: None,
-                },
-            );
-        }
+        self.record_why_gem_ids(slot, songs.iter().map(|song| song.video_id.clone()));
     }
 
+    pub(in crate::daemon) fn record_why_gem_ids(
+        &mut self,
+        slot: &str,
+        video_ids: impl IntoIterator<Item = String>,
+    ) {
+        self.why_gem
+            .upsert_many(video_ids.into_iter().map(|video_id| {
+                (
+                    video_id,
+                    crate::remote::proto::WhyGemModel {
+                        slot: slot.to_owned(),
+                        reasons: Vec::new(),
+                        confidence: None,
+                    },
+                )
+            }));
+    }
+
+    #[cfg(test)]
     pub(in crate::daemon) fn record_why_gem(
         &mut self,
         video_id: String,
         model: crate::remote::proto::WhyGemModel,
     ) {
-        const WHY_GEM_MAX: usize = 999;
-        if let Some(entry) = self
-            .why_gem
-            .iter_mut()
-            .find(|(existing, _)| *existing == video_id)
-        {
-            if entry.1 == model {
-                return;
-            }
-            entry.1 = model;
-        } else {
-            if self.why_gem.len() >= WHY_GEM_MAX {
-                self.why_gem.remove(0);
-            }
-            self.why_gem.push((video_id, model));
-        }
-        self.why_gem_rev = self.why_gem_rev.wrapping_add(1);
+        self.why_gem.upsert(video_id, model);
     }
 
     pub fn why_gem_rev(&self) -> u64 {
-        self.why_gem_rev
+        self.why_gem.revision()
     }
 
     pub fn why_gem_ids(&self) -> Vec<String> {
-        self.why_gem.iter().map(|(id, _)| id.clone()).collect()
+        self.why_gem.ids()
+    }
+
+    /// Remove rows that no longer exist in the live queue before the retained provenance
+    /// snapshot is published. Duplicate queue occurrences intentionally keep one shared answer.
+    pub(in crate::daemon) fn reconcile_why_gem(&mut self) {
+        self.why_gem.retain_video_ids(
+            self.queue.rev(),
+            self.queue.ordered_iter().map(|song| song.video_id.as_str()),
+        );
+    }
+
+    pub(in crate::daemon) fn forget_why_gem_picks<'a>(
+        &mut self,
+        video_ids: impl IntoIterator<Item = &'a str>,
+    ) {
+        self.why_gem.forget_many(video_ids);
+    }
+
+    pub(in crate::daemon) fn clear_why_gem(&mut self) {
+        self.why_gem.clear();
     }
 
     pub(super) fn gui_fetch_why_gem(&self, video_id: &str) -> crate::remote::proto::RemoteResponse {
         use crate::remote::proto::{RemoteResponse, ResponseData};
         let mut response = RemoteResponse::ok("why gem".to_owned());
-        if let Some((_, model)) = self.why_gem.iter().find(|(id, _)| id == video_id) {
+        if let Some(model) = self.why_gem.get(video_id) {
             response.data = Some(ResponseData::WhyGem(model.clone()));
         }
         response

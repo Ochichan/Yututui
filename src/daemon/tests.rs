@@ -237,6 +237,7 @@ fn daemon_event_policy_covers_representative_events() {
     );
     assert_eq!(
         DaemonEvent::Api(crate::api::ApiEvent::StreamingResults {
+            request_id: 0,
             seed_video_id: "seed".to_owned(),
             candidates: Vec::new(),
         })
@@ -247,6 +248,7 @@ fn daemon_event_policy_covers_representative_events() {
     );
     assert_eq!(
         DaemonEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
+            request_id: 1,
             seed_video_id: "seed".to_owned(),
             songs: Vec::new(),
         })
@@ -257,6 +259,7 @@ fn daemon_event_policy_covers_representative_events() {
     );
     assert_eq!(
         DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+            request_id: 0,
             seed_video_id: "seed".to_owned(),
             error: "bad".to_owned(),
         })
@@ -398,6 +401,7 @@ fn daemon_event_policy_covers_representative_events() {
     // Unlike the interactive owner, the daemon has no reducer-side stale slot for AI picks.
     assert_eq!(
         DaemonEvent::Ai(crate::ai::AiEvent::StreamingPicks {
+            request_id: 0,
             seed_video_id: "seed".to_owned(),
             picks: Vec::new(),
             conf: None,
@@ -607,6 +611,7 @@ async fn daemon_scrobble_health_and_stale_results_coalesce_when_owner_is_full() 
         emit_daemon_event(
             &tx,
             DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                request_id: 0,
                 seed_video_id: "seed".to_owned(),
                 error: "old".to_owned(),
             })
@@ -620,6 +625,7 @@ async fn daemon_scrobble_health_and_stale_results_coalesce_when_owner_is_full() 
         emit_daemon_event(
             &tx,
             DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                request_id: 0,
                 seed_video_id: "seed".to_owned(),
                 error: "new".to_owned(),
             })
@@ -633,6 +639,7 @@ async fn daemon_scrobble_health_and_stale_results_coalesce_when_owner_is_full() 
         emit_daemon_event(
             &tx,
             DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                request_id: 0,
                 seed_video_id: "other".to_owned(),
                 error: "other".to_owned(),
             })
@@ -653,6 +660,7 @@ async fn daemon_scrobble_health_and_stale_results_coalesce_when_owner_is_full() 
         DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
             seed_video_id,
             error,
+            ..
         }) if seed_video_id == "seed" && error == "new"
     )));
 }

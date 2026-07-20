@@ -272,6 +272,10 @@ impl App {
         self.audio.bands = d.eq_bands;
         self.audio.preset = d.eq_preset;
         self.audio.normalize = d.normalize;
+        let old_autoplay_streaming = self.autoplay_streaming;
+        let old_streaming_mode = self.config.streaming.mode;
+        let old_streaming_ai_enabled = self.config.streaming.ai.enabled;
+        let old_streaming_source = self.config.effective_search().streaming_source;
         // This is the post-admission commit boundary only: do not reset the streaming failure
         // counter or start a refill from here.
         self.autoplay_streaming = d.autoplay_streaming;
@@ -303,6 +307,22 @@ impl App {
         };
         let old_zoom = self.zoom.percent();
         d.apply_to(&mut self.config);
+        let streaming_generation_changed = (old_autoplay_streaming && !self.autoplay_streaming)
+            || old_streaming_mode != self.config.streaming.mode
+            || old_streaming_ai_enabled != self.config.streaming.ai.enabled
+            || old_streaming_source != self.config.effective_search().streaming_source
+            || old_ai_enabled != self.config.effective_ai_enabled()
+            || old_key != self.config.gemini_api_key
+            || model_changed;
+        if streaming_generation_changed {
+            self.cancel_pending_streaming_recommendation();
+        }
+        if old_ai_enabled != self.config.effective_ai_enabled()
+            || old_key != self.config.gemini_api_key
+            || model_changed
+        {
+            self.streaming.ai_cache.clear();
+        }
         let album_art_quality_changed = self.config.album_art_quality != old_album_art_quality;
         // Push the resolved DJ Gem reply language to the AI actor. The UI language was set live
         // as the user cycled it; this global isn't, so it's resolved and applied here on save

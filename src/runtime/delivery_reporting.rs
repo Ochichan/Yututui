@@ -30,7 +30,10 @@ pub(super) enum ActorRejectionRecovery {
     Lyrics,
     Artwork,
     AiTurn,
-    AiRerank(String),
+    AiRerank {
+        request_id: u64,
+        seed_video_id: String,
+    },
     AiFeedback,
     TransferStart,
     TransferCancel,
@@ -45,9 +48,13 @@ pub(super) fn recover_actor_rejection(
         ActorRejectionRecovery::Lyrics => app.lyrics.loading = false,
         ActorRejectionRecovery::Artwork => app.art.loading = false,
         ActorRejectionRecovery::AiTurn => app.ai.thinking = false,
-        ActorRejectionRecovery::AiRerank(seed_video_id) => {
+        ActorRejectionRecovery::AiRerank {
+            request_id,
+            seed_video_id,
+        } => {
             app.ai.thinking = false;
             return Some(Msg::Streaming(StreamingMsg::AiPicks {
+                request_id,
                 seed_video_id,
                 picks: Vec::new(),
                 conf: None,

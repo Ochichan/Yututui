@@ -61,6 +61,7 @@ pub mod ui;
 pub mod update;
 pub mod util;
 pub mod video_overlay;
+pub mod why_gem;
 pub mod zoom;
 
 #[cfg(test)]

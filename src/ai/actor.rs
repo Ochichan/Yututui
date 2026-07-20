@@ -102,8 +102,9 @@ impl AiHandle {
     }
 
     /// Kick off a one-shot streaming rerank; the result returns as [`AiEvent::StreamingPicks`].
-    pub fn rerank(&self, seed_video_id: String, prompt: String) -> DeliveryResult {
+    pub fn rerank(&self, request_id: u64, seed_video_id: String, prompt: String) -> DeliveryResult {
         self.send(AiCmd::Rerank {
+            request_id,
             seed_video_id,
             prompt,
         })
@@ -204,9 +205,10 @@ impl AiActor {
                 cmd = rx.recv() => match cmd {
                     Some(AiCmd::Ask { prompt, context }) => self.converse(prompt, *context).await,
                     Some(AiCmd::Rerank {
+                        request_id,
                         seed_video_id,
                         prompt,
-                    }) => self.rerank(seed_video_id, prompt).await,
+                    }) => self.rerank(request_id, seed_video_id, prompt).await,
                     Some(AiCmd::SummarizeFeedback { digest }) => {
                         self.summarize_feedback(digest).await
                     }
@@ -420,11 +422,12 @@ impl AiActor {
     /// failure (timeout, error, block, unparseable JSON), and the reducer then degrades to the
     /// local pick. The model can never invent a track — it picks opaque `cid`s, and the reducer
     /// resolves each one against the candidate pack this call was built from.
-    async fn rerank(&mut self, seed_video_id: String, prompt: String) {
+    async fn rerank(&mut self, request_id: u64, seed_video_id: String, prompt: String) {
         let _guard = ThinkingGuard(self.emit.clone());
         let req = build_rerank_request(&prompt);
         let (picks, conf) = self.rerank_call(&req).await.unwrap_or_default();
         self.emit(AiEvent::StreamingPicks {
+            request_id,
             seed_video_id,
             picks,
             conf,

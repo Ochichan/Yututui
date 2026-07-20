@@ -351,6 +351,7 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         .unwrap();
     handle
         .streaming(
+            66,
             "seed",
             "seed-id",
             vec!["old".to_owned()],
@@ -361,6 +362,7 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         .unwrap();
     handle
         .streaming_preflight(
+            77,
             "seed-id",
             vec![Song::remote("a", "A", "x", "1:00")],
             vec![Song::remote("b", "B", "x", "1:00")],
@@ -395,6 +397,7 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
     assert!(matches!(
         bulk_rx.try_recv().unwrap(),
         ApiCmd::Streaming {
+            request_id: 66,
             limit: 12,
             mode: StreamingMode::Discovery,
             ..
@@ -403,6 +406,7 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
     assert!(matches!(
         bulk_rx.try_recv().unwrap(),
         ApiCmd::StreamingPreflight {
+            request_id: 77,
             mode: StreamingMode::Focused,
             ..
         }

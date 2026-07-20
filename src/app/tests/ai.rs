@@ -381,7 +381,7 @@ fn ai_streaming_circuit_breaker_disables_after_repeated_empties() {
     let mut app = app_playing(1, 0);
     app.autoplay_streaming = true;
     for _ in 0..AUTOPLAY_MAX_FAILURES {
-        app.update(AiMsg::Enqueue(Vec::new())); // resolves nothing
+        app.extend_queue_from_streaming(Vec::new()); // an autoplay refill resolved nothing
     }
     assert!(
         !app.autoplay_streaming,
@@ -455,9 +455,12 @@ fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
     app.library_mut().record_play(&current); // current can be present in history; don't duplicate it.
     app.ai.available = true;
     app.autoplay_streaming = true;
+    app.streaming.pending = true;
+    app.streaming.pending_pool_request_id = Some(1);
 
     // The fetched pool flows through the local engine; a diverse shortlist goes to the DJ Gem.
     let cmds = app.update(StreamingMsg::Results {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (
@@ -477,6 +480,10 @@ fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
 
     let (seed_id, prompt) = ai_rerank(&cmds).expect("a DJ Gem rerank command");
     assert_eq!(seed_id, "id0");
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::AiRerank { request_id: 1, .. }))
+    );
     // Compact protocol header + candidate pack.
     assert!(prompt.contains("TASK|streaming_next"));
     assert!(prompt.contains("CANDS"));
@@ -497,6 +504,13 @@ fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
         app.streaming.pending_rerank.is_some(),
         "shortlist + local pick stashed for validation"
     );
+    assert_eq!(
+        app.streaming
+            .pending_rerank
+            .as_ref()
+            .map(|pending| pending.request_id),
+        Some(1)
+    );
     assert!(!app.streaming.pending, "the pool fetch is done");
 }
 
@@ -510,10 +524,13 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
     // as confident, so this test isolates the gated local path.
     app.config.streaming.ai.smart_gate = true;
     app.config.streaming.ai.ambiguity_gap = -1.0;
+    app.streaming.pending = true;
+    app.streaming.pending_pool_request_id = Some(1);
 
     let before = app.queue.len();
     let src = CandidateSource::YtdlpStreaming;
     let cmds = app.update(StreamingMsg::Results {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("cand1", "Track One", "band one", "3:00"), src),
@@ -551,6 +568,8 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     app.autoplay_streaming = true;
     // Force the call through the gate so this exercises the cache, not the smart gate.
     app.config.streaming.ai.ambiguity_gap = 1.0;
+    app.streaming.pending = true;
+    app.streaming.pending_pool_request_id = Some(1);
 
     let src = CandidateSource::YtdlpStreaming;
     let candidates = vec![
@@ -565,6 +584,7 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     // First refill misses the cache → a DJ Gem call goes out, the rerank is stashed, and (on the DJ Gem
     // path) the queue is left untouched, so the next refill recomputes the *same* cache key.
     let cmds = app.update(StreamingMsg::Results {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         candidates: candidates.clone(),
     });
@@ -579,14 +599,24 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
 
     // Seed the cache as if that rerank had resolved to `cached_id`, then clear the in-flight flags
     // (queue/history untouched → the next identical refill keys to the same entry).
-    app.ai_cache_store(key, vec![cached_id.clone()]);
+    app.ai_cache_store(
+        key,
+        vec![why_gem::WhyGemPick::new(
+            cached_id.clone(),
+            why_gem::dj_gem_origin_model(),
+        )],
+    );
     app.streaming.pending_rerank = None;
     app.ai.thinking = false;
     app.streaming.pending = false;
+    app.streaming.pending_pool_request_id = None;
     app.streaming.last_extend = None;
 
     // Second identical refill hits the cache → no call; the cached ordering is enqueued directly.
+    app.streaming.pending = true;
+    app.streaming.pending_pool_request_id = Some(2);
     let cmds = app.update(StreamingMsg::Results {
+        request_id: 2,
         seed_video_id: "id0".to_owned(),
         candidates,
     });
@@ -605,6 +635,10 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     assert!(
         app.queue.contains_video_id(&cached_id),
         "cached ordering enqueued"
+    );
+    assert!(
+        app.why_gem_for(&cached_id).is_some(),
+        "cache hit restores per-track provenance"
     );
 }
 
@@ -764,6 +798,7 @@ fn streaming_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     app.autoplay_streaming = true;
     app.ai.thinking = true;
     app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![
@@ -789,6 +824,7 @@ fn streaming_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
 
     // DJ Gem picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
     app.update(StreamingMsg::AiPicks {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -822,12 +858,13 @@ fn streaming_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
 }
 
 #[test]
-fn streaming_ai_picks_for_a_stale_seed_are_ignored() {
+fn streaming_ai_picks_require_the_exact_same_seed_generation() {
     let mut app = app_playing(2, 0);
     app.ai.available = true;
     app.autoplay_streaming = true;
     app.ai.thinking = true;
     app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 2,
         seed_video_id: "current-seed".to_owned(),
         mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
@@ -839,9 +876,10 @@ fn streaming_ai_picks_for_a_stale_seed_are_ignored() {
         cache_key: 0,
     });
 
-    // A result for a different (older) seed must not consume the in-flight rerank.
+    // An older result for the same seed must not consume the newer in-flight rerank.
     app.update(StreamingMsg::AiPicks {
-        seed_video_id: "old-seed".to_owned(),
+        request_id: 1,
+        seed_video_id: "current-seed".to_owned(),
         picks: vec![AiPick {
             cid: "c1".to_owned(),
             role: None,
@@ -853,17 +891,196 @@ fn streaming_ai_picks_for_a_stale_seed_are_ignored() {
         app.streaming.pending_rerank.is_some(),
         "stale result leaves the current rerank intact"
     );
+    assert!(
+        app.ai.thinking,
+        "stale result leaves the current spinner intact"
+    );
+    app.update(AiMsg::Thinking(false));
+    assert!(
+        app.ai.thinking,
+        "a canceled generation's trailing telemetry cannot hide the current spinner"
+    );
     assert!(!app.queue.contains_video_id("s1"));
 }
 
 #[test]
-fn why_ai_overlay_explains_the_last_ai_rerank() {
+fn metadata_preflight_commits_only_returned_details_and_marks_topups_by_origin() {
+    let mut app = app_playing(2, 0);
+    app.autoplay_streaming = true;
+    app.streaming.pending = true;
+    app.streaming.pending_why_gem = Some(why_gem::PendingWhyGemBatch {
+        request_id: 41,
+        seed_video_id: "id0".to_owned(),
+        mode: crate::streaming::StreamingMode::Balanced,
+        detailed: vec![
+            why_gem::WhyGemPick::new(
+                "kept",
+                crate::remote::proto::WhyGemModel {
+                    slot: "bridge".to_owned(),
+                    reasons: vec!["tr".to_owned()],
+                    confidence: serde_json::Number::from_f64(0.8),
+                },
+            ),
+            why_gem::WhyGemPick::new(
+                "dropped",
+                crate::remote::proto::WhyGemModel {
+                    slot: "discovery".to_owned(),
+                    reasons: vec!["nov".to_owned()],
+                    confidence: serde_json::Number::from_f64(0.8),
+                },
+            ),
+        ],
+    });
+
+    app.update(StreamingMsg::Preflighted {
+        request_id: 41,
+        seed_video_id: "id0".to_owned(),
+        songs: vec![
+            Song::remote("kept", "Kept", "Artist", "3:00"),
+            Song::remote("topup", "Topup", "Artist", "3:00"),
+        ],
+    });
+
+    assert_eq!(
+        app.why_gem_for("kept").map(|model| model.slot.as_str()),
+        Some("bridge")
+    );
+    assert_eq!(
+        app.why_gem_for("topup").map(|model| model.slot.as_str()),
+        Some("Balanced")
+    );
+    assert!(app.why_gem_for("dropped").is_none());
+    assert!(app.streaming.pending_why_gem.is_none());
+}
+
+#[test]
+fn metadata_preflight_requires_the_exact_same_seed_generation() {
+    let mut app = app_playing(2, 0);
+    app.autoplay_streaming = true;
+    app.streaming.pending = true;
+    app.streaming.pending_why_gem = Some(why_gem::PendingWhyGemBatch {
+        request_id: 52,
+        seed_video_id: "id0".to_owned(),
+        mode: crate::streaming::StreamingMode::Balanced,
+        detailed: vec![why_gem::WhyGemPick::new(
+            "new",
+            crate::remote::proto::WhyGemModel {
+                slot: "bridge".to_owned(),
+                reasons: vec!["tr".to_owned()],
+                confidence: serde_json::Number::from_f64(0.8),
+            },
+        )],
+    });
+
+    app.update(StreamingMsg::Preflighted {
+        request_id: 51,
+        seed_video_id: "id0".to_owned(),
+        songs: vec![Song::remote("old", "Old", "Artist", "3:00")],
+    });
+
+    assert!(
+        app.streaming.pending,
+        "stale response must not settle live work"
+    );
+    assert_eq!(
+        app.streaming
+            .pending_why_gem
+            .as_ref()
+            .map(|pending| pending.request_id),
+        Some(52)
+    );
+    assert!(!app.queue.contains_video_id("old"));
+
+    app.update(StreamingMsg::Preflighted {
+        request_id: 52,
+        seed_video_id: "id0".to_owned(),
+        songs: vec![Song::remote("new", "New", "Artist", "3:00")],
+    });
+
+    assert!(!app.streaming.pending);
+    assert!(app.streaming.pending_why_gem.is_none());
+    assert!(app.queue.contains_video_id("new"));
+    assert_eq!(
+        app.why_gem_for("new").map(|model| model.slot.as_str()),
+        Some("bridge")
+    );
+}
+
+#[test]
+fn low_confidence_rerank_marks_only_model_owned_slots_as_detailed() {
+    let mut app = app_playing(2, 0);
+    app.ai.available = true;
+    app.autoplay_streaming = true;
+    app.ai.thinking = true;
+    app.config.streaming.ai.picks = 3;
+    app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
+        seed_video_id: "id0".to_owned(),
+        mode: crate::streaming::StreamingMode::Balanced,
+        shortlist: vec![
+            Song::remote("s1", "S1", "a", "3:00"),
+            Song::remote("s2", "S2", "b", "3:00"),
+            Song::remote("s3", "S3", "c", "3:00"),
+        ],
+        local_pick: vec![
+            Song::remote("s2", "S2", "b", "3:00"),
+            Song::remote("s3", "S3", "c", "3:00"),
+        ],
+        cid_map: vec![
+            crate::streaming::PackedCand {
+                cid: "c1".to_owned(),
+                video_id: "s1".to_owned(),
+            },
+            crate::streaming::PackedCand {
+                cid: "c2".to_owned(),
+                video_id: "s2".to_owned(),
+            },
+        ],
+        cache_key: 0,
+    });
+
+    app.update(StreamingMsg::AiPicks {
+        request_id: 1,
+        seed_video_id: "id0".to_owned(),
+        picks: vec![
+            AiPick {
+                cid: "c1".to_owned(),
+                role: Some("core".to_owned()),
+                reasons: vec!["u".to_owned()],
+            },
+            AiPick {
+                cid: "c2".to_owned(),
+                role: Some("bridge".to_owned()),
+                reasons: vec!["tr".to_owned()],
+            },
+        ],
+        conf: Some(0.2),
+    });
+
+    assert_eq!(
+        app.why_gem_for("s1").map(|model| model.slot.as_str()),
+        Some("core")
+    );
+    assert_eq!(
+        app.why_gem_for("s2").map(|model| model.slot.as_str()),
+        Some("Balanced"),
+        "a local confidence top-up must not inherit unused model rationale"
+    );
+    assert_eq!(
+        app.why_gem_for("s3").map(|model| model.slot.as_str()),
+        Some("Balanced")
+    );
+}
+
+#[test]
+fn why_gem_records_final_rerank_per_track_and_targets_the_queue_selection() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0); // queue id0 (current), id1
     app.ai.available = true;
     app.autoplay_streaming = true;
     app.ai.thinking = true;
     app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![
@@ -885,6 +1102,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
     });
 
     app.update(StreamingMsg::AiPicks {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -901,45 +1119,50 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
         conf: Some(0.75),
     });
 
-    // The explanation is stashed, with cids resolved to real tracks in the model's order.
-    let explain = app
-        .streaming
-        .last_explain
-        .as_ref()
-        .expect("explanation stashed for the overlay");
-    assert_eq!(explain.conf, Some(0.75));
-    assert_eq!(explain.picks.len(), 2);
-    assert_eq!(explain.picks[0].title, "First Song");
-    assert_eq!(explain.picks[0].artist, "Artist One");
-    assert_eq!(explain.picks[0].role.as_deref(), Some("bridge"));
-    assert_eq!(explain.picks[0].reasons, vec!["tr", "u"]);
-    assert_eq!(explain.picks[1].title, "Second Song");
+    let first = app.why_gem_for("s1").expect("final first pick recorded");
+    assert_eq!(first.slot, "bridge");
+    assert_eq!(first.reasons, ["tr", "u"]);
+    assert_eq!(
+        first
+            .confidence
+            .as_ref()
+            .and_then(serde_json::Number::as_f64),
+        Some(0.75)
+    );
+    let second = app.why_gem_for("s2").expect("final second pick recorded");
+    assert_eq!(second.slot, "core");
 
-    // `w` opens the overlay; `w` again dismisses it.
-    assert!(!app.overlays.why_ai_visible);
-    let mut cmds = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
-    admit_player_transition(&mut app, &mut cmds);
-    assert!(app.radio_dedicated_mode);
+    // With Queue open, `w` targets its selected row rather than the current track.
+    app.open_queue_popup();
+    app.queue_popup.cursor = app
+        .queue
+        .ordered_iter()
+        .position(|song| song.video_id == "s1")
+        .expect("s1 is queued");
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(
-        app.overlays.why_ai_visible,
-        "w opens the Why-DJ Gem overlay in Radio mode"
+    assert_eq!(
+        app.overlays.why_gem_video_id.as_deref(),
+        Some("s1"),
+        "w opens the selected row's card"
     );
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(!app.overlays.why_ai_visible, "w again dismisses it");
+    assert!(
+        app.overlays.why_gem_video_id.is_none(),
+        "w again dismisses it"
+    );
 }
 
 #[test]
-fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
+fn why_gem_without_provenance_shows_a_note_not_an_overlay() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
     app.status.text.clear();
-    assert!(app.streaming.last_explain.is_none());
+    assert!(app.why_gem.is_empty());
 
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
-        !app.overlays.why_ai_visible,
-        "no overlay opens without a prior DJ Gem rerank"
+        app.overlays.why_gem_video_id.is_none(),
+        "no overlay opens without provenance for the contextual track"
     );
     assert!(
         !app.status.text.is_empty(),
@@ -948,44 +1171,36 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
 }
 
 #[test]
-fn why_ai_overlay_renders_the_resolved_picks() {
+fn why_gem_w_targets_the_current_track_when_queue_is_closed() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
-    app.streaming.last_explain = Some(StreamingAiExplain {
-        conf: Some(0.82),
-        picks: vec![
-            ExplainPick {
-                title: "Bridge Track".to_owned(),
-                artist: "Some Artist".to_owned(),
-                role: Some("bridge".to_owned()),
-                reasons: vec!["tr".to_owned(), "u".to_owned()],
-            },
-            ExplainPick {
-                title: "Core Track".to_owned(),
-                artist: "Another Artist".to_owned(),
-                role: Some("core".to_owned()),
-                reasons: vec![],
-            },
-        ],
-    });
-    app.overlays.why_ai_visible = true;
-
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::render(f, &app)).unwrap(); // must not panic
-    let buf = terminal.backend().buffer().clone();
-    let text: String = buf
-        .content()
-        .iter()
-        .map(|c| c.symbol().to_owned())
-        .collect();
-    assert!(
-        text.contains("Bridge Track"),
-        "overlay shows the first resolved track"
+    app.why_gem.upsert(
+        "id0".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
     );
-    assert!(
-        text.contains("Core Track"),
-        "overlay shows the second resolved track"
+    app.update(Msg::Key(key(KeyCode::Char('w'))));
+    assert_eq!(app.overlays.why_gem_video_id.as_deref(), Some("id0"));
+}
+
+#[test]
+fn dj_queue_replacement_installs_provenance_only_after_player_admission() {
+    let mut app = app_playing(2, 0);
+    app.why_gem.upsert(
+        "id0".to_owned(),
+        why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
+    );
+
+    let mut cmds = app.update(AiMsg::PlayTracks(vec![Song::remote(
+        "dj", "DJ Pick", "Artist", "3:00",
+    )]));
+    assert!(app.why_gem_for("id0").is_some());
+    assert!(app.why_gem_for("dj").is_none());
+
+    admit_player_transition(&mut app, &mut cmds);
+    assert!(app.why_gem_for("id0").is_none());
+    assert_eq!(
+        app.why_gem_for("dj").map(|model| model.slot.as_str()),
+        Some(why_gem::DJ_GEM_SLOT)
     );
 }
 
@@ -1016,18 +1231,125 @@ fn autoplay_uses_streaming_fallback_without_ai_key() {
 }
 
 #[test]
+fn same_seed_refill_generation_survives_off_on_without_accepting_old_pool() {
+    let mut app = app_playing(1, 0);
+    app.set_autoplay_streaming(true);
+    let first = app.force_autoplay_extend();
+    let first_id = streaming_fallback_request_id(&first).expect("first refill generation");
+
+    app.set_autoplay_streaming(false);
+    assert!(app.streaming.pending_pool_request_id.is_none());
+    assert!(app.streaming.pending_queue_revision.is_none());
+    app.set_autoplay_streaming(true);
+    let second = app.force_autoplay_extend();
+    let second_id = streaming_fallback_request_id(&second).expect("second refill generation");
+    assert_ne!(first_id, second_id);
+
+    app.update(StreamingMsg::Results {
+        request_id: first_id,
+        seed_video_id: "id0".to_owned(),
+        candidates: vec![(
+            Song::remote("old", "Old", "old artist", "3:00"),
+            CandidateSource::WatchPlaylist,
+        )],
+    });
+    assert!(!app.queue.contains_video_id("old"));
+    assert!(app.streaming.pending);
+    assert_eq!(app.streaming.pending_pool_request_id, Some(second_id));
+
+    app.update(StreamingMsg::Results {
+        request_id: second_id,
+        seed_video_id: "id0".to_owned(),
+        candidates: vec![(
+            Song::remote("new", "New", "new artist", "3:00"),
+            CandidateSource::WatchPlaylist,
+        )],
+    });
+    assert!(app.queue.contains_video_id("new"));
+    assert!(app.streaming.pending_queue_revision.is_none());
+}
+
+#[test]
+fn admitted_same_seed_manual_replacement_replaces_the_old_refill_generation() {
+    let mut app = app_playing(1, 0);
+    app.set_autoplay_streaming(true);
+    let refill = app.force_autoplay_extend();
+    let request_id = streaming_fallback_request_id(&refill).expect("refill generation");
+
+    let mut replacement = app.replace_queue_and_load(
+        vec![Song::remote("id0", "Replacement", "new artist", "3:00")],
+        0,
+        None,
+        QueueReplacementOptions::default(),
+    );
+    admit_player_transition(&mut app, &mut replacement);
+    assert!(app.queue.contains_video_id("id0"));
+    let replacement_request_id =
+        streaming_fallback_request_id(&replacement).expect("replacement refill generation");
+    assert_ne!(replacement_request_id, request_id);
+    assert_eq!(
+        app.streaming.pending_pool_request_id,
+        Some(replacement_request_id)
+    );
+    assert_eq!(app.streaming.pending_queue_revision, Some(app.queue.rev()));
+
+    app.update(StreamingMsg::Results {
+        request_id,
+        seed_video_id: "id0".to_owned(),
+        candidates: vec![(
+            Song::remote("stale", "Stale", "old artist", "3:00"),
+            CandidateSource::WatchPlaylist,
+        )],
+    });
+    assert!(!app.queue.contains_video_id("stale"));
+    assert_eq!(
+        app.streaming.pending_pool_request_id,
+        Some(replacement_request_id),
+        "the old response must not consume the replacement generation"
+    );
+}
+
+#[test]
+fn streaming_mode_change_cancels_every_refill_stage() {
+    let mut app = app_playing(1, 0);
+    app.set_autoplay_streaming(true);
+    let _ = app.force_autoplay_extend();
+    app.ai.thinking = true;
+    app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
+        seed_video_id: "id0".to_owned(),
+        mode: crate::streaming::StreamingMode::Balanced,
+        shortlist: Vec::new(),
+        local_pick: Vec::new(),
+        cid_map: Vec::new(),
+        cache_key: 0,
+    });
+
+    app.select_streaming_mode(crate::streaming::StreamingMode::Discovery);
+
+    assert!(!app.streaming.pending);
+    assert!(app.streaming.pending_pool_request_id.is_none());
+    assert!(app.streaming.pending_rerank.is_none());
+    assert!(app.streaming.pending_why_gem.is_none());
+    assert!(app.streaming.pending_queue_revision.is_none());
+    assert!(!app.ai.thinking);
+}
+
+#[test]
 fn streaming_results_run_through_local_engine_and_clear_pending() {
     let _guard = crate::i18n::lock_for_test();
     fastrand::seed(7);
     let mut app = app_playing(2, 0);
     app.autoplay_streaming = true;
     app.streaming.pending = true;
+    app.streaming.pending_pool_request_id = Some(1);
 
     // The local engine excludes the seed (id0) and the already-queued track (id1), dedups
     // the repeated id2, and ranks the rest. Distinct artists + normal durations keep the
     // two survivors out of the artist-cooldown / duration hard filters, so both enqueue.
     let src = CandidateSource::YtdlpStreaming;
     app.update(StreamingMsg::Results {
+        request_id: 1,
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("id0", "current", "a", "3:00"), src), // == seed, dropped
@@ -1057,7 +1379,9 @@ fn streaming_error_uses_circuit_breaker() {
 
     for _ in 0..AUTOPLAY_MAX_FAILURES {
         app.streaming.pending = true;
+        app.streaming.pending_pool_request_id = Some(1);
         app.update(StreamingMsg::Error {
+            request_id: 1,
             seed_video_id: "id0".to_owned(),
             error: "yt-dlp failed".to_owned(),
         });

@@ -8,6 +8,8 @@
 use super::*;
 use crate::queue::{QueueMutationPlan, QueueRemovalPlayback, QueueReplacementDraft};
 
+mod why_gem;
+
 #[derive(Clone, Copy)]
 enum TrackMove {
     Next { auto: bool },
@@ -49,17 +51,22 @@ struct TrackPostCommit {
     persist_playback_modes: bool,
     clear_heal_video_id: Option<String>,
     mode_switch: Option<super::mode_transition::ModeSwitchPlan>,
+    why_gem: Option<super::why_gem::WhyGemCommit>,
+    recommendation_queued: Option<why_gem::RecommendationQueuedCommit>,
 }
 
 /// Caller-owned reducer projections which become valid only with an accepted queue replacement.
 /// Keeping these effects in the track plan prevents a rejected load from changing screens,
 /// consuming a romanization request id, or persisting a queue mode mpv never received.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(in crate::app) struct QueueReplacementOptions {
     pub(in crate::app) player_mode: bool,
     pub(in crate::app) romanize_all: bool,
     pub(in crate::app) persist_playback_modes: bool,
     pub(in crate::app) force_autoplay_extend: bool,
+    /// `None` clears all provenance with the replacement. Recommendation-owned replacements
+    /// provide exact per-video models and install them only after player admission.
+    pub(in crate::app) why_gem: Option<Vec<super::why_gem::WhyGemPick>>,
 }
 
 #[derive(Clone)]
@@ -170,6 +177,14 @@ impl App {
 
     /// Release only the token-scoped Local intent/continuation owned by this rejected batch.
     pub(crate) fn reject_track_transition(&mut self, plan: &TrackTransitionPlan) {
+        if plan
+            .post_commit
+            .recommendation_queued
+            .as_ref()
+            .is_some_and(|commit| commit.streaming_refill)
+        {
+            self.cancel_pending_streaming_recommendation();
+        }
         let Some(mode_switch) = plan.post_commit.mode_switch.as_ref() else {
             return;
         };
@@ -373,24 +388,10 @@ impl App {
                 player_mode: options.player_mode,
                 romanize_songs,
                 persist_playback_modes: options.persist_playback_modes,
-                ..TrackPostCommit::default()
-            },
-        )
-    }
-
-    /// Load a caller-prepared queue mutation as one admission transaction. Play-now and idle
-    /// enqueue use this after inspecting their typed capacity outcome; screen selection and
-    /// caller-owned romanization requests remain deferred alongside the queue and load state.
-    pub(in crate::app) fn load_prepared_queue_mutation(
-        &mut self,
-        mutation: QueueMutationPlan,
-        romanize_songs: Vec<Song>,
-    ) -> Vec<Cmd> {
-        self.prepare_queue_mutation_track_transition(
-            mutation,
-            TrackPostCommit {
-                player_mode: true,
-                romanize_songs,
+                why_gem: Some(options.why_gem.map_or(
+                    super::why_gem::WhyGemCommit::Clear,
+                    super::why_gem::WhyGemCommit::Replace,
+                )),
                 ..TrackPostCommit::default()
             },
         )
@@ -409,6 +410,7 @@ impl App {
             mutation,
             TrackPostCommit {
                 mode_switch: Some(mode_switch),
+                why_gem: Some(super::why_gem::WhyGemCommit::Clear),
                 ..TrackPostCommit::default()
             },
         );
@@ -754,6 +756,9 @@ impl App {
                 effects.extend(self.maybe_autoplay_extend());
             }
         }
+
+        self.commit_why_gem_post_commit(&mut post_commit);
+        self.reconcile_why_gem();
 
         if post_commit.close_queue_popup {
             self.queue_popup.open = false;

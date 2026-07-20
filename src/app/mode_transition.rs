@@ -321,8 +321,7 @@ impl App {
         self.queue_popup.cursor = 0;
         self.queue_popup.anchor = 0;
         self.search_filter.close();
-        self.streaming.pending = false;
-        self.streaming.pending_rerank = None;
+        self.cancel_pending_streaming_recommendation();
         self.ai.thinking = false;
         self.art.force_clear_next_frame = true;
         self.dirty = true;

@@ -37,6 +37,10 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let mut cmds = self.dispatch(msg);
+        // A refill is scoped to the exact queue membership/order snapshot it started from.
+        // Observe revisions after every owner reduction so an admitted manual replacement cannot
+        // leave an old same-seed chain eligible merely because that video id is still present.
+        self.reconcile_pending_streaming_recommendation();
         // Local Find owns derived data from the index, downloaded fallback, playlists and search
         // options. Observe those revisions centrally so changes made while Find stays open
         // cannot leave a stale corpus visible until the user happens to type another key.
@@ -92,6 +96,10 @@ impl App {
             self.fx.cancel();
         }
         self.cancel_stale_seekbar_scrub();
+        // Queue membership is the lifetime boundary for session-only WhyGem provenance. Run this
+        // after every non-animation owner turn so every mutation path (key, mouse, remote, AI,
+        // mode switch, admitted player transition) shares the same stale-entry cleanup.
+        self.reconcile_why_gem();
         self.sync_art_overlay_state();
         self.sync_art_geometry();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
@@ -598,43 +606,113 @@ impl App {
                 }
             }
             StreamingMsg::Results {
+                request_id,
                 seed_video_id,
                 candidates,
             } => {
+                // A pool result cannot belong to a chain that has already advanced to rerank or
+                // metadata preflight. Dropping it without settling the live stage prevents an old
+                // same-seed response from reopening or overwriting newer work.
+                if !self.streaming.pending
+                    || self.streaming.pending_pool_request_id != Some(request_id)
+                    || self.streaming.pending_rerank.is_some()
+                    || self.streaming.pending_why_gem.is_some()
+                {
+                    return Vec::new();
+                }
                 self.streaming.pending = false;
+                self.streaming.pending_pool_request_id = None;
                 if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                     // With a key + reranker enabled, hand the model a diverse local shortlist to
                     // reorder (ids only); otherwise rank the pool purely locally. Either way the
                     // pool went through scoring + MMR + cooldown — never taken verbatim.
                     if self.ai.available && self.config.streaming.ai.enabled {
-                        return self.start_ai_rerank(&seed_video_id, candidates);
+                        return self.start_ai_rerank(request_id, &seed_video_id, candidates);
                     }
                     let picks = self.plan_local_streaming(&seed_video_id, candidates);
-                    return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
+                    return self.extend_sanitized_streaming(request_id, &seed_video_id, picks, &[]);
                 } else {
+                    self.cancel_pending_streaming_recommendation();
                     self.dirty = true;
                 }
             }
             StreamingMsg::Preflighted {
+                request_id,
                 seed_video_id,
                 songs,
             } => {
+                let matches_pending =
+                    self.streaming
+                        .pending_why_gem
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            pending.request_id == request_id
+                                && pending.seed_video_id == seed_video_id
+                        });
+                if !matches_pending {
+                    return Vec::new();
+                }
+                let why_gem = self
+                    .streaming
+                    .pending_why_gem
+                    .take()
+                    .expect("matching preflight provenance");
                 self.streaming.pending = false;
                 if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
-                    return self.extend_queue_from_streaming(songs);
+                    let origin = super::why_gem::streaming_origin_model(why_gem.mode);
+                    let models =
+                        super::why_gem::models_for_songs(&songs, &why_gem.detailed, &origin);
+                    return self.extend_queue_with_preflight_why_gem(songs, models);
+                }
+                self.cancel_pending_streaming_recommendation();
+                self.dirty = true;
+            }
+            StreamingMsg::PreflightError {
+                request_id,
+                seed_video_id,
+                error,
+            } => {
+                let matches_pending =
+                    self.streaming
+                        .pending_why_gem
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            pending.request_id == request_id
+                                && pending.seed_video_id == seed_video_id
+                        });
+                if !matches_pending {
+                    return Vec::new();
+                }
+                self.cancel_pending_streaming_recommendation();
+                if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
+                    return self.note_streaming_failure(format!(
+                        "{}: {error}",
+                        t!("Autoplay failed", "자동재생 실패", "自動再生に失敗")
+                    ));
                 }
                 self.dirty = true;
             }
             StreamingMsg::AiPicks {
+                request_id,
                 seed_video_id,
                 picks,
                 conf,
-            } => return self.on_streaming_ai_picks(seed_video_id, picks, conf),
+            } => return self.on_streaming_ai_picks(request_id, seed_video_id, picks, conf),
             StreamingMsg::Error {
+                request_id,
                 seed_video_id,
                 error,
             } => {
-                self.streaming.pending = false;
+                // `Error` is a candidate-pool failure. Once a newer chain has advanced beyond
+                // that stage it is stale, even when the user is still on the same seed.
+                if !self.streaming.pending
+                    || self.streaming.pending_pool_request_id != Some(request_id)
+                    || self.streaming.pending_rerank.is_some()
+                    || self.streaming.pending_why_gem.is_some()
+                {
+                    return Vec::new();
+                }
+                self.cancel_pending_streaming_recommendation();
                 if self.streaming_active() && self.queue.contains_video_id(&seed_video_id) {
                     return self.note_streaming_failure(format!(
                         "{}: {error}",
@@ -651,6 +729,12 @@ impl App {
     fn handle_ai(&mut self, am: AiMsg) -> Vec<Cmd> {
         match am {
             AiMsg::Thinking(on) => {
+                // A canceled rerank still emits its guard's trailing `Thinking(false)`. If a newer
+                // generation already owns the rerank slot, that old telemetry must not hide the
+                // current spinner; the matching `AiPicks` path settles it explicitly.
+                if !on && self.streaming.pending_rerank.is_some() {
+                    return Vec::new();
+                }
                 self.ai.thinking = on;
                 self.bridges.ai_transcript_scroll.scroll_to_end();
                 self.dirty = true;
@@ -669,19 +753,22 @@ impl App {
             }
             AiMsg::PlayTracks(songs) => {
                 if !songs.is_empty() {
+                    let origin = super::why_gem::dj_gem_origin_model();
+                    let why_gem = super::why_gem::models_for_songs(&songs, &[], &origin);
                     return self.replace_queue_and_load(
                         songs,
                         0,
                         None,
                         QueueReplacementOptions {
                             romanize_all: true,
+                            why_gem: Some(why_gem),
                             ..QueueReplacementOptions::default()
                         },
                     );
                 }
             }
             AiMsg::Enqueue(songs) => {
-                return self.extend_queue_from_streaming(songs);
+                return self.extend_queue_from_dj_gem(songs);
             }
             AiMsg::Suggestions(songs) => {
                 let cmds = self.request_romanization_for_songs(&songs);
@@ -734,6 +821,9 @@ impl App {
                     explore.as_deref(),
                     &avoid_artists,
                 );
+                if self.config.streaming.mode != profile.explore.to_mode() {
+                    self.cancel_pending_streaming_recommendation();
+                }
                 self.config.streaming.mode = profile.explore.to_mode();
                 self.station.active = Some(profile);
                 self.dirty = true;

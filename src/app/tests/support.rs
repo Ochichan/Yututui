@@ -400,12 +400,20 @@ pub(super) fn streaming_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])
     })
 }
 
+pub(super) fn streaming_fallback_request_id(cmds: &[Cmd]) -> Option<u64> {
+    cmds.iter().find_map(|cmd| match cmd {
+        Cmd::StreamingFallback { request_id, .. } => Some(*request_id),
+        _ => None,
+    })
+}
+
 /// The `(seed_video_id, prompt)` of the `AiRerank` command among `cmds`, if any.
 pub(super) fn ai_rerank(cmds: &[Cmd]) -> Option<(&str, &str)> {
     cmds.iter().find_map(|c| match c {
         Cmd::AiRerank {
             seed_video_id,
             prompt,
+            ..
         } => Some((seed_video_id.as_str(), prompt.as_str())),
         _ => None,
     })

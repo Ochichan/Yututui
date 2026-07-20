@@ -127,6 +127,7 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
     app.playback.paused = false;
     app.streaming.pending = true;
     app.streaming.pending_rerank = Some(PendingRerank {
+        request_id: 1,
         seed_video_id: "id1".to_owned(),
         shortlist: Vec::new(),
         local_pick: Vec::new(),
@@ -242,6 +243,7 @@ fn radio_mode_busy_and_closed_preserve_the_complete_switch_for_retry() {
         app.playback.paused = false;
         app.streaming.pending = true;
         app.streaming.pending_rerank = Some(PendingRerank {
+            request_id: 1,
             seed_video_id: "id1".to_owned(),
             shortlist: Vec::new(),
             local_pick: Vec::new(),

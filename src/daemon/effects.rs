@@ -268,6 +268,7 @@ fn dispatch_engine_effects_inner(
         }
         match effect {
             engine::EngineEffect::StreamingFallback {
+                request_id,
                 seed,
                 seed_video_id,
                 exclude_ids,
@@ -276,6 +277,7 @@ fn dispatch_engine_effects_inner(
                 config,
             } => {
                 if let Err(error) = api.streaming(
+                    request_id,
                     seed,
                     seed_video_id.clone(),
                     exclude_ids,
@@ -286,6 +288,7 @@ fn dispatch_engine_effects_inner(
                     tracing::warn!(%error, "api command enqueue failed");
                     if !shutdown.is_triggered() {
                         terminal.push(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                            request_id,
                             seed_video_id,
                             error: error.to_string(),
                         }));
@@ -293,18 +296,25 @@ fn dispatch_engine_effects_inner(
                 }
             }
             engine::EngineEffect::StreamingPreflight {
+                request_id,
                 seed_video_id,
                 picks,
                 fallback,
                 mode,
                 config,
             } => {
-                if let Err(error) =
-                    api.streaming_preflight(seed_video_id.clone(), picks, fallback, mode, config)
-                {
+                if let Err(error) = api.streaming_preflight(
+                    request_id,
+                    seed_video_id.clone(),
+                    picks,
+                    fallback,
+                    mode,
+                    config,
+                ) {
                     tracing::warn!(%error, "api command enqueue failed");
                     if !shutdown.is_triggered() {
                         terminal.push(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                            request_id,
                             seed_video_id,
                             error: error.to_string(),
                         }));

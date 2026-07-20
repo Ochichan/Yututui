@@ -780,7 +780,10 @@ impl App {
                 cmds
             }
             PlaylistIntent::Enqueue => {
+                let manual_video_ids: Vec<String> =
+                    songs.iter().map(|song| song.video_id.clone()).collect();
                 let added = self.queue.extend(songs);
+                self.forget_why_gem_ids(manual_video_ids.iter().take(added).map(String::as_str));
                 self.status.kind = StatusKind::Info;
                 self.status.text = match crate::i18n::current() {
                     crate::i18n::Language::Korean => format!("{added}곡을 대기열에 추가함"),

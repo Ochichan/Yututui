@@ -522,6 +522,9 @@ impl App {
     }
 
     pub(in crate::app) fn select_streaming_mode(&mut self, mode: StreamingMode) -> Vec<Cmd> {
+        if self.config.streaming.mode != mode {
+            self.cancel_pending_streaming_recommendation();
+        }
         self.config.streaming.mode = mode;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
@@ -868,6 +871,7 @@ impl App {
     /// Into an empty queue it just becomes the sole track. This is the unified Enter / double-
     /// click "play" gesture in both the Library and the Search results.
     pub(in crate::app) fn play_now(&mut self, song: Song) -> Vec<Cmd> {
+        let requested_song = song.clone();
         let (plan, outcome) = self.queue.prepare_play_now_many(vec![song]);
         debug_assert_eq!(outcome.requested(), 1);
         if outcome.added() == 0 {
@@ -878,7 +882,7 @@ impl App {
             return Vec::new();
         }
         debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
-        self.load_prepared_queue_mutation(plan, Vec::new())
+        self.load_prepared_queue_mutation(plan, vec![requested_song], outcome.added())
     }
 
     /// Play several tracks now without wiping the queue: insert them immediately after the
@@ -898,7 +902,7 @@ impl App {
             return Vec::new();
         }
         debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
-        self.load_prepared_queue_mutation(plan, requested_songs)
+        self.load_prepared_queue_mutation(plan, requested_songs, outcome.added())
     }
 
     /// Add `song` to the queue without interrupting playback — the unified `\` / right-click
@@ -930,7 +934,7 @@ impl App {
                 return Vec::new();
             }
             debug_assert_eq!(outcome.selected_cursor(), Some(plan.cursor_pos()));
-            return self.load_prepared_queue_mutation(plan, queued_songs);
+            return self.load_prepared_queue_mutation(plan, queued_songs, outcome.added());
         }
 
         let enqueue_next = self.config.effective_enqueue_next();
@@ -946,6 +950,12 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        self.forget_why_gem_ids(
+            queued_songs
+                .iter()
+                .take(added)
+                .map(|song| song.video_id.as_str()),
+        );
         let cmds = self.request_romanization_for_songs(&queued_songs);
         let first_title = self.display_title(&queued_songs[0]).into_owned();
         // A track is already playing → queue it by policy, with no interruption.
