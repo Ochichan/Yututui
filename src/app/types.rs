@@ -174,32 +174,8 @@ pub enum Msg {
     RecordingTick,
     /// A radio recorder disk job finished (a track was saved, or saving failed).
     Recorder(crate::recorder::job::RecorderEvent),
-    /// Search returned results (possibly empty) for `query`.
-    SearchResults {
-        request_id: u64,
-        query: String,
-        source: SearchSource,
-        songs: Vec<Song>,
-        /// The multi-source operation deadline dropped one or more sources (partial results).
-        timed_out: bool,
-    },
-    /// Search failed.
-    SearchError {
-        request_id: u64,
-        source: SearchSource,
-        error: String,
-    },
-    /// A remote playlist's tracks arrived (answering [`Cmd::FetchPlaylistTracks`]).
-    PlaylistTracks {
-        title: String,
-        intent: crate::api::PlaylistIntent,
-        songs: Vec<Song>,
-    },
-    /// Fetching a remote playlist's tracks failed.
-    PlaylistTracksError {
-        title: String,
-        error: String,
-    },
+    /// Search results, playlist-track fetches, and artist-page fetches.
+    Search(SearchMsg),
     /// Local-data work completed: a download scan or portable personal-data export.
     Data(DataMsg),
     /// Local Deck index load/scan result.
@@ -369,20 +345,8 @@ pub enum Cmd {
     VideoToggleMute,
     /// Mark a newer release tag as accepted by the reducer and queued for notification.
     UpdateSeen { tag: String },
-    Search {
-        request_id: u64,
-        query: String,
-        source: SearchSource,
-        config: SearchConfig,
-    },
-    /// Search public YouTube playlists by name (the search box's playlist kind).
-    SearchPlaylists { request_id: u64, query: String },
-    /// Fetch a remote playlist's full track list, then apply `intent` to it.
-    FetchPlaylistTracks {
-        playlist_id: String,
-        title: String,
-        intent: crate::api::PlaylistIntent,
-    },
+    /// Search queries and remote search-row fetches.
+    Search(SearchCmd),
     /// Persist a store to disk (or clear one) via the debounced persistence actor. The
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
@@ -699,6 +663,11 @@ pub enum MouseTarget {
     /// A row in the results-filter popup, by *display* index into the filtered rows.
     /// Single-click selects; double-click plays; right-click enqueues.
     SearchFilterRow(usize),
+    /// A top-songs row on the artist detail screen. Single-click selects; double-click plays.
+    ArtistSongRow(usize),
+    /// An albums/singles row on the artist detail screen. Single-click selects;
+    /// double-click plays the album.
+    ArtistAlbumRow(usize),
     /// Open/close the search-source dropdown.
     SearchSourceMenu,
     /// Pick a source from the search-source dropdown.
@@ -889,6 +858,10 @@ pub enum ScrollSurface {
     LocalFind,
     /// The search results-filter popup's list.
     SearchFilter,
+    /// The artist detail screen's top-songs list.
+    ArtistSongs,
+    /// The artist detail screen's albums/singles list.
+    ArtistAlbums,
     AiTranscript,
     AiSuggestions,
     Settings,
@@ -999,6 +972,9 @@ pub enum Mode {
     Library,
     Settings,
     Ai,
+    /// The artist detail screen (top songs + albums/singles). Reached only from a
+    /// Search artist row — it has no nav tab; Back returns to Search.
+    Artist,
 }
 
 /// Contextual owner of the shared top-level Search/Find navigation slot.
@@ -1455,13 +1431,69 @@ pub enum SearchFocus {
     Results,
 }
 
-/// What the search box looks for: tracks (default) or public YouTube playlists.
-/// Session-scoped; toggled with [`Action::ToggleSearchKind`].
+/// Which list of the artist detail screen holds the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArtistSection {
+    #[default]
+    Songs,
+    Albums,
+}
+
+/// The artist detail screen's state ([`Mode::Artist`]), filled by [`SearchMsg::ArtistPage`]
+/// and dropped when the screen closes.
+pub struct ArtistPageState {
+    pub page: crate::api::ArtistPage,
+    pub section: ArtistSection,
+    pub songs_selected: usize,
+    pub albums_selected: usize,
+    pub songs_scroll: crate::ui::scroll::ScrollState,
+    pub albums_scroll: crate::ui::scroll::ScrollState,
+}
+
+impl ArtistPageState {
+    pub fn new(page: crate::api::ArtistPage) -> Self {
+        // Land the cursor on whichever section actually has rows.
+        let section = if page.songs.is_empty() && !page.albums.is_empty() {
+            ArtistSection::Albums
+        } else {
+            ArtistSection::Songs
+        };
+        Self {
+            page,
+            section,
+            songs_selected: 0,
+            albums_selected: 0,
+            songs_scroll: crate::ui::scroll::ScrollState::default(),
+            albums_scroll: crate::ui::scroll::ScrollState::default(),
+        }
+    }
+
+    /// The rows of the focused section.
+    pub fn section_rows(&self) -> &[Song] {
+        match self.section {
+            ArtistSection::Songs => &self.page.songs,
+            ArtistSection::Albums => &self.page.albums,
+        }
+    }
+
+    /// The focused section's cursor index (clamped to its rows).
+    pub fn section_selected(&self) -> usize {
+        let (sel, len) = match self.section {
+            ArtistSection::Songs => (self.songs_selected, self.page.songs.len()),
+            ArtistSection::Albums => (self.albums_selected, self.page.albums.len()),
+        };
+        sel.min(len.saturating_sub(1))
+    }
+}
+
+/// What the search box looks for: tracks (default), public YouTube playlists, or
+/// YouTube Music artists. Session-scoped; cycled with [`Action::ToggleSearchKind`].
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum SearchKind {
     #[default]
     Songs,
     Playlists,
+    Artists,
 }
 
 /// The semantic kind of the transient `status` line, controlling its color in the player

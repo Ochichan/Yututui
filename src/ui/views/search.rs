@@ -120,12 +120,14 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let current_source = app
         .search_config_for_mode()
         .normalized_source(app.search.source);
-    // Playlist kind fixes the provider (YouTube playlists), so its tag replaces the
+    // Playlist/artist kinds fix the provider (YouTube), so their tag replaces the
     // source code in the title.
-    let tail = if app.search.kind == SearchKind::Playlists {
-        t!("playlists (^P)", "플레이리스트 (^P)", "プレイリスト (^P)").to_owned()
-    } else {
-        current_source.code().to_owned()
+    let tail = match app.search.kind {
+        SearchKind::Playlists => {
+            t!("playlists (^P)", "플레이리스트 (^P)", "プレイリスト (^P)").to_owned()
+        }
+        SearchKind::Artists => t!("artists (^P)", "아티스트 (^P)", "アーティスト (^P)").to_owned(),
+        SearchKind::Songs => current_source.code().to_owned(),
     };
     let title = if app.authenticated {
         match crate::i18n::current() {
@@ -278,20 +280,26 @@ fn result_row_cells(
         |lookup| lookup.is_favorite(&song.video_id),
     );
     let heart = if is_favorite { "♥ " } else { "  " };
-    // Playlist rows get their own tag so they read as containers, not tracks. Codes vary in
-    // width ([YT] vs [RAD]); pad to a fixed column so titles align across mixed-source results.
+    // Playlist/artist rows get their own tag so they read as containers, not tracks. Codes
+    // vary in width ([YT] vs [RAD]); pad to a fixed column so titles align across
+    // mixed-source results.
     let source = if song.youtube_playlist_id().is_some() {
         "[PL]".to_owned()
+    } else if song.youtube_artist_id().is_some() {
+        "[ART]".to_owned()
     } else {
         format!("[{}]", song.source.code())
     };
     let source = crate::ui::text::pad_to_width(&source, 6);
     let title = app.display_title(song);
     let artist = app.display_artist(song);
-    let text = if song.duration.is_empty() {
-        format!("{title} — {artist}")
-    } else {
-        format!("{title} — {artist}  ({})", song.duration)
+    // Artist rows carry no artist column of their own; drop the dash instead of
+    // rendering "Name — ".
+    let text = match (artist.is_empty(), song.duration.is_empty()) {
+        (true, true) => title.into_owned(),
+        (true, false) => format!("{title}  ({})", song.duration),
+        (false, true) => format!("{title} — {artist}"),
+        (false, false) => format!("{title} — {artist}  ({})", song.duration),
     };
     (source, heart, text)
 }

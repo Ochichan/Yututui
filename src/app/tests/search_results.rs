@@ -15,24 +15,24 @@ fn stale_search_results_do_not_overwrite_a_newer_search() {
     assert_ne!(first_id, second_id);
 
     // The newer search's results arrive first and populate the list.
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: second_id,
         query: "abcdef".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![Song::remote("newid", "New", "Artist", "3:00")],
-    });
+    }));
     assert!(app.search.results.iter().any(|s| s.video_id == "newid"));
 
     // The older, slower search's results arrive AFTER — they must be dropped (the bug:
     // once the newer search cleared `searching`, the old guard let this through).
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: first_id,
         query: "a".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![Song::remote("oldid", "Old", "Artist", "3:00")],
-    });
+    }));
     assert!(
         app.search.results.iter().all(|s| s.video_id != "oldid"),
         "stale results must not overwrite the newer search"
@@ -85,13 +85,13 @@ fn external_set_volume_clears_the_mute_latch() {
 fn results_then_enter_plays_and_returns_to_player() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
-    });
+    }));
     assert_eq!(app.search.focus, SearchFocus::Results);
     let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_loads_video(&cmds, "abc123");
@@ -103,7 +103,7 @@ fn results_then_enter_plays_and_returns_to_player() {
 fn enter_on_search_result_queues_only_the_selected_song() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
@@ -113,7 +113,7 @@ fn enter_on_search_result_queues_only_the_selected_song() {
             Song::remote("id1", "One", "B", "3:00"),
             Song::remote("id2", "Two", "C", "3:00"),
         ],
-    });
+    }));
     app.search.focus = SearchFocus::Results;
     app.search.selected = 1;
     app.search.anchor = 1;
@@ -135,13 +135,13 @@ fn enter_on_search_result_plays_now_keeping_the_queue() {
 
     // Go to search, pick a fresh result, hit Enter → play it right now.
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
-    });
+    }));
     app.search.focus = SearchFocus::Results;
     app.search.selected = 0;
     let mut cmds = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -170,13 +170,13 @@ fn backslash_on_search_result_enqueues_without_interrupting() {
 
     // Go to search, pick a fresh result, press `\` → add to queue.
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
-    });
+    }));
     app.search.focus = SearchFocus::Results;
     app.search.selected = 0;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));

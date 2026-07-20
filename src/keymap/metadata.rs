@@ -67,7 +67,7 @@ pub enum Action {
     MoveCursorWordRight,
     SelectAll,
     ToggleSearchSourceMenu,
-    /// Search box: flip between searching tracks and public YouTube playlists.
+    /// Search box: cycle between searching tracks, public YouTube playlists, and artists.
     ToggleSearchKind,
     // Queue window.
     QueueRemove,
@@ -493,9 +493,9 @@ const ACTION_META: &[(Action, &str, &str, &str, &str)] = &[
     (
         Action::ToggleSearchKind,
         "toggle_search_kind",
-        "Search songs / playlists",
-        "검색: 곡 / 플레이리스트",
-        "検索: 曲 / プレイリスト",
+        "Search songs / playlists / artists",
+        "검색: 곡 / 플레이리스트 / 아티스트",
+        "検索: 曲 / プレイリスト / アーティスト",
     ),
     (
         Action::OpenLocalFind,

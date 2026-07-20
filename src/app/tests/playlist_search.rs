@@ -13,17 +13,23 @@ fn ctrl_p_toggles_playlist_search_kind_and_routes_submit() {
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, Cmd::SearchPlaylists { query, .. } if query == "study")),
+        cmds.iter().any(
+            |c| matches!(c, Cmd::Search(SearchCmd::Playlists { query, .. }) if query == "study")
+        ),
         "playlist kind must route to the playlist search command"
     );
     assert!(app.search.searching);
 
-    // Toggling back restores ordinary source-routed search.
+    // Cycling on (through Artists) restores ordinary source-routed search.
+    app.update(Msg::Key(ctrl(KeyCode::Char('p'))));
+    assert_eq!(app.search.kind, SearchKind::Artists);
     app.update(Msg::Key(ctrl(KeyCode::Char('p'))));
     assert_eq!(app.search.kind, SearchKind::Songs);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::Search { .. })));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Search(SearchCmd::Query { .. })))
+    );
 }
 
 /// A search-results screen with one playlist row selected.
@@ -35,7 +41,11 @@ fn enter_on_a_playlist_row_fetches_tracks_to_play() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Cmd::FetchPlaylistTracks { playlist_id, intent: crate::api::PlaylistIntent::Play, .. }
+        Cmd::Search(SearchCmd::PlaylistTracks {
+            playlist_id,
+            intent: crate::api::PlaylistIntent::Play,
+            ..
+        })
             if playlist_id == "PLabcdefgh1234"
     )));
 }
@@ -47,18 +57,18 @@ fn enqueue_and_import_keys_map_to_their_playlist_intents() {
     let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Cmd::FetchPlaylistTracks {
+        Cmd::Search(SearchCmd::PlaylistTracks {
             intent: crate::api::PlaylistIntent::Enqueue,
             ..
-        }
+        })
     )));
     let cmds = app.update(Msg::Key(key(KeyCode::Char('p'))));
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Cmd::FetchPlaylistTracks {
+        Cmd::Search(SearchCmd::PlaylistTracks {
             intent: crate::api::PlaylistIntent::Import,
             ..
-        }
+        })
     )));
 }
 
@@ -68,11 +78,11 @@ fn playlist_tracks_play_replaces_the_queue() {
     let mut app = app_playing(2, 0);
     let before = serde_json::to_value(app.queue.snapshot()).unwrap();
     let before_rev = app.queue.rev();
-    let rejected = app.update(Msg::PlaylistTracks {
+    let rejected = app.update(Msg::Search(SearchMsg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Play,
         songs: songs(3),
-    });
+    }));
     assert_eq!(serde_json::to_value(app.queue.snapshot()).unwrap(), before);
     assert_eq!(app.queue.rev(), before_rev);
     assert!(!app.status.text.contains("Rainy Mix"));
@@ -88,11 +98,11 @@ fn playlist_tracks_play_replaces_the_queue() {
     assert_eq!(app.queue.rev(), before_rev);
     assert!(!app.status.text.contains("Rainy Mix"));
 
-    let mut cmds = app.update(Msg::PlaylistTracks {
+    let mut cmds = app.update(Msg::Search(SearchMsg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Play,
         songs: songs(3),
-    });
+    }));
     admit_player_transition(&mut app, &mut cmds);
     assert_eq!(app.queue.len(), 3);
     assert_ne!(app.queue.rev(), before_rev);
@@ -109,11 +119,11 @@ fn playlist_tracks_enqueue_appends_to_the_queue() {
         "id1".to_owned(),
         why_gem::streaming_origin_model(crate::streaming::StreamingMode::Balanced),
     );
-    app.update(Msg::PlaylistTracks {
+    app.update(Msg::Search(SearchMsg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Enqueue,
         songs: vec![Song::remote("id1", "t", "a", "0:10")],
-    });
+    }));
     assert_eq!(app.queue.len(), 3);
     assert_eq!(current(&app), "id0", "current track is untouched");
     assert!(
@@ -126,11 +136,11 @@ fn playlist_tracks_enqueue_appends_to_the_queue() {
 fn playlist_tracks_import_creates_a_local_playlist() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
-    let cmds = app.update(Msg::PlaylistTracks {
+    let cmds = app.update(Msg::Search(SearchMsg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Import,
         songs: songs(3),
-    });
+    }));
     let imported = app
         .playlists
         .playlists
@@ -148,11 +158,11 @@ fn playlist_tracks_import_creates_a_local_playlist() {
 fn empty_playlist_fetch_reports_instead_of_wiping_the_queue() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
-    let cmds = app.update(Msg::PlaylistTracks {
+    let cmds = app.update(Msg::Search(SearchMsg::PlaylistTracks {
         title: "Rainy Mix".to_owned(),
         intent: crate::api::PlaylistIntent::Play,
         songs: Vec::new(),
-    });
+    }));
     assert!(cmds.is_empty());
     assert_eq!(app.queue.len(), 2, "queue survives an empty fetch");
     assert!(!app.status.text.is_empty());

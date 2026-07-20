@@ -764,11 +764,11 @@ fn app_message_policy_covers_backpressure_lanes() {
         }
     );
     assert_eq!(
-        app_msg_policy(&Msg::SearchError {
+        app_msg_policy(&Msg::Search(SearchMsg::Error {
             request_id: 1,
             source: crate::search_source::SearchSource::Youtube,
             error: "offline".to_owned(),
-        }),
+        })),
         EventPolicy::DropIfStale {
             stale_key: EventKey::SearchRequest,
         }
@@ -915,13 +915,13 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
     }));
     assert!(matches!(
         msg,
-        Msg::SearchResults {
+        Msg::Search(SearchMsg::Results {
             request_id: 3,
             query,
             source: crate::search_source::SearchSource::SoundCloud,
             songs,
             timed_out: true,
-        } if query == "query" && songs[0].video_id == "v1"
+        }) if query == "query" && songs[0].video_id == "v1"
     ));
 
     let msg = Msg::from(RuntimeEvent::Api(
@@ -932,7 +932,8 @@ fn runtime_event_to_msg_preserves_ai_api_and_transport_payloads() {
     ));
     assert!(matches!(
         msg,
-        Msg::PlaylistTracksError { title, error } if title == "mix" && error == "denied"
+        Msg::Search(SearchMsg::PlaylistTracksError { title, error })
+            if title == "mix" && error == "denied"
     ));
 
     let msg = Msg::from(RuntimeEvent::Download(
@@ -1201,11 +1202,11 @@ fn runtime_event_to_msg_preserves_api_player_and_service_payloads() {
             intent: crate::api::PlaylistIntent::Enqueue,
             songs: vec![song("plist123456")],
         })),
-        Msg::PlaylistTracks {
+        Msg::Search(SearchMsg::PlaylistTracks {
             title,
             intent: crate::api::PlaylistIntent::Enqueue,
             songs,
-        } if title == "Mix" && songs[0].video_id == "plist123456"
+        }) if title == "Mix" && songs[0].video_id == "plist123456"
     ));
     assert!(matches!(
         Msg::from(RuntimeEvent::Api(crate::api::ApiEvent::StreamingResults {

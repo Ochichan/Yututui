@@ -79,6 +79,8 @@ fn apply_text_edit_action(
     }
 }
 
+mod search_types;
+pub use search_types::*;
 mod types;
 pub use types::*;
 
@@ -106,6 +108,7 @@ pub use ai_reducer::AiMsg;
 mod audio_output;
 mod audio_output_picker;
 pub use audio_output_picker::*;
+mod artist;
 mod artwork;
 mod clipboard;
 mod context_menu;
@@ -337,7 +340,6 @@ pub struct App {
     /// Search results-filter popup state: open flag, live query, cursor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`SearchFilterPopup`]).
     pub search_filter: SearchFilterPopup,
-
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
     pub config: Config,

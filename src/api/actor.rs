@@ -10,7 +10,10 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingMode};
 use crate::util::sanitize;
 
-use super::{ApiCmd, ApiEvent, ApiHandle, ApiMode, GuiSearchGroup, Song, ytmusic};
+use super::{
+    ApiCmd, ApiEvent, ApiHandle, ApiMode, ArtistIntent, GuiSearchGroup, PlaylistIntent, Song,
+    ytmusic,
+};
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 pub(super) const STREAMING_YTDLP_CACHE_MAX: usize = 512;
@@ -230,7 +233,41 @@ async fn run_interactive_actor<F>(
                 };
                 emit(event);
             }
+            ApiCmd::SearchArtists { request_id, query } => {
+                let event = match api.search_artists(&query).await {
+                    Ok(songs) => {
+                        let query_log = crate::util::query::query_log_preview(&query);
+                        tracing::info!(
+                            count = songs.len(),
+                            query_bytes = query_log.bytes,
+                            query_chars = query_log.chars,
+                            query_preview = %query_log.preview,
+                            query_truncated = query_log.truncated,
+                            "artist search results"
+                        );
+                        ApiEvent::SearchResults {
+                            request_id,
+                            query,
+                            source: SearchSource::Youtube,
+                            songs,
+                            // Artist search is a single provider; no multi-source deadline.
+                            timed_out: false,
+                        }
+                    }
+                    Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(error = %error, "artist search failed");
+                        ApiEvent::SearchError {
+                            request_id,
+                            source: SearchSource::Youtube,
+                            error,
+                        }
+                    }
+                };
+                emit(event);
+            }
             ApiCmd::PlaylistTracks { .. }
+            | ApiCmd::ArtistPage { .. }
             | ApiCmd::Streaming { .. }
             | ApiCmd::StreamingPreflight { .. } => {
                 tracing::warn!(
@@ -270,6 +307,76 @@ where
                         let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(id = %playlist_id, error = %error, "playlist tracks fetch failed");
                         ApiEvent::PlaylistTracksError { title, error }
+                    }
+                };
+                emit(event);
+            }
+            ApiCmd::ArtistPage {
+                channel_id,
+                title,
+                intent,
+            } => {
+                let event = match api.artist_page(&channel_id).await {
+                    Ok(page) => match intent {
+                        ArtistIntent::Open => {
+                            tracing::info!(
+                                songs = page.songs.len(),
+                                albums = page.albums.len(),
+                                id = %channel_id,
+                                "artist page fetched"
+                            );
+                            ApiEvent::ArtistPage { page }
+                        }
+                        // Enqueue/Import act on the artist's full songs playlist, chained
+                        // here so the reducer reuses its playlist-row path unchanged.
+                        ArtistIntent::Enqueue | ArtistIntent::Import => {
+                            let intent = if intent == ArtistIntent::Enqueue {
+                                PlaylistIntent::Enqueue
+                            } else {
+                                PlaylistIntent::Import
+                            };
+                            let title = if page.name.is_empty() {
+                                title
+                            } else {
+                                page.name
+                            };
+                            match &page.songs_playlist_id {
+                                Some(playlist_id) => match api.playlist_tracks(playlist_id).await {
+                                    Ok(songs) => {
+                                        tracing::info!(
+                                            count = songs.len(),
+                                            id = %channel_id,
+                                            "artist songs playlist fetched"
+                                        );
+                                        ApiEvent::PlaylistTracks {
+                                            title,
+                                            intent,
+                                            songs,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                                        tracing::warn!(id = %channel_id, error = %error, "artist songs playlist fetch failed");
+                                        ApiEvent::ArtistPageError { title, error }
+                                    }
+                                },
+                                // No full playlist exposed — fall back to the page's top songs.
+                                None if !page.songs.is_empty() => ApiEvent::PlaylistTracks {
+                                    title,
+                                    intent,
+                                    songs: page.songs,
+                                },
+                                None => ApiEvent::ArtistPageError {
+                                    title,
+                                    error: "the artist page lists no songs".to_owned(),
+                                },
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(id = %channel_id, error = %error, "artist page fetch failed");
+                        ApiEvent::ArtistPageError { title, error }
                     }
                 };
                 emit(event);
@@ -446,7 +553,8 @@ where
             ApiCmd::Search { .. }
             | ApiCmd::GuiSearch { .. }
             | ApiCmd::ResolveTrack { .. }
-            | ApiCmd::SearchPlaylists { .. } => {
+            | ApiCmd::SearchPlaylists { .. }
+            | ApiCmd::SearchArtists { .. } => {
                 tracing::warn!(
                     kind = ?cmd.kind(),
                     "interactive API command arrived on bulk lane"

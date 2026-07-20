@@ -561,6 +561,7 @@ impl App {
             Mode::Library => self.on_key_library(k),
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),
+            Mode::Artist => self.on_key_artist(k),
         }
     }
 

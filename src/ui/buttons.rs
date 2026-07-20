@@ -28,6 +28,8 @@ fn nav_label(mode: Mode, radio_mode: bool, local_mode: bool) -> &'static str {
         Mode::Library => t!("Library", "라이브러리", "ライブラリ"),
         Mode::Settings => t!("Settings", "설정", "設定"),
         Mode::Ai => t!("DJ Gem", "DJ Gem", "DJ Gem"),
+        // Not a nav tab (reached only from a Search artist row); label kept for completeness.
+        Mode::Artist => t!("Artist", "아티스트", "アーティスト"),
     }
 }
 use crate::keymap::Action;

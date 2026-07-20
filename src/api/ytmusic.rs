@@ -20,10 +20,13 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
 
+mod artist;
 mod official_video_search;
 mod search_fallback;
 mod transfer_api;
 mod video_metadata;
+#[cfg(test)]
+use artist::artist_row_parts;
 pub(crate) use official_video_search::TransferVideoSearchResult;
 pub use official_video_search::YtmMusicVideoType;
 pub use transfer_api::{TransferAlbum, TransferAlbumCandidate, TransferAlbumTrack};
@@ -93,7 +96,6 @@ const PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const PLAYLIST_JSON_MAX: usize = 8 * 1024 * 1024;
 /// Cap imported/enqueued playlist tracks at the local-playlist song cap.
 const PLAYLIST_TRACKS_MAX: usize = 999;
-
 #[cfg(test)]
 static TEST_YTDLP_PROGRAM: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
@@ -369,6 +371,19 @@ impl YtMusicApi {
         ytdlp_playlist_search(query).await
     }
 
+    /// Search YouTube Music artists by name. Authenticated innertube answers first;
+    /// anonymous or degraded sessions use the shared anonymous innertube client (artist
+    /// search is not login-gated, and yt-dlp has no artist catalog to fall back to).
+    pub async fn search_artists(&self, query: &str) -> Result<Vec<Song>> {
+        artist::search_artists(self, query).await
+    }
+
+    /// An artist's browse page (top songs + album/single rows). Same client selection as
+    /// [`Self::search_artists`]: authenticated innertube first, anonymous fallback.
+    pub async fn artist_page(&self, channel_id: &str) -> Result<super::ArtistPage> {
+        artist::artist_page(self, channel_id).await
+    }
+
     /// A remote playlist's playable tracks. Authenticated sessions ask innertube (rich
     /// album/duration metadata); anonymous sessions — or an innertube miss — use a flat
     /// yt-dlp extraction of the public playlist page.
@@ -376,6 +391,11 @@ impl YtMusicApi {
         let raw = playlist_id
             .strip_prefix(super::PLAYLIST_ID_PREFIX)
             .unwrap_or(playlist_id);
+        // Artist-page album rows ride the `ytpl:` machinery with their browse id; those
+        // resolve through the album endpoint, not the playlist one.
+        if raw.starts_with("MPRE") {
+            return artist::album_tracks(self, raw).await;
+        }
         if matches!(self, YtMusicApi::Browser(_)) {
             match self.playlist_tracks_full(raw).await {
                 Ok(songs) if !songs.is_empty() => return Ok(songs),

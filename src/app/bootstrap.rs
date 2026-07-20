@@ -80,6 +80,7 @@ impl App {
                 kind: SearchKind::default(),
                 searching: false,
                 request_id: 0,
+                artist: None,
             },
             library: Arc::new(Library::default()),
             signals: Arc::new(Signals::default()),

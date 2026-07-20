@@ -1106,7 +1106,7 @@ fn mutate_for_interaction(app: &mut App, step: usize) {
                 app.ai.suggestions_selected = step % app.ai.suggestions.len();
             }
         }
-        Mode::Settings => {}
+        Mode::Settings | Mode::Artist => {}
     }
 }
 

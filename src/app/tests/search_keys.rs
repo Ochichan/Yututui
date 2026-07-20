@@ -47,12 +47,12 @@ fn enter_in_search_emits_search_cmd() {
     assert!(app.search.searching);
     match cmds.as_slice() {
         [
-            Cmd::Search {
+            Cmd::Search(SearchCmd::Query {
                 query,
                 source,
                 config,
                 ..
-            },
+            }),
         ] => {
             assert_eq!(query, "lofi");
             assert_eq!(*source, SearchSource::Youtube);
@@ -135,7 +135,7 @@ fn search_submit_stays_enter_when_common_confirm_is_remapped() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.search.searching);
     match cmds.as_slice() {
-        [Cmd::Search { query, source, .. }] => {
+        [Cmd::Search(SearchCmd::Query { query, source, .. })] => {
             assert_eq!(query, "lofi");
             assert_eq!(*source, SearchSource::Youtube);
         }

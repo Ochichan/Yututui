@@ -452,7 +452,7 @@ pub struct Lyrics {
     pub delay_osd_until: Option<Instant>,
 }
 
-/// Search-screen state: the query, its results, selection, focus, and in-flight flag.
+/// Search-screen state: the query, results, selection, and transient artist detail page.
 #[derive(Default)]
 pub struct SearchState {
     /// The search query being typed.
@@ -487,6 +487,8 @@ pub struct SearchState {
     pub request_id: u64,
     /// Whether the box searches tracks or public YouTube playlists (session-scoped).
     pub kind: SearchKind,
+    /// The artist detail screen's state, present only while [`Mode::Artist`] is active.
+    pub artist: Option<ArtistPageState>,
 }
 
 /// DJ Gem assistant state: availability, model, the chat transcript, the prompt being

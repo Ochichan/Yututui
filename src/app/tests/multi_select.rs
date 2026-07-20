@@ -324,13 +324,13 @@ fn fresh_search_results_drop_the_old_selection() {
 
     app.search.input = "abc".to_owned();
     let _ = app.submit_search_query();
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "abc".to_owned(),
         songs: songs(2),
         source: SearchSource::Youtube,
         timed_out: false,
-    });
+    }));
     assert!(app.search.picked.is_empty(), "new results clear the picks");
     assert_eq!((app.search.selected, app.search.anchor), (0, 0));
 }

@@ -68,56 +68,90 @@ impl RuntimeHandles {
                 report_player_delivery(app, "video_mute", result);
             }
             Cmd::UpdateSeen { tag } => crate::update::mark_notified(&tag),
-            Cmd::Search {
-                request_id,
-                query,
-                source,
-                config,
-            } => {
-                if let Err(error) = self.api_handle.search(request_id, query, source, config) {
-                    tracing::warn!(%error, "api command enqueue failed");
-                    self.reduce_owner_msg(
-                        app,
-                        Msg::SearchError {
-                            request_id,
-                            source,
-                            error: error.to_string(),
-                        },
-                    );
+            Cmd::Search(search_cmd) => match search_cmd {
+                SearchCmd::Query {
+                    request_id,
+                    query,
+                    source,
+                    config,
+                } => {
+                    if let Err(error) = self.api_handle.search(request_id, query, source, config) {
+                        tracing::warn!(%error, "api command enqueue failed");
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Search(SearchMsg::Error {
+                                request_id,
+                                source,
+                                error: error.to_string(),
+                            }),
+                        );
+                    }
                 }
-            }
-            Cmd::SearchPlaylists { request_id, query } => {
-                if let Err(error) = self.api_handle.search_playlists(request_id, query) {
-                    tracing::warn!(%error, "api command enqueue failed");
-                    self.reduce_owner_msg(
-                        app,
-                        Msg::SearchError {
-                            request_id,
-                            source: crate::search_source::SearchSource::Youtube,
-                            error: error.to_string(),
-                        },
-                    );
+                SearchCmd::Playlists { request_id, query } => {
+                    if let Err(error) = self.api_handle.search_playlists(request_id, query) {
+                        tracing::warn!(%error, "api command enqueue failed");
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Search(SearchMsg::Error {
+                                request_id,
+                                source: crate::search_source::SearchSource::Youtube,
+                                error: error.to_string(),
+                            }),
+                        );
+                    }
                 }
-            }
-            Cmd::FetchPlaylistTracks {
-                playlist_id,
-                title,
-                intent,
-            } => {
-                if let Err(error) =
-                    self.api_handle
-                        .playlist_tracks(playlist_id, title.clone(), intent)
-                {
-                    tracing::warn!(%error, "api command enqueue failed");
-                    self.reduce_owner_msg(
-                        app,
-                        Msg::PlaylistTracksError {
-                            title,
-                            error: error.to_string(),
-                        },
-                    );
+                SearchCmd::Artists { request_id, query } => {
+                    if let Err(error) = self.api_handle.search_artists(request_id, query) {
+                        tracing::warn!(%error, "api command enqueue failed");
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Search(SearchMsg::Error {
+                                request_id,
+                                source: crate::search_source::SearchSource::Youtube,
+                                error: error.to_string(),
+                            }),
+                        );
+                    }
                 }
-            }
+                SearchCmd::PlaylistTracks {
+                    playlist_id,
+                    title,
+                    intent,
+                } => {
+                    if let Err(error) =
+                        self.api_handle
+                            .playlist_tracks(playlist_id, title.clone(), intent)
+                    {
+                        tracing::warn!(%error, "api command enqueue failed");
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Search(SearchMsg::PlaylistTracksError {
+                                title,
+                                error: error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                SearchCmd::ArtistPage {
+                    channel_id,
+                    title,
+                    intent,
+                } => {
+                    if let Err(error) =
+                        self.api_handle
+                            .artist_page(channel_id, title.clone(), intent)
+                    {
+                        tracing::warn!(%error, "api command enqueue failed");
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Search(SearchMsg::ArtistPageError {
+                                title,
+                                error: error.to_string(),
+                            }),
+                        );
+                    }
+                }
+            },
             // Persist: hand the persistence actor an owned snapshot (or clear one). Cloning a
             // store is a couple ms of memcpy at worst; the fsync it replaces on this task was
             // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`

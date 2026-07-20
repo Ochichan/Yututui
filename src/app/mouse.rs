@@ -195,7 +195,11 @@ impl App {
             }
             return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
-        match self.mouse_target_at(col, row) {
+        let target = self.mouse_target_at(col, row);
+        if let Some(commands) = self.artist_mouse_double_click(target.as_ref()) {
+            return commands;
+        }
+        match target {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
                 self.request_radio_mode_switch()
             }
@@ -540,6 +544,7 @@ impl App {
                 let delta = if up { -1 } else { 1 } * n as i32;
                 self.settings_move_row(delta);
             }
+            Mode::Artist => self.artist_mouse_scroll(up, col, row, n),
             _ => {}
         }
         Vec::new()

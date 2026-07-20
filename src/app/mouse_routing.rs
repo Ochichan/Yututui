@@ -669,6 +669,19 @@ impl App {
             MouseTarget::SettingsSpotifyImportModeSelect(_) => Vec::new(),
             // Single-click a list row: select it (double-click plays — see double-click path).
             MouseTarget::ListRow(i) => self.on_list_row_click(i),
+            // Artist-screen rows: single-click lands the cursor (and section focus) there.
+            MouseTarget::ArtistSongRow(i) => {
+                if self.mode == Mode::Artist {
+                    self.artist_select(ArtistSection::Songs, i);
+                }
+                Vec::new()
+            }
+            MouseTarget::ArtistAlbumRow(i) => {
+                if self.mode == Mode::Artist {
+                    self.artist_select(ArtistSection::Albums, i);
+                }
+                Vec::new()
+            }
             // Scrollbar targets are handled by the coordinate-aware click/drag paths.
             MouseTarget::Scrollbar(_) | MouseTarget::LocalFindScrollbar { .. } => Vec::new(),
             // Open the queue window from the `N/M` position label.

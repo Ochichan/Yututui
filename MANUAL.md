@@ -47,6 +47,8 @@ supervisor/lease there. The supported scope is in [terminal compatibility](docs/
 
 Music. If instead you got an error, type `ytt doctor` in the terminal — it checks your setup and tells you, in plain words, what to fix.
 
+**Looking for more than songs?** In the search box, **`Ctrl+P`** cycles what it searches: **songs → YouTube playlists → artists**. A playlist row plays, queues (`\`) or imports (`p`) the whole list; an artist row opens that artist's page — top songs and albums/singles — where `Enter` plays and `Esc` returns to your results.
+
 **Brand new to this?** In **Settings → General**, switch on **Beginner Mode** — the next launch adds an interactive, nine-step walkthrough that points out each part as you go. Its very first card asks which language you'd like: one button per language — **English**, **한국어**, **日本語** — each written in its own script, and highlighting an option previews the card in that language. Press `Enter` and the rest of the tour, and the whole app, switch to your pick (change it any time under **Settings → General → Language**). In retro mode that step simply explains the UI stays English and offers Continue / Skip.
 
 ### The five screens

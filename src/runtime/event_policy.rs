@@ -1,4 +1,4 @@
-use crate::app::{Msg, PlayerMsg, StreamingMsg};
+use crate::app::{Msg, PlayerMsg, SearchMsg, StreamingMsg};
 use crate::util::event_policy::{EventKey as Key, EventLane as Lane, EventPolicy};
 
 pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
@@ -46,9 +46,11 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
                 key: Key::TransferJob,
             }
         }
-        Msg::SearchResults { .. } | Msg::SearchError { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::SearchRequest,
-        },
+        Msg::Search(SearchMsg::Results { .. } | SearchMsg::Error { .. }) => {
+            EventPolicy::DropIfStale {
+                stale_key: Key::SearchRequest,
+            }
+        }
         Msg::ArtworkResult { .. } => EventPolicy::DropIfStale {
             stale_key: Key::ArtworkVideo,
         },
@@ -86,8 +88,12 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::Autoplay
         | Msg::ApiModeResolved { .. }
         | Msg::Recorder(_)
-        | Msg::PlaylistTracks { .. }
-        | Msg::PlaylistTracksError { .. }
+        | Msg::Search(
+            SearchMsg::PlaylistTracks { .. }
+            | SearchMsg::PlaylistTracksError { .. }
+            | SearchMsg::ArtistPage { .. }
+            | SearchMsg::ArtistPageError { .. },
+        )
         | Msg::DownloadsDeleted { .. }
         | Msg::Local(_)
         | Msg::Download(

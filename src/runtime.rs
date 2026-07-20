@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use crate::app::PersistCmd;
 use crate::app::{
     AiMsg, App, Cmd, DataCmd, DownloadCmd, Msg, PersonalDataExportCmd, PlayerControl, PlayerMsg,
-    ScrobbleCmd, StreamingMsg,
+    ScrobbleCmd, SearchCmd, SearchMsg, StreamingMsg,
 };
 use crate::owner_event_policy::{
     api_event_policy, download_event_policy, player_event_policy, remote_event_policy,
@@ -258,33 +258,39 @@ impl From<RuntimeEvent> for Msg {
                     source,
                     songs,
                     timed_out,
-                } => Msg::SearchResults {
+                } => Msg::Search(SearchMsg::Results {
                     request_id,
                     query,
                     source,
                     songs,
                     timed_out,
-                },
+                }),
                 crate::api::ApiEvent::SearchError {
                     request_id,
                     source,
                     error,
-                } => Msg::SearchError {
+                } => Msg::Search(SearchMsg::Error {
                     request_id,
                     source,
                     error,
-                },
+                }),
                 crate::api::ApiEvent::PlaylistTracks {
                     title,
                     intent,
                     songs,
-                } => Msg::PlaylistTracks {
+                } => Msg::Search(SearchMsg::PlaylistTracks {
                     title,
                     intent,
                     songs,
-                },
+                }),
                 crate::api::ApiEvent::PlaylistTracksError { title, error } => {
-                    Msg::PlaylistTracksError { title, error }
+                    Msg::Search(SearchMsg::PlaylistTracksError { title, error })
+                }
+                crate::api::ApiEvent::ArtistPage { page } => {
+                    Msg::Search(SearchMsg::ArtistPage { page })
+                }
+                crate::api::ApiEvent::ArtistPageError { title, error } => {
+                    Msg::Search(SearchMsg::ArtistPageError { title, error })
                 }
                 crate::api::ApiEvent::StreamingResults {
                     request_id,
