@@ -234,6 +234,7 @@ impl App {
             Mode::Artist => {
                 a.selection
                     && self
+                        .search
                         .artist
                         .as_ref()
                         .is_some_and(|st| !st.section_rows().is_empty())

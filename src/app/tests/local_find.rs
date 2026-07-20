@@ -42,7 +42,7 @@ fn assert_no_remote_search(commands: &[Cmd]) {
     assert!(
         commands
             .iter()
-            .all(|command| !matches!(command, Cmd::Search { .. } | Cmd::SearchPlaylists { .. })),
+            .all(|command| !matches!(command, Cmd::Search(_))),
         "Local Find must never emit an online search command"
     );
 }

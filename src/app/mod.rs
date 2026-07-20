@@ -79,6 +79,8 @@ fn apply_text_edit_action(
     }
 }
 
+mod search_types;
+pub use search_types::*;
 mod types;
 pub use types::*;
 
@@ -338,10 +340,6 @@ pub struct App {
     /// Search results-filter popup state: open flag, live query, cursor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`SearchFilterPopup`]).
     pub search_filter: SearchFilterPopup,
-    /// The artist detail screen's state, present only while [`Mode::Artist`] is active
-    /// (see [`ArtistPageState`]).
-    pub artist: Option<ArtistPageState>,
-
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
     pub config: Config,

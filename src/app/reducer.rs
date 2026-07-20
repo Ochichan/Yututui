@@ -1089,22 +1089,22 @@ impl App {
             Msg::TrackResolved { seq, result } => {
                 return self.on_track_resolved(seq, result);
             }
-            Msg::PlaylistTracks {
+            Msg::Search(SearchMsg::PlaylistTracks {
                 title,
                 intent,
                 songs,
-            } => {
+            }) => {
                 return self.on_playlist_tracks(title, intent, songs);
             }
-            Msg::PlaylistTracksError { title, error } => {
+            Msg::Search(SearchMsg::PlaylistTracksError { title, error }) => {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!("{title}: {error}");
                 self.dirty = true;
             }
-            Msg::ArtistPage { page } => {
+            Msg::Search(SearchMsg::ArtistPage { page }) => {
                 return self.on_artist_page(page);
             }
-            Msg::ArtistPageError { title, error } => {
+            Msg::Search(SearchMsg::ArtistPageError { title, error }) => {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!("{title}: {error}");
                 self.dirty = true;
@@ -1113,16 +1113,16 @@ impl App {
                 return self.handle_ytdlp_heal_result(video_id, updated);
             }
             Msg::ResolveFailed { video_id } => return self.handle_resolve_failed(video_id),
-            Msg::SearchResults {
+            Msg::Search(SearchMsg::Results {
                 request_id,
                 query,
                 songs,
                 timed_out,
                 ..
-            } => return self.handle_search_results(request_id, query, songs, timed_out),
-            Msg::SearchError {
+            }) => return self.handle_search_results(request_id, query, songs, timed_out),
+            Msg::Search(SearchMsg::Error {
                 request_id, error, ..
-            } => return self.handle_search_error(request_id, error),
+            }) => return self.handle_search_error(request_id, error),
             Msg::Data(DataMsg::DownloadsScanned(scan)) => {
                 return self.handle_downloads_scanned(scan);
             }

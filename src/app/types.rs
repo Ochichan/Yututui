@@ -174,41 +174,8 @@ pub enum Msg {
     RecordingTick,
     /// A radio recorder disk job finished (a track was saved, or saving failed).
     Recorder(crate::recorder::job::RecorderEvent),
-    /// Search returned results (possibly empty) for `query`.
-    SearchResults {
-        request_id: u64,
-        query: String,
-        source: SearchSource,
-        songs: Vec<Song>,
-        /// The multi-source operation deadline dropped one or more sources (partial results).
-        timed_out: bool,
-    },
-    /// Search failed.
-    SearchError {
-        request_id: u64,
-        source: SearchSource,
-        error: String,
-    },
-    /// A remote playlist's tracks arrived (answering [`Cmd::FetchPlaylistTracks`]).
-    PlaylistTracks {
-        title: String,
-        intent: crate::api::PlaylistIntent,
-        songs: Vec<Song>,
-    },
-    /// Fetching a remote playlist's tracks failed.
-    PlaylistTracksError {
-        title: String,
-        error: String,
-    },
-    /// An artist's page arrived (answering [`Cmd::FetchArtist`] with intent `Open`).
-    ArtistPage {
-        page: crate::api::ArtistPage,
-    },
-    /// Fetching an artist's page (or its songs playlist) failed.
-    ArtistPageError {
-        title: String,
-        error: String,
-    },
+    /// Search results, playlist-track fetches, and artist-page fetches.
+    Search(SearchMsg),
     /// Local-data work completed: a download scan or portable personal-data export.
     Data(DataMsg),
     /// Local Deck index load/scan result.
@@ -378,28 +345,8 @@ pub enum Cmd {
     VideoToggleMute,
     /// Mark a newer release tag as accepted by the reducer and queued for notification.
     UpdateSeen { tag: String },
-    Search {
-        request_id: u64,
-        query: String,
-        source: SearchSource,
-        config: SearchConfig,
-    },
-    /// Search public YouTube playlists by name (the search box's playlist kind).
-    SearchPlaylists { request_id: u64, query: String },
-    /// Search YouTube Music artists by name (the search box's artist kind).
-    SearchArtists { request_id: u64, query: String },
-    /// Fetch a remote playlist's full track list, then apply `intent` to it.
-    FetchPlaylistTracks {
-        playlist_id: String,
-        title: String,
-        intent: crate::api::PlaylistIntent,
-    },
-    /// Fetch an artist's page (top songs + albums), then apply `intent` to it.
-    FetchArtist {
-        channel_id: String,
-        title: String,
-        intent: crate::api::ArtistIntent,
-    },
+    /// Search queries and remote search-row fetches.
+    Search(SearchCmd),
     /// Persist a store to disk (or clear one) via the debounced persistence actor. The
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
@@ -1492,7 +1439,7 @@ pub enum ArtistSection {
     Albums,
 }
 
-/// The artist detail screen's state ([`Mode::Artist`]), filled by [`Msg::ArtistPage`]
+/// The artist detail screen's state ([`Mode::Artist`]), filled by [`SearchMsg::ArtistPage`]
 /// and dropped when the screen closes.
 pub struct ArtistPageState {
     pub page: crate::api::ArtistPage,

@@ -195,7 +195,11 @@ impl App {
             }
             return self.on_mouse_click(col, row, false); // outside -> close, same as single click
         }
-        match self.mouse_target_at(col, row) {
+        let target = self.mouse_target_at(col, row);
+        if let Some(commands) = self.artist_mouse_double_click(target.as_ref()) {
+            return commands;
+        }
+        match target {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
                 self.request_radio_mode_switch()
             }
@@ -219,15 +223,6 @@ impl App {
             Some(MouseTarget::ListRow(i)) => {
                 self.restore_double_click_selection(i);
                 self.on_list_row_activate(i)
-            }
-            // Artist-screen rows: double-click activates (song plays, album fetches).
-            Some(MouseTarget::ArtistSongRow(i)) if self.mode == Mode::Artist => {
-                self.artist_select(ArtistSection::Songs, i);
-                self.artist_activate_selected()
-            }
-            Some(MouseTarget::ArtistAlbumRow(i)) if self.mode == Mode::Artist => {
-                self.artist_select(ArtistSection::Albums, i);
-                self.artist_activate_selected()
             }
             _ => self.on_mouse_click(col, row, false),
         }
@@ -549,30 +544,7 @@ impl App {
                 let delta = if up { -1 } else { 1 } * n as i32;
                 self.settings_move_row(delta);
             }
-            // Artist screen: scroll the section under the pointer, falling back to the
-            // focused one (mirrors the DJ Gem screen's hover-aware wheel).
-            Mode::Artist => {
-                let hovered = match self.mouse_target_at(col, row) {
-                    Some(
-                        MouseTarget::ArtistSongRow(_)
-                        | MouseTarget::Scrollbar(ScrollSurface::ArtistSongs),
-                    ) => Some(ArtistSection::Songs),
-                    Some(
-                        MouseTarget::ArtistAlbumRow(_)
-                        | MouseTarget::Scrollbar(ScrollSurface::ArtistAlbums),
-                    ) => Some(ArtistSection::Albums),
-                    _ => None,
-                };
-                if let Some(st) = self.artist.as_ref() {
-                    match hovered.unwrap_or(st.section) {
-                        ArtistSection::Songs => st.songs_scroll.wheel(up, n, st.page.songs.len()),
-                        ArtistSection::Albums => {
-                            st.albums_scroll.wheel(up, n, st.page.albums.len());
-                        }
-                    }
-                    self.dirty = true;
-                }
-            }
+            Mode::Artist => self.artist_mouse_scroll(up, col, row, n),
             _ => {}
         }
         Vec::new()

@@ -160,7 +160,7 @@ impl App {
         // Leaving the artist screen by any navigation drops its state — it is re-fetched
         // fresh from a Search artist row, never resumed.
         if self.mode == Mode::Artist {
-            self.artist = None;
+            self.search.artist = None;
         }
         match mode {
             Mode::Player => self.mode = Mode::Player,

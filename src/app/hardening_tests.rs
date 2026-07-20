@@ -36,7 +36,7 @@ fn app_with_hardening_favorite() -> App {
 fn app_with_hardening_search_results() -> App {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
@@ -46,7 +46,7 @@ fn app_with_hardening_search_results() -> App {
             hardening_song("b", "Bad Guy", "Billie Eilish"),
             hardening_song("c", "Anti-Hero", "Taylor Swift"),
         ],
-    });
+    }));
     assert_eq!(app.search.focus, SearchFocus::Results);
     app
 }

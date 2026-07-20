@@ -647,26 +647,26 @@ impl App {
         // Playlist/artist kinds are YouTube-only (no other provider has those catalogs),
         // so they bypass the source selection entirely.
         if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
-            return vec![Cmd::SearchPlaylists {
+            return vec![Cmd::Search(SearchCmd::Playlists {
                 request_id,
                 query: q,
-            }];
+            })];
         }
         if self.search.kind == SearchKind::Artists && !self.radio_dedicated_mode {
-            return vec![Cmd::SearchArtists {
+            return vec![Cmd::Search(SearchCmd::Artists {
                 request_id,
                 query: q,
-            }];
+            })];
         }
         let config = self.search_config_for_mode();
         let source = config.normalized_source(self.search.source);
         self.search.source = source;
-        vec![Cmd::Search {
+        vec![Cmd::Search(SearchCmd::Query {
             request_id,
             query: q,
             source,
             config,
-        }]
+        })]
     }
 
     pub(in crate::app) fn set_query_reject_status(&mut self, reason: QueryRejectReason) {
@@ -729,7 +729,7 @@ impl App {
     }
 
     /// Kick the track fetch for a playlist row; `intent` decides what happens when the
-    /// tracks arrive ([`Msg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
+    /// tracks arrive ([`SearchMsg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
     pub(in crate::app) fn fetch_playlist_tracks(
         &mut self,
         row: &Song,
@@ -746,16 +746,16 @@ impl App {
         )
         .to_owned();
         self.dirty = true;
-        vec![Cmd::FetchPlaylistTracks {
+        vec![Cmd::Search(SearchCmd::PlaylistTracks {
             playlist_id: id.to_owned(),
             title: row.title.clone(),
             intent,
-        }]
+        })]
     }
 
     /// Kick the page fetch for an artist row; `intent` decides what happens when it
     /// arrives (`Open` → the artist detail screen, `Enqueue`/`Import` → the artist's
-    /// songs playlist through [`Msg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
+    /// songs playlist through [`SearchMsg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
     pub(in crate::app) fn fetch_artist(
         &mut self,
         row: &Song,
@@ -772,11 +772,11 @@ impl App {
         )
         .to_owned();
         self.dirty = true;
-        vec![Cmd::FetchArtist {
+        vec![Cmd::Search(SearchCmd::ArtistPage {
             channel_id: id.to_owned(),
             title: row.title.clone(),
             intent,
-        }]
+        })]
     }
 
     /// Status hint for per-track actions that don't apply to an artist row.

@@ -49,7 +49,7 @@ fn clicking_the_search_button_submits_the_query() {
     assert!(app.search.searching);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::Search { query, source, .. }]
+        [Cmd::Search(SearchCmd::Query { query, source, .. })]
             if query == "lofi beats" && *source == SearchSource::Youtube
     ));
 }

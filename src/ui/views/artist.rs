@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // The two lists share the leftover space evenly; an empty section folds to its
     // 3-row frame so the populated one gets the room (the anonymous page can lack songs).
-    let (songs_c, albums_c) = match app.artist.as_ref() {
+    let (songs_c, albums_c) = match app.search.artist.as_ref() {
         Some(st) if st.page.songs.is_empty() && !st.page.albums.is_empty() => {
             (Constraint::Length(3), Constraint::Fill(1))
         }
@@ -68,7 +68,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let Some(st) = app.artist.as_ref() else {
+    let Some(st) = app.search.artist.as_ref() else {
         // Defensive: the mode is only entered with state present.
         return;
     };
@@ -107,7 +107,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_section(frame: &mut Frame, app: &App, area: Rect, section: ArtistSection, title: &str) {
-    let Some(st) = app.artist.as_ref() else {
+    let Some(st) = app.search.artist.as_ref() else {
         return;
     };
     let focused = st.section == section;

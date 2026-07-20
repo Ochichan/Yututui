@@ -2,7 +2,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 use super::RuntimeEvent;
 use super::event_policy::app_msg_policy;
-use crate::app::{Msg, PlayerMsg, StreamingMsg};
+use crate::app::{Msg, PlayerMsg, SearchMsg, StreamingMsg};
 use crate::util::delivery::{DeliveryResult, OwnerEvent, OwnerEventIngress};
 use crate::util::event_policy::{EventKey as Key, EventPolicy};
 
@@ -156,7 +156,8 @@ fn api_stale_slot(event: &crate::api::ApiEvent) -> Option<RuntimeTelemetrySlot> 
 
 fn app_stale_slot(msg: &Msg) -> Option<RuntimeTelemetrySlot> {
     match msg {
-        Msg::SearchResults { request_id, .. } | Msg::SearchError { request_id, .. } => {
+        Msg::Search(SearchMsg::Results { request_id, .. })
+        | Msg::Search(SearchMsg::Error { request_id, .. }) => {
             Some(RuntimeTelemetrySlot::StaleSearch(*request_id))
         }
         Msg::ArtworkResult { video_id, .. } => {

@@ -35,11 +35,7 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::VideoTogglePause
         | Cmd::VideoToggleFullscreen
         | Cmd::VideoToggleMute
-        | Cmd::Search { .. }
-        | Cmd::SearchPlaylists { .. }
-        | Cmd::SearchArtists { .. }
-        | Cmd::FetchPlaylistTracks { .. }
-        | Cmd::FetchArtist { .. }
+        | Cmd::Search(_)
         | Cmd::Data(DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_))
         | Cmd::Download(DownloadCmd::Scan(_))
         | Cmd::FetchLyrics { .. }

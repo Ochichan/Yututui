@@ -23,7 +23,7 @@ fn replace_manual_search_metadata(session_id: &str, title: String, artists: Vec<
 
 fn search_cmd_count(cmds: &[Cmd]) -> usize {
     cmds.iter()
-        .filter(|cmd| matches!(cmd, Cmd::Search { .. }))
+        .filter(|cmd| matches!(cmd, Cmd::Search(SearchCmd::Query { .. })))
         .count()
 }
 
@@ -69,12 +69,14 @@ fn local_deck_import_row_s_searches_once_only_after_accepted_exit() {
         "the confirmed handoff must place the online search cursor after its replacement query"
     );
     assert_eq!(search_cmd_count(&exit), 1);
-    let Some(Cmd::Search {
+    let Some(Cmd::Search(SearchCmd::Query {
         query,
         source,
         config,
         ..
-    }) = exit.iter().find(|cmd| matches!(cmd, Cmd::Search { .. }))
+    })) = exit
+        .iter()
+        .find(|cmd| matches!(cmd, Cmd::Search(SearchCmd::Query { .. })))
     else {
         panic!("expected manual search command");
     };

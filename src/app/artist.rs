@@ -4,7 +4,49 @@
 use super::*;
 
 impl App {
-    /// An artist page arrived ([`Msg::ArtistPage`]): open the detail screen. An empty
+    /// Handle artist-row double-click activation without flattening artist logic into mouse.rs.
+    pub(in crate::app) fn artist_mouse_double_click(
+        &mut self,
+        target: Option<&MouseTarget>,
+    ) -> Option<Vec<Cmd>> {
+        if self.mode != Mode::Artist {
+            return None;
+        }
+        let (section, index) = match target {
+            Some(MouseTarget::ArtistSongRow(index)) => (ArtistSection::Songs, *index),
+            Some(MouseTarget::ArtistAlbumRow(index)) => (ArtistSection::Albums, *index),
+            _ => return None,
+        };
+        self.artist_select(section, index);
+        Some(self.artist_activate_selected())
+    }
+
+    /// Scroll the artist section under the pointer, falling back to the focused section.
+    pub(in crate::app) fn artist_mouse_scroll(&mut self, up: bool, col: u16, row: u16, n: usize) {
+        let hovered = match self.mouse_target_at(col, row) {
+            Some(
+                MouseTarget::ArtistSongRow(_) | MouseTarget::Scrollbar(ScrollSurface::ArtistSongs),
+            ) => Some(ArtistSection::Songs),
+            Some(
+                MouseTarget::ArtistAlbumRow(_)
+                | MouseTarget::Scrollbar(ScrollSurface::ArtistAlbums),
+            ) => Some(ArtistSection::Albums),
+            _ => None,
+        };
+        if let Some(state) = self.search.artist.as_ref() {
+            match hovered.unwrap_or(state.section) {
+                ArtistSection::Songs => {
+                    state.songs_scroll.wheel(up, n, state.page.songs.len());
+                }
+                ArtistSection::Albums => {
+                    state.albums_scroll.wheel(up, n, state.page.albums.len());
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// An artist page arrived ([`SearchMsg::ArtistPage`]): open the detail screen. An empty
     /// page (no songs and no albums) stays on Search with a status line instead of
     /// presenting a blank screen.
     pub(in crate::app) fn on_artist_page(&mut self, page: crate::api::ArtistPage) -> Vec<Cmd> {
@@ -20,14 +62,14 @@ impl App {
             return Vec::new();
         }
         self.status.text.clear();
-        self.artist = Some(ArtistPageState::new(page));
+        self.search.artist = Some(ArtistPageState::new(page));
         self.mode = Mode::Artist;
         Vec::new()
     }
 
     /// Close the artist screen back to Search (results, cursor, and query untouched).
     pub(in crate::app) fn close_artist(&mut self) {
-        self.artist = None;
+        self.search.artist = None;
         if self.mode == Mode::Artist {
             self.mode = Mode::Search;
         }
@@ -119,7 +161,7 @@ impl App {
     /// Flip the cursor between the top-songs and albums sections; a section with no rows
     /// never takes it.
     pub(in crate::app) fn artist_toggle_section(&mut self) {
-        let Some(st) = self.artist.as_mut() else {
+        let Some(st) = self.search.artist.as_mut() else {
             return;
         };
         let target = match st.section {
@@ -139,7 +181,7 @@ impl App {
     /// Move the focused section's cursor up/down by `lines`, clamped (saturating, so
     /// `usize::MAX` doubles as jump-to-top/bottom).
     fn artist_move_cursor(&mut self, up: bool, lines: usize) {
-        let Some(st) = self.artist.as_mut() else {
+        let Some(st) = self.search.artist.as_mut() else {
             return;
         };
         let len = st.section_rows().len();
@@ -161,13 +203,13 @@ impl App {
 
     /// The row under the focused section's cursor.
     fn artist_selected_row(&self) -> Option<Song> {
-        let st = self.artist.as_ref()?;
+        let st = self.search.artist.as_ref()?;
         st.section_rows().get(st.section_selected()).cloned()
     }
 
     /// Land the cursor on `(section, idx)` (a row click); no-op past the end.
     pub(in crate::app) fn artist_select(&mut self, section: ArtistSection, idx: usize) {
-        let Some(st) = self.artist.as_mut() else {
+        let Some(st) = self.search.artist.as_mut() else {
             return;
         };
         let len = match section {

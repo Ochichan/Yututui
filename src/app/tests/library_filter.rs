@@ -234,13 +234,13 @@ fn fresh_results_close_the_filter_popup() {
     app.update(Msg::Key(key(KeyCode::Char('/'))));
     assert!(app.search_filter.open);
     // A search that was already in flight lands: the rows the popup indexed are gone.
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "y".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![fsong("z", "Zeta", "Nobody")],
-    });
+    }));
     assert!(!app.search_filter.open);
 }
 
@@ -269,13 +269,13 @@ fn filter_popup_right_click_menu_can_enqueue_without_closing() {
     // Something is already playing, so opening the menu and enqueueing must not interrupt it.
     let mut app = app_playing(2, 0);
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs: vec![fsong("r0", "R0", "A"), fsong("r1", "R1", "B")],
-    });
+    }));
     app.update(Msg::Key(key(KeyCode::Char('/'))));
     assert!(app.search_filter.open);
     render_app(&app);
@@ -320,13 +320,13 @@ fn filter_popup_wheel_scrolls_its_own_viewport() {
     let songs = (0..40)
         .map(|i| fsong(&format!("id{i}"), &format!("Song {i}"), "A"))
         .collect();
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         timed_out: false,
         songs,
-    });
+    }));
     app.update(Msg::Key(key(KeyCode::Char('/'))));
     render_app(&app); // records the popup viewport + rect
     let (col, row) = app

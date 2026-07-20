@@ -121,7 +121,7 @@ fn search_row_context_menu_can_add_it_to_the_queue() {
     let mut app = app_playing(2, 0);
     let playing = app.prefetch.loaded_video_id.clone();
     app.mode = Mode::Search;
-    app.update(Msg::SearchResults {
+    app.update(Msg::Search(SearchMsg::Results {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
@@ -130,7 +130,7 @@ fn search_row_context_menu_can_add_it_to_the_queue() {
             Song::remote("r0", "R0", "A", "3:00"),
             Song::remote("r1", "R1", "B", "3:00"),
         ],
-    });
+    }));
     app.search.focus = SearchFocus::Results;
 
     // Render so the per-row hit rects are published, then right-click row 1.
