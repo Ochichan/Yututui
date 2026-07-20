@@ -1,6 +1,6 @@
 [package]
 name = "yututui-core"
-version = "1.6.34"
+version = "1.6.35"
 edition = "2024"
 publish = false
 description = "Pure playback policies shared by yututui playback owners."
