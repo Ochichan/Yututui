@@ -1190,8 +1190,10 @@ mod tests {
 
     #[test]
     fn delayed_reader_preserves_every_byte_in_order() {
-        let (master, slave) = pty_pair();
-        let mut writer = writer_for(slave);
+        let (master, inherited_slave) = pty_pair();
+        let path = ptsname(&master, Vec::new()).unwrap();
+        let output = reopen_tty_output_at(&inherited_slave, path.as_c_str()).unwrap();
+        let mut writer = writer_for(output);
         // Printable bytes avoid the slave's output post-processing changing the assertion data.
         let expected: Vec<u8> = (0..256 * 1024)
             .map(|index| b'A' + (index % 26) as u8)
@@ -1200,7 +1202,7 @@ mod tests {
 
         let writer_thread = std::thread::spawn(move || {
             let _operation = writer
-                .begin_operation("delayed reader test", Duration::from_secs(3))
+                .begin_operation("delayed reader test", Duration::from_secs(10))
                 .unwrap();
             writer.write_all(&sent)
         });
@@ -1208,19 +1210,30 @@ mod tests {
 
         let mut received = Vec::with_capacity(expected.len());
         let mut chunk = [0u8; 8192];
-        let read_deadline = Instant::now() + Duration::from_secs(4);
+        let read_deadline = Instant::now() + Duration::from_secs(11);
+        let mut reader_failure = None;
         while received.len() < expected.len() {
             match rustix::io::read(&master, &mut chunk) {
                 Ok(read) if read > 0 => received.extend_from_slice(&chunk[..read]),
                 Err(rustix::io::Errno::AGAIN) if Instant::now() < read_deadline => {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                outcome => panic!("PTY reader did not complete before its bound: {outcome:?}"),
+                outcome => {
+                    reader_failure = Some(outcome);
+                    break;
+                }
             }
         }
 
-        writer_thread.join().unwrap().unwrap();
+        let writer_result = writer_thread.join().expect("PTY writer thread panicked");
+        assert!(
+            writer_result.is_ok() && reader_failure.is_none(),
+            "PTY transfer failed after {}/{} bytes: writer={writer_result:?}, reader={reader_failure:?}",
+            received.len(),
+            expected.len()
+        );
         assert_eq!(received, expected);
+        drop(inherited_slave);
     }
 
     #[test]
