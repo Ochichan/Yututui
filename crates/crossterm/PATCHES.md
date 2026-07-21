@@ -46,8 +46,10 @@ probe API is exposed so yututui can distinguish recent user input from terminal 
   A lone legacy ESC gets a 100 ms ambiguity window so a syscall split immediately after the
   prefix does not corrupt CSI/focus/CPR input. A second ESC preserves the first as a key and starts
   a new ambiguity window, so a quick Esc followed by a focus/CSI sequence loses neither event.
-  Generic pending input expires after one idle second. Bracketed paste expires as a paste event
-  after three idle seconds and is capped at 16 MiB.
+  On reader resume, both Unix backends give a continuation already queued in the TTY one
+  nonblocking drain opportunity before expiring its prefix, so a scheduler stall cannot split a
+  complete control sequence. Generic pending input expires after one idle second. Bracketed paste
+  expires as a paste event after three idle seconds and is capped at 16 MiB.
 - Add `cursor::probe_position_with(&mut impl Write, Duration) -> CursorPositionProbe`. It uses the
   caller's writer, purges stale replies, defers without writing when incomplete or complete recent
   input already proves client activity, and uses one absolute response deadline. Preserved input

@@ -41,7 +41,7 @@ if [ "${1:-}" = "--print-tree-digest" ]; then
 fi
 
 # Rebless only after reviewing an intentional vendor-base or local-patch change; see PATCHES.md.
-expected_tree_digest='98cb6a541f08a4cfb49176d43ec8491e69cbbeeeb4b849a38efb9860cf43b7ed'
+expected_tree_digest='cce4ce4c700e16c212bf2f25f1bae744f7d17fed6afcd0a008f8249b4c51180d'
 test "$actual_tree_digest" = "$expected_tree_digest" \
   || fail "vendored crossterm tree drifted (expected $expected_tree_digest, got $actual_tree_digest)"
 

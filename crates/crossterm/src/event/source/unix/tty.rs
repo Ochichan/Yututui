@@ -187,7 +187,6 @@ impl EventSource for UnixInternalEventSource {
         let mut polled_once = false;
 
         loop {
-            self.parser.expire_stale();
             #[cfg(feature = "event-stream")]
             if self.wake_pending {
                 self.wake_pending = false;
@@ -262,6 +261,10 @@ impl EventSource for UnixInternalEventSource {
             if fds.iter().all(|fd| fd.revents == 0)
                 && (timeout.elapsed() || drain_budget.exhausted())
             {
+                self.parser.expire_stale();
+                if let Some(event) = self.parser.next() {
+                    return Ok(Some(event));
+                }
                 return Ok(None);
             }
 
@@ -274,6 +277,9 @@ impl EventSource for UnixInternalEventSource {
             if tty_ready || tty_closed {
                 self.drain_tty(tty_closed, &timeout, &mut drain_budget)?;
             }
+            // yututui patch: give a continuation already queued in the TTY one nonblocking
+            // drain opportunity before expiring its pending prefix after a scheduler stall.
+            self.parser.expire_stale();
             if signal_ready {
                 drain_stream(&mut self.winch_signal_receiver, &timeout)?;
                 self.queue_resize()?;
@@ -298,8 +304,6 @@ impl EventSource for UnixInternalEventSource {
                 }
                 return Ok(None);
             }
-
-            self.parser.expire_stale();
         }
     }
 
@@ -370,6 +374,9 @@ mod tests {
         let (source, first) = bounded_read(source, Duration::from_millis(40));
         assert_eq!(first.unwrap(), None);
         write(&master, b"[I").unwrap();
+        // The continuation is already queued. Even if the consumer resumes after the lone-ESC
+        // ambiguity window, it must drain readable input before expiring the prefix.
+        std::thread::sleep(Duration::from_millis(150));
         let (_, second) = bounded_read(source, Duration::from_secs(1));
         assert_eq!(
             second.unwrap(),
