@@ -498,6 +498,18 @@ fn assert_termios_restored(before: &rustix::termios::Termios, after: &rustix::te
     assert_eq!(after.input_modes, before.input_modes);
     assert_eq!(after.output_modes, before.output_modes);
     assert_eq!(after.control_modes, before.control_modes);
+    #[cfg(target_os = "macos")]
+    {
+        let mut before_local_modes = before.local_modes;
+        let mut after_local_modes = after.local_modes;
+        // XNU sets this kernel-managed, transient bit when TIOCSETA changes ICANON from off to
+        // on. The next terminal read processes the pending canonical input and clears it, so it
+        // is not evidence that the application failed to restore the user's terminal modes.
+        before_local_modes.remove(LocalModes::PENDIN);
+        after_local_modes.remove(LocalModes::PENDIN);
+        assert_eq!(after_local_modes, before_local_modes);
+    }
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(after.local_modes, before.local_modes);
 }
 
@@ -632,18 +644,7 @@ fn sigterm_during_terminal_init_restores_the_controlling_pty() {
     );
 
     let after = tcgetattr(&slave).expect("PTY termios should remain readable after child exit");
-    assert!(
-        after
-            .local_modes
-            .contains(LocalModes::ICANON | LocalModes::ECHO),
-        "SIGTERM left the PTY raw or non-echoing: before={:?}, after={:?}",
-        before.local_modes,
-        after.local_modes
-    );
-    assert_eq!(after.input_modes, before.input_modes);
-    assert_eq!(after.output_modes, before.output_modes);
-    assert_eq!(after.control_modes, before.control_modes);
-    assert_eq!(after.local_modes, before.local_modes);
+    assert_termios_restored(&before, &after);
     assert!(
         status.success(),
         "PTY child did not complete cooperative SIGTERM shutdown: status={status:?}; transcript={}",
@@ -775,18 +776,7 @@ fn repeated_sigterm_during_art_query_forces_bounded_exit_and_restores_the_pty() 
     }
 
     let after = tcgetattr(&slave).expect("PTY termios should remain readable after hard exit");
-    assert!(
-        after
-            .local_modes
-            .contains(LocalModes::ICANON | LocalModes::ECHO),
-        "repeated SIGTERM left the PTY raw or non-echoing: before={:?}, after={:?}",
-        before.local_modes,
-        after.local_modes
-    );
-    assert_eq!(after.input_modes, before.input_modes);
-    assert_eq!(after.output_modes, before.output_modes);
-    assert_eq!(after.control_modes, before.control_modes);
-    assert_eq!(after.local_modes, before.local_modes);
+    assert_termios_restored(&before, &after);
     child
         .release_and_wait(&master)
         .expect("PTY session supervisor should exit after restoration is checked");
