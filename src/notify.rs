@@ -7,12 +7,16 @@
 //! support we fall back to a native [`notify-rust`] toast on a background thread (`show()` blocks)
 //! — except on macOS `panic = "abort"` (release) builds, where the native path is skipped
 //! entirely (see [`emit_native`]). The in-app status toast (set in the recorder reducer) is the
-//! final fallback and always shows.
+//! final fallback and always shows. Terminal writes use the TUI's bounded writer and surface an
+//! I/O failure to the owner; native fallback delivery remains best-effort.
 //!
-//! Detection is env-based and done once at startup; emission is best-effort and never surfaces an
-//! error to the caller.
+//! Detection is env-based and done once at startup. Native emission is best-effort; bounded OSC
+//! output reports an I/O failure to the terminal owner.
 
-use std::io::Write;
+use std::io;
+use std::time::Instant;
+
+use crate::terminal_policy::NOTIFICATION_OUTPUT_TIMEOUT;
 
 /// Which OSC notification form the running terminal understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +55,7 @@ impl Notifier {
             || env("VTE_VERSION").is_some()
         {
             Osc::SevenSevenSeven
-        } else if env("WT_SESSION").is_some()
+        } else if env("WT_SESSION").is_some_and(|value| !value.is_empty())
             || matches!(
                 term_program.as_str(),
                 "iTerm.app" | "ghostty" | "Ghostty" | "WarpTerminal" | "Apple_Terminal"
@@ -64,17 +68,24 @@ impl Notifier {
         Self { osc, tmux }
     }
 
-    /// Fire a desktop notification for `(title, body)`. Best-effort. The OSC path writes a handful
-    /// of bytes to the shared stdout, so call this **between frames** (the main loop's command
-    /// dispatch, never mid-draw); the native fallback runs on its own thread and never blocks.
-    pub fn emit(&self, title: &str, body: &str) {
+    /// Fire a desktop notification for `(title, body)`. The OSC path writes a handful of bytes to
+    /// the bounded terminal output, so call this **between frames** (the main loop's command
+    /// dispatch, never mid-draw); the native fallback runs best-effort on its own thread.
+    pub fn emit(&self, title: &str, body: &str) -> io::Result<()> {
+        self.emit_until(title, body, Instant::now() + NOTIFICATION_OUTPUT_TIMEOUT)
+    }
+
+    pub(crate) fn emit_until(&self, title: &str, body: &str, deadline: Instant) -> io::Result<()> {
         match self.osc {
-            Osc::Nine | Osc::SevenSevenSeven => self.emit_osc(title, body),
-            Osc::None => emit_native(title.to_owned(), body.to_owned()),
+            Osc::Nine | Osc::SevenSevenSeven => self.emit_osc_until(title, body, deadline),
+            Osc::None => {
+                emit_native(title.to_owned(), body.to_owned());
+                Ok(())
+            }
         }
     }
 
-    fn emit_osc(&self, title: &str, body: &str) {
+    fn emit_osc_until(&self, title: &str, body: &str, deadline: Instant) -> io::Result<()> {
         let title = sanitize(title);
         let body = sanitize(body);
         let seq = match self.osc {
@@ -82,7 +93,7 @@ impl Notifier {
             Osc::Nine if title.is_empty() => format!("\x1b]9;{body}\x07"),
             Osc::Nine => format!("\x1b]9;{title}: {body}\x07"),
             Osc::SevenSevenSeven => format!("\x1b]777;notify;{title};{body}\x07"),
-            Osc::None => return,
+            Osc::None => return Ok(()),
         };
         let seq = if self.tmux {
             // tmux passthrough: wrap in DCS and double every ESC in the payload.
@@ -90,9 +101,10 @@ impl Notifier {
         } else {
             seq
         };
-        let mut out = std::io::stdout().lock();
-        let _ = out.write_all(seq.as_bytes());
-        let _ = out.flush();
+        crate::tui::write_control_until("desktop notification", deadline, |out| {
+            out.write_all(seq.as_bytes())?;
+            out.flush()
+        })
     }
 }
 

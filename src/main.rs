@@ -7,12 +7,26 @@ use yututui::{
 };
 
 use anyhow::Result;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The owner loop already gives tracked blocking work 3.5 seconds to finish. This small outer
 /// grace only prevents a timed-out `spawn_blocking` closure from making `Runtime::drop` wait
 /// without a bound; normal shutdown should have no work left by the time it starts.
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+fn merge_terminal_restore(
+    runtime_result: Result<()>,
+    restore_result: std::io::Result<()>,
+) -> Result<()> {
+    match (runtime_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(runtime_error), Ok(())) => Err(runtime_error),
+        (Ok(()), Err(restore_error)) => Err(restore_error.into()),
+        (Err(runtime_error), Err(restore_error)) => Err(runtime_error.context(format!(
+            "bounded terminal restore also failed: {restore_error}"
+        ))),
+    }
+}
 
 fn initialize_cli_persistence(command: OneShotCommand, args: &[String]) -> bool {
     let capability = command.persistence_capability(args);
@@ -291,14 +305,23 @@ fn pause_explorer_console(result: &Result<()>) {
 }
 
 async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {
+    // Register termination streams before any pre-TUI chooser or capability probe can enter raw
+    // mode. Main retains this same owner through final terminal restoration so a first signal
+    // cannot be forgotten by re-registering or by stopping escalation early in teardown.
+    let terminal_signals = terminal_runtime::InteractiveSignals::install()?;
+    let early_shutdown = terminal_signals.shutdown_latch();
+
     // Single-instance guard + control socket. Done BEFORE the terminal is touched so the
     // second-launch UX renders on a clean screen and, critically, before any config loader
     // can migrate or repair state. `--new-instance` skips the guard and binds a private
     // socket; a bind failure degrades to running without remote control rather than refusing.
     let (remote, read_only, via_restart) = match remote::bind_or_detect(new_instance).await {
         remote::BindOutcome::AlreadyRunning => {
-            match second_launch::handle_already_running().await {
-                second_launch::Outcome::Exit => return Ok(()),
+            match second_launch::handle_already_running(&early_shutdown).await {
+                second_launch::Outcome::Exit => {
+                    terminal_signals.shutdown().await;
+                    return Ok(());
+                }
                 second_launch::Outcome::Continue { remote, read_only } => {
                     (remote.map(|server| *server), read_only, !read_only)
                 }
@@ -307,6 +330,10 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         remote::BindOutcome::Bound(server) => (Some(*server), new_instance, false),
         remote::BindOutcome::Unavailable => (None, new_instance, false),
     };
+    if terminal_signals.shutdown_requested() {
+        terminal_signals.shutdown().await;
+        return Ok(());
+    }
     // Advertise where this TUI lives so a later second launch can focus this terminal.
     // Only the interactive player: the daemon path never attaches a hint, and a private
     // `--new-instance` socket never publishes the descriptor anyway.
@@ -340,13 +367,21 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // translated. The Settings dropdown updates this global live as the user changes it.
     i18n::set_language(cfg.effective_language());
     let mouse = cfg.effective_mouse();
+    terminal_signals.set_mouse(mouse);
+    if terminal_signals.shutdown_requested() {
+        terminal_signals.shutdown().await;
+        return Ok(());
+    }
+    // Validate stdin/stdout identity before a probe can raw-mode one TTY and write queries to
+    // another. This is read-only and opens no shared/blocking descriptor.
+    tui::preflight_interactive_terminal()?;
     // Probe the terminal for its graphics protocol + font size, and do it BEFORE `tui::init`
     // so the 1x1 probe image and its cursor-position reports never land on the app's alternate
     // screen. The probe is fully synchronous (see `ratatui_image::picker`): it raw-modes the
-    // tty, queries, and restores the previous mode before returning - so it can't leave
-    // `tui::init`'s crossterm raw-mode setup racing a half-restored terminal, and it spawns no
-    // reader that could outlive it and steal input from the event loop. A failed/absent probe
-    // falls back to halfblocks.
+    // tty, queries, and restores the previous mode before returning. The whole synchronous
+    // transaction runs on a bounded worker; timeout/shutdown restores the pre-probe termios and
+    // fails startup instead of letting `tui::init` race a detached raw-mode owner. Ordinary
+    // unsupported/absent capabilities still fall back to halfblocks.
     //
     // Unconditional (not gated on `album_art`): the About card's embedded icon needs the
     // detected protocol to render at full resolution even when album art is off, and the probe
@@ -356,15 +391,47 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // picker never turns the feature on; it only means "a protocol is known." Repeat probes on
     // terminals without native graphics are cheap: `build_art_picker` short-circuits via the
     // 24h halfblocks cache.
-    let art_picker = Some(terminal_runtime::build_art_picker_with_access(
+    let terminal_negotiation_deadline = Instant::now() + terminal_runtime::STARTUP_OUTPUT_TIMEOUT;
+    let art_picker = match terminal_runtime::build_art_picker_with_access_until_bounded(
         &persistence_access,
-    ));
+        terminal_negotiation_deadline,
+        terminal_signals.shutdown_latch(),
+        terminal_signals.query_cancellation(),
+    )
+    .await
+    {
+        Ok(picker) => Some(picker),
+        Err(_) if terminal_signals.shutdown_requested() => {
+            terminal_signals.shutdown().await;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     startup.mark("art_picker_ready");
+    if terminal_signals.shutdown_requested() {
+        terminal_signals.shutdown().await;
+        return Ok(());
+    }
     // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
     // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
     let zoom = zoom::ZoomHandle::default();
-    let (mut terminal, keyboard_input_mode) = tui::init(mouse, zoom.clone())?;
+    let (mut terminal, keyboard_input_mode) =
+        match tui::init_until(mouse, zoom.clone(), terminal_negotiation_deadline) {
+            Ok(initialized) => initialized,
+            Err(_) if terminal_signals.shutdown_requested() => {
+                terminal_signals.shutdown().await;
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
     startup.mark("terminal_ready");
+    if terminal_signals.shutdown_requested() {
+        drop(terminal);
+        let restored = tui::restore(mouse);
+        terminal_signals.shutdown().await;
+        return restored.map_err(Into::into);
+    }
+    let runtime_shutdown = terminal_signals.shutdown_latch();
     let result = terminal_runtime::run(
         &mut terminal,
         terminal_runtime::TerminalStartupState::new(
@@ -372,6 +439,7 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
             persistent_state,
             persistence_access,
             keyboard_input_mode,
+            runtime_shutdown,
         ),
         art_picker,
         remote,
@@ -380,12 +448,13 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         cli_identity().1,
     )
     .await;
-    // Keep a failed frame's buffered remainder on the alternate screen during normal teardown.
-    // Successful draws flush at ratatui's normal frame boundary; the panic-safe writer separately
-    // discards its remainder while unwinding, after ratatui's panic hook has already restored.
+    // Successful draws flush at ratatui's normal frame boundary. AppTerminal arms its per-instance
+    // drop fence here, so any failed-frame remainder and Ratatui's destructor-time cursor write are
+    // discarded before the bounded restore becomes the sole physical terminal-output owner.
     drop(terminal);
-    tui::restore(mouse);
-    result
+    let restored = tui::restore(mouse);
+    terminal_signals.shutdown().await;
+    merge_terminal_restore(result, restored)
 }
 
 #[cfg(test)]
@@ -407,6 +476,33 @@ mod tests {
             interactive_persistence_capability(false),
             CliPersistenceCapability::Writer
         );
+    }
+
+    #[test]
+    fn terminal_restore_failure_is_returned_without_hiding_a_runtime_failure() {
+        let restore_only = merge_terminal_restore(
+            Ok(()),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "normal terminal restore timed out at leave-alt",
+            )),
+        )
+        .unwrap_err();
+        assert!(restore_only.to_string().contains("leave-alt"));
+
+        let combined = merge_terminal_restore(
+            Err(anyhow::anyhow!("primary terminal liveness failure")),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "restore phase timed out",
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(
+            combined.to_string(),
+            "bounded terminal restore also failed: restore phase timed out"
+        );
+        assert!(format!("{combined:#}").contains("primary terminal liveness failure"));
     }
 
     #[test]

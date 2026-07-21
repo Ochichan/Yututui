@@ -2,6 +2,8 @@ use anyhow::Result;
 
 use crate::runtime;
 
+const SECONDARY_OWNER_IO_MARKER: &str = "; secondary owner I/O failure: ";
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OwnerIngressDrain {
     pub(super) remote_requests: usize,
@@ -23,7 +25,7 @@ pub(super) trait OwnerTeardown {
     async fn shutdown_remote(&mut self);
     async fn reap_player_startup(&mut self);
     fn close_video(&mut self);
-    async fn shutdown_terminal_background(&mut self);
+    async fn shutdown_terminal_background(&mut self) -> Option<std::io::Error>;
     async fn shutdown_resolver(&mut self);
     async fn shutdown_runtime_background(&mut self) -> runtime::BackgroundShutdown;
     async fn shutdown_transfer(&mut self);
@@ -67,7 +69,7 @@ pub(super) async fn complete_owner_teardown<T: OwnerTeardown>(
     teardown.shutdown_remote().await;
     teardown.reap_player_startup().await;
     teardown.close_video();
-    teardown.shutdown_terminal_background().await;
+    let terminal_background_error = teardown.shutdown_terminal_background().await;
     teardown.shutdown_resolver().await;
     let first_background_shutdown = teardown.shutdown_runtime_background().await;
     teardown.shutdown_transfer().await;
@@ -85,7 +87,7 @@ pub(super) async fn complete_owner_teardown<T: OwnerTeardown>(
     let persistence_error = teardown.flush_persistence().await.err();
     let scrobble_error = teardown.shutdown_scrobble().await.err();
 
-    let mut terminal_error = owner_error;
+    let mut terminal_error = merge_terminal_shutdown_error(owner_error, terminal_background_error);
     if let Some(persistence_error) = persistence_error {
         terminal_error = Some(match terminal_error {
             Some(error) => error.context(format!(
@@ -103,4 +105,76 @@ pub(super) async fn complete_owner_teardown<T: OwnerTeardown>(
         });
     }
     terminal_error.map_or(Ok(()), Err)
+}
+
+/// Preserve an already-observed owner failure while adding terminal-worker teardown diagnostics.
+/// A later FailureStore snapshot can be the same liveness failure with join context appended; in
+/// that case use the enriched snapshot instead of repeating the primary message twice.
+pub(super) fn merge_terminal_shutdown_error(
+    primary: Option<anyhow::Error>,
+    terminal: Option<std::io::Error>,
+) -> Option<anyhow::Error> {
+    match (primary, terminal) {
+        (None, None) => None,
+        (Some(primary), None) => Some(primary),
+        (None, Some(terminal)) => Some(terminal.into()),
+        (Some(primary), Some(terminal)) => {
+            let primary_message = primary.to_string();
+            let terminal_message = terminal.to_string();
+            if terminal_message == primary_message {
+                Some(primary)
+            } else if terminal_message.starts_with(&format!(
+                "{primary_message}; secondary terminal shutdown failures:"
+            )) {
+                Some(terminal.into())
+            } else if let Some((terminal_primary, owner_secondary)) =
+                primary_message.split_once(SECONDARY_OWNER_IO_MARKER)
+                && (terminal_message == terminal_primary
+                    || terminal_message.starts_with(&format!(
+                        "{terminal_primary}; secondary terminal shutdown failures:"
+                    )))
+            {
+                Some(
+                    std::io::Error::new(
+                        terminal.kind(),
+                        format!("{terminal_message}{SECONDARY_OWNER_IO_MARKER}{owner_secondary}"),
+                    )
+                    .into(),
+                )
+            } else {
+                Some(primary.context(format!(
+                    "terminal worker shutdown also failed: {terminal_message}"
+                )))
+            }
+        }
+    }
+}
+
+/// Prefer a terminal cause already published by FailureStore over the owner write error caused by
+/// its output cancellation. Preserve the derived owner failure as bounded string context while
+/// retaining the terminal I/O kind and terminal message as the top-level error.
+pub(super) fn prefer_terminal_failure(
+    derived_owner: Option<anyhow::Error>,
+    terminal: Option<std::io::Error>,
+) -> Option<anyhow::Error> {
+    match (derived_owner, terminal) {
+        (None, None) => None,
+        (Some(owner), None) => Some(owner),
+        (None, Some(terminal)) => Some(terminal.into()),
+        (Some(owner), Some(terminal)) => {
+            let owner_message = format!("{owner:#}");
+            let terminal_message = terminal.to_string();
+            if owner.to_string() == terminal_message {
+                Some(terminal.into())
+            } else {
+                Some(
+                    std::io::Error::new(
+                        terminal.kind(),
+                        format!("{terminal_message}{SECONDARY_OWNER_IO_MARKER}{owner_message}"),
+                    )
+                    .into(),
+                )
+            }
+        }
+    }
 }

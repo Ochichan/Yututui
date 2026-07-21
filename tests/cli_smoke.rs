@@ -733,10 +733,13 @@ fn doctor_terminal_json_reports_capabilities_without_config_or_runtime_startup()
             .is_some()
     );
     assert!(json.get("zoom_mode").and_then(|v| v.as_str()).is_some());
-    assert_eq!(
+    assert!(
         json.get("mouse_capture_configured")
-            .and_then(|v| v.as_bool()),
-        Some(true)
+            .is_some_and(|v| v.is_null())
+    );
+    assert_eq!(
+        json.get("mouse_capture_source").and_then(|v| v.as_str()),
+        Some("not_loaded_by_read_only_diagnostic")
     );
 
     let run_konsole_doctor = |version: &str| {

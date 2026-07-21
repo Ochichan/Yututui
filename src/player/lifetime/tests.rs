@@ -1,5 +1,34 @@
 use super::*;
 
+#[test]
+fn claimed_shutdown_publishes_cause_before_becoming_observable() {
+    let shutdown = ShutdownLatch::new();
+    let claimed_shutdown = shutdown.clone();
+    let emergency_shutdown = shutdown.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let claimant = std::thread::spawn(move || {
+        claimed_shutdown.try_trigger_with_before_publish(
+            || {
+                let _ = entered_tx.send(());
+                release_rx.recv().unwrap();
+            },
+            || assert!(emergency_shutdown.is_triggered()),
+        )
+    });
+
+    entered_rx.recv().unwrap();
+    assert!(!shutdown.is_triggered());
+    shutdown.trigger();
+    assert!(
+        !shutdown.is_triggered(),
+        "a losing trigger cannot expose a claim whose cause is not published"
+    );
+    release_tx.send(()).unwrap();
+    assert!(claimant.join().unwrap());
+    assert!(shutdown.is_triggered());
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).unwrap();
@@ -26,6 +55,7 @@ async fn signal_phase_escalates_to_hard_exit_only_on_a_repeat_signal() {
         None
     );
     assert!(shutdown.is_triggered());
+    assert!(shutdown.was_triggered_by_signal());
     assert_eq!(emit_count.get(), 1);
 
     // Any repeat signal escalates with its own exit code and must not re-run the
@@ -40,6 +70,19 @@ async fn signal_phase_escalates_to_hard_exit_only_on_a_repeat_signal() {
         Some(129)
     );
     assert_eq!(emit_count.get(), 1);
+    reset_media_registry_for_test();
+}
+
+#[tokio::test]
+async fn terminal_failure_winner_cannot_be_reclassified_by_a_later_signal() {
+    let _pid_guard = lock_mpv_pid_for_test().await;
+    let shutdown = ShutdownLatch::new();
+    assert!(shutdown.try_trigger_with_before_publish(|| {}, || {}));
+
+    request_signal_shutdown(&shutdown, &|_| {});
+
+    assert!(shutdown.is_triggered());
+    assert!(!shutdown.was_triggered_by_signal());
     reset_media_registry_for_test();
 }
 

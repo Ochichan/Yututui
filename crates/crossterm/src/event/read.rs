@@ -1,4 +1,8 @@
-use std::{collections::vec_deque::VecDeque, io, time::Duration};
+use std::{
+    collections::vec_deque::VecDeque,
+    io::{self, Write},
+    time::Duration,
+};
 
 #[cfg(unix)]
 use crate::event::source::unix::UnixInternalEventSource;
@@ -7,6 +11,48 @@ use crate::event::source::windows::WindowsEventSource;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
 use crate::event::{filter::Filter, source::EventSource, timeout::PollTimeout, InternalEvent};
+
+enum StoredInitError {
+    Os(i32),
+    Message(io::ErrorKind, String),
+}
+
+struct FailedEventSource(StoredInitError);
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CursorPositionQuery {
+    Position(u16, u16),
+    DeferredForPendingInput,
+    DeferredForRecentInput,
+}
+
+impl FailedEventSource {
+    fn new(error: io::Error) -> Self {
+        match error.raw_os_error() {
+            Some(errno) => Self(StoredInitError::Os(errno)),
+            None => Self(StoredInitError::Message(error.kind(), error.to_string())),
+        }
+    }
+
+    fn error(&self) -> io::Error {
+        match &self.0 {
+            StoredInitError::Os(errno) => io::Error::from_raw_os_error(*errno),
+            StoredInitError::Message(kind, message) => io::Error::new(*kind, message.clone()),
+        }
+    }
+}
+
+impl EventSource for FailedEventSource {
+    fn try_read(&mut self, _timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
+        Err(self.error())
+    }
+
+    #[cfg(feature = "event-stream")]
+    fn waker(&self) -> Waker {
+        panic!("an event reader that failed to initialize has no waker")
+    }
+}
 
 /// Can be used to read `InternalEvent`s.
 pub(crate) struct InternalEventReader {
@@ -22,7 +68,11 @@ impl Default for InternalEventReader {
         #[cfg(unix)]
         let source = UnixInternalEventSource::new();
 
-        let source = source.ok().map(|x| Box::new(x) as Box<dyn EventSource>);
+        // yututui patch: do not erase the kind/raw errno from event-source initialization.
+        let source = Some(match source {
+            Ok(source) => Box::new(source) as Box<dyn EventSource>,
+            Err(error) => Box::new(FailedEventSource::new(error)) as Box<dyn EventSource>,
+        });
 
         InternalEventReader {
             source,
@@ -33,6 +83,82 @@ impl Default for InternalEventReader {
 }
 
 impl InternalEventReader {
+    #[cfg(unix)]
+    pub(crate) fn probe_cursor_position<W: Write>(
+        &mut self,
+        writer: &mut W,
+        timeout: Duration,
+    ) -> io::Result<CursorPositionQuery> {
+        use crate::event::filter::CursorPositionFilter;
+
+        let source = self.source.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "Failed to initialize input reader")
+        })?;
+        let deadline = PollTimeout::new(Some(timeout));
+
+        // Pump bytes already readable before writing a new DSR and discard queued replies from
+        // older queries. Non-cursor events stay ordered in the public event queue. DSR carries no
+        // request identifier, so the first reply parsed after the successful write is the only
+        // protocol-level tie-breaker available for a reply racing this purge.
+        let mut recent_input = self
+            .events
+            .iter()
+            .chain(self.skipped_events.iter())
+            .any(|event| !matches!(event, InternalEvent::CursorPosition(_, _)));
+        loop {
+            if deadline.elapsed() {
+                if recent_input {
+                    break;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "pre-query terminal input pump exceeded the cursor-position deadline",
+                ));
+            }
+            match source.try_read(Some(Duration::ZERO)) {
+                Ok(Some(event)) => {
+                    recent_input |= !matches!(event, InternalEvent::CursorPosition(_, _));
+                    self.events.push_back(event);
+                }
+                Ok(None) => break,
+                Err(error) => return Err(error),
+            }
+        }
+        self.events
+            .retain(|event| !matches!(event, InternalEvent::CursorPosition(_, _)));
+        self.skipped_events
+            .retain(|event| !matches!(event, InternalEvent::CursorPosition(_, _)));
+
+        if recent_input {
+            return Ok(CursorPositionQuery::DeferredForRecentInput);
+        }
+        if source.pending_input_is_recent() {
+            return Ok(CursorPositionQuery::DeferredForPendingInput);
+        }
+
+        writer.write_all(b"\x1b[6n")?;
+        writer.flush()?;
+        if deadline.elapsed() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "cursor-position query write exceeded its deadline",
+            ));
+        }
+
+        if !self.poll(deadline.leftover(), &CursorPositionFilter)? {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "cursor position was not received before the query deadline",
+            ));
+        }
+        match self.read(&CursorPositionFilter)? {
+            InternalEvent::CursorPosition(column, row) => {
+                Ok(CursorPositionQuery::Position(column, row))
+            }
+            _ => unreachable!("cursor-position filter admitted another event kind"),
+        }
+    }
+
     /// Returns a `Waker` allowing to wake/force the `poll` method to return `Ok(false)`.
     #[cfg(feature = "event-stream")]
     pub(crate) fn waker(&self) -> Waker {
@@ -132,7 +258,11 @@ mod tests {
 
     #[cfg(unix)]
     use super::super::filter::CursorPositionFilter;
-    use super::{super::Event, EventSource, Filter, InternalEvent, InternalEventReader};
+    #[cfg(unix)]
+    use super::CursorPositionQuery;
+    use super::{
+        super::Event, EventSource, FailedEventSource, Filter, InternalEvent, InternalEventReader,
+    };
 
     #[derive(Debug, Clone)]
     pub(crate) struct InternalEventFilter;
@@ -385,10 +515,181 @@ mod tests {
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
     }
 
+    #[test]
+    fn failed_source_preserves_the_initialization_errno() {
+        let mut source = FailedEventSource::new(io::Error::from_raw_os_error(5));
+        let error = source.try_read(Some(Duration::ZERO)).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(5));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_probe_defers_without_writing_when_input_is_pending() {
+        let source = FakeSource {
+            pending_input: true,
+            ..FakeSource::default()
+        };
+        let mut reader = InternalEventReader {
+            events: VecDeque::new(),
+            source: Some(Box::new(source)),
+            skipped_events: Vec::new(),
+        };
+        let mut writer = Vec::new();
+
+        assert_eq!(
+            reader
+                .probe_cursor_position(&mut writer, Duration::from_secs(1))
+                .unwrap(),
+            CursorPositionQuery::DeferredForPendingInput
+        );
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_probe_discards_a_stale_queued_response() {
+        let source = FakeSource {
+            pending_input: true,
+            ..FakeSource::default()
+        };
+        let mut reader = InternalEventReader {
+            events: vec![InternalEvent::CursorPosition(1, 2)].into(),
+            source: Some(Box::new(source)),
+            skipped_events: vec![InternalEvent::CursorPosition(3, 4)],
+        };
+        let mut writer = Vec::new();
+
+        assert_eq!(
+            reader
+                .probe_cursor_position(&mut writer, Duration::from_secs(1))
+                .unwrap(),
+            CursorPositionQuery::DeferredForPendingInput
+        );
+        assert!(reader.events.is_empty());
+        assert!(reader.skipped_events.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_probe_preserves_complete_input_and_defers_without_writing() {
+        let key = InternalEvent::Event(Event::Key(crate::event::KeyCode::Char('x').into()));
+        let source = FakeSource {
+            events: vec![key.clone()].into(),
+            ..FakeSource::default()
+        };
+        let mut reader = InternalEventReader {
+            events: VecDeque::new(),
+            source: Some(Box::new(source)),
+            skipped_events: Vec::new(),
+        };
+        let mut writer = Vec::new();
+
+        assert_eq!(
+            reader
+                .probe_cursor_position(&mut writer, Duration::from_secs(1))
+                .unwrap(),
+            CursorPositionQuery::DeferredForRecentInput
+        );
+        assert!(writer.is_empty());
+        assert_eq!(reader.events.pop_front(), Some(key));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_probe_deadline_with_recent_input_defers_instead_of_timing_out() {
+        struct DeadlineCrossingSource;
+
+        impl EventSource for DeadlineCrossingSource {
+            fn try_read(
+                &mut self,
+                _timeout: Option<Duration>,
+            ) -> io::Result<Option<InternalEvent>> {
+                std::thread::sleep(Duration::from_millis(2));
+                Ok(Some(InternalEvent::Event(Event::Key(
+                    crate::event::KeyCode::Char('x').into(),
+                ))))
+            }
+
+            #[cfg(feature = "event-stream")]
+            fn waker(&self) -> super::super::sys::Waker {
+                unimplemented!()
+            }
+        }
+
+        let mut reader = InternalEventReader {
+            events: VecDeque::new(),
+            source: Some(Box::new(DeadlineCrossingSource)),
+            skipped_events: Vec::new(),
+        };
+        let mut writer = Vec::new();
+
+        assert_eq!(
+            reader
+                .probe_cursor_position(&mut writer, Duration::from_millis(1))
+                .unwrap(),
+            CursorPositionQuery::DeferredForRecentInput
+        );
+        assert!(writer.is_empty());
+        assert!(matches!(
+            reader.events.front(),
+            Some(InternalEvent::Event(Event::Key(_)))
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_probe_purges_pre_query_reply_and_accepts_the_first_post_query_reply() {
+        struct QuerySource {
+            pre_query_reply_sent: bool,
+            post_query_reply_sent: bool,
+        }
+
+        impl EventSource for QuerySource {
+            fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
+                if timeout == Some(Duration::ZERO) {
+                    if !self.pre_query_reply_sent {
+                        self.pre_query_reply_sent = true;
+                        return Ok(Some(InternalEvent::CursorPosition(1, 2)));
+                    }
+                    return Ok(None);
+                }
+                if !self.post_query_reply_sent {
+                    self.post_query_reply_sent = true;
+                    return Ok(Some(InternalEvent::CursorPosition(30, 40)));
+                }
+                Ok(None)
+            }
+
+            #[cfg(feature = "event-stream")]
+            fn waker(&self) -> super::super::sys::Waker {
+                unimplemented!()
+            }
+        }
+
+        let mut reader = InternalEventReader {
+            events: VecDeque::new(),
+            source: Some(Box::new(QuerySource {
+                pre_query_reply_sent: false,
+                post_query_reply_sent: false,
+            })),
+            skipped_events: Vec::new(),
+        };
+        let mut writer = Vec::new();
+
+        assert_eq!(
+            reader
+                .probe_cursor_position(&mut writer, Duration::from_secs(1))
+                .unwrap(),
+            CursorPositionQuery::Position(30, 40)
+        );
+        assert!(!writer.is_empty());
+    }
+
     #[derive(Default)]
     struct FakeSource {
         events: VecDeque<InternalEvent>,
         error: Option<io::Error>,
+        pending_input: bool,
     }
 
     impl FakeSource {
@@ -396,6 +697,7 @@ mod tests {
             FakeSource {
                 events: events.to_vec().into(),
                 error: Some(io::Error::new(io::ErrorKind::Other, "")),
+                pending_input: false,
             }
         }
 
@@ -403,6 +705,7 @@ mod tests {
             FakeSource {
                 events: events.to_vec().into(),
                 error: None,
+                pending_input: false,
             }
         }
     }
@@ -428,6 +731,11 @@ mod tests {
 
             // Timeout
             Ok(None)
+        }
+
+        #[cfg(unix)]
+        fn pending_input_is_recent(&mut self) -> bool {
+            self.pending_input
         }
 
         #[cfg(feature = "event-stream")]

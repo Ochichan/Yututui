@@ -49,7 +49,24 @@ use crate::{csi, impl_display, Command};
 pub(crate) mod sys;
 
 #[cfg(feature = "events")]
-pub use sys::position;
+pub use sys::{position, probe_position_with};
+
+/// Result of a bounded cursor-position probe.
+///
+/// A deferred result means terminal input itself supplied recent client-liveness evidence, so no
+/// terminal status query was written. The caller can retry without treating the terminal as
+/// unavailable.
+#[cfg(feature = "events")]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorPositionProbe {
+    /// The zero-based cursor position returned by the terminal.
+    Position(u16, u16),
+    /// The query was not sent because doing so could corrupt pending terminal input.
+    DeferredForPendingInput,
+    /// The query was not sent because complete terminal input was preserved for the event reader.
+    DeferredForRecentInput,
+}
 
 /// A command that moves the terminal cursor to the given position (column, row).
 ///

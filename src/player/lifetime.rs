@@ -1,10 +1,8 @@
 //! No-orphan process lifetime: mpv must die with the app, on every exit path.
 //!
-//! Every mpv is launched by [`super::guardian`]. The owner keeps a heartbeat plus a fixed-slot
-//! emergency registry; the guardian owns the media process group, an inherited POSIX IPC lease,
-//! and Linux parent-death protection or nested Windows Job Objects. Signals, panic, terminal-client
-//! loss, owner/guardian death, and frozen-runtime timeouts all converge on that stable boundary.
-//! An exact random command marker and kernel-pinned recovery handle form the next-start backstop.
+//! Every mpv is launched by [`super::guardian`]. A heartbeat, fixed-slot emergency registry,
+//! process-group/Job ownership, inherited POSIX lease, and parent-death protection ensure signals,
+//! panics, terminal loss, owner death, and runtime freezes converge on one stable boundary.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -16,13 +14,9 @@ use crate::util::safe_fs;
 
 /// Every live media process, packed as `(guardian_pid << 32) | mpv_pid`.
 ///
-/// The guardian is our direct child, so its pid cannot be reused before its `Child` is reaped. Every
-/// out-of-band path targets only that stable guardian: Unix requests cooperative termination so the
-/// guardian kills and reaps mpv itself, while Windows closes the last inner Job handle and
-/// atomically kills mpv plus every descendant. The inherited POSIX IPC lease and Linux PDEATHSIG
-/// separately cover direct guardian death. The recorded mpv pid is never signalled from this owner
-/// registry, eliminating collateral kills after pid reuse. A fixed array keeps panic/signal
-/// teardown allocation-free and supports concurrent audio/overlay instances.
+/// Out-of-band paths target only the direct-child guardian, whose pid cannot be reused before reap.
+/// Unix asks it to kill/reap mpv; Windows closes the inner Job handle to kill all descendants. The
+/// fixed array keeps panic/signal teardown allocation-free for concurrent audio/overlay instances.
 const MEDIA_PID_SLOTS: usize = 16;
 const SLOT_FREE: u8 = 0;
 const SLOT_PUBLISHING: u8 = 1;
@@ -30,12 +24,8 @@ const SLOT_LIVE: u8 = 2;
 const SLOT_OWNER_CLEANUP: u8 = 3;
 const SLOT_EMERGENCY_KILL: u8 = 4;
 
-/// The state word is the ownership handshake for the numeric guardian pid in `packed`.
-///
-/// Emergency teardown must claim `SLOT_LIVE -> SLOT_EMERGENCY_KILL` before loading or signalling
-/// the pid. Normal owner teardown must claim `SLOT_LIVE -> SLOT_OWNER_CLEANUP` before it can reap
-/// the direct guardian child. Therefore a guardian pid remains backed by the owner's live `Child`
-/// handle for the entire raw-pid signal call, and can never be reused underneath that call.
+/// The state word hands off the guardian pid between normal and emergency teardown. Either side
+/// must claim its transition before using it, keeping the direct-child handle live through signal.
 struct MediaPidSlot {
     state: AtomicU8,
     packed: AtomicU64,
@@ -303,29 +293,29 @@ fn reset_media_registry_for_test() {
     MEDIA_SHUTDOWN.store(false, Ordering::SeqCst);
 }
 
-/// Monotonic, out-of-band process shutdown signal.
-///
-/// Owner event queues are deliberately bounded and can be saturated at exactly the moment an
-/// external signal arrives. This latch therefore does not share their delivery path: signal
-/// handlers set the atomic first, then wake the owner loop through a watch channel. The atomic
-/// makes checks cheap and monotonic; subscribing before the second check in [`Self::wait`]
-/// makes the wait lost-wakeup safe.
+/// Monotonic shutdown signal independent of bounded owner queues.
 #[derive(Clone)]
 pub struct ShutdownLatch {
     inner: Arc<ShutdownLatchInner>,
 }
 
 struct ShutdownLatchInner {
-    triggered: AtomicBool,
+    state: AtomicU8,
+    signal_won: AtomicBool,
     changed: tokio::sync::watch::Sender<bool>,
 }
+
+const SHUTDOWN_OPEN: u8 = 0;
+const SHUTDOWN_CLAIMED: u8 = 1;
+const SHUTDOWN_TRIGGERED: u8 = 2;
 
 impl ShutdownLatch {
     pub fn new() -> Self {
         let (changed, _rx) = tokio::sync::watch::channel(false);
         Self {
             inner: Arc::new(ShutdownLatchInner {
-                triggered: AtomicBool::new(false),
+                state: AtomicU8::new(SHUTDOWN_OPEN),
+                signal_won: AtomicBool::new(false),
                 changed,
             }),
         }
@@ -336,21 +326,47 @@ impl ShutdownLatch {
         self.trigger_with_emergency(|| {});
     }
 
-    /// Set the monotonic latch, run an emergency action, then wake async waiters.
-    ///
-    /// Terminal hard-failure paths use this ordering to close media admission and kill the global
-    /// registry before a diagnostic mutex or a contended watch wake can delay teardown. Keeping the
-    /// wake last also lets that path publish a best-effort exact diagnostic before the owner runs.
+    /// Set the latch, run an emergency action, then wake async waiters.
     pub(crate) fn trigger_with_emergency(&self, emergency: impl FnOnce()) {
-        let first = !self.inner.triggered.swap(true, Ordering::AcqRel);
-        emergency();
-        if first {
-            self.inner.changed.send_replace(true);
+        let _ = self.try_trigger_with_before_publish(|| {}, emergency);
+    }
+
+    /// Claim, publish the cause, expose shutdown, run emergency work, then wake async waiters.
+    /// A loser cannot publish a competing cause or repeat the winner's emergency action.
+    pub(crate) fn try_trigger_with_before_publish(
+        &self,
+        before_publish: impl FnOnce(),
+        emergency: impl FnOnce(),
+    ) -> bool {
+        let claimed = self
+            .inner
+            .state
+            .compare_exchange(
+                SHUTDOWN_OPEN,
+                SHUTDOWN_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        if !claimed {
+            return false;
         }
+        before_publish();
+        self.inner
+            .state
+            .store(SHUTDOWN_TRIGGERED, Ordering::Release);
+        emergency();
+        self.inner.changed.send_replace(true);
+        true
     }
 
     pub fn is_triggered(&self) -> bool {
-        self.inner.triggered.load(Ordering::Acquire)
+        self.inner.state.load(Ordering::Acquire) == SHUTDOWN_TRIGGERED
+    }
+
+    /// Whether an OS termination signal won the one-shot shutdown arbitration.
+    pub fn was_triggered_by_signal(&self) -> bool {
+        self.inner.signal_won.load(Ordering::Acquire)
     }
 
     /// Wait until shutdown is requested without losing a trigger that races registration.
@@ -363,9 +379,7 @@ impl ShutdownLatch {
             if self.is_triggered() {
                 return;
             }
-            // The sender is owned by the same Arc as this receiver, so closure is impossible
-            // while the wait is live. Treat it as shutdown defensively if that invariant ever
-            // changes.
+            // Sender closure is impossible while this Arc is live; handle it defensively anyway.
             if changed.changed().await.is_err() {
                 return;
             }
@@ -389,10 +403,11 @@ fn request_signal_shutdown<F>(shutdown: &ShutdownLatch, emit: &F)
 where
     F: Fn(SignalEvent),
 {
-    // Ordering is intentional: the owner must suppress recovery before killing mpv can cause
-    // its IPC actor to enqueue TransportClosed into an already-saturated owner lane.
-    shutdown.trigger();
-    kill_mpv_now();
+    // Publish provenance and suppress recovery before killing mpv can enqueue TransportClosed.
+    shutdown.try_trigger_with_before_publish(
+        || shutdown.inner.signal_won.store(true, Ordering::Release),
+        kill_mpv_now,
+    );
     emit(SignalEvent::Quit);
 }
 

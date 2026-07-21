@@ -24,15 +24,34 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
   cleanup landed for 26.08; users can force `YTM_TUI_IMAGE_PROTOCOL=halfblocks` if fragments linger.
 - An empty local `[workspace]` boundary keeps standalone fork gates independent from yututui's
   parent workspace while this crate remains excluded from the application workspace members.
+- Unix capability queries reopen the stdout TTY with independent nonblocking flags, validate its
+  device identity, and share one absolute deadline across raw-mode setup, partial request writes,
+  response waits, and a 64 KiB-capped late-input drain. Raw-mode changes use immediate termios
+  application instead of an unbounded output drain, and a raw-mode restoration failure is surfaced
+  as a distinct fatal error rather than being downgraded to an unsupported-capability fallback. A
+  writer-taking overload lets applications route probe bytes through their own serialized terminal
+  output. An additive absolute-`Instant` overload accepts a shared one-way cancellation fence;
+  cancellation plus an exclusive cleanup closure orders inherited-mode restoration after every
+  admitted raw-mode activation, query output, input poll/read, and late-response drain; a bounded
+  acquisition failure never runs that restore unfenced. Bounded polling and nonblocking-output
+  retries observe cancellation promptly. Apple output uses the same readiness hint with a short
+  timeout fallback, avoiding fixed-sleep throttling without trusting a readiness result over the
+  next nonblocking write. Tmux detection is now read-only: it never launches or waits on a
+  configuration-mutating `tmux set` subprocess.
 
 All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version
-drift, or missing patch markers.
+drift, or missing patch markers. The check also hashes every vendored file except ignored `target/`
+artifacts, so unreviewed base or patch drift fails even when a marker still exists.
+
+After an intentional, reviewed change to this vendored tree, print the new digest with
+`scripts/check-ratatui-image-patch.sh --print-tree-digest` and update `expected_tree_digest` in that
+script. Never rebless the digest merely to make an unexplained check failure pass.
 
 ## Upgrade Checklist
 
 1. Replace this directory with the desired upstream `ratatui-image` release.
-2. Reapply the five local patch groups above.
+2. Reapply the seven local patch groups above.
 3. Keep `yututui patch` comments next to each local behavior change.
 4. Update the upstream base version in this file and in `scripts/check-ratatui-image-patch.sh`.
 5. Run:

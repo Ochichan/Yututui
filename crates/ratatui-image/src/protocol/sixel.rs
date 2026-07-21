@@ -144,7 +144,10 @@ mod tests {
 
         let a = Sixel::new(img.clone(), size, false).unwrap();
         let b = Sixel::new(img, size, false).unwrap();
-        assert_ne!(a.redraw_tag, b.redraw_tag, "each encode must take a unique tag");
+        assert_ne!(
+            a.redraw_tag, b.redraw_tag,
+            "each encode must take a unique tag"
+        );
 
         let mut buf_a = Buffer::empty(area);
         let mut buf_b = Buffer::empty(area);
@@ -155,8 +158,18 @@ mod tests {
         let cell_b = buf_b.cell((0, 0)).unwrap();
         // Same image => identical escape in the symbol, but the (invisible) fg differs, so the
         // cells are unequal and the frame diff emits the second one over the first.
-        assert_eq!(cell_a.symbol(), cell_b.symbol(), "same image keeps the same escape");
-        assert_ne!(cell_a.fg, cell_b.fg, "a rebuilt protocol must perturb the anchor fg");
-        assert_ne!(cell_a, cell_b, "anchor cells must differ so ratatui re-emits the sixel");
+        assert_eq!(
+            cell_a.symbol(),
+            cell_b.symbol(),
+            "same image keeps the same escape"
+        );
+        assert_ne!(
+            cell_a.fg, cell_b.fg,
+            "a rebuilt protocol must perturb the anchor fg"
+        );
+        assert_ne!(
+            cell_a, cell_b,
+            "anchor cells must differ so ratatui re-emits the sixel"
+        );
     }
 }

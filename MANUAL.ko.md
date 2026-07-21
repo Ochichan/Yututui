@@ -33,9 +33,12 @@ ytt
 클릭하세요. mpv, yt-dlp, ffmpeg가 빠졌다면 설치 카드의 복사/안내 버튼을 이용하고 설치 뒤
 **다시 확인**을 누르세요. 기술적인 상세 진단은 계속 `ytt doctor`에서 볼 수 있습니다.
 POSIX 환경에서 guardian으로 보호된 재생을 쓰려면 mpv 0.33 이상이 필요합니다. 대화형
-`ytt` 플레이어는 인식 가능한 Unix 터미널이나 multiplexer 클라이언트를 잃으면 종료되고,
-multiplexer를 조회할 수 없을 때도 안전하게 종료합니다. 유지된 Windows ConPTY broker와
-같은 종류로 반복 중첩된 Screen/Zellij은 연결된 클라이언트와 구분할 수 없으므로,
+`ytt` 플레이어는 확정된 Unix 터미널이나 multiplexer 클라이언트 손실에는 즉시 종료합니다.
+모호한 cursor 응답과 사용할 수 없는 multiplexer 조회는 독립적으로 두 번 확인합니다.
+liveness output-gate 경합 중에는 probe를 미루며, owner frame/control 출력에는 별도의 7초
+제한 시간이 있고, worker가 반환하지
+않는 경우에는 8초 watchdog으로 제한합니다. 유지된 Windows ConPTY/tmux-control broker와
+같은 종류로 반복 중첩된 tmux/Screen/Zellij은 연결된 클라이언트와 구분할 수 없으므로,
 이런 경우에는 `ytt daemon`이나 호스트 측 수명 supervisor/lease를 쓰세요. 지원 범위는 [터미널 호환성](docs/terminal-compatibility.md#terminal-lifetime-detection)을 참고하세요.
 
 ### 첫 곡 재생하기
