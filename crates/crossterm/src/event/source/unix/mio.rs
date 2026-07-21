@@ -7,15 +7,15 @@ use signal_hook_mio::v1_0::Signals;
 use crate::event::sys::Waker;
 use crate::event::{source::EventSource, timeout::PollTimeout, Event, InternalEvent};
 
-use super::input::{InputFd, Parser};
+#[cfg(all(test, feature = "bracketed-paste"))]
+use super::input::MAX_DRAIN_BYTES;
+use super::input::{DrainBudget, InputFd, Parser};
 
 const TTY_TOKEN: Token = Token(0);
 const SIGNAL_TOKEN: Token = Token(1);
 #[cfg(feature = "event-stream")]
 const WAKE_TOKEN: Token = Token(2);
 const TTY_BUFFER_SIZE: usize = 4 * 1024;
-const MAX_DRAIN_BYTES: usize = 64 * 1024;
-const MAX_DRAIN_TIME: Duration = Duration::from_millis(50);
 
 pub(crate) struct UnixInternalEventSource {
     poll: Poll,
@@ -64,19 +64,21 @@ impl UnixInternalEventSource {
         })
     }
 
-    fn drain_tty(&mut self, close_hint: bool, timeout: &PollTimeout) -> io::Result<()> {
-        let mut drained = 0;
-        let drain_timeout = PollTimeout::new(Some(MAX_DRAIN_TIME));
-        let mut attempted_once = false;
+    fn drain_tty(
+        &mut self,
+        close_hint: bool,
+        timeout: &PollTimeout,
+        budget: &mut DrainBudget,
+    ) -> io::Result<()> {
         loop {
             // Preserve poll(0)'s readiness check by allowing one nonblocking read. Every retry,
-            // including an EINTR storm, remains inside both the caller's absolute timeout and a
-            // short per-drain scheduling slice.
-            if attempted_once && (timeout.elapsed() || drain_timeout.elapsed()) {
+            // including an EINTR storm, remains inside both the caller's absolute timeout and the
+            // scheduling slice shared by this entire event-source call.
+            let first_attempt = budget.start();
+            if !first_attempt && (timeout.elapsed() || budget.exhausted()) {
                 self.drain_pending = true;
                 return Ok(());
             }
-            attempted_once = true;
             match self.tty.read(&mut self.tty_buffer) {
                 Ok(0) if self.tty.read_zero_is_eof(close_hint) => {
                     return Err(io::Error::new(
@@ -89,12 +91,12 @@ impl UnixInternalEventSource {
                     return Ok(());
                 }
                 Ok(read_count) => {
-                    drained += read_count;
+                    budget.record(read_count);
                     self.parser.advance(
                         &self.tty_buffer[..read_count],
                         read_count == TTY_BUFFER_SIZE,
                     )?;
-                    if drained >= MAX_DRAIN_BYTES {
+                    if budget.exhausted() {
                         // Do not return to edge-triggered poll until a later call has completed
                         // the drain. Buffered parsed events give callers a fair scheduling point.
                         self.drain_pending = true;
@@ -117,13 +119,19 @@ impl UnixInternalEventSource {
         }
     }
 
-    fn wait_duration(timeout: &PollTimeout, parser: &Parser) -> Option<Duration> {
-        match (timeout.leftover(), parser.pending_wait()) {
-            (Some(timeout), Some(pending)) => Some(timeout.min(pending)),
-            (Some(timeout), None) => Some(timeout),
-            (None, Some(pending)) => Some(pending),
-            (None, None) => None,
-        }
+    fn wait_duration(
+        timeout: &PollTimeout,
+        parser: &Parser,
+        budget: &DrainBudget,
+    ) -> Option<Duration> {
+        [
+            timeout.leftover(),
+            parser.pending_wait(),
+            budget.time_left(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn queue_resize(&mut self) -> io::Result<()> {
@@ -137,6 +145,7 @@ impl UnixInternalEventSource {
 impl EventSource for UnixInternalEventSource {
     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>> {
         let timeout = PollTimeout::new(timeout);
+        let mut drain_budget = DrainBudget::default();
         let mut polled_once = false;
 
         loop {
@@ -154,7 +163,7 @@ impl EventSource for UnixInternalEventSource {
             }
 
             if self.drain_pending {
-                self.drain_tty(false, &timeout)?;
+                self.drain_tty(false, &timeout, &mut drain_budget)?;
                 if let Some(event) = self.parser.next() {
                     return Ok(Some(event));
                 }
@@ -167,6 +176,10 @@ impl EventSource for UnixInternalEventSource {
                 continue;
             }
 
+            if drain_budget.exhausted() {
+                return Ok(None);
+            }
+
             if polled_once && timeout.elapsed() {
                 return Ok(None);
             }
@@ -174,7 +187,7 @@ impl EventSource for UnixInternalEventSource {
 
             match self.poll.poll(
                 &mut self.events,
-                Self::wait_duration(&timeout, &self.parser),
+                Self::wait_duration(&timeout, &self.parser, &drain_budget),
             ) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
@@ -186,7 +199,7 @@ impl EventSource for UnixInternalEventSource {
                 if let Some(event) = self.parser.next() {
                     return Ok(Some(event));
                 }
-                if timeout.elapsed() {
+                if timeout.elapsed() || drain_budget.exhausted() {
                     return Ok(None);
                 }
                 continue;
@@ -213,7 +226,7 @@ impl EventSource for UnixInternalEventSource {
             }
 
             if tty_ready || tty_closed {
-                self.drain_tty(tty_closed, &timeout)?;
+                self.drain_tty(tty_closed, &timeout, &mut drain_budget)?;
             }
             let mut saw_winch = false;
             if signal_ready {
@@ -331,6 +344,25 @@ mod tests {
         let (_, result) = bounded_read(source, Duration::from_secs(1));
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn drain_budget_survives_would_block_between_fragments() {
+        let (master, slave) = raw_pty();
+        let mut source =
+            UnixInternalEventSource::from_input_fd(InputFd::from_owned_for_test(slave)).unwrap();
+        let timeout = PollTimeout::new(Some(Duration::from_secs(1)));
+        let mut budget = DrainBudget::with_test_limits(5, Duration::from_secs(1));
+
+        write(&master, b"abc").unwrap();
+        source.drain_tty(false, &timeout, &mut budget).unwrap();
+        assert!(!budget.exhausted());
+        assert!(!source.drain_pending);
+
+        write(&master, b"def").unwrap();
+        source.drain_tty(false, &timeout, &mut budget).unwrap();
+        assert!(budget.exhausted());
+        assert!(source.drain_pending);
     }
 
     #[cfg(feature = "bracketed-paste")]

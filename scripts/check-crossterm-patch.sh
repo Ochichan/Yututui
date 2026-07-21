@@ -41,7 +41,7 @@ if [ "${1:-}" = "--print-tree-digest" ]; then
 fi
 
 # Rebless only after reviewing an intentional vendor-base or local-patch change; see PATCHES.md.
-expected_tree_digest='722167ef9ed7b90c57e5ca0116d9fc1c6419d297ff9f10fc6539a591a5b0badf'
+expected_tree_digest='98cb6a541f08a4cfb49176d43ec8491e69cbbeeeb4b849a38efb9860cf43b7ed'
 test "$actual_tree_digest" = "$expected_tree_digest" \
   || fail "vendored crossterm tree drifted (expected $expected_tree_digest, got $actual_tree_digest)"
 
@@ -92,6 +92,8 @@ for source in \
   crates/crossterm/src/event/source/unix/tty.rs; do
   grep -Fq 'incomplete_paste_yields_after_one_drain_budget' "$source" \
     || fail "64 KiB input-drain yield regression is missing from $source"
+  grep -Fq 'drain_budget_survives_would_block_between_fragments' "$source" \
+    || fail "fragmented-readiness drain-budget regression is missing from $source"
 done
 
 if grep -Rqs 'Command::new("tput")' crates/crossterm/src; then

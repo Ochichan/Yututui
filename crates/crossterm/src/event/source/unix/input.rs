@@ -25,6 +25,93 @@ const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 #[cfg(feature = "bracketed-paste")]
 const MAX_PASTE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_DRAIN_BYTES: usize = 64 * 1024;
+pub(super) const MAX_DRAIN_TIME: Duration = Duration::from_millis(50);
+
+/// One scheduling slice for terminal input consumed by a single `try_read` call.
+///
+/// A PTY can become temporarily empty between small producer bursts. Keeping this budget outside
+/// the individual drain loop prevents `WouldBlock -> poll -> read` cycles from resetting the byte
+/// and wall-clock limits on platforms such as macOS.
+#[derive(Debug)]
+pub(super) struct DrainBudget {
+    drained: usize,
+    max_bytes: usize,
+    max_time: Duration,
+    started_at: Option<Instant>,
+}
+
+impl Default for DrainBudget {
+    fn default() -> Self {
+        Self::with_limits(MAX_DRAIN_BYTES, MAX_DRAIN_TIME)
+    }
+}
+
+impl DrainBudget {
+    fn with_limits(max_bytes: usize, max_time: Duration) -> Self {
+        Self {
+            drained: 0,
+            max_bytes,
+            max_time,
+            started_at: None,
+        }
+    }
+
+    pub(super) fn record(&mut self, read_count: usize) {
+        self.record_at(read_count, Instant::now());
+    }
+
+    /// Starts the wall-clock slice on the first read attempt in this `try_read` call.
+    ///
+    /// Returns `true` only for that first attempt, which preserves `poll(0)`'s one-read probe
+    /// while still bounding repeated `EINTR` and spurious-readiness cycles.
+    pub(super) fn start(&mut self) -> bool {
+        self.start_at(Instant::now())
+    }
+
+    fn start_at(&mut self, now: Instant) -> bool {
+        if self.started_at.is_some() {
+            return false;
+        }
+        self.started_at = Some(now);
+        true
+    }
+
+    fn record_at(&mut self, read_count: usize, now: Instant) {
+        if read_count == 0 {
+            return;
+        }
+        self.start_at(now);
+        self.drained = self.drained.saturating_add(read_count);
+    }
+
+    pub(super) fn exhausted(&self) -> bool {
+        self.exhausted_at(Instant::now())
+    }
+
+    fn exhausted_at(&self, now: Instant) -> bool {
+        self.drained >= self.max_bytes
+            || self.started_at.map_or(false, |started_at| {
+                now.saturating_duration_since(started_at) >= self.max_time
+            })
+    }
+
+    pub(super) fn time_left(&self) -> Option<Duration> {
+        self.time_left_at(Instant::now())
+    }
+
+    fn time_left_at(&self, now: Instant) -> Option<Duration> {
+        self.started_at.map(|started_at| {
+            self.max_time
+                .saturating_sub(now.saturating_duration_since(started_at))
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_limits(max_bytes: usize, max_time: Duration) -> Self {
+        Self::with_limits(max_bytes, max_time)
+    }
+}
 
 /// An independently opened, non-blocking descriptor for terminal event input.
 ///
@@ -307,6 +394,53 @@ pub(super) mod tests {
         termios.make_raw();
         tcsetattr(&slave, OptionalActions::Now, &termios).unwrap();
         (master, slave)
+    }
+
+    #[test]
+    fn drain_budget_accumulates_fragmented_readiness_cycles() {
+        let started_at = Instant::now();
+        let mut budget = DrainBudget::with_limits(MAX_DRAIN_BYTES, Duration::from_secs(1));
+
+        assert!(budget.start_at(started_at));
+        assert!(!budget.start_at(started_at + Duration::from_millis(10)));
+
+        // Darwin PTYs commonly expose at most 1,022 bytes before a temporary WouldBlock. The
+        // budget must survive every one of those readiness boundaries within the same try_read.
+        for _ in 0..64 {
+            budget.record_at(1_022, started_at);
+        }
+        assert_eq!(budget.drained, 65_408);
+        assert!(!budget.exhausted_at(started_at));
+
+        budget.record_at(127, started_at);
+        assert!(!budget.exhausted_at(started_at));
+        budget.record_at(1, started_at);
+        assert_eq!(budget.drained, MAX_DRAIN_BYTES);
+        assert!(budget.exhausted_at(started_at));
+    }
+
+    #[test]
+    fn drain_budget_wall_deadline_is_lazy_and_saturating() {
+        let started_at = Instant::now();
+        let mut budget = DrainBudget::with_limits(usize::MAX, MAX_DRAIN_TIME);
+
+        assert_eq!(
+            budget.time_left_at(started_at + Duration::from_secs(5)),
+            None
+        );
+        assert!(!budget.exhausted_at(started_at + Duration::from_secs(5)));
+        assert!(budget.start_at(started_at));
+        assert_eq!(budget.time_left_at(started_at), Some(MAX_DRAIN_TIME));
+        assert!(!budget.exhausted_at(started_at + MAX_DRAIN_TIME - Duration::from_millis(1)));
+        assert_eq!(
+            budget.time_left_at(started_at + MAX_DRAIN_TIME - Duration::from_millis(1)),
+            Some(Duration::from_millis(1))
+        );
+        assert!(budget.exhausted_at(started_at + MAX_DRAIN_TIME));
+        assert_eq!(
+            budget.time_left_at(started_at + MAX_DRAIN_TIME + Duration::from_secs(1)),
+            Some(Duration::ZERO)
+        );
     }
 
     #[test]

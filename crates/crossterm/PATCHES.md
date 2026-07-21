@@ -33,12 +33,15 @@ probe API is exposed so yututui can distinguish recent user input from terminal 
 - Open an independent `O_NONBLOCK | O_CLOEXEC | O_NOCTTY` event-input descriptor for the same TTY
   instead of changing or duplicating inherited stdin. Both Mio and `use-dev-tty` use the shared
   descriptor, read loop, and parser.
-- Drain readiness in 64 KiB / 50 ms slices while retaining the edge until a later call reaches
-  `WouldBlock`; yielding between slices prevents a long incomplete paste or repeated `EINTR` from
-  looking like a wedged input worker. Propagate EOF/HUP/EIO and other permanent read failures,
-  retain simultaneous TTY/SIGWINCH/waker readiness, and preserve event-source initialization
-  errors. PTY regressions have parent wall-clock deadlines so a future blocking-read regression
-  cannot hang the test suite.
+- Give each `try_read` call one shared 64 KiB / 50 ms drain budget across every
+  `read -> WouldBlock -> poll -> read` cycle. This is required on PTYs such as macOS, where one
+  writer operation is exposed as many short readiness bursts. When the shared budget is exhausted,
+  retain an undrained edge when necessary and yield so a long incomplete paste, spurious readiness,
+  or repeated `EINTR` cannot look like a wedged input worker. Propagate EOF/HUP/EIO and other
+  permanent read failures, retain simultaneous TTY/SIGWINCH/waker readiness, and preserve
+  event-source initialization errors. Deterministic fragmented-readiness tests cover both Unix
+  backends, and PTY regressions have parent wall-clock deadlines so a future blocking-read
+  regression cannot hang the test suite.
 - Recover from abandoned UTF-8/CSI prefixes without consuming the first byte of the next event.
   A lone legacy ESC gets a 100 ms ambiguity window so a syscall split immediately after the
   prefix does not corrupt CSI/focus/CPR input. A second ESC preserves the first as a key and starts
