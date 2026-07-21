@@ -861,8 +861,7 @@ fn operation_snapshot(shared: &Shared) -> Option<OutputOperationSnapshot> {
 
 #[cfg(unix)]
 fn wait_writable(shared: &Shared, operation: Operation, respect_cancel: bool) -> io::Result<()> {
-    use rustix::event::{PollFd, PollFlags, poll};
-    use rustix::time::Timespec;
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
     if respect_cancel && shared.cancelled.load(Ordering::Acquire) {
         return Err(cancelled_error());
@@ -966,11 +965,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use rustix::event::{PollFd, PollFlags, poll};
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use rustix::fd::OwnedFd;
     use rustix::fs::{CWD, Mode, OFlags, fcntl_getfl, fcntl_setfl, openat};
     use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-    use rustix::time::Timespec;
 
     use super::{
         OutputOperationPhase, PhaseGuard, PreTuiOutputCancellation, TerminalWriter,
