@@ -1,6 +1,6 @@
 # Terminal Compatibility
 
-Status: initial public-beta matrix, updated 2026-07-15. Entries marked
+Status: initial public-beta matrix, updated 2026-07-21. Entries marked
 `Expected` still need a dated ytm-tui smoke run before they are marketed as
 fully verified.
 
@@ -41,9 +41,10 @@ ytm-tui configuration.
 
 ## ytm-tui Detection Path
 
-- Album art uses `ratatui-image`, which can query Kitty, Sixel, iTerm2, and
-  halfblock fallback protocols. If stdout is not a TTY, ytm-tui skips image
-  probing and uses halfblocks.
+- Interactive startup first verifies that stdin (or its controlling `/dev/tty`)
+  and stdout identify the same TTY. A split or non-TTY pair fails before raw mode
+  and before any capability-query bytes are sent. After that preflight, album art
+  uses `ratatui-image` to query Kitty, Sixel, iTerm2, and halfblock fallbacks.
 - Detected KonsolePart versions older than 26.04, or detected sessions without a
   valid `KONSOLE_VERSION`, stay on halfblocks by default. Starting with 26.04,
   ytm-tui permits a Sixel probe and selects Sixel only when DA1 advertises the
@@ -106,25 +107,65 @@ layers:
   `PR_SET_PDEATHSIG`, and Windows uses parent-only and guardian-only
   kill-on-close Job Objects.
 - On recognized Unix direct PTYs, one exclusive input worker checks periodic
-  cursor-position replies. This includes the Distrobox/Podman `conmon` case
-  where the PTY endpoint remains open after its interactive client disappears.
+  cursor-position replies through an independently reopened nonblocking TTY
+  descriptor. Partial Unicode, focus, IME, or other terminal input is retained
+  without letting a second blocking read pin the liveness worker. This includes
+  the Distrobox/Podman `conmon` case where the PTY endpoint remains open after
+  its interactive client disappears.
 - Supported tmux, GNU screen, and Zellij 0.40.1+ sessions are checked through their
-  client-query CLIs as well as the terminal reply. A missing, inaccessible,
-  timed-out, or malformed multiplexer query fails closed: the standalone TUI
-  shuts down rather than assuming a client still exists. Distinct multiplexer
-  layers visible in the environment are checked within one bounded query window.
+  client-query CLIs as well as the terminal reply. A parsed no-client result is
+  definitive and shuts down immediately. A missing, inaccessible, timed-out,
+  or malformed query is ambiguous and must recur independently in that owner
+  layer before shutdown. Distinct multiplexer layers keep independent evidence.
 - On Windows, normal console control events trigger guarded shutdown. A ConPTY
   broker that deliberately keeps the console and `ytt` process alive after its
   visible client disappears is not distinguishable from a live client inside
   `ytt`.
-- Repeated same-type GNU screen or Zellij nesting is likewise not
+- Repeated same-type tmux, GNU screen, or Zellij nesting is likewise not
   distinguishable through those tools' public client listings: an inner client
-  can still appear attached to an outer session whose real client is gone.
+  can still appear attached to an outer session whose real client is gone. A
+  retained tmux control-mode broker also cannot be distinguished from a visible
+  iTerm2/tmux integration, so any well-formed tmux client row counts as attached.
 
 Use `ytt daemon` when playback is meant to survive terminal detach. If playback
-must instead stop with an opaque ConPTY or repeated Screen/Zellij host session,
+must instead stop with an opaque ConPTY, retained tmux control broker, or repeated
+same-type tmux/Screen/Zellij host session,
 run `ytt` under a host-side lifetime supervisor or lease that owns that
 boundary.
+
+Transient terminal silence is not itself terminal loss. Ambiguous cursor replies and
+unusable owner-layer queries require two independent observations in the same evidence
+domain. Liveness output-gate contention defers that probe; the owner frame/control
+operation is instead governed by its own seven-second deadline. A successful reply or real
+input clears terminal-transport suspicion; an attached result clears only its
+matching multiplexer layer. EOF, HUP, EIO, broken pipe, and parsed multiplexer
+no-client states remain immediate failures.
+A worker that enters a syscall/library phase and makes no progress is stopped by
+an independent eight-second hard watchdog. A delayed watchdog tick requests a
+fresh liveness observation but does not, by itself, extend either that hard
+deadline or an active output deadline; watchdog-thread starvation therefore
+cannot be mistaken for proof that the whole process was suspended.
+
+Interactive Unix output is also written through an independently reopened
+nonblocking TTY. Frame and IME output has a seven-second end-to-end bound;
+notifications use one second. Graphics, keyboard, and zoom negotiation share one
+three-second startup deadline. Normal restoration gets one second and a panic or
+single-restore emergency gets 150 ms for raw-mode ioctls and control output. A
+repeated signal uses one 1,650 ms deadline measured from handler entry: up to
+1,500 ms orders the active graphics query behind its cancellation fence, and the
+final 150 ms is reserved for terminal restoration. Restoration runs while that
+fence is held, so a query paused before raw-mode activation cannot resume and
+overwrite a completed restore. A delayed restore worker cannot restart either
+budget or emit controls after its original deadline. An owner write deadline or
+definitive write failure is returned immediately rather than entering the
+two-observation liveness policy. The inherited shell stdin/stdout flags are never
+changed.
+
+Termination streams are registered before the second-launch chooser, graphics
+probe, or TUI can enter raw mode, and the same registration remains live through
+final terminal restoration. The first signal requests cooperative shutdown; a
+repeat signal restores the terminal best-effort under the emergency policy and
+forces exit even if later persistence or actor teardown is wedged.
 
 Run:
 
@@ -133,8 +174,11 @@ ytt doctor terminal --json
 ```
 
 This command is a no-playback diagnostic. It reports environment-derived
-terminal facts and does not start mpv, initialize playback, read cookies, or
-write user config.
+terminal facts, the selected input/output backend, sanitized owner-layer types,
+the liveness policy, and whether stdin/stdout name the same TTY. It does not
+start mpv, initialize playback, read cookies, enter raw mode, send a cursor
+query, run a multiplexer command, or write user config. Pane/session identifiers
+and TTY paths are never included.
 
 `ytt doctor terminal --json` also reports native image hints, the probe timeout
 ytm-tui will use for that environment, any `YTM_TUI_IMAGE_PROTOCOL` override,

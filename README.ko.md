@@ -106,10 +106,10 @@ YuTuTui!는 재생에 **mpv**, 검색·스트림 해석에 **yt-dlp**, 다운로
 POSIX는 상속 mpv `fd://` IPC lease를, Linux는 `PR_SET_PDEATHSIG`를 더하며, Windows는
 대신 닫히면 종료하는 Job Object를 사용합니다. 이 장치들이 mpv를 `ytt` owner의 수명에
 묶습니다. 단독 Unix TUI는 인식 가능한 직접/conmon PTY나 지원하는
-tmux/screen/Zellij 클라이언트를 잃어도 안전하게 종료하며, multiplexer 조회가
-불가능하거나 모호하면 클라이언트를 잃은 것으로 처리합니다. 일반적인 Windows console
-control event도 처리합니다. 그러나 유지된 ConPTY broker와 같은 종류로 반복 중첩된
-Screen/Zellij의 detach는 클라이언트 내부에서 확인할 수 없습니다. 이런 경우에는
+tmux/screen/Zellij 클라이언트를 잃어도 안전하게 종료하며, 불가능하거나 모호한
+multiplexer 조회는 두 번 실패해야 종료합니다. 일반적인 Windows console control event도
+처리합니다. 그러나 유지된 ConPTY/tmux-control broker와 같은 종류로 반복 중첩된
+tmux/Screen/Zellij의 detach는 클라이언트 내부에서 확인할 수 없습니다. 이런 경우에는
 `ytt daemon`이나 호스트 측 수명 supervisor/lease를 사용하세요. 자세한 내용은
 [터미널 호환성](docs/terminal-compatibility.md#terminal-lifetime-detection)을 참고하세요.
 
@@ -356,6 +356,7 @@ audio-output.png · retro.png · transfer.gif · help.png · onboarding.gif · c
 | --- | --- |
 | 앨범 아트가 안 보임 | 기본은 꺼짐: 설정 → 일반 → **앨범 아트** 켜고 재시작. |
 | 터미널마다 앨범 아트/확대 동작이 다름 | `ytt doctor terminal --json`을 실행하고 [terminal matrix](docs/terminal-compatibility.md)와 비교하세요. |
+| 터미널 liveness 오류로 TUI가 종료됨 | `ytt doctor terminal --json` 결과와 오류의 failure class/stage를 보관하세요. EOF/HUP 및 확인된 multiplexer detach는 즉시 종료합니다. 모호한 cursor 응답과 owner-layer 조회는 독립적으로 두 번 확인합니다. Liveness output-gate 경합 중에는 probe를 미루고, owner frame/control 출력에는 별도의 7초 제한 시간을 적용합니다. 터미널과 무관하게 재생하려는 경우에만 `ytt daemon`을 쓰세요. |
 | VS Code / Apple Terminal에서 앨범 아트가 각져 보임 | 그 터미널들엔 이미지 프로토콜이 없어요 — halfblock이 의도된 fallback입니다. |
 | 맨몸 리눅스 콘솔·오래된 SSH에서 화면이 깨짐 | 레트로 모드를 켜세요(설정 → 그래픽): 모든 것이 CP437 안전으로 다시 그려지고, 앨범 아트는 ASCII 아트가 됩니다. |
 | SSH / 맨몸 TTY에서 `v`(뮤직비디오)가 반응 없음 | 영상 오버레이는 mpv GUI 창입니다 — 데스크톱 세션이 필요해요. |

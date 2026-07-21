@@ -18,7 +18,9 @@ use rustix::{
     termios::{Termios, Winsize},
 };
 
-use std::{fs::File, io, process};
+#[cfg(feature = "events")]
+use std::time::{Duration, Instant};
+use std::{fs::File, io};
 #[cfg(feature = "libc")]
 use std::{
     mem,
@@ -99,11 +101,11 @@ pub(crate) fn window_size() -> io::Result<WindowSize> {
 
 #[allow(clippy::useless_conversion)]
 pub(crate) fn size() -> io::Result<(u16, u16)> {
-    if let Ok(window_size) = window_size() {
-        return Ok((window_size.columns, window_size.rows));
-    }
-
-    tput_size().ok_or_else(|| std::io::Error::last_os_error().into())
+    // yututui patch: SIGWINCH and liveness-sensitive callers must never spawn an unbounded
+    // `tput` subprocess. Interactive crossterm callers already require a real TTY, so propagate
+    // the ioctl error directly.
+    let window_size = window_size()?;
+    Ok((window_size.columns, window_size.rows))
 }
 
 #[cfg(feature = "libc")]
@@ -188,39 +190,76 @@ fn set_terminal_attr(fd: impl AsFd, termios: &Termios) -> io::Result<()> {
 /// [`crossterm::event::read`](crate::event::read) or [`crossterm::event::poll`](crate::event::poll) are being called.
 #[cfg(feature = "events")]
 pub fn supports_keyboard_enhancement() -> io::Result<bool> {
-    query_keyboard_enhancement_flags().map(|flags| flags.is_some())
+    let mut writer: Box<dyn io::Write> = match File::options().write(true).open("/dev/tty") {
+        Ok(tty) => Box::new(tty),
+        Err(_) => Box::new(io::stdout()),
+    };
+    supports_keyboard_enhancement_with(&mut writer)
 }
 
-/// Queries the terminal's currently active keyboard enhancement flags.
+/// Queries keyboard-enhancement support using the caller's output writer.
 ///
-/// On unix systems, this function will block and possibly time out while
-/// [`crossterm::event::read`](crate::event::read) or [`crossterm::event::poll`](crate::event::poll) are being called.
+/// This additive API lets terminal runtimes apply their own bounded-write policy instead of
+/// silently falling back to blocking process-global stdout.
 #[cfg(feature = "events")]
-pub fn query_keyboard_enhancement_flags() -> io::Result<Option<KeyboardEnhancementFlags>> {
+pub fn supports_keyboard_enhancement_with<W: io::Write>(writer: &mut W) -> io::Result<bool> {
+    supports_keyboard_enhancement_with_timeout(writer, Duration::from_millis(2000))
+}
+
+/// Queries keyboard-enhancement support using the caller's writer and total timeout.
+///
+/// The timeout covers raw-mode setup, request output, and response polling as one absolute
+/// deadline. This additive API lets a startup coordinator share one budget across serial probes.
+#[cfg(feature = "events")]
+pub fn supports_keyboard_enhancement_with_timeout<W: io::Write>(
+    writer: &mut W,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    query_keyboard_enhancement_flags_with(writer, deadline).map(|flags| flags.is_some())
+}
+
+#[cfg(feature = "events")]
+fn query_keyboard_enhancement_flags_with<W: io::Write>(
+    writer: &mut W,
+    deadline: Instant,
+) -> io::Result<Option<KeyboardEnhancementFlags>> {
     if is_raw_mode_enabled() {
-        query_keyboard_enhancement_flags_raw()
+        query_keyboard_enhancement_flags_raw(writer, deadline)
     } else {
-        query_keyboard_enhancement_flags_nonraw()
+        query_keyboard_enhancement_flags_nonraw(writer, deadline)
     }
 }
 
 #[cfg(feature = "events")]
-fn query_keyboard_enhancement_flags_nonraw() -> io::Result<Option<KeyboardEnhancementFlags>> {
+fn query_keyboard_enhancement_flags_nonraw<W: io::Write>(
+    writer: &mut W,
+    deadline: Instant,
+) -> io::Result<Option<KeyboardEnhancementFlags>> {
     enable_raw_mode()?;
-    let flags = query_keyboard_enhancement_flags_raw();
-    disable_raw_mode()?;
-    flags
+    let result = query_keyboard_enhancement_flags_raw(writer, deadline);
+    let restore = disable_raw_mode();
+    match result {
+        Ok(flags) => {
+            restore?;
+            Ok(flags)
+        }
+        Err(error) => {
+            let _ = restore;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(feature = "events")]
-fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhancementFlags>> {
+fn query_keyboard_enhancement_flags_raw<W: io::Write>(
+    writer: &mut W,
+    deadline: Instant,
+) -> io::Result<Option<KeyboardEnhancementFlags>> {
     use crate::event::{
         filter::{KeyboardEnhancementFlagsFilter, PrimaryDeviceAttributesFilter},
         poll_internal, read_internal, InternalEvent,
     };
-    use std::io::Write;
-    use std::time::Duration;
-
     // This is the recommended method for testing support for the keyboard enhancement protocol.
     // We send a query for the flags supported by the terminal and then the primary device attributes
     // query. If we receive the primary device attributes response but not the keyboard enhancement
@@ -231,66 +270,45 @@ fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhanceme
     // ESC [ ? u        Query progressive keyboard enhancement flags (kitty protocol).
     // ESC [ c          Query primary device attributes.
     const QUERY: &[u8] = b"\x1B[?u\x1B[c";
+    // yututui patch: let the application supply a bounded writer and an absolute startup budget.
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "keyboard enhancement query had no remaining startup budget",
+        ));
+    }
+    writer.write_all(QUERY)?;
+    writer.flush()?;
 
-    let result = File::open("/dev/tty").and_then(|mut file| {
-        file.write_all(QUERY)?;
-        file.flush()
-    });
-    if result.is_err() {
-        let mut stdout = io::stdout();
-        stdout.write_all(QUERY)?;
-        stdout.flush()?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "keyboard enhancement query write exceeded its total deadline",
+        ));
     }
 
-    match poll_internal(
-        Some(Duration::from_millis(2000)),
-        &KeyboardEnhancementFlagsFilter,
-    ) {
+    match poll_internal(Some(remaining), &KeyboardEnhancementFlagsFilter) {
         Ok(true) => match read_internal(&KeyboardEnhancementFlagsFilter) {
             Ok(InternalEvent::KeyboardEnhancementFlags(current_flags)) => {
-                // Flush the PrimaryDeviceAttributes out of the event queue.
-                read_internal(&PrimaryDeviceAttributesFilter).ok();
+                // Flush DA1 only when it is already available. Waiting unconditionally after the
+                // flags reply can strand startup forever when a terminal omits the second reply.
+                if poll_internal(Some(Duration::ZERO), &PrimaryDeviceAttributesFilter)
+                    .unwrap_or(false)
+                {
+                    let _ = read_internal(&PrimaryDeviceAttributesFilter);
+                }
                 Ok(Some(current_flags))
             }
             _ => Ok(None),
         },
         Ok(false) => Err(io::Error::new(
-            io::ErrorKind::Other,
+            io::ErrorKind::TimedOut,
             "The keyboard enhancement status could not be read within a normal duration",
         )),
         // yututui patch: a failed event poll must not be retried forever. The caller can
         // conservatively select its legacy keyboard path when probing fails.
         Err(error) => Err(error),
-    }
-}
-
-/// execute tput with the given argument and parse
-/// the output as a u16.
-///
-/// The arg should be "cols" or "lines"
-fn tput_value(arg: &str) -> Option<u16> {
-    let output = process::Command::new("tput").arg(arg).output().ok()?;
-    let value = output
-        .stdout
-        .into_iter()
-        .filter_map(|b| char::from(b).to_digit(10))
-        .fold(0, |v, n| v * 10 + n as u16);
-
-    if value > 0 {
-        Some(value)
-    } else {
-        None
-    }
-}
-
-/// Returns the size of the screen as determined by tput.
-///
-/// This alternate way of computing the size is useful
-/// when in a subshell.
-fn tput_size() -> Option<(u16, u16)> {
-    match (tput_value("cols"), tput_value("lines")) {
-        (Some(w), Some(h)) => Some((w, h)),
-        _ => None,
     }
 }
 
@@ -320,5 +338,43 @@ fn wrap_with_result(result: i32) -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "events"))]
+mod tests {
+    use super::*;
+
+    struct FailingWriter;
+
+    impl io::Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "bounded writer rejected the terminal query",
+            ))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn keyboard_enhancement_query_uses_the_caller_writer() {
+        let error = query_keyboard_enhancement_flags_raw(
+            &mut FailingWriter,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn expired_keyboard_query_deadline_writes_nothing() {
+        let mut output = Vec::new();
+        let error = query_keyboard_enhancement_flags_raw(&mut output, Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(output.is_empty());
     }
 }

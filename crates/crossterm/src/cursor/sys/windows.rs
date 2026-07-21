@@ -3,12 +3,17 @@
 use std::convert::TryFrom;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "events")]
+use std::{io::Write, time::Duration};
 
 use crossterm_winapi::{result, Coord, Handle, HandleType, ScreenBuffer};
 use winapi::{
     shared::minwindef::{FALSE, TRUE},
     um::wincon::{SetConsoleCursorInfo, SetConsoleCursorPosition, CONSOLE_CURSOR_INFO, COORD},
 };
+
+#[cfg(feature = "events")]
+use crate::cursor::CursorPositionProbe;
 
 /// The position of the cursor, written when you save the cursor's position.
 ///
@@ -42,6 +47,16 @@ pub fn position() -> io::Result<(u16, u16)> {
     position.y = parse_relative_y(position.y)?;
     //    }
     Ok(position.into())
+}
+
+/// Windows obtains the cursor position from the console API, so no query bytes are written.
+#[cfg(feature = "events")]
+pub fn probe_position_with<W: Write>(
+    _writer: &mut W,
+    _timeout: Duration,
+) -> io::Result<CursorPositionProbe> {
+    let (column, row) = position()?;
+    Ok(CursorPositionProbe::Position(column, row))
 }
 
 pub(crate) fn show_cursor(show_cursor: bool) -> std::io::Result<()> {

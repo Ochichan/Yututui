@@ -113,9 +113,9 @@ diagnostic command. POSIX systems require **mpv 0.33 or newer** for the inherite
 adds an inherited mpv `fd://` IPC lease, Linux also adds `PR_SET_PDEATHSIG`, and Windows instead
 uses kill-on-close Job Objects. These bind mpv to the `ytt` owner. The
 standalone Unix TUI also fails closed when it loses a recognized direct/conmon PTY or a supported
-tmux/screen/Zellij client; an inaccessible or ambiguous multiplexer query is treated as lost.
-Normal Windows console-control events are handled too. A retained ConPTY broker and repeated
-same-type Screen/Zellij nesting cannot be proven detached from inside the client; use `ytt daemon`
+tmux/screen/Zellij client; an inaccessible or ambiguous multiplexer query must fail twice before
+shutdown. Normal Windows console-control events are handled too. A retained ConPTY/tmux-control
+broker and repeated same-type tmux/Screen/Zellij nesting cannot be proven detached from inside the client; use `ytt daemon`
 or a host-side lifetime supervisor/lease for those cases. See
 [terminal compatibility](docs/terminal-compatibility.md#terminal-lifetime-detection).
 
@@ -363,6 +363,7 @@ Terminal support varies by emulator — YuTuTui! probes capabilities and falls b
 | --- | --- |
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
 | Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
+| A terminal-liveness error closes the TUI | Run `ytt doctor terminal --json` and keep the error's failure class/stage. EOF/HUP and a confirmed multiplexer detach are immediate; ambiguous cursor replies and owner-layer queries need two independent observations. Liveness output-gate contention defers the probe, while owner frame/control output has its own seven-second deadline. Use `ytt daemon` only when playback should outlive the terminal. |
 | `Ctrl+Backspace` acts like `Ctrl+H`, or Player navigation is suppressed | See [keyboard input modes](docs/terminal-compatibility.md#keyboard-input-modes). Direct modern terminals negotiate an exact protocol when supported; legacy/multiplexed sessions reserve ambiguous `^H` for safe word deletion while that binding remains at its default. |
 | Album art looks blocky in VS Code / Apple Terminal | Those terminals have no image protocol — halfblocks are the intended fallback there. |
 | Bare Linux console or an old SSH session looks broken | Switch on retro mode (Settings → Graphics): everything redraws CP437-safe, album art becomes ASCII art. |

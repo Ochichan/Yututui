@@ -1,7 +1,5 @@
 use std::io;
 
-#[cfg(feature = "libc")]
-use libc::size_t;
 #[cfg(not(feature = "libc"))]
 use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 #[cfg(feature = "libc")]
@@ -48,22 +46,6 @@ impl FileDesc<'_> {
         }
     }
 
-    pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        let result = unsafe {
-            libc::read(
-                self.fd,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                buffer.len() as size_t,
-            )
-        };
-
-        if result < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(result as usize)
-        }
-    }
-
     /// Returns the underlying file descriptor.
     pub fn raw_fd(&self) -> RawFd {
         self.fd
@@ -72,15 +54,6 @@ impl FileDesc<'_> {
 
 #[cfg(not(feature = "libc"))]
 impl FileDesc<'_> {
-    pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        let fd = match self {
-            FileDesc::Owned(fd) => fd.as_fd(),
-            FileDesc::Borrowed(fd) => fd.as_fd(),
-        };
-        let result = rustix::io::read(fd, buffer)?;
-        Ok(result)
-    }
-
     pub fn raw_fd(&self) -> RawFd {
         match self {
             FileDesc::Owned(fd) => fd.as_raw_fd(),

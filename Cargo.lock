@@ -3873,8 +3873,10 @@ checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags 2.13.0",
  "errno",
+ "itoa",
  "libc",
  "linux-raw-sys 0.4.15",
+ "once_cell",
  "windows-sys 0.59.0",
 ]
 
@@ -6148,6 +6150,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "reqwest 0.12.28",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",

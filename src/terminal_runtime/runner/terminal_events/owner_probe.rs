@@ -2,7 +2,29 @@ use std::ffi::OsString;
 use std::io;
 use std::time::{Duration, Instant};
 
-pub(super) const OWNER_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+pub(super) use crate::terminal_policy::OWNER_PROBE_TIMEOUT;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnerProbeDomain {
+    Environment,
+    Tmux,
+    Screen,
+    Zellij,
+}
+
+#[derive(Debug)]
+pub(super) enum OwnerProbeCheck {
+    /// A direct terminal has no independent owner CLI. This is intentionally not treated as an
+    /// `Alive` observation: only CPR or real input can clear transport suspicion.
+    Direct,
+    Layers(Vec<OwnerLayerCheck>),
+}
+
+#[derive(Debug)]
+pub(super) struct OwnerLayerCheck {
+    pub(super) domain: OwnerProbeDomain,
+    pub(super) result: io::Result<()>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TerminalOwnerProbe {
@@ -25,9 +47,9 @@ impl TerminalOwnerProbe {
             .to_string_lossy()
             .to_ascii_lowercase();
         let zellij_marker = env("ZELLIJ");
-        let zellij_session = env("ZELLIJ_SESSION_NAME");
+        let zellij_session = env("ZELLIJ_SESSION_NAME").filter(|value| !value.is_empty());
         let tmux_marker = env("TMUX");
-        let tmux_pane = env("TMUX_PANE");
+        let tmux_pane = env("TMUX_PANE").filter(|value| !value.is_empty());
         let screen_session = env("STY");
 
         let mut layers = Vec::with_capacity(3);
@@ -48,8 +70,14 @@ impl TerminalOwnerProbe {
                 ),
             }
         }
-        if let Some(session) = screen_session {
-            layers.push(TerminalOwnerLayer::Screen { session });
+        match screen_session {
+            Some(session) if !session.is_empty() => {
+                layers.push(TerminalOwnerLayer::Screen { session });
+            }
+            Some(_) => incomplete.push(
+                "GNU screen was detected without a non-empty STY, so client attachment cannot be verified",
+            ),
+            None => {}
         }
 
         if !incomplete.is_empty() {
@@ -81,60 +109,97 @@ impl TerminalOwnerProbe {
         }
     }
 
-    pub(super) fn check_attached(&self) -> io::Result<()> {
+    /// Return every independently attributable layer result under one shared command budget.
+    /// Liveness policy is intentionally left to the caller so one operational CLI failure cannot
+    /// be mistaken for proof that a terminal client disappeared.
+    pub(super) fn check(&self) -> OwnerProbeCheck {
         match self {
-            Self::Direct => Ok(()),
-            Self::Unsupported { reason } => {
-                Err(io::Error::new(io::ErrorKind::Unsupported, reason.clone()))
+            Self::Direct => OwnerProbeCheck::Direct,
+            Self::Unsupported { reason } => OwnerProbeCheck::Layers(vec![OwnerLayerCheck {
+                domain: OwnerProbeDomain::Environment,
+                result: Err(io::Error::new(io::ErrorKind::Unsupported, reason.clone())),
+            }]),
+            Self::Layers(layers) => {
+                let results = self.collect_layers_with(
+                    OWNER_PROBE_TIMEOUT,
+                    TerminalOwnerLayer::check_attached_until,
+                );
+                OwnerProbeCheck::Layers(
+                    layers
+                        .iter()
+                        .zip(results)
+                        .map(|(layer, result)| OwnerLayerCheck {
+                            domain: layer.domain(),
+                            result,
+                        })
+                        .collect(),
+                )
             }
-            Self::Layers(_) => self.check_layers_with(
-                OWNER_PROBE_TIMEOUT,
-                TerminalOwnerLayer::check_attached_until,
-            ),
         }
     }
 
+    #[cfg(test)]
     fn check_layers_with<F>(&self, timeout: Duration, check: F) -> io::Result<()>
     where
         F: Fn(&TerminalOwnerLayer, Instant) -> io::Result<()> + Sync,
     {
-        let layers = match self {
+        match self {
             Self::Direct => return Ok(()),
             Self::Unsupported { reason } => {
                 return Err(io::Error::new(io::ErrorKind::Unsupported, reason.clone()));
             }
+            Self::Layers(_) => {}
+        }
+        for result in self.collect_layers_with(timeout, check) {
+            result?;
+        }
+        Ok(())
+    }
+
+    fn collect_layers_with<F>(&self, timeout: Duration, check: F) -> Vec<io::Result<()>>
+    where
+        F: Fn(&TerminalOwnerLayer, Instant) -> io::Result<()> + Sync,
+    {
+        let layers = match self {
             Self::Layers(layers) => layers,
+            _ => return Vec::new(),
         };
         let deadline = Instant::now() + timeout;
         if let [layer] = layers.as_slice() {
-            return check(layer, deadline);
+            return vec![check(layer, deadline)];
         }
 
         // Each CLI owns its own bounded process tree. Running all explicit nesting layers under one
         // shared deadline keeps the total owner-query budget at 500 ms instead of multiplying it by
-        // the nesting depth. Iterate the joined results in layer order for deterministic errors.
+        // the nesting depth. Preserve layer order so each result keeps a stable evidence domain.
         std::thread::scope(|scope| {
             let check = &check;
-            let handles = layers
+            layers
                 .iter()
                 .map(|layer| scope.spawn(move || check(layer, deadline)))
-                .collect::<Vec<_>>();
-            for handle in handles {
-                match handle.join() {
-                    Ok(result) => result?,
-                    Err(_) => {
-                        return Err(io::Error::other(
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        Err(io::Error::other(
                             "terminal multiplexer attachment query panicked",
-                        ));
-                    }
-                }
-            }
-            Ok(())
+                        ))
+                    })
+                })
+                .collect()
         })
     }
 }
 
 impl TerminalOwnerLayer {
+    fn domain(&self) -> OwnerProbeDomain {
+        match self {
+            Self::Tmux { .. } => OwnerProbeDomain::Tmux,
+            Self::Screen { .. } => OwnerProbeDomain::Screen,
+            Self::Zellij { .. } => OwnerProbeDomain::Zellij,
+        }
+    }
+
     fn check_attached_until(&self, deadline: Instant) -> io::Result<()> {
         let timeout = deadline
             .checked_duration_since(Instant::now())
@@ -164,11 +229,11 @@ impl TerminalOwnerLayer {
                 if !output.status.success() {
                     return Err(command_failure("tmux attachment query", &output));
                 }
-                match tmux_has_direct_terminal_client(&output.stdout) {
+                match tmux_has_attached_client(&output.stdout) {
                     Some(true) => Ok(()),
                     Some(false) => Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "the tmux session has no independently attributable non-control direct terminal client",
+                        "the tmux session has no attached terminal clients",
                     )),
                     None => Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -252,9 +317,9 @@ fn run_command_bounded(
         timeout,
         64 * 1024,
     )
-    .map_err(|error| {
+    .map_err(|_error| {
         io::Error::other(format!(
-            "{program} attachment query failed or exceeded its bound: {error:#}"
+            "{program} attachment query failed or exceeded its bound"
         ))
     })?;
     Ok(CommandOutput {
@@ -265,22 +330,19 @@ fn run_command_bounded(
 }
 
 fn command_failure(label: &str, output: &CommandOutput) -> io::Error {
-    let detail = if output.stderr.is_empty() {
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    } else {
-        String::from_utf8_lossy(&output.stderr).trim().to_owned()
-    };
-    io::Error::other(if detail.is_empty() {
-        format!("{label} failed with {}", output.status)
-    } else {
-        format!("{label} failed: {detail}")
-    })
+    // CLI output may contain pane/session identifiers, socket paths, or wrapper diagnostics.
+    // Keep it available only for attachment-state parsing on successful commands; failures expose
+    // the fixed layer label and exit status, never raw stdout/stderr.
+    io::Error::other(format!("{label} failed with {}", output.status))
 }
 
 fn screen_session_attached(listing: &[u8], session: &OsString) -> Option<bool> {
     let session = session.to_string_lossy();
     String::from_utf8_lossy(listing).lines().find_map(|line| {
-        if !line.contains(session.as_ref()) {
+        // `screen -ls <match>` may print more than one matching socket. Compare the reported
+        // socket token exactly: a substring match can attribute `9123.music (Detached)` to the
+        // current `123.music` session and falsely declare a live owner dead.
+        if line.split_whitespace().next()? != session.as_ref() {
             return None;
         }
         let status = line
@@ -297,9 +359,9 @@ fn screen_session_attached(listing: &[u8], session: &OsString) -> Option<bool> {
     })
 }
 
-fn tmux_has_direct_terminal_client(listing: &[u8]) -> Option<bool> {
+fn tmux_has_attached_client(listing: &[u8]) -> Option<bool> {
     let listing = std::str::from_utf8(listing).ok()?;
-    let mut has_direct_client = false;
+    let mut has_attached_client = false;
     for line in listing.lines().filter(|line| !line.trim().is_empty()) {
         let mut fields = line.split('\t');
         let control_mode = fields.next()?;
@@ -307,18 +369,21 @@ fn tmux_has_direct_terminal_client(listing: &[u8]) -> Option<bool> {
         if fields.next().is_some() {
             return None;
         }
-        let control_mode = match control_mode.trim() {
-            "0" => false,
-            "1" => true,
+        match control_mode.trim() {
+            "0" | "1" => {}
             _ => return None,
-        };
-        let termname = termname.trim().to_ascii_lowercase();
-        let nested_multiplexer = termname.starts_with("tmux") || termname.starts_with("screen");
-        if !control_mode && !termname.is_empty() && !nested_multiplexer {
-            has_direct_client = true;
+        }
+        // A real client nested inside another tmux legitimately reports tmux-256color (or a
+        // screen-derived TERM). It is still attached to this layer. Same-type outer detach cannot
+        // be inferred from this public listing and is documented as an owner-probe limitation.
+        // Control-mode rows can be the user's visible iTerm2/tmux integration. tmux does not
+        // expose a reliable field that distinguishes it from an opaque retained broker, so any
+        // well-formed terminal client is attachment evidence and the limitation is documented.
+        if !termname.trim().is_empty() {
+            has_attached_client = true;
         }
     }
-    Some(has_direct_client)
+    Some(has_attached_client)
 }
 
 fn zellij_has_attached_client(listing: &[u8]) -> Option<bool> {
@@ -353,6 +418,23 @@ mod tests {
         let env = HashMap::from([("ZELLIJ", OsString::from("0"))]);
         let detected = TerminalOwnerProbe::detect_with(|key| env.get(key).cloned());
         assert!(matches!(detected, TerminalOwnerProbe::Unsupported { .. }));
+
+        for env in [
+            HashMap::from([
+                ("TMUX", OsString::from("/tmp/tmux.sock,1,0")),
+                ("TMUX_PANE", OsString::new()),
+            ]),
+            HashMap::from([
+                ("ZELLIJ", OsString::from("0")),
+                ("ZELLIJ_SESSION_NAME", OsString::new()),
+            ]),
+            HashMap::from([("STY", OsString::new())]),
+        ] {
+            assert!(matches!(
+                TerminalOwnerProbe::detect_with(|key| env.get(key).cloned()),
+                TerminalOwnerProbe::Unsupported { .. }
+            ));
+        }
     }
 
     #[test]
@@ -470,39 +552,42 @@ mod tests {
             screen_session_attached(b"\t123.music\t(Multi, attached)\n", &session),
             Some(true)
         );
+        assert_eq!(
+            screen_session_attached(
+                b"\t9123.music\t(Detached)\n\t123.music\t(Attached)\n",
+                &session,
+            ),
+            Some(true),
+            "a near-collision session must not be attributed to the current owner",
+        );
+        assert_eq!(
+            screen_session_attached(b"\t9123.music\t(Detached)\n", &session),
+            None,
+        );
     }
 
     #[test]
-    fn tmux_client_listing_requires_a_non_control_direct_terminal() {
+    fn tmux_client_listing_accepts_nested_and_control_mode_terminals() {
+        assert_eq!(tmux_has_attached_client(b"0\txterm-256color\n"), Some(true));
         assert_eq!(
-            tmux_has_direct_terminal_client(b"0\txterm-256color\n"),
+            tmux_has_attached_client(b"1\txterm-256color\n0\tlinux\n"),
             Some(true)
         );
+        assert_eq!(tmux_has_attached_client(b""), Some(false));
+        assert_eq!(tmux_has_attached_client(b"1\txterm-256color\n"), Some(true));
+        assert_eq!(tmux_has_attached_client(b"0\ttmux-256color\n"), Some(true));
         assert_eq!(
-            tmux_has_direct_terminal_client(b"1\txterm-256color\n0\tlinux\n"),
+            tmux_has_attached_client(b"0\tscreen-256color\n"),
             Some(true)
         );
-        assert_eq!(tmux_has_direct_terminal_client(b""), Some(false));
+        assert_eq!(tmux_has_attached_client(b"0\t\n"), Some(false));
+        assert_eq!(tmux_has_attached_client(b"no-delimiter\n"), None);
+        assert_eq!(tmux_has_attached_client(b"yes\txterm\n"), None);
         assert_eq!(
-            tmux_has_direct_terminal_client(b"1\txterm-256color\n"),
-            Some(false)
-        );
-        assert_eq!(
-            tmux_has_direct_terminal_client(b"0\ttmux-256color\n"),
-            Some(false)
-        );
-        assert_eq!(
-            tmux_has_direct_terminal_client(b"0\tscreen-256color\n"),
-            Some(false)
-        );
-        assert_eq!(tmux_has_direct_terminal_client(b"0\t\n"), Some(false));
-        assert_eq!(tmux_has_direct_terminal_client(b"no-delimiter\n"), None);
-        assert_eq!(tmux_has_direct_terminal_client(b"yes\txterm\n"), None);
-        assert_eq!(
-            tmux_has_direct_terminal_client(b"0\txterm\n0\txterm\textra\n"),
+            tmux_has_attached_client(b"0\txterm\n0\txterm\textra\n"),
             None
         );
-        assert_eq!(tmux_has_direct_terminal_client(b"\xff\n"), None);
+        assert_eq!(tmux_has_attached_client(b"\xff\n"), None);
     }
 
     #[test]
@@ -516,5 +601,24 @@ mod tests {
             Some(false)
         );
         assert_eq!(zellij_has_attached_client(b"old zellij output\n"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_owner_command_does_not_expose_raw_output() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let marker = "private-pane-%7 /private/socket/path";
+        let output = CommandOutput {
+            status: std::process::ExitStatus::from_raw(9 << 8),
+            stdout: marker.as_bytes().to_vec(),
+            stderr: marker.as_bytes().to_vec(),
+        };
+        let message = command_failure("tmux attachment query", &output).to_string();
+        assert!(message.contains("tmux attachment query"));
+        assert!(message.contains('9'));
+        assert!(!message.contains(marker));
+        assert!(!message.contains("%7"));
+        assert!(!message.contains("/private"));
     }
 }

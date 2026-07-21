@@ -138,6 +138,8 @@ use crate::event::{
 };
 use crate::{csi, Command};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
+#[cfg(unix)]
+pub(crate) use read::CursorPositionQuery;
 use std::fmt::{self, Display};
 use std::time::Duration;
 
@@ -279,6 +281,30 @@ where
 {
     let mut reader = lock_internal_event_reader();
     reader.read(filter)
+}
+
+/// Runs a cursor-position query while holding the single event-reader lock for the complete
+/// transaction. `Ok(None)` means recent incomplete user input made it unsafe to send the query.
+#[cfg(unix)]
+pub(crate) fn probe_cursor_position_with<W: std::io::Write>(
+    writer: &mut W,
+    timeout: Duration,
+) -> std::io::Result<CursorPositionQuery> {
+    let deadline = PollTimeout::new(Some(timeout));
+    let mut reader = try_lock_internal_event_reader_for(timeout).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "event reader was busy for the cursor-position query deadline",
+        )
+    })?;
+    let remaining = deadline.leftover().unwrap_or(Duration::ZERO);
+    if remaining.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "cursor-position query deadline expired while acquiring the event reader",
+        ));
+    }
+    reader.probe_cursor_position(writer, remaining)
 }
 
 bitflags! {

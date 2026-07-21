@@ -10,7 +10,7 @@ use crate::app::{self, App, Cmd, Msg};
 use crate::runtime::RuntimeEvent;
 use crate::{
     ai, api, artwork, config, deps, download, event, library, logging, lyrics, media, notify,
-    persist, player, remote, resolver, runtime, scrobble, tools, tui, ui, update, zoom,
+    persist, player, remote, resolver, runtime, scrobble, tools, tui, update, zoom,
 };
 
 use super::art::log_art_picker;
@@ -27,6 +27,7 @@ mod teardown;
 #[cfg(test)]
 mod teardown_tests;
 mod terminal_events;
+mod terminal_output;
 use buffered_events::BufferedWorkerEvents;
 use perf_stats::PerfStats;
 #[cfg(test)]
@@ -36,6 +37,9 @@ use recorder_status::recorder_capacity_blocked_status;
 use runtime_paths::{TerminalRuntimePaths, resolve as terminal_runtime_paths};
 use teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
 use terminal_events::TerminalEventWorker;
+#[cfg(test)]
+use terminal_output::finish_draw_cycle;
+use terminal_output::{draw_app_frame, draw_full_app_frame};
 
 /// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
 /// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
@@ -185,60 +189,6 @@ impl ObserverPlan {
     }
 }
 
-fn draw_app_frame(
-    terminal: &mut tui::AppTerminal,
-    app: &mut App,
-    perf: &mut PerfStats,
-) -> std::io::Result<bool> {
-    let size = terminal.size()?;
-    let tier = crate::ui::layout::tier(ratatui::layout::Rect::new(0, 0, size.width, size.height));
-    app.prepare_ui_tier_for_render(tier);
-    let start = perf.enabled.then(Instant::now);
-    let clear_before = app.take_clear_before_draw();
-    let synchronized = clear_before || app.synchronized_draw_active();
-    let res = tui::draw_frame(terminal, synchronized, clear_before, |f| ui::render(f, app));
-    match res {
-        Ok(()) => {
-            app.mark_local_rows_rendered();
-            if let Some(start) = start {
-                perf.record_draw(start.elapsed());
-            }
-            Ok(true)
-        }
-        Err(e) if is_transient_terminal_draw_error(&e) => {
-            tracing::warn!(
-                error = %e,
-                "ignored transient terminal draw failure; waiting for the next input or resize"
-            );
-            app.dirty = false;
-            Ok(false)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn finish_draw_cycle(app: &mut App) {
-    app.dirty = app.clear_before_draw_pending();
-}
-
-/// Attempt the normal render lifecycle while keeping IME freshness fail-closed. A transient full
-/// draw failure may clear `app.dirty`, so the separate flag is set before touching the terminal and
-/// is cleared only after both a successful draw and the normal finish step.
-fn draw_full_app_frame(
-    terminal: &mut tui::AppTerminal,
-    app: &mut App,
-    perf: &mut PerfStats,
-    reducer_turn_unrendered: &mut bool,
-) -> std::io::Result<bool> {
-    *reducer_turn_unrendered = true;
-    let rendered = draw_app_frame(terminal, app, perf)?;
-    if rendered {
-        finish_draw_cycle(app);
-        *reducer_turn_unrendered = false;
-    }
-    Ok(rendered)
-}
-
 fn ime_scrub_state_requires_full_draw(
     reducer_turn_unrendered: bool,
     dirty: bool,
@@ -304,20 +254,19 @@ fn capture_owner_io_result<T>(
 struct TerminalBackgroundTasks {
     terminal_events: TerminalEventWorker,
     art_resize: crate::util::background_task::BackgroundTask,
-    signal_handlers: crate::util::background_task::BackgroundTask,
     ytdlp_maintainer: crate::util::background_task::BackgroundTask,
     update_check: crate::util::background_task::BackgroundTask,
 }
 
 impl TerminalBackgroundTasks {
-    async fn shutdown(&mut self) {
-        tokio::join!(
+    async fn shutdown(&mut self) -> Option<std::io::Error> {
+        let (terminal_error, _, _, _) = tokio::join!(
             self.terminal_events.shutdown(),
             self.art_resize.shutdown(),
-            self.signal_handlers.shutdown(),
             self.ytdlp_maintainer.shutdown(),
             self.update_check.shutdown(),
         );
+        terminal_error
     }
 }
 
@@ -475,8 +424,8 @@ impl OwnerTeardown for LiveOwnerTeardown<'_> {
         self.app.close_video();
     }
 
-    async fn shutdown_terminal_background(&mut self) {
-        self.terminal_background.shutdown().await;
+    async fn shutdown_terminal_background(&mut self) -> Option<std::io::Error> {
+        self.terminal_background.shutdown().await
     }
 
     async fn shutdown_resolver(&mut self) {
@@ -535,6 +484,22 @@ impl OwnerTeardown for LiveOwnerTeardown<'_> {
     }
 }
 
+async fn finish_interrupted_startup(
+    app: &App,
+    persist: &persist::PersistHandle,
+    terminal_error: Option<std::io::Error>,
+) -> Result<()> {
+    match (terminal_error, flush_owner_persistence(app, persist).await) {
+        (None, Ok(())) => Ok(()),
+        (None, Err(persistence_error)) => Err(persistence_error),
+        (Some(terminal_error), Ok(())) => Err(terminal_error.into()),
+        (Some(terminal_error), Err(persistence_error)) => Err(anyhow::Error::from(terminal_error)
+            .context(format!(
+                "persistence shutdown also failed: {persistence_error:#}"
+            ))),
+    }
+}
+
 pub async fn run(
     terminal: &mut tui::AppTerminal,
     startup_state: TerminalStartupState,
@@ -549,7 +514,11 @@ pub async fn run(
         persistent,
         persistence_access,
         keyboard_input_mode,
+        shutdown,
     } = startup_state;
+    if shutdown.is_triggered() {
+        return Ok(());
+    }
     let persistence_read_only = persistence_access.is_read_only();
     // Resolve every runtime store through the same override-aware roots covered by the writer
     // lease. Observational (`--new-instance`) owners retain read access but receive no mutation
@@ -703,8 +672,14 @@ pub async fn run(
     app.restore_last_session_from_cache(&session_cache);
     startup.mark("app_state_loaded");
 
+    if shutdown.is_triggered() {
+        return finish_interrupted_startup(&app, &persist, None).await;
+    }
     let mut perf = PerfStats::from_env();
-    if let Err(error) = draw_app_frame(terminal, &mut app, &mut perf) {
+    if let Err(error) = draw_app_frame(terminal, &mut app, &mut perf, None) {
+        if shutdown.is_triggered() {
+            return finish_interrupted_startup(&app, &persist, None).await;
+        }
         let owner_error = anyhow::Error::from(error);
         return match flush_owner_persistence(&app, &persist).await {
             Ok(()) => Err(owner_error),
@@ -714,6 +689,9 @@ pub async fn run(
         };
     }
     startup.mark("first_draw");
+    if shutdown.is_triggered() {
+        return finish_interrupted_startup(&app, &persist, None).await;
+    }
     if std::env::var_os("YTM_EXIT_AFTER_FIRST_DRAW").is_some() {
         startup.mark("exit_after_first_draw");
         flush_owner_persistence(&app, &persist).await?;
@@ -723,11 +701,13 @@ pub async fn run(
     // Establish exclusive input ownership and prove that the interactive terminal client is
     // still present before any mpv process (including capability probes) may be spawned. Terminal
     // liveness has its own out-of-band latch so a full worker queue can never delay teardown.
-    let shutdown = player::lifetime::ShutdownLatch::new();
     let (mut events, mut terminal_event_worker, terminal_output) =
         match terminal_events::start(shutdown.clone()) {
             Ok(source) => source,
             Err(error) => {
+                if shutdown.was_triggered_by_signal() {
+                    return finish_interrupted_startup(&app, &persist, None).await;
+                }
                 let owner_error = anyhow::Error::from(error);
                 return match flush_owner_persistence(&app, &persist).await {
                     Ok(()) => Err(owner_error),
@@ -739,43 +719,18 @@ pub async fn run(
         };
     startup.mark("terminal_liveness_ready");
 
-    // Build the owner lane and synchronously register every OS termination stream immediately
-    // after terminal readiness. No mpv capability probe may cross a failed signal-registration
-    // boundary. The latch remains authoritative even if the compatibility event lane is full.
+    if shutdown.is_triggered() {
+        let terminal_error = terminal_event_worker
+            .shutdown()
+            .await
+            .or_else(|| events.take_failure());
+        return finish_interrupted_startup(&app, &persist, terminal_error).await;
+    }
+
+    // Build the owner lane after terminal readiness. The process-signal owner and this latch were
+    // installed before any raw-mode startup work and remain owned by main through final restore.
     let (worker_tx, mut worker_rx) = runtime::channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
-    let hard_exit_mouse = cfg.effective_mouse();
-    let mut signal_handlers = match player::lifetime::spawn_signal_handlers(
-        shutdown.clone(),
-        runtime::sink(worker_tx.clone(), RuntimeEvent::Signal),
-        // Second termination signal while the owner loop is wedged: the cooperative path
-        // already killed mpv and asked the owner to quit, so only best-effort terminal
-        // restore and the exit itself remain. Skipping the persistence flush is deliberate —
-        // the owner (and possibly the persist actor) is not responding, and blocking here
-        // would recreate the unkillable hang this fallback exists to break. Restore runs on
-        // a detached thread with a bounded grace for the same reason: if the owner wedged
-        // inside a blocked stdout write (stalled pty), stdout's lock is held and an inline
-        // `tui::restore` would hang this last-resort path too.
-        move |code| {
-            player::lifetime::kill_mpv_now();
-            std::thread::spawn(move || tui::restore(hard_exit_mouse));
-            std::thread::sleep(Duration::from_millis(150));
-            std::process::exit(code);
-        },
-    ) {
-        Ok(handlers) => handlers,
-        Err(error) => {
-            terminal_event_worker.shutdown().await;
-            let owner_error = anyhow::Error::from(error)
-                .context("could not install termination handling before mpv probes");
-            return match flush_owner_persistence(&app, &persist).await {
-                Ok(()) => Err(owner_error),
-                Err(persistence_error) => Err(owner_error.context(format!(
-                    "persistence shutdown also failed: {persistence_error:#}"
-                ))),
-            };
-        }
-    };
 
     // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs.
     // After first draw (a cold probe spawns `yt-dlp --version`, several hundred ms),
@@ -784,19 +739,13 @@ pub async fn run(
     startup.mark("tools_selected");
     if shutdown.is_triggered() {
         // The terminal watchdog or an OS signal may win while tool discovery is awaiting. Close
-        // both startup workers and return before the first mpv capability probe is admitted.
+        // the terminal worker and return before the first mpv capability probe is admitted.
         player::lifetime::kill_mpv_now();
-        tokio::join!(terminal_event_worker.shutdown(), signal_handlers.shutdown());
-        let owner_error = events.take_failure().map_or_else(
-            || anyhow::anyhow!("terminal shutdown requested during tool discovery"),
-            anyhow::Error::from,
-        );
-        return match flush_owner_persistence(&app, &persist).await {
-            Ok(()) => Err(owner_error),
-            Err(persistence_error) => Err(owner_error.context(format!(
-                "persistence shutdown also failed: {persistence_error:#}"
-            ))),
-        };
+        let terminal_error = terminal_event_worker
+            .shutdown()
+            .await
+            .or_else(|| events.take_failure());
+        return finish_interrupted_startup(&app, &persist, terminal_error).await;
     }
 
     // Probe after `tools::init` so it hits the selected mpv. Recovery-aware temp cleanup is
@@ -887,7 +836,6 @@ pub async fn run(
     let mut terminal_background = TerminalBackgroundTasks {
         terminal_events: terminal_event_worker,
         art_resize: art_resize_task,
-        signal_handlers,
         ytdlp_maintainer,
         update_check,
     };
@@ -897,17 +845,11 @@ pub async fn run(
         // either. Re-check after all background ownership has been assembled and immediately
         // before creating the long-lived player startup task.
         player::lifetime::kill_mpv_now();
-        terminal_background.shutdown().await;
-        let owner_error = events.take_failure().map_or_else(
-            || anyhow::anyhow!("terminal shutdown requested during player preflight"),
-            anyhow::Error::from,
-        );
-        return match flush_owner_persistence(&app, &persist).await {
-            Ok(()) => Err(owner_error),
-            Err(persistence_error) => Err(owner_error.context(format!(
-                "persistence shutdown also failed: {persistence_error:#}"
-            ))),
-        };
+        let terminal_error = terminal_background
+            .shutdown()
+            .await
+            .or_else(|| events.take_failure());
+        return finish_interrupted_startup(&app, &persist, terminal_error).await;
     }
 
     // The remote-control accept loop is started - and the instance descriptor published - just
@@ -1160,8 +1102,14 @@ pub async fn run(
         }
         if app.dirty {
             let Some(_drew) = capture_owner_io_result(
-                terminal_output.run_io(|| {
-                    draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)
+                terminal_output.run_io(|deadline| {
+                    draw_full_app_frame(
+                        terminal,
+                        &mut app,
+                        &mut perf,
+                        &mut reducer_turn_unrendered,
+                        deadline,
+                    )
                 }),
                 &mut owner_error,
             ) else {
@@ -1262,12 +1210,13 @@ pub async fn run(
                     reducer_turn_unrendered = true;
                     if app.dirty {
                         let Some(_drew) = capture_owner_io_result(
-                            terminal_output.run_io(|| {
+                            terminal_output.run_io(|deadline| {
                                 draw_full_app_frame(
                                     terminal,
                                     &mut app,
                                     &mut perf,
                                     &mut reducer_turn_unrendered,
+                                    deadline,
                                 )
                             }),
                             &mut owner_error,
@@ -1286,8 +1235,12 @@ pub async fn run(
                     ) {
                         false
                     } else {
-                        match terminal_output.run_io(|| {
-                            tui::scrub_ime_preedit(terminal, app.synchronized_draw_active())
+                        match terminal_output.run_io(|deadline| {
+                            tui::scrub_ime_preedit_until(
+                                terminal,
+                                app.synchronized_draw_active(),
+                                deadline,
+                            )
                         }) {
                             Ok(tui::ImeScrubResult::Fast) => {
                                 perf.record_ime_fast_scrub();
@@ -1305,12 +1258,13 @@ pub async fn run(
                     };
                     if !fast_succeeded {
                         let Some(_drew) = capture_owner_io_result(
-                            terminal_output.run_io(|| {
+                            terminal_output.run_io(|deadline| {
                                 draw_full_app_frame(
                                     terminal,
                                     &mut app,
                                     &mut perf,
                                     &mut reducer_turn_unrendered,
+                                    deadline,
                                 )
                             }),
                             &mut owner_error,
@@ -1420,7 +1374,10 @@ pub async fn run(
                 // frames (before the draw below) so it never interleaves with a partial frame.
                 if let Cmd::DesktopNotify { title, body } = cmd {
                     if capture_owner_io_result(
-                        terminal_output.run(|| notifier.emit(&title, &body)),
+                        terminal_output.run_io_for(
+                            crate::terminal_policy::NOTIFICATION_OUTPUT_TIMEOUT,
+                            |deadline| notifier.emit_until(&title, &body, deadline),
+                        ),
                         &mut owner_error,
                     )
                     .is_none()
@@ -1468,8 +1425,14 @@ pub async fn run(
         // leaving the resting on-screen output identical.
         if app.dirty {
             let Some(_drew) = capture_owner_io_result(
-                terminal_output.run_io(|| {
-                    draw_full_app_frame(terminal, &mut app, &mut perf, &mut reducer_turn_unrendered)
+                terminal_output.run_io(|deadline| {
+                    draw_full_app_frame(
+                        terminal,
+                        &mut app,
+                        &mut perf,
+                        &mut reducer_turn_unrendered,
+                        deadline,
+                    )
                 }),
                 &mut owner_error,
             ) else {
@@ -1518,13 +1481,14 @@ pub async fn run(
         perf.maybe_log(&app);
     }
 
+    // Stop terminal probing and input delivery at the owner-loop boundary, not several actor
+    // joins later. Otherwise a clean quit leaves an unconsumed event queue and live heartbeats
+    // which can manufacture a terminal failure while orderly teardown is already in progress.
+    shutdown.trigger();
+
     // A terminal failure is stored before its out-of-band latch is triggered. Preserve that cause
     // even when the biased shutdown branch won the select turn and no channel item was consumed.
-    if owner_error.is_none()
-        && let Some(error) = events.take_failure()
-    {
-        owner_error = Some(error.into());
-    }
+    owner_error = teardown::prefer_terminal_failure(owner_error, events.take_failure());
 
     // Every loop exit, including a fatal draw error, reaches the same ownership barrier before
     // any result is returned. The remote publisher is notified before slower actor/persistence

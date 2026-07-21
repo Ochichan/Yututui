@@ -10,14 +10,10 @@
 
 use crate::deps::{self, Need};
 use crate::{config, i18n};
-use serde::Serialize;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const KONSOLE_SIXEL_TUI_MIN_VERSION: u32 = 260_400;
 
 #[path = "doctor/audio_report.rs"]
 mod audio_report;
@@ -25,6 +21,8 @@ mod audio_report;
 mod directory_probe;
 #[path = "doctor/long_form_seek.rs"]
 mod long_form_seek;
+#[path = "doctor/terminal.rs"]
+mod terminal;
 use audio_report::{mpv_lifetime_report, run as run_audio};
 #[cfg(test)]
 use directory_probe::dir_is_writable;
@@ -37,7 +35,7 @@ pub fn run() -> i32 {
 
 pub fn run_with_args(args: &[String]) -> i32 {
     if matches!(args, [cmd, flag] if cmd == "terminal" && flag == "--json") {
-        return run_terminal_json();
+        return terminal::run_json();
     }
     if matches!(args, [cmd, flag] if cmd == "terminal" && (flag == "--help" || flag == "-h")) {
         println!("Usage: ytt doctor terminal --json");
@@ -98,104 +96,6 @@ fn init_tools_sync(cfg: &config::Config) {
         .build()
     {
         rt.block_on(crate::tools::init(&cfg.tools));
-    }
-}
-
-#[derive(Serialize)]
-struct TerminalDoctor {
-    term: Option<String>,
-    term_program: Option<String>,
-    wt_session: bool,
-    image_protocol: &'static str,
-    image_protocol_source: &'static str,
-    native_image_hint: bool,
-    image_probe_timeout_ms: u64,
-    image_protocol_override: Option<String>,
-    image_protocol_override_supported: Option<bool>,
-    image_protocol_override_suggestions: Vec<&'static str>,
-    zoom_mode: &'static str,
-    zoom_mode_source: &'static str,
-    keyboard_enhancement_supported: Option<bool>,
-    mouse_capture_configured: bool,
-    stdout_is_tty: bool,
-    stdin_is_tty: bool,
-    warnings: Vec<String>,
-}
-
-fn run_terminal_json() -> i32 {
-    // No config load, cookie read, playback init, mpv spawn, terminal raw mode, or writes.
-    let term = std::env::var("TERM").ok();
-    let term_program = std::env::var("TERM_PROGRAM").ok();
-    let konsole_version = std::env::var("KONSOLE_VERSION").ok();
-    let wt_session = std::env::var_os("WT_SESSION").is_some();
-    let image_protocol_override = std::env::var("YTM_TUI_IMAGE_PROTOCOL").ok();
-    let image_protocol_override_supported = image_protocol_override
-        .as_deref()
-        .map(image_protocol_override_supported);
-    let image_protocol = terminal_image_protocol(
-        term.as_deref(),
-        term_program.as_deref(),
-        wt_session,
-        konsole_version.as_deref(),
-    );
-    let native_image_hint =
-        terminal_native_image_hint(term.as_deref(), term_program.as_deref(), wt_session);
-    let image_protocol_override_suggestions =
-        terminal_image_override_suggestions(term.as_deref(), term_program.as_deref(), wt_session);
-    let stdout_is_tty = std::io::stdout().is_terminal();
-    let stdin_is_tty = std::io::stdin().is_terminal();
-    let mut warnings = Vec::new();
-    if !stdout_is_tty {
-        warnings.push("stdout is not a TTY; YuTuTui! will skip native image probing".to_string());
-    }
-    if !stdin_is_tty {
-        warnings.push("stdin is not a TTY; interactive terminal probes may not answer".to_string());
-    }
-    if image_protocol_override_supported == Some(false) {
-        warnings.push(
-            "unsupported YTM_TUI_IMAGE_PROTOCOL; accepted values are halfblocks, sixel, kitty, iterm2"
-                .to_string(),
-        );
-    }
-    if native_image_hint
-        && matches!(image_protocol, "unknown" | "halfblocks_or_retro")
-        && !image_protocol_override_suggestions.is_empty()
-    {
-        warnings.push(format!(
-            "native image hint detected; if album art falls back to halfblocks, try {}",
-            image_protocol_override_suggestions.join(", ")
-        ));
-    }
-
-    let report = TerminalDoctor {
-        image_protocol,
-        image_protocol_source: "environment",
-        native_image_hint,
-        image_probe_timeout_ms: terminal_image_probe_timeout_ms(native_image_hint),
-        image_protocol_override,
-        image_protocol_override_supported,
-        image_protocol_override_suggestions,
-        zoom_mode: terminal_zoom_mode(term.as_deref(), term_program.as_deref(), wt_session),
-        zoom_mode_source: "environment",
-        keyboard_enhancement_supported: terminal_keyboard_hint(),
-        mouse_capture_configured: true,
-        term,
-        term_program,
-        wt_session,
-        stdout_is_tty,
-        stdin_is_tty,
-        warnings,
-    };
-
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            println!("{json}");
-            0
-        }
-        Err(e) => {
-            eprintln!("ytt doctor: could not encode terminal report: {e}");
-            1
-        }
     }
 }
 
@@ -441,152 +341,6 @@ fn privacy_path(path: &Path) -> String {
         return format!("~/{}", stripped.display());
     }
     path.display().to_string()
-}
-
-fn terminal_native_image_hint(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    wt_session: bool,
-) -> bool {
-    let term = term.unwrap_or_default().to_ascii_lowercase();
-    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
-    wt_session
-        || env_nonempty("KITTY_WINDOW_ID")
-        || env_nonempty("WEZTERM_EXECUTABLE")
-        || env_nonempty("KONSOLE_VERSION")
-        || term_program == "iterm.app"
-        || term_program.contains("wezterm")
-        || term_program.contains("ghostty")
-        || [
-            "kitty", "ghostty", "wezterm", "foot", "konsole", "mlterm", "mintty", "rio", "contour",
-        ]
-        .iter()
-        .any(|hint| term.contains(hint))
-}
-
-fn env_nonempty(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|value| !value.is_empty())
-}
-
-fn terminal_image_probe_timeout_ms(native_image_hint: bool) -> u64 {
-    if native_image_hint { 700 } else { 250 }
-}
-
-fn image_protocol_override_supported(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "halfblocks" | "halfblock" | "blocks" | "block" | "sixel" | "kitty" | "iterm2" | "iterm"
-    )
-}
-
-fn terminal_image_override_suggestions(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    wt_session: bool,
-) -> Vec<&'static str> {
-    let term = term.unwrap_or_default().to_ascii_lowercase();
-    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
-
-    if env_nonempty("KITTY_WINDOW_ID")
-        || term.contains("kitty")
-        || term.contains("ghostty")
-        || term_program.contains("ghostty")
-    {
-        return vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"];
-    }
-    if term_program == "iterm.app" {
-        return vec!["YTM_TUI_IMAGE_PROTOCOL=iterm2"];
-    }
-    if env_nonempty("WEZTERM_EXECUTABLE")
-        || term_program.contains("wezterm")
-        || term.contains("wezterm")
-    {
-        return vec![
-            "YTM_TUI_IMAGE_PROTOCOL=iterm2",
-            "YTM_TUI_IMAGE_PROTOCOL=kitty",
-            "YTM_TUI_IMAGE_PROTOCOL=sixel",
-        ];
-    }
-    if env_nonempty("KONSOLE_VERSION") || term.contains("konsole") {
-        return vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"];
-    }
-    if wt_session || term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
-        return vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"];
-    }
-    if terminal_native_image_hint(Some(&term), Some(&term_program), wt_session) {
-        return vec![
-            "YTM_TUI_IMAGE_PROTOCOL=kitty",
-            "YTM_TUI_IMAGE_PROTOCOL=iterm2",
-            "YTM_TUI_IMAGE_PROTOCOL=sixel",
-        ];
-    }
-    Vec::new()
-}
-
-fn terminal_image_protocol(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    wt_session: bool,
-    konsole_version: Option<&str>,
-) -> &'static str {
-    let term = term.unwrap_or_default().to_ascii_lowercase();
-    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
-    if term.contains("kitty") {
-        "kitty"
-    } else if term_program == "iterm.app" {
-        "iterm2"
-    } else if term_program.contains("wezterm") {
-        "iterm2_or_kitty_or_sixel"
-    } else if wt_session {
-        "sixel_versioned"
-    } else if term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
-        "sixel"
-    } else if term.contains("konsole") || konsole_version.is_some_and(|version| !version.is_empty())
-    {
-        if konsole_version
-            .and_then(|version| version.trim().parse::<u32>().ok())
-            .is_some_and(|version| version >= KONSOLE_SIXEL_TUI_MIN_VERSION)
-        {
-            "sixel_versioned"
-        } else {
-            "halfblocks"
-        }
-    } else if term_program.contains("ghostty") || term.contains("ghostty") {
-        "kitty"
-    } else if term.contains("linux") {
-        "halfblocks_or_retro"
-    } else {
-        "unknown"
-    }
-}
-
-fn terminal_zoom_mode(
-    term: Option<&str>,
-    term_program: Option<&str>,
-    wt_session: bool,
-) -> &'static str {
-    if let Ok(value) = std::env::var("YTM_TUI_TEXT_SIZING") {
-        return match value.as_str() {
-            "0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF" => "none_forced",
-            "dhl" | "DHL" | "decdhl" => "decdhl_forced",
-            _ => "probe_requested",
-        };
-    }
-    let term = term.unwrap_or_default().to_ascii_lowercase();
-    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
-    if term.contains("kitty") {
-        "osc66_versioned"
-    } else if wt_session {
-        "decdhl_expected"
-    } else if term_program.contains("wezterm") || term_program.contains("ghostty") {
-        "unknown_probe_required"
-    } else {
-        "unknown"
-    }
-}
-
-fn terminal_keyboard_hint() -> Option<bool> {
-    crate::terminal_keyboard::keyboard_input_hint()
 }
 
 fn run_inner(verbose: bool) -> i32 {
@@ -1201,6 +955,11 @@ fn data_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::terminal::{
+        image_protocol_override_supported, terminal_image_override_suggestions,
+        terminal_image_probe_timeout_ms, terminal_image_protocol, terminal_keyboard_hint,
+        terminal_native_image_hint, terminal_zoom_mode,
+    };
     use super::*;
 
     use crate::test_util::env::{with_var, with_vars};

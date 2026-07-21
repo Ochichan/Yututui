@@ -147,10 +147,15 @@ impl PanicOwnedOperation {
     }
 }
 
-/// Wrap the current panic hook so pending operations hit disk before the inherited chain.
+/// Wrap the current panic hook so safety-critical inherited work runs before best-effort disk I/O.
+///
+/// The inherited chain kills media and restores the terminal. Panic persistence can take locks or
+/// block in the filesystem, so running it first could otherwise leave the process in raw mode with
+/// media still alive indefinitely.
 pub fn install_panic_flush(pending: PanicPending) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        previous(info);
         match pending.shadow.seal_and_snapshot() {
             Ok(snapshot) => {
                 for operation in snapshot.into_iter().flatten() {
@@ -161,7 +166,6 @@ pub fn install_panic_flush(pending: PanicPending) {
                 // A concurrent or nested hook owns the one-shot persistence frontier.
             }
         }
-        previous(info);
     }));
 }
 

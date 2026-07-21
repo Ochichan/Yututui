@@ -1,8 +1,8 @@
 # yututui crossterm Patch Notes
 
 This directory vendors `crossterm` 0.29.0 through the root `[patch.crates-io]` entry. The fork is
-intentionally narrow: public crossterm APIs are unchanged, and the local behavior lives in the Unix
-event parser.
+intentionally narrow. Most changes live in the Unix event source and parser; one additive cursor
+probe API is exposed so yututui can distinguish recent user input from terminal loss.
 
 ## Upstream Base
 
@@ -30,6 +30,39 @@ event parser.
   and mutate `NO_COLOR` through the shared test environment guard so inherited state is restored.
 - Propagate keyboard-enhancement polling errors instead of retrying forever, keeping terminal
   capability probing bounded and allowing the application to select its conservative fallback.
+- Open an independent `O_NONBLOCK | O_CLOEXEC | O_NOCTTY` event-input descriptor for the same TTY
+  instead of changing or duplicating inherited stdin. Both Mio and `use-dev-tty` use the shared
+  descriptor, read loop, and parser.
+- Drain readiness in 64 KiB / 50 ms slices while retaining the edge until a later call reaches
+  `WouldBlock`; yielding between slices prevents a long incomplete paste or repeated `EINTR` from
+  looking like a wedged input worker. Propagate EOF/HUP/EIO and other permanent read failures,
+  retain simultaneous TTY/SIGWINCH/waker readiness, and preserve event-source initialization
+  errors. PTY regressions have parent wall-clock deadlines so a future blocking-read regression
+  cannot hang the test suite.
+- Recover from abandoned UTF-8/CSI prefixes without consuming the first byte of the next event.
+  A lone legacy ESC gets a 100 ms ambiguity window so a syscall split immediately after the
+  prefix does not corrupt CSI/focus/CPR input. A second ESC preserves the first as a key and starts
+  a new ambiguity window, so a quick Esc followed by a focus/CSI sequence loses neither event.
+  Generic pending input expires after one idle second. Bracketed paste expires as a paste event
+  after three idle seconds and is capped at 16 MiB.
+- Add `cursor::probe_position_with(&mut impl Write, Duration) -> CursorPositionProbe`. It uses the
+  caller's writer, purges stale replies, defers without writing when incomplete or complete recent
+  input already proves client activity, and uses one absolute response deadline. Preserved input
+  stays queued for the normal event reader. Because the terminal protocol has no query identifier,
+  the first cursor reply parsed after the successful write wins; a reply that arrives on the wire
+  after the pre-query purge is inherently indistinguishable. The original `cursor::position()`
+  remains available.
+- Add `terminal::supports_keyboard_enhancement_with(&mut impl Write)` and its timeout-taking
+  counterpart so startup capability probes can use the application's bounded terminal writer and
+  share one absolute deadline across request output and response polling. The legacy no-argument
+  wrapper remains and preserves its two-second policy.
+- Port the bounded cursor poll/read error behavior from upstream PR
+  <https://github.com/crossterm-rs/crossterm/pull/1067> and the EOF/EIO intent tracked in issue
+  <https://github.com/crossterm-rs/crossterm/issues/793>. The independent nonblocking input and
+  parser resynchronization remain local additions not covered by that upstream PR.
+- Remove the Unix `tput` size fallback. Resize handling now uses only bounded ioctl calls, avoiding
+  an unbounded subprocess from the SIGWINCH/event path (upstream issue
+  <https://github.com/crossterm-rs/crossterm/issues/422>).
 
 The protocol carries `UnicodeChar` as one UTF-16 code unit. The narrow parser rejects isolated
 surrogates rather than emitting invalid text; Konsole sends IME and multi-character commits through
@@ -49,14 +82,22 @@ script. Never rebless the digest merely to make an unexplained check failure pas
 ## Upgrade Checklist
 
 1. Replace this directory with the desired upstream crossterm release.
-2. Verify the new release does not already support win32-input-mode on Unix.
-3. Reapply the local parser patch and its tests only if still needed.
+2. Verify the new release does not already support win32-input-mode on Unix, independently opened
+   nonblocking TTY input, bounded EOF/error handling, parser resynchronization, and typed cursor
+   deferral.
+3. Reapply only the remaining local parser/event-source/cursor patches and their PTY tests.
 4. Update the version, archive checksum, upstream revision, and invariant script.
 5. Run:
 
 ```sh
 scripts/check-crossterm-patch.sh
 cargo fmt --manifest-path crates/crossterm/Cargo.toml --all --check
-cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-features --all-targets -- -D warnings
+cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --features libc -- -D warnings
+cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --no-default-features --features events,bracketed-paste,use-dev-tty -- -D warnings
+cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path crates/crossterm/Cargo.toml
+cargo test --manifest-path crates/crossterm/Cargo.toml --features libc
+cargo test --manifest-path crates/crossterm/Cargo.toml --no-default-features --features events,bracketed-paste,use-dev-tty
 cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
 ```

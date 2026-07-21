@@ -76,6 +76,22 @@ pub fn supports_keyboard_enhancement() -> std::io::Result<bool> {
     Ok(false)
 }
 
+#[cfg(feature = "events")]
+pub fn supports_keyboard_enhancement_with<W: std::io::Write>(
+    _writer: &mut W,
+) -> std::io::Result<bool> {
+    supports_keyboard_enhancement()
+}
+
+/// Timeout-taking counterpart to `supports_keyboard_enhancement_with`.
+#[cfg(feature = "events")]
+pub fn supports_keyboard_enhancement_with_timeout<W: std::io::Write>(
+    writer: &mut W,
+    _timeout: std::time::Duration,
+) -> std::io::Result<bool> {
+    supports_keyboard_enhancement_with(writer)
+}
+
 pub(crate) fn clear(clear_type: ClearType) -> std::io::Result<()> {
     let screen_buffer = ScreenBuffer::current()?;
     let csbi = screen_buffer.info()?;

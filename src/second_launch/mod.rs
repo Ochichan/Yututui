@@ -66,7 +66,7 @@ pub enum Outcome {
 ///
 /// Daemon, one-shot, and `-r` verbs never reach this: they are dispatched in `run()`
 /// before `async_main`.
-pub async fn handle_already_running() -> Outcome {
+pub async fn handle_already_running(shutdown: &crate::player::lifetime::ShutdownLatch) -> Outcome {
     // Strict reader: a missing/foreign descriptor only downgrades the focus ladder and
     // the notification location text, never the flow itself.
     let instance = remote::endpoint::read_current_instance().ok();
@@ -99,7 +99,7 @@ pub async fn handle_already_running() -> Outcome {
             eprintln!("{ALREADY_RUNNING_NOTICE}");
             Outcome::Exit
         }
-        SecondLaunchUx::InteractiveChooser => run_chooser(instance.as_ref()).await,
+        SecondLaunchUx::InteractiveChooser => run_chooser(instance.as_ref(), shutdown).await,
     }
 }
 
@@ -115,75 +115,114 @@ fn has_gui_session() -> bool {
     }
 }
 
-async fn run_chooser(instance: Option<&InstanceFile>) -> Outcome {
+async fn run_chooser(
+    instance: Option<&InstanceFile>,
+    shutdown: &crate::player::lifetime::ShutdownLatch,
+) -> Outcome {
     let owner = match instance.map(|instance| instance.mode) {
         Some(crate::remote::proto::InstanceMode::Daemon) => chooser::OwnerKind::Daemon,
         // A TUI owner or an unreadable descriptor: offer the full menu (focus degrades
         // gracefully to the printed notice when there is nothing to focus).
         _ => chooser::OwnerKind::Tui,
     };
-    let choice =
-        tokio::task::spawn_blocking(move || chooser::prompt(chooser::CHOOSER_TIMEOUT, owner))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or(chooser::Choice::Quit);
+    let prompt_shutdown = shutdown.clone();
+    let choice = tokio::task::spawn_blocking(move || {
+        chooser::prompt(chooser::CHOOSER_TIMEOUT, owner, &prompt_shutdown)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or(chooser::Choice::Quit);
+    if shutdown.is_triggered() {
+        return Outcome::Exit;
+    }
     match choice {
         chooser::Choice::Focus => {
             if run_focus(instance) {
-                println!(
-                    "{}",
+                let _ = chooser::write_status(
                     t!(
                         "Switched to the running player.",
                         "실행 중인 플레이어로 전환했습니다.",
                         "実行中のプレイヤーに切り替えました。"
                     )
-                );
+                    .to_owned(),
+                    shutdown,
+                )
+                .await;
             } else {
-                println!(
-                    "{}",
-                    t!(
-                        "Could not switch to the running player.",
-                        "실행 중인 플레이어로 전환하지 못했습니다.",
-                        "実行中のプレイヤーに切り替えられませんでした。"
-                    )
-                );
-                println!("{ALREADY_RUNNING_NOTICE}");
+                let _ = chooser::write_status(
+                    format!(
+                        "{}\n{ALREADY_RUNNING_NOTICE}",
+                        t!(
+                            "Could not switch to the running player.",
+                            "실행 중인 플레이어로 전환하지 못했습니다.",
+                            "実行中のプレイヤーに切り替えられませんでした。"
+                        )
+                    ),
+                    shutdown,
+                )
+                .await;
             }
             Outcome::Exit
         }
-        chooser::Choice::Restart => match restart::restart_into_primary(instance).await {
-            restart::RestartResult::TookOver { remote } => Outcome::Continue {
-                remote,
-                read_only: false,
-            },
-            restart::RestartResult::LostRace => {
-                println!(
-                    "{}",
-                    t!(
-                        "Another player took over first; leaving it in control.",
-                        "다른 플레이어가 먼저 시작되어 그쪽에 제어를 넘깁니다.",
-                        "別のプレイヤーが先に引き継いだため、そちらに制御を任せます。"
-                    )
-                );
-                Outcome::Exit
+        chooser::Choice::Restart => {
+            let _ = chooser::write_status(
+                t!(
+                    "Asking the running player to quit…",
+                    "실행 중인 플레이어에 종료를 요청하는 중…",
+                    "実行中のプレイヤーに終了を要求しています…"
+                )
+                .to_owned(),
+                shutdown,
+            )
+            .await;
+            if shutdown.is_triggered() {
+                return Outcome::Exit;
             }
-            restart::RestartResult::OldOwnerStuck => {
-                println!(
-                    "{}",
-                    t!(
-                        "The running player did not exit. Close it manually and run ytt again.",
-                        "실행 중인 플레이어가 종료되지 않았습니다. 직접 종료한 뒤 ytt를 다시 실행하세요.",
-                        "実行中のプレイヤーが終了しませんでした。手動で終了してから、yttを再度実行してください。"
+            match tokio::select! {
+                _ = shutdown.wait() => return Outcome::Exit,
+                result = restart::restart_into_primary(instance) => result,
+            } {
+                restart::RestartResult::TookOver { remote } => Outcome::Continue {
+                    remote,
+                    read_only: false,
+                },
+                restart::RestartResult::LostRace => {
+                    let _ = chooser::write_status(
+                        t!(
+                            "Another player took over first; leaving it in control.",
+                            "다른 플레이어가 먼저 시작되어 그쪽에 제어를 넘깁니다.",
+                            "別のプレイヤーが先に引き継いだため、そちらに制御を任せます。"
+                        )
+                        .to_owned(),
+                        shutdown,
                     )
-                );
-                Outcome::Exit
+                    .await;
+                    Outcome::Exit
+                }
+                restart::RestartResult::OldOwnerStuck => {
+                    let _ = chooser::write_status(
+                        t!(
+                            "The running player did not exit. Close it manually and run ytt again.",
+                            "실행 중인 플레이어가 종료되지 않았습니다. 직접 종료한 뒤 ytt를 다시 실행하세요.",
+                            "実行中のプレイヤーが終了しませんでした。手動で終了してから、yttを再度実行してください。"
+                        )
+                        .to_owned(),
+                        shutdown,
+                    )
+                    .await;
+                    Outcome::Exit
+                }
             }
-        },
+        }
         chooser::Choice::NewInstance => {
             // The explicit `--new-instance` path: bind a private pid-qualified endpoint and
             // stay a strict read-only observer (never promoted to the writer).
-            let remote = match remote::bind_or_detect(true).await {
+            let outcome = tokio::select! {
+                _ = shutdown.wait() => return Outcome::Exit,
+                outcome = remote::bind_or_detect(true) => outcome,
+            };
+            let remote = match outcome {
                 remote::BindOutcome::Bound(server) => Some(server),
                 _ => None,
             };

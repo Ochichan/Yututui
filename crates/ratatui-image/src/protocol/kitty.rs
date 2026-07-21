@@ -335,11 +335,7 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool, z_index: i32) ->
         write!(data, "{escape}_Gq=2,").unwrap();
 
         if i == 0 {
-            write!(
-                data,
-                "i={id},a=T,U=1,f=32,t=d,s={w},v={h},z={z_index},"
-            )
-            .unwrap();
+            write!(data, "i={id},a=T,U=1,f=32,t=d,s={w},v={h},z={z_index},").unwrap();
         }
 
         // m=0 means over
