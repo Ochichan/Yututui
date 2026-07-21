@@ -1,9 +1,11 @@
 #![cfg(unix)]
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,10 @@ use yututui::terminal_runtime::{
 use yututui::{tui, zoom::ZoomHandle};
 
 const CHILD_MARKER: &str = "YUTUTUI_TEST_STARTUP_SIGNAL_PTY_CHILD";
+const SUPERVISOR_MARKER: &str = "YUTUTUI_TEST_PTY_SESSION_SUPERVISOR";
+const SUPERVISOR_STATE_DIR: &str = "YUTUTUI_TEST_PTY_SUPERVISOR_STATE_DIR";
+const SUPERVISOR_TARGET_TEST: &str = "YUTUTUI_TEST_PTY_SUPERVISOR_TARGET";
+const SUPERVISOR_TEST_NAME: &str = "pty_session_supervisor";
 const CHILD_TEST_NAME: &str = "startup_signal_pty_child";
 const REPEATED_SIGNAL_CHILD_TEST_NAME: &str = "repeated_signal_art_query_pty_child";
 const TERMINAL_DROP_CHILD_TEST_NAME: &str = "terminal_drop_pty_child";
@@ -36,38 +42,213 @@ const EXIT_AFTER_SIGNAL_TIMEOUT: Duration = Duration::from_secs(6);
 const FIRST_SIGNAL_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 const REPEATED_SIGNAL_DELAY: Duration = Duration::from_millis(50);
 const HARD_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+const SUPERVISOR_RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
+static NEXT_SUPERVISOR_ID: AtomicUsize = AtomicUsize::new(0);
+
+struct KillTargetOnDrop {
+    child: Child,
+}
+
+impl KillTargetOnDrop {
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+}
+
+impl Drop for KillTargetOnDrop {
+    fn drop(&mut self) {
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
 
 struct KillChildOnDrop {
-    child: Child,
+    supervisor: Child,
+    state_dir: PathBuf,
+    signal_requests: u32,
+    released_and_reaped: bool,
 }
 
 impl KillChildOnDrop {
     fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        match fs::read_to_string(self.state_dir.join("target-status")) {
+            Ok(raw) => {
+                let raw = raw.trim().parse::<i32>().map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid PTY target status {raw:?}: {error}"),
+                    )
+                })?;
+                return Ok(Some(ExitStatus::from_raw(raw)));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+
+        if let Some(status) = self.supervisor.try_wait()? {
+            return Err(io::Error::other(format!(
+                "PTY session supervisor exited before publishing target status: {status:?}"
+            )));
+        }
+        Ok(None)
     }
 
-    fn send_sigterm(&self) -> io::Result<()> {
-        let pid = libc::pid_t::try_from(self.child.id())
-            .map_err(|_| io::Error::other("test child pid does not fit pid_t"))?;
-        // SAFETY: `pid` still identifies the live Child owned by this guard, and `kill` does not
-        // dereference memory in this process.
-        if unsafe { libc::kill(pid, libc::SIGTERM) } == -1 {
-            return Err(io::Error::last_os_error());
+    fn wait_for_target_ready(&mut self) -> io::Result<()> {
+        let deadline = Instant::now() + ENTER_TIMEOUT;
+        loop {
+            match fs::metadata(self.state_dir.join("target-ready")) {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+
+            if let Some(status) = self.supervisor.try_wait()? {
+                return Err(io::Error::other(format!(
+                    "PTY session supervisor exited before publishing target readiness: {status:?}"
+                )));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "PTY session supervisor did not publish target readiness in time",
+                ));
+            }
+            thread::sleep(Duration::from_millis(2));
         }
-        Ok(())
+    }
+
+    fn send_sigterm(&mut self) -> io::Result<()> {
+        self.wait_for_target_ready()?;
+        if let Some(status) = self.try_wait()? {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("PTY target exited before SIGTERM could be requested: {status:?}"),
+            ));
+        }
+
+        self.signal_requests = self
+            .signal_requests
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("PTY signal request counter overflowed"))?;
+        publish_supervisor_state(
+            &self.state_dir.join("signal-request"),
+            self.signal_requests.to_string().as_bytes(),
+        )?;
+
+        let deadline = Instant::now() + ENTER_TIMEOUT;
+        loop {
+            if read_supervisor_counter(&self.state_dir.join("signal-ack"))?
+                .is_some_and(|acknowledged| acknowledged >= self.signal_requests)
+            {
+                return Ok(());
+            }
+            if let Some(status) = self.try_wait()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("PTY target exited before acknowledging SIGTERM: {status:?}"),
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "PTY session supervisor did not acknowledge SIGTERM in time",
+                ));
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn release_and_wait(&mut self, master: &OwnedFd) -> io::Result<()> {
+        fs::write(self.state_dir.join("release"), b"release")?;
+        let deadline = Instant::now() + ENTER_TIMEOUT;
+        let mut trailing_output = Vec::new();
+        loop {
+            if let Some(status) = self.supervisor.try_wait()? {
+                self.released_and_reaped = true;
+                if status.success() {
+                    return Ok(());
+                }
+                return Err(io::Error::other(format!(
+                    "PTY session supervisor failed after release: {status:?}"
+                )));
+            }
+            // On XNU a controlling-session leader waits for the PTY output queue to drain before
+            // exit/revoke. Keep reading the libtest suffix after release so that wait stays bounded.
+            drain_master(master, &mut trailing_output)?;
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "PTY session supervisor did not exit after release",
+                ));
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
     }
 }
 
 impl Drop for KillChildOnDrop {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            if let Ok(pid) = libc::pid_t::try_from(self.child.id()) {
-                // SAFETY: this is best-effort cleanup of the exact, still-owned test Child. The
-                // subsequent wait prevents the subprocess from being orphaned or left as a zombie.
-                let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+        if !self.released_and_reaped {
+            match self.supervisor.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    if let Ok(process_group) = libc::pid_t::try_from(self.supervisor.id()) {
+                        // SAFETY: the unreaped supervisor called `setsid`, so its positive pid is
+                        // still reserved as the process group id for only this isolated fixture.
+                        // Killing the negative id cleans up it and any unfinished target.
+                        let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+                    } else {
+                        let _ = self.supervisor.kill();
+                    }
+                    let _ = self.supervisor.wait();
+                }
             }
-            let _ = self.child.wait();
         }
+        let _ = fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+fn create_supervisor_state_dir() -> io::Result<PathBuf> {
+    for _ in 0..1024 {
+        let id = NEXT_SUPERVISOR_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "yututui-pty-supervisor-{}-{id}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique PTY supervisor state directory",
+    ))
+}
+
+fn publish_supervisor_state(path: &Path, value: impl AsRef<[u8]>) -> io::Result<()> {
+    let pending = path.with_extension("pending");
+    fs::write(&pending, value)?;
+    fs::rename(pending, path)
+}
+
+fn read_supervisor_counter(path: &Path) -> io::Result<Option<u32>> {
+    match fs::read_to_string(path) {
+        Ok(value) => value.trim().parse::<u32>().map(Some).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid PTY supervisor counter {value:?}: {error}"),
+            )
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -110,10 +291,12 @@ fn spawn_pty_child_with(
         .args([
             "--ignored",
             "--exact",
-            child_test_name,
+            SUPERVISOR_TEST_NAME,
             "--test-threads=1",
             "--nocapture",
         ])
+        .env(SUPERVISOR_MARKER, "1")
+        .env(SUPERVISOR_TARGET_TEST, child_test_name)
         .env(CHILD_MARKER, "1")
         // Keep keyboard negotiation deterministic, then deliberately force the zoom CPR probe.
         // With no synthetic CPR reply, SIGTERM is guaranteed to land inside `init_until` rather
@@ -134,10 +317,13 @@ fn spawn_pty_child_with(
         .stderr(Stdio::from(slave.try_clone()?));
     configure(&mut command);
 
+    let state_dir = create_supervisor_state_dir()?;
+    command.env(SUPERVISOR_STATE_DIR, &state_dir);
+
     // SAFETY: after `fork` this closure invokes only `setsid`, `ioctl`, and errno capture before
-    // `exec`. File-descriptor redirection has already made stdin the PTY slave. The new session and
-    // TIOCSCTTY make that slave `/dev/tty`, matching a real interactive terminal without touching
-    // the terminal running the parent test.
+    // `exec`. File-descriptor redirection has already made stdin the PTY slave. The supervisor's
+    // new session and TIOCSCTTY make that slave `/dev/tty`; the target inherits both while the
+    // terminal running the parent test remains untouched.
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -151,7 +337,18 @@ fn spawn_pty_child_with(
         });
     }
 
-    command.spawn().map(|child| KillChildOnDrop { child })
+    match command.spawn() {
+        Ok(supervisor) => Ok(KillChildOnDrop {
+            supervisor,
+            state_dir,
+            signal_requests: 0,
+            released_and_reaped: false,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir(&state_dir);
+            Err(error)
+        }
+    }
 }
 
 fn spawn_pty_child(slave: &File) -> io::Result<KillChildOnDrop> {
@@ -216,7 +413,7 @@ fn escaped_transcript(transcript: &[u8]) -> String {
 }
 
 fn wait_for_child_exit(
-    mut child: KillChildOnDrop,
+    child: &mut KillChildOnDrop,
     master: &OwnedFd,
     timeout: Duration,
     label: &str,
@@ -308,10 +505,14 @@ fn assert_termios_restored(before: &rustix::termios::Termios, after: &rustix::te
 fn app_terminal_drop_defers_physical_cursor_restore_to_bounded_owner() {
     let (master, slave) = pty_pair().expect("isolated PTY should be available");
     let before = tcgetattr(&slave).expect("PTY termios should be readable before the child starts");
-    let child = spawn_terminal_teardown_child(&slave, TERMINAL_DROP_CHILD_TEST_NAME)
+    let mut child = spawn_terminal_teardown_child(&slave, TERMINAL_DROP_CHILD_TEST_NAME)
         .expect("terminal-drop PTY child should start");
-    let (status, transcript) =
-        wait_for_child_exit(child, &master, ENTER_TIMEOUT, "terminal-drop PTY child");
+    let (status, transcript) = wait_for_child_exit(
+        &mut child,
+        &master,
+        ENTER_TIMEOUT,
+        "terminal-drop PTY child",
+    );
 
     assert!(
         status.success(),
@@ -321,16 +522,23 @@ fn app_terminal_drop_defers_physical_cursor_restore_to_bounded_owner() {
     assert_app_terminal_restore_sequence(&transcript);
     let after = tcgetattr(&slave).expect("PTY termios should remain readable after child exit");
     assert_termios_restored(&before, &after);
+    child
+        .release_and_wait(&master)
+        .expect("PTY session supervisor should exit after restoration is checked");
 }
 
 #[test]
 fn panic_unwind_does_not_reenter_unbounded_ratatui_cursor_output() {
     let (master, slave) = pty_pair().expect("isolated PTY should be available");
     let before = tcgetattr(&slave).expect("PTY termios should be readable before the child starts");
-    let child = spawn_terminal_teardown_child(&slave, TERMINAL_PANIC_CHILD_TEST_NAME)
+    let mut child = spawn_terminal_teardown_child(&slave, TERMINAL_PANIC_CHILD_TEST_NAME)
         .expect("terminal-panic PTY child should start");
-    let (status, transcript) =
-        wait_for_child_exit(child, &master, ENTER_TIMEOUT, "terminal-panic PTY child");
+    let (status, transcript) = wait_for_child_exit(
+        &mut child,
+        &master,
+        ENTER_TIMEOUT,
+        "terminal-panic PTY child",
+    );
 
     assert!(
         !status.success(),
@@ -345,6 +553,9 @@ fn panic_unwind_does_not_reenter_unbounded_ratatui_cursor_output() {
     assert_app_terminal_restore_sequence(&transcript);
     let after = tcgetattr(&slave).expect("PTY termios should remain readable after child exit");
     assert_termios_restored(&before, &after);
+    child
+        .release_and_wait(&master)
+        .expect("PTY session supervisor should exit after restoration is checked");
 }
 
 #[test]
@@ -438,6 +649,9 @@ fn sigterm_during_terminal_init_restores_the_controlling_pty() {
         "PTY child did not complete cooperative SIGTERM shutdown: status={status:?}; transcript={}",
         escaped_transcript(&transcript)
     );
+    child
+        .release_and_wait(&master)
+        .expect("PTY session supervisor should exit after restoration is checked");
 }
 
 #[test]
@@ -573,6 +787,111 @@ fn repeated_sigterm_during_art_query_forces_bounded_exit_and_restores_the_pty() 
     assert_eq!(after.output_modes, before.output_modes);
     assert_eq!(after.control_modes, before.control_modes);
     assert_eq!(after.local_modes, before.local_modes);
+    child
+        .release_and_wait(&master)
+        .expect("PTY session supervisor should exit after restoration is checked");
+}
+
+/// Own the controlling PTY while the actual fixture runs as an ordinary child of this session.
+///
+/// XNU revokes a controlling terminal when its session leader exits, invalidating even the
+/// parent test's already-open slave descriptor. Keeping this process alive until the parent has
+/// compared termios mirrors a real shell-owned terminal and preserves the post-exit restoration
+/// assertion on macOS without weakening it to accept `ENOTTY`.
+#[test]
+#[ignore = "subprocess fixture; run through the parent PTY lifecycle tests"]
+fn pty_session_supervisor() {
+    if std::env::var_os(SUPERVISOR_MARKER).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+
+    let state_dir = PathBuf::from(
+        std::env::var_os(SUPERVISOR_STATE_DIR)
+            .expect("PTY supervisor state directory should be configured"),
+    );
+    let target_test = std::env::var(SUPERVISOR_TARGET_TEST)
+        .expect("PTY supervisor target test should be configured");
+    let mut target = KillTargetOnDrop {
+        child: Command::new(std::env::current_exe().expect("test executable should resolve"))
+            .args([
+                "--ignored",
+                "--exact",
+                &target_test,
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env_remove(SUPERVISOR_MARKER)
+            .env_remove(SUPERVISOR_STATE_DIR)
+            .env_remove(SUPERVISOR_TARGET_TEST)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("PTY supervisor target should start"),
+    };
+
+    publish_supervisor_state(&state_dir.join("target-ready"), b"ready")
+        .expect("PTY supervisor should publish target readiness");
+    let mut forwarded_signals = 0_u32;
+    let status = 'target: loop {
+        if let Some(status) = target
+            .try_wait()
+            .expect("PTY supervisor target status should be readable")
+        {
+            break status;
+        }
+
+        let requested_signals = read_supervisor_counter(&state_dir.join("signal-request"))
+            .expect("PTY supervisor signal request should be readable")
+            .unwrap_or(forwarded_signals);
+        assert!(
+            requested_signals >= forwarded_signals,
+            "PTY signal request counter moved backwards"
+        );
+        while forwarded_signals < requested_signals {
+            if let Some(status) = target
+                .try_wait()
+                .expect("PTY supervisor target status should be readable before SIGTERM")
+            {
+                break 'target status;
+            }
+            let pid = libc::pid_t::try_from(target.id())
+                .expect("PTY supervisor target pid should fit pid_t");
+            // SAFETY: `try_wait` just proved that this exact owned Child remains unreaped, so its
+            // pid cannot be reused between the check and `kill`; `kill` dereferences no memory.
+            if unsafe { libc::kill(pid, libc::SIGTERM) } == -1 {
+                let error = io::Error::last_os_error();
+                if let Some(status) = target
+                    .try_wait()
+                    .expect("PTY supervisor target status should remain readable after kill")
+                {
+                    break 'target status;
+                }
+                panic!("PTY supervisor could not forward SIGTERM: {error}");
+            }
+            forwarded_signals += 1;
+            publish_supervisor_state(
+                &state_dir.join("signal-ack"),
+                forwarded_signals.to_string().as_bytes(),
+            )
+            .expect("PTY supervisor should acknowledge forwarded SIGTERM");
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    publish_supervisor_state(
+        &state_dir.join("target-status"),
+        status.into_raw().to_string().as_bytes(),
+    )
+    .expect("PTY supervisor should publish target status");
+
+    let deadline = Instant::now() + SUPERVISOR_RELEASE_TIMEOUT;
+    while !state_dir.join("release").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "PTY parent did not release the session supervisor after checking termios"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Invoked only by [`sigterm_during_terminal_init_restores_the_controlling_pty`]. The marker makes
