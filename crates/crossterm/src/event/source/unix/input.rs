@@ -344,6 +344,26 @@ impl Parser {
         )
     }
 
+    // yututui patch: source-loop regressions age only the pending timestamp so the production
+    // read path still decides whether queued TTY input is drained before the prefix expires.
+    #[cfg(test)]
+    pub(super) fn age_pending_past_idle_for_test(&mut self) -> bool {
+        if self.buffer.is_empty() {
+            return false;
+        }
+        let last_input_at = match self.last_input_at {
+            Some(last_input_at) => last_input_at,
+            None => return false,
+        };
+        let age = self.idle_limit() + Duration::from_millis(1);
+        self.last_input_at = Some(
+            last_input_at
+                .checked_sub(age)
+                .expect("pending test timestamp has sufficient history"),
+        );
+        true
+    }
+
     fn idle_limit(&self) -> Duration {
         if self.buffer.as_slice() == b"\x1b" {
             return ESC_PENDING_IDLE;

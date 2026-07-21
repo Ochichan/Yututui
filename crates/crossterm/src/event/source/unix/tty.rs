@@ -365,19 +365,19 @@ mod tests {
     }
 
     #[test]
-    fn fragmented_focus_sequence_survives_separate_reads() {
+    fn queued_focus_continuation_is_drained_before_stale_escape_expires() {
         let (master, slave) = raw_pty();
-        let source =
+        let mut source =
             UnixInternalEventSource::from_input_fd(InputFd::from_owned_for_test(slave)).unwrap();
-        write(&master, b"\x1b").unwrap();
-
-        let (source, first) = bounded_read(source, Duration::from_millis(40));
-        assert_eq!(first.unwrap(), None);
+        source.parser.advance(b"\x1b", false).unwrap();
+        assert_eq!(source.parser.next(), None);
         write(&master, b"[I").unwrap();
-        // The continuation is already queued. Even if the consumer resumes after the lone-ESC
-        // ambiguity window, it must drain readable input before expiring the prefix.
-        std::thread::sleep(Duration::from_millis(150));
-        let (_, second) = bounded_read(source, Duration::from_secs(1));
+        assert!(
+            source.parser.age_pending_past_idle_for_test(),
+            "incomplete focus prefix was not retained"
+        );
+
+        let (_, second) = bounded_read(source, Duration::ZERO);
         assert_eq!(
             second.unwrap(),
             Some(InternalEvent::Event(Event::FocusGained))

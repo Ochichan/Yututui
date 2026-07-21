@@ -48,8 +48,10 @@ probe API is exposed so yututui can distinguish recent user input from terminal 
   a new ambiguity window, so a quick Esc followed by a focus/CSI sequence loses neither event.
   On reader resume, both Unix backends give a continuation already queued in the TTY one
   nonblocking drain opportunity before expiring its prefix, so a scheduler stall cannot split a
-  complete control sequence. Generic pending input expires after one idle second. Bracketed paste
-  expires as a paste event after three idle seconds and is capped at 16 MiB.
+  complete control sequence. The source regressions synthetically age only the pending timestamp
+  after queuing a continuation, keeping host scheduling out of this ordering check. Generic pending
+  input expires after one idle second. Bracketed paste expires as a paste event after three idle
+  seconds and is capped at 16 MiB.
 - Add `cursor::probe_position_with(&mut impl Write, Duration) -> CursorPositionProbe`. It uses the
   caller's writer, purges stale replies, defers without writing when incomplete or complete recent
   input already proves client activity, and uses one absolute response deadline. Preserved input
