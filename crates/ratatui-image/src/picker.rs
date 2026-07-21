@@ -892,42 +892,34 @@ impl BoundedTtyWriter {
             return Err(Self::timeout_error());
         }
 
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            use rustix::event::{PollFd, PollFlags, poll};
+        use rustix::event::{PollFd, PollFlags, poll};
 
-            let millis: i32 = remaining
-                .min(CANCELLATION_POLL_SLICE)
-                .as_millis()
-                .try_into()
-                .unwrap_or(50);
-            let mut fds = [PollFd::new(&self.fd, PollFlags::OUT)];
-            match poll(&mut fds, millis) {
-                Ok(0) => Ok(()),
-                Ok(_) => {
-                    let events = fds[0].revents();
-                    if events.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {
-                        Err(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            format!(
-                                "terminal capability query output closed (poll revents: {events:?})"
-                            ),
-                        ))
-                    } else {
-                        Ok(())
-                    }
+        // yututui patch: use readiness as a hint on Apple too. A missed notification reaches this
+        // short timeout and retries exactly like the old bounded sleep, while the nonblocking
+        // write and absolute deadline remain authoritative after a spurious notification.
+        let millis: i32 = remaining
+            .min(CANCELLATION_POLL_SLICE)
+            .as_millis()
+            .try_into()
+            .unwrap_or(50);
+        let mut fds = [PollFd::new(&self.fd, PollFlags::OUT)];
+        match poll(&mut fds, millis) {
+            Ok(0) => Ok(()),
+            Ok(_) => {
+                let events = fds[0].revents();
+                if events.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {
+                    Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!(
+                            "terminal capability query output closed (poll revents: {events:?})"
+                        ),
+                    ))
+                } else {
+                    Ok(())
                 }
-                Err(rustix::io::Errno::INTR) => Ok(()),
-                Err(error) => Err(io::Error::from(error)),
             }
-        }
-
-        // Terminal-output `poll(2)` behavior is not consistent across Apple terminal devices.
-        // Nonblocking retries remain bounded by the same absolute deadline.
-        #[cfg(target_vendor = "apple")]
-        {
-            std::thread::sleep(remaining.min(Duration::from_millis(10)));
-            Ok(())
+            Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(io::Error::from(error)),
         }
     }
 }

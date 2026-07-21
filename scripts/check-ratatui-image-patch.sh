@@ -41,7 +41,7 @@ if [ "${1:-}" = "--print-tree-digest" ]; then
 fi
 
 # Rebless only after reviewing an intentional vendor-base or local-patch change; see PATCHES.md.
-expected_tree_digest='f190615f20be0d3762e8fa20838352e7f44ca176e3d440acec72339fc698fc42'
+expected_tree_digest='ad192c53d3e82db10f57fa77c139452df5b7ac3a6e731fba2eea0da3427718c0'
 test "$actual_tree_digest" = "$expected_tree_digest" \
   || fail "vendored ratatui-image tree drifted (expected $expected_tree_digest, got $actual_tree_digest)"
 

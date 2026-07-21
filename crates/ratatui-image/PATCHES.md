@@ -34,8 +34,10 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
   cancellation plus an exclusive cleanup closure orders inherited-mode restoration after every
   admitted raw-mode activation, query output, input poll/read, and late-response drain; a bounded
   acquisition failure never runs that restore unfenced. Bounded polling and nonblocking-output
-  retries observe cancellation promptly. Tmux detection is now read-only: it never launches or
-  waits on a configuration-mutating `tmux set` subprocess.
+  retries observe cancellation promptly. Apple output uses the same readiness hint with a short
+  timeout fallback, avoiding fixed-sleep throttling without trusting a readiness result over the
+  next nonblocking write. Tmux detection is now read-only: it never launches or waits on a
+  configuration-mutating `tmux set` subprocess.
 
 All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version

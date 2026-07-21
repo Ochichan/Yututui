@@ -13,9 +13,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
 #[cfg(all(unix, not(target_vendor = "apple")))]
 const WAIT_SLICE: Duration = Duration::from_millis(50);
+// Apple terminal devices have historically had less consistent readiness behavior. Poll remains
+// a hint there, with the old bounded retry cadence retained as its timeout fallback.
+#[cfg(all(unix, target_vendor = "apple"))]
+const WAIT_SLICE: Duration = Duration::from_millis(10);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputOperationPhase {
     Preparing,
@@ -856,7 +859,7 @@ fn operation_snapshot(shared: &Shared) -> Option<OutputOperationSnapshot> {
     })
 }
 
-#[cfg(all(unix, not(target_vendor = "apple")))]
+#[cfg(unix)]
 fn wait_writable(shared: &Shared, operation: Operation, respect_cancel: bool) -> io::Result<()> {
     use rustix::event::{PollFd, PollFlags, poll};
     use rustix::time::Timespec;
@@ -893,22 +896,6 @@ fn wait_writable(shared: &Shared, operation: Operation, respect_cancel: bool) ->
         Err(rustix::io::Errno::INTR) => Ok(()),
         Err(error) => Err(os_error(error)),
     }
-}
-
-// Terminal-output `poll(2)` behavior is not consistent across Apple terminal devices. The
-// descriptor is nonblocking, so a short bounded retry is safer there and still preserves the
-// absolute deadline.
-#[cfg(all(unix, target_vendor = "apple"))]
-fn wait_writable(shared: &Shared, operation: Operation, respect_cancel: bool) -> io::Result<()> {
-    if respect_cancel && shared.cancelled.load(Ordering::Acquire) {
-        return Err(cancelled_error());
-    }
-    let remaining = operation.deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(timeout_error(operation));
-    }
-    std::thread::sleep(remaining.min(Duration::from_millis(10)));
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -979,9 +966,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
+    use rustix::event::{PollFd, PollFlags, poll};
     use rustix::fd::OwnedFd;
     use rustix::fs::{CWD, Mode, OFlags, fcntl_getfl, fcntl_setfl, openat};
     use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+    use rustix::time::Timespec;
 
     use super::{
         OutputOperationPhase, PhaseGuard, PreTuiOutputCancellation, TerminalWriter,
@@ -1202,21 +1191,34 @@ mod tests {
 
         let writer_thread = std::thread::spawn(move || {
             let _operation = writer
-                .begin_operation("delayed reader test", Duration::from_secs(10))
+                .begin_operation("delayed reader test", Duration::from_secs(3))
                 .unwrap();
             writer.write_all(&sent)
         });
         std::thread::sleep(Duration::from_millis(75));
+        assert!(
+            !writer_thread.is_finished(),
+            "delayed reader fixture did not apply PTY backpressure"
+        );
 
         let mut received = Vec::with_capacity(expected.len());
         let mut chunk = [0u8; 8192];
-        let read_deadline = Instant::now() + Duration::from_secs(11);
+        let read_deadline = Instant::now() + Duration::from_secs(4);
         let mut reader_failure = None;
         while received.len() < expected.len() {
             match rustix::io::read(&master, &mut chunk) {
                 Ok(read) if read > 0 => received.extend_from_slice(&chunk[..read]),
                 Err(rustix::io::Errno::AGAIN) if Instant::now() < read_deadline => {
-                    std::thread::sleep(Duration::from_millis(5));
+                    let remaining = read_deadline.saturating_duration_since(Instant::now());
+                    let timeout = Timespec::try_from(remaining.min(Duration::from_millis(10)))
+                        .expect("PTY reader poll timeout fits");
+                    let mut fds = [PollFd::new(&master, PollFlags::IN)];
+                    if let Err(error) = poll(&mut fds, Some(&timeout))
+                        && error != rustix::io::Errno::INTR
+                    {
+                        reader_failure = Some(Err(error));
+                        break;
+                    }
                 }
                 outcome => {
                     reader_failure = Some(outcome);
