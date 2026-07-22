@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use crate::remote;
 use crate::remote::proto::{InstanceFile, RemoteCommand};
-use crate::t;
 
 pub struct RestartBudget {
     pub quit_ack: Duration,
@@ -52,14 +51,6 @@ pub async fn restart_into_primary(old: Option<&InstanceFile>) -> RestartResult {
 }
 
 async fn restart_with_budget(old: Option<&InstanceFile>, budget: RestartBudget) -> RestartResult {
-    println!(
-        "{}",
-        t!(
-            "Asking the running player to quit…",
-            "실행 중인 플레이어에 종료를 요청하는 중…",
-            "実行中のプレイヤーに終了を要求しています…"
-        )
-    );
     match tokio::time::timeout(budget.quit_ack, remote::client::send(RemoteCommand::Quit)).await {
         Ok(Ok(_)) | Ok(Err(remote::client::ClientError::NoRunningInstance)) => {}
         Ok(Err(first_error)) => {

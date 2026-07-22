@@ -7,71 +7,65 @@
 //! dropping input or blocking the liveness deadline behind an unresponsive reducer.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
 
 use crate::player::lifetime::ShutdownLatch;
+use crate::terminal_policy::{
+    AMBIGUOUS_CONFIRMATIONS, AMBIGUOUS_RETRY_INTERVAL,
+    HARD_WATCHDOG_TIMEOUT as RUNTIME_LIVENESS_DEADLINE, HEARTBEAT_INTERVAL, OWNER_PROBE_INTERVAL,
+    STARTUP_LIVENESS_REPORT_TIMEOUT as STARTUP_READY_TIMEOUT,
+};
 
+mod backend;
+mod liveness;
+mod output_gate;
 #[cfg(unix)]
 mod owner_probe;
+mod schedule;
+#[cfg(test)]
+mod shutdown_race_tests;
+use backend::{
+    CrosstermInput, output_operation_stage, owner_output_operation_expired,
+    terminal_output_operation,
+};
+use liveness::{
+    EvidenceDomain, FailureStore, LivenessStage, ProbeOutcome, SuspicionTracker, TerminalFailure,
+    TerminalFailureClass, WatchdogProgress,
+};
+use output_gate::OutputRole;
+pub(in crate::terminal_runtime::runner) use output_gate::TerminalOutputLock;
 #[cfg(unix)]
 #[cfg(test)]
 use owner_probe::OWNER_PROBE_TIMEOUT;
-#[cfg(unix)]
-use owner_probe::TerminalOwnerProbe;
+use schedule::{LivenessAction, LivenessSchedule};
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 // Multiplexer CLIs are materially heavier than CPR and need not run for every input heartbeat.
-// A detach immediately after a successful query is still detected within 2.5 s plus the bounded
-// 500 ms query, leaving teardown margin below the four-second acceptance bound.
-const OWNER_PROBE_INTERVAL: Duration = Duration::from_millis(2500);
+// A detach immediately after a successful query is detected within 2.5 s plus the bounded 500 ms
+// query; explicit no-client results remain immediate rather than consuming ambiguity retries.
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(4);
-/// A CPR may spend two seconds waiting after its half-second idle interval. When its deadline
-/// coincides with a multiplexer probe, that probe may add 500 ms first, but its completion also
-/// advances watchdog progress. Three-and-a-half seconds retains scheduler/watchdog margin below
-/// the four-second detach acceptance bound. This watchdog is independent of the input worker, so
-/// it also covers a syscall/library call which never returns.
-const RUNTIME_LIVENESS_DEADLINE: Duration = Duration::from_millis(3500);
 const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(50);
-// An owner frame may begin waiting just after liveness starts a normal two-second CPR. Keep this
-// larger than the CPR bound; the independent 3.5-second watchdog remains the hard upper bound when
-// either side actually wedges while owning the gate.
-const OUTPUT_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(4);
+const WATCHDOG_SCHEDULING_GAP: Duration = Duration::from_secs(1);
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(2500);
+const WEDGED_JOIN_TIMEOUT: Duration = Duration::from_millis(100);
 const STARTUP_JOIN_GRACE: Duration = Duration::from_millis(100);
 type KillMedia = Arc<dyn Fn() + Send + Sync + 'static>;
+type SharedFailure = Arc<FailureStore>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TerminalFailure {
-    kind: io::ErrorKind,
-    message: String,
+#[cfg(not(test))]
+fn cancel_terminal_output() {
+    crate::tui::cancel_output();
 }
 
-impl TerminalFailure {
-    fn new(kind: io::ErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
-
-    fn into_error(self) -> io::Error {
-        io::Error::new(self.kind, self.message)
-    }
-}
-
-impl From<io::Error> for TerminalFailure {
-    fn from(error: io::Error) -> Self {
-        Self::new(error.kind(), error.to_string())
-    }
-}
-
-type SharedFailure = Arc<Mutex<Option<TerminalFailure>>>;
+// TUI writer tests share a process-global active-writer slot. Liveness unit tests exercise the
+// gate wake separately and must not cancel a different concurrently running PTY fixture.
+#[cfg(test)]
+fn cancel_terminal_output() {}
 
 /// The async side of the exclusive terminal input source.
 pub(super) struct TerminalEventReceiver {
@@ -79,178 +73,41 @@ pub(super) struct TerminalEventReceiver {
     failure: SharedFailure,
 }
 
-/// Serialises CPR writes with complete terminal frames/OSC messages.
-#[derive(Clone)]
-pub(super) struct TerminalOutputLock {
-    gate: Arc<OutputGate>,
-    shutdown: ShutdownLatch,
-    failure: SharedFailure,
-    kill_media: KillMedia,
-    acquire_timeout: Duration,
-}
-
-impl TerminalOutputLock {
-    pub(super) fn run<T>(&self, operation: impl FnOnce() -> T) -> io::Result<T> {
-        self.run_with_role(OutputRole::Owner, operation)
-    }
-
-    pub(super) fn run_io<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-        self.run(operation)?
-    }
-
-    fn run_liveness_io<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-        self.run_with_role(OutputRole::Liveness, operation)?
-    }
-
-    fn run_with_role<T>(&self, role: OutputRole, operation: impl FnOnce() -> T) -> io::Result<T> {
-        let _permit = match self.acquire(role) {
-            Ok(permit) => permit,
-            Err(error) => {
-                let returned = io::Error::new(error.kind(), error.to_string());
-                if !self.shutdown.is_triggered() {
-                    fail_runtime(
-                        &self.failure,
-                        &self.shutdown,
-                        error,
-                        self.kill_media.as_ref(),
-                    );
-                }
-                return Err(returned);
-            }
-        };
-        Ok(operation())
-    }
-
-    fn acquire(&self, role: OutputRole) -> io::Result<OutputPermit> {
-        let deadline = Instant::now() + self.acquire_timeout;
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(role, OutputRole::Liveness) {
-            state.liveness_waiters = state.liveness_waiters.saturating_add(1);
-        }
-
-        loop {
-            if self.shutdown.is_triggered() {
-                if matches!(role, OutputRole::Liveness) {
-                    state.liveness_waiters = state.liveness_waiters.saturating_sub(1);
-                    self.gate.changed.notify_all();
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "terminal output ownership ended during shutdown",
-                ));
-            }
-            let liveness_has_priority =
-                matches!(role, OutputRole::Owner) && state.liveness_waiters > 0;
-            if !state.held && !liveness_has_priority {
-                state.held = true;
-                if matches!(role, OutputRole::Liveness) {
-                    state.liveness_waiters = state.liveness_waiters.saturating_sub(1);
-                }
-                return Ok(OutputPermit {
-                    gate: Arc::clone(&self.gate),
-                });
-            }
-
-            let now = Instant::now();
-            if now >= deadline {
-                if matches!(role, OutputRole::Liveness) {
-                    state.liveness_waiters = state.liveness_waiters.saturating_sub(1);
-                    self.gate.changed.notify_all();
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "terminal output ownership could not be acquired before its deadline",
-                ));
-            }
-            let waited = self.gate.changed.wait_timeout(state, deadline - now);
-            let (next, _) = waited.unwrap_or_else(std::sync::PoisonError::into_inner);
-            state = next;
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum OutputRole {
-    Owner,
-    Liveness,
-}
-
-#[derive(Default)]
-struct OutputGateState {
-    held: bool,
-    liveness_waiters: usize,
-}
-
-#[derive(Default)]
-struct OutputGate {
-    state: Mutex<OutputGateState>,
-    changed: Condvar,
-}
-
-struct OutputPermit {
-    gate: Arc<OutputGate>,
-}
-
-impl Drop for OutputPermit {
-    fn drop(&mut self) {
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.held = false;
-        self.gate.changed.notify_all();
-    }
-}
-
-#[derive(Default)]
-struct WatchdogProgress {
-    completed_checks: AtomicU64,
-    armed: AtomicBool,
-}
-
-impl WatchdogProgress {
-    fn completed(&self) {
-        self.completed_checks.fetch_add(1, Ordering::Release);
-    }
-
-    fn arm(&self) {
-        self.armed.store(true, Ordering::Release);
-    }
-}
-
 impl TerminalEventReceiver {
     pub(super) async fn recv(&mut self) -> Option<Event> {
         self.events.recv().await
     }
 
-    /// Return the first terminal failure without letting a poisoned diagnostic mutex suppress
-    /// owner teardown.
+    /// Return a non-consuming snapshot of the immutable first failure plus any teardown details.
     pub(super) fn take_failure(&self) -> Option<io::Error> {
-        self.failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .map(TerminalFailure::into_error)
+        self.failure.error_snapshot()
     }
 }
 
 /// Join ownership for the blocking terminal reader.
 pub(super) struct TerminalEventWorker {
     stop: Arc<AtomicBool>,
+    shutdown: ShutdownLatch,
     input_thread: Option<JoinHandle<()>>,
     watchdog_thread: Option<JoinHandle<()>>,
     failure: SharedFailure,
+    output_lock: TerminalOutputLock,
 }
 
 impl TerminalEventWorker {
-    pub(super) async fn shutdown(&mut self) {
+    pub(super) async fn shutdown(&mut self) -> Option<io::Error> {
+        // Win terminal-failure arbitration before cancelling an in-flight CPR/gate operation.
+        self.shutdown.trigger();
         self.stop.store(true, Ordering::Release);
-        let deadline = Instant::now() + SHUTDOWN_JOIN_TIMEOUT;
+        cancel_terminal_output();
+        self.output_lock.wake_all();
+        let join_timeout =
+            if self.failure.primary_class() == Some(TerminalFailureClass::WorkerStall) {
+                WEDGED_JOIN_TIMEOUT
+            } else {
+                SHUTDOWN_JOIN_TIMEOUT
+            };
+        let deadline = Instant::now() + join_timeout;
         join_threads_until(
             &mut self.input_thread,
             &mut self.watchdog_thread,
@@ -258,6 +115,7 @@ impl TerminalEventWorker {
             &self.failure,
         )
         .await;
+        self.failure.error_snapshot()
     }
 }
 
@@ -265,7 +123,9 @@ impl Drop for TerminalEventWorker {
     fn drop(&mut self) {
         // The normal teardown path joins the thread. The atomic is the non-blocking fallback for
         // panic/cancellation; process teardown remains the ultimate boundary in that path.
+        self.shutdown.trigger();
         self.stop.store(true, Ordering::Release);
+        self.output_lock.wake_all();
     }
 }
 
@@ -292,10 +152,14 @@ async fn join_threads_until(
                     "terminal liveness watchdog exceeded its bounded shutdown join; detaching until process exit"
                 );
             }
-            record_failure(
+            record_background_failure(
                 failure,
-                TerminalFailure::new(
+                TerminalFailure::runtime(
                     io::ErrorKind::TimedOut,
+                    TerminalFailureClass::WorkerStall,
+                    LivenessStage::Stopping,
+                    None,
+                    Duration::ZERO,
                     "terminal background worker exceeded its bounded shutdown join",
                 ),
             );
@@ -311,19 +175,29 @@ fn join_finished_thread(thread: &mut Option<JoinHandle<()>>, label: &str, failur
     }
     let joined = thread.take().expect("finished thread exists").join();
     if joined.is_err() {
-        record_failure(
+        record_background_failure(
             failure,
-            TerminalFailure::new(io::ErrorKind::Other, format!("{label} panicked")),
+            TerminalFailure::runtime(
+                io::ErrorKind::Other,
+                TerminalFailureClass::InternalFatal,
+                LivenessStage::Stopping,
+                None,
+                Duration::ZERO,
+                format!("{label} panicked while joining"),
+            ),
         );
     }
 }
 
 fn stop_and_join_startup_threads(
     stop: &AtomicBool,
+    output_lock: &TerminalOutputLock,
     input: Option<JoinHandle<()>>,
     watchdog: Option<JoinHandle<()>>,
 ) {
     stop.store(true, Ordering::Release);
+    cancel_terminal_output();
+    output_lock.wake_all();
     let deadline = Instant::now() + STARTUP_JOIN_GRACE;
     for thread in [input, watchdog].into_iter().flatten() {
         while !thread.is_finished() && Instant::now() < deadline {
@@ -353,32 +227,39 @@ pub(super) fn start(
         crate::util::backpressure::bounded_channel(crate::util::backpressure::OWNER_EVENT_QUEUE);
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let stop = Arc::new(AtomicBool::new(false));
-    let failure = Arc::new(Mutex::new(None));
+    let failure = Arc::new(FailureStore::default());
     let progress = Arc::new(WatchdogProgress::default());
     let kill_media: KillMedia = Arc::new(crate::player::lifetime::kill_mpv_now);
-    let output_lock = TerminalOutputLock {
-        gate: Arc::new(OutputGate::default()),
-        shutdown: shutdown.clone(),
-        failure: Arc::clone(&failure),
-        kill_media: Arc::clone(&kill_media),
-        acquire_timeout: OUTPUT_LOCK_TIMEOUT,
-    };
+    let output_lock = TerminalOutputLock::new(shutdown.clone());
 
     let watchdog_stop = Arc::clone(&stop);
     let watchdog_progress = Arc::clone(&progress);
     let watchdog_shutdown = shutdown.clone();
     let watchdog_failure = Arc::clone(&failure);
     let watchdog_kill_media = Arc::clone(&kill_media);
+    let watchdog_output_lock = output_lock.clone();
     let watchdog_thread = std::thread::Builder::new()
         .name("ytt-terminal-watchdog".to_owned())
         .spawn(move || {
-            run_watchdog(
-                watchdog_progress,
-                watchdog_stop,
-                watchdog_shutdown,
-                watchdog_failure,
-                watchdog_kill_media,
-                RUNTIME_LIVENESS_DEADLINE,
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                run_watchdog(
+                    Arc::clone(&watchdog_progress),
+                    Arc::clone(&watchdog_stop),
+                    watchdog_shutdown.clone(),
+                    Arc::clone(&watchdog_failure),
+                    Arc::clone(&watchdog_kill_media),
+                    watchdog_output_lock.clone(),
+                    (RUNTIME_LIVENESS_DEADLINE, None),
+                );
+            }));
+            signal_abnormal_worker_exit(
+                "terminal liveness watchdog",
+                result,
+                &watchdog_stop,
+                &watchdog_shutdown,
+                &watchdog_failure,
+                watchdog_kill_media.as_ref(),
+                &watchdog_output_lock,
             );
         })?;
 
@@ -387,28 +268,51 @@ pub(super) fn start(
     let thread_output_lock = output_lock.clone();
     let thread_progress = Arc::clone(&progress);
     let thread_kill_media = Arc::clone(&kill_media);
+    let input_shutdown = shutdown.clone();
     let input_thread = match std::thread::Builder::new()
         .name("ytt-terminal-input".to_owned())
         .spawn(move || {
-            let backend = CrosstermInput::detect(thread_output_lock);
-            run_input_loop(
-                backend,
-                event_tx,
-                ready_tx,
-                InputLoopControl {
-                    stop: thread_stop,
-                    shutdown,
-                    failure: thread_failure,
-                    progress: thread_progress,
-                    kill_media: thread_kill_media,
-                    heartbeat_interval: HEARTBEAT_INTERVAL,
-                    owner_probe_interval: OWNER_PROBE_INTERVAL,
-                },
+            let worker_output = thread_output_lock.clone();
+            let worker_shutdown = input_shutdown.clone();
+            // A panic unwinds through `run_input_loop` and drops both reporting senders. Keep one
+            // of each alive until the wrapper publishes the exact panic failure and triggers
+            // shutdown, so neither startup nor the owner can synthesize a generic disconnect first.
+            let event_channel_guard = event_tx.clone();
+            let ready_channel_guard = ready_tx.clone();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let control_output = thread_output_lock.clone();
+                let backend = CrosstermInput::detect(thread_output_lock);
+                run_input_loop(
+                    backend,
+                    event_tx,
+                    ready_tx,
+                    InputLoopControl {
+                        stop: Arc::clone(&thread_stop),
+                        shutdown: input_shutdown.clone(),
+                        failure: Arc::clone(&thread_failure),
+                        progress: Arc::clone(&thread_progress),
+                        kill_media: Arc::clone(&thread_kill_media),
+                        output_lock: control_output,
+                        heartbeat_interval: HEARTBEAT_INTERVAL,
+                        owner_probe_interval: OWNER_PROBE_INTERVAL,
+                    },
+                );
+            }));
+            signal_abnormal_worker_exit(
+                "terminal input worker",
+                result,
+                &thread_stop,
+                &worker_shutdown,
+                &thread_failure,
+                thread_kill_media.as_ref(),
+                &worker_output,
             );
+            drop(ready_channel_guard);
+            drop(event_channel_guard);
         }) {
         Ok(thread) => thread,
         Err(error) => {
-            stop_and_join_startup_threads(&stop, None, Some(watchdog_thread));
+            stop_and_join_startup_threads(&stop, &output_lock, None, Some(watchdog_thread));
             return Err(error);
         }
     };
@@ -423,37 +327,81 @@ pub(super) fn start(
                 },
                 TerminalEventWorker {
                     stop,
+                    shutdown: shutdown.clone(),
                     input_thread: Some(input_thread),
                     watchdog_thread: Some(watchdog_thread),
                     failure,
+                    output_lock: output_lock.clone(),
                 },
                 output_lock,
             ))
         }
         Ok(Err(error)) => {
-            stop_and_join_startup_threads(&stop, Some(input_thread), Some(watchdog_thread));
-            Err(error.into_error())
+            let reported = error.into_error();
+            stop_and_join_startup_threads(
+                &stop,
+                &output_lock,
+                Some(input_thread),
+                Some(watchdog_thread),
+            );
+            Err(failure.error_snapshot().unwrap_or(reported))
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            stop_and_join_startup_threads(&stop, Some(input_thread), Some(watchdog_thread));
-            Err(io::Error::new(
+            let snapshot = progress.snapshot(Instant::now());
+            let stage = if snapshot.stage == LivenessStage::Idle {
+                LivenessStage::CprWait
+            } else {
+                snapshot.stage
+            };
+            let timeout_failure = TerminalFailure::startup(
                 io::ErrorKind::TimedOut,
-                "terminal liveness startup check exceeded four seconds; use `ytt daemon` for background playback",
-            ))
+                TerminalFailureClass::WorkerStall,
+                stage,
+                Some(EvidenceDomain::Transport),
+                STARTUP_READY_TIMEOUT,
+                "terminal readiness worker exceeded its startup report deadline",
+            );
+            fail_runtime(
+                &failure,
+                &shutdown,
+                &stop,
+                timeout_failure.with_last_alive(snapshot.last_alive_elapsed),
+                kill_media.as_ref(),
+                Some(&output_lock),
+            );
+            stop_and_join_startup_threads(
+                &stop,
+                &output_lock,
+                Some(input_thread),
+                Some(watchdog_thread),
+            );
+            Err(failure.error_snapshot().unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "terminal liveness startup check exceeded 8250 ms; use `ytt daemon` for background playback",
+                )
+            }))
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            stop_and_join_startup_threads(&stop, Some(input_thread), Some(watchdog_thread));
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "terminal input worker stopped before reporting readiness",
-            ))
+            stop_and_join_startup_threads(
+                &stop,
+                &output_lock,
+                Some(input_thread),
+                Some(watchdog_thread),
+            );
+            Err(failure.error_snapshot().unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "terminal input worker stopped before reporting readiness",
+                )
+            }))
         }
     }
 }
 
 trait InputBackend {
-    fn check_owner_attached(&mut self) -> io::Result<()>;
-    fn heartbeat(&mut self) -> io::Result<()>;
+    fn check_owner_attached(&mut self) -> Vec<ProbeOutcome>;
+    fn heartbeat(&mut self) -> ProbeOutcome;
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
     fn read(&mut self) -> io::Result<Event>;
 }
@@ -464,61 +412,9 @@ struct InputLoopControl {
     failure: SharedFailure,
     progress: Arc<WatchdogProgress>,
     kill_media: KillMedia,
+    output_lock: TerminalOutputLock,
     heartbeat_interval: Duration,
     owner_probe_interval: Duration,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LivenessAction {
-    Heartbeat,
-    OwnerProbe,
-}
-
-struct LivenessSchedule {
-    next_heartbeat: Instant,
-    next_owner_probe: Instant,
-    heartbeat_interval: Duration,
-    owner_probe_interval: Duration,
-}
-
-impl LivenessSchedule {
-    fn new(now: Instant, heartbeat_interval: Duration, owner_probe_interval: Duration) -> Self {
-        Self {
-            next_heartbeat: now + heartbeat_interval,
-            next_owner_probe: now + owner_probe_interval,
-            heartbeat_interval,
-            owner_probe_interval,
-        }
-    }
-
-    fn due(&self, now: Instant) -> Option<LivenessAction> {
-        let heartbeat_due = now >= self.next_heartbeat;
-        let owner_probe_due = now >= self.next_owner_probe;
-        match (heartbeat_due, owner_probe_due) {
-            (false, false) => None,
-            (true, false) => Some(LivenessAction::Heartbeat),
-            (false, true) => Some(LivenessAction::OwnerProbe),
-            (true, true) if self.next_owner_probe <= self.next_heartbeat => {
-                Some(LivenessAction::OwnerProbe)
-            }
-            (true, true) => Some(LivenessAction::Heartbeat),
-        }
-    }
-
-    fn completed(&mut self, action: LivenessAction, now: Instant) {
-        match action {
-            LivenessAction::Heartbeat => self.next_heartbeat = now + self.heartbeat_interval,
-            LivenessAction::OwnerProbe => {
-                self.next_owner_probe = now + self.owner_probe_interval;
-            }
-        }
-    }
-
-    fn until_next(&self, now: Instant) -> Duration {
-        self.next_heartbeat
-            .min(self.next_owner_probe)
-            .saturating_duration_since(now)
-    }
 }
 
 fn run_input_loop<B: InputBackend>(
@@ -533,17 +429,25 @@ fn run_input_loop<B: InputBackend>(
         failure,
         progress,
         kill_media,
+        output_lock,
         heartbeat_interval,
         owner_probe_interval,
     } = control;
-    if let Err(error) = initial_liveness_check(&mut backend) {
-        let failure_value = TerminalFailure::from(error);
-        record_failure(&failure, failure_value.clone());
+    if let Err(failure_value) =
+        initial_liveness_check(&mut backend, &stop, &shutdown, &progress, Instant::now())
+    {
+        fail_runtime(
+            &failure,
+            &shutdown,
+            &stop,
+            failure_value.clone(),
+            kill_media.as_ref(),
+            Some(&output_lock),
+        );
         let _ = ready.send(Err(failure_value));
-        shutdown.trigger();
         return;
     }
-    progress.completed();
+    progress.alive();
     if ready.send(Ok(())).is_err() {
         stop.store(true, Ordering::Release);
         return;
@@ -551,20 +455,49 @@ fn run_input_loop<B: InputBackend>(
 
     let mut liveness =
         LivenessSchedule::new(Instant::now(), heartbeat_interval, owner_probe_interval);
-    while !stop.load(Ordering::Acquire) {
+    let mut suspicions = SuspicionTracker::default();
+    let mut input_error_generation = 0u64;
+    while !stop.load(Ordering::Acquire) && !shutdown.is_triggered() {
         let now = Instant::now();
+        if progress.take_probe_request() {
+            liveness.force_heartbeat(now);
+        }
         if let Some(action) = liveness.due(now) {
-            let result = match action {
-                LivenessAction::Heartbeat => backend.heartbeat(),
-                LivenessAction::OwnerProbe => backend.check_owner_attached(),
+            let outcomes = match action {
+                LivenessAction::Heartbeat => {
+                    progress.enter(LivenessStage::CprWait);
+                    vec![backend.heartbeat()]
+                }
+                LivenessAction::OwnerProbe => {
+                    progress.enter(LivenessStage::OwnerProbe);
+                    backend.check_owner_attached()
+                }
             };
-            match result {
-                Ok(()) => {
-                    progress.completed();
+            if runtime_is_stopping(&stop, &shutdown) {
+                break;
+            }
+            match evaluate_probe_outcomes(
+                outcomes,
+                &mut suspicions,
+                &progress,
+                false,
+                Instant::now(),
+            ) {
+                Ok(ProbeDisposition::Complete) => {
                     liveness.completed(action, Instant::now());
                 }
-                Err(error) => {
-                    fail_runtime(&failure, &shutdown, error, kill_media.as_ref());
+                Ok(ProbeDisposition::Retry) => {
+                    liveness.retry(action, Instant::now());
+                }
+                Err(terminal_failure) => {
+                    fail_runtime(
+                        &failure,
+                        &shutdown,
+                        &stop,
+                        terminal_failure,
+                        kill_media.as_ref(),
+                        Some(&output_lock),
+                    );
                     return;
                 }
             }
@@ -572,37 +505,116 @@ fn run_input_loop<B: InputBackend>(
         }
 
         let timeout = liveness.until_next(now).min(STOP_POLL_INTERVAL);
-        match backend.poll(timeout) {
-            Ok(false) => {}
-            Ok(true) => match backend.read() {
-                Ok(event) => match events.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+        progress.enter(LivenessStage::InputPoll);
+        let polled = backend.poll(timeout);
+        if runtime_is_stopping(&stop, &shutdown) {
+            break;
+        }
+        match polled {
+            Ok(false) => progress.idle(),
+            Ok(true) => {
+                progress.enter(LivenessStage::InputRead);
+                let read = backend.read();
+                if runtime_is_stopping(&stop, &shutdown) {
+                    break;
+                }
+                match read {
+                    Ok(event) => match events.try_send(event) {
+                        Ok(()) => {
+                            suspicions.clear(EvidenceDomain::Transport);
+                            progress.alive();
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            let terminal_failure = TerminalFailure::runtime(
+                                io::ErrorKind::Other,
+                                TerminalFailureClass::InternalFatal,
+                                LivenessStage::EventDelivery,
+                                None,
+                                Duration::ZERO,
+                                "terminal input queue saturated; owner is unresponsive",
+                            )
+                            .with_last_alive(progress.snapshot(Instant::now()).last_alive_elapsed);
+                            fail_runtime(
+                                &failure,
+                                &shutdown,
+                                &stop,
+                                terminal_failure,
+                                kill_media.as_ref(),
+                                Some(&output_lock),
+                            );
+                            return;
+                        }
+                    },
+                    Err(error) if is_transient_input_error(&error) => progress.idle(),
+                    Err(error) => {
+                        input_error_generation = input_error_generation.wrapping_add(1).max(1);
+                        match evaluate_probe_outcomes(
+                            [ProbeOutcome::transport(
+                                error,
+                                input_error_generation,
+                                LivenessStage::InputRead,
+                            )],
+                            &mut suspicions,
+                            &progress,
+                            false,
+                            Instant::now(),
+                        ) {
+                            Ok(ProbeDisposition::Complete) => {}
+                            Ok(ProbeDisposition::Retry) => {
+                                wait_retry_interruptibly(&stop, &shutdown);
+                            }
+                            Err(terminal_failure) => {
+                                fail_runtime(
+                                    &failure,
+                                    &shutdown,
+                                    &stop,
+                                    terminal_failure,
+                                    kill_media.as_ref(),
+                                    Some(&output_lock),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) if is_transient_input_error(&error) => progress.idle(),
+            Err(error) => {
+                input_error_generation = input_error_generation.wrapping_add(1).max(1);
+                match evaluate_probe_outcomes(
+                    [ProbeOutcome::transport(
+                        error,
+                        input_error_generation,
+                        LivenessStage::InputPoll,
+                    )],
+                    &mut suspicions,
+                    &progress,
+                    false,
+                    Instant::now(),
+                ) {
+                    Ok(ProbeDisposition::Complete) => {}
+                    Ok(ProbeDisposition::Retry) => {
+                        wait_retry_interruptibly(&stop, &shutdown);
+                    }
+                    Err(terminal_failure) => {
                         fail_runtime(
                             &failure,
                             &shutdown,
-                            io::Error::other(
-                                "terminal input queue saturated; owner is unresponsive",
-                            ),
+                            &stop,
+                            terminal_failure,
                             kill_media.as_ref(),
+                            Some(&output_lock),
                         );
                         return;
                     }
-                },
-                Err(error) if is_transient_input_error(&error) => {}
-                Err(error) => {
-                    fail_runtime(&failure, &shutdown, error, kill_media.as_ref());
-                    return;
                 }
-            },
-            Err(error) if is_transient_input_error(&error) => {}
-            Err(error) => {
-                fail_runtime(&failure, &shutdown, error, kill_media.as_ref());
-                return;
             }
         }
     }
+    cancel_terminal_output();
+    output_lock.wake_all();
+    progress.enter(LivenessStage::Stopping);
 }
 
 fn run_watchdog(
@@ -611,50 +623,294 @@ fn run_watchdog(
     shutdown: ShutdownLatch,
     failure: SharedFailure,
     kill_media: KillMedia,
-    deadline: Duration,
+    output_lock: TerminalOutputLock,
+    policy: (Duration, Option<KillMedia>),
 ) {
-    let mut observed = progress.completed_checks.load(Ordering::Acquire);
-    let mut expires_at = Instant::now() + deadline;
+    let (deadline, before_failure_arbitration) = policy;
+    let mut last_tick = Instant::now();
     while !stop.load(Ordering::Acquire) && !shutdown.is_triggered() {
-        if !progress.armed.load(Ordering::Acquire) {
+        let now = Instant::now();
+        let scheduling_gap = now.saturating_duration_since(last_tick);
+        if scheduling_gap >= WATCHDOG_SCHEDULING_GAP {
+            // A delayed watchdog alone is not evidence that the process was suspended. Preserve
+            // absolute hard deadlines and merely request a fresh liveness observation.
+            progress.request_probe();
+        }
+        last_tick = now;
+
+        if !progress.is_armed() {
             std::thread::sleep(WATCHDOG_POLL_INTERVAL);
-            observed = progress.completed_checks.load(Ordering::Acquire);
-            expires_at = Instant::now() + deadline;
             continue;
         }
 
-        let completed = progress.completed_checks.load(Ordering::Acquire);
-        if completed != observed {
-            observed = completed;
-            expires_at = Instant::now() + deadline;
-        } else if Instant::now() >= expires_at {
+        let snapshot = progress.snapshot(now);
+        let operation = terminal_output_operation();
+        let gate = output_lock.snapshot();
+        let stage_expired =
+            snapshot.stage != LivenessStage::Idle && snapshot.stage_elapsed >= deadline;
+        let suspect_expired = snapshot
+            .suspect_elapsed
+            .is_some_and(|elapsed| elapsed >= deadline);
+        // Owner output has its own shorter contract (currently 7 s). A CPR request's 500 ms write
+        // budget must instead return through the ambiguity policy; only an indefinitely wedged
+        // CPR reaches the independent 8 s worker deadline.
+        let operation_expired = owner_output_operation_expired(operation, gate.holder_role);
+        let owner_deadline_expired = gate.owner_deadline_expired;
+        if stage_expired || suspect_expired || operation_expired || owner_deadline_expired {
+            let stage = if let Some(operation) = operation.filter(|_| operation_expired) {
+                output_operation_stage(operation)
+            } else if owner_deadline_expired {
+                operation.map_or(LivenessStage::OwnerRender, output_operation_stage)
+            } else if operation.is_none()
+                && gate.holder_role == Some(OutputRole::Owner)
+                && (gate.liveness_waiters > 0
+                    || snapshot.suspect_stage == LivenessStage::OutputGate)
+            {
+                LivenessStage::OwnerRender
+            } else if stage_expired {
+                snapshot.stage
+            } else {
+                snapshot.suspect_stage
+            };
+            let elapsed = if let Some(operation) = operation.filter(|_| operation_expired) {
+                operation.elapsed
+            } else if owner_deadline_expired {
+                gate.held_for
+            } else if stage_expired {
+                snapshot.stage_elapsed
+            } else {
+                snapshot.suspect_elapsed.unwrap_or_default()
+            };
+            let operation_detail = operation.map_or_else(
+                || "none".to_owned(),
+                |value| {
+                    format!(
+                        "label={}, generation={}, elapsed_ms={}, phase={:?}, expired={}",
+                        value.label,
+                        value.generation,
+                        value.elapsed.as_millis(),
+                        value.phase,
+                        value.expired,
+                    )
+                },
+            );
+            let detail = format!(
+                "terminal worker made no progress before its hard deadline (last_alive_ms={}, holder_role={:?}, holder_generation={}, holder_held_ms={}, liveness_waiters={}, output_operation={})",
+                snapshot.last_alive_elapsed.as_millis(),
+                gate.holder_role,
+                gate.holder_generation,
+                gate.held_for.as_millis(),
+                gate.liveness_waiters,
+                operation_detail,
+            );
+            if let Some(hook) = &before_failure_arbitration {
+                hook();
+            }
             fail_runtime(
                 &failure,
                 &shutdown,
-                io::Error::new(
+                &stop,
+                TerminalFailure::runtime(
                     io::ErrorKind::TimedOut,
-                    "terminal liveness worker stopped completing checks before its watchdog deadline",
-                ),
+                    TerminalFailureClass::WorkerStall,
+                    stage,
+                    Some(EvidenceDomain::Transport),
+                    elapsed,
+                    detail,
+                )
+                .with_last_alive(snapshot.last_alive_elapsed),
                 kill_media.as_ref(),
+                Some(&output_lock),
             );
             return;
         }
         std::thread::sleep(WATCHDOG_POLL_INTERVAL);
     }
+    cancel_terminal_output();
+    output_lock.wake_all();
 }
 
-fn initial_liveness_check(backend: &mut impl InputBackend) -> io::Result<()> {
-    liveness_check(backend).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("terminal client liveness could not be established: {error}"),
-        )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeDisposition {
+    Complete,
+    Retry,
+}
+
+fn evaluate_probe_outcomes(
+    outcomes: impl IntoIterator<Item = ProbeOutcome>,
+    suspicions: &mut SuspicionTracker,
+    progress: &WatchdogProgress,
+    startup: bool,
+    now: Instant,
+) -> Result<ProbeDisposition, TerminalFailure> {
+    let mut retry = false;
+    for outcome in outcomes {
+        match outcome {
+            ProbeOutcome::Alive(domain) => {
+                suspicions.clear(domain);
+                if domain == EvidenceDomain::Transport {
+                    progress.alive();
+                } else {
+                    progress.idle();
+                }
+            }
+            ProbeOutcome::PendingInput if startup => {
+                progress.idle();
+                retry = true;
+            }
+            ProbeOutcome::PendingInput | ProbeOutcome::RecentInput => {
+                suspicions.clear(EvidenceDomain::Transport);
+                progress.alive();
+            }
+            ProbeOutcome::OwnerOutputBusy => {
+                // Gate contention is not terminal evidence. It neither confirms an ambiguous CPR
+                // nor clears it; only an actual reply or real input can do that.
+                progress.idle();
+            }
+            ProbeOutcome::NoEvidence => progress.idle(),
+            ProbeOutcome::DefinitiveLoss {
+                domain,
+                stage,
+                error,
+            } => {
+                return Err(make_probe_failure(
+                    startup,
+                    error.kind(),
+                    TerminalFailureClass::DefinitiveLoss,
+                    stage,
+                    Some(domain),
+                    Duration::ZERO,
+                    error,
+                )
+                .with_last_alive(progress.snapshot(now).last_alive_elapsed));
+            }
+            ProbeOutcome::Ambiguous {
+                domain,
+                stage,
+                evidence_id,
+                error,
+            } => {
+                let observation = suspicions.observe(domain, evidence_id, now);
+                if domain == EvidenceDomain::Transport {
+                    progress.transport_suspect(stage);
+                } else {
+                    progress.idle();
+                }
+                if observation.confirmations >= AMBIGUOUS_CONFIRMATIONS {
+                    return Err(make_probe_failure(
+                        startup,
+                        error.kind(),
+                        TerminalFailureClass::AmbiguousExhausted,
+                        stage,
+                        Some(domain),
+                        observation.elapsed,
+                        format!(
+                            "terminal liveness remained ambiguous after {} independent checks: {error}",
+                            observation.confirmations
+                        ),
+                    )
+                    .with_last_alive(progress.snapshot(now).last_alive_elapsed));
+                }
+                retry = true;
+            }
+            ProbeOutcome::InternalFatal {
+                domain,
+                stage,
+                error,
+            } => {
+                return Err(make_probe_failure(
+                    startup,
+                    error.kind(),
+                    TerminalFailureClass::InternalFatal,
+                    stage,
+                    domain,
+                    Duration::ZERO,
+                    error,
+                )
+                .with_last_alive(progress.snapshot(now).last_alive_elapsed));
+            }
+        }
+    }
+    Ok(if retry {
+        ProbeDisposition::Retry
+    } else {
+        ProbeDisposition::Complete
     })
 }
 
-fn liveness_check(backend: &mut impl InputBackend) -> io::Result<()> {
-    backend.check_owner_attached()?;
-    backend.heartbeat()
+fn make_probe_failure(
+    startup: bool,
+    kind: io::ErrorKind,
+    class: TerminalFailureClass,
+    stage: LivenessStage,
+    domain: Option<EvidenceDomain>,
+    elapsed: Duration,
+    detail: impl std::fmt::Display,
+) -> TerminalFailure {
+    if startup {
+        TerminalFailure::startup(kind, class, stage, domain, elapsed, detail)
+    } else {
+        TerminalFailure::runtime(kind, class, stage, domain, elapsed, detail)
+    }
+}
+
+fn initial_liveness_check(
+    backend: &mut impl InputBackend,
+    stop: &AtomicBool,
+    shutdown: &ShutdownLatch,
+    progress: &WatchdogProgress,
+    started_at: Instant,
+) -> Result<(), TerminalFailure> {
+    let mut suspicions = SuspicionTracker::default();
+    for action in [LivenessAction::OwnerProbe, LivenessAction::Heartbeat] {
+        loop {
+            if stop.load(Ordering::Acquire) || shutdown.is_triggered() {
+                return Err(TerminalFailure::startup(
+                    io::ErrorKind::BrokenPipe,
+                    TerminalFailureClass::InternalFatal,
+                    LivenessStage::Stopping,
+                    None,
+                    started_at.elapsed(),
+                    "shutdown interrupted the terminal readiness check",
+                ));
+            }
+            let outcomes = match action {
+                LivenessAction::OwnerProbe => {
+                    progress.enter(LivenessStage::OwnerProbe);
+                    backend.check_owner_attached()
+                }
+                LivenessAction::Heartbeat => {
+                    progress.enter(LivenessStage::CprWait);
+                    vec![backend.heartbeat()]
+                }
+            };
+            match evaluate_probe_outcomes(
+                outcomes,
+                &mut suspicions,
+                progress,
+                true,
+                Instant::now(),
+            )? {
+                ProbeDisposition::Complete => break,
+                ProbeDisposition::Retry => {
+                    wait_retry_interruptibly(stop, shutdown);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn wait_retry_interruptibly(stop: &AtomicBool, shutdown: &ShutdownLatch) {
+    let retry_deadline = Instant::now() + AMBIGUOUS_RETRY_INTERVAL;
+    while Instant::now() < retry_deadline {
+        if stop.load(Ordering::Acquire) || shutdown.is_triggered() {
+            break;
+        }
+        std::thread::sleep(
+            Duration::from_millis(10).min(retry_deadline.saturating_duration_since(Instant::now())),
+        );
+    }
 }
 
 fn is_transient_input_error(error: &io::Error) -> bool {
@@ -664,109 +920,116 @@ fn is_transient_input_error(error: &io::Error) -> bool {
     )
 }
 
+fn runtime_is_stopping(stop: &AtomicBool, shutdown: &ShutdownLatch) -> bool {
+    stop.load(Ordering::Acquire) || shutdown.is_triggered()
+}
+
 fn fail_runtime(
     failure: &SharedFailure,
     shutdown: &ShutdownLatch,
-    error: io::Error,
+    stop: &AtomicBool,
+    terminal_failure: TerminalFailure,
     kill_media: &dyn Fn(),
+    output_lock: Option<&TerminalOutputLock>,
 ) {
-    let mut failure_value = None;
+    // Ordinary teardown sets `stop` before cancelling output or waking the gate. Arbitration here
+    // is intentionally adjacent to publication so those derived BrokenPipe/ConnectionAborted
+    // results cannot become a false terminal primary.
+    let competing_failure = terminal_failure.clone();
+    if runtime_is_stopping(stop, shutdown) {
+        if failure.has_primary() {
+            failure.record_secondary(competing_failure);
+        }
+        return;
+    }
+    let message = terminal_failure.message.clone();
+    let class = terminal_failure.class;
+    let stage = terminal_failure.stage;
+    let domain = terminal_failure.domain;
+    let elapsed_ms = terminal_failure.elapsed_ms;
+    let last_alive_ms = terminal_failure.last_alive_ms;
     let mut diagnostic_recorded = false;
-    // Set the monotonic latch before the global lifetime backstop, then kill media before touching
-    // diagnostic locks, formatting, or tracing. The wake is emitted after this closure: in the
-    // uncontended case the owner therefore still sees the exact cause, while a thread suspended
-    // with the diagnostic mutex can never hold media teardown past the watchdog deadline.
-    shutdown.trigger_with_emergency(|| {
-        kill_media();
-        let value = TerminalFailure::new(
-            error.kind(),
-            format!("terminal client liveness was lost: {error}"),
-        );
-        diagnostic_recorded = try_record_failure(failure, value.clone());
-        failure_value = Some(value);
-    });
-    if let Some(failure_value) = failure_value {
-        tracing::warn!(
-            error = %failure_value.message,
-            diagnostic_recorded,
-            "terminal owner requested shutdown"
-        );
+    let won_arbitration = shutdown.try_trigger_with_before_publish(
+        || {
+            // The latch claim is not externally visible until this immutable cause is published.
+            diagnostic_recorded = failure.record_primary(terminal_failure.clone());
+            if !diagnostic_recorded {
+                failure.record_secondary(terminal_failure);
+            }
+        },
+        || {
+            cancel_terminal_output();
+            kill_media();
+        },
+    );
+    if !won_arbitration {
+        if failure.has_primary() {
+            failure.record_secondary(competing_failure);
+        }
+        return;
+    }
+    if let Some(output_lock) = output_lock {
+        output_lock.wake_all();
+    }
+    tracing::warn!(
+        error = %message,
+        failure_class = %class,
+        phase = %stage,
+        evidence_domain = domain.map(|value| value.to_string()),
+        elapsed_ms,
+        last_alive_ms,
+        diagnostic_recorded,
+        "terminal owner requested shutdown"
+    );
+}
+
+fn record_background_failure(failure: &FailureStore, value: TerminalFailure) {
+    if !failure.record_primary(value.clone()) {
+        failure.record_secondary(value);
     }
 }
 
-fn try_record_failure(failure: &SharedFailure, value: TerminalFailure) -> bool {
-    let mut slot = match failure.try_lock() {
-        Ok(slot) => slot,
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        Err(std::sync::TryLockError::WouldBlock) => return false,
+fn signal_abnormal_worker_exit(
+    label: &str,
+    unwind: std::thread::Result<()>,
+    stop: &AtomicBool,
+    shutdown: &ShutdownLatch,
+    failure: &SharedFailure,
+    kill_media: &dyn Fn(),
+    output_lock: &TerminalOutputLock,
+) {
+    if unwind.is_ok() && runtime_is_stopping(stop, shutdown) {
+        // A worker that published the primary failure returns through its ordinary epilogue after
+        // setting the shared stop/latch. That is expected completion, not secondary corruption.
+        return;
+    }
+    let detail = if unwind.is_err() {
+        format!("{label} panicked")
+    } else {
+        format!("{label} returned unexpectedly")
     };
-    if slot.is_none() {
-        *slot = Some(value);
-    }
-    true
-}
-
-fn record_failure(failure: &SharedFailure, value: TerminalFailure) {
-    let mut slot = failure
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if slot.is_none() {
-        *slot = Some(value);
-    }
-}
-
-struct CrosstermInput {
-    output_lock: TerminalOutputLock,
-    #[cfg(unix)]
-    owner: TerminalOwnerProbe,
-}
-
-impl CrosstermInput {
-    fn detect(output_lock: TerminalOutputLock) -> Self {
-        Self {
-            output_lock,
-            #[cfg(unix)]
-            owner: TerminalOwnerProbe::detect_with(|key| std::env::var_os(key)),
+    let worker_failure = TerminalFailure::runtime(
+        io::ErrorKind::Other,
+        TerminalFailureClass::InternalFatal,
+        LivenessStage::Stopping,
+        None,
+        Duration::ZERO,
+        detail,
+    );
+    if runtime_is_stopping(stop, shutdown) {
+        if failure.has_primary() {
+            failure.record_secondary(worker_failure);
         }
+        return;
     }
-}
-
-impl InputBackend for CrosstermInput {
-    fn check_owner_attached(&mut self) -> io::Result<()> {
-        #[cfg(unix)]
-        self.owner.check_attached()?;
-        Ok(())
-    }
-
-    fn heartbeat(&mut self) -> io::Result<()> {
-        #[cfg(unix)]
-        {
-            // `cursor::position` writes DSR/CPR and keeps non-CPR input in crossterm's internal
-            // queue. Its normal Unix no-response path is bounded at two seconds. Crossterm 0.29's
-            // Unix implementation, however, deliberately retries `poll_internal` errors inside an
-            // unbounded loop (`cursor/sys/unix.rs`, `Err(_) => {}`). PTY EOF/EIO can therefore pin
-            // this call forever. The separate watchdog must remain independent of this worker; the
-            // output gate's own deadline additionally prevents the owner from waiting behind it.
-            self.output_lock
-                .run_liveness_io(crossterm::cursor::position)?;
-        }
-        #[cfg(not(unix))]
-        {
-            // Windows console-close delivery is owned by the synchronous control handlers. Still
-            // cross the output gate once per check: if an owner render/write is permanently stuck,
-            // this bounded acquisition fails closed instead of letting guardian heartbeats run.
-            self.output_lock.run_liveness_io(|| Ok(()))?;
-        }
-        Ok(())
-    }
-
-    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-        crossterm::event::poll(timeout)
-    }
-
-    fn read(&mut self) -> io::Result<Event> {
-        crossterm::event::read()
-    }
+    fail_runtime(
+        failure,
+        shutdown,
+        stop,
+        worker_failure,
+        kill_media,
+        Some(output_lock),
+    );
 }
 
 #[cfg(test)]
@@ -787,13 +1050,13 @@ mod tests {
     }
 
     impl InputBackend for FakeInput {
-        fn check_owner_attached(&mut self) -> io::Result<()> {
-            Ok(())
+        fn check_owner_attached(&mut self) -> Vec<ProbeOutcome> {
+            vec![ProbeOutcome::NoEvidence]
         }
 
-        fn heartbeat(&mut self) -> io::Result<()> {
+        fn heartbeat(&mut self) -> ProbeOutcome {
             self.heartbeats += 1;
-            Ok(())
+            ProbeOutcome::Alive(EvidenceDomain::Transport)
         }
 
         fn poll(&mut self, _timeout: Duration) -> io::Result<bool> {
@@ -839,7 +1102,7 @@ mod tests {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let shutdown = ShutdownLatch::new();
-        let failure = Arc::new(Mutex::new(None));
+        let failure = Arc::new(FailureStore::default());
         let progress = Arc::new(WatchdogProgress::default());
 
         run_input_loop(
@@ -852,6 +1115,7 @@ mod tests {
                 failure: Arc::clone(&failure),
                 progress,
                 kill_media: noop_kill_media(),
+                output_lock: TerminalOutputLock::new(shutdown.clone()),
                 heartbeat_interval: HEARTBEAT_INTERVAL,
                 owner_probe_interval: OWNER_PROBE_INTERVAL,
             },
@@ -863,8 +1127,8 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(shutdown.is_triggered());
         assert_eq!(
-            failure.lock().unwrap().as_ref().unwrap().kind,
-            io::ErrorKind::UnexpectedEof
+            failure.primary_class(),
+            Some(TerminalFailureClass::DefinitiveLoss)
         );
     }
 
@@ -879,7 +1143,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let shutdown = ShutdownLatch::new();
-        let failure = Arc::new(Mutex::new(None));
+        let failure = Arc::new(FailureStore::default());
         let progress = Arc::new(WatchdogProgress::default());
 
         run_input_loop(
@@ -892,6 +1156,7 @@ mod tests {
                 failure: Arc::clone(&failure),
                 progress,
                 kill_media: noop_kill_media(),
+                output_lock: TerminalOutputLock::new(shutdown.clone()),
                 heartbeat_interval: HEARTBEAT_INTERVAL,
                 owner_probe_interval: OWNER_PROBE_INTERVAL,
             },
@@ -902,156 +1167,24 @@ mod tests {
         assert!(shutdown.is_triggered());
         assert!(
             failure
-                .lock()
+                .error_snapshot()
                 .unwrap()
-                .as_ref()
-                .unwrap()
-                .message
+                .to_string()
                 .contains("queue saturated")
         );
     }
 
-    struct BlockingHeartbeat {
-        calls: usize,
-        entered: Option<std::sync::mpsc::SyncSender<()>>,
-        release: Arc<(Mutex<bool>, Condvar)>,
-    }
-
-    impl InputBackend for BlockingHeartbeat {
-        fn check_owner_attached(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn heartbeat(&mut self) -> io::Result<()> {
-            self.calls += 1;
-            if self.calls == 1 {
-                return Ok(());
-            }
-            if let Some(entered) = self.entered.take() {
-                let _ = entered.send(());
-            }
-            let (lock, changed) = &*self.release;
-            let mut released = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*released {
-                released = changed
-                    .wait(released)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            Ok(())
-        }
-
-        fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-            std::thread::sleep(timeout);
-            Ok(false)
-        }
-
-        fn read(&mut self) -> io::Result<Event> {
-            unreachable!("blocking fixture never reports an event")
-        }
-    }
-
     #[test]
-    fn independent_watchdog_kills_media_when_backend_call_never_returns() {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-        let release = Arc::new((Mutex::new(false), Condvar::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let shutdown = ShutdownLatch::new();
-        let failure = Arc::new(Mutex::new(None));
-        let progress = Arc::new(WatchdogProgress::default());
-        let killed_after_latch = Arc::new(AtomicBool::new(false));
-        let kill_observation = Arc::clone(&killed_after_latch);
-        let kill_shutdown = shutdown.clone();
-        let kill_media: KillMedia = Arc::new(move || {
-            kill_observation.store(kill_shutdown.is_triggered(), Ordering::Release);
-        });
-
-        let input_stop = Arc::clone(&stop);
-        let input_shutdown = shutdown.clone();
-        let input_failure = Arc::clone(&failure);
-        let input_progress = Arc::clone(&progress);
-        let input_kill = Arc::clone(&kill_media);
-        let input_release = Arc::clone(&release);
-        let input = std::thread::spawn(move || {
-            run_input_loop(
-                BlockingHeartbeat {
-                    calls: 0,
-                    entered: Some(entered_tx),
-                    release: input_release,
-                },
-                tx,
-                ready_tx,
-                InputLoopControl {
-                    stop: input_stop,
-                    shutdown: input_shutdown,
-                    failure: input_failure,
-                    progress: input_progress,
-                    kill_media: input_kill,
-                    heartbeat_interval: Duration::from_millis(5),
-                    owner_probe_interval: Duration::from_secs(1),
-                },
-            );
-        });
-        assert_eq!(ready_rx.recv().unwrap(), Ok(()));
-        let armed_at = Instant::now();
-        progress.arm();
-
-        let watchdog_progress = Arc::clone(&progress);
-        let watchdog_stop = Arc::clone(&stop);
-        let watchdog_shutdown = shutdown.clone();
-        let watchdog_failure = Arc::clone(&failure);
-        let watchdog_kill = Arc::clone(&kill_media);
-        let watchdog = std::thread::spawn(move || {
-            run_watchdog(
-                watchdog_progress,
-                watchdog_stop,
-                watchdog_shutdown,
-                watchdog_failure,
-                watchdog_kill,
-                Duration::from_millis(100),
-            );
-        });
-
-        entered_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("fixture must enter its permanently blocked heartbeat");
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !shutdown.is_triggered() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(shutdown.is_triggered());
-        assert!(
-            armed_at.elapsed() < Duration::from_millis(500),
-            "scaled watchdog exceeded its bounded detection window"
-        );
-        watchdog.join().unwrap();
-        assert!(killed_after_latch.load(Ordering::Acquire));
-        assert!(
-            failure
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("watchdog deadline")
-        );
-
-        stop.store(true, Ordering::Release);
-        let (released, changed) = &*release;
-        *released.lock().unwrap() = true;
-        changed.notify_all();
-        input.join().unwrap();
-    }
-
-    #[test]
-    fn production_watchdog_leaves_kill_margin_below_four_seconds() {
-        assert!(
-            RUNTIME_LIVENESS_DEADLINE + WATCHDOG_POLL_INTERVAL < Duration::from_secs(4),
-            "watchdog configuration must detect a blocked terminal before acceptance deadline"
-        );
+    fn production_liveness_constants_match_the_approved_policy() {
+        assert_eq!(HEARTBEAT_INTERVAL, Duration::from_millis(500));
+        assert_eq!(OWNER_PROBE_INTERVAL, Duration::from_millis(2500));
+        assert_eq!(OWNER_PROBE_TIMEOUT, Duration::from_millis(500));
+        assert_eq!(AMBIGUOUS_RETRY_INTERVAL, Duration::from_millis(250));
+        assert_eq!(RUNTIME_LIVENESS_DEADLINE, Duration::from_secs(8));
+        assert_eq!(WATCHDOG_POLL_INTERVAL, Duration::from_millis(50));
+        assert_eq!(STARTUP_READY_TIMEOUT, Duration::from_millis(8250));
+        assert_eq!(SHUTDOWN_JOIN_TIMEOUT, Duration::from_millis(2500));
+        assert_eq!(WEDGED_JOIN_TIMEOUT, Duration::from_millis(100));
         #[cfg(unix)]
         assert!(
             HEARTBEAT_INTERVAL
@@ -1061,14 +1194,10 @@ mod tests {
                 < RUNTIME_LIVENESS_DEADLINE,
             "a documented worst-case heartbeat must finish with watchdog scheduling margin"
         );
-        #[cfg(unix)]
-        assert!(
-            OWNER_PROBE_INTERVAL + OWNER_PROBE_TIMEOUT + WATCHDOG_POLL_INTERVAL
-                < Duration::from_secs(4),
-            "a multiplexer detach just after a successful query must fail closed within four seconds"
+        assert_eq!(
+            output_gate::LIVENESS_ACQUIRE_TIMEOUT,
+            Duration::from_secs(1)
         );
-        assert!(OUTPUT_LOCK_TIMEOUT > Duration::from_secs(2));
-        assert!(OUTPUT_LOCK_TIMEOUT < RUNTIME_LIVENESS_DEADLINE);
     }
 
     #[test]
@@ -1100,72 +1229,275 @@ mod tests {
     }
 
     #[test]
-    fn output_lock_timeout_is_fatal_and_never_waits_forever() {
-        let shutdown = ShutdownLatch::new();
-        let failure = Arc::new(Mutex::new(None));
-        let killed_after_latch = Arc::new(AtomicBool::new(false));
-        let kill_observation = Arc::clone(&killed_after_latch);
-        let kill_shutdown = shutdown.clone();
-        let output = TerminalOutputLock {
-            gate: Arc::new(OutputGate::default()),
-            shutdown: shutdown.clone(),
-            failure: Arc::clone(&failure),
-            kill_media: Arc::new(move || {
-                kill_observation.store(kill_shutdown.is_triggered(), Ordering::Release);
-            }),
-            acquire_timeout: Duration::from_millis(30),
+    fn runtime_ambiguity_survives_once_and_requires_distinct_confirmation() {
+        let progress = WatchdogProgress::default();
+        let mut suspicions = SuspicionTracker::default();
+        let start = Instant::now();
+        let outcome = |evidence_id| {
+            ProbeOutcome::transport(
+                io::Error::new(io::ErrorKind::TimedOut, "CPR timed out"),
+                evidence_id,
+                LivenessStage::CprWait,
+            )
         };
-        let _held_forever = output.acquire(OutputRole::Owner).unwrap();
 
-        let started = Instant::now();
-        let error = output
-            .run(|| ())
-            .expect_err("second owner must hit the bounded acquisition deadline");
-
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(shutdown.is_triggered());
-        assert!(killed_after_latch.load(Ordering::Acquire));
+        assert_eq!(
+            evaluate_probe_outcomes([outcome(1)], &mut suspicions, &progress, false, start,)
+                .unwrap(),
+            ProbeDisposition::Retry
+        );
         assert!(
-            failure
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("output ownership")
+            evaluate_probe_outcomes(
+                [outcome(1)],
+                &mut suspicions,
+                &progress,
+                false,
+                start + Duration::from_secs(1),
+            )
+            .is_ok()
+        );
+        let failure = evaluate_probe_outcomes(
+            [outcome(2)],
+            &mut suspicions,
+            &progress,
+            false,
+            start + Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert_eq!(failure.class, TerminalFailureClass::AmbiguousExhausted);
+    }
+
+    #[test]
+    fn pending_and_recent_input_have_distinct_startup_semantics() {
+        let progress = WatchdogProgress::default();
+        let mut startup = SuspicionTracker::default();
+        assert_eq!(
+            evaluate_probe_outcomes(
+                [ProbeOutcome::PendingInput],
+                &mut startup,
+                &progress,
+                true,
+                Instant::now(),
+            )
+            .unwrap(),
+            ProbeDisposition::Retry
+        );
+        assert_eq!(
+            evaluate_probe_outcomes(
+                [ProbeOutcome::RecentInput],
+                &mut startup,
+                &progress,
+                true,
+                Instant::now(),
+            )
+            .unwrap(),
+            ProbeDisposition::Complete,
+            "an event queued before the first CPR is conclusive startup liveness evidence"
+        );
+        let mut runtime = SuspicionTracker::default();
+        assert_eq!(
+            evaluate_probe_outcomes(
+                [ProbeOutcome::PendingInput],
+                &mut runtime,
+                &progress,
+                false,
+                Instant::now(),
+            )
+            .unwrap(),
+            ProbeDisposition::Complete
+        );
+
+        let timeout = |evidence_id| {
+            ProbeOutcome::transport(
+                io::Error::new(io::ErrorKind::TimedOut, "CPR timed out"),
+                evidence_id,
+                LivenessStage::CprWait,
+            )
+        };
+        assert_eq!(
+            evaluate_probe_outcomes([timeout(1)], &mut runtime, &progress, false, Instant::now(),)
+                .unwrap(),
+            ProbeDisposition::Retry
+        );
+        assert_eq!(
+            evaluate_probe_outcomes(
+                [ProbeOutcome::RecentInput],
+                &mut runtime,
+                &progress,
+                false,
+                Instant::now(),
+            )
+            .unwrap(),
+            ProbeDisposition::Complete
+        );
+        assert_eq!(
+            evaluate_probe_outcomes([timeout(2)], &mut runtime, &progress, false, Instant::now(),)
+                .expect("recent input must clear the earlier transport suspicion"),
+            ProbeDisposition::Retry
         );
     }
 
     #[test]
-    fn emergency_kill_and_latch_do_not_wait_for_the_diagnostic_mutex() {
+    fn failure_is_stored_before_emergency_latch_and_media_kill() {
         let shutdown = ShutdownLatch::new();
-        let failure = Arc::new(Mutex::new(None));
-        let held = failure.lock().unwrap();
-        let killed_after_latch = Arc::new(AtomicBool::new(false));
-        let kill_observation = Arc::clone(&killed_after_latch);
-        let thread_shutdown = shutdown.clone();
+        let stop = AtomicBool::new(false);
+        let failure = Arc::new(FailureStore::default());
+        let kill_observed_ready_cause = Arc::new(AtomicBool::new(false));
+        let kill_observation = Arc::clone(&kill_observed_ready_cause);
         let kill_shutdown = shutdown.clone();
-        let thread_failure = Arc::clone(&failure);
-        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
-        let worker = std::thread::spawn(move || {
-            fail_runtime(
-                &thread_failure,
-                &thread_shutdown,
-                io::Error::new(io::ErrorKind::BrokenPipe, "fixture terminal detached"),
-                &move || {
-                    kill_observation.store(kill_shutdown.is_triggered(), Ordering::Release);
-                },
-            );
-            let _ = done_tx.send(());
-        });
-
-        let completed = done_rx.recv_timeout(Duration::from_millis(500));
+        let kill_failure = Arc::clone(&failure);
+        fail_runtime(
+            &failure,
+            &shutdown,
+            &stop,
+            TerminalFailure::runtime(
+                io::ErrorKind::BrokenPipe,
+                TerminalFailureClass::DefinitiveLoss,
+                LivenessStage::InputRead,
+                Some(EvidenceDomain::Transport),
+                Duration::ZERO,
+                "fixture terminal detached",
+            ),
+            &move || {
+                kill_observation.store(
+                    kill_shutdown.is_triggered() && kill_failure.error_snapshot().is_some(),
+                    Ordering::Release,
+                );
+            },
+            None,
+        );
         assert!(shutdown.is_triggered());
-        assert!(killed_after_latch.load(Ordering::Acquire));
-        drop(held);
-        worker.join().unwrap();
-        completed.expect("emergency teardown must not block on diagnostic ownership");
-        assert!(failure.lock().unwrap().is_none());
+        assert!(kill_observed_ready_cause.load(Ordering::Acquire));
+        let first = failure.error_snapshot().unwrap().to_string();
+        assert!(first.contains("fixture terminal detached"));
+        assert_eq!(
+            failure.primary_class(),
+            Some(TerminalFailureClass::DefinitiveLoss)
+        );
+    }
+
+    #[test]
+    fn panic_is_recorded_before_reporting_channels_can_disconnect() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Event>(1);
+        let event_channel_guard = tx.clone();
+        drop(tx);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let ready_channel_guard = ready_tx.clone();
+        drop(ready_tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            ready_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        let stop = AtomicBool::new(false);
+        let shutdown = ShutdownLatch::new();
+        let failure = Arc::new(FailureStore::default());
+        let output = TerminalOutputLock::new(shutdown.clone());
+        let panic: std::thread::Result<()> = Err(Box::new("fixture panic"));
+        signal_abnormal_worker_exit(
+            "terminal input worker",
+            panic,
+            &stop,
+            &shutdown,
+            &failure,
+            &|| {},
+            &output,
+        );
+
+        assert!(shutdown.is_triggered());
+        assert!(
+            failure
+                .error_snapshot()
+                .unwrap()
+                .to_string()
+                .contains("terminal input worker panicked")
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            ready_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(ready_channel_guard);
+        drop(event_channel_guard);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            ready_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn concurrent_worker_failure_enriches_an_existing_terminal_primary() {
+        let stop = AtomicBool::new(false);
+        let shutdown = ShutdownLatch::new();
+        let failure = Arc::new(FailureStore::default());
+        assert!(failure.record_primary(TerminalFailure::runtime(
+            io::ErrorKind::BrokenPipe,
+            TerminalFailureClass::DefinitiveLoss,
+            LivenessStage::CprWait,
+            Some(EvidenceDomain::Transport),
+            Duration::ZERO,
+            "authoritative terminal failure",
+        )));
+        shutdown.trigger();
+        signal_abnormal_worker_exit(
+            "terminal watchdog",
+            Err(Box::new("concurrent panic")),
+            &stop,
+            &shutdown,
+            &failure,
+            &|| panic!("an existing shutdown must not rerun emergency teardown"),
+            &TerminalOutputLock::new(shutdown.clone()),
+        );
+
+        let snapshot = failure.error_snapshot().unwrap().to_string();
+        assert!(snapshot.contains("authoritative terminal failure"));
+        assert!(snapshot.contains("terminal watchdog panicked"));
+    }
+
+    #[test]
+    fn concurrent_probe_failure_enriches_primary_without_repeating_emergency() {
+        let stop = AtomicBool::new(false);
+        let shutdown = ShutdownLatch::new();
+        let failure = Arc::new(FailureStore::default());
+        assert!(failure.record_primary(TerminalFailure::runtime(
+            io::ErrorKind::BrokenPipe,
+            TerminalFailureClass::DefinitiveLoss,
+            LivenessStage::CprWait,
+            Some(EvidenceDomain::Transport),
+            Duration::ZERO,
+            "authoritative terminal failure",
+        )));
+        shutdown.trigger();
+
+        fail_runtime(
+            &failure,
+            &shutdown,
+            &stop,
+            TerminalFailure::runtime(
+                io::ErrorKind::ConnectionAborted,
+                TerminalFailureClass::AmbiguousExhausted,
+                LivenessStage::OwnerProbe,
+                Some(EvidenceDomain::OwnerEnvironment),
+                Duration::ZERO,
+                "concurrent owner probe failure",
+            ),
+            &|| panic!("an existing shutdown must not rerun emergency teardown"),
+            None,
+        );
+
+        let snapshot = failure.error_snapshot().unwrap().to_string();
+        assert!(snapshot.contains("authoritative terminal failure"));
+        assert!(snapshot.contains("concurrent owner probe failure"));
     }
 }

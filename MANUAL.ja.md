@@ -33,10 +33,13 @@ ytt
 **検索** をクリックしてください。mpv、yt-dlp、ffmpeg が不足している場合は、案内
 カードのコピー/ガイドボタンを使い、インストール後に **再確認** を選びます。技術的な
 詳細は引き続き `ytt doctor` で確認できます。POSIX 環境で guardian に保護された再生を
-使うには mpv 0.33 以降が必要です。対話型 `ytt` プレイヤーは、識別できる Unix
-ターミナルまたは multiplexer クライアントを失うと終了し、multiplexer を照会できない
-場合も安全側に終了します。維持された Windows ConPTY broker と同種類で繰り返し
-ネストした Screen/Zellij は、接続中のクライアントと区別できません。その場合は
+使うには mpv 0.33 以降が必要です。対話型 `ytt` プレイヤーは、確定した Unix
+ターミナルまたは multiplexer クライアントの消失では直ちに終了します。曖昧な cursor
+応答と利用できない multiplexer 照会は独立して二回確認します。liveness output-gate の
+競合中は probe を延期し、owner frame/control 出力には別の七秒の制限時間があります。
+worker が戻らない場合は八秒の watchdog
+で制限します。維持された Windows ConPTY/tmux-control broker と同種類で繰り返し
+ネストした tmux/Screen/Zellij は、接続中のクライアントと区別できません。その場合は
 `ytt daemon` またはホスト側の寿命 supervisor/lease を使ってください。対応範囲は
 [ターミナル互換性](docs/terminal-compatibility.md#terminal-lifetime-detection)を参照してください。
 

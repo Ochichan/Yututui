@@ -161,6 +161,13 @@ embed-resource = "3.0.9"
 # raw numeric PID.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# The interactive terminal owns independently reopened nonblocking TTY descriptors. Using
+# rustix keeps open/fstat/poll/write ownership explicit and avoids changing the inherited
+# shell descriptors' shared open-file-description flags.
+rustix = { version = "1", default-features = false, features = ["event", "fs", "std", "termios"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1", default-features = false, features = ["pty"] }
 
 # No-orphan on Windows: an outer owner Job plus a guardian-only nested Job, both
 # KILL_ON_JOB_CLOSE, cover close, logoff, and hard owner death. Pinned process handles make

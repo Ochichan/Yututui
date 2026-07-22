@@ -41,7 +41,7 @@ if [ "${1:-}" = "--print-tree-digest" ]; then
 fi
 
 # Rebless only after reviewing an intentional vendor-base or local-patch change; see PATCHES.md.
-expected_tree_digest='ea803b5495687b86408d7f5eacab1ef6e6b850b8e43ed2a458e3ce4276761c0d'
+expected_tree_digest='22eab0c8ca4468ac2d2175ad638a743cbc36c9dad19b00f772a8b12d0698f1ae'
 test "$actual_tree_digest" = "$expected_tree_digest" \
   || fail "vendored crossterm tree drifted (expected $expected_tree_digest, got $actual_tree_digest)"
 
@@ -69,6 +69,38 @@ grep -Fq 'parse_csi_win32_input' "$parser" \
   || fail "vendored crossterm win32-input parser is missing"
 grep -Fq 'test_parse_csi_win32_input_distinguishes_ctrl_backspace_and_ctrl_h' "$parser" \
   || fail "vendored crossterm Ctrl+Backspace regression test is missing"
+
+grep -Fq 'OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY' \
+  crates/crossterm/src/event/source/unix/input.rs \
+  || fail "independent nonblocking terminal-input descriptor is missing"
+
+grep -Fq 'pub enum CursorPositionProbe' crates/crossterm/src/cursor.rs \
+  || fail "typed cursor-position probe result is missing"
+
+grep -Fq 'pub use sys::{position, probe_position_with};' crates/crossterm/src/cursor.rs \
+  || fail "writer-injected cursor-position probe is not publicly exported"
+grep -Fq 'pub fn probe_position_with' crates/crossterm/src/cursor/sys/unix.rs \
+  || fail "Unix writer-injected cursor-position probe is missing"
+grep -Fq 'pub fn probe_position_with' crates/crossterm/src/cursor/sys/windows.rs \
+  || fail "Windows writer-injected cursor-position probe is missing"
+
+grep -Fq 'supports_keyboard_enhancement_with_timeout' crates/crossterm/src/terminal.rs \
+  || fail "bounded writer-injected keyboard probe is missing"
+
+for source in \
+  crates/crossterm/src/event/source/unix/mio.rs \
+  crates/crossterm/src/event/source/unix/tty.rs; do
+  grep -Fq 'incomplete_paste_yields_after_one_drain_budget' "$source" \
+    || fail "64 KiB input-drain yield regression is missing from $source"
+  grep -Fq 'drain_budget_survives_would_block_between_fragments' "$source" \
+    || fail "fragmented-readiness drain-budget regression is missing from $source"
+  grep -Fq 'queued_focus_continuation_is_drained_before_stale_escape_expires' "$source" \
+    || fail "queued-prefix expiry ordering regression is missing from $source"
+done
+
+if grep -Rqs 'Command::new("tput")' crates/crossterm/src; then
+  fail "terminal size handling still launches an unbounded tput subprocess"
+fi
 
 crossterm_lock_block=$(
   awk '

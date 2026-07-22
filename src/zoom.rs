@@ -31,6 +31,7 @@ use std::cell::Cell as StateCell;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
@@ -43,6 +44,10 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
+
+use crate::terminal_policy::CPR_TOTAL_TIMEOUT as ZOOM_CPR_MAX;
+
+const DECDWL_CLEANUP_RESERVE: Duration = Duration::from_millis(50);
 
 /// Which glyph-scaling mechanism the terminal offers (see the module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +233,7 @@ impl ZoomHandle {
 
 /// Detect which zoom mechanism this terminal has. Must run with raw mode + the
 /// alternate screen active and **before** the exclusive terminal event worker exists —
-/// the probes read their CPR replies off stdin themselves (`crossterm::cursor::position()`).
+/// the probes use writer-injected bounded CPR queries and read their replies from stdin.
 ///
 /// Order matters: OSC 66 is strictly better (fine-grained levels), so it's checked
 /// first on the terminal families that ship or answer it quickly; Windows Terminal is
@@ -238,18 +243,48 @@ impl ZoomHandle {
 /// `off` disables zoom entirely, `on` forces the OSC 66 probe, `dhl` forces double-size
 /// lines without probing.
 pub fn detect_mode() -> ZoomMode {
+    detect_mode_with_output(&mut io::stdout())
+}
+
+/// Detect the zoom mechanism while routing every probe request through `output`.
+///
+/// Interactive runtimes should pass their serialized, deadline-bounded terminal writer. The
+/// stdio wrapper remains for callers that do not own such a writer.
+pub fn detect_mode_with_output(output: &mut impl Write) -> ZoomMode {
+    detect_mode_with_output_deadline(output, None)
+}
+
+/// Detect zoom while sharing an absolute startup deadline with earlier terminal probes.
+/// An expired budget writes nothing and conservatively disables zoom.
+pub(crate) fn detect_mode_with_output_until(
+    output: &mut impl Write,
+    deadline: Instant,
+) -> ZoomMode {
+    detect_mode_with_output_deadline(output, Some(deadline))
+}
+
+fn detect_mode_with_output_deadline(
+    output: &mut impl Write,
+    deadline: Option<Instant>,
+) -> ZoomMode {
+    if remaining_probe_time(deadline).is_some_and(|remaining| remaining.is_zero()) {
+        return ZoomMode::None;
+    }
     match std::env::var("YTM_TUI_TEXT_SIZING").ok().as_deref() {
         Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF") => return ZoomMode::None,
         Some("dhl" | "DHL" | "decdhl") => return ZoomMode::Decdhl,
         _ => {}
     }
-    if should_probe_osc66() && probe_osc66() {
+    if should_probe_osc66() && probe_osc66_with_output(output, deadline) {
         return ZoomMode::Osc66;
     }
-    if std::env::var_os("WT_SESSION").is_some() {
+    if remaining_probe_time(deadline).is_some_and(|remaining| remaining.is_zero()) {
+        return ZoomMode::None;
+    }
+    if std::env::var_os("WT_SESSION").is_some_and(|value| !value.is_empty()) {
         return ZoomMode::Decdhl;
     }
-    if should_probe_decdwl() && probe_decdwl() {
+    if should_probe_decdwl() && probe_decdwl_with_output(output, deadline) {
         return ZoomMode::Decdhl;
     }
     ZoomMode::None
@@ -264,22 +299,20 @@ pub fn detect_mode() -> ZoomMode {
 /// The probe glyph is a space at the top-left of the still-blank alternate screen, so
 /// nothing user-visible is left behind; the first frame paints over it.
 pub fn probe_osc66() -> bool {
-    let probe = || -> io::Result<bool> {
-        {
-            let mut out = io::stdout().lock();
-            // Home the cursor so the 2-rows-tall probe block can't hang off the bottom
-            // of the screen (where a supporting terminal would scroll and break the
-            // row-stability check below).
-            out.write_all(b"\x1b[H")?;
-            out.flush()?;
-        }
-        let before = crossterm::cursor::position()?;
-        {
-            let mut out = io::stdout().lock();
-            out.write_all(b"\x1b]66;s=2; \x1b\\")?;
-            out.flush()?;
-        }
-        let after = crossterm::cursor::position()?;
+    probe_osc66_with_output(&mut io::stdout(), None)
+}
+
+fn probe_osc66_with_output(output: &mut impl Write, deadline: Option<Instant>) -> bool {
+    let mut probe = || -> io::Result<bool> {
+        require_probe_time(deadline)?;
+        // Home the cursor so the 2-rows-tall probe block can't hang off the bottom of the screen
+        // (where a supporting terminal would scroll and break the row-stability check below).
+        output.write_all(b"\x1b[H")?;
+        output.flush()?;
+        let before = cursor_position_with_output(output, deadline)?;
+        output.write_all(b"\x1b]66;s=2; \x1b\\")?;
+        output.flush()?;
+        let after = cursor_position_with_output(output, deadline)?;
         Ok(after.1 == before.1 && after.0 == before.0 + 2)
     };
     probe().unwrap_or(false)
@@ -322,31 +355,89 @@ fn should_probe_osc66() -> bool {
 ///
 /// Runs on the still-blank alternate screen; the probe line is reset to single width
 /// and cleared, and the first frame repaints everything anyway.
-fn probe_decdwl() -> bool {
-    let probe = || -> io::Result<bool> {
+fn probe_decdwl_with_output(output: &mut impl Write, deadline: Option<Instant>) -> bool {
+    let mut probe = || -> io::Result<bool> {
+        require_probe_time(deadline)?;
         let (cols, _) = crossterm::terminal::size()?;
         if cols < 8 {
             return Ok(false);
         }
-        {
-            let mut out = io::stdout().lock();
-            // Ensure autowrap, home, make row 1 double-width, then write one char past
-            // the half-width boundary.
-            out.write_all(b"\x1b[?7h\x1b[H\x1b#6")?;
+        // Ensure autowrap, home, make row 1 double-width, then write one char past the half-width
+        // boundary.
+        let query_deadline = deadline.map(|deadline| {
+            deadline
+                .checked_sub(DECDWL_CLEANUP_RESERVE)
+                .unwrap_or(deadline)
+        });
+        let result = (|| {
+            output.write_all(b"\x1b[?7h\x1b[H\x1b#6")?;
             let fill = usize::from(cols / 2) + 1;
-            out.write_all(&vec![b' '; fill])?;
-            out.flush()?;
+            output.write_all(&vec![b' '; fill])?;
+            output.flush()?;
+            cursor_position_with_output(output, query_deadline)
+        })();
+        // Undo even when the CPR times out or fails. The shared-deadline path reserves a small
+        // tail so this best-effort single-width/clear sequence can still reach the terminal.
+        let cleanup = output
+            .write_all(b"\x1b[H\x1b#5\x1b[2J\x1b[H")
+            .and_then(|_| output.flush());
+        match result {
+            Ok(after) => {
+                cleanup?;
+                Ok(after.1 > 0)
+            }
+            Err(error) => {
+                let _ = cleanup;
+                Err(error)
+            }
         }
-        let after = crossterm::cursor::position()?;
-        {
-            let mut out = io::stdout().lock();
-            // Undo: single-width again and wipe the probe rows.
-            out.write_all(b"\x1b[H\x1b#5\x1b[2J\x1b[H")?;
-            out.flush()?;
-        }
-        Ok(after.1 > 0)
     };
     probe().unwrap_or(false)
+}
+
+fn cursor_position_with_output(
+    output: &mut impl Write,
+    deadline: Option<Instant>,
+) -> io::Result<(u16, u16)> {
+    let timeout = remaining_probe_time(deadline)
+        .unwrap_or(ZOOM_CPR_MAX)
+        .min(ZOOM_CPR_MAX);
+    if timeout.is_zero() {
+        return Err(expired_probe_error());
+    }
+    match crossterm::cursor::probe_position_with(output, timeout)? {
+        crossterm::cursor::CursorPositionProbe::Position(column, row) => Ok((column, row)),
+        crossterm::cursor::CursorPositionProbe::DeferredForPendingInput => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "text-zoom cursor probe deferred while terminal input is incomplete",
+        )),
+        crossterm::cursor::CursorPositionProbe::DeferredForRecentInput => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "text-zoom cursor probe deferred after recent terminal input",
+        )),
+        _ => Err(io::Error::other(
+            "terminal returned an unknown cursor-position probe outcome",
+        )),
+    }
+}
+
+fn remaining_probe_time(deadline: Option<Instant>) -> Option<Duration> {
+    deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
+}
+
+fn require_probe_time(deadline: Option<Instant>) -> io::Result<()> {
+    if remaining_probe_time(deadline).is_some_and(|remaining| remaining.is_zero()) {
+        Err(expired_probe_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn expired_probe_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "text-zoom probe had no remaining startup budget",
+    )
 }
 
 /// Where the DECDWL probe is worth its two CPR round-trips: any plausibly-interactive
@@ -793,6 +884,14 @@ mod tests {
             "fractional levels still coarsen the grid by 2"
         );
         assert_eq!(zoom.set(0), 100);
+    }
+
+    #[test]
+    fn expired_zoom_probe_budget_writes_nothing() {
+        let mut output = Vec::new();
+
+        assert!(!probe_osc66_with_output(&mut output, Some(Instant::now())));
+        assert!(output.is_empty());
     }
 
     #[test]

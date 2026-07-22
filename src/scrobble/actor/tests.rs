@@ -1121,13 +1121,18 @@ async fn shutdown_interrupt_applies_latest_config_and_post_config_observation() 
     );
     let mut latest = durable_only_settings();
     latest.local_files = true;
-    assert_eq!(
-        handle.reconfigure(latest),
-        Ok(crate::util::delivery::DeliveryReceipt::Coalesced {
-            replaced_existing: true,
-            evicted_oldest: false,
-        })
-    );
+    match handle.reconfigure(latest) {
+        Ok(
+            crate::util::delivery::DeliveryReceipt::Deferred
+            | crate::util::delivery::DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            },
+        ) => {}
+        receipt => panic!(
+            "latest config should be deferred or replace the still-pending config: {receipt:?}"
+        ),
+    }
     let (started_unix, observations) = threshold_observations("local:shutdown-config-tail");
     for mut observation in observations {
         observation

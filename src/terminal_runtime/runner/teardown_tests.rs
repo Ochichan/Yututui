@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use super::teardown::{OwnerIngressDrain, OwnerTeardown, complete_owner_teardown};
+use super::teardown::{
+    OwnerIngressDrain, OwnerTeardown, complete_owner_teardown, merge_terminal_shutdown_error,
+    prefer_terminal_failure,
+};
 use super::*;
 
 #[derive(Default)]
@@ -9,6 +12,7 @@ struct RecordingTeardown {
     background_outcomes: VecDeque<runtime::BackgroundShutdown>,
     ingress_drain: OwnerIngressDrain,
     fail_scrobble: bool,
+    terminal_background_error: Option<std::io::Error>,
 }
 
 impl OwnerTeardown for RecordingTeardown {
@@ -49,8 +53,9 @@ impl OwnerTeardown for RecordingTeardown {
         self.steps.push("video");
     }
 
-    async fn shutdown_terminal_background(&mut self) {
+    async fn shutdown_terminal_background(&mut self) -> Option<std::io::Error> {
         self.steps.push("terminal_background");
+        self.terminal_background_error.take()
     }
 
     async fn shutdown_resolver(&mut self) {
@@ -275,4 +280,64 @@ async fn scrobble_durability_failure_is_returned_after_the_full_barrier() {
             .contains("injected scrobble durability failure")
     );
     assert_eq!(teardown.steps.last(), Some(&"scrobble"));
+}
+
+#[tokio::test]
+async fn late_terminal_join_failure_is_returned_without_hiding_the_owner_failure() {
+    let mut teardown = RecordingTeardown {
+        terminal_background_error: Some(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "terminal input worker join timed out",
+        )),
+        ..Default::default()
+    };
+    let owner_error = anyhow::anyhow!("original owner failure");
+
+    let error = complete_owner_teardown(&mut teardown, Some(owner_error))
+        .await
+        .expect_err("both failures must survive the ownership barrier");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("original owner failure"));
+    assert!(rendered.contains("terminal input worker join timed out"));
+}
+
+#[test]
+fn enriched_terminal_snapshot_replaces_its_earlier_copy_without_duplication() {
+    let primary = anyhow::Error::from(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "terminal primary",
+    ));
+    let enriched = std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "terminal primary; secondary terminal shutdown failures: join timed out",
+    );
+
+    let merged = merge_terminal_shutdown_error(Some(primary), Some(enriched))
+        .expect("the enriched terminal snapshot remains fatal")
+        .to_string();
+    assert_eq!(
+        merged,
+        "terminal primary; secondary terminal shutdown failures: join timed out"
+    );
+}
+
+#[test]
+fn terminal_cancellation_cause_stays_typed_and_owner_io_is_secondary() {
+    let owner = anyhow::Error::from(std::io::Error::new(
+        std::io::ErrorKind::Interrupted,
+        "bounded owner write was cancelled",
+    ));
+    let terminal = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "terminal client detached");
+
+    let merged = prefer_terminal_failure(Some(owner), Some(terminal)).unwrap();
+    let typed = merged
+        .downcast_ref::<std::io::Error>()
+        .expect("terminal cause remains the top-level typed I/O error");
+    assert_eq!(typed.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(typed.to_string().starts_with("terminal client detached"));
+    assert!(
+        typed
+            .to_string()
+            .contains("bounded owner write was cancelled")
+    );
 }

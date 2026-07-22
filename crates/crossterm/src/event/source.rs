@@ -21,6 +21,13 @@ pub(crate) trait EventSource: Sync + Send {
     /// Returns `Ok(None)` if there's no event available and timeout expires.
     fn try_read(&mut self, timeout: Option<Duration>) -> io::Result<Option<InternalEvent>>;
 
+    /// Returns whether an incomplete input sequence was received recently enough that an
+    /// application-generated terminal query should be deferred.
+    #[cfg(unix)]
+    fn pending_input_is_recent(&mut self) -> bool {
+        false
+    }
+
     /// Returns a `Waker` allowing to wake/force the `try_read` method to return `Ok(None)`.
     #[cfg(feature = "event-stream")]
     fn waker(&self) -> Waker;

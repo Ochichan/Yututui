@@ -12,6 +12,10 @@ pub enum Errors {
     Tmux(&'static str),
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Raw-mode teardown failed. Applications must not treat this as an unsupported capability:
+    /// starting another TUI on top of the unrestored mode can corrupt the caller's shell.
+    #[error("Terminal restore error: {0}")]
+    TerminalRestore(Box<Errors>),
     #[error("Image error: {0}")]
     Image(#[from] image::error::ImageError),
 }

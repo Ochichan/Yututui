@@ -1,3 +1,5 @@
+mod input;
+
 #[cfg(feature = "use-dev-tty")]
 pub(crate) mod tty;
 

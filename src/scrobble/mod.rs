@@ -1388,18 +1388,31 @@ mod tests {
     async fn reconfigure_retries_and_merges_the_latest_snapshot() {
         let (handle, mut rx, _shutdown_rx) = test_handle(1);
         assert!(handle.auth_start().is_ok());
+        {
+            let mut state = lock_pending(&handle.pending.state);
+            // Model a delivery thread blocked on the full actor inbox so both reconfigures are
+            // admitted before a real drainer can remove the first snapshot.
+            state.drainer_running = true;
+        }
 
         let mut first = settings();
         first.local_files = false;
         let mut latest = settings();
         latest.local_files = true;
         assert_eq!(handle.reconfigure(first), Ok(DeliveryReceipt::Deferred));
-        assert!(matches!(
+        assert_eq!(
             handle.reconfigure(latest),
-            Ok(DeliveryReceipt::Coalesced { .. })
-        ));
+            Ok(DeliveryReceipt::Coalesced {
+                replaced_existing: true,
+                evicted_oldest: false,
+            })
+        );
         assert_eq!(handle.auth_start(), Err(DeliveryError::Busy));
 
+        assert!(spawn_pending_drainer(
+            handle.tx.clone(),
+            Arc::clone(&handle.pending)
+        ));
         assert!(matches!(rx.recv().await, Some(ScrobbleCmd::AuthStart)));
         assert!(matches!(
             rx.recv().await,

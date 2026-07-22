@@ -58,6 +58,9 @@ jobs:
       - name: Vendored crossterm format
         run: cargo fmt --manifest-path crates/crossterm/Cargo.toml --all --check
 
+      - name: Vendored ratatui-image format
+        run: cargo fmt --manifest-path crates/ratatui-image/Cargo.toml --all --check
+
       - name: Architecture invariants
         run: scripts/check-architecture.sh
 
@@ -156,16 +159,32 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Vendored crossterm clippy (warnings = errors)
+      - name: Vendored crossterm clippy matrices (warnings = errors)
+        run: |
+          cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --features libc -- -D warnings
+          cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --no-default-features --features events,bracketed-paste,use-dev-tty -- -D warnings
+          cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Vendored ratatui-image clippy (warnings = errors)
         run: >-
-          cargo clippy --manifest-path crates/crossterm/Cargo.toml
-          --all-targets --all-features -- -D warnings
+          cargo clippy --manifest-path crates/ratatui-image/Cargo.toml --all-targets
+          --no-default-features --features crossterm,tokio -- -D warnings
 
       - name: Test
         run: cargo test --workspace
 
-      - name: Vendored crossterm test
-        run: cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
+      - name: Vendored crossterm test matrices
+        run: |
+          cargo test --manifest-path crates/crossterm/Cargo.toml
+          cargo test --manifest-path crates/crossterm/Cargo.toml --features libc
+          cargo test --manifest-path crates/crossterm/Cargo.toml --no-default-features --features events,bracketed-paste,use-dev-tty
+          cargo test --manifest-path crates/crossterm/Cargo.toml --all-features
+
+      - name: Vendored ratatui-image test
+        run: >-
+          cargo test --manifest-path crates/ratatui-image/Cargo.toml
+          --no-default-features --features crossterm,tokio
 
       # Advisory while the number proves stable (81.99% on 2026-07-16, threshold 80);
       # flip to enforcing by dropping continue-on-error after a release cycle.
@@ -205,6 +224,39 @@ jobs:
 
       - name: Test tray helper
         run: "cargo test --features desktop -- desktop::"
+
+  terminal-pty-macos:
+    name: Unix terminal PTY (macOS)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          toolchain: stable
+
+      - name: Test default Mio source
+        run: cargo test --manifest-path crates/crossterm/Cargo.toml
+
+      - name: Test use-dev-tty source
+        run: >-
+          cargo test --manifest-path crates/crossterm/Cargo.toml
+          --no-default-features --features events,bracketed-paste,use-dev-tty
+
+      - name: Test bounded capability-query output
+        run: >-
+          cargo test --manifest-path crates/ratatui-image/Cargo.toml
+          --no-default-features --features crossterm,tokio
+          bounded_query_writer_times_out_when_pty_reader_stalls
+
+      - name: Test application terminal output
+        run: cargo test --lib tui::terminal_io::tests
+
+      - name: Test application terminal lifecycle on a controlling PTY
+        run: cargo test --test terminal_startup_signal -- --test-threads=1
 
   macos-optional:
     name: macOS (optional light)
