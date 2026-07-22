@@ -398,9 +398,13 @@ impl App {
             })
             .ok();
         let child = match spawner {
-            VideoSpawner::Real => {
-                spawn_video_overlay(&url, cookies.as_deref(), layout, ipc_path.as_deref())
-            }
+            VideoSpawner::Real => spawn_video_overlay(
+                &url,
+                cookies.as_deref(),
+                layout,
+                self.playback.volume,
+                ipc_path.as_deref(),
+            ),
             #[cfg(test)]
             VideoSpawner::Fake => spawn_fake_video_overlay_process()
                 .map_err(|error| tracing::warn!(%error, "fake video overlay failed to spawn"))

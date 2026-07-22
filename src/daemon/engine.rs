@@ -536,6 +536,7 @@ impl DaemonEngine {
             &url,
             cookies.as_deref(),
             self.config.video_layout,
+            self.playback.volume,
             None,
         );
         let Some(overlay) = overlay else {
