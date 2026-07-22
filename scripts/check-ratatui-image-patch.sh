@@ -32,6 +32,18 @@ grep -Fq 'KONSOLE_SIXEL_TUI_MIN_VERSION' crates/ratatui-image/src/picker.rs \
 grep -Fq 'require_reported_cell_size_for_sixel' crates/ratatui-image/src/picker.rs \
   || fail "Konsole Sixel cell-size guard is missing"
 
+grep -Fq 'pub enum RenderScale' crates/ratatui-image/src/lib.rs \
+  || fail "native RenderScale patch is missing"
+
+grep -Fq 'transmit_direct' crates/ratatui-image/src/protocol/kitty.rs \
+  || fail "zoomed Kitty direct-placement patch is missing"
+
+grep -Fq 'render_scale.clear_size' crates/ratatui-image/src/protocol/sixel.rs \
+  || fail "DECDHL Sixel clear-geometry patch is missing"
+
+grep -Fq 'NEXT_RESIZE_REQUEST_ID' crates/ratatui-image/src/thread.rs \
+  || fail "threaded resize global-generation patch is missing"
+
 test -f crates/ratatui-image/PATCHES.md \
   || fail "crates/ratatui-image/PATCHES.md is missing"
 

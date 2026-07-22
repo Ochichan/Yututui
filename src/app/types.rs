@@ -358,11 +358,7 @@ pub enum Cmd {
     /// Load or rebuild the Local Deck index off the UI thread.
     Local(LocalCmd),
     /// Fetch synced lyrics for a track.
-    FetchLyrics {
-        video_id: String,
-        artist: String,
-        title: String,
-    },
+    FetchLyrics(crate::lyrics::LyricsRequest),
     /// Fetch + decode album art for a track (only when album art is enabled).
     FetchArtwork { video_id: String, source: ArtSource },
     /// Prefetch a track's direct stream URL for instant skip.
@@ -641,7 +637,7 @@ pub enum MouseTarget {
     /// Inert coverage for the expanded lyric-delay OSD's value and spacing. Action buttons are
     /// registered after it and win hit-testing; everything else is deliberately consumed.
     LyricsDelayBlock,
-    /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
+    /// Open/close the EQ preset dropdown on the player status line (clicking the `EQ:` label).
     EqMenu,
     /// Pick an EQ preset from the open dropdown.
     EqSelect(EqPreset),

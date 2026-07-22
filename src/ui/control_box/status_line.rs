@@ -118,7 +118,7 @@ fn push_playback_state(
 ) {
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
     // cells on some terminals (Windows), which drifts every later segment's hit rect
-    // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
+    // off its rendered text and makes `R:`/`EQ:` unclickable. See `render_controls`.
     if !(minimal && labels.beginner()) {
         let state = match (minimal, app.playback.paused, labels.beginner() && retro) {
             (true, true, _) => "‖",
@@ -453,7 +453,7 @@ fn push_shuffle_repeat(
     ));
 }
 
-/// The `eq:` preset label — a click target that opens the EQ menu.
+/// The `EQ:` preset label — a click target that opens the EQ menu.
 fn push_eq(
     parts: &mut StatusLineParts,
     app: &App,
@@ -479,7 +479,7 @@ fn push_eq(
             )),
         )
     } else {
-        format!("eq:{}", app.audio.preset.label())
+        format!("EQ:{}", app.audio.preset.label())
     };
     parts.push((Some(MouseTarget::EqMenu), Cow::Owned(eq)));
 }
@@ -495,7 +495,7 @@ fn push_streaming_mode(
 ) {
     if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
-        // mode dropdown — same affordance as the `eq:` label next to it.
+        // mode dropdown — same affordance as the `EQ:` label next to it.
         parts.push((None, Cow::Borrowed(gap)));
         let streaming = if labels.beginner() {
             let states = if retro {

@@ -458,7 +458,7 @@ impl App {
                 self.on_player_action(action)
             }
             MouseTarget::Player(_) => Vec::new(),
-            // Toggle the EQ dropdown by clicking its `eq:` label (closes the streaming one).
+            // Toggle the EQ dropdown by clicking its `EQ:` label (closes the streaming one).
             MouseTarget::EqMenu if self.player_controls_live() => {
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;

@@ -72,13 +72,73 @@ impl App {
             && !self.zoom_suppresses_native_art()
     }
 
-    /// Text zoom renders on a scaled virtual grid, which pixel-protocol art can't join:
-    /// its placeholder/anchor cells are forwarded unscaled, so a zoomed placement would
-    /// stripe across the scaled rows. Native art is therefore hidden while zoomed —
-    /// "zoom the text" literally — and the freed space goes to lyrics/track info.
-    /// Halfblocks and retro ASCII art are text, so they keep rendering (and scale).
+    /// Native art participates in zoom only when its placement protocol matches the terminal's
+    /// grid-scaling mechanism. Other pixel protocols remain hidden rather than drawing at stale
+    /// geometry. Halfblocks and retro ASCII art are text, so they keep rendering (and scale).
     fn zoom_suppresses_native_art(&self) -> bool {
-        self.zoom.scale() > 1 && self.native_image_protocol_selected()
+        self.zoom.scale() > 1
+            && self.native_image_protocol_selected()
+            && !self.native_art_zoom_supported()
+    }
+
+    fn native_art_zoom_supported(&self) -> bool {
+        let protocol = self
+            .art
+            .picker
+            .as_ref()
+            .map(|picker| picker.protocol_type());
+        matches!(
+            (self.zoom.mode(), protocol),
+            (
+                crate::zoom::ZoomMode::Osc66,
+                Some(ratatui_image::picker::ProtocolType::Kitty)
+            ) | (
+                crate::zoom::ZoomMode::Decdhl,
+                Some(ratatui_image::picker::ProtocolType::Sixel)
+            )
+        )
+    }
+
+    /// A direct Kitty placement can outlive the protocol object that created it. Keep this
+    /// deliberately conservative: even if config/mode state has just hidden the art or its encode
+    /// is in flight (so the thread protocol temporarily has no inner value), the outer protocol
+    /// plus the supported zoom/protocol pair means pixels may still exist in the terminal.
+    fn zoomed_kitty_direct_placement_may_be_visible(&self) -> bool {
+        self.zoom.scale() > 1
+            && self.zoom.mode() == crate::zoom::ZoomMode::Osc66
+            && self.art.picker.as_ref().is_some_and(|picker| {
+                picker.protocol_type() == ratatui_image::picker::ProtocolType::Kitty
+            })
+            && self.art.protocol.borrow().is_some()
+    }
+
+    /// Native-raster geometry corresponding to the backend's current virtual grid.
+    pub(crate) fn art_render_scale(&self) -> ratatui_image::RenderScale {
+        if self.zoom.scale() <= 1 || !self.native_image_protocol_selected() {
+            return ratatui_image::RenderScale::Normal;
+        }
+
+        match (
+            self.zoom.mode(),
+            self.art
+                .picker
+                .as_ref()
+                .map(|picker| picker.protocol_type()),
+        ) {
+            (crate::zoom::ZoomMode::Osc66, Some(ratatui_image::picker::ProtocolType::Kitty)) => {
+                ratatui_image::RenderScale::Uniform {
+                    factor: u16::from(self.zoom.scale()),
+                    double_width_lines: false,
+                }
+            }
+            (crate::zoom::ZoomMode::Decdhl, Some(ratatui_image::picker::ProtocolType::Sixel)) => {
+                ratatui_image::RenderScale::Uniform {
+                    factor: 2,
+                    double_width_lines: true,
+                }
+            }
+            _ => ratatui_image::RenderScale::Normal,
+        }
     }
 
     /// Whether rendering will actually ship a native terminal image this frame. Retro mode
@@ -780,6 +840,7 @@ impl App {
     /// Drop any held art (track change, or the feature turned off) — also frees its RAM.
     pub(in crate::app) fn clear_artwork(&mut self) {
         let had_native_art_under_overlay = self.native_art_active() && self.art.overlay_mask != 0;
+        let had_zoomed_kitty_direct_placement = self.zoomed_kitty_direct_placement_may_be_visible();
         *self.art.protocol.borrow_mut() = None;
         self.art.source = None;
         self.art.video_id = None;
@@ -787,6 +848,12 @@ impl App {
         self.art.loading = false;
         if had_native_art_under_overlay {
             self.reinforce_overlay_for_art_refresh();
+        }
+        if had_zoomed_kitty_direct_placement {
+            // A new cover gets a new Kitty image id, so dropping the Rust protocol cannot delete
+            // the old direct placement. One full clear removes it; this is event-driven only and
+            // never adds steady-frame clears.
+            self.request_native_image_clear();
         }
     }
 

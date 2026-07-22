@@ -166,10 +166,82 @@ pub use image::imageops::FilterType;
 type Result<T> = std::result::Result<T, errors::Errors>;
 
 /// The terminal's font size in `(width, height)`
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FontSize {
     pub width: u16,
     pub height: u16,
+}
+
+/// yututui patch: rendering scale applied by native terminal protocols.
+///
+/// The image is still laid out in logical ratatui cells. Native protocols may render those cells
+/// across a larger physical-cell footprint when the terminal itself is zooming the text grid.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum RenderScale {
+    /// Render one protocol cell per logical ratatui cell.
+    #[default]
+    Normal,
+    /// Uniformly enlarge the native raster and placement.
+    Uniform {
+        factor: u16,
+        /// Double-width line modes (for example DECDHL) keep the logical clear width while their
+        /// physical height grows with `factor`.
+        double_width_lines: bool,
+    },
+}
+
+impl RenderScale {
+    /// Collapse identity and invalid factors to [`RenderScale::Normal`].
+    pub const fn normalized(self) -> Self {
+        match self {
+            Self::Uniform { factor, .. } if factor <= 1 => Self::Normal,
+            other => other,
+        }
+    }
+
+    /// Physical scale factor, always at least one.
+    pub const fn factor(self) -> u16 {
+        match self.normalized() {
+            Self::Normal => 1,
+            Self::Uniform { factor, .. } => factor,
+        }
+    }
+
+    /// Font metrics used to encode the native raster at this scale.
+    pub const fn scaled_font(self, font_size: FontSize) -> FontSize {
+        let factor = self.factor();
+        FontSize::new(
+            font_size.width.saturating_mul(factor),
+            font_size.height.saturating_mul(factor),
+        )
+    }
+
+    /// Physical-cell footprint for protocols with explicit placement dimensions.
+    pub const fn placement_size(self, size: Size) -> Size {
+        let factor = self.factor();
+        Size::new(
+            size.width.saturating_mul(factor),
+            size.height.saturating_mul(factor),
+        )
+    }
+
+    /// Physical-cell area that must be cleared before drawing an anchored raster.
+    pub const fn clear_size(self, size: Size) -> Size {
+        match self.normalized() {
+            Self::Normal => size,
+            Self::Uniform {
+                factor,
+                double_width_lines,
+            } => Size::new(
+                if double_width_lines {
+                    size.width
+                } else {
+                    size.width.saturating_mul(factor)
+                },
+                size.height.saturating_mul(factor),
+            ),
+        }
+    }
 }
 
 impl FontSize {
@@ -413,8 +485,10 @@ impl Resize {
         size: Size,
         background_color: Option<Rgba<u8>>,
     ) -> DynamicImage {
-        let width = (size.width * font_size.width) as u32;
-        let height = (size.height * font_size.height) as u32;
+        // yututui patch: scaled font metrics can exceed `u16` during multiplication; promote the
+        // operands before multiplying so native zoom never wraps the target raster dimensions.
+        let width = u32::from(size.width) * u32::from(font_size.width);
+        let height = u32::from(size.height) * u32::from(font_size.height);
 
         // Resize/Crop/etc., fitting a multiple of font-size, but not necessarily the `size`.
         let mut image = self.resize_pixels(image, width, height);

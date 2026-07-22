@@ -55,6 +55,7 @@ pub mod terminal_keyboard;
 pub mod terminal_runtime;
 pub mod theme;
 pub mod tools;
+pub mod track_identity;
 pub mod transfer;
 pub mod tui;
 pub mod ui;

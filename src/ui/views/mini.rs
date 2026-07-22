@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if area.height >= 4 {
         control_box::render_status_line(frame, app, row(3), animated);
     }
-    // The status line's `eq:`/`streaming:` toggles and the queue position stay live in the
+    // The status line's `EQ:`/`streaming:` toggles and the queue position stay live in the
     // miniplayer, so their surfaces must render here too — an open popup that isn't drawn
     // would capture input invisibly.
     if app.dropdowns.eq_open {

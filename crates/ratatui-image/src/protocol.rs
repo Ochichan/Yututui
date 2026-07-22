@@ -20,7 +20,7 @@ use self::{
     kitty::{Kitty, StatefulKitty},
     sixel::Sixel,
 };
-use crate::{FontSize, ResizeEncodeRender, Result};
+use crate::{FontSize, RenderScale, ResizeEncodeRender, Result};
 
 use super::Resize;
 
@@ -75,6 +75,17 @@ trait StatefulProtocolTrait: ProtocolTrait {
     ///
     /// This can be done in a background thread, and the result is stored in this [StatefulProtocol].
     fn resize_encode(&mut self, img: DynamicImage, size: Size) -> Result<()>;
+
+    /// yututui patch: encode with native-terminal render scaling. Protocols that do not support native scaling
+    /// deliberately keep their scale-one behavior.
+    fn resize_encode_scaled(
+        &mut self,
+        img: DynamicImage,
+        size: Size,
+        _render_scale: RenderScale,
+    ) -> Result<()> {
+        self.resize_encode(img, size)
+    }
 }
 
 /// A fixed-size image protocol for the [crate::Image] widget.
@@ -139,6 +150,10 @@ pub struct StatefulProtocol {
     hash: u64,
     protocol_type: StatefulProtocolType,
     last_encoding_result: Option<Result<()>>,
+    // yututui patch: keep desired and encoded native scale separate so threaded responses can
+    // return ownership without allowing stale geometry to render.
+    render_scale: RenderScale,
+    encoded_render_scale: Option<RenderScale>,
 }
 
 #[derive(Clone)]
@@ -194,12 +209,40 @@ impl StatefulProtocol {
             hash: u64::default(),
             protocol_type,
             last_encoding_result: None,
+            render_scale: RenderScale::Normal,
+            encoded_render_scale: None,
         }
     }
 
     // Calculate the area that this image will ultimately render to, inside the given area.
     pub fn size_for(&self, resize: Resize, size: Size) -> Size {
-        resize.size_for(&self.source.image, self.font_size, size)
+        resize.size_for(&self.source.image, self.effective_font_size(), size)
+    }
+
+    /// Set the desired native rendering scale. Halfblocks and iTerm2 keep their established
+    /// scale-one behavior; Kitty and Sixel opt in through their protocol implementations.
+    pub fn set_render_scale(&mut self, render_scale: RenderScale) {
+        self.render_scale = if matches!(
+            self.protocol_type,
+            StatefulProtocolType::Kitty(_) | StatefulProtocolType::Sixel(_)
+        ) {
+            render_scale.normalized()
+        } else {
+            RenderScale::Normal
+        };
+    }
+
+    fn effective_font_size(&self) -> FontSize {
+        self.render_scale.scaled_font(self.font_size)
+    }
+
+    fn desired_size(&self) -> Size {
+        let font_size = self.effective_font_size();
+        if font_size == self.font_size {
+            self.source.desired
+        } else {
+            Resize::natural_size(&self.source.image, font_size)
+        }
     }
 
     pub fn protocol_type(&self) -> &StatefulProtocolType {
@@ -239,19 +282,20 @@ impl ResizeEncodeRender for StatefulProtocol {
 
         let img = resize.resize(
             &self.source.image,
-            self.font_size,
+            self.effective_font_size(),
             size,
             self.background_color(),
         );
 
         // TODO: save err in struct
-        let result = self
-            .protocol_type
-            .inner_trait_mut()
-            .resize_encode(img, size);
+        let result =
+            self.protocol_type
+                .inner_trait_mut()
+                .resize_encode_scaled(img, size, self.render_scale);
 
         if result.is_ok() {
-            self.hash = self.source.hash
+            self.hash = self.source.hash;
+            self.encoded_render_scale = Some(self.render_scale);
         }
 
         self.last_encoding_result = Some(result)
@@ -264,11 +308,11 @@ impl ResizeEncodeRender for StatefulProtocol {
     fn needs_resize(&self, resize: &Resize, size: Size) -> Option<Size> {
         resize.needs_resize(
             &self.source.image,
-            Some(self.source.desired),
-            self.font_size,
+            Some(self.desired_size()),
+            self.effective_font_size(),
             Some(self.last_encoding_area()),
             size,
-            self.source.hash != self.hash,
+            self.source.hash != self.hash || self.encoded_render_scale != Some(self.render_scale),
         )
     }
 }

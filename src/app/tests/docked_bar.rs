@@ -320,7 +320,7 @@ fn eq_dropdown_drops_up_from_the_docked_status_line() {
     let anchor = app
         .hits
         .rect_of_target(MouseTarget::EqMenu)
-        .expect("eq: registered in the docked box");
+        .expect("EQ: registered in the docked box");
     app.update(Msg::MouseClick {
         col: anchor.x,
         row: anchor.y,

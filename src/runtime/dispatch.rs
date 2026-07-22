@@ -399,16 +399,8 @@ impl RuntimeHandles {
             Cmd::Recorder(job) => {
                 self.dispatch_recorder(app, job);
             }
-            Cmd::FetchLyrics {
-                video_id,
-                artist,
-                title,
-            } => {
-                if !report_actor_delivery(
-                    app,
-                    "lyrics",
-                    self.lyrics_handle.fetch(video_id, artist, title),
-                ) {
+            Cmd::FetchLyrics(request) => {
+                if !report_actor_delivery(app, "lyrics", self.lyrics_handle.fetch(request)) {
                     recover_actor_rejection(app, ActorRejectionRecovery::Lyrics);
                 }
             }
