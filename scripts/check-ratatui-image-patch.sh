@@ -41,7 +41,7 @@ if [ "${1:-}" = "--print-tree-digest" ]; then
 fi
 
 # Rebless only after reviewing an intentional vendor-base or local-patch change; see PATCHES.md.
-expected_tree_digest='ad192c53d3e82db10f57fa77c139452df5b7ac3a6e731fba2eea0da3427718c0'
+expected_tree_digest='ea0e9ad2b6225cf055238825b9cc557fb2c6f439a589bcfcd417168aeacb9fdf'
 test "$actual_tree_digest" = "$expected_tree_digest" \
   || fail "vendored ratatui-image tree drifted (expected $expected_tree_digest, got $actual_tree_digest)"
 
@@ -68,6 +68,18 @@ grep -Fq 'KONSOLE_SIXEL_TUI_MIN_VERSION' crates/ratatui-image/src/picker.rs \
 
 grep -Fq 'require_reported_cell_size_for_sixel' crates/ratatui-image/src/picker.rs \
   || fail "Konsole Sixel cell-size guard is missing"
+
+grep -Fq 'pub enum RenderScale' crates/ratatui-image/src/lib.rs \
+  || fail "native RenderScale patch is missing"
+
+grep -Fq 'transmit_direct' crates/ratatui-image/src/protocol/kitty.rs \
+  || fail "zoomed Kitty direct-placement patch is missing"
+
+grep -Fq 'render_scale.clear_size' crates/ratatui-image/src/protocol/sixel.rs \
+  || fail "DECDHL Sixel clear-geometry patch is missing"
+
+grep -Fq 'NEXT_RESIZE_REQUEST_ID' crates/ratatui-image/src/thread.rs \
+  || fail "threaded resize global-generation patch is missing"
 
 grep -Fq 'from_query_stdio_with_options_and_writer' crates/ratatui-image/src/picker.rs \
   || fail "bounded terminal-query writer seam is missing"

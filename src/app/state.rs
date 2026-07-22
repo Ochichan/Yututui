@@ -242,7 +242,7 @@ pub struct Status {
 /// source menu is separate but shares the same modal dismissal path.
 #[derive(Default)]
 pub struct Dropdowns {
-    /// Whether the EQ-preset dropdown is showing (toggled by clicking the `eq:` label,
+    /// Whether the EQ-preset dropdown is showing (toggled by clicking the `EQ:` label,
     /// dismissed by picking a preset or clicking elsewhere).
     pub eq_open: bool,
     /// Whether the streaming-mode dropdown is showing. Mutually exclusive with `eq_open`.

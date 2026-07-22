@@ -55,7 +55,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1), // help
         ])
         .split(inner);
-        render_filler(frame, app, inner, rows[1]);
+        // Field animations belong to the filler only. Passing the full player inner rect here
+        // lets sparse effects survive in the unused cells of the docked controls/help rows.
+        render_filler(frame, app, rows[1], rows[1]);
         crate::ui::control_box::render_docked(frame, app, rows[2]);
         buttons::render_help_button(frame, app, rows[3]);
     } else {
@@ -589,6 +591,7 @@ fn draw_art(frame: &mut Frame, app: &App, rect: Rect) {
         return;
     }
     if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
+        proto.set_render_scale(app.art_render_scale());
         frame.render_stateful_widget(
             StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),
             rect,

@@ -27,6 +27,7 @@
 //!
 //! [text sizing protocol]: https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
 
+use std::cell::Cell as StateCell;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering};
@@ -459,16 +460,26 @@ fn should_probe_decdwl() -> bool {
 /// merging style-identical contiguous cells into one escape per run. Cells whose symbol
 /// already carries raw escape bytes (ratatui-image's protocol anchor cells) are printed
 /// verbatim at the scaled position instead — wrapping them would corrupt the image
-/// protocol handshake. (Pixel album art is hidden by the views while zoomed; this is a
-/// safety net, not a rendering path.)
+/// protocol handshake. Matching native-art protocols use this raw-anchor path while zoomed.
 pub struct ZoomBackend<W: Write> {
     inner: CrosstermBackend<W>,
     zoom: ZoomHandle,
+    physical_rows: StateCell<u16>,
+    dhl_active: bool,
+    prepared_physical_rows: u16,
+    touched_dhl_rows: u16,
 }
 
 impl<W: Write> ZoomBackend<W> {
     pub fn new(inner: CrosstermBackend<W>, zoom: ZoomHandle) -> Self {
-        Self { inner, zoom }
+        Self {
+            inner,
+            zoom,
+            physical_rows: StateCell::new(0),
+            dhl_active: false,
+            prepared_physical_rows: 0,
+            touched_dhl_rows: 0,
+        }
     }
 
     fn scale(&self) -> u16 {
@@ -540,6 +551,64 @@ impl<W: Write> ZoomBackend<W> {
 }
 
 impl<W: Write> ZoomBackend<W> {
+    /// Prime every complete physical row pair with its DECDHL rendition. Konsole remembers line
+    /// renditions across clears, and preparing the full grid up front keeps cursor-only image
+    /// anchors from inheriting a stale single-width row after a resize.
+    fn prepare_dhl_rows(&mut self) -> io::Result<()> {
+        let physical_rows = self.physical_rows.get();
+        let needs_prepare = !self.dhl_active || physical_rows != self.prepared_physical_rows;
+        self.dhl_active = true;
+        if !needs_prepare {
+            return Ok(());
+        }
+
+        let paired_rows = physical_rows / 2 * 2;
+        for row in 0..paired_rows {
+            queue!(&mut self.inner, MoveTo(0, row))?;
+            write!(
+                &mut self.inner,
+                "{}",
+                if row % 2 == 0 { "\x1b#3" } else { "\x1b#4" }
+            )?;
+        }
+        self.prepared_physical_rows = physical_rows;
+        self.touched_dhl_rows = self.touched_dhl_rows.max(paired_rows);
+        Ok(())
+    }
+
+    fn assert_dhl_pair(&mut self, y: u16) -> io::Result<()> {
+        let top = y.saturating_mul(2);
+        for (row, sequence) in [(top, "\x1b#3"), (top.saturating_add(1), "\x1b#4")] {
+            queue!(&mut self.inner, MoveTo(0, row))?;
+            write!(&mut self.inner, "{sequence}")?;
+        }
+        self.touched_dhl_rows = self.touched_dhl_rows.max(top.saturating_add(2));
+        Ok(())
+    }
+
+    /// Restore every row that may have acquired a persistent double-height rendition. This runs
+    /// exactly once when leaving DECDHL, followed by a clear/home so no half-glyph survives.
+    fn reset_dhl_rows(&mut self) -> io::Result<()> {
+        if !self.dhl_active {
+            return Ok(());
+        }
+
+        let rows = self
+            .physical_rows
+            .get()
+            .max(self.prepared_physical_rows)
+            .max(self.touched_dhl_rows);
+        for row in 0..rows {
+            queue!(&mut self.inner, MoveTo(0, row))?;
+            write!(&mut self.inner, "\x1b#5")?;
+        }
+        write!(&mut self.inner, "\x1b[2J\x1b[H")?;
+        self.dhl_active = false;
+        self.prepared_physical_rows = 0;
+        self.touched_dhl_rows = 0;
+        Ok(())
+    }
+
     /// One diffed run in double-size-line mode: the run is written twice, `ESC # 3` on
     /// the top physical row and `ESC # 4` on the bottom one, with identical text —
     /// konsole requires matching halves, and the others don't mind. The rendition is
@@ -550,7 +619,7 @@ impl<W: Write> ZoomBackend<W> {
             return Ok(());
         }
         for (half, sequence) in [(0, "\x1b#3"), (1, "\x1b#4")] {
-            let row = y * 2 + half;
+            let row = y.saturating_mul(2).saturating_add(half);
             // Assert the rendition from column 0 (valid on the line in either state),
             // then land on the logical column and write.
             queue!(&mut self.inner, MoveTo(0, row))?;
@@ -558,6 +627,9 @@ impl<W: Write> ZoomBackend<W> {
             queue!(&mut self.inner, MoveTo(x, row))?;
             write!(&mut self.inner, "{run}")?;
         }
+        self.touched_dhl_rows = self
+            .touched_dhl_rows
+            .max(y.saturating_mul(2).saturating_add(2));
         run.clear();
         Ok(())
     }
@@ -573,13 +645,13 @@ impl<W: Write> ZoomBackend<W> {
 
         for (x, y, cell) in content {
             let sym = cell.symbol();
-            // Image anchor cells can't exist here (native art hides while zoomed, and
-            // double-size lines couldn't host them anyway) — forward them raw as the
-            // same safety net the OSC 66 path keeps.
+            // Matching Sixel image anchors are emitted once at the logical art origin. Assert the
+            // physical row pair first, then forward the protocol bytes without duplicating them.
             if sym.contains('\u{1b}') {
                 let (rx, ry) = run_pos;
                 self.flush_run_dhl(&mut run, rx, ry)?;
-                queue!(&mut self.inner, MoveTo(x, y * 2))?;
+                self.assert_dhl_pair(y)?;
+                queue!(&mut self.inner, MoveTo(x, y.saturating_mul(2)))?;
                 write!(&mut self.inner, "{sym}")?;
                 style = None;
                 next = None;
@@ -620,11 +692,14 @@ impl<W: Write> Backend for ZoomBackend<W> {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         if self.scale() <= 1 {
+            self.reset_dhl_rows()?;
             return self.inner.draw(content);
         }
         if self.zoom.mode() == ZoomMode::Decdhl {
+            self.prepare_dhl_rows()?;
             return self.draw_dhl(content);
         }
+        self.reset_dhl_rows()?;
         let (s, frac) = zoom_params(self.zoom.percent());
 
         let mut run = String::new();
@@ -726,6 +801,7 @@ impl<W: Write> Backend for ZoomBackend<W> {
     fn size(&self) -> io::Result<Size> {
         let s = self.scale();
         let size = self.inner.size()?;
+        self.physical_rows.set(size.height);
         Ok(Size {
             width: size.width / s,
             height: size.height / s,
@@ -735,6 +811,7 @@ impl<W: Write> Backend for ZoomBackend<W> {
     fn window_size(&mut self) -> io::Result<WindowSize> {
         let s = self.scale();
         let mut ws = self.inner.window_size()?;
+        self.physical_rows.set(ws.columns_rows.height);
         ws.columns_rows.width /= s;
         ws.columns_rows.height /= s;
         Ok(ws)
@@ -778,6 +855,10 @@ mod tests {
 
     fn drawn_bytes(sink: &CaptureWriter) -> String {
         String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
+    }
+
+    fn clear_drawn_bytes(sink: &CaptureWriter) {
+        sink.0.lock().unwrap().clear();
     }
 
     fn cell(sym: &str) -> Cell {
@@ -920,13 +1001,13 @@ mod tests {
         );
     }
 
-    fn dhl_backend() -> (ZoomBackend<CaptureWriter>, CaptureWriter) {
+    fn dhl_backend() -> (ZoomBackend<CaptureWriter>, CaptureWriter, ZoomHandle) {
         let zoom = ZoomHandle::default();
         zoom.set_mode(ZoomMode::Decdhl);
         zoom.set(200);
         let sink = CaptureWriter::default();
-        let backend = ZoomBackend::new(CrosstermBackend::new(sink.clone()), zoom);
-        (backend, sink)
+        let backend = ZoomBackend::new(CrosstermBackend::new(sink.clone()), zoom.clone());
+        (backend, sink, zoom)
     }
 
     #[test]
@@ -950,7 +1031,7 @@ mod tests {
 
     #[test]
     fn decdhl_draw_emits_identical_top_and_bottom_halves() {
-        let (mut backend, sink) = dhl_backend();
+        let (mut backend, sink, _) = dhl_backend();
         let (a, b) = (cell("a"), cell("b"));
         // Contiguous cells at virtual (3,2)-(4,2): logical column 3, physical rows 4+5.
         backend
@@ -974,7 +1055,7 @@ mod tests {
 
     #[test]
     fn decdhl_cursor_maps_logical_columns_and_doubled_rows() {
-        let (mut backend, sink) = dhl_backend();
+        let (mut backend, sink, _) = dhl_backend();
         backend
             .set_cursor_position(Position { x: 5, y: 3 })
             .unwrap();
@@ -1003,6 +1084,79 @@ mod tests {
         // At 100% DECDHL is inert.
         zoom.set(100);
         assert_eq!(zoom.mouse_scale(), (1, 1));
+    }
+
+    #[test]
+    fn decdhl_raw_image_anchor_is_emitted_once_on_a_primed_pair() {
+        let (mut backend, sink, _) = dhl_backend();
+        let raw = "\x1bPqSIXEL\x1b\\";
+        let anchor = cell(raw);
+
+        backend.draw([(3u16, 2u16, &anchor)].into_iter()).unwrap();
+        backend.flush().unwrap();
+        let out = drawn_bytes(&sink);
+
+        assert_eq!(out.matches(raw).count(), 1, "raw protocol bytes: {out:?}");
+        assert!(out.contains("\x1b[5;1H\x1b#3"), "top row primed: {out:?}");
+        assert!(
+            out.contains("\x1b[6;1H\x1b#4"),
+            "bottom row primed: {out:?}"
+        );
+        assert!(
+            out.contains(&format!("\x1b[5;4H{raw}")),
+            "anchor lands at logical x / physical y: {out:?}"
+        );
+    }
+
+    #[test]
+    fn decdhl_primes_all_rows_again_after_physical_height_changes() {
+        let (mut backend, sink, _) = dhl_backend();
+        backend.physical_rows.set(4);
+        backend.draw(std::iter::empty()).unwrap();
+        backend.flush().unwrap();
+        let first = drawn_bytes(&sink);
+        assert_eq!(first.matches("\x1b#3").count(), 2);
+        assert_eq!(first.matches("\x1b#4").count(), 2);
+
+        clear_drawn_bytes(&sink);
+        backend.physical_rows.set(6);
+        backend.draw(std::iter::empty()).unwrap();
+        backend.flush().unwrap();
+        let resized = drawn_bytes(&sink);
+        assert_eq!(resized.matches("\x1b#3").count(), 3);
+        assert_eq!(resized.matches("\x1b#4").count(), 3);
+    }
+
+    #[test]
+    fn leaving_decdhl_resets_each_row_then_clears_exactly_once() {
+        let (mut backend, sink, zoom) = dhl_backend();
+        backend.physical_rows.set(6);
+        let a = cell("a");
+        backend.draw([(0u16, 0u16, &a)].into_iter()).unwrap();
+        backend.flush().unwrap();
+
+        clear_drawn_bytes(&sink);
+        zoom.set(100);
+        let n = cell("n");
+        backend.draw([(0u16, 0u16, &n)].into_iter()).unwrap();
+        backend.flush().unwrap();
+        let reset = drawn_bytes(&sink);
+        assert_eq!(
+            reset.matches("\x1b#5").count(),
+            6,
+            "reset every row: {reset:?}"
+        );
+        assert!(reset.contains("\x1b[2J\x1b[H"), "clear and home: {reset:?}");
+
+        clear_drawn_bytes(&sink);
+        backend.draw([(1u16, 0u16, &n)].into_iter()).unwrap();
+        backend.flush().unwrap();
+        let steady = drawn_bytes(&sink);
+        assert!(!steady.contains("\x1b#5"), "reset is one-shot: {steady:?}");
+        assert!(
+            !steady.contains("\x1b[2J\x1b[H"),
+            "clear is one-shot: {steady:?}"
+        );
     }
 
     #[test]

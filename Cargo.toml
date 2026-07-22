@@ -98,8 +98,9 @@ ratatui = "0.30.2"
 # protocol encoders are pure Rust and compiled unconditionally — no feature gates them —
 # so `crossterm` alone is enough. Opt-in feature; nothing renders unless the user enables it.
 # Patched to a local fork (see `[patch.crates-io]` below +
-# `crates/ratatui-image/PATCHES.md`) for popup-safe Kitty rendering, reliable Sixel/iTerm2
-# retransmission, and conservative Konsole protocol detection. Same public crate version.
+# `crates/ratatui-image/PATCHES.md`) for popup-safe and zoom-aware Kitty/Sixel rendering,
+# stale-worker ownership rejection, reliable Sixel/iTerm2 retransmission, and conservative
+# Konsole protocol detection. Same public crate version.
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "tokio"] }
 # Synced-lyrics fetch (lrclib) + raw browse. `native-tls` uses the OS TLS stack —
 # Security.framework on macOS, SChannel on Windows — so there's no bundled C crypto

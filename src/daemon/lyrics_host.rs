@@ -6,7 +6,7 @@
 //! a headless daemon with no GUI attached never talks to lrclib.
 
 use crate::api::Song;
-use crate::lyrics::{LyricLine, LyricsHandle};
+use crate::lyrics::{LyricLine, LyricsHandle, LyricsRequest};
 use crate::remote::proto::LyricLineModel;
 use crate::remote::publish::Publisher;
 
@@ -59,11 +59,7 @@ impl LyricsHost {
                 && since.elapsed() >= EMPTY_RETRY_AFTER
             {
                 self.retried_empty = true;
-                let _ = self.handle.fetch(
-                    song.video_id.clone(),
-                    song.artist.clone(),
-                    song.title.clone(),
-                );
+                let _ = self.handle.fetch(request_for_song(song));
             }
             return;
         }
@@ -74,11 +70,7 @@ impl LyricsHost {
         if let Some(song) = current {
             // A delivery failure only means the actor is gone (process teardown); the
             // cleared snapshot above is already the correct terminal state.
-            let _ = self.handle.fetch(
-                song.video_id.clone(),
-                song.artist.clone(),
-                song.title.clone(),
-            );
+            let _ = self.handle.fetch(request_for_song(song));
         }
     }
 
@@ -104,6 +96,20 @@ impl LyricsHost {
     }
 }
 
+fn request_for_song(song: &Song) -> LyricsRequest {
+    let duration_secs = song
+        .duration_secs
+        .or_else(|| crate::streaming::candidate::parse_duration_secs(&song.duration))
+        .map(f64::from);
+    LyricsRequest {
+        video_id: song.video_id.clone(),
+        title: song.title.clone(),
+        artist: song.artist.clone(),
+        album: song.album.clone(),
+        duration_secs,
+    }
+}
+
 /// Seconds → whole milliseconds, non-negative. All lrclib lines are synced, so `ms` is
 /// always `Some` here; the wire keeps `Option` for unsynced sources (docs/gui/02 §7).
 fn to_models(lines: &[LyricLine]) -> Vec<LyricLineModel> {
@@ -119,6 +125,23 @@ fn to_models(lines: &[LyricLine]) -> Vec<LyricLineModel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn song_request_carries_album_and_duration() {
+        let song = Song::from_search(
+            "rich-id",
+            "Rich title",
+            "Rich artist",
+            "4:02",
+            Some("Rich album".to_owned()),
+        );
+        let request = request_for_song(&song);
+        assert_eq!(request.video_id, "rich-id");
+        assert_eq!(request.title, "Rich title");
+        assert_eq!(request.artist, "Rich artist");
+        assert_eq!(request.album.as_deref(), Some("Rich album"));
+        assert_eq!(request.duration_secs, Some(242.0));
+    }
 
     #[test]
     fn converts_seconds_to_clamped_millis() {

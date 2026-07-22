@@ -14,7 +14,9 @@ use ratatui::{
 };
 
 use super::{ProtocolTrait, StatefulProtocolTrait, clear_area};
-use crate::{Result, errors::Errors, picker::cap_parser::Parser, protocol::UNIT_WIDTH};
+use crate::{
+    RenderScale, Result, errors::Errors, picker::cap_parser::Parser, protocol::UNIT_WIDTH,
+};
 
 #[derive(Clone, Default)]
 pub struct Sixel {
@@ -28,7 +30,7 @@ pub struct Sixel {
 
 impl Sixel {
     pub fn new(image: DynamicImage, size: Size, is_tmux: bool) -> Result<Self> {
-        let data = encode(&image, size, is_tmux)?;
+        let data = encode(&image, size, is_tmux, RenderScale::Normal)?;
         Ok(Self {
             data,
             size,
@@ -39,14 +41,22 @@ impl Sixel {
 }
 
 // TODO: change E to sixel_rs::status::Error and map when calling
-fn encode(img: &DynamicImage, size: Size, is_tmux: bool) -> Result<String> {
+fn encode(
+    img: &DynamicImage,
+    size: Size,
+    is_tmux: bool,
+    render_scale: RenderScale,
+) -> Result<String> {
     let (w, h) = (img.width(), img.height());
     let img_rgba8 = img.to_rgba8();
     let bytes = img_rgba8.as_raw();
     let (start, escape, end) = Parser::tmux_start_escape_end(is_tmux);
 
-    let width = size.width;
-    let height = size.height;
+    // yututui patch: a DECDHL raster spans twice the physical rows, while CSI X still counts
+    // logical columns on the double-width line.
+    let clear_size = render_scale.clear_size(size);
+    let width = clear_size.width;
+    let height = clear_size.height;
 
     let sixel_data = sixel_encode(bytes, w as usize, h as usize, &EncodeOptions::default())
         .map_err(|err| Errors::Sixel(format!("sixel encoding error: {err}")))?;
@@ -115,7 +125,18 @@ pub(crate) fn render(data: &str, area: Rect, buf: &mut Buffer) {
 
 impl StatefulProtocolTrait for Sixel {
     fn resize_encode(&mut self, img: DynamicImage, size: Size) -> Result<()> {
-        let data = encode(&img, size, self.is_tmux)?;
+        self.resize_encode_scaled(img, size, RenderScale::Normal)
+    }
+
+    fn resize_encode_scaled(
+        &mut self,
+        img: DynamicImage,
+        size: Size,
+        render_scale: RenderScale,
+    ) -> Result<()> {
+        // yututui patch: the outer state has already resized pixels with scaled font metrics;
+        // carry the scale here for DECDHL-aware clear geometry.
+        let data = encode(&img, size, self.is_tmux, render_scale)?;
         *self = Sixel {
             data,
             size,
@@ -171,5 +192,25 @@ mod tests {
             cell_a, cell_b,
             "anchor cells must differ so ratatui re-emits the sixel"
         );
+    }
+
+    #[test]
+    fn double_width_scale_clears_logical_columns_across_physical_rows() {
+        let img = image::DynamicImage::new_rgb8(2, 2);
+        let data = encode(
+            &img,
+            Size::new(3, 2),
+            false,
+            RenderScale::Uniform {
+                factor: 2,
+                double_width_lines: true,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            data.starts_with("\x1b[3X\x1b[1B\x1b[3X\x1b[1B\x1b[3X\x1b[1B\x1b[3X\x1b[1B\x1b[4A")
+        );
+        assert!(!data.starts_with("\x1b[6X"));
     }
 }

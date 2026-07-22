@@ -273,13 +273,13 @@ pub(in crate::ui) fn render_seekbar(frame: &mut Frame, app: &App, area: Rect, an
 /// The transport status line: state, queue position, rating, shuffle, repeat, speed, EQ, etc.
 ///
 /// Rendered as click segments rather than one string so repeat and
-/// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
-/// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
+/// `EQ:` (opens the preset dropdown) are mouse targets — but every segment shares the same
+/// cyan style, so the line looks exactly like the plain status text it replaced. `EQ:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
 pub(in crate::ui) fn render_status_line(frame: &mut Frame, app: &App, area: Rect, animated: bool) {
     // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
     // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
-    // the `eq:` / repeat toggles at the tail must stay visible and clickable.
+    // the `EQ:` / repeat toggles at the tail must stay visible and clickable.
     let (gap_w, parts) = fitted_status_line_parts(app, area.width, animated);
     // The identify chip (`ID?` / `지듣노`) is the smallest control on the line, and its
     // trailing `?` sits right on its rect's edge — fold up to two cells of the flanking
@@ -550,7 +550,7 @@ pub(in crate::ui) fn render_controls(frame: &mut Frame, app: &App, area: Rect, a
     crate::ui::anim::pause_flash_overlay(frame, app, area);
 }
 
-/// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets
+/// The EQ preset dropdown, anchored under the `EQ:` label and listing the built-in presets
 /// (the active one highlighted). Each row is a click target that selects that preset.
 pub fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<(String, bool, MouseTarget)> = crate::eq::EqPreset::CYCLE
@@ -568,7 +568,7 @@ pub fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The streaming-mode dropdown, anchored under the `streaming:` label and listing the station modes
 /// (the active one highlighted). Each row is a click target that switches the mode. Mirrors
-/// the `eq:` dropdown exactly.
+/// the `EQ:` dropdown exactly.
 pub fn render_streaming_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     let cur = app.config.streaming.mode;
     let rows: Vec<(String, bool, MouseTarget)> = crate::streaming::StreamingMode::CYCLE
@@ -601,7 +601,7 @@ fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
         + 2
 }
 
-/// A compact status-line dropdown shared by the `eq:` and `streaming:` labels. Anchored under the
+/// A compact status-line dropdown shared by the `EQ:` and `streaming:` labels. Anchored under the
 /// label whose hit rect matches `anchor_target`; titled `title`; lists `rows` of
 /// `(label, is_active, click-target)`. The active row is a full-width highlight bar (no arrow
 /// gutter) so the box stays exactly as wide as the longest label. Drawn over whatever is
@@ -1025,7 +1025,7 @@ mod tests {
 
         let (_, narrow) = fitted_status_line_parts(&app, 32, false);
         assert!(text_for(&narrow, &MouseTarget::Player(Action::ToggleShuffle)).starts_with("x:"));
-        assert!(text_for(&narrow, &MouseTarget::EqMenu).starts_with("eq:"));
+        assert!(text_for(&narrow, &MouseTarget::EqMenu).starts_with("EQ:"));
     }
 
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
             text_for(&parts, &MouseTarget::Player(Action::CycleRepeat)),
             "r:✗ "
         );
-        assert_eq!(text_for(&parts, &MouseTarget::EqMenu), "eq:Flat");
+        assert_eq!(text_for(&parts, &MouseTarget::EqMenu), "EQ:Flat");
     }
 
     #[test]

@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Mode::Ai => views::ai::render(frame, app, area),
             Mode::Artist => views::artist::render(frame, app, area),
         }
-        // The docked control box's `eq:`/`streaming:` dropdowns, on every screen that shows
+        // The docked control box's `EQ:`/`streaming:` dropdowns, on every screen that shows
         // the box. The Player screen keeps its own in-view calls (legacy z-order: dropdowns
         // draw *under* the queue popup there), so this hoist covers only the other screens.
         if app.mode != Mode::Player && app.control_box_active() {

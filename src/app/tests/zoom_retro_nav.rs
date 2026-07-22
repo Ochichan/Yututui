@@ -138,30 +138,120 @@ fn persisted_zoom_is_restored_only_when_the_terminal_supports_it() {
 }
 
 #[test]
-fn native_album_art_is_hidden_while_zoomed() {
+fn halfblock_album_art_survives_zoom_without_native_render_scaling() {
     let mut app = app_playing(1, 0);
     app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
-    app.config.album_art = Some(true);
-    app.art.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    app.set_art_resize_tx(tx);
-    let img = image::DynamicImage::new_rgb8(4, 4);
-    app.set_artwork("vid0".to_owned(), Some(img));
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
     assert!(app.art_active(), "sanity: art shows at scale 1");
 
     app.update(Msg::Key(ctrl(KeyCode::Char('='))));
-    // The halfblocks picker renders art as text cells, which keep scaling.
     assert!(app.art_active(), "halfblock art is text and survives zoom");
+    assert_eq!(app.art_render_scale(), ratatui_image::RenderScale::Normal);
+}
 
-    app.art
-        .picker
-        .as_mut()
-        .unwrap()
-        .set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+#[test]
+fn kitty_album_art_uses_osc66_grid_scale() {
+    let mut app = app_playing(1, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Kitty);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+
+    assert!(app.art_active(), "Kitty direct placement joins OSC 66 zoom");
+    assert_eq!(
+        app.art_render_scale(),
+        ratatui_image::RenderScale::Uniform {
+            factor: 2,
+            double_width_lines: false,
+        }
+    );
+}
+
+#[test]
+fn zoomed_kitty_track_change_without_overlay_requests_one_full_clear() {
+    let mut app = app_playing(2, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
+    app.zoom.set(125);
+    configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Kitty);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    app.set_art_resize_tx(tx);
+    let video_id = app.queue.current().unwrap().video_id.clone();
+    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
+    assert_eq!(
+        app.art.overlay_mask, 0,
+        "regression requires no popup/overlay"
+    );
+
+    let _ = render_app_buffer(&app, 100, 30);
+    let request = rx
+        .try_recv()
+        .expect("first render queues the direct Kitty encode");
+    app.apply_artwork_resize(request.resize_encode().unwrap());
+    let rendered = render_app_buffer(&app, 100, 30);
+    assert!(
+        rendered
+            .content()
+            .iter()
+            .any(|cell| cell.symbol().contains("a=T") && cell.symbol().contains("C=1")),
+        "sanity: a direct Kitty placement may now exist in the terminal"
+    );
+    assert!(
+        !app.take_clear_before_draw(),
+        "drawing supported zoomed art does not cause steady-frame clears"
+    );
+
+    let mut cmds = app.advance(false);
+    admit_player_transition(&mut app, &mut cmds);
+    assert_eq!(
+        app.queue.current().map(|song| song.video_id.as_str()),
+        Some("id1")
+    );
     assert!(
         !app.art_active(),
-        "pixel-protocol art would stripe across scaled rows; it must hide"
+        "old track art is dropped before the new fetch returns"
     );
+    assert!(
+        app.take_clear_before_draw(),
+        "dropping the old random-id direct placement requests a full clear"
+    );
+    assert!(
+        !app.take_clear_before_draw(),
+        "without an overlay the direct-placement clear remains one-shot"
+    );
+}
+
+#[test]
+fn sixel_album_art_uses_decdhl_physical_rows() {
+    let mut app = app_playing(1, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Decdhl);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+
+    assert!(app.art_active(), "Sixel raster joins DECDHL zoom");
+    assert_eq!(
+        app.art_render_scale(),
+        ratatui_image::RenderScale::Uniform {
+            factor: 2,
+            double_width_lines: true,
+        }
+    );
+}
+
+#[test]
+fn mismatched_native_album_art_stays_hidden_until_scale_one() {
+    let mut app = app_playing(1, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    assert!(app.art_active(), "sanity: art shows at scale 1");
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert!(
+        !app.art_active(),
+        "Sixel cannot follow an OSC 66 placement grid"
+    );
+    assert_eq!(app.art_render_scale(), ratatui_image::RenderScale::Normal);
+
     app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
     assert!(app.art_active(), "art returns at scale 1");
 }

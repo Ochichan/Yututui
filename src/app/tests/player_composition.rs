@@ -2,7 +2,7 @@ use super::*;
 
 use crate::config::PlayerBarPosition;
 use crate::ui::layout::UiTier;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui_image::picker::ProtocolType;
 use unicode_width::UnicodeWidthStr;
 
@@ -185,23 +185,23 @@ fn bottom_art_suppresses_only_the_rendered_donut() {
         "a loading image must not contextually suppress donut"
     );
 
-    let video_id = app.queue.current().expect("current track").video_id.clone();
-    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
     app.art
         .picker
         .as_mut()
         .expect("test picker")
         .set_protocol_type(ProtocolType::Kitty);
+    let video_id = app.queue.current().expect("current track").video_id.clone();
+    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
     app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.zoom.set(125);
     let _ = render_app_buffer(&app, 100, 30);
     assert!(
-        app.art.rect.get().is_none(),
-        "zoom-hidden native art publishes no mask"
+        app.art.rect.get().is_some(),
+        "Kitty art participates in the supported OSC 66 zoom grid"
     );
     assert!(
-        app.bridges.canvas_active.get(),
-        "zoom-hidden native art must restore donut"
+        !app.bridges.canvas_active.get() && !app.bridges.canvas_heavy_active.get(),
+        "visible zoomed Kitty art keeps the bottom donut contextually suppressed"
     );
 }
 
@@ -283,6 +283,56 @@ fn animations_off_frames_are_stable_across_animation_phase_changes() {
         );
         assert!(!app.bridges.canvas_active.get());
         assert!(!app.bridges.canvas_heavy_active.get());
+    }
+}
+
+#[test]
+fn bottom_field_animations_never_paint_the_docked_bar_or_footer() {
+    let _guard = crate::i18n::lock_for_test();
+    let make_app = |animations: bool| {
+        let mut app = app_playing(1, 0);
+        app.config.player_bar_position = Some(PlayerBarPosition::Bottom);
+        app.config.album_art = Some(false);
+        app.config.animations.master = animations;
+        app.config.animations.plasma = animations;
+        app.playback.paused = false;
+        app.anim.anim_frame = 37;
+        app
+    };
+
+    let plain = make_app(false);
+    let animated = make_app(true);
+    let plain_buffer = render_app_buffer(&plain, 80, 24);
+    let animated_buffer = render_app_buffer(&animated, 80, 24);
+    assert!(animated.bridges.canvas_active.get(), "plasma rendered");
+
+    let inner = Rect::new(1, 1, 78, 22);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(crate::ui::control_box::DOCKED_BOX_ROWS),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let filler_changed = (rows[1].top()..rows[1].bottom()).any(|y| {
+        (rows[1].left()..rows[1].right()).any(|x| {
+            plain_buffer.cell((x, y)).expect("plain filler cell")
+                != animated_buffer.cell((x, y)).expect("animated filler cell")
+        })
+    });
+    assert!(filler_changed, "plasma must still paint the filler");
+
+    for protected in [rows[2], rows[3]] {
+        for y in protected.top()..protected.bottom() {
+            for x in protected.left()..protected.right() {
+                assert_eq!(
+                    plain_buffer.cell((x, y)),
+                    animated_buffer.cell((x, y)),
+                    "animation leaked into protected docked cell ({x},{y})"
+                );
+            }
+        }
     }
 }
 

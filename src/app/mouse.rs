@@ -54,7 +54,7 @@ impl HitMap {
     }
 
     /// Screen rect of the first registered region whose target equals `target`, in publish
-    /// order. Used by the status-line dropdowns to anchor under their `eq:`/`streaming:` label.
+    /// order. Used by the status-line dropdowns to anchor under their `EQ:`/`streaming:` label.
     pub fn rect_of_target(&self, target: MouseTarget) -> Option<Rect> {
         self.buttons
             .borrow()

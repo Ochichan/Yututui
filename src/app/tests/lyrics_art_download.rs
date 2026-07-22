@@ -1,13 +1,32 @@
 use super::*;
 
 #[test]
+fn lyrics_request_carries_album_and_numeric_duration() {
+    let song = Song::from_search(
+        "rich-id",
+        "Rich title",
+        "Rich artist",
+        "3:45",
+        Some("Rich album".to_owned()),
+    );
+    let Cmd::FetchLyrics(request) = fetch_lyrics_cmd(&song) else {
+        panic!("expected a FetchLyrics cmd");
+    };
+    assert_eq!(request.video_id, "rich-id");
+    assert_eq!(request.title, "Rich title");
+    assert_eq!(request.artist, "Rich artist");
+    assert_eq!(request.album.as_deref(), Some("Rich album"));
+    assert_eq!(request.duration_secs, Some(225.0));
+}
+
+#[test]
 fn shift_l_toggles_lyrics_and_fetches_on_open() {
     let mut app = app_playing(3, 0); // playing id0
     let cmds = app.update(Msg::Key(key(KeyCode::Char('L'))));
     assert!(app.lyrics.visible);
     assert!(app.lyrics.loading);
     match cmds.as_slice() {
-        [Cmd::FetchLyrics { video_id, .. }] => assert_eq!(video_id, "id0"),
+        [Cmd::FetchLyrics(request)] => assert_eq!(request.video_id, "id0"),
         _ => panic!("expected a FetchLyrics cmd"),
     }
     // Toggling off issues no fetch.
@@ -57,7 +76,7 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
     assert!(app.lyrics.loading);
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::FetchLyrics { video_id, .. } if video_id == "id1"))
+            .any(|c| matches!(c, Cmd::FetchLyrics(request) if request.video_id == "id1"))
     );
 }
 

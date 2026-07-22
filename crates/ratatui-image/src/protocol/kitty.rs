@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::protocol::UNIT_WIDTH;
-use crate::{Result, picker::cap_parser::Parser};
+use crate::{RenderScale, Result, picker::cap_parser::Parser};
 use image::DynamicImage;
 use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Size;
@@ -28,6 +28,9 @@ struct KittyProtoState {
     transmitted: Arc<AtomicBool>,
     transmit_str: Option<String>,
     id: (u32, String, u16), // Full ID, Formatted color ID, ID extra part for diacritic
+    // yututui patch: zoomed Kitty uses one explicit transmit-and-place anchor instead of Unicode
+    // placeholders; scale one keeps the upstream-compatible virtual path byte-identical.
+    direct: bool,
 }
 
 impl KittyProtoState {
@@ -44,6 +47,31 @@ impl KittyProtoState {
             transmitted: Arc::new(AtomicBool::new(false)),
             transmit_str: Some(transmit_str),
             id: (id, id_color, id_extra),
+            direct: false,
+        }
+    }
+
+    fn new_with_z_index_and_scale(
+        img: &DynamicImage,
+        id: u32,
+        is_tmux: bool,
+        z_index: i32,
+        size: Size,
+        render_scale: RenderScale,
+    ) -> Self {
+        let render_scale = render_scale.normalized();
+        if render_scale == RenderScale::Normal {
+            return Self::new_with_z_index(img, id, is_tmux, z_index);
+        }
+
+        let transmit_str = transmit_direct(img, id, is_tmux, z_index, size, render_scale);
+        let [id_extra, id_r, id_g, id_b] = id.to_be_bytes();
+        let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
+        Self {
+            transmitted: Arc::new(AtomicBool::new(false)),
+            transmit_str: Some(transmit_str),
+            id: (id, id_color, u16::from(id_extra)),
+            direct: true,
         }
     }
 
@@ -142,6 +170,10 @@ impl StatefulKitty {
     }
 
     pub(crate) fn mark_rows_for_redraw(&self, area: Rect, damage: Rect, buf: &mut Buffer) {
+        // yututui patch: direct placements are complete at their single transmit anchor.
+        if self.proto_state.direct {
+            return;
+        }
         mark_rows_for_redraw(area, self.size, buf, &self.id, damage, 0);
     }
 }
@@ -151,7 +183,11 @@ impl ProtocolTrait for StatefulKitty {
         // Transmit only once. This is why self is mut.
         let seq = self.proto_state.make_transmit();
 
-        render(area, self.size, buf, &self.id, seq, 0);
+        if self.proto_state.direct {
+            render_direct(area, self.size, buf, seq);
+        } else {
+            render(area, self.size, buf, &self.id, seq, 0);
+        }
     }
 
     fn size(&self) -> Size {
@@ -161,11 +197,53 @@ impl ProtocolTrait for StatefulKitty {
 
 impl StatefulProtocolTrait for StatefulKitty {
     fn resize_encode(&mut self, img: DynamicImage, size: Size) -> Result<()> {
+        self.resize_encode_scaled(img, size, RenderScale::Normal)
+    }
+
+    fn resize_encode_scaled(
+        &mut self,
+        img: DynamicImage,
+        size: Size,
+        render_scale: RenderScale,
+    ) -> Result<()> {
+        // yututui patch: scaled state chooses explicit direct placement; Normal delegates to the
+        // exact virtual-placement constructor used before native zoom support.
         self.size = size;
         // If resized then we must transmit again.
-        self.proto_state =
-            KittyProtoState::new_with_z_index(&img, self.id.0, self.is_tmux, self.z_index);
+        self.proto_state = KittyProtoState::new_with_z_index_and_scale(
+            &img,
+            self.id.0,
+            self.is_tmux,
+            self.z_index,
+            size,
+            render_scale,
+        );
         Ok(())
+    }
+}
+
+fn render_direct(area: Rect, size: Size, buf: &mut Buffer, seq: Option<&str>) {
+    let Some(seq) = seq else {
+        return;
+    };
+    let width = area.width.min(size.width);
+    let height = area.height.min(size.height);
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    if let Some(cell) = buf.cell_mut((area.left(), area.top())) {
+        cell.set_symbol(seq).set_diff_option(UNIT_WIDTH);
+    }
+    for y in 0..height {
+        for x in 0..width {
+            if x == 0 && y == 0 {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((area.left() + x, area.top() + y)) {
+                cell.set_diff_option(CellDiffOption::Skip);
+            }
+        }
     }
 }
 
@@ -351,6 +429,56 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool, z_index: i32) ->
     data
 }
 
+/// yututui patch: create a Kitty transmit-and-place command with an explicit physical-cell footprint.
+///
+/// This path is used only while the terminal grid itself is zoomed. `C=1` keeps the cursor at the
+/// ratatui anchor, so the backend's logical-to-physical cursor mapping remains authoritative.
+fn transmit_direct(
+    img: &DynamicImage,
+    id: u32,
+    is_tmux: bool,
+    z_index: i32,
+    size: Size,
+    render_scale: RenderScale,
+) -> String {
+    let (w, h) = (img.width(), img.height());
+    let placement = render_scale.placement_size(size);
+    let img_rgba8 = img.to_rgba8();
+    let bytes = img_rgba8.as_raw();
+    let (start, escape, end) = Parser::tmux_start_escape_end(is_tmux);
+
+    const CHARS_PER_CHUNK: usize = 4096;
+    const CHUNK_SIZE: usize = (CHARS_PER_CHUNK / 4) * 3;
+    let chunks = bytes.chunks(CHUNK_SIZE);
+    let chunk_count = chunks.len();
+    const WORST_CASE_ADDITIONAL_CHUNK_0_LEN: usize = 72;
+    let bytes_written_per_chunk = 11 + CHARS_PER_CHUNK + (escape.len() * 2);
+    let reserve_size =
+        (chunk_count * bytes_written_per_chunk) + WORST_CASE_ADDITIONAL_CHUNK_0_LEN + end.len();
+    let mut data = String::with_capacity(reserve_size);
+
+    for (i, chunk) in chunks.enumerate() {
+        data.push_str(start);
+        write!(data, "{escape}_Gq=2,").unwrap();
+        if i == 0 {
+            write!(
+                data,
+                "i={id},a=T,f=32,t=d,s={w},v={h},c={},r={},C=1,z={z_index},",
+                placement.width, placement.height
+            )
+            .unwrap();
+        }
+
+        let more = u8::from(chunk_count > (i + 1));
+        write!(data, "m={more};").unwrap();
+        base64_simd::STANDARD.encode_append(chunk, &mut data);
+        write!(data, "{escape}\\").unwrap();
+        data.push_str(end);
+    }
+
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, ImageBuffer, Rgba};
@@ -372,6 +500,62 @@ mod tests {
         let seq = transmit_virtual(&image, 42, false, 0);
 
         assert!(seq.contains("z=0,"));
+    }
+
+    #[test]
+    fn scale_one_keeps_the_virtual_transmission_byte_identical() {
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(2, 1, Rgba([1, 2, 3, 4])));
+        let normal = KittyProtoState::new_with_z_index(&image, 42, false, 0);
+        let scaled = KittyProtoState::new_with_z_index_and_scale(
+            &image,
+            42,
+            false,
+            0,
+            Size::new(2, 1),
+            RenderScale::Normal,
+        );
+
+        assert_eq!(normal.transmit_str, scaled.transmit_str);
+        assert!(!scaled.direct);
+    }
+
+    #[test]
+    fn direct_transmission_places_at_the_scaled_cell_size() {
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
+        let seq = transmit_direct(
+            &image,
+            42,
+            false,
+            TEXT_BACKGROUND_Z_INDEX,
+            Size::new(3, 2),
+            RenderScale::Uniform {
+                factor: 2,
+                double_width_lines: false,
+            },
+        );
+
+        assert!(seq.contains("a=T,f=32,t=d,s=1,v=1,c=6,r=4,C=1,"));
+        assert!(seq.contains(&format!("z={TEXT_BACKGROUND_Z_INDEX},")));
+        assert!(!seq.contains("U=1"));
+    }
+
+    #[test]
+    fn direct_render_uses_one_anchor_and_skips_the_remaining_logical_cells() {
+        let area = Rect::new(2, 1, 3, 2);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 6));
+        render_direct(area, area.as_size(), &mut buf, Some("\x1b_Gdirect\x1b\\"));
+
+        let anchor = buf.cell((2, 1)).unwrap();
+        assert_eq!(anchor.symbol(), "\x1b_Gdirect\x1b\\");
+        assert_eq!(anchor.diff_option, UNIT_WIDTH);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if (x, y) != (area.left(), area.top()) {
+                    assert_eq!(buf.cell((x, y)).unwrap().diff_option, CellDiffOption::Skip);
+                    assert!(!buf.cell((x, y)).unwrap().symbol().contains('\u{10EEEE}'));
+                }
+            }
+        }
     }
 
     #[test]
