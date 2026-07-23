@@ -225,6 +225,30 @@ jobs:
       - name: Test tray helper
         run: "cargo test --features desktop -- desktop::"
 
+  windows-compile:
+    name: Windows compile gate
+    # GitHub-hosted and always on, unlike windows-optional above: cfg-gated dead code and
+    # non-Unix unused imports are invisible to every Linux gate, so 1.6.36 reached the release
+    # pipeline with 18 such errors. This job only compiles/lints, so it stays cheap; the
+    # self-hosted windows-optional job still owns the real test run and stays label-gated.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy vendored crossterm
+        run: cargo clippy --manifest-path crates/crossterm/Cargo.toml --all-targets -- -D warnings
+
   terminal-pty-macos:
     name: Unix terminal PTY (macOS)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
