@@ -17,11 +17,14 @@ use super::{
     ACTIVE_KEYBOARD_KITTY, ACTIVE_KEYBOARD_NONE, ACTIVE_KEYBOARD_WIN32, DISABLE_WIN32_INPUT,
     ENABLE_WIN32_INPUT, ImeScrubResult, PanicSafeBufWriter, disable_keyboard_input_with,
     draw_frame_after_explicit_clear, draw_frame_inner, draw_frame_with_output,
-    enable_kitty_keyboard_with_state, scrub_ime_preedit_with_output, scrub_unchanged_terminal,
-    select_keyboard_input_mode, write_win32_input_sequence,
+    scrub_ime_preedit_with_output, scrub_unchanged_terminal, select_keyboard_input_mode,
+    write_win32_input_sequence,
 };
 #[cfg(unix)]
-use super::{AppTerminal, restore_terminal_state_with, run_bounded_restore};
+use super::{
+    AppTerminal, enable_kitty_keyboard_with_state, restore_terminal_state_with,
+    run_bounded_restore,
+};
 use crate::terminal_keyboard::{KeyboardInputMode, KeyboardInputPlan};
 use crate::zoom::{ZoomBackend, ZoomHandle, ZoomMode};
 
@@ -109,6 +112,10 @@ fn active_restore_writes_all_terminal_controls_around_raw_mode_restore() {
     }
 }
 
+// Asserts the Kitty push/pop bytes directly. On Windows the console, not the writer, decides
+// between ANSI bytes and the winapi fallback, and the legacy console reports the pop as
+// Unsupported, so those byte assertions only describe Unix behavior.
+#[cfg(unix)]
 #[test]
 fn failed_keyboard_enable_flush_keeps_the_marker_for_restore() {
     struct FlushFailWriter {
@@ -373,10 +380,21 @@ fn native_and_legacy_plans_do_not_run_unnecessary_protocol_operations() {
 
 #[test]
 fn keyboard_protocol_cleanup_emits_the_matching_inverse_once() {
+    // The legacy Windows console has no progressive-enhancement support, so popping the Kitty
+    // flags is reported as Unsupported there. The cleanup contract under test is the state
+    // transition and the WIN32 inverse below, both of which still have to hold.
+    fn expect_cleanup(result: io::Result<()>) {
+        match result {
+            Ok(()) => {}
+            Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::Unsupported => {}
+            Err(error) => panic!("unexpected keyboard cleanup failure: {error}"),
+        }
+    }
+
     let kitty = AtomicU8::new(ACTIVE_KEYBOARD_KITTY);
     let mut kitty_output = Vec::new();
-    disable_keyboard_input_with(&kitty, &mut kitty_output).unwrap();
-    disable_keyboard_input_with(&kitty, &mut kitty_output).unwrap();
+    expect_cleanup(disable_keyboard_input_with(&kitty, &mut kitty_output));
+    expect_cleanup(disable_keyboard_input_with(&kitty, &mut kitty_output));
     assert_eq!(
         kitty.load(std::sync::atomic::Ordering::Relaxed),
         ACTIVE_KEYBOARD_NONE
