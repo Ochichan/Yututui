@@ -17,7 +17,7 @@
           lib = pkgs.lib;
           yututui = pkgs.rustPlatform.buildRustPackage {
             pname = "yututui";
-            version = "1.6.35"; # keep in sync with Cargo.toml
+            version = "1.6.36"; # keep in sync with Cargo.toml
 
             # Drop build artifacts and flake results from the copied source so the store path
             # stays small and rebuilds aren't invalidated by a local `target/`.
@@ -72,7 +72,7 @@
           # correct hash to paste here (docs/gui/04 §9 risk 2).
           guiDist = pkgs.buildNpmPackage {
             pname = "yututui-gui";
-            version = "1.6.35"; # private GUI package version; not part of the release surface
+            version = "1.6.36"; # private GUI package version; not part of the release surface
             src = ./gui;
             npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
             dontNpmInstall = true;
@@ -84,7 +84,7 @@
           };
           yututui-desktop = pkgs.rustPlatform.buildRustPackage {
             pname = "yututui-desktop";
-            version = "1.6.35"; # keep the yututray binary version in sync with Cargo.toml
+            version = "1.6.36"; # keep the yututray binary version in sync with Cargo.toml
             src = desktopSrc;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];

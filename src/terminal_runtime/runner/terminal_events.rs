@@ -40,9 +40,10 @@ use liveness::{
 };
 use output_gate::OutputRole;
 pub(in crate::terminal_runtime::runner) use output_gate::TerminalOutputLock;
-#[cfg(unix)]
+// The policy assertion below is platform-independent, so take the constant from the policy
+// module rather than the Unix-only owner-probe re-export.
 #[cfg(test)]
-use owner_probe::OWNER_PROBE_TIMEOUT;
+use crate::terminal_policy::OWNER_PROBE_TIMEOUT;
 use schedule::{LivenessAction, LivenessSchedule};
 
 // Multiplexer CLIs are materially heavier than CPR and need not run for every input heartbeat.

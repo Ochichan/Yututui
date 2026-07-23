@@ -27,6 +27,8 @@ pub struct InteractiveSignals {
 }
 
 impl InteractiveSignals {
+    // `InitialTerminalState` is `()` off Unix, so the captured state is a unit binding there.
+    #[cfg_attr(not(unix), allow(clippy::let_unit_value))]
     pub fn install() -> std::io::Result<Self> {
         let shutdown = ShutdownLatch::new();
         let mouse = Arc::new(AtomicBool::new(false));
@@ -98,6 +100,7 @@ fn capture_initial_terminal_state() -> InitialTerminalState {
 #[cfg(not(unix))]
 fn capture_initial_terminal_state() -> InitialTerminalState {}
 
+#[cfg_attr(not(unix), allow(clippy::let_unit_value))]
 fn hard_exit_after_second_signal(
     mouse: bool,
     code: i32,

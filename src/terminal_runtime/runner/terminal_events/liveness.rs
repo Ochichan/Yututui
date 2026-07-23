@@ -23,6 +23,9 @@ impl fmt::Display for TerminalFailureClass {
     }
 }
 
+// Only `Transport` has a non-Unix producer; the owner-probe domains are constructed by the
+// multiplexer probes, which are Unix-only.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EvidenceDomain {
     Transport,
@@ -295,6 +298,7 @@ impl ProbeOutcome {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn owner(domain: EvidenceDomain, error: io::Error, evidence_id: u64) -> Self {
         if is_definitive_terminal_loss(&error) {
             Self::DefinitiveLoss {

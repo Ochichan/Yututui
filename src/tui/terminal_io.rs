@@ -19,6 +19,9 @@ const WAIT_SLICE: Duration = Duration::from_millis(50);
 // a hint there, with the old bounded retry cadence retained as its timeout fallback.
 #[cfg(all(unix, target_vendor = "apple"))]
 const WAIT_SLICE: Duration = Duration::from_millis(10);
+// The phase machine is driven only by the Unix bounded-output path; other platforms keep the
+// type for `OutputOperationSnapshot` but never transition through it.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputOperationPhase {
     Preparing,
@@ -53,6 +56,7 @@ pub(crate) struct PreTuiOutput {
 }
 
 /// Out-of-band cancellation for a pre-TUI writer blocked on a full Unix terminal queue.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) struct PreTuiOutputCancellation {
     #[cfg(unix)]
@@ -87,6 +91,7 @@ pub(super) struct OperationGuard {
     generation: u64,
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone)]
 pub(super) struct EmergencyWriter {
     #[cfg(unix)]
@@ -202,6 +207,7 @@ impl TerminalWriter {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn emergency(&self, _budget: Duration) -> EmergencyWriter {
         EmergencyWriter {
             #[cfg(unix)]
@@ -268,6 +274,7 @@ impl PreTuiOutput {
         })
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn cancellation(&self) -> PreTuiOutputCancellation {
         PreTuiOutputCancellation {
             #[cfg(unix)]
@@ -285,6 +292,7 @@ impl PreTuiOutput {
 }
 
 impl PreTuiOutputCancellation {
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn cancel(&self) {
         #[cfg(unix)]
         self.shared.cancelled.store(true, Ordering::Release);
@@ -297,6 +305,7 @@ fn clamp_operation_deadline(now: Instant, overall: Instant, budget: Duration) ->
 }
 
 impl EmergencyWriter {
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn begin_operation_until(
         &mut self,
         label: &'static str,
@@ -676,6 +685,7 @@ pub(super) fn cancel_active_output() {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(super) fn reset_active_output() {
     #[cfg(unix)]
     if let Some(shared) = lock_unpoisoned(&ACTIVE_OUTPUT)
