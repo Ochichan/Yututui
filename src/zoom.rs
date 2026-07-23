@@ -256,6 +256,7 @@ pub fn detect_mode_with_output(output: &mut impl Write) -> ZoomMode {
 
 /// Detect zoom while sharing an absolute startup deadline with earlier terminal probes.
 /// An expired budget writes nothing and conservatively disables zoom.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn detect_mode_with_output_until(
     output: &mut impl Write,
     deadline: Instant,

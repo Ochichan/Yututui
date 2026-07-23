@@ -165,7 +165,11 @@ pub enum ImeScrubResult {
 const ACTIVE_KEYBOARD_NONE: u8 = 0;
 const ACTIVE_KEYBOARD_KITTY: u8 = 1;
 const ACTIVE_KEYBOARD_WIN32: u8 = 2;
+// The two-phase cleaning states exist only for the Unix teardown path; the non-Unix branch of
+// `disable_keyboard_input_with` swaps straight back to `ACTIVE_KEYBOARD_NONE`.
+#[cfg_attr(not(unix), allow(dead_code))]
 const ACTIVE_KEYBOARD_KITTY_CLEANING: u8 = 3;
+#[cfg_attr(not(unix), allow(dead_code))]
 const ACTIVE_KEYBOARD_WIN32_CLEANING: u8 = 4;
 static ACTIVE_KEYBOARD_PROTOCOL: AtomicU8 = AtomicU8::new(ACTIVE_KEYBOARD_NONE);
 #[cfg(unix)]
@@ -631,6 +635,7 @@ pub fn restore(mouse: bool) -> io::Result<()> {
 }
 
 /// Synchronous second-signal restore: 150 ms on Unix, existing best-effort elsewhere.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn emergency_restore(mouse: bool) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -1056,6 +1061,7 @@ fn remember_restore_error<T>(first: &mut Option<io::Error>, result: io::Result<T
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn merge_restore_error(primary: io::Error, restored: io::Result<()>) -> io::Error {
     match restored {
         Ok(()) => primary,
