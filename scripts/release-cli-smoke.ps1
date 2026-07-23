@@ -119,8 +119,11 @@ try {
     if (-not ($doc.image_protocol -is [string]) -or -not ($doc.zoom_mode -is [string])) {
         throw "doctor JSON missing image_protocol or zoom_mode: $($doctor.Stdout)"
     }
-    if ($doc.mouse_capture_configured -ne $true) {
-        throw "doctor JSON did not report mouse_capture_configured=true: $($doctor.Stdout)"
+    if ($null -ne $doc.mouse_capture_configured) {
+        throw "doctor JSON must report mouse_capture_configured=null: $($doctor.Stdout)"
+    }
+    if ($doc.mouse_capture_source -ne "not_loaded_by_read_only_diagnostic") {
+        throw "doctor JSON did not report the read-only mouse_capture_source: $($doctor.Stdout)"
     }
 
     $status = Invoke-YttCapture @("daemon", "status")

@@ -131,8 +131,10 @@ if not isinstance(doc.get("image_protocol"), str):
     raise SystemExit("doctor JSON missing image_protocol")
 if not isinstance(doc.get("zoom_mode"), str):
     raise SystemExit("doctor JSON missing zoom_mode")
-if doc.get("mouse_capture_configured") is not True:
-    raise SystemExit("doctor JSON did not report mouse_capture_configured=true")
+if doc.get("mouse_capture_configured", False) is not None:
+    raise SystemExit("doctor JSON must report mouse_capture_configured=null")
+if doc.get("mouse_capture_source") != "not_loaded_by_read_only_diagnostic":
+    raise SystemExit("doctor JSON did not report the read-only mouse_capture_source")
 PY
 
 run_ytt daemon status

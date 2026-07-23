@@ -1,8 +1,9 @@
-use std::{
-    collections::vec_deque::VecDeque,
-    io::{self, Write},
-    time::Duration,
-};
+use std::{collections::vec_deque::VecDeque, io, time::Duration};
+
+// Only the Unix cursor-position probe below is generic over a writer; importing `Write`
+// unconditionally is an unused import on Windows, which `#![deny(unused_imports)]` rejects.
+#[cfg(unix)]
+use std::io::Write;
 
 #[cfg(unix)]
 use crate::event::source::unix::UnixInternalEventSource;
