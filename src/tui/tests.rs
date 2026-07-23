@@ -22,8 +22,7 @@ use super::{
 };
 #[cfg(unix)]
 use super::{
-    AppTerminal, enable_kitty_keyboard_with_state, restore_terminal_state_with,
-    run_bounded_restore,
+    AppTerminal, enable_kitty_keyboard_with_state, restore_terminal_state_with, run_bounded_restore,
 };
 use crate::terminal_keyboard::{KeyboardInputMode, KeyboardInputPlan};
 use crate::zoom::{ZoomBackend, ZoomHandle, ZoomMode};
