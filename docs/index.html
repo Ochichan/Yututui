@@ -789,7 +789,31 @@ kbd {
   .seek2__fill, .spinner, .qpop, .cur, .term__cue::before, .toast2 { animation: none !important; }
   .btn:hover, .btn--ghost:hover, .btn--primary:hover { transform: none; }
   *, *::before, *::after { transition-duration: .001ms !important; }
+  .reel-lb { animation: none !important; }
 }
+
+/* ============================================================
+   Promo reel lightbox
+   ============================================================ */
+.reel-lb {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background: rgba(0, 0, 0, .78);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  animation: reel-in .25s ease;
+}
+.reel-lb__frame {
+  position: relative; width: min(1180px, 100%); aspect-ratio: 16 / 9;
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: #191724; box-shadow: var(--shadow);
+}
+.reel-lb__frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+.reel-lb__close {
+  position: absolute; top: clamp(.8rem, 2.5vw, 1.4rem); right: clamp(.8rem, 2.5vw, 1.4rem);
+  z-index: 1; width: 36px; height: 36px; font-size: 1rem;
+}
+@keyframes reel-in { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -845,6 +869,7 @@ kbd {
   <div class="hero__cta">
     <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install YuTuTui!</span></a>
     <a class="btn btn--ghost" href="https://github.com/Ochichan/Yututui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="hero.cta2">Star it on GitHub</span></a>
+    <button class="btn btn--ghost" type="button" data-reel-open aria-haspopup="dialog"><span aria-hidden="true">▶</span> <span data-i18n="hero.reel">Watch the reel</span></button>
   </div>
   <div class="oneliner">
     <code><span class="prompt">$</span> <span id="brewcmd">brew install Ochichan/tap/yututui</span></code>
@@ -1455,6 +1480,7 @@ scoop install yututui" data-i18n="copy">copy</button>
       <a href="https://github.com/Ochichan/Yututui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
       <a href="https://github.com/Ochichan/Yututui/releases" target="_blank" rel="noopener" data-i18n="foot.releases">Releases</a>
       <a href="https://github.com/Ochichan/Yututui/blob/main/MANUAL.md" target="_blank" rel="noopener" data-i18n="foot.manual">Manual</a>
+      <a href="reel.html" data-i18n="foot.reel">Promo reel</a>
       <a href="https://github.com/Ochichan/Yututui#troubleshooting" target="_blank" rel="noopener" data-i18n="foot.trouble">Troubleshooting</a>
     </div>
     <div class="foot__meta">
@@ -1467,6 +1493,14 @@ scoop install yututui" data-i18n="copy">copy</button>
     Not affiliated with YouTube, Google, Spotify, Last.fm or ListenBrainz. Plays public songs anonymously; bring your own accounts if and when you want them. Gemini-powered features (DJ Gem, radio song ID) are optional and need a free Gemini API key — everything else works without them.
   </p>
 </footer>
+
+<!-- ===== Promo reel lightbox (iframe loaded on demand) ===== -->
+<div class="reel-lb" id="reel-lb" role="dialog" aria-modal="true" aria-label="YuTuTui! promo reel" hidden>
+  <button class="icon-btn reel-lb__close" type="button" id="reel-close" aria-label="Close reel">✕</button>
+  <div class="reel-lb__frame">
+    <iframe id="reel-iframe" title="YuTuTui! promo reel" allow="autoplay; fullscreen"></iframe>
+  </div>
+</div>
 
 <script>
 /* ============================================================
@@ -1485,6 +1519,8 @@ var KO = {
   "hero.sub": "Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다. DJ Gem 스트리밍, 라이브 라디오, 터미널 기능에 맞춘 앨범 아트 fallback, 싱크 가사, 스크로블, 명령 한 줄 Spotify 이사까지. 브라우저도, 광고도 없이.",
   "hero.cta1": "YuTuTui! 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
+  "hero.reel": "데모 영상 보기",
+  "foot.reel": "데모 영상",
   "copy": "복사",
   "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 14종, 마지막 hex까지 내 마음대로",
   "trust.keys": "⌨ 앱 동작 키 재설정 가능", "trust.mit": "⚖ MIT",
@@ -1652,6 +1688,8 @@ var JA = {
   "hero.sub": "Public beta: 毎日使えるくらいには安定していますが、まだ速く動いている最中です。DJ Gem ストリーミング、ライブラジオ、ターミナル機能に合わせたアルバムアート fallback、同期歌詞、スクロブル、コマンド一行の Spotify 引っ越しまで。ブラウザも広告もなし。",
   "hero.cta1": "YuTuTui! をインストール",
   "hero.cta2": "GitHub でスターを付ける",
+  "hero.reel": "デモを見る",
+  "foot.reel": "デモ",
   "copy": "コピー",
   "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ14種、最後の hex まで自分色",
   "trust.keys": "⌨ アプリ操作を再設定可能", "trust.mit": "⚖ MIT",
@@ -1873,6 +1911,38 @@ document.querySelectorAll(".copy-btn").forEach(function (btn) {
     }
   });
 });
+
+/* ---- Promo reel lightbox ---- */
+(function () {
+  var lb = document.getElementById("reel-lb");
+  var frame = document.getElementById("reel-iframe");
+  var closeBtn = document.getElementById("reel-close");
+  if (!lb || !frame || !closeBtn) return;
+  var REEL_SRC = "reel.html";
+  var lastFocus = null;
+  function open(e) {
+    if (e) e.preventDefault();
+    lastFocus = document.activeElement;
+    frame.setAttribute("src", REEL_SRC);   // load on demand
+    lb.hidden = false;
+    document.body.style.overflow = "hidden";
+    closeBtn.focus();
+  }
+  function close() {
+    lb.hidden = true;
+    frame.setAttribute("src", "about:blank"); // stop the reel fully
+    document.body.style.overflow = "";
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+  document.querySelectorAll("[data-reel-open]").forEach(function (o) {
+    o.addEventListener("click", open);
+  });
+  closeBtn.addEventListener("click", close);
+  lb.addEventListener("click", function (e) { if (e.target === lb) close(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !lb.hidden) close();
+  });
+})();
 
 /* ---- Install tabs ---- */
 var HOSTS = { mac: "ytt@macos ~ ", win: "PS C:\\Users\\ytt> ", lin: "ytt@linux ~ ", src: "ytt@src ~/yututui " };
