@@ -581,11 +581,20 @@ fn verify_private_dacl(file: &File, expected_sid: PSID) -> io::Result<()> {
             "Windows returned an invalid export security descriptor",
         ));
     }
-    // SAFETY: owner points inside the live descriptor and both SIDs remain valid for this call.
-    if owner.is_null()
-        || unsafe { IsValidSid(owner) } == 0
-        || unsafe { EqualSid(owner, expected_sid) } == 0
-    {
+    if owner.is_null() {
+        return Err(invalid_acl(
+            "private file is not owned by the current account",
+        ));
+    }
+    // SAFETY: `owner` points inside the live descriptor and was checked for null above.
+    if unsafe { IsValidSid(owner) } == 0 {
+        return Err(invalid_acl(
+            "private file is not owned by the current account",
+        ));
+    }
+    // SAFETY: `owner` is a valid SID in the live descriptor, and `expected_sid` is the valid
+    // current-account SID retained by the caller for the duration of this check.
+    if unsafe { EqualSid(owner, expected_sid) } == 0 {
         return Err(invalid_acl(
             "private file is not owned by the current account",
         ));
