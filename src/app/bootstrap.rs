@@ -4,6 +4,13 @@ use super::*;
 
 impl App {
     pub fn new(volume: i64) -> Self {
+        let personal_state = crate::personal_state::legacy_state(
+            &Library::default(),
+            &Playlists::default(),
+            &Signals::default(),
+            &StationStore::default(),
+        )
+        .unwrap_or_default();
         Self {
             should_quit: false,
             dirty: true,
@@ -23,6 +30,7 @@ impl App {
             overlays: Overlays::default(),
             transfer_running: false,
             personal_export: PersonalDataExportState::default(),
+            personal_state,
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,

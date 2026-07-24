@@ -9,6 +9,19 @@ fn song(id: &str) -> Song {
     Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
 }
 
+pub(super) fn personal_state_paths() -> crate::personal_state::PersonalStatePaths {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let root = std::env::temp_dir().join(format!(
+        "yututui-daemon-personal-state-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).expect("create daemon personal-state test root");
+    crate::personal_state::PersonalStatePaths::for_data_root(root)
+}
+
 pub(in crate::daemon) fn radio_station(id: &str) -> Song {
     let mut song = Song::remote(id, format!("station-{id}"), "", "");
     song.playable = Some(crate::api::PlayableRef::RadioStream {
@@ -35,6 +48,14 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             speed: 1.0,
         },
         config: Config::default(),
+        personal_state: crate::personal_state::legacy_state(
+            &Library::default(),
+            &crate::playlists::Playlists::default(),
+            &Signals::default(),
+            &StationStore::default(),
+        )
+        .expect("default personal state"),
+        personal_state_paths: personal_state_paths(),
         library: Library::default(),
         playlists: crate::playlists::Playlists::default(),
         playlists_rev: 0,

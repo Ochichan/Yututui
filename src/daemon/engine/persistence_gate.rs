@@ -47,6 +47,20 @@ fn save_store(kind: StoreKind, save: impl FnOnce() -> std::io::Result<()>) -> st
 }
 
 impl DaemonEngine {
+    fn personal_state_paths(
+        &self,
+    ) -> Result<crate::personal_state::PersonalStatePaths, crate::personal_state::PersonalStateError>
+    {
+        #[cfg(test)]
+        {
+            Ok(self.personal_state_paths.clone())
+        }
+        #[cfg(not(test))]
+        {
+            crate::personal_state::PersonalStatePaths::current()
+        }
+    }
+
     pub(super) fn reject_remote_recovery(&mut self, error: StartupRecoveryError) -> RemoteResponse {
         let error = EngineError::from(error);
         let message = error.to_string();
@@ -112,21 +126,59 @@ impl DaemonEngine {
     }
 
     pub(super) fn save_library(&mut self, context: &str) {
-        if self.should_skip_remote_save() {
-            return;
-        }
-        if let Err(error) = save_store(StoreKind::Library, || self.library.save()) {
-            self.record_persistence_failure(context, error);
-        }
+        self.save_personal_state(context, StoreKind::Library);
     }
 
     pub(super) fn save_playlists(&mut self, context: &str) {
+        self.save_personal_state(context, StoreKind::Playlists);
+    }
+
+    fn save_personal_state(&mut self, context: &str, failure_kind: StoreKind) {
         if self.should_skip_remote_save() {
             return;
         }
-        if let Err(error) = save_store(StoreKind::Playlists, || self.playlists.save()) {
+        let commit = crate::personal_state::reconcile_runtime(
+            &self.personal_state,
+            &self.library,
+            &self.playlists,
+            &self.signals,
+            &self.station,
+        )
+        .and_then(|state| {
+            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                state,
+                self.playlists.revision(),
+            )
+        });
+        let commit = match commit {
+            Ok(commit) => commit,
+            Err(error) => {
+                self.record_persistence_failure(context, std::io::Error::other(error.to_string()));
+                return;
+            }
+        };
+        let paths = match self.personal_state_paths() {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.record_persistence_failure(context, std::io::Error::other(error.to_string()));
+                return;
+            }
+        };
+        if let Err(error) = save_store(failure_kind, || {
+            commit
+                .commit(&paths)
+                .map(|_| ())
+                .map_err(std::io::Error::other)
+        }) {
             self.record_persistence_failure(context, error);
+            return;
         }
+        self.personal_state = commit.state().clone();
+        let (library, playlists, signals, station) = commit.runtime_stores();
+        self.library = library;
+        self.playlists = playlists;
+        self.signals = signals;
+        self.station = station;
     }
 
     /// Persist an owner candidate without touching the live daemon store. The caller may swap it
@@ -149,8 +201,39 @@ impl DaemonEngine {
                 ),
             );
         }
-        match save_store(StoreKind::Playlists, || candidate.save()) {
-            Ok(()) => Ok(()),
+        let commit = crate::personal_state::reconcile_runtime(
+            &self.personal_state,
+            &self.library,
+            candidate,
+            &self.signals,
+            &self.station,
+        )
+        .and_then(|state| {
+            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                state,
+                candidate.revision(),
+            )
+        })
+        .map_err(|error| {
+            crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                "failed to prepare daemon transfer playlists: {error}"
+            ))
+        })?;
+        let paths = self.personal_state_paths().map_err(|error| {
+            crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                "failed to resolve personal-state storage: {error}"
+            ))
+        })?;
+        match save_store(StoreKind::Playlists, || {
+            commit
+                .commit(&paths)
+                .map(|_| ())
+                .map_err(std::io::Error::other)
+        }) {
+            Ok(()) => {
+                self.personal_state = commit.state().clone();
+                Ok(())
+            }
             Err(error) => {
                 let message = format!("failed to save daemon transfer playlists: {error}");
                 self.record_persistence_failure("daemon transfer playlists", error);
@@ -160,12 +243,7 @@ impl DaemonEngine {
     }
 
     pub(super) fn save_signals(&mut self, context: &str) {
-        if self.should_skip_remote_save() {
-            return;
-        }
-        if let Err(error) = save_store(StoreKind::Signals, || self.signals.save()) {
-            self.record_persistence_failure(context, error);
-        }
+        self.save_personal_state(context, StoreKind::Signals);
     }
 
     pub(super) fn save_session(&mut self) {

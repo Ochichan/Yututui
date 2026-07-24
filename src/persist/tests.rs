@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 mod handle;
 #[path = "tests/panic_shadow_seal.rs"]
 mod panic_shadow_seal;
+#[path = "tests/personal_state.rs"]
+mod personal_state;
 #[path = "tests/protocol_model.rs"]
 mod protocol_model;
 #[path = "tests/races.rs"]
@@ -91,6 +93,10 @@ fn test_operation(
 
 #[test]
 fn debounce_windows_match_store_durability_policy() {
+    assert_eq!(
+        debounce(StoreKind::PersonalState),
+        Duration::from_millis(300)
+    );
     assert_eq!(debounce(StoreKind::Library), Duration::from_millis(300));
     assert_eq!(debounce(StoreKind::Signals), Duration::from_millis(300));
     assert_eq!(debounce(StoreKind::Downloads), Duration::from_millis(500));

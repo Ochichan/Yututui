@@ -636,52 +636,33 @@ impl App {
                         self.dirty = true;
                         return vec![Cmd::Persist(PersistCmd::Library)];
                     }
-                    let artist_key = signals::normalize_artist(&song.artist);
                     let now = signals::unix_now();
-                    let liked = self.library.is_favorite(&song.video_id);
-                    let disliked = self.signals.is_disliked(&song.video_id);
-                    match (liked, disliked) {
-                        // neutral → like: add to favorites, lift the artist affinity.
-                        (false, false) => {
-                            let now_fav = self.library_mut().toggle_favorite(&song);
-                            self.signals_mut().record_like(
-                                &song.video_id,
-                                &artist_key,
-                                now_fav,
-                                now,
-                            );
-                            let comp = self.playback_completion();
+                    let change = crate::rating::cycle(
+                        Arc::make_mut(&mut self.library),
+                        Arc::make_mut(&mut self.signals),
+                        &song,
+                        now,
+                    );
+                    let artist_key = signals::normalize_artist(&song.artist);
+                    let comp = self.playback_completion();
+                    match change.after {
+                        crate::personal_state::Rating::Liked => {
                             self.record_session_event(&artist_key, Outcome::Like, comp);
-                            self.dirty = true;
-                            return vec![
-                                Cmd::Persist(PersistCmd::Library),
-                                Cmd::Persist(PersistCmd::Signals),
-                            ];
                         }
-                        // like → dislike: drop the favorite (undoing its affinity lift) and set
-                        // the dislike flag (which pushes the affinity down).
-                        (true, _) => {
-                            self.library_mut().toggle_favorite(&song);
-                            self.signals_mut()
-                                .record_like(&song.video_id, &artist_key, false, now);
-                            self.signals_mut()
-                                .toggle_dislike(&song.video_id, &artist_key, now);
-                            let comp = self.playback_completion();
+                        crate::personal_state::Rating::Disliked => {
                             self.record_session_event(&artist_key, Outcome::Dislike, comp);
-                            self.dirty = true;
-                            return vec![
-                                Cmd::Persist(PersistCmd::Library),
-                                Cmd::Persist(PersistCmd::Signals),
-                            ];
                         }
-                        // dislike → neutral: clear the flag, restoring the affinity it pushed down.
-                        (false, true) => {
-                            self.signals_mut()
-                                .toggle_dislike(&song.video_id, &artist_key, now);
-                            self.dirty = true;
-                            return vec![Cmd::Persist(PersistCmd::Signals)];
-                        }
+                        crate::personal_state::Rating::Neutral => {}
                     }
+                    self.dirty = true;
+                    let mut persist = Vec::with_capacity(2);
+                    if change.library_changed {
+                        persist.push(Cmd::Persist(PersistCmd::Library));
+                    }
+                    if change.signals_changed {
+                        persist.push(Cmd::Persist(PersistCmd::Signals));
+                    }
+                    return persist;
                 }
                 Vec::new()
             }

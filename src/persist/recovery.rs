@@ -171,7 +171,7 @@ impl RecoveryLockError {
 }
 
 impl StartupRecoveryError {
-    fn artifact(store: StoreKind, error: std::io::Error) -> Self {
+    pub(crate) fn artifact(store: StoreKind, error: std::io::Error) -> Self {
         Self {
             store,
             failure: StartupRecoveryFailure::ArtifactUnverifiable {

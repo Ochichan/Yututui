@@ -7,7 +7,7 @@ pub(super) struct PanicShadowSealed;
 
 struct PanicShadowState {
     phase: PanicShadowPhase,
-    slots: [Option<PanicOwnedOperation>; 8],
+    slots: [Option<PanicOwnedOperation>; 9],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +47,7 @@ impl PanicShadow {
         operation: PanicOwnedOperation,
         after_phase_check: impl FnOnce(),
     ) -> Result<(), PanicShadowSealed> {
-        let index = slot(operation.kind());
+        let index = panic_slot(operation.kind());
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         if state.phase == PanicShadowPhase::Sealed {
             drop(state);
@@ -84,7 +84,7 @@ impl PanicShadow {
         }
         let mut retired = Vec::with_capacity(operations.len());
         for operation in operations {
-            let index = slot(operation.kind());
+            let index = panic_slot(operation.kind());
             if let Some(operation) = replace_slot_if_newer(&mut state.slots[index], operation) {
                 retired.push(operation);
             }
@@ -96,10 +96,10 @@ impl PanicShadow {
 
     pub(super) fn clear_through(&self, kind: StoreKind, order: JournalOrder) {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        let retired = state.slots[slot(kind)]
+        let retired = state.slots[panic_slot(kind)]
             .as_ref()
             .is_some_and(|operation| operation.order() <= order)
-            .then(|| state.slots[slot(kind)].take())
+            .then(|| state.slots[panic_slot(kind)].take())
             .flatten();
         drop(state);
         drop(retired);
@@ -110,7 +110,7 @@ impl PanicShadow {
     /// Clean shutdown uses this after ordinary admission is sealed. Every returned Arc remains
     /// hook-owned until its write is confirmed and [`Self::clear_through`] retires it, so a timed
     /// out fallback can truthfully return while preserving recovery ownership.
-    pub(super) fn snapshot(&self) -> [Option<PanicOwnedOperation>; 8] {
+    pub(super) fn snapshot(&self) -> [Option<PanicOwnedOperation>; 9] {
         let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
         std::array::from_fn(|index| state.slots[index].clone())
     }
@@ -119,7 +119,7 @@ impl PanicShadow {
     #[must_use = "only the first panic hook owns the sealed persistence frontier"]
     pub(super) fn seal_and_snapshot(
         &self,
-    ) -> Result<[Option<PanicOwnedOperation>; 8], PanicShadowSealed> {
+    ) -> Result<[Option<PanicOwnedOperation>; 9], PanicShadowSealed> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         if state.phase == PanicShadowPhase::Sealed {
             return Err(PanicShadowSealed);
@@ -129,8 +129,22 @@ impl PanicShadow {
     }
 
     #[cfg(test)]
-    pub(super) fn peek_for_test(&self) -> [Option<PanicOwnedOperation>; 8] {
+    pub(super) fn peek_for_test(&self) -> [Option<PanicOwnedOperation>; 9] {
         self.snapshot()
+    }
+}
+
+pub(super) const fn panic_slot(kind: StoreKind) -> usize {
+    match kind {
+        StoreKind::PersonalState => 0,
+        StoreKind::Library => 1,
+        StoreKind::Signals => 2,
+        StoreKind::Downloads => 3,
+        StoreKind::Config => 4,
+        StoreKind::Playlists => 5,
+        StoreKind::Station => 6,
+        StoreKind::RomanizedTitles => 7,
+        StoreKind::Session => 8,
     }
 }
 
@@ -155,18 +169,5 @@ fn replace_slot_if_newer(
         slot.replace(incoming)
     } else {
         Some(incoming)
-    }
-}
-
-const fn slot(kind: StoreKind) -> usize {
-    match kind {
-        StoreKind::Library => 0,
-        StoreKind::Signals => 1,
-        StoreKind::Downloads => 2,
-        StoreKind::Config => 3,
-        StoreKind::Playlists => 4,
-        StoreKind::Station => 5,
-        StoreKind::RomanizedTitles => 6,
-        StoreKind::Session => 7,
     }
 }

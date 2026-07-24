@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use super::*;
 
-const ALL_STORES: [persist::StoreKind; 8] = [
+const ALL_STORES: [persist::StoreKind; 9] = [
+    persist::StoreKind::PersonalState,
     persist::StoreKind::Library,
     persist::StoreKind::Signals,
     persist::StoreKind::Downloads,

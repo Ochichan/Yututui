@@ -15,14 +15,39 @@ const RESTORE_RETRY_MAX: Duration = Duration::from_secs(5);
 impl RuntimeHandles {
     pub(super) fn dispatch_transfer_playlist_commit(
         &mut self,
+        app: &crate::app::App,
         commit: Box<TransferPlaylistCommit>,
     ) {
+        let prepared = crate::personal_state::reconcile_runtime(
+            &app.personal_state,
+            &app.library,
+            &commit.candidate,
+            &app.signals,
+            &app.station,
+        )
+        .and_then(|state| {
+            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                state,
+                commit.candidate.revision(),
+            )
+        });
+        let prepared = match prepared {
+            Ok(prepared) => Box::new(prepared),
+            Err(error) => {
+                commit
+                    .request
+                    .respond(Err(LocalPlaylistStoreError::resumable(format!(
+                        "playlist personal-state preparation failed: {error}"
+                    ))));
+                return;
+            }
+        };
         let persist = self.persist.clone();
         let emitter = self.background_tasks.emitter(self.worker_tx.clone());
         let rejected_request = commit.request.clone();
         let admitted = self.background_tasks.spawn_cancellable(
             "transfer_playlist_commit",
-            persist_transfer_playlist_commit(persist, emitter, commit),
+            persist_transfer_playlist_commit(persist, emitter, commit, prepared),
         );
         if !admitted {
             rejected_request.respond(Err(LocalPlaylistStoreError::resumable(
@@ -36,6 +61,7 @@ async fn persist_transfer_playlist_commit(
     persist: crate::persist::PersistHandle,
     emitter: RuntimeTaskEmitter,
     commit: Box<TransferPlaylistCommit>,
+    prepared: Box<crate::personal_state::PersonalStateCommit>,
 ) {
     let restore_attempt = match &commit.kind {
         crate::app::TransferPlaylistCommitKind::RestoreThenFail { retry_attempt, .. } => {
@@ -47,9 +73,9 @@ async fn persist_transfer_playlist_commit(
         tokio::time::sleep(restore_retry_delay(attempt)).await;
     }
     let restore = restore_attempt.is_some();
-    let candidate = std::sync::Arc::new(commit.candidate.clone());
+    let personal_state = prepared.state().clone();
     let target = loop {
-        match persist.save_tracked(Snapshot::Playlists(candidate.clone())) {
+        match persist.save_tracked(Snapshot::PersonalState(prepared.clone())) {
             Ok(target) => break target,
             Err(error) if restore => {
                 // A prior candidate may already be durable. Never release the checkpoint waiter
@@ -71,12 +97,13 @@ async fn persist_transfer_playlist_commit(
     let persistence = persist.flush_target(target, TARGET_FLUSH_BUDGET).await;
     emitter
         .emit_terminal(RuntimeEvent::App(Msg::Data(
-            crate::app::DataMsg::TransferPlaylistPersisted(
+            crate::app::DataMsg::TransferPlaylistPersisted(Box::new(
                 crate::app::TransferPlaylistPersistence {
                     commit,
                     persistence,
+                    personal_state,
                 },
-            ),
+            )),
         )))
         .await;
 }
@@ -94,6 +121,25 @@ fn restore_retry_delay(attempt: u8) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared(
+        playlists: &crate::playlists::Playlists,
+    ) -> Box<crate::personal_state::PersonalStateCommit> {
+        let state = crate::personal_state::legacy_state(
+            &crate::library::Library::default(),
+            playlists,
+            &crate::signals::Signals::default(),
+            &crate::station::StationStore::default(),
+        )
+        .unwrap();
+        Box::new(
+            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                state,
+                playlists.revision(),
+            )
+            .unwrap(),
+        )
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn persistence_admission_starts_inside_the_spawned_task() {
@@ -125,20 +171,21 @@ mod tests {
                 },
             },
         });
+        let prepared = prepared(&commit.candidate);
 
-        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::Playlists));
+        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::PersonalState));
         assert!(tasks.spawn_cancellable(
             "transfer_playlist_commit_test",
-            persist_transfer_playlist_commit(persist.clone(), emitter, commit),
+            persist_transfer_playlist_commit(persist.clone(), emitter, commit, prepared),
         ));
         assert!(
-            !persist.has_pending_for_test(crate::persist::StoreKind::Playlists),
+            !persist.has_pending_for_test(crate::persist::StoreKind::PersonalState),
             "constructing and admitting the task must not synchronously queue persistence"
         );
 
         tokio::task::yield_now().await;
         assert!(
-            persist.has_pending_for_test(crate::persist::StoreKind::Playlists),
+            persist.has_pending_for_test(crate::persist::StoreKind::PersonalState),
             "the first task poll owns persistence admission"
         );
         let _ = tasks.shutdown(Duration::from_secs(1)).await;
@@ -164,21 +211,22 @@ mod tests {
                 retry_attempt: 3,
             },
         });
+        let prepared = prepared(&commit.candidate);
 
         assert!(tasks.spawn_cancellable(
             "transfer_playlist_restore_backoff_test",
-            persist_transfer_playlist_commit(persist.clone(), emitter, commit),
+            persist_transfer_playlist_commit(persist.clone(), emitter, commit, prepared),
         ));
         tokio::task::yield_now().await;
-        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::Playlists));
+        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::PersonalState));
 
         tokio::time::advance(Duration::from_millis(799)).await;
         tokio::task::yield_now().await;
-        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::Playlists));
+        assert!(!persist.has_pending_for_test(crate::persist::StoreKind::PersonalState));
 
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
-        assert!(persist.has_pending_for_test(crate::persist::StoreKind::Playlists));
+        assert!(persist.has_pending_for_test(crate::persist::StoreKind::PersonalState));
         assert_eq!(restore_retry_delay(u8::MAX), RESTORE_RETRY_MAX);
         let _ = tasks.shutdown(Duration::from_secs(1)).await;
     }

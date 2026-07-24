@@ -440,7 +440,9 @@ async fn ordering_unavailable_stays_pending_without_inflight_transition() {
     assert_eq!(retries[&StoreKind::Config].retry_count, 1);
 
     let owned = shadow.peek_for_test();
-    let Some(PanicOwnedOperation::Pending(operation)) = owned[3].as_ref() else {
+    let Some(PanicOwnedOperation::Pending(operation)) =
+        owned[panic_slot(StoreKind::Config)].as_ref()
+    else {
         panic!("unordered operation must stay in pending panic-shadow form");
     };
     assert_eq!(operation.order, order);
@@ -490,7 +492,9 @@ fn clean_seal_is_monotonic_while_repeated_final_batches_stay_refreshable() {
     assert_eq!(pending_label, "refreshed final");
 
     let shadow = handle.panic_shadow.peek_for_test();
-    let Some(PanicOwnedOperation::Pending(shadow_operation)) = shadow[3].as_ref() else {
+    let Some(PanicOwnedOperation::Pending(shadow_operation)) =
+        shadow[panic_slot(StoreKind::Config)].as_ref()
+    else {
         panic!("panic shadow must own the refreshed final in pending form");
     };
     assert_eq!(shadow_operation.order, pending_order);

@@ -294,6 +294,130 @@ impl Signals {
             self.tracks.remove(&k);
         }
     }
+
+    /// Capture the path-free signal projection for the one-time Personal State v2 baseline.
+    pub(crate) fn personal_state_legacy_signals(
+        &self,
+        catalog: &HashMap<String, crate::personal_state::PortableTrack>,
+    ) -> crate::personal_state::legacy::LegacySignals {
+        use crate::personal_state::legacy::{
+            LegacyPlayEvent, LegacySignals, LegacyTrackSignal, stable_hash,
+        };
+        use crate::personal_state::{PortableTrack, PortableTrackKey};
+        use std::collections::BTreeMap;
+
+        let fallback = |video_id: &str| PortableTrack {
+            key: PortableTrackKey::Catalog {
+                provider: "youtube".to_owned(),
+                exact_catalog_id: video_id.to_owned(),
+            },
+            title: String::new(),
+            artist: String::new(),
+            album: None,
+            duration_secs: None,
+            isrc: None,
+        };
+        let tracks = self
+            .tracks
+            .iter()
+            .map(|(video_id, signal)| {
+                let track = catalog
+                    .get(video_id)
+                    .cloned()
+                    .unwrap_or_else(|| fallback(video_id));
+                (
+                    track.key.clone(),
+                    LegacyTrackSignal {
+                        track,
+                        play_count: signal.play_count,
+                        completed_count: signal.completed_count,
+                        skip_count: signal.skip_count,
+                        last_played_at: signal.last_played_at,
+                        last_completion: signal.last_completion.clamp(0.0, 1.0),
+                        disliked: signal.disliked,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut occurrences = HashMap::<(String, i64), u32>::new();
+        let play_log = self
+            .play_log
+            .iter()
+            .map(|(video_id, played_at)| {
+                let occurrence = occurrences
+                    .entry((video_id.clone(), *played_at))
+                    .or_default();
+                *occurrence = occurrence.saturating_add(1);
+                let track = catalog
+                    .get(video_id)
+                    .cloned()
+                    .unwrap_or_else(|| fallback(video_id));
+                LegacyPlayEvent {
+                    event_id: format!(
+                        "legacy-play-{}",
+                        stable_hash(&format!("{video_id}\u{0}{played_at}\u{0}{occurrence}"))
+                    ),
+                    track,
+                    played_at: *played_at,
+                }
+            })
+            .collect();
+        LegacySignals {
+            tracks,
+            artist_affinity: self
+                .artist_weight
+                .iter()
+                .map(|(key, weight)| (key.clone(), *weight))
+                .collect(),
+            play_log,
+        }
+    }
+
+    /// Rebuild the runtime signal store from a Personal State v2 projection.
+    pub(crate) fn from_personal_state_legacy(
+        projection: crate::personal_state::legacy::LegacySignals,
+    ) -> Self {
+        let mut signals = Self {
+            tracks: projection
+                .tracks
+                .into_values()
+                .map(|signal| {
+                    (
+                        crate::personal_state::legacy::portable_track_to_song(signal.track)
+                            .video_id,
+                        TrackSignals {
+                            play_count: signal.play_count,
+                            completed_count: signal.completed_count.min(signal.play_count),
+                            skip_count: signal.skip_count.min(signal.play_count),
+                            last_played_at: signal.last_played_at,
+                            last_completion: signal.last_completion.clamp(0.0, 1.0),
+                            disliked: signal.disliked,
+                        },
+                    )
+                })
+                .collect(),
+            artist_weight: projection
+                .artist_affinity
+                .into_iter()
+                .filter(|(_, weight)| weight.is_finite())
+                .map(|(key, weight)| (key, weight.clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX)))
+                .collect(),
+            play_log: projection
+                .play_log
+                .into_iter()
+                .map(|event| {
+                    (
+                        crate::personal_state::legacy::portable_track_to_song(event.track).video_id,
+                        event.played_at,
+                    )
+                })
+                .collect(),
+            play_log_generation: 0,
+        };
+        signals.enforce_caps();
+        signals.play_log_generation = signals.play_log.len() as u64;
+        signals
+    }
 }
 
 /// Negative artist-affinity delta for a skip at `completion`, by severity band.

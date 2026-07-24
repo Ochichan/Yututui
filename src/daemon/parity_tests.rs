@@ -188,6 +188,7 @@ fn command_classifier_pins_shared_and_owner_boundary_exceptions() {
     assert_eq!(
         command_parity_class(&RemoteCommand::ExportPersonalData {
             directory: "/tmp".to_owned(),
+            schema: None,
         }),
         CommandParityClass::BothOwnerLoopIntercepted
     );
@@ -795,6 +796,33 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
     assert!(app_resp.ok && engine_resp.ok);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("unguarded clear-upcoming", &app, &engine);
+}
+
+#[tokio::test]
+async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
+    let (mut app, mut engine) = hermetic_pair();
+    assert_parity("track rating baseline", &app, &engine);
+
+    for step in ["liked", "disliked", "neutral"] {
+        let command = RemoteCommand::Rate {
+            video_id: "v1".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        let app_response = app_apply(&mut app, command.clone());
+        let (engine_response, shutdown, effects) = engine.handle_remote(command).await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_eq!(
+            app_response.reason, engine_response.reason,
+            "track rating {step}: owners disagree on the reason"
+        );
+        assert_eq!(
+            serde_json::to_value(&*app.signals).unwrap(),
+            serde_json::to_value(engine.signals()).unwrap(),
+            "track rating {step}: recommendation projections diverged"
+        );
+        assert_parity(&format!("track rating {step}"), &app, &engine);
+    }
 }
 
 #[tokio::test]

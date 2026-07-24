@@ -52,6 +52,7 @@ use durable::allocate_process_epoch_at;
 use durable::{AcceptedJournalOrder, JournalGeneration, JournalOrder, JournalOrderSource};
 #[cfg(test)]
 pub(crate) use locking::with_intent_lock_contention_observer;
+pub(crate) use locking::with_store_intent_lock;
 use locking::{acquire_intent_lock, acquire_intent_lock_with_budget, acquire_private_lock};
 pub use ordered_fallback::PersistenceFallbackError;
 use owned_snapshot::OwnedSnapshot;
@@ -60,6 +61,8 @@ use panic_ownership::{
     PanicOperation, PanicOwnedOperation, lock_inflight, remove_inflight_if_order,
     retain_newest_inflight, write_panic_operation,
 };
+#[cfg(test)]
+use panic_shadow::panic_slot;
 use panic_shadow::{PanicShadow, PanicShadowSealed};
 #[cfg(test)]
 use recovery::load_with_journal_recovery_then;
@@ -97,6 +100,7 @@ pub(crate) use writer_lease::{persistence_access, writer_lease_allows_mutation};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StoreKind {
+    PersonalState,
     Library,
     Signals,
     Downloads,
@@ -110,6 +114,7 @@ pub enum StoreKind {
 impl StoreKind {
     pub fn label(self) -> &'static str {
         match self {
+            StoreKind::PersonalState => "personal state",
             StoreKind::Library => "library",
             StoreKind::Signals => "signals",
             StoreKind::Downloads => "downloads manifest",
@@ -139,6 +144,7 @@ type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
 /// snapshot is live. Writing delegates to the store's own `save()` — same path resolution, same
 /// atomic temp-write + fsync + rename.
 pub enum Snapshot {
+    PersonalState(Box<crate::personal_state::PersonalStateCommit>),
     Library(Arc<crate::library::Library>),
     Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
@@ -160,6 +166,7 @@ pub enum Snapshot {
 impl Snapshot {
     fn kind(&self) -> StoreKind {
         match self {
+            Snapshot::PersonalState(_) => StoreKind::PersonalState,
             Snapshot::Library(_) => StoreKind::Library,
             Snapshot::Signals(_) => StoreKind::Signals,
             Snapshot::Downloads(_) => StoreKind::Downloads,
@@ -180,7 +187,9 @@ impl Snapshot {
 fn debounce(kind: StoreKind) -> Duration {
     match kind {
         // Ratings/favorites/likes: flush fast — this is the data a user would miss.
-        StoreKind::Library | StoreKind::Signals => Duration::from_millis(300),
+        StoreKind::PersonalState | StoreKind::Library | StoreKind::Signals => {
+            Duration::from_millis(300)
+        }
         StoreKind::Downloads | StoreKind::Config | StoreKind::Playlists | StoreKind::Station => {
             Duration::from_millis(500)
         }

@@ -631,6 +631,7 @@ mod tests {
     fn personal_export_command_is_an_additive_round_trip() {
         let command = RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         };
         let line = serde_json::to_string(&command).unwrap();
         let back: RemoteCommand = serde_json::from_str(&line).unwrap();

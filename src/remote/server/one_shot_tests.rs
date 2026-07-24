@@ -124,6 +124,7 @@ async fn v7_one_shot_rejects_v8_only_export_before_owner_admission() {
         request_id: None,
         command: RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         },
     };
 

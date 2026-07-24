@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-use yututui::remote::{self, PERSONAL_EXPORT_CAPABILITY};
+use yututui::remote::{self, PERSONAL_EXPORT_CAPABILITY, PERSONAL_STATE_V2_CAPABILITY};
 
 const EXIT_OK: i32 = 0;
 const EXIT_RUNTIME: i32 = 1;
@@ -20,14 +20,17 @@ Usage: ytt data <command>
 Export portable personal data without credentials, machine paths, or media files.
 
 Commands:
-  export [--to DIR]       Export settings, library, history, playlists, and preferences
+  export [--to DIR] [--schema 1|2]
+                          Export personal state (schema 2 by default)
+  import <FILE> [--dry-run] [--apply]
+                          Preview or apply a personal-state import
 
 Options:
   -h, --help              Show this help
 ";
 
 const EXPORT_USAGE: &str = "\
-Usage: ytt data export [--to DIR]
+Usage: ytt data export [--to DIR] [--schema 1|2]
 
 Write one versioned JSON export. By default, DIR is the operating system's Downloads
 folder. An explicit DIR must already exist.
@@ -37,6 +40,7 @@ paths, and media files are excluded.
 
 Options:
       --to DIR            Existing destination directory
+      --schema 1|2        Export schema (default: 2)
   -h, --help              Show this help
 ";
 
@@ -44,6 +48,18 @@ const PRIVACY_NOTE: &str =
     "Private listening history is included; credentials, filesystem paths, and media are excluded.";
 const PRIMARY_SNAPSHOT_NOTE: &str = "When `--new-instance` players are open, this command exports \
 only the advertised primary; export each secondary from its Settings screen.";
+
+const IMPORT_USAGE: &str = "\
+Usage: ytt data import <FILE> [--dry-run] [--apply]
+
+Preview a v1 or v2 personal-data import. No data is changed unless --apply is present.
+Foreign datasets use a deletion-free merge; same-dataset v2 bundles use causal merge.
+
+Options:
+      --dry-run           Preview only (the default)
+      --apply             Atomically apply the previewed merge
+  -h, --help              Show this help
+";
 
 #[derive(Debug)]
 enum OwnerExportError {
@@ -62,7 +78,92 @@ pub fn run(args: &[String]) -> i32 {
             EXIT_OK
         }
         "export" => run_export(&args[1..]),
+        "import" => run_import(&args[1..]),
         other => data_usage_error(&format!("unknown command `{other}`")),
+    }
+}
+
+fn run_import(args: &[String]) -> i32 {
+    let request = match parse_import_args(args) {
+        Ok(ParseImport::Help) => {
+            print!("{IMPORT_USAGE}");
+            return EXIT_OK;
+        }
+        Ok(ParseImport::Request(request)) => request,
+        Err(message) => return import_usage_error(&message),
+    };
+    let path = match resolve_import_source(&request.file) {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("ytt data import: {message}");
+            return EXIT_RUNTIME;
+        }
+    };
+    if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
+        let message = if error.kind() == std::io::ErrorKind::WouldBlock {
+            "another ytt process owns personal data. Close it before previewing or applying an import"
+                .to_owned()
+        } else {
+            format!(
+                "could not secure a coherent personal-state snapshot: {}",
+                yututui::util::sanitize::sanitize_error_text(error.to_string())
+            )
+        };
+        eprintln!("ytt data import: {message}");
+        return EXIT_RUNTIME;
+    }
+
+    let (paths, plan) = match yututui::data_import::plan_from_file(&path) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!(
+                "ytt data import: {}",
+                yututui::util::sanitize::sanitize_error_text(error.to_string())
+            );
+            return EXIT_RUNTIME;
+        }
+    };
+    print_import_summary(&plan.summary);
+    if !request.apply {
+        println!("Preview only; run again with --apply to save these changes.");
+        return EXIT_OK;
+    }
+    if !plan.summary.changed {
+        println!("No changes were needed.");
+        return EXIT_OK;
+    }
+    match yututui::data_import::apply_plan(&paths, plan) {
+        Ok(_) => {
+            println!("Personal data import applied atomically.");
+            EXIT_OK
+        }
+        Err(error) => {
+            eprintln!(
+                "ytt data import: {}",
+                yututui::util::sanitize::sanitize_error_text(error.to_string())
+            );
+            EXIT_RUNTIME
+        }
+    }
+}
+
+fn print_import_summary(summary: &yututui::personal_state::ImportSummary) {
+    println!(
+        "Import preview: {} operation(s), +{} favorite(s), +{} history item(s), \
+         +{} radio favorite(s), +{} playlist(s), +{} playlist item(s), +{} signal track(s).",
+        summary.operations_added,
+        summary.favorites_added,
+        summary.history_added,
+        summary.radio_favorites_added,
+        summary.playlists_added,
+        summary.playlist_entries_added,
+        summary.signal_tracks_added,
+    );
+    if summary.duplicate_operations > 0 {
+        println!(
+            "{} operation(s) were already present and will not be applied again.",
+            summary.duplicate_operations
+        );
     }
 }
 
@@ -72,11 +173,11 @@ fn run_export(args: &[String]) -> i32 {
             print!("{EXPORT_USAGE}");
             return EXIT_OK;
         }
-        Ok(ParseExport::Destination(path)) => path,
+        Ok(ParseExport::Request(request)) => request,
         Err(message) => return export_usage_error(&message),
     };
 
-    let directory = match resolve_destination(requested.as_deref()) {
+    let directory = match resolve_destination(requested.destination.as_deref()) {
         Ok(path) => path,
         Err(message) => {
             eprintln!("ytt data export: {message}");
@@ -95,7 +196,7 @@ fn run_export(args: &[String]) -> i32 {
         }
     };
     let instance = match runtime.block_on(remote::client::instance_with_capability(
-        PERSONAL_EXPORT_CAPABILITY,
+        export_capability(requested.schema),
     )) {
         Ok(instance) => instance,
         Err(error) => {
@@ -105,9 +206,9 @@ fn run_export(args: &[String]) -> i32 {
     };
 
     let result = if let Some(instance) = instance {
-        export_through_owner_or_recover_stale(&runtime, instance, &directory)
+        export_through_owner_or_recover_stale(&runtime, instance, &directory, requested.schema)
     } else {
-        export_offline_with_guard(&runtime, &directory)
+        export_offline_with_guard(&runtime, &directory, requested.schema)
     };
 
     match result {
@@ -131,13 +232,14 @@ fn run_export(args: &[String]) -> i32 {
 fn export_offline_with_guard(
     runtime: &tokio::runtime::Runtime,
     directory: &Path,
+    schema: u32,
 ) -> Result<PathBuf, String> {
     if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             return match runtime.block_on(remote::client::instance_with_capability(
-                PERSONAL_EXPORT_CAPABILITY,
+                export_capability(schema),
             )) {
-                Ok(Some(instance)) => export_through_owner(runtime, instance, directory)
+                Ok(Some(instance)) => export_through_owner(runtime, instance, directory, schema)
                     .map_err(|error| owner_export_error_message(error, directory)),
                 Ok(None) | Err(_) => Err(
                     "another ytt process owns personal data but is not an export-capable primary. \
@@ -155,12 +257,15 @@ fn export_offline_with_guard(
 
     // Recheck after establishing the process-wide lease. Current-version owners cannot cross this
     // point; this catches a compatible older primary that published during acquisition.
-    match runtime.block_on(remote::client::instance_with_capability(
-        PERSONAL_EXPORT_CAPABILITY,
-    )) {
-        Ok(Some(instance)) => export_through_owner_or_recover_stale(runtime, instance, directory),
+    match runtime.block_on(remote::client::instance_with_capability(export_capability(
+        schema,
+    ))) {
+        Ok(Some(instance)) => {
+            export_through_owner_or_recover_stale(runtime, instance, directory, schema)
+        }
         Ok(None) => {
-            yututui::data_export::export_from_disk(directory).map_err(offline_export_error_message)
+            yututui::data_export::export_from_disk_with_schema(directory, export_schema(schema))
+                .map_err(offline_export_error_message)
         }
         Err(error) => Err(error.human_message()),
     }
@@ -172,6 +277,7 @@ fn export_offline_with_guard(
 fn export_offline_after_stale_descriptor(
     runtime: &tokio::runtime::Runtime,
     directory: &Path,
+    schema: u32,
 ) -> Result<PathBuf, String> {
     if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
         if error.kind() == std::io::ErrorKind::WouldBlock {
@@ -193,7 +299,8 @@ fn export_offline_after_stale_descriptor(
         return Err(error.human_message());
     }
 
-    yututui::data_export::export_from_disk(directory).map_err(offline_export_error_message)
+    yututui::data_export::export_from_disk_with_schema(directory, export_schema(schema))
+        .map_err(offline_export_error_message)
 }
 
 fn offline_export_error_message(error: yututui::data_export::ExportError) -> String {
@@ -204,6 +311,7 @@ fn export_through_owner(
     runtime: &tokio::runtime::Runtime,
     instance: remote::proto::InstanceFile,
     directory: &Path,
+    schema: u32,
 ) -> Result<PathBuf, OwnerExportError> {
     let requested_directory = directory;
     let Some(directory) = requested_directory.to_str() else {
@@ -214,6 +322,7 @@ fn export_through_owner(
     };
     let command = remote::proto::RemoteCommand::ExportPersonalData {
         directory: directory.to_string(),
+        schema: Some(schema),
     };
     let response = runtime
         .block_on(remote::client::send_to(instance, command))
@@ -287,11 +396,12 @@ fn export_through_owner_or_recover_stale(
     runtime: &tokio::runtime::Runtime,
     instance: remote::proto::InstanceFile,
     directory: &Path,
+    schema: u32,
 ) -> Result<PathBuf, String> {
-    match export_through_owner(runtime, instance, directory) {
+    match export_through_owner(runtime, instance, directory, schema) {
         Ok(path) => Ok(path),
         Err(error) if permits_stale_descriptor_recovery(&error) => {
-            export_offline_after_stale_descriptor(runtime, directory)
+            export_offline_after_stale_descriptor(runtime, directory, schema)
         }
         Err(error) => Err(owner_export_error_message(error, directory)),
     }
@@ -339,7 +449,58 @@ fn is_terminal_unsafe_character(character: char) -> bool {
 
 enum ParseExport {
     Help,
-    Destination(Option<String>),
+    Request(ExportRequest),
+}
+
+enum ParseImport {
+    Help,
+    Request(ImportRequest),
+}
+
+struct ImportRequest {
+    file: String,
+    apply: bool,
+}
+
+fn parse_import_args(args: &[String]) -> Result<ParseImport, String> {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "-h" | "--help"))
+    {
+        return Ok(ParseImport::Help);
+    }
+    let mut file = None;
+    let mut apply = false;
+    let mut dry_run = false;
+    for argument in args {
+        match argument.as_str() {
+            "--apply" if apply => return Err("`--apply` may only be specified once".to_owned()),
+            "--apply" => apply = true,
+            "--dry-run" if dry_run => {
+                return Err("`--dry-run` may only be specified once".to_owned());
+            }
+            "--dry-run" => dry_run = true,
+            option if option.starts_with('-') => {
+                return Err(format!("unexpected option `{option}`"));
+            }
+            value => {
+                if file.is_some() {
+                    return Err("exactly one import file is required".to_owned());
+                }
+                file = Some(value.to_owned());
+            }
+        }
+    }
+    if apply && dry_run {
+        return Err("`--apply` and `--dry-run` cannot be used together".to_owned());
+    }
+    let file = file.ok_or_else(|| "an import file is required".to_owned())?;
+    Ok(ParseImport::Request(ImportRequest { file, apply }))
+}
+
+struct ExportRequest {
+    destination: Option<String>,
+    schema: u32,
 }
 
 fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
@@ -351,9 +512,34 @@ fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
     }
 
     let mut destination = None;
+    let mut schema = None;
     let mut index = 0;
     while index < args.len() {
         let argument = &args[index];
+        if argument == "--schema" || argument.starts_with("--schema=") {
+            let raw = if argument == "--schema" {
+                index += 1;
+                args.get(index)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "`--schema` requires 1 or 2".to_string())?
+                    .as_str()
+            } else {
+                argument
+                    .strip_prefix("--schema=")
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "`--schema` requires 1 or 2".to_string())?
+            };
+            let parsed = raw
+                .parse::<u32>()
+                .ok()
+                .filter(|value| matches!(value, 1 | 2))
+                .ok_or_else(|| "`--schema` must be 1 or 2".to_string())?;
+            if schema.replace(parsed).is_some() {
+                return Err("`--schema` may only be specified once".to_string());
+            }
+            index += 1;
+            continue;
+        }
         let value = if argument == "--to" {
             index += 1;
             args.get(index)
@@ -375,7 +561,26 @@ fn parse_export_args(args: &[String]) -> Result<ParseExport, String> {
         index += 1;
     }
 
-    Ok(ParseExport::Destination(destination))
+    Ok(ParseExport::Request(ExportRequest {
+        destination,
+        schema: schema.unwrap_or(2),
+    }))
+}
+
+fn export_schema(schema: u32) -> yututui::data_export::ExportSchema {
+    if schema == 1 {
+        yututui::data_export::ExportSchema::V1
+    } else {
+        yututui::data_export::ExportSchema::V2
+    }
+}
+
+fn export_capability(schema: u32) -> &'static str {
+    if schema == 1 {
+        PERSONAL_EXPORT_CAPABILITY
+    } else {
+        PERSONAL_STATE_V2_CAPABILITY
+    }
 }
 
 fn resolve_destination(requested: Option<&str>) -> Result<PathBuf, String> {
@@ -444,6 +649,20 @@ fn resolve_destination(requested: Option<&str>) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+fn resolve_import_source(raw: &str) -> Result<PathBuf, String> {
+    let path = expand_tilde(raw)?;
+    let path = std::path::absolute(path)
+        .map_err(|error| format!("could not resolve import file: {error}"))?;
+    if path
+        .to_string_lossy()
+        .chars()
+        .any(is_terminal_unsafe_character)
+    {
+        return Err("import paths cannot contain control or bidirectional characters".to_owned());
+    }
+    Ok(path)
+}
+
 fn expand_tilde(raw: &str) -> Result<PathBuf, String> {
     if raw == "~" {
         return home_dir();
@@ -477,6 +696,11 @@ fn export_usage_error(message: &str) -> i32 {
     EXIT_USAGE
 }
 
+fn import_usage_error(message: &str) -> i32 {
+    eprintln!("ytt data import: {message}\n\n{IMPORT_USAGE}");
+    EXIT_USAGE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,22 +713,30 @@ mod tests {
     fn help_succeeds_and_missing_or_unknown_commands_are_usage_errors() {
         assert_eq!(run(&strings(&["--help"])), EXIT_OK);
         assert_eq!(run(&strings(&["export", "--help"])), EXIT_OK);
+        assert_eq!(run(&strings(&["import", "--help"])), EXIT_OK);
         assert_eq!(run(&[]), EXIT_USAGE);
         assert_eq!(run(&strings(&["unknown"])), EXIT_USAGE);
     }
 
     #[test]
     fn export_parser_accepts_default_and_one_destination() {
-        assert!(matches!(
-            parse_export_args(&[]).unwrap(),
-            ParseExport::Destination(None)
-        ));
+        let ParseExport::Request(request) = parse_export_args(&[]).unwrap() else {
+            panic!("expected export request");
+        };
+        assert_eq!(request.destination, None);
+        assert_eq!(request.schema, 2);
         match parse_export_args(&strings(&["--to", "/tmp"])).unwrap() {
-            ParseExport::Destination(Some(path)) => assert_eq!(path, "/tmp"),
+            ParseExport::Request(request) => {
+                assert_eq!(request.destination.as_deref(), Some("/tmp"));
+                assert_eq!(request.schema, 2);
+            }
             _ => panic!("expected destination"),
         }
-        match parse_export_args(&strings(&["--to=/tmp"])).unwrap() {
-            ParseExport::Destination(Some(path)) => assert_eq!(path, "/tmp"),
+        match parse_export_args(&strings(&["--to=/tmp", "--schema", "1"])).unwrap() {
+            ParseExport::Request(request) => {
+                assert_eq!(request.destination.as_deref(), Some("/tmp"));
+                assert_eq!(request.schema, 1);
+            }
             _ => panic!("expected destination"),
         }
     }
@@ -523,10 +755,32 @@ mod tests {
             strings(&["--to"]),
             strings(&["--to="]),
             strings(&["--to", "/tmp", "--to", "/var/tmp"]),
+            strings(&["--schema", "3"]),
+            strings(&["--schema=1", "--schema=2"]),
             strings(&["unexpected"]),
         ] {
             assert!(parse_export_args(&args).is_err(), "accepted {args:?}");
         }
+    }
+
+    #[test]
+    fn import_parser_is_preview_first_and_apply_is_explicit() {
+        let ParseImport::Request(preview) = parse_import_args(&strings(&["backup.json"])).unwrap()
+        else {
+            panic!("expected import request");
+        };
+        assert_eq!(preview.file, "backup.json");
+        assert!(!preview.apply);
+
+        let ParseImport::Request(apply) =
+            parse_import_args(&strings(&["backup.json", "--apply"])).unwrap()
+        else {
+            panic!("expected import request");
+        };
+        assert!(apply.apply);
+        assert!(parse_import_args(&strings(&["backup.json", "--apply", "--dry-run"])).is_err());
+        assert!(parse_import_args(&[]).is_err());
+        assert!(parse_import_args(&strings(&["one.json", "two.json"])).is_err());
     }
 
     #[test]

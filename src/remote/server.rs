@@ -546,6 +546,7 @@ fn default_capabilities() -> Vec<String> {
         "status".to_string(),
         "queue-control".to_string(),
         super::PERSONAL_EXPORT_CAPABILITY.to_string(),
+        super::PERSONAL_STATE_V2_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
         // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
@@ -563,6 +564,7 @@ fn standalone_capabilities_advertise_retained_request_outcomes() {
 #[test]
 fn standalone_capabilities_advertise_personal_export() {
     assert!(default_capabilities().contains(&super::PERSONAL_EXPORT_CAPABILITY.to_string()));
+    assert!(default_capabilities().contains(&super::PERSONAL_STATE_V2_CAPABILITY.to_string()));
 }
 
 #[cfg(test)]

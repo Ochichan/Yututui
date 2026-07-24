@@ -297,6 +297,8 @@ pub struct App {
     pub transfer_running: bool,
     /// Portable personal-data export state shared by Settings and authenticated remote requests.
     pub(crate) personal_export: PersonalDataExportState,
+    /// Canonical mergeable personal state. The legacy stores below are runtime projections.
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed

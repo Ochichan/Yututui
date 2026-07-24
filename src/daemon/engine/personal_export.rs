@@ -3,6 +3,7 @@
 use super::DaemonEngine;
 use crate::config::Config;
 use crate::library::Library;
+use crate::personal_state::PersonalStateV2;
 use crate::signals::Signals;
 use crate::station::StationStore;
 
@@ -11,7 +12,17 @@ impl DaemonEngine {
     /// clone. Playlists are immutable to the daemon and are loaded directly by the worker.
     pub(crate) fn personal_export_sources(
         &self,
-    ) -> Result<(Config, Library, Signals, StationStore, usize), String> {
+    ) -> Result<
+        (
+            PersonalStateV2,
+            Config,
+            Library,
+            Signals,
+            StationStore,
+            usize,
+        ),
+        String,
+    > {
         let mut config = self.config.clone();
         config.volume = self.playback.volume;
         config.speed = Some(self.playback.speed);
@@ -32,6 +43,7 @@ impl DaemonEngine {
             )
         })?;
         Ok((
+            self.personal_state.clone(),
             config,
             self.library.clone(),
             self.signals.clone(),

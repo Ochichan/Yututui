@@ -284,8 +284,9 @@ impl DaemonEngine {
     /// accepted (its sole sender binds the player model's current track); the cycle
     /// transitions mirror the TUI's `Action::CycleRating` (src/app/player.rs) lockstep —
     /// neutral → like → dislike → neutral over library favorites + dislike signals.
-    /// The daemon skips the App-only session-event/affinity recorder, matching its
-    /// OS-media rating path (`media_set_rating`).
+    /// The daemon skips only the App-local DJ session event, matching its OS-media
+    /// rating path (`media_set_rating`). Persistent recommendation affinity is updated
+    /// by the shared rating reducer on both owners.
     pub(super) fn gui_rate(
         &mut self,
         video_id: &str,
@@ -306,37 +307,15 @@ impl DaemonEngine {
             self.library_invalidations = self.library_invalidations.wrapping_add(1);
             return RemoteResponse::ok("rating cycled".to_string());
         }
-        let artist_key = crate::signals::normalize_artist(&song.artist);
         let now = crate::signals::unix_now();
-        let liked = self.library.is_favorite(&song.video_id);
-        let disliked = self.signals.is_disliked(&song.video_id);
-        match (liked, disliked) {
-            // neutral → like
-            (false, false) => {
-                let now_fav = self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, now_fav, now);
-            }
-            // like → dislike
-            (true, _) => {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
-                self.signals
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-            }
-            // dislike → neutral: signals-only, like the App leg — no library write and
-            // no invalidation push for a mutation the library never saw.
-            (false, true) => {
-                self.signals
-                    .toggle_dislike(&song.video_id, &artist_key, now);
-                self.save_signals("daemon GUI rating signals");
-                return RemoteResponse::ok("rating cycled".to_string());
-            }
+        let change = crate::rating::cycle(&mut self.library, &mut self.signals, &song, now);
+        if change.library_changed {
+            self.save_library("daemon GUI rating library");
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
         }
-        self.save_library("daemon GUI rating library");
-        self.save_signals("daemon GUI rating signals");
-        self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        if change.signals_changed {
+            self.save_signals("daemon GUI rating signals");
+        }
         RemoteResponse::ok("rating cycled".to_string())
     }
 
