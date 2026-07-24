@@ -4,8 +4,10 @@
 //! private files are `0600`, and reads/appends use `O_NOFOLLOW` so a symlink is rejected instead
 //! of followed. Windows rejects reparse-point final paths for the same private state APIs.
 
+mod owner_only;
 mod pinned;
 mod recovery_backups;
+pub use owner_only::*;
 pub(crate) use pinned::{OwnedGeneration, PinnedDir};
 use recovery_backups::backup_with_label;
 pub use recovery_backups::{

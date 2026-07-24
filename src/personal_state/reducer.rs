@@ -7,11 +7,11 @@ use super::legacy::{
     PLAYLIST_ENTRIES_MAX, PLAYLISTS_MAX, RADIO_MAX, SIGNAL_TRACKS_MAX, rating_from_legacy,
     sha256_hex,
 };
-use super::model::operation_set;
+use super::model::{derive_device_registry, operation_set};
 use super::{
-    CausalStamp, DeviceRecord, DeviceRegistry, EngagementKind, Operation, OperationEnvelope,
-    PersonalStateError, PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack,
-    PortableTrackKey, Rating, VersionVector,
+    CausalStamp, DeviceRegistry, EngagementKind, Operation, OperationEnvelope, PersonalStateError,
+    PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack, PortableTrackKey, Rating,
+    VersionVector,
 };
 
 const RAW_EVENT_RETENTION_SECS: i64 = 365 * 24 * 60 * 60;
@@ -164,7 +164,7 @@ pub fn merge(
     }
     merged.operations = operations.into_values().collect();
     merged.version_vector.merge(&remote.version_vector);
-    merge_device_registry(&mut merged.device_registry, &remote.device_registry);
+    merged.device_registry = derive_device_registry(&merged.operations)?;
     merged.compaction_checkpoint = choose_checkpoint(
         merged.compaction_checkpoint.as_ref(),
         remote.compaction_checkpoint.as_ref(),
@@ -198,7 +198,7 @@ pub(crate) fn project_at(
     let mut station_profile = None::<Register<(Option<String>, crate::station::Explore)>>;
     let mut avoided = BTreeMap::<String, Register<bool>>::new();
     let mut events = BTreeMap::<String, EngagementEvent>::new();
-    let mut devices = state.device_registry.clone();
+    let devices = derive_device_registry(&state.operations)?;
     let mut bindings = BTreeMap::<PortableTrackKey, Register<PortableTrackKey>>::new();
 
     if let Some((baseline_envelope, baseline_value)) = &baseline {
@@ -380,24 +380,7 @@ pub(crate) fn project_at(
             } => {
                 update_register(&mut bindings, placeholder.clone(), envelope, target.clone());
             }
-            Operation::AddDevice { device } => {
-                let entry = devices
-                    .entry(device.device_id.clone())
-                    .or_insert_with(|| device.clone());
-                if !entry.revoked {
-                    *entry = device.clone();
-                }
-            }
-            Operation::RevokeDevice { device_id } => {
-                devices
-                    .entry(device_id.clone())
-                    .and_modify(|device| device.revoked = true)
-                    .or_insert_with(|| DeviceRecord {
-                        device_id: device_id.clone(),
-                        name: "Revoked device".to_owned(),
-                        revoked: true,
-                    });
-            }
+            Operation::AddDevice { .. } | Operation::RevokeDevice { .. } => {}
             Operation::LegacyBaseline { .. } => {}
         }
     }
@@ -1004,21 +987,6 @@ fn empty_legacy() -> LegacyProjection {
         playlists: Vec::new(),
         signals: LegacySignals::default(),
         station: LegacyStation::default(),
-    }
-}
-
-fn merge_device_registry(target: &mut DeviceRegistry, source: &DeviceRegistry) {
-    for (device_id, source_device) in source {
-        target
-            .entry(device_id.clone())
-            .and_modify(|target_device| {
-                if source_device.revoked {
-                    target_device.revoked = true;
-                } else if !target_device.revoked && source_device.name < target_device.name {
-                    target_device.name = source_device.name.clone();
-                }
-            })
-            .or_insert_with(|| source_device.clone());
     }
 }
 

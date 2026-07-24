@@ -60,6 +60,7 @@ ts-export = ["dep:ts-rs", "yututui-core/ts-export"]
 perf-harness = []
 
 [dependencies]
+age = { version = "0.12.1", default-features = false }
 anyhow = "1.0.103"
 # Spotify OAuth PKCE: base64url-encode the SHA-256 code challenge. Pure Rust, tiny.
 base64 = "0.22"
@@ -67,11 +68,19 @@ crossterm = "0.29"
 # Playlist file import/export (Exportify-compatible). Pure Rust; handles quoting/escaping
 # correctly, which hand-rolled CSV never does.
 csv = "1.3"
+# Human-entered, no-padding Base32 pairing codes. Already shared with lofty.
+data-encoding = "2.11"
 directories = "6.0.0"
+# Device operation signatures. Version 2 shares curve25519-dalek 4 and sha2 0.10
+# with age; v3 would duplicate the curve implementation in every shipped binary.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "zeroize"] }
 # Tiny, dependency-free RNG for queue shuffling (no `rand` pull-in).
 fastrand = "2"
 futures = "0.3.32"
 getrandom = "0.4"
+# Recovery signing-key derivation. Both are pure Rust and share age's RustCrypto graph.
+hkdf = "0.12"
+hmac = "0.12"
 # Decode album art / thumbnails ourselves (off the render thread) and hand a ready
 # `DynamicImage` to ratatui-image. Default features are off so only the formats we
 # actually fetch are compiled in — JPEG (i.ytimg thumbnails + yt-dlp embedded covers),
@@ -148,6 +157,8 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
 yututui-core = { path = "crates/yututui-core" }
+# Wipe temporary credential/key buffers. `derive` is compile-time only.
+zeroize = { version = "1.9", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["test-util"] }

@@ -1,5 +1,8 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Mutex, OnceLock};
+
+use base64::Engine;
 
 use super::transaction::{CommitPoint, TargetFile};
 use super::*;
@@ -16,6 +19,81 @@ fn track(id: &str) -> PortableTrack {
         duration_secs: Some(180),
         isrc: None,
     }
+}
+
+fn public_identity(seed: u8) -> DevicePublicIdentity {
+    static AGE_RECIPIENTS: OnceLock<Mutex<Vec<(u8, String)>>> = OnceLock::new();
+    let recipients = AGE_RECIPIENTS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut recipients = recipients.lock().unwrap();
+    let age_recipient = recipients
+        .iter()
+        .find(|(existing_seed, _)| *existing_seed == seed)
+        .map(|(_, recipient)| recipient.clone())
+        .unwrap_or_else(|| {
+            let recipient = age::x25519::Identity::generate().to_public().to_string();
+            recipients.push((seed, recipient.clone()));
+            recipient
+        });
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    assert!(!signing_key.verifying_key().is_weak());
+    DevicePublicIdentity {
+        age_recipient,
+        ed25519_verifying_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signing_key.verifying_key().as_bytes()),
+    }
+}
+
+fn membership_operation(
+    author: &str,
+    sequence: u64,
+    operation_id: &str,
+    operation: Operation,
+) -> OperationEnvelope {
+    OperationEnvelope {
+        operation_id: operation_id.to_owned(),
+        stamp: CausalStamp {
+            dot: Dot {
+                device_id: DeviceId::new(author).unwrap(),
+                sequence,
+            },
+            observed: VersionVector::default(),
+            recorded_at_unix: 0,
+        },
+        origin: OperationOrigin::Local,
+        operation,
+    }
+}
+
+fn state_with_keyed_devices(device_ids: &[&str]) -> PersonalStateV2 {
+    let mut state = PersonalStateV2::empty("device-test".to_owned()).unwrap();
+    for (index, device_id) in device_ids.iter().enumerate() {
+        let device_id = DeviceId::new(*device_id).unwrap();
+        let dot = Dot {
+            device_id: DeviceId::new("membership").unwrap(),
+            sequence: index as u64 + 1,
+        };
+        state.operations.push(OperationEnvelope {
+            operation_id: format!("add-device-{}", device_id.as_str()),
+            stamp: CausalStamp {
+                dot: dot.clone(),
+                observed: VersionVector::default(),
+                recorded_at_unix: 0,
+            },
+            origin: OperationOrigin::Local,
+            operation: Operation::AddDevice {
+                device: DeviceRecord {
+                    device_id,
+                    name: format!("Device {}", index + 1),
+                    revoked: false,
+                    public_identity: Some(public_identity(index as u8 + 1)),
+                },
+            },
+        });
+        state.version_vector.observe(&dot);
+    }
+    refresh_device_registry(&mut state).unwrap();
+    state.normalize().unwrap();
+    state
 }
 
 fn rating_state(
@@ -158,6 +236,339 @@ fn validation_rejects_private_claims_and_deserialized_identifier_bypasses() {
         },
     });
     assert!(state.validate().is_err());
+}
+
+#[test]
+fn device_registry_is_derived_and_rejects_an_injected_snapshot() {
+    let state = state_with_keyed_devices(&["device-a"]);
+    let mut injected = state.clone();
+    let injected_id = DeviceId::new("injected").unwrap();
+    injected.device_registry.insert(
+        injected_id.clone(),
+        DeviceRecord {
+            device_id: injected_id,
+            name: "Injected".to_owned(),
+            revoked: false,
+            public_identity: Some(public_identity(9)),
+        },
+    );
+    assert!(matches!(
+        injected.validate(),
+        Err(PersonalStateError::InvalidOperation(
+            "device registry does not match membership operations"
+        ))
+    ));
+}
+
+#[test]
+fn membership_derivation_is_order_independent_and_revocation_is_grow_only() {
+    let device_id = DeviceId::new("device").unwrap();
+    let unkeyed = membership_operation(
+        "author-a",
+        1,
+        "unkeyed",
+        Operation::AddDevice {
+            device: DeviceRecord {
+                device_id: device_id.clone(),
+                name: "Alpha legacy placeholder".to_owned(),
+                revoked: false,
+                public_identity: None,
+            },
+        },
+    );
+    let keyed = membership_operation(
+        "author-b",
+        1,
+        "keyed",
+        Operation::AddDevice {
+            device: DeviceRecord {
+                device_id: device_id.clone(),
+                name: "Zulu enrolled device".to_owned(),
+                revoked: false,
+                public_identity: Some(public_identity(1)),
+            },
+        },
+    );
+    let revoke = membership_operation(
+        "author-c",
+        1,
+        "revoke",
+        Operation::RevokeDevice {
+            device_id: device_id.clone(),
+        },
+    );
+
+    let forward =
+        derive_device_registry(&[unkeyed.clone(), keyed.clone(), revoke.clone()]).unwrap();
+    let reverse = derive_device_registry(&[revoke, keyed, unkeyed]).unwrap();
+    assert_eq!(forward, reverse);
+    let derived = &forward[&device_id];
+    assert_eq!(derived.name, "Zulu enrolled device");
+    assert!(derived.revoked);
+    assert_eq!(derived.public_identity, Some(public_identity(1)));
+}
+
+#[test]
+fn conflicting_device_public_identities_are_a_hard_error() {
+    let device_id = DeviceId::new("device").unwrap();
+    let add = |author: &str, seed: u8| {
+        membership_operation(
+            author,
+            1,
+            author,
+            Operation::AddDevice {
+                device: DeviceRecord {
+                    device_id: device_id.clone(),
+                    name: "Device".to_owned(),
+                    revoked: false,
+                    public_identity: Some(public_identity(seed)),
+                },
+            },
+        )
+    };
+    assert_eq!(
+        derive_device_registry(&[add("author-a", 1), add("author-b", 2)]),
+        Err(PersonalStateError::ConflictingDeviceIdentity)
+    );
+}
+
+#[test]
+fn device_public_identity_and_add_device_shape_are_validated() {
+    let mut invalid_identity = public_identity(1);
+    invalid_identity.age_recipient = "age1short".to_owned();
+    let device = DeviceRecord {
+        device_id: DeviceId::new("device").unwrap(),
+        name: "Device".to_owned(),
+        revoked: false,
+        public_identity: Some(invalid_identity),
+    };
+    assert!(
+        derive_device_registry(&[membership_operation(
+            "author",
+            1,
+            "invalid-key",
+            Operation::AddDevice { device },
+        )])
+        .is_err()
+    );
+
+    let revoked_device = DeviceRecord {
+        device_id: DeviceId::new("revoked").unwrap(),
+        name: "Revoked".to_owned(),
+        revoked: true,
+        public_identity: Some(public_identity(2)),
+    };
+    assert!(
+        derive_device_registry(&[membership_operation(
+            "author",
+            1,
+            "invalid-add",
+            Operation::AddDevice {
+                device: revoked_device,
+            },
+        )])
+        .is_err()
+    );
+}
+
+#[test]
+fn device_public_identity_rejects_bad_age_checksum_and_weak_ed25519_key() {
+    let mut bad_checksum = public_identity(3);
+    let final_character = bad_checksum.age_recipient.pop().unwrap();
+    bad_checksum
+        .age_recipient
+        .push(if final_character == 'q' { 'p' } else { 'q' });
+    let invalid_age = DeviceRecord {
+        device_id: DeviceId::new("invalid-age").unwrap(),
+        name: "Invalid age".to_owned(),
+        revoked: false,
+        public_identity: Some(bad_checksum),
+    };
+    assert!(
+        derive_device_registry(&[membership_operation(
+            "author",
+            1,
+            "bad-age-checksum",
+            Operation::AddDevice {
+                device: invalid_age,
+            },
+        )])
+        .is_err()
+    );
+
+    let mut weak_key = public_identity(4);
+    let mut identity_point = [0_u8; 32];
+    identity_point[0] = 1;
+    weak_key.ed25519_verifying_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(identity_point);
+    let invalid_key = DeviceRecord {
+        device_id: DeviceId::new("invalid-key").unwrap(),
+        name: "Invalid key".to_owned(),
+        revoked: false,
+        public_identity: Some(weak_key),
+    };
+    assert!(
+        derive_device_registry(&[membership_operation(
+            "author",
+            1,
+            "weak-ed25519-key",
+            Operation::AddDevice {
+                device: invalid_key,
+            },
+        )])
+        .is_err()
+    );
+}
+
+#[test]
+fn explicit_device_bindings_produce_distinct_dots() {
+    let state = state_with_keyed_devices(&["device-a", "device-b"]);
+    let mut library = crate::library::Library::default();
+    library.toggle_favorite(&crate::api::Song::remote(
+        "explicit".to_owned(),
+        "Explicit".to_owned(),
+        "Artist".to_owned(),
+        "3:00".to_owned(),
+    ));
+    let reconcile = |device: &str| {
+        reconcile_runtime_as(
+            &state,
+            &DeviceId::new(device).unwrap(),
+            &library,
+            &crate::playlists::Playlists::default(),
+            &crate::signals::Signals::default(),
+            &crate::station::StationStore::default(),
+        )
+        .unwrap()
+    };
+    let from_a = reconcile("device-a");
+    let from_b = reconcile("device-b");
+    let new_dot = |candidate: &PersonalStateV2| {
+        candidate
+            .operations
+            .iter()
+            .find(|operation| matches!(operation.operation, Operation::SetRating { .. }))
+            .unwrap()
+            .stamp
+            .dot
+            .clone()
+    };
+    assert_eq!(new_dot(&from_a).device_id.as_str(), "device-a");
+    assert_eq!(new_dot(&from_b).device_id.as_str(), "device-b");
+    assert_ne!(new_dot(&from_a), new_dot(&from_b));
+}
+
+#[test]
+fn local_device_binding_rejects_missing_revoked_unkeyed_and_ambiguous_states() {
+    let empty_library = crate::library::Library::default();
+    let empty_playlists = crate::playlists::Playlists::default();
+    let empty_signals = crate::signals::Signals::default();
+    let empty_station = crate::station::StationStore::default();
+    let keyed = state_with_keyed_devices(&["device-a"]);
+    assert!(
+        reconcile_runtime_as(
+            &keyed,
+            &DeviceId::new("missing").unwrap(),
+            &empty_library,
+            &empty_playlists,
+            &empty_signals,
+            &empty_station,
+        )
+        .is_err()
+    );
+
+    let revoked = append_operation_as(
+        &keyed,
+        &DeviceId::new("device-a").unwrap(),
+        Operation::RevokeDevice {
+            device_id: DeviceId::new("device-a").unwrap(),
+        },
+        1,
+    )
+    .unwrap();
+    assert!(
+        reconcile_runtime_as(
+            &revoked,
+            &DeviceId::new("device-a").unwrap(),
+            &empty_library,
+            &empty_playlists,
+            &empty_signals,
+            &empty_station,
+        )
+        .is_err()
+    );
+
+    let unkeyed = legacy_state(
+        &empty_library,
+        &empty_playlists,
+        &empty_signals,
+        &empty_station,
+    )
+    .unwrap();
+    let unkeyed_id = unkeyed.device_registry.keys().next().unwrap();
+    assert!(
+        reconcile_runtime_as(
+            &unkeyed,
+            unkeyed_id,
+            &empty_library,
+            &empty_playlists,
+            &empty_signals,
+            &empty_station,
+        )
+        .is_err()
+    );
+
+    let ambiguous = state_with_keyed_devices(&["device-a", "device-b"]);
+    assert!(
+        reconcile_runtime(
+            &ambiguous,
+            &empty_library,
+            &empty_playlists,
+            &empty_signals,
+            &empty_station,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn legacy_single_device_wrapper_keeps_existing_behavior() {
+    let library = crate::library::Library::default();
+    let playlists = crate::playlists::Playlists::default();
+    let signals = crate::signals::Signals::default();
+    let station = crate::station::StationStore::default();
+    let state = legacy_state(&library, &playlists, &signals, &station).unwrap();
+    let reconciled = reconcile_runtime(&state, &library, &playlists, &signals, &station).unwrap();
+    assert_eq!(reconciled, state);
+}
+
+#[test]
+fn membership_only_commit_advances_revision() {
+    let state = legacy_state(
+        &crate::library::Library::default(),
+        &crate::playlists::Playlists::default(),
+        &crate::signals::Signals::default(),
+        &crate::station::StationStore::default(),
+    )
+    .unwrap();
+    let prepared = PersonalStateCommit::prepare(state).unwrap();
+    let before = prepared.state().clone();
+    let local_device = before.device_registry.values().next().unwrap().clone();
+    let local_device_id = local_device.device_id.clone();
+    let candidate = append_operation_as(
+        &before,
+        &local_device_id,
+        Operation::AddDevice {
+            device: DeviceRecord {
+                public_identity: Some(public_identity(3)),
+                ..local_device
+            },
+        },
+        1,
+    )
+    .unwrap();
+    let after = PersonalStateCommit::prepare(candidate).unwrap();
+    assert!(after.state().revision > before.revision);
 }
 
 #[test]
@@ -359,6 +770,7 @@ fn same_dataset_import_persists_causal_changes_even_when_projection_is_unchanged
         device_id: dot.device_id.clone(),
         name: "Second device".to_owned(),
         revoked: false,
+        public_identity: None,
     };
     remote
         .device_registry

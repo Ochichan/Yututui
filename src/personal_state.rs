@@ -11,13 +11,18 @@ mod reducer;
 mod transaction;
 
 pub(crate) use coordinator::reconcile_runtime;
+pub use coordinator::{append_operation_as, reconcile_runtime_as};
 pub use import::{ImportPlan, ImportSummary, plan_import};
 pub use legacy::{LegacyProjection, legacy_state};
+#[cfg(test)]
+pub(crate) use model::derive_device_registry;
+pub(crate) use model::refresh_device_registry;
 pub use model::{
-    CausalStamp, CompactionCheckpoint, DeviceId, DeviceRecord, DeviceRegistry, Dot, EngagementKind,
-    Operation, OperationEnvelope, OperationOrigin, PERSONAL_STATE_KIND,
-    PERSONAL_STATE_SCHEMA_VERSION, PersonalStateError, PersonalStateMetadata, PersonalStateV2,
-    PlaylistEntryId, PlaylistId, PortableTrack, PortableTrackKey, Rating, VersionVector,
+    CausalStamp, CompactionCheckpoint, DeviceId, DevicePublicIdentity, DeviceRecord,
+    DeviceRegistry, Dot, EngagementKind, Operation, OperationEnvelope, OperationOrigin,
+    PERSONAL_STATE_KIND, PERSONAL_STATE_SCHEMA_VERSION, PersonalStateError, PersonalStateMetadata,
+    PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack, PortableTrackKey, Rating,
+    VersionVector,
 };
 pub(crate) use reducer::runtime_fingerprint;
 pub use reducer::{MergeSummary, PersonalProjection, merge, project};
