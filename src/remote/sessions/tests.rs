@@ -38,6 +38,7 @@ fn command_reply_timeouts_keep_quick_playback_and_export_classes_distinct() {
     assert_eq!(
         tuning.command_reply_timeout(&crate::remote::proto::RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         }),
         Duration::from_millis(30)
     );

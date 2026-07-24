@@ -14,11 +14,15 @@ use crate::remote::proto::{
     InstanceMode, RETAINED_REQUEST_OUTCOMES_CAPABILITY, RemoteCommand, StatusSnapshot,
 };
 use crate::remote::server::RemoteEvent;
-use crate::remote::{LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY};
+use crate::remote::{
+    LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY,
+    PERSONAL_STATE_V2_CAPABILITY,
+};
 use crate::util::process::{self, ProcessProfile};
 
 mod accounts_host;
 mod ai_host;
+mod capabilities;
 mod cli;
 mod downloads_host;
 mod effects;
@@ -34,6 +38,7 @@ mod serve_setup;
 mod shutdown_drain;
 mod transfer_host;
 
+use capabilities::daemon_capabilities;
 use cli::{ParseOutcome, parse};
 use effects::{DaemonEffectTasks, dispatch_engine_effects, dispatch_session_engine_effects};
 #[cfg(any(windows, test))]
@@ -473,9 +478,9 @@ async fn run_owner_loop(
             .unwrap_or(DaemonEvent::Ai(crate::ai::AiEvent::Thinking(false)));
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => match command {
-                RemoteCommand::ExportPersonalData { directory } => {
+                RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        directory,
+                        personal_export::Target::new(directory, schema.unwrap_or(2)),
                         reply,
                         &engine,
                         &event_tx,
@@ -514,9 +519,9 @@ async fn run_owner_loop(
                 origin,
                 reply,
             }) => match command {
-                RemoteCommand::ExportPersonalData { directory } => {
+                RemoteCommand::ExportPersonalData { directory, schema } => {
                     personal_export.start_engine(
-                        directory,
+                        personal_export::Target::new(directory, schema.unwrap_or(2)),
                         reply,
                         &engine,
                         &event_tx,
@@ -1051,27 +1056,6 @@ fn daemon_error_exit_code(error: &DaemonError) -> i32 {
 async fn current_status() -> Result<StatusSnapshot, ClientError> {
     let response = client::send(RemoteCommand::Status).await?;
     response.status.ok_or(ClientError::MalformedResponse)
-}
-
-fn daemon_capabilities() -> Vec<String> {
-    vec![
-        "remote-control".to_string(),
-        "status".to_string(),
-        "queue-control".to_string(),
-        RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
-        "headless-playback".to_string(),
-        "session-resume".to_string(),
-        "autoplay-streaming".to_string(),
-        "search-playback".to_string(),
-        // v8 sessions with live push (docs/gui/02 §10).
-        "events-v8".to_string(),
-        PERSONAL_EXPORT_CAPABILITY.to_string(),
-        LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
-        // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
-        // rating, video, library, playlists, downloads, AI, accounts, transfer,
-        // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.
-        "v8-commands".to_string(),
-    ]
 }
 
 fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {

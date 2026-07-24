@@ -10,6 +10,14 @@ impl PendingOperation {
         self.publication().ensure_ordering()?;
         let action = match self.action() {
             PendingAction::Save(snapshot) => {
+                if let OwnedSnapshot::PersonalState(commit) = &**snapshot {
+                    return Ok(PanicOperation {
+                        order: self.order,
+                        kind: self.kind(),
+                        label: self.label(),
+                        action: PanicAction::PersonalState(Arc::new((**commit).clone())),
+                    });
+                }
                 #[cfg(test)]
                 if let OwnedSnapshot::Test {
                     storage_path: None,
@@ -52,6 +60,7 @@ impl PendingOperation {
 
 #[derive(Clone)]
 enum PanicAction {
+    PersonalState(Arc<crate::personal_state::PersonalStateCommit>),
     Replace {
         path: PathBuf,
         bytes: Vec<u8>,
@@ -240,6 +249,14 @@ fn write_panic_delete(
 /// (which is also the least-bad outcome mid-hook).
 pub(super) fn write_panic_operation(operation: &PanicOperation) -> std::io::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &operation.action {
+        PanicAction::PersonalState(commit) => {
+            let paths = crate::personal_state::PersonalStatePaths::current()
+                .map_err(std::io::Error::other)?;
+            commit
+                .commit(&paths)
+                .map(|_| ())
+                .map_err(std::io::Error::other)
+        }
         PanicAction::Replace { path, bytes } => write_panic_replace(
             operation,
             path,

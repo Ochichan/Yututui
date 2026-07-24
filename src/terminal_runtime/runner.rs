@@ -582,6 +582,7 @@ pub async fn run(
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());
     let PersistentStartupState {
+        personal_state,
         library,
         session_cache,
         signals,
@@ -591,6 +592,7 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
+    app.personal_state = personal_state;
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
     app.download_store = download_store;
@@ -616,7 +618,6 @@ pub async fn run(
     // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
     // files are count-repaired on load; persist the repaired snapshot so startup does not keep
     // redoing the same repair every run.
-    let playlists_repaired_at_startup = playlist_repair.changed();
     app.playlists = Arc::new(loaded_playlists);
     if playlist_repair.changed() {
         tracing::warn!(?playlist_repair, "playlists file was repaired on load");
@@ -662,11 +663,6 @@ pub async fn run(
     // No actor or direct writer can run with a stale read-only fallback snapshot.
     let persist = persist::spawn();
     persist::install_panic_flush(persist.pending());
-    if playlists_repaired_at_startup
-        && let Err(error) = persist.save(persist::Snapshot::Playlists(app.playlists.clone()))
-    {
-        tracing::warn!(%error, "startup playlist repair remains read-only");
-    }
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
     app.restore_last_session_from_cache(&session_cache);

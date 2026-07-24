@@ -141,6 +141,9 @@ pub struct DaemonEngine {
     library_invalidations: u64,
     signals: Signals,
     station: StationStore,
+    personal_state: crate::personal_state::PersonalStateV2,
+    #[cfg(test)]
+    personal_state_paths: crate::personal_state::PersonalStatePaths,
     loaded_video_id: Option<String>,
     /// One explicit lifecycle owns both the automatic-restart gate and any current-track replay
     /// payload, so contradictory armed/pending combinations cannot be represented.
@@ -256,6 +259,7 @@ impl DaemonEngine {
         let (config, startup) =
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
         let crate::persist::StartupStoreSet {
+            personal_state,
             library,
             playlists,
             session_cache,
@@ -277,6 +281,7 @@ impl DaemonEngine {
             player::lifetime::reap_orphans(&dir);
         }
         let mut engine = Self::with_state(state, Arc::new(emit));
+        engine.personal_state = personal_state;
 
         // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
         // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
@@ -310,6 +315,9 @@ impl DaemonEngine {
             playlists,
             signals,
         } = state;
+        let personal_state =
+            crate::personal_state::legacy_state(&library, &playlists, &signals, &station)
+                .unwrap_or_default();
         if let Some(profile) = &station.active {
             config.streaming.mode = profile.explore.to_mode();
         }
@@ -345,6 +353,9 @@ impl DaemonEngine {
             library_invalidations: 0,
             signals,
             station,
+            personal_state,
+            #[cfg(test)]
+            personal_state_paths: tests::personal_state_paths(),
             loaded_video_id: None,
             transport_recovery: TransportRecoveryState::Armed,
             transport_recovery_generation: 0,

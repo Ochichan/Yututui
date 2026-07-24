@@ -595,10 +595,21 @@ fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
     let bytes = std::fs::read(&files[0]).expect("read export");
     let text = String::from_utf8(bytes.clone()).expect("export is UTF-8");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse export");
-    assert_eq!(json["kind"], "yututui_personal_data_export");
-    assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["settings"]["general"]["volume"], 42);
-    assert_eq!(json["library"]["favorites"][0]["title"], "Portable song");
+    assert_eq!(json["kind"], "yututui_personal_state");
+    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["metadata"]["credentials_included"], false);
+    assert_eq!(json["metadata"]["filesystem_paths_included"], false);
+    assert_eq!(json["metadata"]["playable_urls_included"], false);
+    let legacy_baseline = json["operations"]
+        .as_array()
+        .expect("v2 operations")
+        .iter()
+        .find(|operation| operation["operation"]["type"] == "legacy_baseline")
+        .expect("v2 legacy baseline");
+    assert_eq!(
+        legacy_baseline["operation"]["baseline"]["favorites"][0]["title"],
+        "Portable song"
+    );
     for forbidden in [SECRET, PRIVATE_PATH, "gemini_api_key", "cookies_file"] {
         assert!(!text.contains(forbidden), "export leaked {forbidden:?}");
     }
@@ -645,7 +656,12 @@ fn personal_data_export_recovers_from_a_stale_descriptor_without_deleting_it() {
         "created_unix": 1,
         "mode": "standalone_tui",
         "protocol_version": 8,
-        "capabilities": ["remote-control", "status", "personal-export-v1"]
+        "capabilities": [
+            "remote-control",
+            "status",
+            "personal-export-v1",
+            "personal-state-v2"
+        ]
     });
     std::fs::write(
         &descriptor,

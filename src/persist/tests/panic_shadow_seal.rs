@@ -102,7 +102,9 @@ async fn paused_panic_hook_snapshot_rejects_every_late_admission_without_partial
 
     release_tx.send(()).expect("release paused panic hook");
     let sealed = paused_hook.join().expect("paused panic hook joins");
-    let owned = sealed[3].as_ref().expect("accepted config is snapshotted");
+    let owned = sealed[panic_slot(StoreKind::Config)]
+        .as_ref()
+        .expect("accepted config is snapshotted");
     assert_eq!(owned.kind(), StoreKind::Config);
     assert!(matches!(owned, PanicOwnedOperation::Pending(_)));
 }
@@ -128,7 +130,7 @@ async fn actor_prepared_rejection_preserves_the_pending_operation_captured_by_th
     let sealed = shadow
         .seal_and_snapshot()
         .expect("hook seals the accepted Pending frontier");
-    let captured = sealed[3]
+    let captured = sealed[panic_slot(StoreKind::Config)]
         .as_ref()
         .expect("hook captured actor-owned config")
         .clone();
@@ -180,35 +182,45 @@ fn panic_shadow_slot_transitions_are_monotonic_and_exhaustive() {
 
     shadow.publish(pending_owner(current)).unwrap();
     assert!(matches!(
-        shadow.peek_for_test()[3],
+        shadow.peek_for_test()[panic_slot(StoreKind::Config)],
         Some(PanicOwnedOperation::Pending(_))
     ));
     shadow.publish(prepared_owner(current)).unwrap();
     assert!(matches!(
-        shadow.peek_for_test()[3],
+        shadow.peek_for_test()[panic_slot(StoreKind::Config)],
         Some(PanicOwnedOperation::Prepared(_))
     ));
 
     shadow.publish(pending_owner(current)).unwrap();
     shadow.publish(prepared_owner(older)).unwrap();
-    let retained = shadow.peek_for_test()[3].clone().unwrap();
+    let retained = shadow.peek_for_test()[panic_slot(StoreKind::Config)]
+        .clone()
+        .unwrap();
     assert_eq!(retained.order(), current);
     assert!(matches!(retained, PanicOwnedOperation::Prepared(_)));
 
     shadow.publish(pending_owner(newer)).unwrap();
-    let retained = shadow.peek_for_test()[3].clone().unwrap();
+    let retained = shadow.peek_for_test()[panic_slot(StoreKind::Config)]
+        .clone()
+        .unwrap();
     assert_eq!(retained.order(), newer);
     assert!(matches!(retained, PanicOwnedOperation::Pending(_)));
 
     shadow.clear_through(StoreKind::Config, current);
-    assert_eq!(shadow.peek_for_test()[3].as_ref().unwrap().order(), newer);
+    assert_eq!(
+        shadow.peek_for_test()[panic_slot(StoreKind::Config)]
+            .as_ref()
+            .unwrap()
+            .order(),
+        newer
+    );
     shadow.clear_through(StoreKind::Config, newer);
-    assert!(shadow.peek_for_test()[3].is_none());
+    assert!(shadow.peek_for_test()[panic_slot(StoreKind::Config)].is_none());
 
     shadow.publish(pending_owner(current)).unwrap();
     shadow.clear_through(StoreKind::Config, newer);
     assert!(
-        shadow.peek_for_test()[3].is_none(),
+        shadow.peek_for_test()[panic_slot(StoreKind::Config)].is_none(),
         "a durable frontier above the retained order must clear stale panic ownership"
     );
 }
@@ -219,11 +231,23 @@ fn open_snapshot_does_not_seal_but_terminal_seal_rejects_every_publisher() {
     let first = journal_order_in_epoch(32, 1, 0xc1);
     let second = journal_order_in_epoch(32, 2, 0xc2);
     shadow.publish(pending_owner(first)).unwrap();
-    assert_eq!(shadow.snapshot()[3].as_ref().unwrap().order(), first);
+    assert_eq!(
+        shadow.snapshot()[panic_slot(StoreKind::Config)]
+            .as_ref()
+            .unwrap()
+            .order(),
+        first
+    );
     shadow.publish(pending_owner(second)).unwrap();
 
     let sealed = shadow.seal_and_snapshot().unwrap();
-    assert_eq!(sealed[3].as_ref().unwrap().order(), second);
+    assert_eq!(
+        sealed[panic_slot(StoreKind::Config)]
+            .as_ref()
+            .unwrap()
+            .order(),
+        second
+    );
     assert!(matches!(
         shadow.publish(prepared_owner(second)),
         Err(PanicShadowSealed)
@@ -235,7 +259,7 @@ fn open_snapshot_does_not_seal_but_terminal_seal_rejects_every_publisher() {
     assert!(matches!(shadow.seal_and_snapshot(), Err(PanicShadowSealed)));
 
     shadow.clear_through(StoreKind::Config, second);
-    assert!(shadow.snapshot()[3].is_none());
+    assert!(shadow.snapshot()[panic_slot(StoreKind::Config)].is_none());
 }
 
 #[test]
@@ -271,7 +295,9 @@ fn concurrent_publish_and_seal_have_one_linearized_frontier() {
 
     assert_eq!(publisher.join().unwrap(), Ok(()));
     let sealed = sealer.join().unwrap();
-    let Some(PanicOwnedOperation::Pending(operation)) = sealed[3].as_ref() else {
+    let Some(PanicOwnedOperation::Pending(operation)) =
+        sealed[panic_slot(StoreKind::Config)].as_ref()
+    else {
         panic!("publish-first frontier must retain the exact pending form");
     };
     assert_eq!(operation.order, order);

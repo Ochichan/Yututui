@@ -15,7 +15,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::{Song, is_youtube_video_id};
@@ -27,8 +27,9 @@ use crate::signals::Signals;
 use crate::station::StationStore;
 use crate::streaming::StreamingConfig;
 
+mod import_v1;
 pub(crate) mod live;
-mod offline;
+pub(crate) mod offline;
 mod publish;
 #[cfg(unix)]
 mod unix_private;
@@ -51,6 +52,13 @@ pub const EXPORT_MAX_BYTES: u64 = 192 * 1024 * 1024;
 const EXPORT_KIND: &str = "yututui_personal_data_export";
 const EXPORT_PROFILE: &str = "portable";
 const FILE_PREFIX: &str = "yututui-personal-data-v1";
+const FILE_PREFIX_V2: &str = "yututui-personal-data-v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportSchema {
+    V1,
+    V2,
+}
 
 const OMITTED_CATEGORIES: &[&str] = &[
     "authentication cookies, API keys, OAuth tokens, and account identifiers",
@@ -65,7 +73,7 @@ const OMITTED_CATEGORIES: &[&str] = &[
 /// An owned, already-sanitized snapshot that is safe to move to a blocking worker.
 ///
 /// This type intentionally does not retain `Config`, `Song`, or any secret-bearing source type.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSnapshot {
     kind: String,
     schema_version: u32,
@@ -174,7 +182,7 @@ impl ExportSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PrivacyMetadata {
     credentials_included: bool,
     filesystem_paths_included: bool,
@@ -184,7 +192,7 @@ struct PrivacyMetadata {
     omitted: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExportSummary {
     favorites: usize,
     history: usize,
@@ -203,7 +211,7 @@ struct ExportSummary {
 
 /// Explicit groups of portable settings. Each `Value` is constructed field-by-field below;
 /// none is a serialization of `Config` or a secret-bearing nested config object.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableSettingsV1 {
     general: Value,
     playback: Value,
@@ -219,7 +227,7 @@ struct PortableSettingsV1 {
     recording: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableLibraryV1 {
     favorites: Vec<PortableTrackV1>,
     history: Vec<PortableTrackV1>,
@@ -227,27 +235,27 @@ struct PortableLibraryV1 {
     radio_history: Vec<PortableTrackV1>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortablePlaylistV1 {
     id: Option<String>,
     name: String,
     tracks: Vec<PortableTrackV1>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortablePreferencesV1 {
     signals: PortableSignalsV1,
     station: PortableStationStoreV1,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableTrackV1 {
     catalog: Option<PortableCatalogId>,
     local_origin: bool,
     source: SearchSource,
     title: String,
     artist: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artists: Vec<String>,
     duration: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,7 +264,7 @@ struct PortableTrackV1 {
     album: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     album_artist: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     album_artists: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     album_release_date: Option<String>,
@@ -276,20 +284,20 @@ struct PortableTrackV1 {
     isrc: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct PortableCatalogId {
     source: SearchSource,
     id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableSignalsV1 {
     track_signals: Vec<PortableTrackSignalV1>,
     artist_weights: BTreeMap<String, f32>,
     play_log: Vec<PortablePlayEventV1>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableTrackSignalV1 {
     catalog: PortableCatalogId,
     play_count: u32,
@@ -300,18 +308,18 @@ struct PortableTrackSignalV1 {
     disliked: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortablePlayEventV1 {
     catalog: PortableCatalogId,
     played_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableStationStoreV1 {
     active: Option<PortableStationProfileV1>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PortableStationProfileV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
@@ -388,8 +396,14 @@ pub fn default_export_directory() -> Result<PathBuf, ExportError> {
 /// Remote clients use this as part of validating an owner's completion response before showing a
 /// filesystem path as a successful backup.
 pub fn is_personal_export_file_name(name: &str) -> bool {
+    [FILE_PREFIX, FILE_PREFIX_V2]
+        .into_iter()
+        .any(|prefix| is_export_file_name_with_prefix(name, prefix))
+}
+
+fn is_export_file_name_with_prefix(name: &str, prefix: &str) -> bool {
     let Some(stem) = name
-        .strip_prefix(FILE_PREFIX)
+        .strip_prefix(prefix)
         .and_then(|rest| rest.strip_prefix('-'))
         .and_then(|rest| rest.strip_suffix(".json"))
     else {
@@ -408,7 +422,49 @@ pub fn is_personal_export_file_name(name: &str) -> bool {
 
 /// Load all typed stores (including persistence journals), sanitize them, and export to `directory`.
 pub fn export_from_disk(directory: &Path) -> Result<PathBuf, ExportError> {
+    export_from_disk_with_schema(directory, ExportSchema::V2)
+}
+
+pub fn export_from_disk_with_schema(
+    directory: &Path,
+    schema: ExportSchema,
+) -> Result<PathBuf, ExportError> {
     let sources = offline::load_sources()?;
+    if schema == ExportSchema::V2 {
+        let paths = crate::personal_state::PersonalStatePaths::current().map_err(|error| {
+            ExportError::SourceStore {
+                store: "personal state",
+                detail: error.to_string(),
+            }
+        })?;
+        let loaded = crate::personal_state::load_ledger(&paths).map_err(|error| {
+            ExportError::SourceStore {
+                store: "personal state",
+                detail: error.to_string(),
+            }
+        })?;
+        let state = match loaded {
+            Some(state) => crate::personal_state::reconcile_runtime(
+                &state,
+                &sources.library,
+                &sources.playlists,
+                &sources.signals,
+                &sources.station,
+            ),
+            None => crate::personal_state::legacy_state(
+                &sources.library,
+                &sources.playlists,
+                &sources.signals,
+                &sources.station,
+            ),
+        }
+        .and_then(crate::personal_state::PersonalStateCommit::prepare)
+        .map_err(|error| ExportError::SourceStore {
+            store: "personal state",
+            detail: error.to_string(),
+        })?;
+        return export_personal_state_snapshot(directory, state.state());
+    }
     let snapshot = ExportSnapshot::new(
         &sources.config,
         &sources.library,
@@ -422,17 +478,59 @@ pub fn export_from_disk(directory: &Path) -> Result<PathBuf, ExportError> {
     export_snapshot(directory, &snapshot)
 }
 
+pub use import_v1::decode_personal_state_export;
+
 /// Pretty-print and atomically publish a private, uniquely named JSON export.
 pub fn export_snapshot(
     directory: &Path,
     snapshot: &ExportSnapshot,
 ) -> Result<PathBuf, ExportError> {
+    export_serializable(directory, snapshot, snapshot.created_at_unix, FILE_PREFIX)
+}
+
+pub fn export_personal_state_snapshot(
+    directory: &Path,
+    state: &crate::personal_state::PersonalStateV2,
+) -> Result<PathBuf, ExportError> {
+    state.validate().map_err(|error| ExportError::SourceStore {
+        store: "personal state",
+        detail: error.to_string(),
+    })?;
+    export_serializable(directory, state, unix_now(), FILE_PREFIX_V2)
+}
+
+pub fn export_v2_from_sources(
+    directory: &Path,
+    personal_state: &crate::personal_state::PersonalStateV2,
+    library: &Library,
+    playlists: &Playlists,
+    signals: &Signals,
+    station: &StationStore,
+) -> Result<PathBuf, ExportError> {
+    let state = crate::personal_state::reconcile_runtime(
+        personal_state,
+        library,
+        playlists,
+        signals,
+        station,
+    )
+    .and_then(crate::personal_state::PersonalStateCommit::prepare)
+    .map_err(|error| ExportError::SourceStore {
+        store: "personal state",
+        detail: error.to_string(),
+    })?;
+    export_personal_state_snapshot(directory, state.state())
+}
+
+fn export_serializable(
+    directory: &Path,
+    snapshot: &impl Serialize,
+    created_at_unix: u64,
+    file_prefix: &str,
+) -> Result<PathBuf, ExportError> {
     let destination = validate_destination(directory)?;
     let suffix = random_suffix()?;
-    let final_path = destination.join(format!(
-        "{FILE_PREFIX}-{}-{suffix}.json",
-        snapshot.created_at_unix
-    ));
+    let final_path = destination.join(format!("{file_prefix}-{}-{suffix}.json", created_at_unix));
     let (temp_path, file) = create_private_temp(&destination)?;
 
     let write_result = (|| {

@@ -44,6 +44,8 @@ const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
 /// Clients must gate the additive command on this capability so a new CLI never sends an
 /// unknown command to an older running instance.
 pub const PERSONAL_EXPORT_CAPABILITY: &str = "personal-export-v1";
+/// Advertised when the export command understands `schema: 2` and returns a v2 causal ledger.
+pub const PERSONAL_STATE_V2_CAPABILITY: &str = "personal-state-v2";
 
 /// Daemon/demo capability for the managed long-form seek preference and truthful runtime status.
 /// The standalone TUI owner intentionally does not advertise daemon-only GUI mutation support.
@@ -85,6 +87,7 @@ mod tests {
     fn personal_export_has_a_long_running_reply_window() {
         let command = proto::RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         };
         assert_eq!(reply_timeout_for(&command), Duration::from_secs(5 * 60));
     }

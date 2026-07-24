@@ -486,7 +486,7 @@ fn preflight_store_json(
     Ok(budget.estimated_heap)
 }
 
-pub(super) struct OfflineSources {
+pub(crate) struct OfflineSources {
     pub config: Config,
     pub library: Library,
     pub playlists: Playlists,
@@ -514,7 +514,7 @@ impl SourcePaths {
     }
 }
 
-pub(super) fn load_sources() -> Result<OfflineSources, ExportError> {
+pub(crate) fn load_sources() -> Result<OfflineSources, ExportError> {
     load_sources_at(SourcePaths::resolved())
 }
 

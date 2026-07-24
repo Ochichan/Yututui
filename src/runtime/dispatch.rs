@@ -157,7 +157,7 @@ impl RuntimeHandles {
             // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`
             // carries its own owned snapshot.
             Cmd::Persist(PersistCmd::TransferPlaylistCommit(commit)) => {
-                self.dispatch_transfer_playlist_commit(commit);
+                self.dispatch_transfer_playlist_commit(app, commit);
             }
             Cmd::Persist(p) => {
                 let result = persist_delivery::admit(&self.persist, app, p);
@@ -166,24 +166,36 @@ impl RuntimeHandles {
             Cmd::Data(cmd) => match cmd {
                 DataCmd::PersonalDataExport(PersonalDataExportCmd::Export {
                     directory,
+                    schema,
                     sources,
                     reply,
                 }) => {
                     let emitter = self.background_tasks.emitter(self.worker_tx.clone());
                     self.background_tasks
                         .spawn_blocking("personal_data_export", move || {
-                            let snapshot = crate::data_export::ExportSnapshot::new(
-                                &sources.config,
-                                &sources.library,
-                                &sources.playlists,
-                                &sources.signals,
-                                &sources.station,
-                            );
-                            drop(sources);
-                            let result = crate::data_export::export_snapshot(&directory, &snapshot)
-                                .map_err(|error| {
-                                    crate::util::sanitize::sanitize_error_text(error.to_string())
-                                });
+                            let result = if schema == 1 {
+                                let snapshot = crate::data_export::ExportSnapshot::new(
+                                    &sources.config,
+                                    &sources.library,
+                                    &sources.playlists,
+                                    &sources.signals,
+                                    &sources.station,
+                                );
+                                drop(sources);
+                                crate::data_export::export_snapshot(&directory, &snapshot)
+                            } else {
+                                crate::data_export::export_v2_from_sources(
+                                    &directory,
+                                    &sources.personal_state,
+                                    &sources.library,
+                                    &sources.playlists,
+                                    &sources.signals,
+                                    &sources.station,
+                                )
+                            }
+                            .map_err(|error| {
+                                crate::util::sanitize::sanitize_error_text(error.to_string())
+                            });
                             emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
                                 crate::app::DataMsg::PersonalDataExport(
                                     crate::app::PersonalDataExportMsg::Finished { result, reply },

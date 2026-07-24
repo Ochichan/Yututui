@@ -109,6 +109,7 @@ fn daemon_capabilities_advertise_headless_playback() {
     assert!(daemon_capabilities().contains(&"queue-control".to_string()));
     assert!(daemon_capabilities().contains(&RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&PERSONAL_EXPORT_CAPABILITY.to_string()));
+    assert!(daemon_capabilities().contains(&PERSONAL_STATE_V2_CAPABILITY.to_string()));
     assert!(daemon_capabilities().contains(&LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string()));
 }
 

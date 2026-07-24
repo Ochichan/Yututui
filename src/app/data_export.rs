@@ -95,6 +95,7 @@ impl App {
 
     fn personal_export_sources(&self, config: Config) -> PersonalDataExportSources {
         PersonalDataExportSources {
+            personal_state: self.personal_state.clone(),
             config,
             library: self.library.as_ref().clone(),
             playlists: self.playlists.as_ref().clone(),
@@ -151,7 +152,7 @@ impl App {
     /// fallback. Resolution failure is surfaced in place and no worker is started.
     pub(in crate::app) fn start_personal_export_to_downloads(&mut self) -> Vec<Cmd> {
         match personal_export_download_directory() {
-            Ok(directory) => self.start_personal_export(directory, None),
+            Ok(directory) => self.start_personal_export(directory, 2, None),
             Err(error) => {
                 let error = crate::util::sanitize::sanitize_error_text(error.to_string());
                 if let Some(settings) = self.settings.as_mut() {
@@ -175,6 +176,7 @@ impl App {
     pub(in crate::app) fn start_personal_export(
         &mut self,
         directory: PathBuf,
+        schema: u32,
         reply: Option<crate::remote::RemoteReply>,
     ) -> Vec<Cmd> {
         if self.personal_export.in_progress {
@@ -210,6 +212,7 @@ impl App {
         vec![Cmd::Data(DataCmd::PersonalDataExport(
             PersonalDataExportCmd::Export {
                 directory,
+                schema,
                 sources: Box::new(sources),
                 reply,
             },
@@ -391,7 +394,7 @@ mod tests {
         crate::i18n::set_language(crate::i18n::Language::Korean);
         let (reply, mut response) = tokio::sync::oneshot::channel();
 
-        let cmds = app.start_personal_export(PathBuf::from("/unused"), Some(reply.into()));
+        let cmds = app.start_personal_export(PathBuf::from("/unused"), 2, Some(reply.into()));
 
         assert!(cmds.is_empty(), "rejection must not carry cloned sources");
         assert!(!app.personal_export.in_progress);

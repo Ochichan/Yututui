@@ -77,10 +77,29 @@ impl App {
         )))]
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn on_transfer_playlist_persisted(
         &mut self,
         commit: crate::app::TransferPlaylistCommit,
         persistence: crate::persist::TargetFlushOutcome,
+    ) -> Vec<Cmd> {
+        self.finish_transfer_playlist_persistence(commit, persistence, None)
+    }
+
+    pub(in crate::app) fn on_transfer_playlist_persisted_with_personal_state(
+        &mut self,
+        commit: crate::app::TransferPlaylistCommit,
+        persistence: crate::persist::TargetFlushOutcome,
+        personal_state: crate::personal_state::PersonalStateV2,
+    ) -> Vec<Cmd> {
+        self.finish_transfer_playlist_persistence(commit, persistence, Some(personal_state))
+    }
+
+    fn finish_transfer_playlist_persistence(
+        &mut self,
+        commit: crate::app::TransferPlaylistCommit,
+        persistence: crate::persist::TargetFlushOutcome,
+        personal_state: Option<crate::personal_state::PersonalStateV2>,
     ) -> Vec<Cmd> {
         use crate::persist::TargetFlushOutcome;
         let crate::app::TransferPlaylistCommit {
@@ -114,6 +133,9 @@ impl App {
                     }
                     TargetFlushOutcome::CommittedExact => {
                         self.playlists = std::sync::Arc::new(candidate);
+                        if let Some(personal_state) = personal_state {
+                            self.personal_state = personal_state;
+                        }
                         self.reconcile_playlists_reload();
                         self.dirty = true;
                         request.respond(Ok(

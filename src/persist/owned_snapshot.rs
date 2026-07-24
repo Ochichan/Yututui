@@ -6,6 +6,7 @@ use super::*;
 /// directly behind `Arc` would make every snapshot non-`Sync`. Admission moves only its serialized
 /// `entries` state into a DTO; every other variant is moved unchanged without cloning.
 pub(super) enum OwnedSnapshot {
+    PersonalState(Box<crate::personal_state::PersonalStateCommit>),
     Library(Arc<crate::library::Library>),
     Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
@@ -26,6 +27,7 @@ pub(super) enum OwnedSnapshot {
 impl From<Snapshot> for OwnedSnapshot {
     fn from(snapshot: Snapshot) -> Self {
         match snapshot {
+            Snapshot::PersonalState(value) => Self::PersonalState(value),
             Snapshot::Library(value) => Self::Library(value),
             Snapshot::Signals(value) => Self::Signals(value),
             Snapshot::Downloads(value) => Self::Downloads(value),
@@ -55,6 +57,7 @@ impl From<Snapshot> for OwnedSnapshot {
 impl OwnedSnapshot {
     pub(super) fn kind(&self) -> StoreKind {
         match self {
+            Self::PersonalState(_) => StoreKind::PersonalState,
             Self::Library(_) => StoreKind::Library,
             Self::Signals(_) => StoreKind::Signals,
             Self::Downloads(_) => StoreKind::Downloads,
@@ -70,6 +73,14 @@ impl OwnedSnapshot {
 
     pub(super) fn write(&self) -> std::io::Result<()> {
         match self {
+            Self::PersonalState(value) => {
+                let paths = crate::personal_state::PersonalStatePaths::current()
+                    .map_err(std::io::Error::other)?;
+                value
+                    .commit(&paths)
+                    .map(|_| ())
+                    .map_err(std::io::Error::other)
+            }
             Self::Library(value) => value.as_ref().save(),
             Self::Signals(value) => value.as_ref().save(),
             Self::Downloads(value) => value.save(),
@@ -88,6 +99,7 @@ impl OwnedSnapshot {
 
     pub(super) fn storage_path(&self) -> Option<PathBuf> {
         match self {
+            Self::PersonalState(_) => None,
             Self::Library(_) => crate::library::library_path(),
             Self::Signals(_) => crate::signals::signals_path(),
             Self::Downloads(_) => crate::downloads::store_path(),
@@ -103,6 +115,7 @@ impl OwnedSnapshot {
 
     pub(super) fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
         match self {
+            Self::PersonalState(value) => serde_json::to_vec_pretty(value.state()),
             Self::Library(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Signals(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Downloads(value) => serde_json::to_vec_pretty(value),

@@ -125,8 +125,12 @@ impl App {
         cmd: crate::remote::proto::RemoteCommand,
         reply: crate::remote::server::RemoteReply,
     ) -> Vec<Cmd> {
-        if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory } = cmd {
-            return self.start_personal_export(PathBuf::from(directory), Some(reply));
+        if let crate::remote::proto::RemoteCommand::ExportPersonalData { directory, schema } = cmd {
+            return self.start_personal_export(
+                PathBuf::from(directory),
+                schema.unwrap_or(2),
+                Some(reply),
+            );
         }
         let deferred = Self::remote_reply_plan(&cmd);
         let (resp, mut cmds) = self.apply_remote(cmd);
@@ -1153,7 +1157,16 @@ impl App {
             Msg::Tools(event) => return self.handle_tools(event),
             Msg::Transfer(event) => return self.on_transfer_event(event),
             Msg::Data(DataMsg::TransferPlaylistPersisted(result)) => {
-                return self.on_transfer_playlist_persisted(*result.commit, result.persistence);
+                let TransferPlaylistPersistence {
+                    commit,
+                    persistence,
+                    personal_state,
+                } = *result;
+                return self.on_transfer_playlist_persisted_with_personal_state(
+                    *commit,
+                    persistence,
+                    personal_state,
+                );
             }
         }
         Vec::new()

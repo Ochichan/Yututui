@@ -32,6 +32,7 @@ pub(crate) enum TransferPlaylistCommitKind {
 pub struct TransferPlaylistPersistence {
     pub(crate) commit: Box<TransferPlaylistCommit>,
     pub(crate) persistence: crate::persist::TargetFlushOutcome,
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
 }
 
 pub enum DownloadMsg {
@@ -270,7 +271,7 @@ pub enum DataMsg {
     /// A portable personal-data export worker event.
     PersonalDataExport(PersonalDataExportMsg),
     /// Targeted persistence confirmation for an owner-mediated transfer playlist patch.
-    TransferPlaylistPersisted(TransferPlaylistPersistence),
+    TransferPlaylistPersisted(Box<TransferPlaylistPersistence>),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -294,6 +295,7 @@ pub(crate) struct PersonalDataExportState {
 /// secret-bearing types only as far as the blocking worker; projection there produces the
 /// allowlisted [`crate::data_export::ExportSnapshot`] before anything is written.
 pub struct PersonalDataExportSources {
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
     pub(crate) config: Config,
     pub(crate) library: Library,
     pub(crate) playlists: Playlists,
@@ -315,6 +317,7 @@ pub enum PersonalDataExportCmd {
     /// reply channel is carried only for `ytt data export`; the in-TUI button uses `None`.
     Export {
         directory: PathBuf,
+        schema: u32,
         sources: Box<PersonalDataExportSources>,
         reply: Option<crate::remote::RemoteReply>,
     },

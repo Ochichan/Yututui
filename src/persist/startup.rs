@@ -5,6 +5,7 @@ use super::{StartupRecoveryError, ensure_startup_recovery_coherent};
 /// TUI and daemon owners share this loader so neither can start actors, child cleanup, logging,
 /// or player effects after checking only the subset of stores it happens to use immediately.
 pub struct StartupStoreSet {
+    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
     pub(crate) library: crate::library::Library,
     pub(crate) session_cache: crate::session::SessionCache,
     pub(crate) signals: crate::signals::Signals,
@@ -15,7 +16,7 @@ pub struct StartupStoreSet {
     pub(crate) romanization: crate::romanize::RomanizeCache,
 }
 
-fn load_startup_store_set_after_preflight() -> StartupStoreSet {
+fn load_startup_store_set_after_preflight() -> Result<StartupStoreSet, StartupRecoveryError> {
     let library = crate::library::Library::load();
     let session_cache = crate::session::SessionCache::load();
     let signals = crate::signals::Signals::load();
@@ -23,7 +24,43 @@ fn load_startup_store_set_after_preflight() -> StartupStoreSet {
     let (playlists, playlist_repair) = crate::playlists::Playlists::load_with_repair_report();
     let station = crate::station::StationStore::load();
     let romanization = crate::romanize::RomanizeCache::load();
-    StartupStoreSet {
+    let paths = crate::personal_state::PersonalStatePaths::current()
+        .map_err(personal_state_startup_error)?;
+    let existing =
+        crate::personal_state::load_ledger(&paths).map_err(personal_state_startup_error)?;
+    let personal_state = match existing {
+        Some(state) => {
+            let actual = crate::personal_state::runtime_fingerprint(
+                &library, &playlists, &signals, &station,
+            )
+            .map_err(personal_state_startup_error)?;
+            if state.projection_fingerprint.as_deref() != Some(actual.as_str()) {
+                return Err(personal_state_startup_error(
+                    crate::personal_state::PersonalStateError::ProjectionMismatch,
+                ));
+            }
+            state
+        }
+        None => {
+            let state =
+                crate::personal_state::legacy_state(&library, &playlists, &signals, &station)
+                    .map_err(personal_state_startup_error)?;
+            let commit = crate::personal_state::PersonalStateCommit::prepare(state)
+                .map_err(personal_state_startup_error)?;
+            if crate::persist::persistence_access().is_read_only() {
+                commit.state().clone()
+            } else {
+                commit
+                    .commit(&paths)
+                    .map_err(personal_state_startup_error)?
+            }
+        }
+    };
+    let projection =
+        crate::personal_state::project(&personal_state).map_err(personal_state_startup_error)?;
+    let (library, playlists, signals, station) = projection.into_runtime();
+    Ok(StartupStoreSet {
+        personal_state,
         library,
         session_cache,
         signals,
@@ -32,7 +69,7 @@ fn load_startup_store_set_after_preflight() -> StartupStoreSet {
         playlist_repair,
         station,
         romanization,
-    }
+    })
 }
 
 /// Inspect the recovery frontier for every persistent store before any ordinary loader is allowed
@@ -42,6 +79,11 @@ fn load_startup_store_set_after_preflight() -> StartupStoreSet {
 /// acquires that store's intent lock and validates its journal/sidecar/checksum/decoded candidate.
 pub fn preflight_all_startup_stores() -> Result<(), StartupRecoveryError> {
     ensure_startup_recovery_coherent()?;
+    if let Some(data_root) = crate::paths::data_dir() {
+        let paths = crate::personal_state::PersonalStatePaths::for_data_root(data_root);
+        crate::personal_state::recover_pending_transactions(&paths)
+            .map_err(personal_state_startup_error)?;
+    }
     crate::config::Config::preflight_persistence_recovery()?;
     crate::library::Library::preflight_persistence_recovery()?;
     crate::session::SessionCache::preflight_persistence_recovery()?;
@@ -56,7 +98,7 @@ pub fn preflight_all_startup_stores() -> Result<(), StartupRecoveryError> {
 /// Load the non-config startup stores through the mandatory inspect-only phase.
 pub fn load_startup_store_set() -> Result<StartupStoreSet, StartupRecoveryError> {
     preflight_all_startup_stores()?;
-    let stores = load_startup_store_set_after_preflight();
+    let stores = load_startup_store_set_after_preflight()?;
     ensure_startup_recovery_coherent()?;
     Ok(stores)
 }
@@ -68,9 +110,18 @@ pub fn load_verified_startup_state()
     preflight_all_startup_stores()?;
     let config = crate::config::Config::load();
     ensure_startup_recovery_coherent()?;
-    let stores = load_startup_store_set_after_preflight();
+    let stores = load_startup_store_set_after_preflight()?;
     ensure_startup_recovery_coherent()?;
     Ok((config, stores))
+}
+
+fn personal_state_startup_error(
+    error: crate::personal_state::PersonalStateError,
+) -> StartupRecoveryError {
+    StartupRecoveryError::artifact(
+        crate::persist::StoreKind::PersonalState,
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
+    )
 }
 
 #[cfg(test)]

@@ -209,40 +209,33 @@ impl DaemonEngine {
             }
             return;
         }
-        let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
-        let liked = self.library.is_favorite(&song.video_id);
-        let disliked = self.signals.is_disliked(&song.video_id);
-        if like {
-            if liked {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
+        let target = if like {
+            if crate::rating::current(&self.library, &self.signals, &song.video_id)
+                == crate::personal_state::Rating::Liked
+            {
+                crate::personal_state::Rating::Neutral
             } else {
-                if disliked {
-                    self.signals
-                        .toggle_dislike(&song.video_id, &artist_key, now);
-                }
-                let now_fav = self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, now_fav, now);
+                crate::personal_state::Rating::Liked
             }
-        } else if disliked {
-            self.signals
-                .toggle_dislike(&song.video_id, &artist_key, now);
         } else {
-            if liked {
-                self.library.toggle_favorite(&song);
-                self.signals
-                    .record_like(&song.video_id, &artist_key, false, now);
+            if crate::rating::current(&self.library, &self.signals, &song.video_id)
+                == crate::personal_state::Rating::Disliked
+            {
+                crate::personal_state::Rating::Neutral
+            } else {
+                crate::personal_state::Rating::Disliked
             }
-            self.signals
-                .toggle_dislike(&song.video_id, &artist_key, now);
+        };
+        let change = crate::rating::set(&mut self.library, &mut self.signals, &song, target, now);
+        if change.library_changed {
+            self.save_library("daemon media rating library");
+            // Favorites membership changed: a subscribed GUI's paged library view is stale.
+            self.library_invalidations = self.library_invalidations.wrapping_add(1);
         }
-        self.save_library("daemon media rating library");
-        self.save_signals("daemon media rating signals");
-        // Favorites membership changed: a subscribed GUI's paged library view is stale.
-        self.library_invalidations = self.library_invalidations.wrapping_add(1);
+        if change.signals_changed {
+            self.save_signals("daemon media rating signals");
+        }
     }
 
     /// Build the OS media-session snapshot from engine state (the daemon analog of

@@ -139,6 +139,9 @@ fn completed_export_file_name_shape_is_strict() {
     assert!(is_personal_export_file_name(
         "yututui-personal-data-v1-1783704534-0123456789abcdef.json"
     ));
+    assert!(is_personal_export_file_name(
+        "yututui-personal-data-v2-1783704534-0123456789abcdef.json"
+    ));
     for invalid in [
         "yututui-personal-data-v1-1783704534-0123456789ABCDEf.json",
         "yututui-personal-data-v1-now-0123456789abcdef.json",
@@ -148,6 +151,53 @@ fn completed_export_file_name_shape_is_strict() {
     ] {
         assert!(!is_personal_export_file_name(invalid), "accepted {invalid}");
     }
+}
+
+#[test]
+fn v1_export_decodes_once_as_a_v2_legacy_baseline() {
+    let snapshot = fixture_snapshot();
+    let bytes = serde_json::to_vec(&snapshot).unwrap();
+    let decoded = decode_personal_state_export(&bytes).unwrap();
+
+    assert_eq!(decoded.schema_version, 2);
+    assert_eq!(
+        crate::personal_state::project(&decoded)
+            .unwrap()
+            .legacy
+            .favorites
+            .len(),
+        1,
+        "local and downloaded copies with the same exact YouTube id collapse"
+    );
+    assert_eq!(
+        decoded
+            .operations
+            .iter()
+            .filter(|operation| matches!(
+                operation.operation,
+                crate::personal_state::Operation::LegacyBaseline { .. }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn v2_export_round_trips_and_rejects_private_metadata_claims() {
+    let state = crate::personal_state::legacy_state(
+        &Library::default(),
+        &Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&state).unwrap();
+    assert_eq!(decode_personal_state_export(&bytes).unwrap(), state);
+
+    let mut unsafe_state = state;
+    unsafe_state.metadata.credentials_included = true;
+    let bytes = serde_json::to_vec(&unsafe_state).unwrap();
+    assert!(decode_personal_state_export(&bytes).is_err());
 }
 
 #[test]

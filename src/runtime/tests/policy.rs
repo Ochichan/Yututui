@@ -72,7 +72,7 @@ fn runtime_event_policy_covers_representative_events() {
     );
     assert_eq!(
         RuntimeEvent::App(Msg::Data(crate::app::DataMsg::TransferPlaylistPersisted(
-            crate::app::TransferPlaylistPersistence {
+            Box::new(crate::app::TransferPlaylistPersistence {
                 commit: Box::new(crate::app::TransferPlaylistCommit {
                     request,
                     owner_base_revision: 0,
@@ -85,7 +85,8 @@ fn runtime_event_policy_covers_representative_events() {
                     },
                 }),
                 persistence: crate::persist::TargetFlushOutcome::Unconfirmed,
-            },
+                personal_state: crate::personal_state::PersonalStateV2::default(),
+            },)
         )))
         .policy(),
         EventPolicy::MustDeliver {

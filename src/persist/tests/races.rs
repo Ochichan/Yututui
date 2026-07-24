@@ -64,7 +64,7 @@ fn panic_shadow_is_independent_of_transition_locks_and_keeps_a_monotonic_frontie
         .publish(PanicOwnedOperation::Prepared(Arc::new(prepared)))
         .unwrap();
     assert!(matches!(
-        shadow.peek_for_test()[3],
+        shadow.peek_for_test()[panic_slot(StoreKind::Config)],
         Some(PanicOwnedOperation::Prepared(_))
     ));
 
@@ -72,12 +72,14 @@ fn panic_shadow_is_independent_of_transition_locks_and_keeps_a_monotonic_frontie
         .publish(PanicOwnedOperation::Pending(Arc::clone(&newer)))
         .unwrap();
     shadow.clear_through(StoreKind::Config, older_order);
-    let owned = shadow.peek_for_test()[3].clone().unwrap();
+    let owned = shadow.peek_for_test()[panic_slot(StoreKind::Config)]
+        .clone()
+        .unwrap();
     assert_eq!(owned.order(), newer_order);
     assert!(matches!(owned, PanicOwnedOperation::Pending(_)));
 
     shadow.clear_through(StoreKind::Config, newer_order);
-    assert!(shadow.peek_for_test()[3].is_none());
+    assert!(shadow.peek_for_test()[panic_slot(StoreKind::Config)].is_none());
 }
 
 #[test]
@@ -325,7 +327,9 @@ async fn panic_flush_owns_unjournaled_write_while_blocking_pool_is_full() {
         shadow: Arc::clone(&panic_shadow),
     };
     let panic_owned = panic_pending.shadow.seal_and_snapshot().unwrap();
-    let panic_owned = panic_owned[3].as_ref().expect("config shadow is owned");
+    let panic_owned = panic_owned[panic_slot(StoreKind::Config)]
+        .as_ref()
+        .expect("config shadow is owned");
     assert_eq!(panic_owned.order(), expected_order);
     assert_eq!(panic_owned.kind(), StoreKind::Config);
     panic_owned.write().unwrap();

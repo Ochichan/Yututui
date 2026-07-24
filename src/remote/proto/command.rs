@@ -144,9 +144,12 @@ pub enum RemoteCommand {
     /// Danger zone: reset the whole config to defaults (the GUI double-confirms).
     ResetAllSettings,
     /// Write a portable, credential-free snapshot to this existing absolute directory.
-    /// Additive since v8 and capability-gated by `personal-export-v1`.
+    /// Additive since v8 and capability-gated by `personal-export-v1`; schema 2 additionally
+    /// requires `personal-state-v2`.
     ExportPersonalData {
         directory: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<u32>,
     },
     // ── Deferred v8 GUI commands (additive; capability-gated by `v8-commands`) ─────────
     //
@@ -437,7 +440,13 @@ impl RemoteCommand {
             | RemoteCommand::EnqueueTracks { video_ids } => validate_track_ids(video_ids),
             RemoteCommand::Apply { change } => validate_gui_setting_change(change),
             RemoteCommand::SetGeminiKey { key } => validate_gemini_key(key),
-            RemoteCommand::ExportPersonalData { directory } => validate_export_directory(directory),
+            RemoteCommand::ExportPersonalData { directory, schema } => {
+                validate_export_directory(directory)?;
+                if schema.is_some_and(|schema| !matches!(schema, 1 | 2)) {
+                    return Err(validation_error("bad_export_schema"));
+                }
+                Ok(())
+            }
             RemoteCommand::QueueMove { from, to, .. }
                 if *from >= REMOTE_MAX_TRACK_IDS || *to >= REMOTE_MAX_TRACK_IDS =>
             {
@@ -830,6 +839,7 @@ mod tests {
         assert!(RemoteCommand::TogglePause.requires_confirmation());
         let export = RemoteCommand::ExportPersonalData {
             directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
         };
         assert_eq!(
             export.request_retry_class(),
@@ -885,6 +895,7 @@ mod tests {
         let directory = std::env::temp_dir().to_string_lossy().into_owned();
         let command = RemoteCommand::ExportPersonalData {
             directory: directory.clone(),
+            schema: Some(2),
         };
         assert!(command.validate().is_ok());
 
@@ -902,9 +913,12 @@ mod tests {
                 "export_directory_too_long",
             ),
         ] {
-            let error = RemoteCommand::ExportPersonalData { directory }
-                .validate()
-                .unwrap_err();
+            let error = RemoteCommand::ExportPersonalData {
+                directory,
+                schema: None,
+            }
+            .validate()
+            .unwrap_err();
             assert_eq!(error.reason(), reason);
         }
     }

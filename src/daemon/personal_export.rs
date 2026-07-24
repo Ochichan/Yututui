@@ -6,6 +6,7 @@ use super::DaemonEventSender;
 use super::effects::DaemonEffectTasks;
 use crate::config::Config;
 use crate::library::Library;
+use crate::personal_state::PersonalStateV2;
 use crate::player::lifetime::ShutdownLatch;
 use crate::remote::{RemoteReply, proto::RemoteResponse};
 use crate::signals::Signals;
@@ -27,10 +28,21 @@ pub(super) struct Finished {
     pub(super) result: Result<PathBuf, String>,
 }
 
+pub(super) struct Target {
+    directory: String,
+    schema: u32,
+}
+
+impl Target {
+    pub(super) fn new(directory: String, schema: u32) -> Self {
+        Self { directory, schema }
+    }
+}
+
 impl PersonalExport {
     pub(super) fn start_engine(
         &mut self,
-        directory: String,
+        target: Target,
         reply: RemoteReply,
         engine: &super::engine::DaemonEngine,
         event_tx: &DaemonEventSender,
@@ -38,7 +50,7 @@ impl PersonalExport {
         tasks: &mut DaemonEffectTasks,
     ) {
         self.start(
-            directory,
+            target,
             reply,
             || engine.personal_export_sources(),
             event_tx,
@@ -49,15 +61,26 @@ impl PersonalExport {
 
     pub(super) fn start<F>(
         &mut self,
-        directory: String,
+        target: Target,
         reply: RemoteReply,
         sources: F,
         event_tx: &DaemonEventSender,
         shutdown: &ShutdownLatch,
         tasks: &mut DaemonEffectTasks,
     ) where
-        F: FnOnce() -> Result<(Config, Library, Signals, StationStore, usize), String>,
+        F: FnOnce() -> Result<
+            (
+                PersonalStateV2,
+                Config,
+                Library,
+                Signals,
+                StationStore,
+                usize,
+            ),
+            String,
+        >,
     {
+        let Target { directory, schema } = target;
         if self.pending.is_some() {
             let _ = reply.send(RemoteResponse::err_with_message(
                 "personal_export_busy",
@@ -65,16 +88,17 @@ impl PersonalExport {
             ));
             return;
         }
-        let (config, library, signals, station, live_estimated_bytes) = match sources() {
-            Ok(sources) => sources,
-            Err(message) => {
-                let _ = reply.send(RemoteResponse::err_with_message(
-                    "personal_export_too_large",
-                    message,
-                ));
-                return;
-            }
-        };
+        let (personal_state, config, library, signals, station, live_estimated_bytes) =
+            match sources() {
+                Ok(sources) => sources,
+                Err(message) => {
+                    let _ = reply.send(RemoteResponse::err_with_message(
+                        "personal_export_too_large",
+                        message,
+                    ));
+                    return;
+                }
+            };
 
         self.next_generation = self.next_generation.wrapping_add(1);
         if self.next_generation == 0 {
@@ -86,14 +110,26 @@ impl PersonalExport {
         let scheduled = tasks.schedule_personal_export(event_tx, shutdown, generation, move || {
             let playlists = crate::data_export::load_playlists_read_only(live_estimated_bytes)
                 .map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))?;
-            let snapshot = crate::data_export::ExportSnapshot::new(
-                &config, &library, &playlists, &signals, &station,
-            );
-            // Projection no longer borrows these stores; discard them before serialization to
-            // keep a daemon export's peak memory bounded by one full representation at a time.
-            drop((config, library, playlists, signals, station));
-            crate::data_export::export_snapshot(PathBuf::from(directory).as_path(), &snapshot)
-                .map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))
+            let destination = PathBuf::from(directory);
+            let result = if schema == 1 {
+                let snapshot = crate::data_export::ExportSnapshot::new(
+                    &config, &library, &playlists, &signals, &station,
+                );
+                // Projection no longer borrows these stores; discard them before serialization
+                // to keep peak memory bounded by one full representation at a time.
+                drop((personal_state, config, library, playlists, signals, station));
+                crate::data_export::export_snapshot(destination.as_path(), &snapshot)
+            } else {
+                crate::data_export::export_v2_from_sources(
+                    destination.as_path(),
+                    &personal_state,
+                    &library,
+                    &playlists,
+                    &signals,
+                    &station,
+                )
+            };
+            result.map_err(|error| crate::util::sanitize::sanitize_error_text(error.to_string()))
         });
         if !scheduled {
             self.settle_generation(generation, RemoteResponse::err("shutting_down"));
@@ -167,8 +203,16 @@ mod tests {
         (DaemonEventSender::new(raw), rx)
     }
 
-    fn sources() -> (Config, Library, Signals, StationStore, usize) {
+    fn sources() -> (
+        PersonalStateV2,
+        Config,
+        Library,
+        Signals,
+        StationStore,
+        usize,
+    ) {
         (
+            PersonalStateV2::default(),
             Config::default(),
             Library::default(),
             Signals::default(),
@@ -194,7 +238,7 @@ mod tests {
         let sources_called = std::cell::Cell::new(false);
 
         export.start(
-            "/unused".to_owned(),
+            Target::new("/unused".to_owned(), 2),
             reply.into(),
             || {
                 sources_called.set(true);
@@ -234,7 +278,7 @@ mod tests {
         let (reply, response) = oneshot::channel();
 
         export.start(
-            "/unused".to_owned(),
+            Target::new("/unused".to_owned(), 2),
             reply.into(),
             || Err("live source exceeds safe clone budget".to_owned()),
             &events,
@@ -262,7 +306,7 @@ mod tests {
         let (reply, response) = oneshot::channel();
 
         export.start(
-            "/unused".to_owned(),
+            Target::new("/unused".to_owned(), 2),
             reply.into(),
             || Ok(sources()),
             &events,
