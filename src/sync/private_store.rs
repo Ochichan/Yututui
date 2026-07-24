@@ -11,7 +11,9 @@ use age::secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::personal_state::{DeviceId, DevicePublicIdentity, PersonalStateV2};
+use crate::personal_state::{
+    DeviceId, DevicePublicIdentity, PersonalStateV2, validate_join_import_extension,
+};
 use crate::util::safe_fs::{
     AdvisoryFileLock, read_owner_only_limited, remove_owner_only_file_durable, sync_parent_dir,
     try_lock_private_file, write_owner_only_atomic,
@@ -25,6 +27,8 @@ use super::crypto::{
 use super::error::VaultError;
 use super::membership::MembershipAnchor;
 use super::pairing::ApprovedPairing;
+
+mod transition;
 
 const PRIVATE_STORE_KIND: &str = "yututui_vault_private_store";
 const PRIVATE_STORE_SCHEMA_VERSION: u32 = 1;
@@ -160,6 +164,7 @@ pub struct PrivateStoreSnapshot {
     device: DeviceSecretMaterial,
     enrollment: EnrollmentState,
     pending_pairing: Option<PendingPairing>,
+    setup_recovery_checksum: Option<String>,
     trust_anchors: Option<TrustAnchors>,
     pending_ledger_anchor: Option<PendingLedgerAnchor>,
     checkpoint_anchor: Option<StoredCheckpointAnchor>,
@@ -180,6 +185,7 @@ impl PrivateStoreSnapshot {
             device,
             enrollment: EnrollmentState::PendingApproval,
             pending_pairing: None,
+            setup_recovery_checksum: None,
             trust_anchors: None,
             pending_ledger_anchor: None,
             checkpoint_anchor: None,
@@ -208,6 +214,7 @@ impl PrivateStoreSnapshot {
             device,
             enrollment: EnrollmentState::PendingLedgerCommit,
             pending_pairing: None,
+            setup_recovery_checksum: None,
             trust_anchors: Some(trust_anchors),
             pending_ledger_anchor: Some(pending_ledger_anchor),
             checkpoint_anchor: None,
@@ -245,6 +252,48 @@ impl PrivateStoreSnapshot {
         self.trust_anchors
             .as_ref()
             .map(|anchors| anchors.recovery_verifying_key.as_str())
+    }
+
+    /// Durable proof that initial setup exported and read back its offline recovery kit.
+    ///
+    /// Pairing enrollment never sets this marker, so a pending setup can be resumed without
+    /// confusing it with a device waiting for approval.
+    pub fn confirm_setup_recovery(
+        &mut self,
+        checksum: impl Into<String>,
+    ) -> Result<(), VaultError> {
+        if self.enrollment != EnrollmentState::PendingLedgerCommit
+            || self.pending_pairing.is_some()
+            || self.setup_recovery_checksum.is_some()
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        let checksum = checksum.into();
+        validate_sha256_hex(&checksum)?;
+        self.setup_recovery_checksum = Some(checksum);
+        Ok(())
+    }
+
+    pub fn setup_recovery_checksum(&self) -> Option<&str> {
+        self.setup_recovery_checksum.as_deref()
+    }
+
+    pub(crate) fn pending_checkpoint_sequence(&self) -> Option<u64> {
+        self.pending_ledger_anchor
+            .as_ref()
+            .map(|anchor| anchor.checkpoint.sequence)
+    }
+
+    pub(crate) fn pending_checkpoint_hash(&self) -> Option<&str> {
+        self.pending_ledger_anchor
+            .as_ref()
+            .map(|anchor| anchor.checkpoint.hash.as_str())
+    }
+
+    pub(crate) fn pending_membership_head_hash(&self) -> Option<&str> {
+        self.pending_ledger_anchor
+            .as_ref()
+            .map(|anchor| anchor.membership_head_hash.as_str())
     }
 
     pub fn membership_root_hash(&self) -> Option<&str> {
@@ -296,9 +345,12 @@ impl PrivateStoreSnapshot {
         }
     }
 
-    /// Read the expected approval context only while enrollment is still pending.
+    /// Read the restart context while a pairing request or its ledger commit is still pending.
     pub fn pending_pairing(&self) -> Result<Option<&PendingPairing>, VaultError> {
-        if self.enrollment != EnrollmentState::PendingApproval {
+        if !matches!(
+            self.enrollment,
+            EnrollmentState::PendingApproval | EnrollmentState::PendingLedgerCommit
+        ) {
             return Err(VaultError::InvalidPrivateStore);
         }
         Ok(self.pending_pairing.as_ref())
@@ -338,7 +390,32 @@ impl PrivateStoreSnapshot {
         self.trust_anchors = Some(trust_anchors);
         self.pending_ledger_anchor = Some(pending_ledger_anchor);
         self.enrollment = EnrollmentState::PendingLedgerCommit;
-        self.pending_pairing = None;
+        Ok(())
+    }
+
+    /// Revalidate a previously saved approval after a process restart.
+    pub fn validate_approved_pairing(&self, approved: &ApprovedPairing) -> Result<(), VaultError> {
+        if self.enrollment != EnrollmentState::PendingLedgerCommit {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        let pending = self
+            .pending_pairing
+            .as_ref()
+            .ok_or(VaultError::InvalidPrivateStore)?;
+        let anchors = self
+            .trust_anchors
+            .as_ref()
+            .ok_or(VaultError::InvalidPrivateStore)?;
+        let (dataset_id, pending_anchor) =
+            verified_pending_ledger(&self.device, anchors, approved.signed_checkpoint())?;
+        if dataset_id != self.dataset_id
+            || pending.invite_id != approved.invite_id()
+            || pending.request_nonce != approved.request_nonce()
+            || self.device.device_id() != approved.approved_device_id().as_str()
+            || self.pending_ledger_anchor.as_ref() != Some(&pending_anchor)
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
         Ok(())
     }
 
@@ -365,6 +442,53 @@ impl PrivateStoreSnapshot {
         }
         self.checkpoint_anchor = Some(committed_anchor.checkpoint);
         self.pending_ledger_anchor = None;
+        self.pending_pairing = None;
+        self.setup_recovery_checksum = None;
+        self.enrollment = EnrollmentState::Active;
+        Ok(())
+    }
+
+    /// Activate a newly approved device after committing its deletion-free local merge.
+    ///
+    /// The signed approval checkpoint remains the retained rollback anchor. The committed ledger
+    /// may extend that exact checkpoint only with the single local baseline accepted by
+    /// `plan_join_import`; authenticated remote operations and version-vector coverage must remain
+    /// intact. This deliberately does not relax [`Self::mark_active`]'s exact-state contract.
+    pub fn mark_active_after_join(
+        &mut self,
+        approved_checkpoint: &SignedCheckpoint,
+        committed_candidate: &PersonalStateV2,
+    ) -> Result<(), VaultError> {
+        if self.enrollment != EnrollmentState::PendingLedgerCommit || self.trust_anchors.is_none() {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        let trust_anchors = self
+            .trust_anchors
+            .as_ref()
+            .ok_or(VaultError::InvalidPrivateStore)?;
+        let (dataset_id, approved_anchor) =
+            verified_pending_ledger(&self.device, trust_anchors, approved_checkpoint)?;
+        let local_device_id =
+            DeviceId::new(self.device.device_id()).map_err(|_| VaultError::InvalidPrivateStore)?;
+        if dataset_id != self.dataset_id
+            || self.pending_ledger_anchor.as_ref() != Some(&approved_anchor)
+            || approved_checkpoint.payload.dataset_id != committed_candidate.dataset_id
+            || approved_checkpoint.payload.state.device_registry
+                != committed_candidate.device_registry
+            || validate_join_import_extension(
+                &approved_checkpoint.payload.state,
+                committed_candidate,
+                &local_device_id,
+            )
+            .is_err()
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+
+        self.checkpoint_anchor = Some(approved_anchor.checkpoint);
+        self.pending_ledger_anchor = None;
+        self.pending_pairing = None;
+        self.setup_recovery_checksum = None;
         self.enrollment = EnrollmentState::Active;
         Ok(())
     }
@@ -572,6 +696,8 @@ struct DiskPrivateStore {
     device_id: String,
     enrollment: DiskEnrollmentState,
     pending_pairing: Option<DiskPendingPairing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    setup_recovery_checksum: Option<String>,
     device_age_identity: String,
     device_signing_key: String,
     device_binding_signature: String,
@@ -737,6 +863,7 @@ impl DiskPrivateStore {
             public_identity: &public_identity,
             enrollment: &enrollment,
             pending_pairing: pending_pairing.as_ref(),
+            setup_recovery_checksum: snapshot.setup_recovery_checksum.as_deref(),
             recovery_recipient: recovery_recipient.as_deref(),
             recovery_verifying_key: recovery_verifying_key.as_deref(),
             membership_root_hash: membership_root_hash.as_deref(),
@@ -757,6 +884,7 @@ impl DiskPrivateStore {
             device_id: snapshot.device.device_id().to_owned(),
             enrollment,
             pending_pairing,
+            setup_recovery_checksum: snapshot.setup_recovery_checksum.clone(),
             device_age_identity: snapshot
                 .device
                 .age_identity_secret()
@@ -810,10 +938,21 @@ impl DiskPrivateStore {
             _ => return Err(VaultError::InvalidPrivateStore),
         }
         if let Some(pending) = &self.pending_pairing {
-            if !matches!(self.enrollment, DiskEnrollmentState::PendingApproval) {
+            if !matches!(
+                self.enrollment,
+                DiskEnrollmentState::PendingApproval | DiskEnrollmentState::PendingLedgerCommit
+            ) {
                 return Err(VaultError::InvalidPrivateStore);
             }
             pending.validate()?;
+        }
+        if let Some(checksum) = &self.setup_recovery_checksum {
+            if !matches!(self.enrollment, DiskEnrollmentState::PendingLedgerCommit)
+                || self.pending_pairing.is_some()
+            {
+                return Err(VaultError::InvalidPrivateStore);
+            }
+            validate_sha256_hex(checksum)?;
         }
         match (&self.enrollment, &self.pending_ledger_anchor) {
             (DiskEnrollmentState::PendingLedgerCommit, Some(anchor)) => {
@@ -902,6 +1041,7 @@ impl DiskPrivateStore {
             device,
             enrollment: (&self.enrollment).into(),
             pending_pairing,
+            setup_recovery_checksum: self.setup_recovery_checksum.take(),
             trust_anchors,
             pending_ledger_anchor,
             checkpoint_anchor,
@@ -923,6 +1063,7 @@ impl DiskPrivateStore {
             public_identity: &public_identity,
             enrollment: &self.enrollment,
             pending_pairing: self.pending_pairing.as_ref(),
+            setup_recovery_checksum: self.setup_recovery_checksum.as_deref(),
             recovery_recipient: self.recovery_recipient.as_deref(),
             recovery_verifying_key: self.recovery_verifying_key.as_deref(),
             membership_root_hash: self.membership_root_hash.as_deref(),
@@ -950,6 +1091,8 @@ struct DiskDeviceBinding<'a> {
     public_identity: &'a DevicePublicIdentity,
     enrollment: &'a DiskEnrollmentState,
     pending_pairing: Option<&'a DiskPendingPairing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup_recovery_checksum: Option<&'a str>,
     recovery_recipient: Option<&'a str>,
     recovery_verifying_key: Option<&'a str>,
     membership_root_hash: Option<&'a str>,
@@ -1047,10 +1190,21 @@ fn validate_snapshot(snapshot: &PrivateStoreSnapshot) -> Result<(), VaultError> 
         validate_device_recovery_separation(&snapshot.device, anchors)?;
     }
     if let Some(pending) = &snapshot.pending_pairing {
-        if snapshot.enrollment != EnrollmentState::PendingApproval {
+        if !matches!(
+            snapshot.enrollment,
+            EnrollmentState::PendingApproval | EnrollmentState::PendingLedgerCommit
+        ) {
             return Err(VaultError::InvalidPrivateStore);
         }
         validate_pending_pairing(pending)?;
+    }
+    if let Some(checksum) = &snapshot.setup_recovery_checksum {
+        if snapshot.enrollment != EnrollmentState::PendingLedgerCommit
+            || snapshot.pending_pairing.is_some()
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        validate_sha256_hex(checksum)?;
     }
     match (snapshot.enrollment, &snapshot.pending_ledger_anchor) {
         (EnrollmentState::PendingLedgerCommit, Some(anchor)) => {
@@ -1105,14 +1259,27 @@ fn validate_same_store_identity(
     } else if current.enrollment == EnrollmentState::PendingApproval
         && candidate.enrollment == EnrollmentState::PendingLedgerCommit
     {
+        current.pending_pairing == candidate.pending_pairing
+    } else if current.enrollment == EnrollmentState::PendingLedgerCommit
+        && candidate.enrollment == EnrollmentState::Active
+    {
         candidate.pending_pairing.is_none()
     } else {
         current.pending_pairing == candidate.pending_pairing
+    };
+    let setup_recovery_transition_valid = if current.enrollment
+        == EnrollmentState::PendingLedgerCommit
+        && candidate.enrollment == EnrollmentState::Active
+    {
+        candidate.setup_recovery_checksum.is_none()
+    } else {
+        current.setup_recovery_checksum == candidate.setup_recovery_checksum
     };
     if current.dataset_id != candidate.dataset_id
         || current.device.public_record() != candidate.device.public_record()
         || !anchors_match
         || !pending_pairing_transition_valid
+        || !setup_recovery_transition_valid
         || !pending_ledger_transition_valid
     {
         return Err(VaultError::InvalidPrivateStore);

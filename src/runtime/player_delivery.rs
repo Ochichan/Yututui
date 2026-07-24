@@ -683,6 +683,10 @@ impl super::RuntimeHandles {
         // point onward retain their exact event in the task outbox. Consequently no later actor
         // event can enter the main queue and overtake that fallback during the final drain.
         self.worker_tx.close_admission();
+        // Manual WebDAV preparation is deliberately detached from the joined runtime task set.
+        // Settle its retained caller before remote wire shutdown; a late candidate is discarded by
+        // the reducer and cannot install after this owner boundary.
+        app.settle_personal_sync_shutdown();
         let follow_ups =
             begin_player_shutdown_state(&mut self.player, &mut self.pending_player_intents, app);
         for follow_up in follow_ups {

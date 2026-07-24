@@ -132,6 +132,23 @@ impl App {
                 Some(reply),
             );
         }
+        match cmd {
+            crate::remote::proto::RemoteCommand::SyncNow => {
+                return self.start_personal_sync(PersonalSyncAction::SyncNow, reply);
+            }
+            crate::remote::proto::RemoteCommand::SyncRevokeDevice { device_id } => {
+                let device_id = match crate::personal_state::DeviceId::new(device_id) {
+                    Ok(device_id) => device_id,
+                    Err(_) => {
+                        let _ =
+                            reply.send(crate::remote::proto::RemoteResponse::err("bad_device_id"));
+                        return Vec::new();
+                    }
+                };
+                return self.start_personal_sync(PersonalSyncAction::Revoke(device_id), reply);
+            }
+            _ => {}
+        }
         let deferred = Self::remote_reply_plan(&cmd);
         let (resp, mut cmds) = self.apply_remote(cmd);
         // Admission-sensitive success snapshots wait for their player intent, while a
@@ -1058,6 +1075,12 @@ impl App {
                 reply,
             })) => {
                 return self.finish_personal_export(result, reply);
+            }
+            Msg::Data(DataMsg::PersonalSyncPrepared(prepared)) => {
+                return self.finish_personal_sync(*prepared);
+            }
+            Msg::Data(DataMsg::PersonalSyncPersisted(persisted)) => {
+                return self.finish_personal_sync_persistence(*persisted);
             }
             Msg::Media(cmd) => return self.apply_media(cmd),
             Msg::MediaArtworkReady(ready) => {

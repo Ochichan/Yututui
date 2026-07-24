@@ -95,7 +95,8 @@ impl App {
 
     fn personal_export_sources(&self, config: Config) -> PersonalDataExportSources {
         PersonalDataExportSources {
-            personal_state: self.personal_state.clone(),
+            personal_state: self.personal_state.ledger.clone(),
+            personal_state_device_id: self.personal_state.device_id.clone(),
             config,
             library: self.library.as_ref().clone(),
             playlists: self.playlists.as_ref().clone(),
@@ -301,6 +302,17 @@ mod tests {
         app.settings.as_mut().unwrap().draft.autoplay_streaming = false;
 
         assert_eq!(app.personal_export_config().autoplay_streaming, Some(false));
+    }
+
+    #[test]
+    fn personal_export_sources_preserve_the_enrolled_device_binding() {
+        let mut app = App::new(100);
+        let device_id = crate::personal_state::DeviceId::new("device-a").unwrap();
+        app.personal_state.device_id = Some(device_id.clone());
+
+        let sources = app.personal_export_sources(app.personal_export_config());
+
+        assert_eq!(sources.personal_state_device_id, Some(device_id));
     }
 
     #[test]

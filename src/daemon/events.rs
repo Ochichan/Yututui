@@ -49,6 +49,9 @@ pub(super) enum DaemonEvent {
     /// An owned blocking personal-data projection finished and is ready to settle its retained
     /// remote request on the owner lane.
     PersonalExportFinished(personal_export::Finished),
+    /// Detached WebDAV preparation completed; only the owner lane may revision-check and install
+    /// this candidate.
+    PersonalSyncFinished(Box<super::personal_sync::Finished>),
     Signal,
     TelemetryWake,
 }
@@ -93,9 +96,11 @@ impl DaemonEvent {
             DaemonEvent::TransportRecoveryRetry { .. } => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
-            DaemonEvent::PersonalExportFinished(_) => EventPolicy::MustDeliver {
-                lane: Lane::WorkResult,
-            },
+            DaemonEvent::PersonalExportFinished(_) | DaemonEvent::PersonalSyncFinished(_) => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
             DaemonEvent::Signal => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -120,6 +125,7 @@ impl DaemonEvent {
             DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
             DaemonEvent::TransportRecoveryRetry { .. } => "transport_recovery_retry",
             DaemonEvent::PersonalExportFinished(_) => "personal_export_finished",
+            DaemonEvent::PersonalSyncFinished(_) => "personal_sync_finished",
             DaemonEvent::Signal => "signal",
             DaemonEvent::TelemetryWake => "telemetry_wake",
         }

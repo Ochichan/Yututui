@@ -419,6 +419,82 @@ fn symlink_reads_and_appends_are_rejected() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn bounded_regular_reads_enforce_the_hard_byte_cap() {
+    let dir = temp_root("bounded-regular-read");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("input.pem");
+
+    fs::write(&path, b"1234").unwrap();
+    assert_eq!(read_no_symlink_limited(&path, 4).unwrap(), b"1234");
+    fs::write(&path, b"12345").unwrap();
+    assert_eq!(
+        read_no_symlink_limited(&path, 4).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_read_rejects_raced_path_swap_to_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = temp_root("bounded-read-symlink-swap");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("input.pem");
+    let original = dir.join("original.pem");
+    let replacement = dir.join("replacement.pem");
+    fs::write(&path, b"approved").unwrap();
+    fs::write(&replacement, b"replacement").unwrap();
+
+    fs::rename(&path, &original).unwrap();
+    symlink(&replacement, &path).unwrap();
+
+    assert!(read_no_symlink_limited(&path, 64).is_err());
+    assert_eq!(fs::read(&original).unwrap(), b"approved");
+    assert_eq!(fs::read(&replacement).unwrap(), b"replacement");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_read_rejects_fifo_without_blocking_on_open() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let dir = temp_root("bounded-read-fifo");
+    fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("input.pem");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let watchdog_path = fifo.clone();
+    let watchdog = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut options = OpenOptions::new();
+        options.write(true).custom_flags(libc::O_NONBLOCK);
+        let _ = options.open(watchdog_path);
+    });
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        read_no_symlink_limited(&fifo, 64).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(200),
+        "a FIFO replacement must be rejected before a blocking read"
+    );
+    watchdog.join().unwrap();
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[cfg(windows)]
 #[test]
 fn reparse_point_reads_and_appends_are_rejected() {

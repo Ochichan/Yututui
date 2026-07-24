@@ -1,5 +1,45 @@
 use super::*;
 
+/// Immutable snapshot taken at send time so the actor never reaches back into `App`.
+pub enum Snapshot {
+    PersonalState(Box<crate::personal_state::PersonalStateCommit>),
+    /// A WebDAV result whose ledger and private checkpoint anchor commit together.
+    PersonalSync(crate::sync::service::PersonalSyncPersistence),
+    Library(Arc<crate::library::Library>),
+    Signals(Arc<crate::signals::Signals>),
+    Downloads(crate::downloads::DownloadStore),
+    Config(Box<crate::config::Config>),
+    Playlists(Arc<crate::playlists::Playlists>),
+    Station(crate::station::StationStore),
+    RomanizedTitles(crate::romanize::RomanizeCache),
+    Session(crate::session::SessionCache),
+    #[cfg(test)]
+    Test {
+        kind: StoreKind,
+        label: &'static str,
+        storage_path: Option<PathBuf>,
+        writer: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    },
+}
+
+#[cfg(test)]
+impl Snapshot {
+    pub(super) fn kind(&self) -> StoreKind {
+        match self {
+            Self::PersonalState(_) | Self::PersonalSync(_) => StoreKind::PersonalState,
+            Self::Library(_) => StoreKind::Library,
+            Self::Signals(_) => StoreKind::Signals,
+            Self::Downloads(_) => StoreKind::Downloads,
+            Self::Config(_) => StoreKind::Config,
+            Self::Playlists(_) => StoreKind::Playlists,
+            Self::Station(_) => StoreKind::Station,
+            Self::RomanizedTitles(_) => StoreKind::RomanizedTitles,
+            Self::Session(_) => StoreKind::Session,
+            Self::Test { kind, .. } => *kind,
+        }
+    }
+}
+
 /// Private thread-shareable form of the public admission API.
 ///
 /// `RomanizeCache` carries a render-only `RefCell` scratch buffer, so moving that public payload
@@ -7,6 +47,7 @@ use super::*;
 /// `entries` state into a DTO; every other variant is moved unchanged without cloning.
 pub(super) enum OwnedSnapshot {
     PersonalState(Box<crate::personal_state::PersonalStateCommit>),
+    PersonalSync(crate::sync::service::PersonalSyncPersistence),
     Library(Arc<crate::library::Library>),
     Signals(Arc<crate::signals::Signals>),
     Downloads(crate::downloads::DownloadStore),
@@ -28,6 +69,7 @@ impl From<Snapshot> for OwnedSnapshot {
     fn from(snapshot: Snapshot) -> Self {
         match snapshot {
             Snapshot::PersonalState(value) => Self::PersonalState(value),
+            Snapshot::PersonalSync(value) => Self::PersonalSync(value),
             Snapshot::Library(value) => Self::Library(value),
             Snapshot::Signals(value) => Self::Signals(value),
             Snapshot::Downloads(value) => Self::Downloads(value),
@@ -58,6 +100,7 @@ impl OwnedSnapshot {
     pub(super) fn kind(&self) -> StoreKind {
         match self {
             Self::PersonalState(_) => StoreKind::PersonalState,
+            Self::PersonalSync(_) => StoreKind::PersonalState,
             Self::Library(_) => StoreKind::Library,
             Self::Signals(_) => StoreKind::Signals,
             Self::Downloads(_) => StoreKind::Downloads,
@@ -81,6 +124,7 @@ impl OwnedSnapshot {
                     .map(|_| ())
                     .map_err(std::io::Error::other)
             }
+            Self::PersonalSync(value) => value.write().map_err(std::io::Error::other),
             Self::Library(value) => value.as_ref().save(),
             Self::Signals(value) => value.as_ref().save(),
             Self::Downloads(value) => value.save(),
@@ -100,6 +144,7 @@ impl OwnedSnapshot {
     pub(super) fn storage_path(&self) -> Option<PathBuf> {
         match self {
             Self::PersonalState(_) => None,
+            Self::PersonalSync(_) => None,
             Self::Library(_) => crate::library::library_path(),
             Self::Signals(_) => crate::signals::signals_path(),
             Self::Downloads(_) => crate::downloads::store_path(),
@@ -116,6 +161,7 @@ impl OwnedSnapshot {
     pub(super) fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
         match self {
             Self::PersonalState(value) => serde_json::to_vec_pretty(value.state()),
+            Self::PersonalSync(value) => serde_json::to_vec_pretty(value.state()),
             Self::Library(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Signals(value) => serde_json::to_vec_pretty(value.as_ref()),
             Self::Downloads(value) => serde_json::to_vec_pretty(value),
@@ -133,6 +179,9 @@ impl OwnedSnapshot {
         #[cfg(test)]
         if let Self::Test { label, .. } = self {
             return label;
+        }
+        if matches!(self, Self::PersonalSync(_)) {
+            return "personal sync";
         }
         self.kind().label()
     }

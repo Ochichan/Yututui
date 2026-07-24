@@ -181,7 +181,7 @@ async fn deliver_terminal(
     }
 }
 
-fn deliver_terminal_blocking(
+pub(super) fn deliver_terminal_blocking(
     tx: &DaemonEventSender,
     shutdown: &ShutdownLatch,
     mut event: DaemonEvent,

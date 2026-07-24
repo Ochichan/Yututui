@@ -443,7 +443,7 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
                 endpoint: ep,
                 owns_instance_file: false,
                 mode: InstanceMode::StandaloneTui,
-                capabilities: default_capabilities(),
+                capabilities: secondary_capabilities(),
                 host_terminal: None,
             })),
             Err(e) => {
@@ -547,11 +547,19 @@ fn default_capabilities() -> Vec<String> {
         "queue-control".to_string(),
         super::PERSONAL_EXPORT_CAPABILITY.to_string(),
         super::PERSONAL_STATE_V2_CAPABILITY.to_string(),
+        super::WEB_DAV_SYNC_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
         // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
         "events-v8".to_string(),
     ]
+}
+
+fn secondary_capabilities() -> Vec<String> {
+    default_capabilities()
+        .into_iter()
+        .filter(|capability| capability != super::WEB_DAV_SYNC_CAPABILITY)
+        .collect()
 }
 
 #[cfg(test)]
@@ -565,6 +573,18 @@ fn standalone_capabilities_advertise_retained_request_outcomes() {
 fn standalone_capabilities_advertise_personal_export() {
     assert!(default_capabilities().contains(&super::PERSONAL_EXPORT_CAPABILITY.to_string()));
     assert!(default_capabilities().contains(&super::PERSONAL_STATE_V2_CAPABILITY.to_string()));
+    assert!(default_capabilities().contains(&super::WEB_DAV_SYNC_CAPABILITY.to_string()));
+}
+
+#[cfg(test)]
+#[test]
+fn secondary_capabilities_do_not_advertise_personal_sync_mutation() {
+    assert!(
+        !secondary_capabilities().contains(&super::WEB_DAV_SYNC_CAPABILITY.to_string()),
+        "a read-only --new-instance must not invite a WebDAV mutation"
+    );
+    assert!(secondary_capabilities().contains(&"status".to_string()));
+    assert!(secondary_capabilities().contains(&"events-v8".to_string()));
 }
 
 #[cfg(test)]

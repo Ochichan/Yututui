@@ -95,12 +95,21 @@ lofty = "0.24"
 # Last.fm `api_sig` request signing (md5 per their auth spec — a format requirement,
 # not a security choice). Pure Rust, tiny (RustCrypto).
 md-5 = "0.10"
+# Inspect reqwest's existing native-TLS source chain so certificate failures can be surfaced as a
+# distinct, redacted recovery state. This is already in reqwest's graph; declaring it directly
+# adds no TLS provider or native dependency.
+native-tls = "0.2"
 # Native desktop notifications (radio-recording saved) — the *fallback* tier used only when the
 # terminal doesn't support OSC 9/777 escape-sequence notifications (see `crate::notify`). One
 # crate, three backends: pure-Rust zbus/D-Bus on Linux, WinRT toast on Windows, NSUserNotification
 # on macOS. Default features (no `preview-macos-un`, which can't post from an unbundled binary).
 notify-rust = "4"
+# Bounded streaming WebDAV Multi-Status parsing. Default features are unnecessary: sync only
+# consumes namespaced XML events and never serializes application data as XML.
+quick-xml = { version = "0.41", default-features = false }
 ratatui = "0.30.2"
+# Read WebDAV credentials without echoing them or placing them in process arguments.
+rpassword = "7"
 # Album art in the player view. `default-features = false` drops `chafa-dyn` (its only C
 # dependency — would break the clean Windows cross-compile) and `image-defaults` (we pull
 # `image` directly with just the formats we need). The Kitty/Sixel/iTerm2/halfblocks

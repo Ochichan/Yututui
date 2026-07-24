@@ -88,10 +88,17 @@ mod bootstrap;
 mod data_export;
 mod feedback;
 mod helpers;
+mod personal_sync;
 pub(crate) use helpers::open_in_browser;
 pub(in crate::app) use helpers::{
     fetch_lyrics_cmd, rect_contains, song_label, spawn_video_overlay,
 };
+pub(crate) use personal_sync::PersonalStateRuntime;
+pub use personal_sync::{
+    PersonalSyncAction, PersonalSyncCommit, PersonalSyncPersisted, PersonalSyncPrepared,
+    PersonalSyncReply,
+};
+pub(crate) use personal_sync::{PersonalSyncCommitStage, PersonalSyncPersistOutcome};
 mod mode_switch;
 mod navigation;
 mod onboarding;
@@ -297,8 +304,9 @@ pub struct App {
     pub transfer_running: bool,
     /// Portable personal-data export state shared by Settings and authenticated remote requests.
     pub(crate) personal_export: PersonalDataExportState,
-    /// Canonical mergeable personal state. The legacy stores below are runtime projections.
-    pub(crate) personal_state: crate::personal_state::PersonalStateV2,
+    /// Canonical mergeable state plus its enrolled device and manual-sync coordination.
+    /// The legacy stores below remain runtime projections of this domain state.
+    pub(crate) personal_state: PersonalStateRuntime,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed

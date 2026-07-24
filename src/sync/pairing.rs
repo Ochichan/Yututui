@@ -30,7 +30,7 @@ pub struct PairingInvite {
     membership_root_hash: String,
     membership_starting_head_hash: String,
     expires_at_unix: i64,
-    consumed: AtomicBool,
+    finalized: AtomicBool,
 }
 
 impl fmt::Debug for PairingInvite {
@@ -43,7 +43,7 @@ impl fmt::Debug for PairingInvite {
             .field("membership_root_hash", &"[redacted]")
             .field("membership_starting_head_hash", &"[redacted]")
             .field("expires_at_unix", &self.expires_at_unix)
-            .field("consumed", &self.consumed.load(Ordering::Acquire))
+            .field("finalized", &self.finalized.load(Ordering::Acquire))
             .finish()
     }
 }
@@ -133,6 +133,11 @@ pub struct ApprovedPairing {
 }
 
 impl PairingInvite {
+    /// Derive the opaque remote invite directory without exposing the pairing secret.
+    pub fn invite_id_for_code(code: &PairingCode) -> Result<String, VaultError> {
+        pairing_invite_id(code)
+    }
+
     pub fn create(
         dataset_id: impl Into<String>,
         membership_root_hash: impl Into<String>,
@@ -159,7 +164,36 @@ impl PairingInvite {
             expires_at_unix: now_unix
                 .checked_add(PAIRING_LIFETIME_SECS)
                 .ok_or(VaultError::PairingExpired)?,
-            consumed: AtomicBool::new(false),
+            finalized: AtomicBool::new(false),
+        })
+    }
+
+    /// Rehydrate an owner-only durable invite without minting a replacement code.
+    pub(crate) fn resume(
+        code: PairingCode,
+        dataset_id: impl Into<String>,
+        membership_root_hash: impl Into<String>,
+        membership_starting_head_hash: impl Into<String>,
+        expires_at_unix: i64,
+    ) -> Result<Self, VaultError> {
+        let invite_id = pairing_invite_id(&code)?;
+        let dataset_id = dataset_id.into();
+        let membership_root_hash = membership_root_hash.into();
+        let membership_starting_head_hash = membership_starting_head_hash.into();
+        if super::crypto::validate_dataset_id(&dataset_id).is_err()
+            || !valid_hash(&membership_root_hash)
+            || !valid_hash(&membership_starting_head_hash)
+        {
+            return Err(VaultError::InvalidMembership);
+        }
+        Ok(Self {
+            code,
+            invite_id,
+            dataset_id,
+            membership_root_hash,
+            membership_starting_head_hash,
+            expires_at_unix,
+            finalized: AtomicBool::new(false),
         })
     }
 
@@ -173,6 +207,18 @@ impl PairingInvite {
 
     pub fn expires_at_unix(&self) -> i64 {
         self.expires_at_unix
+    }
+
+    pub(crate) fn dataset_id(&self) -> &str {
+        &self.dataset_id
+    }
+
+    pub(crate) fn membership_root_hash(&self) -> &str {
+        &self.membership_root_hash
+    }
+
+    pub(crate) fn membership_starting_head_hash(&self) -> &str {
+        &self.membership_starting_head_hash
     }
 
     pub fn create_request(
@@ -233,6 +279,63 @@ impl PairingInvite {
         ))
     }
 
+    /// Reauthenticate an exact locally staged request after restart.
+    pub fn resume_request(
+        code: &PairingCode,
+        encrypted: EncryptedObject,
+        expected_request_nonce: &str,
+        device_secrets: &DeviceSecretMaterial,
+        now_unix: i64,
+    ) -> Result<SealedPairingRequest, VaultError> {
+        let invite_id = pairing_invite_id(code)?;
+        let payload: PairingRequestPayload = open_pairing_json(code, &encrypted)?;
+        validate_request(&payload, code, &invite_id, now_unix)?;
+        if payload.request_nonce != expected_request_nonce
+            || !device_secrets.matches_record(&payload.device)
+        {
+            return Err(VaultError::PairingProofFailed);
+        }
+        Ok(SealedPairingRequest {
+            invite_id,
+            encrypted: encrypted.authenticated_after_verification(),
+        })
+    }
+
+    /// Reauthenticate the exact locally journaled request without extending its lifetime.
+    ///
+    /// This is only used to recover an immutable request or consume a host approval that was
+    /// committed while the request was valid. It must never authorize a new membership change.
+    pub(crate) fn resume_journaled_request(
+        code: &PairingCode,
+        encrypted: EncryptedObject,
+        expected_request_nonce: &str,
+        device_secrets: &DeviceSecretMaterial,
+    ) -> Result<SealedPairingRequest, VaultError> {
+        let invite_id = pairing_invite_id(code)?;
+        let payload = Self::open_journaled_request(code, &encrypted)?;
+        if payload.invite_id != invite_id
+            || payload.request_nonce != expected_request_nonce
+            || !device_secrets.matches_record(&payload.device)
+        {
+            return Err(VaultError::PairingProofFailed);
+        }
+        Ok(SealedPairingRequest {
+            invite_id,
+            encrypted: encrypted.authenticated_after_verification(),
+        })
+    }
+
+    /// Authenticate a locally staged request from its code proof and device signature.
+    pub(crate) fn open_journaled_request(
+        code: &PairingCode,
+        encrypted: &EncryptedObject,
+    ) -> Result<PairingRequestPayload, VaultError> {
+        let invite_id = pairing_invite_id(code)?;
+        let payload: PairingRequestPayload = open_pairing_json(code, encrypted)?;
+        validate_request_proof(&payload, code, &invite_id)?;
+        Ok(payload)
+    }
+
     pub fn review_request(
         &self,
         sealed: &SealedPairingRequest,
@@ -247,6 +350,22 @@ impl PairingInvite {
         Ok(payload)
     }
 
+    /// Reauthenticate the exact immutable request after the host has durably bound it.
+    ///
+    /// Expiry prevents a new approval from being committed. It does not make a membership change
+    /// that is already visible on the signed checkpoint chain impossible to hand off after crash.
+    pub(crate) fn review_bound_request(
+        &self,
+        sealed: &SealedPairingRequest,
+    ) -> Result<PairingRequestPayload, VaultError> {
+        if sealed.invite_id != self.invite_id {
+            return Err(VaultError::PairingProofFailed);
+        }
+        let payload: PairingRequestPayload = open_pairing_json(&self.code, &sealed.encrypted)?;
+        validate_request_proof(&payload, &self.code, &self.invite_id)?;
+        Ok(payload)
+    }
+
     pub fn approve(
         &self,
         sealed_request: &SealedPairingRequest,
@@ -256,6 +375,29 @@ impl PairingInvite {
         now_unix: i64,
     ) -> Result<SealedPairingApproval, VaultError> {
         let request = self.review_request(sealed_request, now_unix)?;
+        self.approve_reviewed(request, membership, encrypted_checkpoint, approver)
+    }
+
+    /// Finish the authenticated handoff for a request whose exact device addition is already
+    /// committed to the signed membership/checkpoint chain.
+    pub(crate) fn approve_committed(
+        &self,
+        sealed_request: &SealedPairingRequest,
+        membership: MembershipChain,
+        encrypted_checkpoint: &EncryptedObject,
+        approver: &DeviceSecretMaterial,
+    ) -> Result<SealedPairingApproval, VaultError> {
+        let request = self.review_bound_request(sealed_request)?;
+        self.approve_reviewed(request, membership, encrypted_checkpoint, approver)
+    }
+
+    fn approve_reviewed(
+        &self,
+        request: PairingRequestPayload,
+        membership: MembershipChain,
+        encrypted_checkpoint: &EncryptedObject,
+        approver: &DeviceSecretMaterial,
+    ) -> Result<SealedPairingApproval, VaultError> {
         let verified = membership.verify(&MembershipAnchor::RootHash(
             self.membership_root_hash.clone(),
         ))?;
@@ -339,20 +481,52 @@ impl PairingInvite {
             approver_signature,
         };
         let encrypted = seal_pairing_json(&self.code, &payload)?;
-        self.consumed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| VaultError::PairingConsumed)?;
         Ok(SealedPairingApproval {
             invite_id: self.invite_id.clone(),
             encrypted,
         })
     }
 
+    /// Consume the one-time invite only after its approval handoff is durably published.
+    ///
+    /// Approval construction is intentionally retryable: a failed PUT must not strand a device
+    /// that has already been added to the encrypted checkpoint.
+    pub fn finalize_approval(
+        &self,
+        sealed_request: &SealedPairingRequest,
+        sealed_approval: &SealedPairingApproval,
+        now_unix: i64,
+    ) -> Result<(), VaultError> {
+        self.ensure_available(now_unix)?;
+        let request = self.review_request(sealed_request, now_unix)?;
+        if sealed_approval.invite_id != self.invite_id {
+            return Err(VaultError::PairingProofFailed);
+        }
+        let approval: PairingApprovalPayload =
+            open_pairing_json(&self.code, &sealed_approval.encrypted)?;
+        if approval.kind != PAIRING_APPROVAL_KIND
+            || approval.schema_version != super::VAULT_SCHEMA_VERSION
+            || approval.invite_id != self.invite_id
+            || approval.request_nonce != request.request_nonce
+            || approval.dataset_id != self.dataset_id
+            || approval.membership_root_hash != self.membership_root_hash
+            || approval.membership_starting_head_hash != self.membership_starting_head_hash
+            || approval.approved_device_id != request.device.device_id
+            || approval.expires_at_unix != self.expires_at_unix
+        {
+            return Err(VaultError::PairingProofFailed);
+        }
+        self.finalized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| VaultError::PairingConsumed)?;
+        Ok(())
+    }
+
     fn ensure_available(&self, now_unix: i64) -> Result<(), VaultError> {
         if now_unix > self.expires_at_unix {
             return Err(VaultError::PairingExpired);
         }
-        if self.consumed.load(Ordering::Acquire) {
+        if self.finalized.load(Ordering::Acquire) {
             return Err(VaultError::PairingConsumed);
         }
         Ok(())
@@ -398,7 +572,7 @@ impl ApprovedPairing {
         expected_request_nonce: &str,
         device_secrets: &DeviceSecretMaterial,
         encrypted_checkpoint: &EncryptedObject,
-        now_unix: i64,
+        _now_unix: i64,
     ) -> Result<Self, VaultError> {
         if sealed.invite_id != pairing_invite_id(code)? {
             return Err(VaultError::PairingProofFailed);
@@ -417,9 +591,9 @@ impl ApprovedPairing {
         {
             return Err(VaultError::PairingProofFailed);
         }
-        if now_unix > payload.expires_at_unix {
-            return Err(VaultError::PairingExpired);
-        }
+        // A host-signed approval is bound to the exact request nonce, device keys, membership
+        // addition, and checkpoint ciphertext. Once that membership is committed, delaying the
+        // immutable handoff past the ten-minute invite window cannot admit a different device.
         let verified = payload.membership.verify(&MembershipAnchor::RootHash(
             payload.membership_root_hash.clone(),
         ))?;
@@ -516,6 +690,19 @@ fn validate_request(
     expected_invite_id: &str,
     now_unix: i64,
 ) -> Result<(), VaultError> {
+    validate_request_proof(payload, code, expected_invite_id)?;
+    if now_unix > payload.expires_at_unix {
+        Err(VaultError::PairingExpired)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_request_proof(
+    payload: &PairingRequestPayload,
+    code: &PairingCode,
+    expected_invite_id: &str,
+) -> Result<(), VaultError> {
     if payload.kind != PAIRING_REQUEST_KIND
         || payload.schema_version != super::VAULT_SCHEMA_VERSION
         || payload.invite_id != expected_invite_id
@@ -553,11 +740,7 @@ fn validate_request(
         &(&proof, &payload.pairing_proof),
         &payload.device_signature,
     )?;
-    if now_unix > payload.expires_at_unix {
-        Err(VaultError::PairingExpired)
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 fn validate_device(device: &DeviceRecord) -> Result<(), VaultError> {

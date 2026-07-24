@@ -1,6 +1,6 @@
 use super::{
     LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY,
-    PERSONAL_STATE_V2_CAPABILITY, RETAINED_REQUEST_OUTCOMES_CAPABILITY,
+    PERSONAL_STATE_V2_CAPABILITY, RETAINED_REQUEST_OUTCOMES_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
 };
 
 pub(super) fn daemon_capabilities() -> Vec<String> {
@@ -17,6 +17,7 @@ pub(super) fn daemon_capabilities() -> Vec<String> {
         "events-v8".to_string(),
         PERSONAL_EXPORT_CAPABILITY.to_string(),
         PERSONAL_STATE_V2_CAPABILITY.to_string(),
+        WEB_DAV_SYNC_CAPABILITY.to_string(),
         LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
         // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
         // rating, video, library, playlists, downloads, AI, accounts, transfer,

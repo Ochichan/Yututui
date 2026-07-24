@@ -38,6 +38,7 @@ fn playing_update() -> PollUpdate {
         track_id: Some("song-id".to_string()),
         position_epoch: 7,
         artwork: None,
+        personal_sync: None,
     })
 }
 
@@ -189,6 +190,7 @@ fn idle_daemon_payload_enables_resume_and_stop() {
         track_id: None,
         position_epoch: 0,
         artwork: None,
+        personal_sync: None,
     });
     let payload = english_payload(&update);
     assert_eq!(payload.title, "Nothing playing");

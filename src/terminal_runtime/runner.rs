@@ -583,6 +583,7 @@ pub async fn run(
     log_art_picker(app.art.picker.as_ref());
     let PersistentStartupState {
         personal_state,
+        personal_state_device_id,
         library,
         session_cache,
         signals,
@@ -592,7 +593,8 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
-    app.personal_state = personal_state;
+    app.personal_state.ledger = personal_state;
+    app.personal_state.device_id = personal_state_device_id;
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
     app.download_store = download_store;

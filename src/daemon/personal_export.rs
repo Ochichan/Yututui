@@ -71,6 +71,7 @@ impl PersonalExport {
         F: FnOnce() -> Result<
             (
                 PersonalStateV2,
+                Option<crate::personal_state::DeviceId>,
                 Config,
                 Library,
                 Signals,
@@ -88,17 +89,24 @@ impl PersonalExport {
             ));
             return;
         }
-        let (personal_state, config, library, signals, station, live_estimated_bytes) =
-            match sources() {
-                Ok(sources) => sources,
-                Err(message) => {
-                    let _ = reply.send(RemoteResponse::err_with_message(
-                        "personal_export_too_large",
-                        message,
-                    ));
-                    return;
-                }
-            };
+        let (
+            personal_state,
+            personal_state_device_id,
+            config,
+            library,
+            signals,
+            station,
+            live_estimated_bytes,
+        ) = match sources() {
+            Ok(sources) => sources,
+            Err(message) => {
+                let _ = reply.send(RemoteResponse::err_with_message(
+                    "personal_export_too_large",
+                    message,
+                ));
+                return;
+            }
+        };
 
         self.next_generation = self.next_generation.wrapping_add(1);
         if self.next_generation == 0 {
@@ -123,6 +131,7 @@ impl PersonalExport {
                 crate::data_export::export_v2_from_sources(
                     destination.as_path(),
                     &personal_state,
+                    personal_state_device_id.as_ref(),
                     &library,
                     &playlists,
                     &signals,
@@ -205,6 +214,7 @@ mod tests {
 
     fn sources() -> (
         PersonalStateV2,
+        Option<crate::personal_state::DeviceId>,
         Config,
         Library,
         Signals,
@@ -213,6 +223,7 @@ mod tests {
     ) {
         (
             PersonalStateV2::default(),
+            None,
             Config::default(),
             Library::default(),
             Signals::default(),

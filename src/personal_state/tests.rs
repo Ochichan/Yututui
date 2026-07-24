@@ -708,6 +708,112 @@ fn foreign_import_is_deletion_free_and_repeated_import_is_a_noop() {
 }
 
 #[test]
+fn join_import_keeps_authenticated_causality_and_adds_one_owned_baseline() {
+    let existing_device = DeviceId::new("existing-device").unwrap();
+    let joining_device = DeviceId::new("joining-device").unwrap();
+    let remote = state_with_keyed_devices(&[existing_device.as_str(), joining_device.as_str()]);
+    let remote = append_operation_as(
+        &remote,
+        &existing_device,
+        Operation::SetRating {
+            track: track("remote"),
+            rating: Rating::Liked,
+        },
+        10,
+    )
+    .unwrap();
+
+    let mut local_library = crate::library::Library::default();
+    local_library.toggle_favorite(&crate::api::Song::remote(
+        "local".to_owned(),
+        "Local".to_owned(),
+        "Artist".to_owned(),
+        "3:00".to_owned(),
+    ));
+    let local = legacy_state(
+        &local_library,
+        &crate::playlists::Playlists::default(),
+        &crate::signals::Signals::default(),
+        &crate::station::StationStore::default(),
+    )
+    .unwrap();
+    let local_operation_ids = local
+        .operations
+        .iter()
+        .map(|operation| operation.operation_id.clone())
+        .collect::<HashSet<_>>();
+
+    let plan = plan_join_import(&remote, &local, &joining_device).unwrap();
+    assert!(plan.summary.changed);
+    assert_eq!(plan.summary.operations_added, 1);
+    assert_eq!(plan.candidate.operations.len(), remote.operations.len() + 1);
+    assert!(remote.operations.iter().all(|operation| {
+        plan.candidate
+            .operations
+            .iter()
+            .any(|candidate| candidate == operation)
+    }));
+    assert!(
+        plan.candidate
+            .operations
+            .iter()
+            .filter(|operation| {
+                !remote
+                    .operations
+                    .iter()
+                    .any(|remote| remote.operation_id == operation.operation_id)
+            })
+            .all(|operation| {
+                operation.stamp.dot.device_id == joining_device
+                    && operation.origin == OperationOrigin::Imported
+                    && matches!(operation.operation, Operation::LegacyBaseline { .. })
+                    && !local_operation_ids.contains(&operation.operation_id)
+            })
+    );
+    let favorite_ids = project(&plan.candidate)
+        .unwrap()
+        .legacy
+        .favorites
+        .into_iter()
+        .filter_map(|track| match track.key {
+            PortableTrackKey::Catalog {
+                exact_catalog_id, ..
+            } => Some(exact_catalog_id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        favorite_ids,
+        HashSet::from(["remote".to_owned(), "local".to_owned()])
+    );
+
+    let repeated = plan_join_import(&plan.candidate, &local, &joining_device).unwrap();
+    assert!(!repeated.summary.changed);
+    assert_eq!(repeated.candidate, plan.candidate);
+}
+
+#[test]
+fn join_import_is_a_noop_when_local_projection_adds_nothing() {
+    let joining_device = DeviceId::new("joining-device").unwrap();
+    let remote = state_with_keyed_devices(&["existing-device", joining_device.as_str()]);
+    let remote = append_operation_as(
+        &remote,
+        &DeviceId::new("existing-device").unwrap(),
+        Operation::SetRating {
+            track: track("already-remote"),
+            rating: Rating::Liked,
+        },
+        10,
+    )
+    .unwrap();
+
+    let plan = plan_join_import(&remote, &remote, &joining_device).unwrap();
+    assert!(!plan.summary.changed);
+    assert_eq!(plan.summary.operations_added, 0);
+    assert_eq!(plan.candidate, remote);
+}
+
+#[test]
 fn foreign_baseline_does_not_override_an_explicit_local_rating() {
     let song = crate::api::Song::remote(
         "same".to_owned(),

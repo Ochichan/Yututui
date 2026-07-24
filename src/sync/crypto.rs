@@ -282,6 +282,15 @@ impl EncryptedObject {
     pub(crate) fn is_locally_produced(&self) -> bool {
         self.provenance == CiphertextProvenance::ProducedLocally
     }
+
+    /// Promote bytes only after their complete authenticated payload was verified locally.
+    ///
+    /// This is used for restart-safe pairing requests: the code AEAD and device signature are
+    /// checked again before the exact staged ciphertext is allowed back onto the transport.
+    pub(crate) fn authenticated_after_verification(mut self) -> Self {
+        self.provenance = CiphertextProvenance::ProducedLocally;
+        self
+    }
 }
 
 impl PartialEq for EncryptedObject {

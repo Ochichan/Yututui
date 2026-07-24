@@ -628,6 +628,64 @@ fn personal_data_export_writes_a_private_sanitized_json_file_offline() {
     std::fs::remove_dir_all(root).expect("cleanup isolated export");
 }
 
+#[test]
+fn personal_data_import_preview_runs_beside_owner_but_apply_requires_writer_lease() {
+    let root = isolated_root("personal-import-reader");
+    let _ = std::fs::remove_dir_all(&root);
+    let data_dir = root.join("data");
+    create_private_dir_all(&root);
+    create_private_dir_all(&data_dir);
+    let import_file = root.join("personal-state-v2.json");
+    let state =
+        yututui::personal_state::PersonalStateV2::empty("preview-beside-owner".to_owned()).unwrap();
+    std::fs::write(&import_file, serde_json::to_vec_pretty(&state).unwrap())
+        .expect("write import fixture");
+
+    let owner_lock = yututui::util::safe_fs::try_lock_private_file(
+        &data_dir.join(".ytt-persistence-writer.lock"),
+    )
+    .expect("open writer lease")
+    .expect("hold simulated owner lease");
+    let before = snapshot_tree(&data_dir);
+
+    let preview = isolated_command(
+        &root,
+        &["data", "import", import_file.to_str().unwrap(), "--dry-run"],
+    )
+    .output()
+    .expect("read-only import preview should run");
+    assert!(
+        preview.status.success(),
+        "stdout={}, stderr={}",
+        stdout(&preview),
+        stderr(&preview)
+    );
+    assert!(stdout(&preview).contains("Import preview:"));
+    assert!(stdout(&preview).contains("Preview only;"));
+    assert_eq!(
+        snapshot_tree(&data_dir),
+        before,
+        "preview mutated the owner's data tree"
+    );
+
+    let apply = isolated_command(
+        &root,
+        &["data", "import", import_file.to_str().unwrap(), "--apply"],
+    )
+    .output()
+    .expect("contended import apply should return");
+    assert_eq!(apply.status.code(), Some(1));
+    assert!(
+        stderr(&apply).contains("Close it before applying an import"),
+        "stdout={}, stderr={}",
+        stdout(&apply),
+        stderr(&apply)
+    );
+
+    drop(owner_lock);
+    std::fs::remove_dir_all(root).expect("cleanup isolated import");
+}
+
 #[cfg(unix)]
 #[test]
 fn personal_data_export_recovers_from_a_stale_descriptor_without_deleting_it() {
@@ -1399,6 +1457,7 @@ mod remote_owner {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         }
     }
 
@@ -1605,6 +1664,63 @@ mod remote_owner {
         assert!(queue_play.status.success(), "{}", stderr(&queue_play));
         assert_eq!(stdout(&queue_play), "played queue item 1\n");
         assert_credentials_hidden(&queue_play, &instance.endpoint);
+
+        owner.join().expect("fake owner thread should complete");
+        clean_isolated_remote(&root);
+    }
+
+    #[test]
+    fn sync_status_uses_the_live_owner_and_sanitizes_human_output() {
+        let root = short_root("sync-status-owner");
+        clean_isolated_remote(&root);
+        let instance = isolated_instance(
+            &root,
+            PROTOCOL_VERSION,
+            vec!["status".to_owned(), "webdav-sync-v1".to_owned()],
+        );
+        write_current_descriptor(&root, &instance);
+        let report = yututui::sync::service::SyncStatusReport {
+            state: yututui::sync::SyncHealthState::NeedsAttention,
+            label: "Needs\n\u{1b}[31mattention".to_owned(),
+            configured: true,
+            device_id: Some("device-a".to_owned()),
+            last_attempt_unix: Some(10),
+            last_success_unix: None,
+            failure: Some(yututui::sync::SyncFailureKind::Storage),
+            recovery_action: Some("Retry\r\u{202e}now".to_owned()),
+        };
+        let mut status = snapshot(Vec::new(), Default::default());
+        status.personal_sync = Some(report.clone());
+        let response = RemoteResponse::status(status);
+        let owner = spawn_fake_owner(
+            instance.endpoint.clone(),
+            vec![
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response: response.clone(),
+                },
+                Exchange {
+                    command: RemoteCommand::Status,
+                    response,
+                },
+            ],
+        );
+
+        let human = run_isolated_with_timeout(&root, &["sync", "status"]);
+        assert!(human.status.success(), "stderr={}", stderr(&human));
+        let human_text = stdout(&human);
+        assert_eq!(human_text.lines().count(), 2, "stdout={human_text}");
+        assert!(!human_text.contains('\u{1b}'));
+        assert!(!human_text.contains('\r'));
+        assert!(!human_text.contains('\u{202e}'));
+        assert_credentials_hidden(&human, &instance.endpoint);
+
+        let json = run_isolated_with_timeout(&root, &["sync", "status", "--json"]);
+        assert!(json.status.success(), "stderr={}", stderr(&json));
+        let projected: yututui::sync::service::SyncStatusReport =
+            serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(projected, report);
+        assert_credentials_hidden(&json, &instance.endpoint);
 
         owner.join().expect("fake owner thread should complete");
         clean_isolated_remote(&root);

@@ -4,6 +4,7 @@ use age::secrecy::{ExposeSecret, SecretString};
 
 use crate::personal_state::{
     CausalStamp, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin, VersionVector,
+    legacy_state, plan_join_import,
 };
 use crate::sync::{
     CheckpointAnchor, MembershipAnchor, MembershipChain, RecoveryKit, SignedCheckpoint,
@@ -187,6 +188,65 @@ fn owner_only_round_trip_preserves_keys_anchors_and_credential() {
 }
 
 #[test]
+fn pending_setup_recovery_confirmation_is_signed_and_cleared_on_activation() {
+    let directory = TestDirectory::new();
+    let store = directory.store();
+    let fixture = pending_ledger_fixture();
+    let mut snapshot = fixture.snapshot;
+    let checksum = "e".repeat(SHA256_HEX_BYTES);
+    snapshot
+        .confirm_setup_recovery(checksum.clone())
+        .expect("confirm recovery export");
+    store.create(&mut snapshot).expect("create");
+
+    let mut loaded = store.load().expect("load setup marker");
+    assert_eq!(loaded.setup_recovery_checksum(), Some(checksum.as_str()));
+    loaded
+        .mark_active(&fixture.checkpoint, &fixture.state)
+        .expect("activate");
+    assert_eq!(loaded.setup_recovery_checksum(), None);
+    store.save(&mut loaded).expect("save activation");
+    assert_eq!(
+        store
+            .load()
+            .expect("reload active setup")
+            .setup_recovery_checksum(),
+        None
+    );
+}
+
+#[test]
+fn pending_setup_recovery_confirmation_tampering_is_rejected() {
+    let directory = TestDirectory::new();
+    let store = directory.store();
+    let mut snapshot = pending_ledger_snapshot();
+    snapshot
+        .confirm_setup_recovery("e".repeat(SHA256_HEX_BYTES))
+        .expect("confirm recovery export");
+    store.create(&mut snapshot).expect("create");
+    let original = Zeroizing::new(
+        read_owner_only_limited(&directory.path(), MAX_PRIVATE_STORE_BYTES)
+            .expect("read setup marker"),
+    );
+
+    assert_tamper_rejected(
+        &store,
+        &directory.path(),
+        &original,
+        format!(
+            "\"setup_recovery_checksum\":\"{}\"",
+            "e".repeat(SHA256_HEX_BYTES)
+        )
+        .as_bytes(),
+        format!(
+            "\"setup_recovery_checksum\":\"{}\"",
+            "d".repeat(SHA256_HEX_BYTES)
+        )
+        .as_bytes(),
+    );
+}
+
+#[test]
 fn pending_pairing_round_trips_without_persisting_the_code() {
     let directory = TestDirectory::new();
     let store = directory.store();
@@ -262,10 +322,7 @@ fn pending_pairing_rejects_invalid_or_out_of_state_context() {
             .set_pending_pairing("invite-01", "a".repeat(32))
             .is_err()
     );
-    assert_eq!(
-        pending_ledger.pending_pairing().err(),
-        Some(VaultError::InvalidPrivateStore)
-    );
+    assert!(pending_ledger.pending_pairing().unwrap().is_none());
 }
 
 #[test]
@@ -457,6 +514,122 @@ fn enrollment_and_checkpoint_transitions_are_explicit_and_monotonic() {
         store.load().expect("load revoked").enrollment(),
         EnrollmentState::Revoked
     );
+}
+
+#[test]
+fn join_activation_accepts_one_local_baseline_and_retains_the_approved_anchor() {
+    let fixture = pending_ledger_fixture();
+    let mut library = crate::library::Library::default();
+    library.toggle_favorite(&crate::api::Song::remote(
+        "local-favorite".to_owned(),
+        "Local favorite".to_owned(),
+        "Local artist".to_owned(),
+        "3:00".to_owned(),
+    ));
+    let local = legacy_state(
+        &library,
+        &crate::playlists::Playlists::default(),
+        &crate::signals::Signals::default(),
+        &crate::station::StationStore::default(),
+    )
+    .expect("local state");
+    let local_device_id = DeviceId::new(fixture.snapshot.device_id()).expect("local device id");
+    let plan = plan_join_import(&fixture.state, &local, &local_device_id).expect("join preview");
+    assert!(plan.summary.changed);
+    assert_eq!(
+        plan.candidate.operations.len(),
+        fixture.state.operations.len() + 1
+    );
+
+    let expected_hash = fixture.checkpoint.hash().expect("approved hash");
+    let expected_sequence = fixture.checkpoint.payload.checkpoint_sequence;
+    let mut snapshot = fixture.snapshot;
+    snapshot
+        .mark_active_after_join(&fixture.checkpoint, &plan.candidate)
+        .expect("activate joined device");
+    assert_eq!(snapshot.enrollment(), EnrollmentState::Active);
+    assert_eq!(snapshot.checkpoint_hash(), Some(expected_hash.as_str()));
+    assert_eq!(snapshot.checkpoint_sequence(), Some(expected_sequence));
+}
+
+#[test]
+fn join_activation_rejects_missing_remote_state_and_unexplained_causal_coverage() {
+    let mut fixture = pending_ledger_fixture();
+    let mut library = crate::library::Library::default();
+    library.toggle_favorite(&crate::api::Song::remote(
+        "local-favorite".to_owned(),
+        "Local favorite".to_owned(),
+        "Local artist".to_owned(),
+        "3:00".to_owned(),
+    ));
+    let local = legacy_state(
+        &library,
+        &crate::playlists::Playlists::default(),
+        &crate::signals::Signals::default(),
+        &crate::station::StationStore::default(),
+    )
+    .expect("local state");
+    let local_device_id = DeviceId::new(fixture.snapshot.device_id()).expect("local device id");
+    let plan = plan_join_import(&fixture.state, &local, &local_device_id).expect("join preview");
+
+    let mut replaced_remote_operation = plan.candidate.clone();
+    replaced_remote_operation.operations[0].operation_id = "forged-initial-device".to_owned();
+    replaced_remote_operation
+        .normalize()
+        .expect("structurally valid replacement");
+    assert_eq!(
+        fixture
+            .snapshot
+            .mark_active_after_join(&fixture.checkpoint, &replaced_remote_operation,),
+        Err(VaultError::InvalidPrivateStore)
+    );
+
+    let mut fixture = pending_ledger_fixture();
+    let local_device_id = DeviceId::new(fixture.snapshot.device_id()).expect("local device id");
+    let mut unexplained = plan_join_import(&fixture.state, &local, &local_device_id)
+        .expect("join preview")
+        .candidate;
+    unexplained.version_vector.0.insert(
+        DeviceId::new("foreign-causal-source").expect("foreign id"),
+        1,
+    );
+    unexplained
+        .validate()
+        .expect("high-water coverage is structurally valid");
+    assert_eq!(
+        fixture
+            .snapshot
+            .mark_active_after_join(&fixture.checkpoint, &unexplained),
+        Err(VaultError::InvalidPrivateStore)
+    );
+}
+
+#[test]
+fn join_activation_authenticates_the_exact_pending_checkpoint() {
+    let mut fixture = pending_ledger_fixture();
+    let mut tampered_checkpoint = fixture.checkpoint.clone();
+    let replacement = if tampered_checkpoint.signature.starts_with('A') {
+        "B"
+    } else {
+        "A"
+    };
+    tampered_checkpoint
+        .signature
+        .replace_range(0..1, replacement);
+    assert_eq!(
+        fixture
+            .snapshot
+            .mark_active_after_join(&tampered_checkpoint, &fixture.state),
+        Err(VaultError::SignatureVerificationFailed)
+    );
+
+    let fixture = pending_ledger_fixture();
+    let expected_hash = fixture.checkpoint.hash().expect("approved hash");
+    let mut snapshot = fixture.snapshot;
+    snapshot
+        .mark_active_after_join(&fixture.checkpoint, &fixture.state)
+        .expect("no-op join activation");
+    assert_eq!(snapshot.checkpoint_hash(), Some(expected_hash.as_str()));
 }
 
 #[test]

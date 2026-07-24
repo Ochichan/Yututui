@@ -5,6 +5,7 @@ use super::legacy::{
     ENGAGEMENT_EVENTS_MAX, FAVORITES_MAX, HISTORY_MAX, LegacyPlaylist, LegacyProjection,
     PLAYLIST_ENTRIES_MAX, PLAYLISTS_MAX, RADIO_MAX, SIGNAL_TRACKS_MAX, stable_hash,
 };
+use super::reducer::project_at;
 use super::{
     CausalStamp, DeviceId, Dot, Operation, OperationEnvelope, OperationOrigin, PersonalStateError,
     PersonalStateV2, PortableTrack, PortableTrackKey, VersionVector, merge, project,
@@ -76,6 +77,305 @@ pub fn plan_import(
         changed,
     );
     Ok(ImportPlan { candidate, summary })
+}
+
+/// Preview the deletion-free local contribution made while joining an authenticated dataset.
+///
+/// The authenticated checkpoint remains the causal source of truth. The existing device-local
+/// state is reduced to its portable projection and may contribute one new baseline owned by the
+/// newly approved device; none of the local ledger's foreign operation IDs, dots, or version
+/// vector are copied. Repeating the preview after its candidate is present is a no-op.
+pub fn plan_join_import(
+    authenticated_remote: &PersonalStateV2,
+    existing_local: &PersonalStateV2,
+    local_device_id: &DeviceId,
+) -> Result<ImportPlan, PersonalStateError> {
+    authenticated_remote.validate()?;
+    existing_local.validate()?;
+    validate_join_device(authenticated_remote, local_device_id)?;
+
+    let now_unix = crate::signals::unix_now();
+    let before = project_at(authenticated_remote, now_unix)?.legacy;
+    let local = project_at(existing_local, now_unix)?.legacy;
+    let remote_baseline = winning_baseline(authenticated_remote);
+    let combined = merge_baselines(local, remote_baseline);
+    combined.validate()?;
+
+    let sequence = authenticated_remote
+        .version_vector
+        .observed(local_device_id)
+        .checked_add(1)
+        .ok_or(PersonalStateError::InvalidOperation(
+            "join import operation sequence exhausted",
+        ))?;
+    let dot = Dot {
+        device_id: local_device_id.clone(),
+        sequence,
+    };
+    let operation_id = join_import_operation_id(
+        &authenticated_remote.dataset_id,
+        local_device_id,
+        sequence,
+        &combined,
+    )?;
+    let mut candidate = authenticated_remote.clone();
+    candidate.operations.push(OperationEnvelope {
+        operation_id,
+        stamp: CausalStamp {
+            dot: dot.clone(),
+            observed: authenticated_remote.version_vector.clone(),
+            // A baseline import has no trustworthy wall-clock event time. Keeping this stable
+            // also makes two previews over identical inputs byte-for-byte deterministic.
+            recorded_at_unix: 0,
+        },
+        origin: OperationOrigin::Imported,
+        operation: Operation::LegacyBaseline {
+            baseline: Box::new(combined),
+        },
+    });
+    candidate.version_vector.observe(&dot);
+    candidate.projection_fingerprint = None;
+    candidate.normalize()?;
+
+    let after = project_at(&candidate, now_unix)?.legacy;
+    if after == before {
+        return Ok(ImportPlan {
+            candidate: authenticated_remote.clone(),
+            summary: summarize(&before, &before, 0, 0, false),
+        });
+    }
+    if !legacy_is_deletion_free_extension(&before, &after) {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import would remove authenticated state",
+        ));
+    }
+
+    candidate.revision = authenticated_remote.revision.saturating_add(1);
+    validate_join_import_extension(authenticated_remote, &candidate, local_device_id)?;
+    let summary = summarize(&before, &after, 1, 0, true);
+    Ok(ImportPlan { candidate, summary })
+}
+
+/// Validate the narrow state extension accepted while a newly approved device is pending.
+///
+/// This is crate-private so the private key store can independently validate the committed
+/// candidate before making the device active.
+pub(crate) fn validate_join_import_extension(
+    approved: &PersonalStateV2,
+    candidate: &PersonalStateV2,
+    local_device_id: &DeviceId,
+) -> Result<(), PersonalStateError> {
+    approved.validate()?;
+    candidate.validate()?;
+    validate_join_device(approved, local_device_id)?;
+    if approved.dataset_id != candidate.dataset_id
+        || approved.device_registry != candidate.device_registry
+        || approved.compaction_checkpoint != candidate.compaction_checkpoint
+        || approved.metadata != candidate.metadata
+        || candidate.revision < approved.revision
+    {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import changed authenticated state",
+        ));
+    }
+
+    let approved_by_id = approved
+        .operations
+        .iter()
+        .map(|operation| (operation.operation_id.as_str(), operation))
+        .collect::<BTreeMap<_, _>>();
+    if approved_by_id.iter().any(|(operation_id, operation)| {
+        !candidate
+            .operations
+            .iter()
+            .any(|candidate| candidate.operation_id == **operation_id && candidate == *operation)
+    }) || approved
+        .version_vector
+        .0
+        .iter()
+        .any(|(device, sequence)| candidate.version_vector.observed(device) < *sequence)
+    {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import dropped authenticated causal state",
+        ));
+    }
+
+    let additions = candidate
+        .operations
+        .iter()
+        .filter(|operation| !approved_by_id.contains_key(operation.operation_id.as_str()))
+        .collect::<Vec<_>>();
+    if additions.is_empty() {
+        if candidate.operations.len() != approved.operations.len()
+            || candidate.version_vector != approved.version_vector
+        {
+            return Err(PersonalStateError::InvalidOperation(
+                "join import has an unexplained causal extension",
+            ));
+        }
+        return Ok(());
+    }
+    if additions.len() != 1 || candidate.operations.len() != approved.operations.len() + 1 {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import must contain at most one local baseline",
+        ));
+    }
+
+    let addition = additions[0];
+    let sequence = approved
+        .version_vector
+        .observed(local_device_id)
+        .checked_add(1)
+        .ok_or(PersonalStateError::InvalidOperation(
+            "join import operation sequence exhausted",
+        ))?;
+    let Operation::LegacyBaseline { baseline } = &addition.operation else {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import extension is not a baseline",
+        ));
+    };
+    let expected_operation_id =
+        join_import_operation_id(&approved.dataset_id, local_device_id, sequence, baseline)?;
+    if addition.operation_id != expected_operation_id
+        || addition.origin != OperationOrigin::Imported
+        || addition.stamp.dot.device_id != *local_device_id
+        || addition.stamp.dot.sequence != sequence
+        || addition.stamp.observed != approved.version_vector
+        || addition.stamp.recorded_at_unix != 0
+    {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import baseline is not owned by the approved device",
+        ));
+    }
+    let mut expected_vector = approved.version_vector.clone();
+    expected_vector.observe(&addition.stamp.dot);
+    if candidate.version_vector != expected_vector {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import version vector has an unexplained extension",
+        ));
+    }
+
+    let now_unix = crate::signals::unix_now();
+    let before = project_at(approved, now_unix)?.legacy;
+    let after = project_at(candidate, now_unix)?.legacy;
+    if before == after || !legacy_is_deletion_free_extension(&before, &after) {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import is not a deletion-free extension",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_join_device(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+) -> Result<(), PersonalStateError> {
+    let device =
+        state
+            .device_registry
+            .get(local_device_id)
+            .ok_or(PersonalStateError::InvalidOperation(
+                "approved device is absent from the remote registry",
+            ))?;
+    if device.revoked || device.public_identity.is_none() || local_device_id.as_str() == "legacy" {
+        return Err(PersonalStateError::InvalidOperation(
+            "join import requires an active keyed device",
+        ));
+    }
+    Ok(())
+}
+
+fn winning_baseline(state: &PersonalStateV2) -> LegacyProjection {
+    let mut winner = None::<&OperationEnvelope>;
+    for envelope in &state.operations {
+        if !matches!(envelope.operation, Operation::LegacyBaseline { .. }) {
+            continue;
+        }
+        if winner.is_none_or(|current| {
+            stamp_order(
+                &envelope.stamp,
+                &envelope.operation_id,
+                &current.stamp,
+                &current.operation_id,
+            )
+            .is_gt()
+        }) {
+            winner = Some(envelope);
+        }
+    }
+    winner
+        .and_then(|envelope| match &envelope.operation {
+            Operation::LegacyBaseline { baseline } => Some(baseline.as_ref().clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn join_import_operation_id(
+    dataset_id: &str,
+    local_device_id: &DeviceId,
+    sequence: u64,
+    baseline: &LegacyProjection,
+) -> Result<String, PersonalStateError> {
+    let material = serde_json::to_string(&(dataset_id, local_device_id, sequence, baseline))?;
+    Ok(format!("join-import-{}", stable_hash(&material)))
+}
+
+fn legacy_is_deletion_free_extension(before: &LegacyProjection, after: &LegacyProjection) -> bool {
+    tracks_are_retained(&before.favorites, &after.favorites)
+        && tracks_are_retained(&before.history, &after.history)
+        && tracks_are_retained(&before.radio_favorites, &after.radio_favorites)
+        && tracks_are_retained(&before.radio_history, &after.radio_history)
+        && before.playlists.iter().all(|playlist| {
+            after
+                .playlists
+                .iter()
+                .find(|candidate| candidate.playlist_id == playlist.playlist_id)
+                .is_some_and(|candidate| {
+                    playlist.entries.iter().all(|entry| {
+                        candidate.entries.iter().any(|candidate| {
+                            candidate.entry_id == entry.entry_id
+                                && candidate.track.key == entry.track.key
+                        })
+                    })
+                })
+        })
+        && before.signals.tracks.iter().all(|(key, signal)| {
+            after.signals.tracks.get(key).is_some_and(|candidate| {
+                candidate.play_count >= signal.play_count
+                    && candidate.completed_count >= signal.completed_count
+                    && candidate.skip_count >= signal.skip_count
+                    && (!signal.disliked || candidate.disliked)
+            })
+        })
+        && before
+            .signals
+            .artist_affinity
+            .keys()
+            .all(|artist| after.signals.artist_affinity.contains_key(artist))
+        && before.signals.play_log.iter().all(|event| {
+            after
+                .signals
+                .play_log
+                .iter()
+                .any(|candidate| candidate.event_id == event.event_id)
+        })
+        && before
+            .station
+            .avoid_artist_keys
+            .iter()
+            .all(|artist| after.station.avoid_artist_keys.contains(artist))
+        && before
+            .station
+            .query
+            .as_ref()
+            .is_none_or(|query| after.station.query.as_ref() == Some(query))
+}
+
+fn tracks_are_retained(before: &[PortableTrack], after: &[PortableTrack]) -> bool {
+    before
+        .iter()
+        .all(|track| after.iter().any(|candidate| candidate.key == track.key))
 }
 
 fn rewrite_foreign_projection(

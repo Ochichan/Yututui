@@ -35,6 +35,8 @@ mod locking;
 mod ordered_fallback;
 #[path = "persist/owned_snapshot.rs"]
 mod owned_snapshot;
+#[path = "persist/panic_hook.rs"]
+mod panic_hook;
 #[path = "persist/panic_ownership.rs"]
 mod panic_ownership;
 #[path = "persist/panic_shadow.rs"]
@@ -56,7 +58,8 @@ pub(crate) use locking::with_store_intent_lock;
 use locking::{acquire_intent_lock, acquire_intent_lock_with_budget, acquire_private_lock};
 pub use ordered_fallback::PersistenceFallbackError;
 use owned_snapshot::OwnedSnapshot;
-pub use panic_ownership::install_panic_flush;
+pub use owned_snapshot::Snapshot;
+pub use panic_hook::install_panic_flush;
 use panic_ownership::{
     PanicOperation, PanicOwnedOperation, lock_inflight, remove_inflight_if_order,
     retain_newest_inflight, write_panic_operation,
@@ -86,6 +89,7 @@ use snapshot_state::{
     JournalCompletion, PendingAction, PendingOperation, PendingQueue, ShadowCoveredOperation,
     SnapshotAdmission, publish_pending_batch, publish_pending_operation,
 };
+pub(crate) use startup::load_personal_state_device_id;
 pub use startup::{
     StartupStoreSet, load_startup_store_set, load_verified_startup_state,
     preflight_all_startup_stores,
@@ -138,48 +142,6 @@ pub enum PersistEvent {
 
 type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
 type EventSinkSlot = Arc<Mutex<Option<EventSink>>>;
-
-/// Immutable snapshot of one store, taken at send time so the actor never reaches back into
-/// `App`. The large app-owned stores use shared ownership; app mutations copy on write while a
-/// snapshot is live. Writing delegates to the store's own `save()` — same path resolution, same
-/// atomic temp-write + fsync + rename.
-pub enum Snapshot {
-    PersonalState(Box<crate::personal_state::PersonalStateCommit>),
-    Library(Arc<crate::library::Library>),
-    Signals(Arc<crate::signals::Signals>),
-    Downloads(crate::downloads::DownloadStore),
-    Config(Box<crate::config::Config>),
-    Playlists(Arc<crate::playlists::Playlists>),
-    Station(crate::station::StationStore),
-    RomanizedTitles(crate::romanize::RomanizeCache),
-    Session(crate::session::SessionCache),
-    #[cfg(test)]
-    Test {
-        kind: StoreKind,
-        label: &'static str,
-        storage_path: Option<PathBuf>,
-        writer: Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
-    },
-}
-
-#[cfg(test)]
-impl Snapshot {
-    fn kind(&self) -> StoreKind {
-        match self {
-            Snapshot::PersonalState(_) => StoreKind::PersonalState,
-            Snapshot::Library(_) => StoreKind::Library,
-            Snapshot::Signals(_) => StoreKind::Signals,
-            Snapshot::Downloads(_) => StoreKind::Downloads,
-            Snapshot::Config(_) => StoreKind::Config,
-            Snapshot::Playlists(_) => StoreKind::Playlists,
-            Snapshot::Station(_) => StoreKind::Station,
-            Snapshot::RomanizedTitles(_) => StoreKind::RomanizedTitles,
-            Snapshot::Session(_) => StoreKind::Session,
-            #[cfg(test)]
-            Snapshot::Test { kind, .. } => *kind,
-        }
-    }
-}
 
 /// How long a store may sit dirty before its write lands. The deadline is armed by the
 /// *first* dirty event and not pushed back by later ones, so a continuous stream of
