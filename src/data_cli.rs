@@ -99,10 +99,14 @@ fn run_import(args: &[String]) -> i32 {
             return EXIT_RUNTIME;
         }
     };
-    if let Err(error) = yututui::persist::initialize_persistence_writer(false) {
+    let access = if request.apply {
+        yututui::persist::initialize_persistence_writer(false)
+    } else {
+        yututui::persist::initialize_persistence_reader()
+    };
+    if let Err(error) = access {
         let message = if error.kind() == std::io::ErrorKind::WouldBlock {
-            "another ytt process owns personal data. Close it before previewing or applying an import"
-                .to_owned()
+            "another ytt process owns personal data. Close it before applying an import".to_owned()
         } else {
             format!(
                 "could not secure a coherent personal-state snapshot: {}",
@@ -113,7 +117,12 @@ fn run_import(args: &[String]) -> i32 {
         return EXIT_RUNTIME;
     }
 
-    let (paths, plan) = match yututui::data_import::plan_from_file(&path) {
+    let planned = if request.apply {
+        yututui::data_import::plan_from_file(&path)
+    } else {
+        yututui::data_import::preview_from_file(&path)
+    };
+    let (paths, plan) = match planned {
         Ok(plan) => plan,
         Err(error) => {
             eprintln!(

@@ -15,28 +15,40 @@ pub(super) async fn flush_owner_persistence(
         return Ok(());
     }
 
-    let personal_state = crate::personal_state::reconcile_runtime(
-        &app.personal_state,
-        &app.library,
-        &app.playlists,
-        &app.signals,
-        &app.station,
-    )
-    .and_then(|state| {
-        crate::personal_state::PersonalStateCommit::prepare_for_runtime(
-            state,
-            app.playlists.revision(),
-        )
-    })
-    .map_err(anyhow::Error::msg)
-    .context("could not prepare the final personal-state transaction")?;
+    let personal_paths = crate::personal_state::PersonalStatePaths::current()
+        .map_err(anyhow::Error::msg)
+        .context("could not resolve the final personal-state transaction")?;
+    let sync_paths = crate::sync::SyncPaths::current()
+        .map_err(anyhow::Error::msg)
+        .context("could not resolve the final personal-sync transaction")?;
+    let personal_snapshot = match app.personal_sync_shutdown_persistence(personal_paths, sync_paths)
+    {
+        Ok(Some(writer)) => persist::Snapshot::PersonalSync(writer),
+        Ok(None) => {
+            let personal_state = app
+                .reconcile_personal_state(&app.playlists)
+                .and_then(|state| {
+                    crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                        state,
+                        app.playlists.revision(),
+                    )
+                })
+                .map_err(anyhow::Error::msg)
+                .context("could not prepare the final personal-state transaction")?;
+            persist::Snapshot::PersonalState(Box::new(personal_state))
+        }
+        Err(error) => {
+            return Err(anyhow::Error::msg(error))
+                .context("could not preserve the accepted personal-sync candidate at quit");
+        }
+    };
 
     // Always publish every authoritative store. A store that happened not to receive a
     // runtime mutation is still part of the quit transaction; omitting it makes a flush timeout
     // silently depend on whichever commands happened to run during this session.
     let snapshots = [
         persist::Snapshot::Session(app.session_cache_snapshot()),
-        persist::Snapshot::PersonalState(Box::new(personal_state)),
+        personal_snapshot,
         persist::Snapshot::Downloads(app.download_store.clone()),
         persist::Snapshot::Config(Box::new(app.config.clone())),
         persist::Snapshot::RomanizedTitles(app.romanization.cache.clone()),

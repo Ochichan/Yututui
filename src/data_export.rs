@@ -443,26 +443,35 @@ pub fn export_from_disk_with_schema(
                 detail: error.to_string(),
             }
         })?;
-        let state = match loaded {
-            Some(state) => crate::personal_state::reconcile_runtime(
-                &state,
-                &sources.library,
-                &sources.playlists,
-                &sources.signals,
-                &sources.station,
-            ),
-            None => crate::personal_state::legacy_state(
-                &sources.library,
-                &sources.playlists,
-                &sources.signals,
-                &sources.station,
-            ),
-        }
-        .and_then(crate::personal_state::PersonalStateCommit::prepare)
-        .map_err(|error| ExportError::SourceStore {
-            store: "personal state",
-            detail: error.to_string(),
-        })?;
+        let state =
+            match loaded {
+                Some(state) => {
+                    let local_device = crate::persist::load_personal_state_device_id(&state)
+                        .map_err(|error| ExportError::SourceStore {
+                            store: "personal state",
+                            detail: error.to_string(),
+                        })?;
+                    reconcile_v2_sources(
+                        &state,
+                        local_device.as_ref(),
+                        &sources.library,
+                        &sources.playlists,
+                        &sources.signals,
+                        &sources.station,
+                    )
+                }
+                None => crate::personal_state::legacy_state(
+                    &sources.library,
+                    &sources.playlists,
+                    &sources.signals,
+                    &sources.station,
+                ),
+            }
+            .and_then(crate::personal_state::PersonalStateCommit::prepare)
+            .map_err(|error| ExportError::SourceStore {
+                store: "personal state",
+                detail: error.to_string(),
+            })?;
         return export_personal_state_snapshot(directory, state.state());
     }
     let snapshot = ExportSnapshot::new(
@@ -502,13 +511,15 @@ pub fn export_personal_state_snapshot(
 pub fn export_v2_from_sources(
     directory: &Path,
     personal_state: &crate::personal_state::PersonalStateV2,
+    local_device: Option<&crate::personal_state::DeviceId>,
     library: &Library,
     playlists: &Playlists,
     signals: &Signals,
     station: &StationStore,
 ) -> Result<PathBuf, ExportError> {
-    let state = crate::personal_state::reconcile_runtime(
+    let state = reconcile_v2_sources(
         personal_state,
+        local_device,
         library,
         playlists,
         signals,
@@ -522,6 +533,33 @@ pub fn export_v2_from_sources(
     export_personal_state_snapshot(directory, state.state())
 }
 
+pub(crate) fn reconcile_v2_sources(
+    personal_state: &crate::personal_state::PersonalStateV2,
+    local_device: Option<&crate::personal_state::DeviceId>,
+    library: &Library,
+    playlists: &Playlists,
+    signals: &Signals,
+    station: &StationStore,
+) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError> {
+    match local_device {
+        Some(device_id) => crate::personal_state::reconcile_runtime_as(
+            personal_state,
+            device_id,
+            library,
+            playlists,
+            signals,
+            station,
+        ),
+        None => crate::personal_state::reconcile_runtime(
+            personal_state,
+            library,
+            playlists,
+            signals,
+            station,
+        ),
+    }
+}
+
 fn export_serializable(
     directory: &Path,
     snapshot: &impl Serialize,
@@ -531,12 +569,7 @@ fn export_serializable(
     let destination = validate_destination(directory)?;
     let suffix = random_suffix()?;
     let final_path = destination.join(format!("{file_prefix}-{}-{suffix}.json", created_at_unix));
-    let (temp_path, file) = create_private_temp(&destination)?;
-
-    let write_result = (|| {
-        let opened_temp_metadata = file.metadata()?;
-        revalidate_destination_security(&destination, &opened_temp_metadata)?;
-        revalidate_temp_file(&temp_path, &opened_temp_metadata)?;
+    publish_private_file(&destination, &final_path, |file| {
         let mut limited = LimitedWriter::new(file, EXPORT_MAX_BYTES);
         if let Err(error) = serde_json::to_writer_pretty(&mut limited, snapshot) {
             return if limited.exceeded {
@@ -557,31 +590,70 @@ fn export_serializable(
             };
         }
         limited.flush()?;
-        let file = limited.into_inner();
+        Ok(limited.into_inner())
+    })
+}
+
+/// Publish a bounded owner-only file into an existing user-selected directory without changing
+/// that directory's permissions or replacing a racing destination.
+pub(crate) fn write_private_export_noreplace(
+    path: &Path,
+    bytes: &[u8],
+    max_bytes: u64,
+) -> Result<PathBuf, ExportError> {
+    if bytes.len() as u64 > max_bytes {
+        return Err(ExportError::TooLarge { max_bytes });
+    }
+    let parent = path.parent().ok_or_else(|| {
+        ExportError::InvalidDestination("the export path has no parent directory".to_owned())
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        ExportError::InvalidDestination("the export path has no file name".to_owned())
+    })?;
+    let destination = validate_destination(parent)?;
+    let final_path = destination.join(name);
+    publish_private_file(&destination, &final_path, |mut file| {
+        file.write_all(bytes)?;
+        file.flush()?;
+        Ok(file)
+    })
+}
+
+fn publish_private_file(
+    destination: &Path,
+    final_path: &Path,
+    write: impl FnOnce(File) -> Result<File, ExportError>,
+) -> Result<PathBuf, ExportError> {
+    let (temp_path, file) = create_private_temp(destination)?;
+    let write_result = (|| {
+        let opened_temp_metadata = file.metadata()?;
+        revalidate_destination_security(destination, &opened_temp_metadata)?;
+        revalidate_temp_file(&temp_path, &opened_temp_metadata)?;
+        let file = write(file)?;
         file.sync_all()?;
         // Establish the complete private temp name durably before publishing another link/name.
         // If the later post-publish directory sync fails, that durable temp entry is the recovery
         // anchor and must not be removed.
-        publish::sync_directory(&destination)?;
+        publish::sync_directory(destination)?;
         let temp_metadata = file.metadata()?;
         #[cfg(windows)]
         let temp_identity = windows_private::file_identity(&file)?;
         drop(file);
 
-        revalidate_destination(&destination)?;
-        revalidate_destination_security(&destination, &temp_metadata)?;
+        revalidate_destination(destination)?;
+        revalidate_destination_security(destination, &temp_metadata)?;
         revalidate_temp_file(&temp_path, &temp_metadata)?;
         #[cfg(windows)]
         windows_private::revalidate_path_identity(&temp_path, temp_identity)?;
         #[cfg(windows)]
         let _destination_chain_guard =
-            windows_private::verify_private_destination_chain(&destination)
+            windows_private::verify_private_destination_chain(destination)
                 .map_err(windows_destination_error)?;
-        let outcome = publish::no_replace(&temp_path, &final_path)?;
+        let outcome = publish::no_replace(&temp_path, final_path)?;
         Ok(publish::finish(
-            &destination,
+            destination,
             &temp_path,
-            &final_path,
+            final_path,
             outcome,
         ))
     })();

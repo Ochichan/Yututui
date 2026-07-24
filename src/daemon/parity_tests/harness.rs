@@ -81,7 +81,9 @@ pub(super) fn command_parity_class(command: &RemoteCommand) -> CommandParityClas
             | RemoteSettingChange::AiEnabled { .. } => SharedStableEpoch,
             RemoteSettingChange::RadioMode { .. } => OwnerSpecific,
         },
-        RemoteCommand::ExportPersonalData { .. } => BothOwnerLoopIntercepted,
+        RemoteCommand::ExportPersonalData { .. }
+        | RemoteCommand::SyncNow
+        | RemoteCommand::SyncRevokeDevice { .. } => BothOwnerLoopIntercepted,
         RemoteCommand::Quit => OwnerSpecific,
         RemoteCommand::Play { .. }
         | RemoteCommand::Enqueue { .. }

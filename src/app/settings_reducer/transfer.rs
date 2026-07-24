@@ -134,7 +134,7 @@ impl App {
                     TargetFlushOutcome::CommittedExact => {
                         self.playlists = std::sync::Arc::new(candidate);
                         if let Some(personal_state) = personal_state {
-                            self.personal_state = personal_state;
+                            self.personal_state.ledger = personal_state;
                         }
                         self.reconcile_playlists_reload();
                         self.dirty = true;

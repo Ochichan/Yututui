@@ -7,22 +7,20 @@ use crate::personal_state::PersonalStateV2;
 use crate::signals::Signals;
 use crate::station::StationStore;
 
+type PersonalExportSources = (
+    PersonalStateV2,
+    Option<crate::personal_state::DeviceId>,
+    Config,
+    Library,
+    Signals,
+    StationStore,
+    usize,
+);
+
 impl DaemonEngine {
     /// Fold mutable playback preferences into the config, validate every dynamic allocation, then
     /// clone. Playlists are immutable to the daemon and are loaded directly by the worker.
-    pub(crate) fn personal_export_sources(
-        &self,
-    ) -> Result<
-        (
-            PersonalStateV2,
-            Config,
-            Library,
-            Signals,
-            StationStore,
-            usize,
-        ),
-        String,
-    > {
+    pub(crate) fn personal_export_sources(&self) -> Result<PersonalExportSources, String> {
         let mut config = self.config.clone();
         config.volume = self.playback.volume;
         config.speed = Some(self.playback.speed);
@@ -44,6 +42,7 @@ impl DaemonEngine {
         })?;
         Ok((
             self.personal_state.clone(),
+            self.personal_state_device_id.clone(),
             config,
             self.library.clone(),
             self.signals.clone(),

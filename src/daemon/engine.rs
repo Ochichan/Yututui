@@ -37,6 +37,7 @@ mod keymap_theme;
 mod media_session;
 mod persistence_gate;
 mod personal_export;
+pub(super) mod personal_sync;
 mod remote_dispatch;
 mod streaming;
 mod transport;
@@ -142,28 +143,22 @@ pub struct DaemonEngine {
     signals: Signals,
     station: StationStore,
     personal_state: crate::personal_state::PersonalStateV2,
+    personal_state_device_id: Option<crate::personal_state::DeviceId>,
+    personal_sync_in_progress: bool,
     #[cfg(test)]
     personal_state_paths: crate::personal_state::PersonalStatePaths,
     loaded_video_id: Option<String>,
-    /// One explicit lifecycle owns both the automatic-restart gate and any current-track replay
-    /// payload, so contradictory armed/pending combinations cannot be represented.
+    /// One lifecycle owns automatic-restart gating and any current-track replay payload.
     transport_recovery: TransportRecoveryState,
-    /// Monotonic identity for scheduled transport retries. Stale retry events must never
-    /// restart a newer player lifetime.
     transport_recovery_generation: u64,
-    /// Shared one-shot arbiter for same-item stale-source replacement. Its logical generation
-    /// advances only on ordinary loads; a recovery replacement advances the file generation
-    /// without rearming the item latch.
     source_recovery: crate::player::recovery::RecoveryPlanner,
     source_logical_generation: u64,
     source_file_generation: u64,
-    /// Deterministic player starts for transport-recovery tests. Production always takes
-    /// the real `player::spawn` path.
+    /// Test-only deterministic player starts; production always calls `player::spawn`.
     #[cfg(test)]
     test_player_starts: VecDeque<PlayerRuntime>,
     streaming: bool,
-    /// Compatibility projection for status/tests. The owner correlation record below is the
-    /// source of truth; this bit is updated only through the streaming request helpers.
+    /// Compatibility projection; only the streaming request helpers update this bit.
     streaming_pending: bool,
     streaming_request_seq: u64,
     pending_streaming_request: Option<PendingStreamingRequest>,
@@ -260,6 +255,7 @@ impl DaemonEngine {
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
         let crate::persist::StartupStoreSet {
             personal_state,
+            personal_state_device_id,
             library,
             playlists,
             session_cache,
@@ -282,6 +278,7 @@ impl DaemonEngine {
         }
         let mut engine = Self::with_state(state, Arc::new(emit));
         engine.personal_state = personal_state;
+        engine.personal_state_device_id = personal_state_device_id;
 
         // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
         // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
@@ -354,6 +351,8 @@ impl DaemonEngine {
             signals,
             station,
             personal_state,
+            personal_state_device_id: None,
+            personal_sync_in_progress: false,
             #[cfg(test)]
             personal_state_paths: tests::personal_state_paths(),
             loaded_video_id: None,
@@ -900,6 +899,9 @@ impl DaemonEngine {
                         mime: None,
                     })
             }),
+            personal_sync: Some(crate::sync::service::read_current_status(
+                self.personal_sync_in_progress,
+            )),
         }
     }
 

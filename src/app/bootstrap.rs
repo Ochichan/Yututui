@@ -30,7 +30,10 @@ impl App {
             overlays: Overlays::default(),
             transfer_running: false,
             personal_export: PersonalDataExportState::default(),
-            personal_state,
+            personal_state: PersonalStateRuntime {
+                ledger: personal_state,
+                ..PersonalStateRuntime::default()
+            },
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,

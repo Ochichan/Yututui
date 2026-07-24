@@ -22,6 +22,8 @@ fn command_requires_v8(command: &RemoteCommand) -> bool {
         RemoteCommand::QueuePlayIfRevision { .. }
             | RemoteCommand::QueueRemoveIfRevision { .. }
             | RemoteCommand::ExportPersonalData { .. }
+            | RemoteCommand::SyncNow
+            | RemoteCommand::SyncRevokeDevice { .. }
     )
 }
 

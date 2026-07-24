@@ -288,6 +288,11 @@ pub struct StatusSnapshot {
     /// the freeze goldens) stay byte-identical when it is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artwork: Option<ArtworkRef>,
+    /// Privacy-safe encrypted personal-state sync health. Older owners omit this additive v8
+    /// field; endpoints, filesystem paths, credentials, and raw upstream errors are never
+    /// included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_sync: Option<crate::sync::service::SyncStatusReport>,
 }
 
 fn is_zero_u64(value: &u64) -> bool {
@@ -756,6 +761,7 @@ mod tests {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -784,6 +790,7 @@ mod tests {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

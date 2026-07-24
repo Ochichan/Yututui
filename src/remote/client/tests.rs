@@ -272,6 +272,7 @@ async fn send_to_instance_round_trips_status_response() {
         track_id: None,
         position_epoch: 0,
         artwork: None,
+        personal_sync: None,
     };
     let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
     let server = tokio::spawn(serve_one_response(listener, response, PROTOCOL_VERSION));
@@ -682,7 +683,19 @@ fn capability_gate_distinguishes_old_and_capable_instances() {
 
     old.capabilities
         .push(super::super::PERSONAL_EXPORT_CAPABILITY.to_string());
-    assert!(require_capability(old, super::super::PERSONAL_EXPORT_CAPABILITY).is_ok());
+    assert!(require_capability(old.clone(), super::super::PERSONAL_EXPORT_CAPABILITY).is_ok());
+    let sync_error =
+        require_capability(old.clone(), super::super::WEB_DAV_SYNC_CAPABILITY).unwrap_err();
+    assert_eq!(
+        sync_error,
+        MissingCapability {
+            capability: super::super::WEB_DAV_SYNC_CAPABILITY.to_string()
+        }
+    );
+
+    old.capabilities
+        .push(super::super::WEB_DAV_SYNC_CAPABILITY.to_string());
+    assert!(require_capability(old, super::super::WEB_DAV_SYNC_CAPABILITY).is_ok());
 }
 
 #[tokio::test]
@@ -739,6 +752,7 @@ fn snapshot(queue: Vec<crate::remote::proto::QueueItemSnapshot>) -> StatusSnapsh
         track_id: None,
         position_epoch: 0,
         artwork: None,
+        personal_sync: None,
     }
 }
 

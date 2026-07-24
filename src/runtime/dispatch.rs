@@ -159,11 +159,69 @@ impl RuntimeHandles {
             Cmd::Persist(PersistCmd::TransferPlaylistCommit(commit)) => {
                 self.dispatch_transfer_playlist_commit(app, commit);
             }
+            Cmd::Persist(PersistCmd::PersonalSyncCommit(commit)) => {
+                self.dispatch_personal_sync_commit(app, commit);
+            }
             Cmd::Persist(p) => {
                 let result = persist_delivery::admit(&self.persist, app, p);
                 report_actor_delivery(app, "persistence", result);
             }
             Cmd::Data(cmd) => match cmd {
+                DataCmd::PersonalSync {
+                    action,
+                    attempt,
+                    personal_state,
+                    reply,
+                } => {
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    let rejected_action = action.clone();
+                    let rejected_reply = reply.clone();
+                    let completed_action = action.clone();
+                    let spawned = crate::sync::spawn_detached_prepare(
+                        move || {
+                            crate::sync::SyncPaths::current()
+                                .map_err(crate::sync::service::SyncServiceError::from)
+                                .and_then(|paths| {
+                                    let revoke_target = match &action {
+                                        crate::app::PersonalSyncAction::SyncNow => None,
+                                        crate::app::PersonalSyncAction::Revoke(device_id) => {
+                                            Some(device_id)
+                                        }
+                                    };
+                                    crate::sync::service::prepare_owner_sync(
+                                        &personal_state,
+                                        revoke_target,
+                                        &paths,
+                                    )
+                                })
+                        },
+                        move |result| {
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
+                                crate::app::DataMsg::PersonalSyncPrepared(Box::new(
+                                    crate::app::PersonalSyncPrepared {
+                                        action: completed_action,
+                                        attempt,
+                                        result,
+                                        reply,
+                                    },
+                                )),
+                            )));
+                        },
+                    );
+                    if !spawned {
+                        self.reduce_owner_msg(
+                            app,
+                            Msg::Data(crate::app::DataMsg::PersonalSyncPrepared(Box::new(
+                                crate::app::PersonalSyncPrepared {
+                                    action: rejected_action,
+                                    attempt,
+                                    result: Err(crate::sync::service::SyncServiceError::Storage),
+                                    reply: rejected_reply,
+                                },
+                            ))),
+                        );
+                    }
+                }
                 DataCmd::PersonalDataExport(PersonalDataExportCmd::Export {
                     directory,
                     schema,
@@ -187,6 +245,7 @@ impl RuntimeHandles {
                                 crate::data_export::export_v2_from_sources(
                                     &directory,
                                     &sources.personal_state,
+                                    sources.personal_state_device_id.as_ref(),
                                     &sources.library,
                                     &sources.playlists,
                                     &sources.signals,

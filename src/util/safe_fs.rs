@@ -871,7 +871,8 @@ pub fn write_private_atomic_json<T: Serialize>(path: &Path, value: &T) -> io::Re
 #[cfg(unix)]
 fn open_no_symlink(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.read(true).custom_flags(libc::O_NOFOLLOW);
+    opts.read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     opts.open(path)
 }
 

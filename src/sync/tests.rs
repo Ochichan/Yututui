@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::personal_state::{
     CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
-    PersonalStateV2, VersionVector, append_operation_as,
+    PersonalStateV2, PortableTrack, PortableTrackKey, Rating, VersionVector, append_operation_as,
 };
 
 use super::*;
@@ -111,6 +111,29 @@ fn pairing_is_single_use_and_delivers_an_anchored_checkpoint() {
     let joining = DeviceSecretMaterial::generate_for("device-two").unwrap();
     let (request, nonce) =
         PairingInvite::create_request(&join_code, "Second device", &joining, 1_001).unwrap();
+    let resumed_request = PairingInvite::resume_request(
+        &join_code,
+        EncryptedObject::from_bytes(request.encrypted.as_bytes().to_vec()).unwrap(),
+        &nonce,
+        &joining,
+        1_002,
+    )
+    .unwrap();
+    assert_eq!(
+        resumed_request.encrypted.as_bytes(),
+        request.encrypted.as_bytes(),
+        "restart reuses the exact immutable request ciphertext"
+    );
+    assert!(
+        PairingInvite::resume_request(
+            &join_code,
+            EncryptedObject::from_bytes(request.encrypted.as_bytes().to_vec()).unwrap(),
+            &"f".repeat(32),
+            &joining,
+            1_002,
+        )
+        .is_err()
+    );
     let reviewed = invite.review_request(&request, 1_002).unwrap();
 
     let mut membership = fixture.membership.clone();
@@ -157,6 +180,21 @@ fn pairing_is_single_use_and_delivers_an_anchored_checkpoint() {
             1_003,
         )
         .unwrap();
+    assert!(
+        invite
+            .approve(
+                &request,
+                membership.clone(),
+                &encrypted,
+                &fixture.device,
+                1_003
+            )
+            .is_ok(),
+        "approval construction stays retryable until publication is finalized"
+    );
+    invite
+        .finalize_approval(&request, &approval, 1_003)
+        .unwrap();
     assert_eq!(
         invite
             .approve(&request, membership, &encrypted, &fixture.device, 1_003)
@@ -174,17 +212,19 @@ fn pairing_is_single_use_and_delivers_an_anchored_checkpoint() {
     .unwrap();
     assert_eq!(opened.payload.state.device_registry.len(), 2);
 
+    let resumed_after_expiry = ApprovedPairing::open(
+        &join_code,
+        &approval,
+        &nonce,
+        &joining,
+        &encrypted,
+        invite.expires_at_unix() + 1,
+    )
+    .unwrap();
     assert_eq!(
-        ApprovedPairing::open(
-            &join_code,
-            &approval,
-            &nonce,
-            &joining,
-            &encrypted,
-            invite.expires_at_unix() + 1,
-        )
-        .err(),
-        Some(VaultError::PairingExpired)
+        resumed_after_expiry.signed_checkpoint().hash().unwrap(),
+        approved.signed_checkpoint().hash().unwrap(),
+        "an already committed exact handoff remains resumable after the code expires"
     );
 
     let wrong_code = PairingCode::generate().unwrap();
@@ -222,6 +262,10 @@ fn pairing_is_single_use_and_delivers_an_anchored_checkpoint() {
     private_store.save(&mut private).unwrap();
     let mut resumed = private_store.load().unwrap();
     assert_eq!(resumed.enrollment(), EnrollmentState::PendingLedgerCommit);
+    assert!(
+        resumed.pending_pairing().unwrap().is_some(),
+        "approved join retains enough context to resume after restart"
+    );
     resumed
         .mark_active(approved.signed_checkpoint(), &opened.payload.state)
         .unwrap();
@@ -353,9 +397,55 @@ fn recovery_kit_replaces_all_devices_and_rotates_recipients() {
     )
     .unwrap();
     let second_encrypted = second.encrypt(&fixture.membership_anchor).unwrap();
+    let canonical_manifest = manual::SignedVaultManifest::create(
+        &fixture.state.dataset_id,
+        2,
+        fixture.membership.clone(),
+        &fixture.membership_anchor,
+        fixture.device_record.device_id.clone(),
+        &fixture.device,
+        &second,
+    )
+    .unwrap();
+    let encrypted_manifest = canonical_manifest
+        .encrypt(&fixture.membership_anchor)
+        .unwrap();
+    let orphan_state = append_operation_as(
+        &fixture.state,
+        &fixture.device_record.device_id,
+        Operation::SetRating {
+            track: PortableTrack {
+                key: PortableTrackKey::Catalog {
+                    provider: "youtube".to_owned(),
+                    exact_catalog_id: "orphan-checkpoint".to_owned(),
+                },
+                title: "Lost manifest race".to_owned(),
+                artist: "Concurrent writer".to_owned(),
+                album: None,
+                duration_secs: Some(180),
+                isrc: None,
+            },
+            rating: Rating::Liked,
+        },
+        1_003,
+    )
+    .unwrap();
+    let orphan = SignedCheckpoint::create(
+        fixture.membership.clone(),
+        &fixture.membership_anchor,
+        fixture.device_record.device_id.clone(),
+        fixture.device.signing_key(),
+        &first_anchor,
+        orphan_state,
+    )
+    .unwrap();
+    assert_ne!(orphan.hash().unwrap(), second.hash().unwrap());
+    let orphan_encrypted = orphan.encrypt(&fixture.membership_anchor).unwrap();
     let mut recovered = kit
         .recover(
+            &encrypted_manifest,
             &[
+                orphan_encrypted,
                 second_encrypted.clone(),
                 fixture.encrypted_checkpoint.clone(),
             ],
@@ -363,6 +453,14 @@ fn recovery_kit_replaces_all_devices_and_rotates_recipients() {
             "Recovered device",
         )
         .unwrap();
+    assert!(
+        !recovered
+            .state
+            .operations
+            .iter()
+            .any(|operation| operation.operation_id == "device-one:2"),
+        "a valid same-sequence checkpoint orphaned by a lost manifest CAS is not canonical"
+    );
     assert_eq!(
         recovered.checkpoint.payload.checkpoint_sequence,
         second.payload.checkpoint_sequence + 1
@@ -370,8 +468,21 @@ fn recovery_kit_replaces_all_devices_and_rotates_recipients() {
     let second_anchor =
         CheckpointAnchor::from_trusted(second.payload.checkpoint_sequence, second.hash().unwrap())
             .unwrap();
+    let stale_manifest = manual::SignedVaultManifest::create(
+        &fixture.state.dataset_id,
+        1,
+        fixture.membership.clone(),
+        &fixture.membership_anchor,
+        fixture.device_record.device_id.clone(),
+        &fixture.device,
+        &fixture.checkpoint,
+    )
+    .unwrap()
+    .encrypt(&fixture.membership_anchor)
+    .unwrap();
     assert_eq!(
         kit.recover(
+            &stale_manifest,
             std::slice::from_ref(&fixture.encrypted_checkpoint),
             Some(&second_anchor),
             "Stale recovery",
@@ -565,6 +676,42 @@ fn file_transport_is_conditional_idempotent_and_ciphertext_only() {
         .is_err()
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_export_preserves_user_directory_permissions_and_never_replaces() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = test_directory("recovery-export");
+    let destination = root.join("Downloads");
+    std::fs::create_dir(&destination).unwrap();
+    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = destination.join("recovery.json");
+    let kit = RecoveryKit::generate("dataset-recovery-export", None).unwrap();
+
+    kit.export_confirmed(&path).unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&destination)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let first = std::fs::read(&path).unwrap();
+    assert_eq!(
+        kit.export_confirmed(&path).unwrap_err(),
+        VaultError::StorageFailed
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), first);
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -36,7 +36,7 @@ fn save_failure_injected(_kind: StoreKind) -> bool {
     false
 }
 
-fn save_store(kind: StoreKind, save: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
+fn save_store<T>(kind: StoreKind, save: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
     if save_failure_injected(kind) {
         return Err(std::io::Error::other(format!(
             "injected {} save failure",
@@ -47,7 +47,31 @@ fn save_store(kind: StoreKind, save: impl FnOnce() -> std::io::Result<()>) -> st
 }
 
 impl DaemonEngine {
-    fn personal_state_paths(
+    fn reconcile_personal_state(
+        &self,
+        playlists: &crate::playlists::Playlists,
+    ) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError>
+    {
+        match &self.personal_state_device_id {
+            Some(device_id) => crate::personal_state::reconcile_runtime_as(
+                &self.personal_state,
+                device_id,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+            None => crate::personal_state::reconcile_runtime(
+                &self.personal_state,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+        }
+    }
+
+    pub(super) fn personal_state_paths(
         &self,
     ) -> Result<crate::personal_state::PersonalStatePaths, crate::personal_state::PersonalStateError>
     {
@@ -137,48 +161,79 @@ impl DaemonEngine {
         if self.should_skip_remote_save() {
             return;
         }
-        let commit = crate::personal_state::reconcile_runtime(
-            &self.personal_state,
-            &self.library,
-            &self.playlists,
-            &self.signals,
-            &self.station,
-        )
-        .and_then(|state| {
-            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
-                state,
-                self.playlists.revision(),
-            )
-        });
+        if let Err(error) = self.commit_live_personal_state(failure_kind) {
+            self.record_persistence_failure(context, error);
+        }
+    }
+
+    /// Make every mutation currently visible in the daemon projections durable before a
+    /// detached personal-sync worker observes it.
+    ///
+    /// The exact enrolled device authors any synthesized operation. The live ledger and
+    /// projections are swapped only after the multi-store transaction is confirmed, so a
+    /// transient write failure leaves the user's in-memory mutation available for a later retry.
+    pub(super) fn persist_live_personal_state_for_sync(
+        &mut self,
+    ) -> Result<crate::personal_state::PersonalStateV2, crate::sync::service::SyncServiceError>
+    {
+        if let Err(error) = current_recovery_status() {
+            self.record_persistence_failure(
+                "daemon personal sync preflight",
+                std::io::Error::other(error.to_string()),
+            );
+            return Err(crate::sync::service::SyncServiceError::Storage);
+        }
+        if self.should_skip_remote_save() {
+            return Err(crate::sync::service::SyncServiceError::Storage);
+        }
+        match self.commit_live_personal_state(StoreKind::PersonalState) {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                self.record_persistence_failure("daemon personal sync source", error);
+                Err(crate::sync::service::SyncServiceError::Storage)
+            }
+        }
+    }
+
+    fn commit_live_personal_state(
+        &mut self,
+        failure_kind: StoreKind,
+    ) -> Result<crate::personal_state::PersonalStateV2, std::io::Error> {
+        let commit = self
+            .reconcile_personal_state(&self.playlists)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    self.playlists.revision(),
+                )
+            });
         let commit = match commit {
             Ok(commit) => commit,
-            Err(error) => {
-                self.record_persistence_failure(context, std::io::Error::other(error.to_string()));
-                return;
-            }
+            Err(error) => return Err(std::io::Error::other(error.to_string())),
         };
         let paths = match self.personal_state_paths() {
             Ok(paths) => paths,
-            Err(error) => {
-                self.record_persistence_failure(context, std::io::Error::other(error.to_string()));
-                return;
-            }
+            Err(error) => return Err(std::io::Error::other(error.to_string())),
         };
-        if let Err(error) = save_store(failure_kind, || {
-            commit
-                .commit(&paths)
-                .map(|_| ())
-                .map_err(std::io::Error::other)
-        }) {
-            self.record_persistence_failure(context, error);
-            return;
+        let installed = save_store(failure_kind, || {
+            commit.commit(&paths).map_err(std::io::Error::other)
+        })?;
+        if installed != *commit.state() {
+            return Err(std::io::Error::other(
+                "personal state changed while the daemon transaction was installing",
+            ));
         }
-        self.personal_state = commit.state().clone();
-        let (library, playlists, signals, station) = commit.runtime_stores();
+        let (library, mut playlists, signals, station) = commit.runtime_stores();
+        let playlists_changed = playlists.inherit_revision_from(&self.playlists);
+        self.personal_state = installed.clone();
         self.library = library;
         self.playlists = playlists;
         self.signals = signals;
         self.station = station;
+        if playlists_changed {
+            self.bump_playlists_rev();
+        }
+        Ok(installed)
     }
 
     /// Persist an owner candidate without touching the live daemon store. The caller may swap it
@@ -201,24 +256,19 @@ impl DaemonEngine {
                 ),
             );
         }
-        let commit = crate::personal_state::reconcile_runtime(
-            &self.personal_state,
-            &self.library,
-            candidate,
-            &self.signals,
-            &self.station,
-        )
-        .and_then(|state| {
-            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
-                state,
-                candidate.revision(),
-            )
-        })
-        .map_err(|error| {
-            crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
-                "failed to prepare daemon transfer playlists: {error}"
-            ))
-        })?;
+        let commit = self
+            .reconcile_personal_state(candidate)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    candidate.revision(),
+                )
+            })
+            .map_err(|error| {
+                crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
+                    "failed to prepare daemon transfer playlists: {error}"
+                ))
+            })?;
         let paths = self.personal_state_paths().map_err(|error| {
             crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(format!(
                 "failed to resolve personal-state storage: {error}"

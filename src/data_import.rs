@@ -45,6 +45,19 @@ impl From<PersonalStateError> for ImportError {
 }
 
 pub fn plan_from_file(path: &Path) -> Result<(PersonalStatePaths, ImportPlan), ImportError> {
+    plan_from_file_with_recovery(path, true)
+}
+
+/// Preview an import from the currently installed coherent frontier without acquiring a writer
+/// lease or repairing transaction artifacts.
+pub fn preview_from_file(path: &Path) -> Result<(PersonalStatePaths, ImportPlan), ImportError> {
+    plan_from_file_with_recovery(path, false)
+}
+
+fn plan_from_file_with_recovery(
+    path: &Path,
+    recover_pending: bool,
+) -> Result<(PersonalStatePaths, ImportPlan), ImportError> {
     let bytes =
         crate::util::safe_fs::read_no_symlink_limited(path, crate::data_export::EXPORT_MAX_BYTES)
             .map_err(|error| {
@@ -59,7 +72,7 @@ pub fn plan_from_file(path: &Path) -> Result<(PersonalStatePaths, ImportPlan), I
     }
     let imported = crate::data_export::decode_personal_state_export(&bytes)?;
     let paths = PersonalStatePaths::current()?;
-    let current = load_current_state(&paths)?;
+    let current = load_current_state(&paths, recover_pending)?;
     let plan = plan_import(&current, &imported)?;
     Ok((paths, plan))
 }
@@ -75,17 +88,39 @@ pub fn apply_plan(
     commit.commit(paths).map_err(ImportError::from)
 }
 
-fn load_current_state(paths: &PersonalStatePaths) -> Result<PersonalStateV2, ImportError> {
+fn load_current_state(
+    paths: &PersonalStatePaths,
+    recover_pending: bool,
+) -> Result<PersonalStateV2, ImportError> {
+    let loaded = if recover_pending {
+        crate::personal_state::load_ledger(paths)
+    } else {
+        crate::personal_state::load_ledger_read_only(paths)
+    }?;
     let sources = crate::data_export::offline::load_sources()
         .map_err(|error| ImportError::LegacySource(error.to_string()))?;
-    match crate::personal_state::load_ledger(paths)? {
-        Some(state) => crate::personal_state::reconcile_runtime(
-            &state,
-            &sources.library,
-            &sources.playlists,
-            &sources.signals,
-            &sources.station,
-        ),
+    if !recover_pending {
+        let verified = crate::personal_state::load_ledger_read_only(paths)?;
+        if verified != loaded {
+            return Err(PersonalStateError::Io(
+                "personal state changed while building the import preview; retry".to_owned(),
+            )
+            .into());
+        }
+    }
+    match loaded {
+        Some(state) => {
+            let local_device = crate::persist::load_personal_state_device_id(&state)
+                .map_err(|error| ImportError::LegacySource(error.to_string()))?;
+            crate::data_export::reconcile_v2_sources(
+                &state,
+                local_device.as_ref(),
+                &sources.library,
+                &sources.playlists,
+                &sources.signals,
+                &sources.station,
+            )
+        }
         None => legacy_state(
             &sources.library,
             &sources.playlists,

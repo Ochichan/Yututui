@@ -129,7 +129,7 @@ pub(super) fn is_forbidden_metadata_char(ch: char) -> bool {
 /// A search result track, trimmed to what the UI needs. Serializable so the local
 /// library (favorites/history) can persist tracks verbatim. `local_path` is set only for
 /// downloaded/local audio files; old persisted JSON omits it and still deserializes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Song {
     pub video_id: String,
     pub title: String,

@@ -10,6 +10,14 @@ impl PendingOperation {
         self.publication().ensure_ordering()?;
         let action = match self.action() {
             PendingAction::Save(snapshot) => {
+                if let OwnedSnapshot::PersonalSync(commit) = &**snapshot {
+                    return Ok(PanicOperation {
+                        order: self.order,
+                        kind: self.kind(),
+                        label: self.label(),
+                        action: PanicAction::PersonalSync(commit.clone()),
+                    });
+                }
                 if let OwnedSnapshot::PersonalState(commit) = &**snapshot {
                     return Ok(PanicOperation {
                         order: self.order,
@@ -61,6 +69,7 @@ impl PendingOperation {
 #[derive(Clone)]
 enum PanicAction {
     PersonalState(Arc<crate::personal_state::PersonalStateCommit>),
+    PersonalSync(crate::sync::service::PersonalSyncPersistence),
     Replace {
         path: PathBuf,
         bytes: Vec<u8>,
@@ -156,28 +165,6 @@ impl PanicOwnedOperation {
     }
 }
 
-/// Wrap the current panic hook so safety-critical inherited work runs before best-effort disk I/O.
-///
-/// The inherited chain kills media and restores the terminal. Panic persistence can take locks or
-/// block in the filesystem, so running it first could otherwise leave the process in raw mode with
-/// media still alive indefinitely.
-pub fn install_panic_flush(pending: PanicPending) {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        previous(info);
-        match pending.shadow.seal_and_snapshot() {
-            Ok(snapshot) => {
-                for operation in snapshot.into_iter().flatten() {
-                    let _ = operation.write();
-                }
-            }
-            Err(PanicShadowSealed) => {
-                // A concurrent or nested hook owns the one-shot persistence frontier.
-            }
-        }
-    }));
-}
-
 pub(super) fn retain_newest_inflight(inflight: &SharedInflight, operation: PanicOperation) -> bool {
     let kind = operation.kind;
     let mut map = lock_inflight(inflight);
@@ -257,6 +244,7 @@ pub(super) fn write_panic_operation(operation: &PanicOperation) -> std::io::Resu
                 .map(|_| ())
                 .map_err(std::io::Error::other)
         }
+        PanicAction::PersonalSync(commit) => commit.write().map_err(std::io::Error::other),
         PanicAction::Replace { path, bytes } => write_panic_replace(
             operation,
             path,

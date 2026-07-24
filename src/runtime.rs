@@ -26,6 +26,7 @@ mod event_policy;
 pub(crate) mod ingress;
 mod local_find;
 mod persist_delivery;
+mod personal_sync_commit;
 pub(crate) mod player_delivery;
 mod read_only;
 mod recorder_recovery;

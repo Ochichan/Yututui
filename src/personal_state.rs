@@ -12,7 +12,8 @@ mod transaction;
 
 pub(crate) use coordinator::reconcile_runtime;
 pub use coordinator::{append_operation_as, reconcile_runtime_as};
-pub use import::{ImportPlan, ImportSummary, plan_import};
+pub(crate) use import::validate_join_import_extension;
+pub use import::{ImportPlan, ImportSummary, plan_import, plan_join_import};
 pub use legacy::{LegacyProjection, legacy_state};
 #[cfg(test)]
 pub(crate) use model::derive_device_registry;
@@ -26,8 +27,8 @@ pub use model::{
 };
 pub(crate) use reducer::runtime_fingerprint;
 pub use reducer::{MergeSummary, PersonalProjection, merge, project};
-pub(crate) use transaction::load_ledger;
 pub use transaction::{PersonalStateCommit, PersonalStatePaths, recover_pending_transactions};
+pub(crate) use transaction::{load_ledger, load_ledger_read_only};
 
 #[cfg(test)]
 mod tests;

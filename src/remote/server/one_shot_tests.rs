@@ -111,7 +111,38 @@ async fn one_shot_run_search_validates_before_requiring_a_session() {
 }
 
 #[tokio::test]
-async fn v7_one_shot_rejects_v8_only_export_before_owner_admission() {
+async fn v7_one_shot_rejects_additive_v8_commands_before_owner_admission() {
+    let emits = Arc::new(AtomicUsize::new(0));
+    let sink_emits = Arc::clone(&emits);
+    let emit: EventSink = Arc::new(move |_| {
+        sink_emits.fetch_add(1, Ordering::Relaxed);
+        true
+    });
+    for command in [
+        RemoteCommand::ExportPersonalData {
+            directory: std::env::temp_dir().to_string_lossy().into_owned(),
+            schema: None,
+        },
+        RemoteCommand::SyncNow,
+        RemoteCommand::SyncRevokeDevice {
+            device_id: "device-a".to_owned(),
+        },
+    ] {
+        let request = RemoteRequest {
+            version: PROTOCOL_VERSION_V7,
+            token: "secret".to_owned(),
+            request_id: None,
+            command,
+        };
+        let response = build_response(request, "secret", &emit, &test_hub()).await;
+
+        assert_eq!(response.reason.as_deref(), Some("bad_version"));
+    }
+    assert_eq!(emits.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn unauthenticated_personal_sync_is_rejected_before_owner_admission() {
     let emits = Arc::new(AtomicUsize::new(0));
     let sink_emits = Arc::clone(&emits);
     let emit: EventSink = Arc::new(move |_| {
@@ -119,18 +150,15 @@ async fn v7_one_shot_rejects_v8_only_export_before_owner_admission() {
         true
     });
     let request = RemoteRequest {
-        version: PROTOCOL_VERSION_V7,
-        token: "secret".to_owned(),
-        request_id: None,
-        command: RemoteCommand::ExportPersonalData {
-            directory: std::env::temp_dir().to_string_lossy().into_owned(),
-            schema: None,
-        },
+        version: PROTOCOL_VERSION,
+        token: "wrong-token".to_owned(),
+        request_id: Some("unauthenticated-sync".to_owned()),
+        command: RemoteCommand::SyncNow,
     };
 
     let response = build_response(request, "secret", &emit, &test_hub()).await;
 
-    assert_eq!(response.reason.as_deref(), Some("bad_version"));
+    assert_eq!(response.reason.as_deref(), Some("bad_token"));
     assert_eq!(emits.load(Ordering::Relaxed), 0);
 }
 
@@ -160,7 +188,7 @@ async fn one_shot_reports_server_busy_when_retained_request_cache_is_saturated()
 }
 
 #[tokio::test]
-async fn one_shot_marks_only_a_retained_same_id_outcome_as_replayed() {
+async fn one_shot_personal_sync_replays_one_retained_same_id_outcome() {
     let path = std::env::temp_dir()
         .join(format!(
             "yututui-remote-replay-proof-test-{}.sock",
@@ -189,8 +217,8 @@ async fn one_shot_marks_only_a_retained_same_id_outcome_as_replayed() {
     let request = RemoteRequest {
         version: PROTOCOL_VERSION,
         token: "secret".to_owned(),
-        request_id: Some("same-mutation".to_owned()),
-        command: RemoteCommand::TogglePause,
+        request_id: Some("same-sync-mutation".to_owned()),
+        command: RemoteCommand::SyncNow,
     };
     let line = serde_json::to_string(&request).unwrap();
     let first: RemoteResponseEnvelope =

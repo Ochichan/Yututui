@@ -94,6 +94,7 @@ fn initialize_interactive_persistence_with_retry(
 }
 
 mod data_cli;
+mod sync_cli;
 
 fn cli_identity() -> (&'static str, &'static str) {
     match option_env!("CARGO_BIN_NAME") {
@@ -151,6 +152,7 @@ fn run() -> Result<()> {
                     "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
                 println!("       {bin} data <cmd>       Export portable personal data");
+                println!("       {bin} sync <cmd>       Encrypted personal-state sync");
                 println!("       {bin} doctor [-v]      Check your environment and exit");
                 println!("       {bin} doctor audio [-v]");
                 println!("       {bin} doctor privacy [--cleanup]");
@@ -207,6 +209,12 @@ fn run() -> Result<()> {
             "data" => {
                 let rest = collect_lossy_cli_args(std::env::args_os().skip(2));
                 std::process::exit(data_cli::run(&rest));
+            }
+            // Always-encrypted WebDAV personal-state synchronization. This one-shot surface
+            // prompts for credentials rather than accepting them in process arguments.
+            "sync" => {
+                let rest = collect_lossy_cli_args(std::env::args_os().skip(2));
+                std::process::exit(sync_cli::run(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its

@@ -55,6 +55,8 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             &StationStore::default(),
         )
         .expect("default personal state"),
+        personal_state_device_id: None,
+        personal_sync_in_progress: false,
         personal_state_paths: personal_state_paths(),
         library: Library::default(),
         playlists: crate::playlists::Playlists::default(),

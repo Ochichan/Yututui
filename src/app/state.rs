@@ -25,6 +25,33 @@ impl App {
     pub fn signals_mut(&mut self) -> &mut Signals {
         Arc::make_mut(&mut self.signals)
     }
+
+    /// Reconcile owner-visible runtime stores under the explicitly enrolled sync device.
+    ///
+    /// Unsynced legacy ledgers retain the historical single-device inference path.
+    pub(crate) fn reconcile_personal_state(
+        &self,
+        playlists: &Playlists,
+    ) -> Result<crate::personal_state::PersonalStateV2, crate::personal_state::PersonalStateError>
+    {
+        match &self.personal_state.device_id {
+            Some(device_id) => crate::personal_state::reconcile_runtime_as(
+                &self.personal_state.ledger,
+                device_id,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+            None => crate::personal_state::reconcile_runtime(
+                &self.personal_state.ledger,
+                &self.library,
+                playlists,
+                &self.signals,
+                &self.station,
+            ),
+        }
+    }
 }
 
 /// Live audio-processing settings: the active EQ preset and its per-band gains, loudness

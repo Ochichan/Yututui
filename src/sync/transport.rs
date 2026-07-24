@@ -13,6 +13,8 @@ const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_OBJECT_SEGMENTS: usize = 16;
 const MAX_OBJECT_SEGMENT_BYTES: usize = 128;
 const MAX_LIST_RESOURCES: usize = 10_000;
+const MAX_LIST_REQUESTS: usize = 1_024;
+const MAX_LIST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 const CIPHERTEXT_OVERHEAD_LIMIT: usize = 2 * 1024 * 1024;
 
@@ -67,12 +69,130 @@ pub enum ObjectWriteResult {
     AlreadyPresent(ObjectMetadata),
 }
 
+/// One whole-operation deadline shared by all transport calls and retry attempts.
+#[derive(Debug, Clone, Copy)]
+pub struct VaultDeadline {
+    expires_at: Instant,
+}
+
+impl VaultDeadline {
+    pub fn from_now(duration: Duration) -> Self {
+        Self {
+            expires_at: Instant::now()
+                .checked_add(duration)
+                .unwrap_or_else(Instant::now),
+        }
+    }
+
+    pub fn expired() -> Self {
+        Self {
+            expires_at: Instant::now(),
+        }
+    }
+
+    pub fn check(self) -> Result<(), VaultError> {
+        self.remaining().map(|_| ())
+    }
+
+    pub fn remaining(self) -> Result<Duration, VaultError> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(VaultError::RemoteUnavailable)
+    }
+}
+
+/// Maximum work one recursive listing may consume from its caller's global budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListLimits {
+    pub requests: usize,
+    pub response_bytes: usize,
+    pub scanned_collections: usize,
+    pub scanned_resources: usize,
+    pub returned_objects: usize,
+}
+
+impl ListLimits {
+    pub fn for_returned_objects(returned_objects: usize) -> Self {
+        Self {
+            requests: MAX_LIST_REQUESTS,
+            response_bytes: MAX_LIST_RESPONSE_BYTES,
+            scanned_collections: MAX_LIST_REQUESTS,
+            scanned_resources: MAX_LIST_RESOURCES,
+            returned_objects,
+        }
+    }
+
+    pub(crate) fn validate(self) -> Result<(), VaultError> {
+        if self.requests == 0
+            || self.response_bytes == 0
+            || self.scanned_collections == 0
+            || self.scanned_resources == 0
+            || self.returned_objects == 0
+        {
+            return Err(VaultError::ResourceLimitExceeded);
+        }
+        Ok(())
+    }
+}
+
+/// Measured recursive-list work, including empty and collection-only responses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListCost {
+    pub requests: usize,
+    pub response_bytes: usize,
+    pub scanned_collections: usize,
+    pub scanned_resources: usize,
+    pub returned_objects: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListOutcome {
+    pub objects: Vec<ObjectMetadata>,
+    pub cost: ListCost,
+}
+
+impl ListOutcome {
+    pub(crate) fn validate(&self, limits: ListLimits) -> Result<(), VaultError> {
+        limits.validate()?;
+        if self.cost.requests == 0
+            || self.cost.scanned_collections == 0
+            || self.cost.returned_objects != self.objects.len()
+            || self.cost.scanned_resources < self.cost.returned_objects
+            || self.cost.requests > limits.requests
+            || self.cost.response_bytes > limits.response_bytes
+            || self.cost.scanned_collections > limits.scanned_collections
+            || self.cost.scanned_resources > limits.scanned_resources
+            || self.cost.returned_objects > limits.returned_objects
+        {
+            return Err(VaultError::ResourceLimitExceeded);
+        }
+        Ok(())
+    }
+}
+
 pub trait VaultTransport {
     fn get(
         &self,
         key: &ObjectKey,
         max_bytes: usize,
     ) -> Result<Option<(EncryptedObject, ObjectMetadata)>, VaultError>;
+
+    /// Fetch one object under a caller-owned whole-operation deadline.
+    ///
+    /// Flat/local transports can use this compatibility implementation. Network transports should
+    /// override it so the same deadline also limits connection, redirect, and response-body work.
+    fn get_with_deadline(
+        &self,
+        key: &ObjectKey,
+        max_bytes: usize,
+        deadline: VaultDeadline,
+    ) -> Result<Option<(EncryptedObject, ObjectMetadata)>, VaultError> {
+        deadline.check()?;
+        let result = self.get(key, max_bytes);
+        deadline.check()?;
+        result
+    }
 
     fn put(
         &self,
@@ -81,11 +201,57 @@ pub trait VaultTransport {
         condition: ObjectCondition,
     ) -> Result<ObjectWriteResult, VaultError>;
 
+    /// Write one object under a caller-owned whole-operation deadline.
+    ///
+    /// The default preserves compatibility for deterministic/local transports. Network transports
+    /// should override it so hidden preparation and readback requests cannot outlive the caller's
+    /// deadline.
+    fn put_with_deadline(
+        &self,
+        key: &ObjectKey,
+        object: &EncryptedObject,
+        condition: ObjectCondition,
+        deadline: VaultDeadline,
+    ) -> Result<ObjectWriteResult, VaultError> {
+        deadline.check()?;
+        let result = self.put(key, object, condition);
+        deadline.check()?;
+        result
+    }
+
     fn list(
         &self,
         prefix: &ObjectKey,
         max_resources: usize,
     ) -> Result<Vec<ObjectMetadata>, VaultError>;
+
+    /// Perform one bounded list and report its actual work.
+    ///
+    /// Flat transports can rely on this compatibility implementation. Recursive transports must
+    /// override it so empty collections, response bytes, and internal requests are not hidden.
+    fn list_with_limits(
+        &self,
+        prefix: &ObjectKey,
+        limits: ListLimits,
+        deadline: VaultDeadline,
+    ) -> Result<ListOutcome, VaultError> {
+        limits.validate()?;
+        deadline.check()?;
+        let objects = self.list(prefix, limits.returned_objects)?;
+        deadline.check()?;
+        let outcome = ListOutcome {
+            cost: ListCost {
+                requests: 1,
+                response_bytes: 0,
+                scanned_collections: 1,
+                scanned_resources: objects.len(),
+                returned_objects: objects.len(),
+            },
+            objects,
+        };
+        outcome.validate(limits)?;
+        Ok(outcome)
+    }
 }
 
 /// A deterministic encrypted-object store used by vault and lifecycle conformance tests.

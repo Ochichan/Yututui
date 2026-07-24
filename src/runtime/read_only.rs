@@ -29,6 +29,7 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::AiRerank { .. } => Some("AI usage"),
         Cmd::Scrobble(_) => Some("scrobble state"),
         Cmd::Transfer(_) => Some("transfer state"),
+        Cmd::Data(DataCmd::PersonalSync { .. }) => Some("personal sync"),
         Cmd::PlayerControl(_)
         | Cmd::VideoConnect { .. }
         | Cmd::VideoLoad(_)
@@ -95,6 +96,26 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
             ));
             Vec::new()
         }
+        Cmd::Persist(crate::app::PersistCmd::PersonalSyncCommit(commit)) => {
+            app.personal_state.sync.in_progress = false;
+            app.personal_state.sync.pending_reply = None;
+            commit
+                .reply
+                .respond(crate::remote::proto::RemoteResponse::err_with_message(
+                    "read_only_secondary",
+                    "the read-only secondary cannot change personal sync state".to_owned(),
+                ));
+            Vec::new()
+        }
+        Cmd::Data(DataCmd::PersonalSync { reply, .. }) => {
+            app.personal_state.sync.in_progress = false;
+            app.personal_state.sync.pending_reply = None;
+            reply.respond(crate::remote::proto::RemoteResponse::err_with_message(
+                "read_only_secondary",
+                "the read-only secondary cannot change personal sync state".to_owned(),
+            ));
+            Vec::new()
+        }
         _ => Vec::new(),
     };
     app.set_status_error(match crate::i18n::current() {
@@ -107,4 +128,32 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
         _ => format!("Read-only secondary: {component} change rejected — {reason}"),
     });
     follow_ups
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[test]
+    fn read_only_secondary_settles_manual_sync_reply_without_worker_start() {
+        let mut app = App::new(50);
+        app.personal_state.sync.in_progress = true;
+        let (reply, mut response) = oneshot::channel();
+        let command = Cmd::Data(DataCmd::PersonalSync {
+            action: crate::app::PersonalSyncAction::SyncNow,
+            attempt: 1,
+            personal_state: Box::new(crate::personal_state::PersonalStateV2::default()),
+            reply: crate::app::PersonalSyncReply::new(reply.into()),
+        });
+
+        assert_eq!(durable_mutation_component(&command), Some("personal sync"));
+        assert!(reject_mutation(&mut app, &command, "personal sync", "test").is_empty());
+        assert_eq!(
+            response.try_recv().unwrap().reason.as_deref(),
+            Some("read_only_secondary")
+        );
+        assert!(!app.personal_state.sync.in_progress);
+    }
 }

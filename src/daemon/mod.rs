@@ -16,7 +16,7 @@ use crate::remote::proto::{
 use crate::remote::server::RemoteEvent;
 use crate::remote::{
     LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY, PERSONAL_EXPORT_CAPABILITY,
-    PERSONAL_STATE_V2_CAPABILITY,
+    PERSONAL_STATE_V2_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
 };
 use crate::util::process::{self, ProcessProfile};
 
@@ -34,6 +34,7 @@ mod observer_plan;
 #[cfg(test)]
 mod parity_tests;
 mod personal_export;
+mod personal_sync;
 mod serve_setup;
 mod shutdown_drain;
 mod transfer_host;
@@ -378,6 +379,7 @@ async fn run_owner_loop(
     let mut effect_tasks = DaemonEffectTasks::new();
     let mut gui_search_pending = GuiSearchPending::default();
     let mut personal_export = personal_export::PersonalExport::default();
+    let mut personal_sync = personal_sync::PersonalSync::default();
     let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
     if !shutdown.is_triggered() {
         let initial_effects = engine.initial_effects();
@@ -488,6 +490,9 @@ async fn run_owner_loop(
                         &mut effect_tasks,
                     );
                 }
+                command @ (RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. }) => {
+                    personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
+                }
                 command => {
                     let Some((response, wants_shutdown, effects)) =
                         await_owner_handler(&shutdown, engine.handle_remote(command)).await
@@ -528,6 +533,9 @@ async fn run_owner_loop(
                         &shutdown,
                         &mut effect_tasks,
                     );
+                }
+                command @ (RemoteCommand::SyncNow | RemoteCommand::SyncRevokeDevice { .. }) => {
+                    personal_sync.start_command(command, reply, &mut engine, &event_tx, &shutdown);
                 }
                 command => {
                     let requester_key = engine::RequesterKey::new(
@@ -698,6 +706,9 @@ async fn run_owner_loop(
                 ));
             }
             DaemonEvent::PersonalExportFinished(finished) => personal_export.finish(finished),
+            DaemonEvent::PersonalSyncFinished(finished) => {
+                personal_sync.finish(*finished, &mut engine, &event_tx, &shutdown)
+            }
             DaemonEvent::Scrobble(event) => {
                 accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
             }
@@ -845,6 +856,7 @@ async fn run_owner_loop(
     // A worker that completed before the admission frontier was settled by the drain above.
     // Anything still retained cannot re-enter now, so release its wire settlement explicitly.
     personal_export.shutdown();
+    personal_sync.shutdown();
     tracing::debug!(
         remote_requests = drain.remote_requests,
         subscribe_requests = drain.subscribe_requests,

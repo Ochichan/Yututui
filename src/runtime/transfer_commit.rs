@@ -18,19 +18,14 @@ impl RuntimeHandles {
         app: &crate::app::App,
         commit: Box<TransferPlaylistCommit>,
     ) {
-        let prepared = crate::personal_state::reconcile_runtime(
-            &app.personal_state,
-            &app.library,
-            &commit.candidate,
-            &app.signals,
-            &app.station,
-        )
-        .and_then(|state| {
-            crate::personal_state::PersonalStateCommit::prepare_for_runtime(
-                state,
-                commit.candidate.revision(),
-            )
-        });
+        let prepared = app
+            .reconcile_personal_state(&commit.candidate)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    commit.candidate.revision(),
+                )
+            });
         let prepared = match prepared {
             Ok(prepared) => Box::new(prepared),
             Err(error) => {

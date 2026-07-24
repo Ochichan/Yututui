@@ -550,6 +550,7 @@ mod tests {
             track_id: None,
             position_epoch: 0,
             artwork: None,
+            personal_sync: None,
         }
     }
 

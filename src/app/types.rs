@@ -272,6 +272,11 @@ pub enum DataMsg {
     PersonalDataExport(PersonalDataExportMsg),
     /// Targeted persistence confirmation for an owner-mediated transfer playlist patch.
     TransferPlaylistPersisted(Box<TransferPlaylistPersistence>),
+    /// Detached WebDAV preparation completed and is ready for the primary owner to revision-check
+    /// and atomically install.
+    PersonalSyncPrepared(Box<PersonalSyncPrepared>),
+    /// Exact persistence-actor result for a detached WebDAV candidate or its local rebase.
+    PersonalSyncPersisted(Box<PersonalSyncPersisted>),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -296,6 +301,7 @@ pub(crate) struct PersonalDataExportState {
 /// allowlisted [`crate::data_export::ExportSnapshot`] before anything is written.
 pub struct PersonalDataExportSources {
     pub(crate) personal_state: crate::personal_state::PersonalStateV2,
+    pub(crate) personal_state_device_id: Option<crate::personal_state::DeviceId>,
     pub(crate) config: Config,
     pub(crate) library: Library,
     pub(crate) playlists: Playlists,
@@ -309,6 +315,14 @@ pub enum DataCmd {
     ScanDownloads(PathBuf),
     /// Run one portable personal-data export.
     PersonalDataExport(PersonalDataExportCmd),
+    /// Prepare a manual encrypted sync on a blocking worker. Only the owner-lane completion may
+    /// install the detached candidate.
+    PersonalSync {
+        action: PersonalSyncAction,
+        attempt: u8,
+        personal_state: Box<crate::personal_state::PersonalStateV2>,
+        reply: PersonalSyncReply,
+    },
 }
 
 /// Effects in the portable personal-data export domain.
@@ -472,6 +486,8 @@ pub enum PersistCmd {
     /// Persist one transfer candidate under an exact target generation. Live playlists stay
     /// unchanged until the completion returns to the reducer.
     TransferPlaylistCommit(Box<TransferPlaylistCommit>),
+    /// Install one WebDAV candidate through the PersonalState persistence ordering lane.
+    PersonalSyncCommit(Box<PersonalSyncCommit>),
 }
 
 /// Blocking Local Deck work requested by the reducer.

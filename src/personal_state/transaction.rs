@@ -336,6 +336,28 @@ pub(crate) fn load_ledger(
     read_installed_ledger(paths)
 }
 
+/// Read the installed ledger without repairing or deleting transaction artifacts.
+///
+/// Observational commands can run beside the primary writer, so they must not perform recovery.
+/// Any in-flight or interrupted transaction makes the preview temporarily unavailable instead of
+/// exposing a mixed ledger/projection frontier.
+pub(crate) fn load_ledger_read_only(
+    paths: &PersonalStatePaths,
+) -> Result<Option<PersonalStateV2>, PersonalStateError> {
+    match fs::read_dir(&paths.transactions) {
+        Ok(mut entries) => {
+            if entries.next().transpose()?.is_some() {
+                return Err(PersonalStateError::Io(
+                    "a personal-state transaction is in progress; retry the preview".to_owned(),
+                ));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    read_installed_ledger(paths)
+}
+
 fn read_installed_ledger(
     paths: &PersonalStatePaths,
 ) -> Result<Option<PersonalStateV2>, PersonalStateError> {

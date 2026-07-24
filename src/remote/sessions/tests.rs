@@ -25,6 +25,7 @@ fn command_reply_timeouts_keep_quick_playback_and_export_classes_distinct() {
         reply_timeout: Duration::from_millis(10),
         playback_reply_timeout: Duration::from_millis(20),
         personal_export_reply_timeout: Duration::from_millis(30),
+        manual_sync_reply_timeout: Duration::from_millis(40),
         ..SessionTuning::default()
     };
     assert_eq!(
@@ -41,6 +42,10 @@ fn command_reply_timeouts_keep_quick_playback_and_export_classes_distinct() {
             schema: None,
         }),
         Duration::from_millis(30)
+    );
+    assert_eq!(
+        tuning.command_reply_timeout(&crate::remote::proto::RemoteCommand::SyncNow),
+        Duration::from_millis(40)
     );
 }
 

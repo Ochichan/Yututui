@@ -11,7 +11,9 @@ use crate::personal_state::{
     CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
 };
 
-use super::crypto::{base64url_encode, derive_recovery_signing_key, sha256_domain_hex};
+use super::crypto::{
+    base64url_encode, decrypt_json_with_identity, derive_recovery_signing_key, sha256_domain_hex,
+};
 use super::error::VaultError;
 use super::membership::{MembershipAnchor, RecoveryCutoff};
 
@@ -120,10 +122,14 @@ impl RecoveryKit {
     /// A successful return is the setup flow's required "recovery kit saved" confirmation.
     pub fn export_confirmed(&self, path: &Path) -> Result<String, VaultError> {
         let bytes = self.to_json()?;
-        crate::util::safe_fs::write_owner_only_atomic(path, &bytes)
-            .map_err(|_| VaultError::StorageFailed)?;
+        let published = crate::data_export::write_private_export_noreplace(
+            path,
+            &bytes,
+            RECOVERY_KIT_MAX_BYTES,
+        )
+        .map_err(|_| VaultError::StorageFailed)?;
         let readback = Zeroizing::new(
-            crate::util::safe_fs::read_owner_only_limited(path, RECOVERY_KIT_MAX_BYTES)
+            crate::util::safe_fs::read_owner_only_limited(&published, RECOVERY_KIT_MAX_BYTES)
                 .map_err(|_| VaultError::StorageFailed)?,
         );
         let restored = Self::from_json(&readback)?;
@@ -154,25 +160,44 @@ impl RecoveryKit {
         Ok(base64url_encode(key.verifying_key().as_bytes()))
     }
 
-    /// Recover the highest contiguous authenticated checkpoint supplied by the vault listing.
+    /// Recover the checkpoint selected by the authenticated vault manifest.
     ///
     /// Every previously active device is explicitly revoked at its covered sequence, the
     /// membership epoch rotates, and the replacement checkpoint excludes all old recipients.
-    /// A retained local anchor, when available, makes a stale or forked listing fail closed.
-    /// With only the static recovery kit, callers must provide every object returned by the
-    /// bounded checkpoint listing; no static kit can detect a server that hides its newest object.
+    /// Checkpoints left behind by a lost conditional-manifest race are ignored. A retained local
+    /// anchor, when available, makes a stale manifest or a forked checkpoint chain fail closed.
+    /// With only the static recovery kit, no client can detect a server that replays a complete,
+    /// previously valid manifest and its checkpoint.
     pub fn recover(
         &self,
+        encrypted_manifest: &super::crypto::EncryptedObject,
         encrypted_checkpoints: &[super::crypto::EncryptedObject],
         retained_anchor: Option<&super::checkpoint::CheckpointAnchor>,
         new_device_name: impl Into<String>,
     ) -> Result<RecoveryResult, VaultError> {
         let recovery_verifying_key = self.recovery_verifying_key()?;
         let anchor = MembershipAnchor::RecoveryVerifyingKey(recovery_verifying_key);
-        let previous =
-            self.select_latest_checkpoint(encrypted_checkpoints, retained_anchor, &anchor)?;
+        let manifest: super::manual::SignedVaultManifest =
+            decrypt_json_with_identity(encrypted_manifest, &self.recovery_identity)?;
+        if manifest.payload.dataset_id != self.dataset_id {
+            return Err(VaultError::RecoveryKitInvalid);
+        }
+        let manifest_membership = manifest.verify(&anchor)?;
+        let previous = self.select_manifest_checkpoint(
+            encrypted_checkpoints,
+            retained_anchor,
+            &anchor,
+            &manifest,
+        )?;
         let previous_hash = previous.hash()?;
         let previous_membership = previous.payload.membership.verify(&anchor)?;
+        if previous.payload.membership != manifest.payload.membership
+            || previous_membership.head_hash != manifest_membership.head_hash
+            || previous.payload.checkpoint_sequence != manifest.payload.checkpoint_sequence
+            || previous_hash != manifest.payload.checkpoint_hash
+        {
+            return Err(VaultError::RollbackDetected);
+        }
         let device_id = DeviceId::new(format!("dev-{}", super::crypto::random_id_hex::<16>()?))
             .map_err(|_| VaultError::InvalidDeviceId)?;
         let device_secrets = super::crypto::DeviceSecretMaterial::generate_for(device_id.as_str())?;
@@ -237,18 +262,19 @@ impl RecoveryKit {
         })
     }
 
-    fn select_latest_checkpoint(
+    fn select_manifest_checkpoint(
         &self,
         encrypted_checkpoints: &[super::crypto::EncryptedObject],
         retained_anchor: Option<&super::checkpoint::CheckpointAnchor>,
         membership_anchor: &MembershipAnchor,
+        manifest: &super::manual::SignedVaultManifest,
     ) -> Result<super::checkpoint::SignedCheckpoint, VaultError> {
         if encrypted_checkpoints.is_empty()
             || encrypted_checkpoints.len() > MAX_RECOVERY_CHECKPOINT_CANDIDATES
         {
             return Err(VaultError::ResourceLimitExceeded);
         }
-        let mut candidates = BTreeMap::<u64, (String, super::checkpoint::SignedCheckpoint)>::new();
+        let mut candidates = BTreeMap::<String, super::checkpoint::SignedCheckpoint>::new();
         for encrypted in encrypted_checkpoints {
             let checkpoint = super::checkpoint::SignedCheckpoint::decrypt(
                 encrypted,
@@ -259,54 +285,53 @@ impl RecoveryKit {
                 return Err(VaultError::RecoveryKitInvalid);
             }
             let hash = checkpoint.hash()?;
-            match candidates.get(&checkpoint.payload.checkpoint_sequence) {
-                Some((existing_hash, _)) if existing_hash == &hash => continue,
-                Some(_) => return Err(VaultError::RollbackDetected),
-                None => {
-                    candidates.insert(checkpoint.payload.checkpoint_sequence, (hash, checkpoint));
-                }
-            }
+            candidates.entry(hash).or_insert(checkpoint);
         }
 
-        let (mut previous, start_sequence) = match retained_anchor {
-            Some(anchor) => {
-                let hash = anchor
-                    .checkpoint_hash
-                    .as_deref()
-                    .ok_or(VaultError::RollbackDetected)?;
-                (
-                    Some((anchor.checkpoint_sequence, hash)),
-                    anchor.checkpoint_sequence,
-                )
-            }
-            None => (None, 0),
-        };
-        let mut saw_candidate_at_or_after_anchor = retained_anchor.is_none();
-        for (sequence, (hash, checkpoint)) in candidates.range(start_sequence..) {
-            saw_candidate_at_or_after_anchor = true;
-            if let Some((previous_sequence, previous_hash)) = previous {
-                if *sequence == previous_sequence {
-                    if hash != previous_hash {
-                        return Err(VaultError::RollbackDetected);
-                    }
-                    previous = Some((*sequence, hash));
-                    continue;
-                }
-                if *sequence != previous_sequence.saturating_add(1)
-                    || checkpoint.payload.previous_checkpoint_hash.as_deref() != Some(previous_hash)
-                {
-                    return Err(VaultError::SequenceGap);
-                }
-            }
-            previous = Some((*sequence, hash));
-        }
-        if !saw_candidate_at_or_after_anchor {
+        let canonical_hash = manifest.payload.checkpoint_hash.as_str();
+        let canonical = candidates
+            .get(canonical_hash)
+            .ok_or(VaultError::RollbackDetected)?;
+        if canonical.payload.checkpoint_sequence != manifest.payload.checkpoint_sequence {
             return Err(VaultError::RollbackDetected);
         }
-        candidates
-            .pop_last()
-            .map(|(_, (_, checkpoint))| checkpoint)
-            .ok_or(VaultError::RecoveryKitInvalid)
+
+        let Some(retained_anchor) = retained_anchor else {
+            return Ok(canonical.clone());
+        };
+        let retained_hash = retained_anchor
+            .checkpoint_hash
+            .as_deref()
+            .ok_or(VaultError::RollbackDetected)?;
+        if canonical.payload.checkpoint_sequence < retained_anchor.checkpoint_sequence {
+            return Err(VaultError::RollbackDetected);
+        }
+
+        let mut current = canonical;
+        let mut current_hash = canonical_hash;
+        while current.payload.checkpoint_sequence > retained_anchor.checkpoint_sequence {
+            let previous_hash = current
+                .payload
+                .previous_checkpoint_hash
+                .as_deref()
+                .ok_or(VaultError::RollbackDetected)?;
+            let previous = candidates
+                .get(previous_hash)
+                .ok_or(VaultError::RollbackDetected)?;
+            if previous.payload.checkpoint_sequence.saturating_add(1)
+                != current.payload.checkpoint_sequence
+            {
+                return Err(VaultError::RollbackDetected);
+            }
+            current = previous;
+            current_hash = previous_hash;
+        }
+        if current.payload.checkpoint_sequence != retained_anchor.checkpoint_sequence
+            || current_hash != retained_hash
+        {
+            return Err(VaultError::RollbackDetected);
+        }
+        Ok(canonical.clone())
     }
 
     pub(crate) fn signing_key(&self) -> Result<ed25519_dalek::SigningKey, VaultError> {
