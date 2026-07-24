@@ -6,7 +6,7 @@ use super::legacy::{
 use super::{
     CausalStamp, DeviceId, Dot, EngagementKind, Operation, OperationEnvelope, OperationOrigin,
     PersonalStateError, PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack,
-    PortableTrackKey, project,
+    PortableTrackKey, project, refresh_device_registry,
 };
 
 /// Convert mutations visible in the four runtime projections into causal v2 operations.
@@ -17,11 +17,74 @@ pub(crate) fn reconcile_runtime(
     signals: &crate::signals::Signals,
     station: &crate::station::StationStore,
 ) -> Result<PersonalStateV2, PersonalStateError> {
+    let device = local_device(state)?;
+    reconcile_runtime_for_device(state, device, library, playlists, signals, station, false)
+}
+
+/// Reconcile runtime mutations using the device explicitly bound to this process.
+///
+/// Synced ledgers must never guess which active device owns a new causal dot.
+pub fn reconcile_runtime_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    library: &crate::library::Library,
+    playlists: &crate::playlists::Playlists,
+    signals: &crate::signals::Signals,
+    station: &crate::station::StationStore,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    reconcile_runtime_for_device(
+        state,
+        local_device_id.clone(),
+        library,
+        playlists,
+        signals,
+        station,
+        true,
+    )
+}
+
+/// Append one local operation under an explicit device binding.
+pub fn append_operation_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    operation: Operation,
+    recorded_at_unix: i64,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    state.validate()?;
+    let enrollment = matches!(
+        &operation,
+        Operation::AddDevice { device }
+            if &device.device_id == local_device_id
+                && device.public_identity.is_some()
+                && state
+                    .device_registry
+                    .get(local_device_id)
+                    .is_some_and(|current| current.public_identity.is_none())
+    );
+    validate_local_device_binding(state, local_device_id, !enrollment)?;
+
     let mut candidate = state.clone();
-    candidate.validate()?;
+    OperationAppender::new(&mut candidate, local_device_id.clone())
+        .append(operation, recorded_at_unix)?;
+    refresh_device_registry(&mut candidate)?;
+    candidate.normalize()?;
+    Ok(candidate)
+}
+
+fn reconcile_runtime_for_device(
+    state: &PersonalStateV2,
+    device: DeviceId,
+    library: &crate::library::Library,
+    playlists: &crate::playlists::Playlists,
+    signals: &crate::signals::Signals,
+    station: &crate::station::StationStore,
+    require_keyed_binding: bool,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    state.validate()?;
+    validate_local_device_binding(state, &device, require_keyed_binding)?;
+    let mut candidate = state.clone();
     let base = project(state)?.legacy;
     let current = LegacyProjection::from_runtime(library, playlists, signals, station);
-    let device = local_device(state)?;
     let mut appender = OperationAppender::new(&mut candidate, device);
 
     reconcile_ratings(&base, &current, &mut appender)?;
@@ -76,6 +139,7 @@ impl<'a> OperationAppender<'a> {
         };
         self.state.version_vector.observe(&dot);
         self.state.operations.push(envelope);
+        self.state.projection_fingerprint = None;
         Ok(dot)
     }
 
@@ -110,15 +174,51 @@ impl<'a> OperationAppender<'a> {
 }
 
 fn local_device(state: &PersonalStateV2) -> Result<DeviceId, PersonalStateError> {
-    state
+    state.validate()?;
+    let mut active = state
         .device_registry
         .values()
         .filter(|device| !device.revoked && device.device_id.as_str() != "legacy")
-        .map(|device| device.device_id.clone())
-        .min()
-        .ok_or(PersonalStateError::InvalidOperation(
-            "personal state has no active local device",
-        ))
+        .map(|device| device.device_id.clone());
+    let device = active.next().ok_or(PersonalStateError::InvalidOperation(
+        "personal state has no active local device",
+    ))?;
+    if active.next().is_some() {
+        return Err(PersonalStateError::InvalidOperation(
+            "multiple active devices require an explicit local device binding",
+        ));
+    }
+    Ok(device)
+}
+
+fn validate_local_device_binding(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    require_keyed: bool,
+) -> Result<(), PersonalStateError> {
+    let device =
+        state
+            .device_registry
+            .get(local_device_id)
+            .ok_or(PersonalStateError::InvalidOperation(
+                "local device binding is not in the registry",
+            ))?;
+    if device.revoked {
+        return Err(PersonalStateError::InvalidOperation(
+            "local device binding is revoked",
+        ));
+    }
+    if device.device_id.as_str() == "legacy" {
+        return Err(PersonalStateError::InvalidOperation(
+            "legacy migration device cannot own local operations",
+        ));
+    }
+    if require_keyed && device.public_identity.is_none() {
+        return Err(PersonalStateError::InvalidOperation(
+            "local device binding has no public identity",
+        ));
+    }
+    Ok(())
 }
 
 fn reconcile_ratings(

@@ -245,6 +245,7 @@ pub(crate) fn legacy_state_from_projection(
         device_id: local_device.clone(),
         name: "This device".to_owned(),
         revoked: false,
+        public_identity: None,
     };
     state.device_registry.insert(local_device, device.clone());
     state.operations.push(OperationEnvelope {

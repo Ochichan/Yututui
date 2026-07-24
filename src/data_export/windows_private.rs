@@ -116,7 +116,7 @@ pub(super) struct DestinationChainGuard {
 /// FILE_ID_INFO carries the full 128-bit identifier needed by ReFS, unlike the older 64-bit file
 /// index exposed by BY_HANDLE_FILE_INFORMATION.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FileIdentity {
+pub(crate) struct FileIdentity {
     volume_serial_number: u64,
     file_id: [u8; 16],
 }
@@ -126,7 +126,7 @@ pub(super) struct FileIdentity {
 /// Preparation that can fail (token/SID/ACL construction) happens before the path is created.
 /// While the DACL is replaced, the handle denies read/write sharing; delete sharing is retained so
 /// the path can be marked for deletion before closing if hardening or verification fails.
-pub(super) fn create_private_file(path: &Path) -> io::Result<File> {
+pub(crate) fn create_private_file(path: &Path) -> io::Result<File> {
     let current_user = current_user_sid()?;
     let private_acl = AclBuffer::for_sid(current_user.as_ptr())?;
 
@@ -156,6 +156,12 @@ pub(super) fn create_private_file(path: &Path) -> io::Result<File> {
         Ok(()) => Ok(file),
         Err(error) => Err(remove_failed_file(path, file, error)),
     }
+}
+
+/// Verify the protected DACL and owner through an existing credential/key file handle.
+pub(crate) fn verify_current_user_private_file(file: &File) -> io::Result<()> {
+    let current_user = current_user_sid()?;
+    verify_private_dacl(file, current_user.as_ptr())
 }
 
 /// Verify the complete volume-root-to-destination chain and pin it against rename/delete races.
@@ -446,7 +452,7 @@ pub(super) fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Capture the volume plus 128-bit file identifier from an already-open temp file.
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
+pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     let mut info = FILE_ID_INFO::default();
     // SAFETY: the File handle is live, `info` is correctly aligned writable storage, and the
     // buffer size exactly matches the FileIdInfo structure requested from Windows.
@@ -470,7 +476,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
 }
 
 /// Reopen a path without following a reparse point and require the same captured file identity.
-pub(super) fn revalidate_path_identity(path: &Path, expected: FileIdentity) -> io::Result<()> {
+pub(crate) fn revalidate_path_identity(path: &Path, expected: FileIdentity) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options
         .access_mode(0)
@@ -541,6 +547,7 @@ fn apply_private_dacl(file: &File, dacl: *const ACL) -> io::Result<()> {
 
 fn verify_private_dacl(file: &File, expected_sid: PSID) -> io::Result<()> {
     let handle = file.as_raw_handle() as HANDLE;
+    let mut owner: PSID = null_mut();
     let mut dacl: *mut ACL = null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
 
@@ -550,8 +557,8 @@ fn verify_private_dacl(file: &File, expected_sid: PSID) -> io::Result<()> {
         GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
             null_mut(),
             &mut dacl,
             null_mut(),
@@ -572,6 +579,15 @@ fn verify_private_dacl(file: &File, expected_sid: PSID) -> io::Result<()> {
     if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
         return Err(invalid_acl(
             "Windows returned an invalid export security descriptor",
+        ));
+    }
+    // SAFETY: owner points inside the live descriptor and both SIDs remain valid for this call.
+    if owner.is_null()
+        || unsafe { IsValidSid(owner) } == 0
+        || unsafe { EqualSid(owner, expected_sid) } == 0
+    {
+        return Err(invalid_acl(
+            "private file is not owned by the current account",
         ));
     }
 

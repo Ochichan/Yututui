@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const PERSONAL_STATE_KIND: &str = "yututui_personal_state";
@@ -9,6 +10,7 @@ pub(crate) const MAX_OPERATIONS: usize = 250_000;
 pub(crate) const MAX_DEVICES: usize = 256;
 pub(crate) const MAX_TEXT_CHARS: usize = 1_024;
 pub(crate) const MAX_TRACK_ID_CHARS: usize = 512;
+const ED25519_VERIFYING_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersonalStateError {
@@ -19,6 +21,7 @@ pub enum PersonalStateError {
     InvalidVersionVector,
     DuplicateDot,
     ConflictingOperationId,
+    ConflictingDeviceIdentity,
     TooManyOperations,
     TooManyDevices,
     InvalidOperation(&'static str),
@@ -40,6 +43,9 @@ impl fmt::Display for PersonalStateError {
             Self::DuplicateDot => write!(f, "different operations reuse the same causal dot"),
             Self::ConflictingOperationId => {
                 write!(f, "different operations reuse the same operation id")
+            }
+            Self::ConflictingDeviceIdentity => {
+                write!(f, "device id is bound to different public identities")
             }
             Self::TooManyOperations => write!(f, "personal-state operation limit exceeded"),
             Self::TooManyDevices => write!(f, "personal-state device limit exceeded"),
@@ -329,11 +335,19 @@ pub struct OperationEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevicePublicIdentity {
+    pub age_recipient: String,
+    pub ed25519_verifying_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceRecord {
     pub device_id: DeviceId,
     pub name: String,
     #[serde(default)]
     pub revoked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_identity: Option<DevicePublicIdentity>,
 }
 
 pub type DeviceRegistry = BTreeMap<DeviceId, DeviceRecord>;
@@ -459,7 +473,7 @@ impl PersonalStateV2 {
                     "device registry key does not match its record",
                 ));
             }
-            validate_text("device name", &device.name)?;
+            validate_device_record(device, true)?;
         }
         if let Some(checkpoint) = &self.compaction_checkpoint {
             validate_id("checkpoint id", &checkpoint.checkpoint_id, 256)?;
@@ -537,6 +551,11 @@ impl PersonalStateV2 {
             .any(|(device, sequence)| self.version_vector.observed(device) < *sequence)
         {
             return Err(PersonalStateError::InvalidVersionVector);
+        }
+        if derive_device_registry(&self.operations)? != self.device_registry {
+            return Err(PersonalStateError::InvalidOperation(
+                "device registry does not match membership operations",
+            ));
         }
         Ok(())
     }
@@ -661,14 +680,158 @@ fn validate_operation(operation: &Operation) -> Result<(), PersonalStateError> {
             target.validate()
         }
         Operation::AddDevice { device } => {
-            validate_id("device id", device.device_id.as_str(), MAX_TRACK_ID_CHARS)?;
-            validate_text("device name", &device.name)
+            if device.revoked {
+                return Err(PersonalStateError::InvalidOperation(
+                    "AddDevice cannot add a revoked device",
+                ));
+            }
+            validate_device_record(device, false)
         }
         Operation::RevokeDevice { device_id } => {
             validate_id("device id", device_id.as_str(), MAX_TRACK_ID_CHARS)
         }
         Operation::LegacyBaseline { baseline } => baseline.validate(),
     }
+}
+
+pub(crate) fn derive_device_registry(
+    operations: &[OperationEnvelope],
+) -> Result<DeviceRegistry, PersonalStateError> {
+    let mut additions = DeviceRegistry::new();
+    let mut revoked = BTreeSet::new();
+
+    for envelope in operations {
+        match &envelope.operation {
+            Operation::AddDevice { device } => {
+                if device.revoked {
+                    return Err(PersonalStateError::InvalidOperation(
+                        "AddDevice cannot add a revoked device",
+                    ));
+                }
+                validate_device_record(device, false)?;
+                match additions.get_mut(&device.device_id) {
+                    Some(existing) => merge_device_addition(existing, device)?,
+                    None => {
+                        additions.insert(device.device_id.clone(), device.clone());
+                    }
+                }
+            }
+            Operation::RevokeDevice { device_id } => {
+                validate_id("device id", device_id.as_str(), MAX_TRACK_ID_CHARS)?;
+                revoked.insert(device_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for device_id in revoked {
+        additions
+            .entry(device_id.clone())
+            .and_modify(|device| device.revoked = true)
+            .or_insert_with(|| DeviceRecord {
+                device_id,
+                name: "Revoked device".to_owned(),
+                revoked: true,
+                public_identity: None,
+            });
+    }
+    if additions.len() > MAX_DEVICES {
+        return Err(PersonalStateError::TooManyDevices);
+    }
+    Ok(additions)
+}
+
+pub(crate) fn refresh_device_registry(
+    state: &mut PersonalStateV2,
+) -> Result<(), PersonalStateError> {
+    let derived = derive_device_registry(&state.operations)?;
+    if state.device_registry != derived {
+        state.device_registry = derived;
+        // A prepared ledger uses this as its durable-change marker. Membership-only operations do
+        // not alter the legacy runtime projection, so clearing it is what advances the revision.
+        state.projection_fingerprint = None;
+    }
+    Ok(())
+}
+
+fn merge_device_addition(
+    existing: &mut DeviceRecord,
+    candidate: &DeviceRecord,
+) -> Result<(), PersonalStateError> {
+    match (&existing.public_identity, &candidate.public_identity) {
+        (Some(left), Some(right)) if left != right => {
+            return Err(PersonalStateError::ConflictingDeviceIdentity);
+        }
+        // Attaching the device's public keys is a one-time enrollment transition. Keep the name
+        // from that authenticated record too, rather than retaining a lexical legacy placeholder
+        // that would disagree with the signed membership root.
+        (None, Some(identity)) => {
+            existing.name.clone_from(&candidate.name);
+            existing.public_identity = Some(identity.clone());
+        }
+        (Some(_), None) => {}
+        _ if candidate.name < existing.name => existing.name.clone_from(&candidate.name),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_device_record(
+    device: &DeviceRecord,
+    allow_revoked: bool,
+) -> Result<(), PersonalStateError> {
+    validate_id("device id", device.device_id.as_str(), MAX_TRACK_ID_CHARS)?;
+    validate_text("device name", &device.name)?;
+    if device.revoked && !allow_revoked {
+        return Err(PersonalStateError::InvalidOperation(
+            "AddDevice cannot add a revoked device",
+        ));
+    }
+    if let Some(identity) = &device.public_identity {
+        validate_device_public_identity(identity)?;
+    }
+    Ok(())
+}
+
+fn validate_device_public_identity(
+    identity: &DevicePublicIdentity,
+) -> Result<(), PersonalStateError> {
+    let recipient = identity
+        .age_recipient
+        .parse::<age::x25519::Recipient>()
+        .map_err(|_| PersonalStateError::InvalidOperation("invalid age X25519 recipient"))?;
+    if recipient.to_string() != identity.age_recipient {
+        return Err(PersonalStateError::InvalidOperation(
+            "invalid age X25519 recipient",
+        ));
+    }
+    let encoded_key = identity.ed25519_verifying_key.as_bytes();
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded_key)
+        .map_err(|_| PersonalStateError::InvalidOperation("invalid Ed25519 verifying key"))?;
+    let decoded: [u8; ED25519_VERIFYING_KEY_BYTES] = decoded
+        .try_into()
+        .map_err(|_| PersonalStateError::InvalidOperation("invalid Ed25519 verifying key"))?;
+    if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(decoded)
+        != identity.ed25519_verifying_key
+    {
+        return Err(PersonalStateError::InvalidOperation(
+            "invalid Ed25519 verifying key",
+        ));
+    }
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&decoded)
+        .map_err(|_| PersonalStateError::InvalidOperation("invalid Ed25519 verifying key"))?;
+    if verifying_key.to_bytes() != decoded {
+        return Err(PersonalStateError::InvalidOperation(
+            "invalid Ed25519 verifying key",
+        ));
+    }
+    if verifying_key.is_weak() {
+        return Err(PersonalStateError::InvalidOperation(
+            "weak Ed25519 verifying key",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_origin(origin: &OperationOrigin) -> Result<(), PersonalStateError> {
