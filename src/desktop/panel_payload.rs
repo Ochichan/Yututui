@@ -278,6 +278,7 @@ fn search_source_id(source: SearchSource) -> &'static str {
         SearchSource::Audius => "audius",
         SearchSource::Jamendo => "jamendo",
         SearchSource::InternetArchive => "internet_archive",
+        SearchSource::OpenSubsonic => "open_subsonic",
         SearchSource::RadioBrowser => "radio_browser",
         SearchSource::All => "all",
     }

@@ -214,6 +214,12 @@ impl CloneBudget {
                 self.add_text(file)?;
                 self.add_text(url)
             }
+            PlayableRef::OpenSubsonic { item, cover_art_id } => {
+                self.add_text(item.backend_id().as_str())?;
+                self.add_text(item.account_scope_id().as_str())?;
+                self.add_text(item.item_id().as_str())?;
+                self.add_optional_text(cover_art_id.as_ref().map(|id| id.as_str()))
+            }
         }
     }
 }
@@ -268,5 +274,30 @@ mod tests {
                 NESTED_TEXT_ITEMS_LIMIT + 1
             ))
         );
+    }
+
+    #[test]
+    fn clone_budget_counts_open_subsonic_cover_identity_bytes() {
+        let item = crate::open_subsonic::OpenSubsonicItemRef::new(
+            crate::open_subsonic::BackendId::new("backend").unwrap(),
+            crate::open_subsonic::AccountScopeId::new("account").unwrap(),
+            crate::open_subsonic::ItemId::new("item").unwrap(),
+        );
+        let mut without_cover = CloneBudget::default();
+        without_cover
+            .add_playable(&PlayableRef::OpenSubsonic {
+                item: item.clone(),
+                cover_art_id: None,
+            })
+            .unwrap();
+        let cover = crate::open_subsonic::CoverArtId::new("cover-art").unwrap();
+        let mut with_cover = CloneBudget::default();
+        with_cover
+            .add_playable(&PlayableRef::OpenSubsonic {
+                item,
+                cover_art_id: Some(cover.clone()),
+            })
+            .unwrap();
+        assert_eq!(with_cover.bytes - without_cover.bytes, cover.as_str().len());
     }
 }

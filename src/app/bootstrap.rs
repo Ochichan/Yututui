@@ -100,6 +100,7 @@ impl App {
             signals: Arc::new(Signals::default()),
             session: Session::default(),
             library_ui: LibraryView::default(),
+            server: ServerUiState::default(),
             library_rows_cache: RefCell::new(None),
             all_count_cache: Cell::new(None),
             yid_scan_memo: RefCell::new(None),
@@ -212,6 +213,7 @@ impl App {
             search.audius = false;
             search.jamendo = false;
             search.internet_archive = false;
+            search.open_subsonic = false;
             search.radio_browser = true;
             search.source = SearchSource::RadioBrowser;
         } else {

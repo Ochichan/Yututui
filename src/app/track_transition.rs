@@ -72,7 +72,7 @@ pub(in crate::app) struct QueueReplacementOptions {
 #[derive(Clone)]
 pub(in crate::app) struct PreparedTrackLoad {
     pub(in crate::app) song: Song,
-    pub(in crate::app) url: String,
+    pub(in crate::app) destination: crate::playback_target::PlaybackDestination,
     pub(in crate::app) prefetched_url: Option<String>,
     pub(in crate::app) invalid_prefetch: Option<(String, String)>,
 }
@@ -572,8 +572,8 @@ impl App {
         plan.recorder = Some(recorder);
         match &plan.kind {
             TrackTransitionKind::Load { load, .. } => {
-                commands.push(PlayerCmd::load(
-                    load.url.clone(),
+                commands.push(PlayerCmd::load_destination(
+                    load.destination.clone(),
                     crate::player::MediaSourceContext::from_live(load.song.is_radio_station()),
                 ));
                 if let Some(af) = self.track_audio_filter() {

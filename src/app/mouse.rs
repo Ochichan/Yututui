@@ -199,6 +199,9 @@ impl App {
         if let Some(commands) = self.artist_mouse_double_click(target.as_ref()) {
             return commands;
         }
+        if let Some(commands) = self.server_library_mouse_double_click(target.as_ref()) {
+            return commands;
+        }
         match target {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
                 self.request_radio_mode_switch()
@@ -504,11 +507,7 @@ impl App {
         }
         match self.mode {
             Mode::Library => {
-                let len = if self.local_dedicated_mode {
-                    self.local_rows_len()
-                } else {
-                    self.library_len()
-                };
+                let len = self.library_rows_len_for_wheel();
                 self.bridges.library_scroll.wheel(up, n, len);
                 self.dirty = true;
             }

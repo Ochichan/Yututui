@@ -372,7 +372,7 @@ impl DaemonEngine {
             self.stop_playback();
             return Ok(());
         };
-        let target = match song.playback_target_checked() {
+        let target = match song.playback_destination_checked() {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(

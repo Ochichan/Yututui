@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::playback_target::{PlayableUrlError, validate_playable_url};
+pub use crate::open_subsonic::OpenSubsonicItemRef;
+use crate::playback_target::{
+    CredentialedPlaybackRef, PlayableUrlError, PlaybackDestination, validate_playable_url,
+};
 use crate::search_source::SearchSource;
 
 /// Marker prefix for *playlist* rows in search results — their `video_id` is
@@ -236,6 +239,13 @@ pub enum PlayableRef {
         file: String,
         url: String,
     },
+    /// Exact server/account/item identity. Upstream URLs and credentials deliberately stay in
+    /// the OpenSubsonic owner; playback must first mint a short-lived loopback proxy route.
+    OpenSubsonic {
+        item: OpenSubsonicItemRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cover_art_id: Option<crate::open_subsonic::CoverArtId>,
+    },
     RadioStream {
         url: String,
     },
@@ -312,10 +322,12 @@ impl Song {
         let title = title.into();
         let artist = artist.into();
         let duration = duration.into();
-        let video_id = if source == SearchSource::Youtube {
-            source_id.clone()
-        } else {
-            format!("{}:{source_id}", source.id_prefix())
+        let video_id = match (&source, &playable) {
+            (SearchSource::Youtube, _) => source_id.clone(),
+            (SearchSource::OpenSubsonic, PlayableRef::OpenSubsonic { item, .. }) => {
+                item.stable_track_id()
+            }
+            _ => format!("{}:{source_id}", source.id_prefix()),
         };
         Self {
             video_id,
@@ -345,6 +357,37 @@ impl Song {
             local_path: None,
             yt_video_id: None,
         }
+    }
+
+    /// Convert one sanitized OpenSubsonic catalog row into the common playable song model.
+    ///
+    /// The opaque `(backend, account, item)` tuple remains the identity and playback target;
+    /// no authenticated upstream URL is materialized in UI state or handed directly to mpv.
+    pub fn from_open_subsonic(server: crate::open_subsonic::ServerSong) -> Self {
+        let duration = server.duration_secs.map_or_else(String::new, |seconds| {
+            let minutes = seconds / 60;
+            let remainder = seconds % 60;
+            format!("{minutes}:{remainder:02}")
+        });
+        let item = server.item.clone();
+        let cover_art_id = server.cover_art_id.clone();
+        let source_id = item.stable_track_id();
+        let mut song = Self::from_source(
+            SearchSource::OpenSubsonic,
+            source_id,
+            server.title,
+            server.artist,
+            duration,
+            PlayableRef::OpenSubsonic { item, cover_art_id },
+        );
+        song.artists = sanitize_metadata_vec(server.artists, MAX_ARTIST_CHARS);
+        song.album = sanitize_optional_metadata(server.album, MAX_ALBUM_CHARS);
+        song.album_artist = sanitize_optional_metadata(server.album_artist, MAX_ARTIST_CHARS);
+        song.album_artists = song.album_artist.iter().cloned().collect();
+        song.disc_number = server.disc_number.filter(|number| *number > 0);
+        song.track_number = server.track_number.filter(|number| *number > 0);
+        song.duration_secs = server.duration_secs;
+        song
     }
 
     /// Build a locally playable track from a file path. Rich metadata parsing is intentionally
@@ -568,12 +611,44 @@ impl Song {
             .unwrap_or_else(|| self.watch_url_checked())
     }
 
+    /// A player-ready direct target or an exact credentialed reference for the owner to resolve.
+    ///
+    /// OpenSubsonic credentials and upstream URLs never enter [`Song`]. The playback owner turns
+    /// this exact reference into a short-lived loopback route before using the ordinary direct
+    /// handoff path.
+    pub fn playback_destination_checked(&self) -> Result<PlaybackDestination, PlayableUrlError> {
+        if let Some(path) = &self.local_path {
+            return Ok(PlaybackDestination::Direct(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        match &self.playable {
+            Some(PlayableRef::OpenSubsonic { item, .. }) => Ok(PlaybackDestination::Credentialed(
+                CredentialedPlaybackRef::OpenSubsonic {
+                    backend_id: item.backend_id().as_str().to_owned(),
+                    account_scope_id: item.account_scope_id().as_str().to_owned(),
+                    item_id: item.item_id().as_str().to_owned(),
+                },
+            )),
+            _ => self
+                .playback_target_checked()
+                .map(PlaybackDestination::Direct),
+        }
+    }
+
     /// A URL mpv/yt-dlp can resolve and play for catalog tracks.
     pub fn watch_url(&self) -> String {
         self.watch_url_checked().unwrap_or_default()
     }
 
     pub fn watch_url_checked(&self) -> Result<String, PlayableUrlError> {
+        if self.source == SearchSource::OpenSubsonic
+            && !matches!(&self.playable, Some(PlayableRef::OpenSubsonic { .. }))
+        {
+            return Err(PlayableUrlError::Invalid(
+                "OpenSubsonic track is missing its exact server identity".to_owned(),
+            ));
+        }
         match &self.playable {
             Some(PlayableRef::YoutubeVideo { id }) if !is_definitely_non_video_youtube_ref(id) => {
                 validate_playable_url(
@@ -593,6 +668,9 @@ impl Song {
             Some(PlayableRef::ArchiveFile { url, .. }) => {
                 validate_playable_url(SearchSource::InternetArchive, url)
             }
+            Some(PlayableRef::OpenSubsonic { .. }) => Err(PlayableUrlError::Invalid(
+                "OpenSubsonic playback requires the local proxy".to_owned(),
+            )),
             Some(PlayableRef::RadioStream { url }) => {
                 validate_playable_url(SearchSource::RadioBrowser, url)
             }
@@ -620,6 +698,7 @@ impl Song {
             Some(PlayableRef::DirectUrl { .. })
             | Some(PlayableRef::JamendoTrackId { .. })
             | Some(PlayableRef::ArchiveFile { .. })
+            | Some(PlayableRef::OpenSubsonic { .. })
             | Some(PlayableRef::RadioStream { .. }) => None,
             Some(PlayableRef::YoutubeVideo { .. })
             | Some(PlayableRef::YtdlpUrl { .. })

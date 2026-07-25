@@ -95,7 +95,7 @@ impl App {
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
         };
-        let target = match song.playback_target_checked() {
+        let target = match song.playback_destination_checked() {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(
@@ -165,7 +165,7 @@ impl App {
             cmds.push(Cmd::PlayerControl(PlayerControl::Restart { restore }));
             return cmds;
         };
-        let target = match song.playback_target_checked() {
+        let target = match song.playback_destination_checked() {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(

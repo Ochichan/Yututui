@@ -1221,6 +1221,9 @@ async fn run_download_to_path(
         import_context,
         metadata_required,
     } = options;
+    if song.source == crate::search_source::SearchSource::OpenSubsonic {
+        bail!("music-server downloads are not supported");
+    }
     // Re-check at the actor boundary (not just in the UI reducer): a non-video YouTube ref
     // (channel/playlist) would otherwise have `playback_target()` fall back to a channel URL,
     // handing yt-dlp something that isn't a downloadable track.
@@ -1450,6 +1453,9 @@ fn parse_percent(line: &str) -> Option<f64> {
 #[cfg(test)]
 #[path = "download/import_admission_tests.rs"]
 mod import_admission_tests;
+#[cfg(all(test, unix))]
+#[path = "download/server_download_tests.rs"]
+mod server_download_tests;
 #[cfg(test)]
 #[path = "download/tests.rs"]
 mod tests;

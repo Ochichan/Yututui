@@ -33,6 +33,13 @@ pub enum ArtSource {
         video_id: String,
         quality: AlbumArtQuality,
     },
+    /// Authenticated OpenSubsonic artwork. Only exact opaque IDs cross this message; the
+    /// credential, origin, and authenticated request remain inside the current server actor.
+    OpenSubsonic {
+        item: crate::open_subsonic::OpenSubsonicItemRef,
+        cover_art_id: crate::open_subsonic::CoverArtId,
+        quality: AlbumArtQuality,
+    },
     /// A local file: read its embedded cover art.
     Local(PathBuf),
 }
@@ -105,6 +112,23 @@ where
             } => (
                 match client.as_ref() {
                     Some(client) => fetch_remote(client, &id, quality).await,
+                    None => None,
+                },
+                remote_max_dimension(quality),
+                Some(quality),
+            ),
+            ArtSource::OpenSubsonic {
+                item,
+                cover_art_id,
+                quality,
+            } => (
+                match crate::open_subsonic::current_handle() {
+                    Some(handle) => handle
+                        .cover_art(item, cover_art_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|payload| payload.bytes),
                     None => None,
                 },
                 remote_max_dimension(quality),

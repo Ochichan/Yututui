@@ -3,6 +3,7 @@ use super::*;
 mod audio_output;
 mod cache_facts;
 mod cache_safety;
+mod route_lifecycle;
 mod seek_dispatch;
 
 fn recovery_request(position_secs: f64, paused: bool) -> super::super::recovery::LoadWithResume {

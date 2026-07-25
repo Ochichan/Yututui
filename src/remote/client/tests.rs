@@ -695,7 +695,19 @@ fn capability_gate_distinguishes_old_and_capable_instances() {
 
     old.capabilities
         .push(super::super::WEB_DAV_SYNC_CAPABILITY.to_string());
-    assert!(require_capability(old, super::super::WEB_DAV_SYNC_CAPABILITY).is_ok());
+    assert!(require_capability(old.clone(), super::super::WEB_DAV_SYNC_CAPABILITY).is_ok());
+
+    let server_error =
+        require_capability(old.clone(), super::super::OPEN_SUBSONIC_CAPABILITY).unwrap_err();
+    assert_eq!(
+        server_error,
+        MissingCapability {
+            capability: super::super::OPEN_SUBSONIC_CAPABILITY.to_string()
+        }
+    );
+    old.capabilities
+        .push(super::super::OPEN_SUBSONIC_CAPABILITY.to_string());
+    assert!(require_capability(old, super::super::OPEN_SUBSONIC_CAPABILITY).is_ok());
 }
 
 #[tokio::test]

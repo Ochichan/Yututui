@@ -19,5 +19,6 @@ mod player_layout;
 mod player_lyrics;
 mod queue_actions;
 pub mod search;
+pub mod server_library;
 pub mod settings;
 pub mod why_ai;

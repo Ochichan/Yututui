@@ -585,8 +585,9 @@ fn parse_search_source(value: String) -> Result<SearchSource, serde_json::Error>
         "audius" => Ok(SearchSource::Audius),
         "jamendo" => Ok(SearchSource::Jamendo),
         "internet_archive" => Ok(SearchSource::InternetArchive),
-        // "radio_browser" is deliberately absent: live radio streams are not valid
-        // autoplay/DJ Gem candidates (see SearchConfig::normalized_streaming_source).
+        // "open_subsonic" and "radio_browser" are deliberately absent: credentialed server
+        // tracks and live radio streams are not autoplay/DJ Gem candidates (see
+        // SearchConfig::normalized_streaming_source).
         "all" => Ok(SearchSource::All),
         _ => Err(serde::de::Error::custom("unknown streaming source")),
     }

@@ -10,6 +10,7 @@ struct ValidatedLoad {
     request_id: u64,
     file_generation: u64,
     url: String,
+    route_lease: Option<crate::playback_target::PlaybackRouteLease>,
     resume: resume::ResumeLoad,
     source_context: MediaSourceContext,
     wait_for_cache_reset: bool,
@@ -61,7 +62,10 @@ impl PendingLoadBoundary {
 }
 
 enum LoadValidationOutcome {
-    Validated(String),
+    Validated {
+        url: String,
+        route_lease: Option<crate::playback_target::PlaybackRouteLease>,
+    },
     Rejected(String),
     Superseded,
 }
@@ -120,6 +124,9 @@ fn accept_actor_command(
     backlog: &mut VecDeque<PlayerCmd>,
     seek_flight: &mut Option<SeekFlight>,
 ) {
+    if cmd.invalidates_file_generation() {
+        revoke_all_playback_routes(state);
+    }
     if merge_issued_pending_resume_command(state, &cmd) {
         return;
     }
@@ -239,6 +246,10 @@ fn rebase_cancelled_recovery(
     state
         .media_source_contexts
         .insert(generation, source_context);
+    if let Some(lease) = state.playback_route_leases.remove(&previous) {
+        state.playback_route_leases.insert(generation, lease);
+    }
+    state.route_revocations.rebase(previous, generation);
     if let Some(cache) = state.cache.as_mut() {
         cache.rebase_file_generation(previous, generation);
     }
@@ -246,6 +257,16 @@ fn rebase_cancelled_recovery(
         action.rebase_file_generation(previous, generation);
     }
     publish_cache_status(state);
+}
+
+fn revoke_playback_route(state: &mut DispatchState, file_generation: u64) {
+    state.route_revocations.revoke(file_generation);
+    state.playback_route_leases.remove(&file_generation);
+}
+
+fn revoke_all_playback_routes(state: &mut DispatchState) {
+    state.route_revocations.revoke_all();
+    state.playback_route_leases.clear();
 }
 
 fn supersedes_pending_resume(cmd: &PlayerCmd) -> bool {

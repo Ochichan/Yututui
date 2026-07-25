@@ -11,14 +11,16 @@ use crate::streaming::{CandidateSource, StreamingMode};
 use crate::util::sanitize;
 
 use super::{
-    ApiCmd, ApiEvent, ApiHandle, ApiMode, ArtistIntent, GuiSearchGroup, PlaylistIntent, Song,
-    ytmusic,
+    ApiCmd, ApiEvent, ApiHandle, ApiMode, ArtistIntent, GuiSearchGroup, GuiSearchRequestId,
+    PlaylistIntent, Song, ytmusic,
 };
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 pub(super) const STREAMING_YTDLP_CACHE_MAX: usize = 512;
 const API_INTERACTIVE_QUEUE: usize = 256;
 const API_BULK_QUEUE: usize = 256;
+const API_SEARCH_RESULT_LIMIT: usize = 50;
+const ALL_SERVER_SEARCH_BUDGET: Duration = Duration::from_millis(1_500);
 
 /// Spawn the API actor, returning its handle immediately.
 ///
@@ -63,36 +65,201 @@ async fn gui_search_groups(
     source: SearchSource,
     config: &SearchConfig,
 ) -> Vec<GuiSearchGroup> {
-    let url_like = crate::media::parse_youtube_playlist_id(query).is_some()
-        || crate::media::parse_youtube_video_id(query).is_some();
-    let targets: Vec<SearchSource> = if source == SearchSource::All && !url_like {
+    let targets = gui_search_targets(query, source, config);
+    futures::future::join_all(targets.into_iter().map(|target| async move {
+        let result = if target == SearchSource::OpenSubsonic {
+            budget_server_search(search_open_subsonic(query, config))
+                .await
+                .0
+        } else {
+            search_one_interactive_source(api, query, target, config).await
+        };
+        match result {
+            Ok(songs) => GuiSearchGroup {
+                source: target,
+                songs,
+                error: None,
+            },
+            Err(error) => GuiSearchGroup {
+                source: target,
+                songs: Vec::new(),
+                error: Some(sanitize::sanitize_error_text(format!("{error:#}"))),
+            },
+        }
+    }))
+    .await
+}
+
+fn gui_search_targets(
+    query: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+) -> Vec<SearchSource> {
+    if is_youtube_url_query(query) {
+        vec![SearchSource::Youtube]
+    } else if source == SearchSource::All {
         let enabled = config.enabled_sources();
         if enabled.is_empty() {
             vec![SearchSource::Youtube]
         } else {
             enabled
         }
-    } else if source == SearchSource::All {
-        vec![SearchSource::Youtube]
     } else {
         vec![source]
-    };
-    let mut groups = Vec::with_capacity(targets.len());
-    for target in targets {
-        match api.search_songs(query, target, config).await {
-            Ok(songs) => groups.push(GuiSearchGroup {
-                source: target,
-                songs,
-                error: None,
-            }),
-            Err(e) => groups.push(GuiSearchGroup {
-                source: target,
-                songs: Vec::new(),
-                error: Some(sanitize::sanitize_error_text(format!("{e:#}"))),
-            }),
+    }
+}
+
+async fn search_one_interactive_source(
+    api: &ytmusic::YtMusicApi,
+    query: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+) -> anyhow::Result<Vec<Song>> {
+    if source == SearchSource::OpenSubsonic {
+        search_open_subsonic(query, config).await
+    } else {
+        api.search_songs(query, source, config).await
+    }
+}
+
+async fn search_interactive_reported(
+    api: &ytmusic::YtMusicApi,
+    query: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+) -> anyhow::Result<(Vec<Song>, bool)> {
+    if is_youtube_url_query(query) {
+        return api.search_songs_reported(query, source, config).await;
+    }
+    match source {
+        SearchSource::OpenSubsonic => {
+            let (result, timed_out) =
+                budget_server_search(search_open_subsonic(query, config)).await;
+            Ok((result?, timed_out))
+        }
+        SearchSource::All => {
+            let public_enabled = !config.enabled_public_sources().is_empty();
+            let server_enabled = config.is_enabled(SearchSource::OpenSubsonic);
+            let public = async {
+                if public_enabled {
+                    Some(
+                        api.search_songs_reported(query, SearchSource::All, config)
+                            .await,
+                    )
+                } else {
+                    None
+                }
+            };
+            let server = async {
+                if server_enabled {
+                    Some(budget_server_search(search_open_subsonic(query, config)).await)
+                } else {
+                    None
+                }
+            };
+            let (public, server) = tokio::join!(public, server);
+            merge_all_search_results(public, server)
+        }
+        _ => api.search_songs_reported(query, source, config).await,
+    }
+}
+
+async fn search_open_subsonic(query: &str, config: &SearchConfig) -> anyhow::Result<Vec<Song>> {
+    if !config.is_enabled(SearchSource::OpenSubsonic) {
+        anyhow::bail!(
+            "{} is disabled in Settings → General",
+            SearchSource::OpenSubsonic.label()
+        );
+    }
+    let handle = crate::open_subsonic::current_handle()
+        .ok_or_else(|| anyhow::anyhow!("music server is off"))?;
+    handle
+        .search(query, API_SEARCH_RESULT_LIMIT as u32)
+        .await
+        .map(|songs| songs.into_iter().map(Song::from_open_subsonic).collect())
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+async fn budget_server_search<F>(future: F) -> (anyhow::Result<Vec<Song>>, bool)
+where
+    F: std::future::Future<Output = anyhow::Result<Vec<Song>>>,
+{
+    match tokio::time::timeout(ALL_SERVER_SEARCH_BUDGET, future).await {
+        Ok(result) => (result, false),
+        Err(_) => (Err(anyhow::anyhow!("music server search timed out")), true),
+    }
+}
+
+fn merge_all_search_results(
+    public: Option<anyhow::Result<(Vec<Song>, bool)>>,
+    server: Option<(anyhow::Result<Vec<Song>>, bool)>,
+) -> anyhow::Result<(Vec<Song>, bool)> {
+    let mut public_songs = Vec::new();
+    let mut server_songs = Vec::new();
+    let mut errors = Vec::new();
+    let mut had_success = false;
+    let mut timed_out = false;
+
+    if let Some(result) = public {
+        match result {
+            Ok((incoming, public_timed_out)) => {
+                had_success = true;
+                timed_out = public_timed_out;
+                public_songs = incoming;
+            }
+            Err(error) => errors.push(sanitize::sanitize_error_text(format!("{error:#}"))),
         }
     }
-    groups
+    if let Some((result, server_timed_out)) = server {
+        timed_out |= server_timed_out;
+        match result {
+            Ok(incoming) => {
+                had_success = true;
+                server_songs = incoming;
+            }
+            Err(error) => errors.push(sanitize::sanitize_error_text(format!("{error:#}"))),
+        }
+    }
+    let songs = interleave_unique(public_songs, server_songs, API_SEARCH_RESULT_LIMIT);
+    if songs.is_empty() && !errors.is_empty() && !had_success {
+        anyhow::bail!("all enabled sources failed ({})", errors.join("; "));
+    }
+    for error in errors {
+        tracing::warn!(error = %error, "one search source failed; returning partial results");
+    }
+    Ok((songs, timed_out))
+}
+
+fn interleave_unique(public: Vec<Song>, server: Vec<Song>, limit: usize) -> Vec<Song> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut songs = Vec::with_capacity(limit.min(public.len().saturating_add(server.len())));
+    let mut seen = HashSet::new();
+    let mut public = public.into_iter();
+    let mut server = server.into_iter();
+    loop {
+        let mut advanced = false;
+        for next in [&mut public, &mut server] {
+            if let Some(song) = next.next() {
+                advanced = true;
+                if seen.insert(song.video_id.clone()) {
+                    songs.push(song);
+                    if songs.len() >= limit {
+                        return songs;
+                    }
+                }
+            }
+        }
+        if !advanced {
+            return songs;
+        }
+    }
+}
+
+fn is_youtube_url_query(query: &str) -> bool {
+    crate::media::parse_youtube_playlist_id(query).is_some()
+        || crate::media::parse_youtube_video_id(query).is_some()
 }
 
 async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
@@ -109,6 +276,68 @@ async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
     (api, mode)
 }
 
+async fn interactive_search_event(
+    api: &ytmusic::YtMusicApi,
+    request_id: u64,
+    query: String,
+    source: SearchSource,
+    config: SearchConfig,
+) -> ApiEvent {
+    match search_interactive_reported(api, &query, source, &config).await {
+        Ok((songs, timed_out)) => {
+            let query_log = crate::util::query::query_log_preview(&query);
+            tracing::info!(
+                count = songs.len(),
+                query_bytes = query_log.bytes,
+                query_chars = query_log.chars,
+                query_preview = %query_log.preview,
+                query_truncated = query_log.truncated,
+                source = %source.code(),
+                timed_out,
+                "search results"
+            );
+            ApiEvent::SearchResults {
+                request_id,
+                query,
+                source,
+                songs,
+                timed_out,
+            }
+        }
+        Err(error) => {
+            let error = sanitize::sanitize_error_text(format!("{error:#}"));
+            tracing::warn!(source = %source.code(), error = %error, "search failed");
+            ApiEvent::SearchError {
+                request_id,
+                source,
+                error,
+            }
+        }
+    }
+}
+
+async fn gui_search_event(
+    api: &ytmusic::YtMusicApi,
+    request_id: GuiSearchRequestId,
+    query: String,
+    source: SearchSource,
+    config: SearchConfig,
+) -> ApiEvent {
+    let groups = gui_search_groups(api, &query, source, &config).await;
+    let query_log = crate::util::query::query_log_preview(&query);
+    tracing::info!(
+        request_id = ?request_id,
+        query_bytes = query_log.bytes,
+        query_chars = query_log.chars,
+        query_preview = %query_log.preview,
+        query_truncated = query_log.truncated,
+        source = %source.code(),
+        groups = groups.len(),
+        "gui search completed"
+    );
+    ApiEvent::GuiSearchCompleted { request_id, groups }
+}
+
 async fn run_interactive_actor<F>(
     api: Arc<ytmusic::YtMusicApi>,
     mut rx: Receiver<ApiCmd>,
@@ -116,6 +345,7 @@ async fn run_interactive_actor<F>(
 ) where
     F: Fn(ApiEvent) + Send + Sync + 'static,
 {
+    let mut dedicated_server_search: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search {
@@ -124,38 +354,20 @@ async fn run_interactive_actor<F>(
                 source,
                 config,
             } => {
-                let event = match api.search_songs_reported(&query, source, &config).await {
-                    Ok((songs, timed_out)) => {
-                        let query_log = crate::util::query::query_log_preview(&query);
-                        tracing::info!(
-                            count = songs.len(),
-                            query_bytes = query_log.bytes,
-                            query_chars = query_log.chars,
-                            query_preview = %query_log.preview,
-                            query_truncated = query_log.truncated,
-                            source = %source.code(),
-                            timed_out,
-                            "search results"
+                if source == SearchSource::OpenSubsonic {
+                    if let Some(task) = dedicated_server_search.take() {
+                        task.abort();
+                    }
+                    let api = Arc::clone(&api);
+                    let emit = Arc::clone(&emit);
+                    dedicated_server_search = Some(tokio::spawn(async move {
+                        emit(
+                            interactive_search_event(&api, request_id, query, source, config).await,
                         );
-                        ApiEvent::SearchResults {
-                            request_id,
-                            query,
-                            source,
-                            songs,
-                            timed_out,
-                        }
-                    }
-                    Err(e) => {
-                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
-                        tracing::warn!(source = %source.code(), error = %error, "search failed");
-                        ApiEvent::SearchError {
-                            request_id,
-                            source,
-                            error,
-                        }
-                    }
-                };
-                emit(event);
+                    }));
+                } else {
+                    emit(interactive_search_event(&api, request_id, query, source, config).await);
+                }
             }
             ApiCmd::GuiSearch {
                 request_id,
@@ -163,19 +375,18 @@ async fn run_interactive_actor<F>(
                 source,
                 config,
             } => {
-                let groups = gui_search_groups(&api, &query, source, &config).await;
-                let query_log = crate::util::query::query_log_preview(&query);
-                tracing::info!(
-                    request_id = ?request_id,
-                    query_bytes = query_log.bytes,
-                    query_chars = query_log.chars,
-                    query_preview = %query_log.preview,
-                    query_truncated = query_log.truncated,
-                    source = %source.code(),
-                    groups = groups.len(),
-                    "gui search completed"
-                );
-                emit(ApiEvent::GuiSearchCompleted { request_id, groups });
+                if source == SearchSource::OpenSubsonic {
+                    if let Some(task) = dedicated_server_search.take() {
+                        task.abort();
+                    }
+                    let api = Arc::clone(&api);
+                    let emit = Arc::clone(&emit);
+                    dedicated_server_search = Some(tokio::spawn(async move {
+                        emit(gui_search_event(&api, request_id, query, source, config).await);
+                    }));
+                } else {
+                    emit(gui_search_event(&api, request_id, query, source, config).await);
+                }
             }
             ApiCmd::ResolveTrack { seq, query, config } => {
                 // The same innertube→yt-dlp search as the Search screen, but the answer
@@ -276,6 +487,9 @@ async fn run_interactive_actor<F>(
                 );
             }
         }
+    }
+    if let Some(task) = dedicated_server_search {
+        task.abort();
     }
 }
 
@@ -602,5 +816,105 @@ pub(super) fn enforce_streaming_cache_cap(
             return;
         };
         cache.remove(&oldest);
+    }
+}
+
+#[cfg(test)]
+mod open_subsonic_search_tests {
+    use super::*;
+
+    fn song(id: &str) -> Song {
+        Song::remote(id, format!("Song {id}"), "Artist", "3:00")
+    }
+
+    #[test]
+    fn all_search_keeps_public_results_when_server_is_offline() {
+        let result = merge_all_search_results(
+            Some(Ok((vec![song("public")], false))),
+            Some((Err(anyhow::anyhow!("music server is offline")), false)),
+        )
+        .unwrap();
+        assert_eq!(result.0.len(), 1);
+        assert_eq!(result.0[0].video_id, "public");
+        assert!(!result.1);
+    }
+
+    #[test]
+    fn all_search_keeps_server_results_when_public_sources_fail() {
+        let result = merge_all_search_results(
+            Some(Err(anyhow::anyhow!("public source failed"))),
+            Some((Ok(vec![song("server")]), false)),
+        )
+        .unwrap();
+        assert_eq!(result.0[0].video_id, "server");
+    }
+
+    #[test]
+    fn all_search_deduplicates_and_only_fails_when_every_source_fails() {
+        let result = merge_all_search_results(
+            Some(Ok((vec![song("same")], true))),
+            Some((Ok(vec![song("same"), song("other")]), false)),
+        )
+        .unwrap();
+        assert_eq!(
+            result
+                .0
+                .iter()
+                .map(|song| song.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["same", "other"]
+        );
+        assert!(result.1);
+        assert!(
+            merge_all_search_results(
+                Some(Err(anyhow::anyhow!("public failed"))),
+                Some((Err(anyhow::anyhow!("server failed")), false)),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn all_search_fairly_includes_server_rows_when_public_hits_the_limit() {
+        let public = (0..API_SEARCH_RESULT_LIMIT)
+            .map(|index| song(&format!("public-{index}")))
+            .collect();
+        let result = merge_all_search_results(
+            Some(Ok((public, false))),
+            Some((Ok(vec![song("server-only")]), false)),
+        )
+        .unwrap();
+        assert_eq!(result.0.len(), API_SEARCH_RESULT_LIMIT);
+        assert!(result.0.iter().any(|song| song.video_id == "server-only"));
+        assert_eq!(result.0[0].video_id, "public-0");
+        assert_eq!(result.0[1].video_id, "server-only");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn all_search_server_branch_has_an_independent_latency_budget() {
+        let task = tokio::spawn(budget_server_search(std::future::pending::<
+            anyhow::Result<Vec<Song>>,
+        >()));
+        tokio::time::advance(ALL_SERVER_SEARCH_BUDGET).await;
+        let (result, timed_out) = task.await.unwrap();
+        assert!(result.is_err());
+        assert!(timed_out);
+    }
+
+    #[test]
+    fn youtube_urls_short_circuit_every_gui_source_selection() {
+        let mut config = SearchConfig::default();
+        config.set_enabled(SearchSource::OpenSubsonic, true);
+        assert_eq!(
+            gui_search_targets(
+                "https://youtu.be/dQw4w9WgXcQ",
+                SearchSource::OpenSubsonic,
+                &config,
+            ),
+            vec![SearchSource::Youtube]
+        );
+        let all = gui_search_targets("ordinary query", SearchSource::All, &config);
+        assert!(all.contains(&SearchSource::Youtube));
+        assert!(all.contains(&SearchSource::OpenSubsonic));
     }
 }

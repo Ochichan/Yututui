@@ -5,6 +5,7 @@ fn keyboard_moves_and_activates_the_selected_sync_row() {
     let mut app = App::new(100);
     app.open_settings();
     app.settings.as_mut().unwrap().tab = SettingsTab::Sync;
+    app.server.settings.area = SyncArea::PersonalState;
 
     assert_eq!(app.personal_state.sync_ui.row, 0);
     app.update(Msg::Key(key(KeyCode::Down)));
@@ -38,6 +39,7 @@ fn sync_rows_have_dedicated_mouse_targets_and_activate_on_click() {
     let mut app = App::new(100);
     app.open_settings();
     app.settings.as_mut().unwrap().tab = SettingsTab::Sync;
+    app.server.settings.area = SyncArea::PersonalState;
 
     let _ = render_app_buffer(&app, 80, 24);
     assert!(
@@ -62,6 +64,7 @@ fn thirty_column_sync_layout_keeps_a_selectable_row_visible() {
     app.config.retro_mode = true;
     app.open_settings();
     app.settings.as_mut().unwrap().tab = SettingsTab::Sync;
+    app.server.settings.area = SyncArea::PersonalState;
 
     let buffer = render_app_buffer(&app, 30, 30);
     assert!(
@@ -82,6 +85,7 @@ fn renderer_uses_the_live_sync_projection() {
     app.config.retro_mode = true;
     app.open_settings();
     app.settings.as_mut().unwrap().tab = SettingsTab::Sync;
+    app.server.settings.area = SyncArea::PersonalState;
     app.personal_state.sync_ui.lifecycle = crate::sync::service::SyncLifecycleState::Active;
     app.personal_state.sync_ui.status.configured = true;
     app.personal_state.sync_ui.status.state = crate::sync::SyncHealthState::UpToDate;
@@ -99,6 +103,7 @@ fn renderer_exposes_each_recoverable_unfinished_connection_action() {
     app.config.retro_mode = true;
     app.open_settings();
     app.settings.as_mut().unwrap().tab = SettingsTab::Sync;
+    app.server.settings.area = SyncArea::PersonalState;
 
     let buffer = render_app_buffer(&app, 100, 30);
 

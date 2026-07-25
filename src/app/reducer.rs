@@ -1022,6 +1022,16 @@ impl App {
                 _ => {}
             }
         }
+        if self.server.settings.modal_open() {
+            match &msg {
+                Msg::MouseDoubleClick { .. }
+                | Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseScroll { .. } => return Vec::new(),
+                _ => {}
+            }
+        }
         // A picker-opening/applying press owns its paired double-click. Check this before the
         // open-modal route: the second press of a swatch double-click arrives after the first has
         // opened the picker and must not be reinterpreted against the newly rendered popup.
@@ -1101,6 +1111,12 @@ impl App {
             }
             Msg::Data(DataMsg::SyncUi(event)) => {
                 return self.finish_sync_ui_event(event);
+            }
+            Msg::Server(ServerEvent::Settings(event)) => {
+                return self.finish_music_server_event(event);
+            }
+            Msg::Server(ServerEvent::Library(event)) => {
+                return self.finish_server_library_event(event);
             }
             Msg::Media(cmd) => return self.apply_media(cmd),
             Msg::MediaArtworkReady(ready) => {

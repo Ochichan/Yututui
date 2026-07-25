@@ -329,6 +329,88 @@ async fn accepted_seek_uses_fast_precision_and_one_epoch_in_both_owners() {
 }
 
 #[tokio::test]
+async fn open_subsonic_load_uses_the_same_typed_destination_and_epoch_in_both_owners() {
+    let (mut app, mut engine) = hermetic_pair();
+    let item = crate::open_subsonic::OpenSubsonicItemRef::new(
+        crate::open_subsonic::BackendId::new("backend-a").unwrap(),
+        crate::open_subsonic::AccountScopeId::new("account-a").unwrap(),
+        crate::open_subsonic::ItemId::new("song-a").unwrap(),
+    );
+    let item_id = item.item_id().as_str().to_owned();
+    let server_song = Song::from_source(
+        crate::search_source::SearchSource::OpenSubsonic,
+        item_id,
+        "Server song",
+        "Server artist",
+        "3:00",
+        crate::api::PlayableRef::OpenSubsonic {
+            item,
+            cover_art_id: None,
+        },
+    );
+    let server_video_id = server_song.video_id.clone();
+    let previous = song("previous");
+    let previous_video_id = previous.video_id.clone();
+    let mut queue = Queue::default();
+    queue.set(vec![server_song, previous], 1);
+    let snapshot = queue.snapshot();
+    app.queue.restore_snapshot(snapshot.clone());
+    engine.restore_queue_snapshot(snapshot, RNG_SEED);
+    app.install_seek_parity_state(&previous_video_id, 12.0, 180.0);
+    let mut engine_player = engine.install_seek_parity_player(&previous_video_id, 12.0, 180.0);
+    let epochs = PositionEpochs::capture(&app, &engine);
+
+    let (reply_tx, mut reply_rx) = oneshot::channel();
+    let app_commands = app.update(Msg::Remote(
+        RemoteCommand::QueuePlay { position: 0 },
+        reply_tx.into(),
+    ));
+    let app_load = app_commands
+        .iter()
+        .flat_map(Cmd::player_commands)
+        .find_map(|command| match command {
+            crate::player::PlayerCmd::Load(load) => Some(load.clone()),
+            _ => None,
+        })
+        .expect("App OpenSubsonic load");
+    admit_app_player_intents(&mut app, app_commands);
+    assert!(reply_rx.try_recv().expect("App queue-play reply").ok);
+
+    let (engine_reply, shutdown, effects) = engine
+        .handle_remote(RemoteCommand::QueuePlay { position: 0 })
+        .await;
+    assert!(engine_reply.ok);
+    assert!(!shutdown);
+    assert!(effects.is_empty());
+    let engine_load = match recv_parity_player_command(&mut engine_player).await {
+        crate::player::PlayerCmd::Load(load) => load,
+        _ => panic!("daemon OpenSubsonic load"),
+    };
+
+    assert_eq!(app_load, engine_load);
+    assert_eq!(
+        app_load.destination().credentialed_target(),
+        Some(
+            &crate::playback_target::CredentialedPlaybackRef::OpenSubsonic {
+                backend_id: "backend-a".to_owned(),
+                account_scope_id: "account-a".to_owned(),
+                item_id: "song-a".to_owned(),
+            }
+        )
+    );
+    assert_eq!(
+        app.queue.current().map(|song| song.video_id.as_str()),
+        Some(server_video_id.as_str())
+    );
+    epochs.assert_delta(
+        "OpenSubsonic queue load",
+        PositionEpochs::capture(&app, &engine),
+        1,
+    );
+    assert_parity("OpenSubsonic queue load", &app, &engine);
+}
+
+#[tokio::test]
 async fn midtrack_source_recovery_trace_and_epoch_match_in_both_owners() {
     const ERROR: &str = "connection reset while reading source";
     let (mut app, mut engine) = hermetic_pair();

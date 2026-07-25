@@ -211,6 +211,77 @@ fn contradictory_legacy_rating_repairs_to_disliked() {
 }
 
 #[test]
+fn open_subsonic_legacy_projection_preserves_exact_server_identity() {
+    use crate::open_subsonic::{AccountScopeId, BackendId, ItemId, OpenSubsonicItemRef};
+
+    let item = OpenSubsonicItemRef::new(
+        BackendId::new("backend-a").unwrap(),
+        AccountScopeId::new("account-a").unwrap(),
+        ItemId::new("song-1").unwrap(),
+    );
+    let mut song = crate::api::Song::from_source(
+        crate::search_source::SearchSource::OpenSubsonic,
+        "song-1",
+        "Server title",
+        "Server artist",
+        "3:01",
+        crate::api::PlayableRef::OpenSubsonic {
+            item: item.clone(),
+            cover_art_id: None,
+        },
+    );
+    song.album = Some("Server album".to_owned());
+    song.duration_secs = Some(181);
+    song.isrc = Some("ISRC00000001".to_owned());
+
+    let portable = super::legacy::portable_track(&song);
+    assert_eq!(
+        portable.key,
+        PortableTrackKey::OpenSubsonic {
+            backend_id: "backend-a".to_owned(),
+            account_scope_id: "account-a".to_owned(),
+            item_id: "song-1".to_owned(),
+        }
+    );
+
+    let restored = super::legacy::portable_track_to_song(portable.clone());
+    assert_eq!(
+        restored.source,
+        crate::search_source::SearchSource::OpenSubsonic
+    );
+    assert_eq!(restored.video_id, item.stable_track_id());
+    assert_eq!(
+        restored.playable,
+        Some(crate::api::PlayableRef::OpenSubsonic {
+            item,
+            cover_art_id: None,
+        })
+    );
+    assert_eq!(restored.album.as_deref(), Some("Server album"));
+    assert_eq!(restored.duration_secs, Some(181));
+    assert_eq!(restored.isrc.as_deref(), Some("ISRC00000001"));
+    assert!(restored.local_path.is_none());
+    assert!(restored.origin_url.is_none());
+    assert_eq!(super::legacy::portable_track(&restored), portable);
+}
+
+#[test]
+fn portable_open_subsonic_identity_rejects_oversized_multibyte_ids() {
+    let key = PortableTrackKey::OpenSubsonic {
+        backend_id: "界".repeat(200),
+        account_scope_id: "account".to_owned(),
+        item_id: "song".to_owned(),
+    };
+
+    assert!(matches!(
+        key.validate(),
+        Err(PersonalStateError::InvalidOperation(
+            "invalid OpenSubsonic backend identity"
+        ))
+    ));
+}
+
+#[test]
 fn validation_rejects_private_claims_and_deserialized_identifier_bypasses() {
     let mut state = PersonalStateV2::empty("dataset".to_owned()).unwrap();
     state.metadata.filesystem_paths_included = true;

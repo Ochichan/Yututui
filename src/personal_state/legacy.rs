@@ -404,7 +404,13 @@ impl LegacyProjection {
 }
 
 pub(crate) fn portable_track(song: &crate::api::Song) -> PortableTrack {
-    let key = if let Some(youtube_id) = song.youtube_id() {
+    let key = if let Some(crate::api::PlayableRef::OpenSubsonic { item, .. }) = &song.playable {
+        PortableTrackKey::OpenSubsonic {
+            backend_id: item.backend_id().as_str().to_owned(),
+            account_scope_id: item.account_scope_id().as_str().to_owned(),
+            item_id: item.item_id().as_str().to_owned(),
+        }
+    } else if let Some(youtube_id) = song.youtube_id() {
         PortableTrackKey::Catalog {
             provider: "youtube".to_owned(),
             exact_catalog_id: youtube_id.to_owned(),
@@ -435,13 +441,14 @@ pub(crate) fn portable_track(song: &crate::api::Song) -> PortableTrack {
 }
 
 pub(crate) fn portable_track_to_song(track: PortableTrack) -> crate::api::Song {
-    let (video_id, source) = match &track.key {
+    let (video_id, source, playable) = match &track.key {
         PortableTrackKey::Catalog {
             provider,
             exact_catalog_id,
         } if provider == "youtube" || provider == "yt" => (
             exact_catalog_id.clone(),
             crate::search_source::SearchSource::Youtube,
+            None,
         ),
         PortableTrackKey::Catalog {
             provider,
@@ -449,25 +456,37 @@ pub(crate) fn portable_track_to_song(track: PortableTrack) -> crate::api::Song {
         } => (
             exact_catalog_id.clone(),
             source_from_provider(provider).unwrap_or_default(),
+            None,
         ),
         PortableTrackKey::OpenSubsonic {
             backend_id,
             account_scope_id,
             item_id,
-        } => (
-            format!(
-                "subsonic:{}",
-                stable_hash(&format!(
-                    "{backend_id}\u{0}{account_scope_id}\u{0}{item_id}"
-                ))
-            ),
-            crate::search_source::SearchSource::Youtube,
-        ),
+        } => {
+            use crate::open_subsonic::{AccountScopeId, BackendId, ItemId, OpenSubsonicItemRef};
+
+            let item = OpenSubsonicItemRef::new(
+                BackendId::new(backend_id.clone())
+                    .expect("validated portable OpenSubsonic backend id"),
+                AccountScopeId::new(account_scope_id.clone())
+                    .expect("validated portable OpenSubsonic account scope id"),
+                ItemId::new(item_id.clone()).expect("validated portable OpenSubsonic item id"),
+            );
+            (
+                item.stable_track_id(),
+                crate::search_source::SearchSource::OpenSubsonic,
+                Some(crate::api::PlayableRef::OpenSubsonic {
+                    item,
+                    cover_art_id: None,
+                }),
+            )
+        }
         PortableTrackKey::LocalPlaceholder {
             portable_placeholder_id,
         } => (
             format!("local-placeholder:{portable_placeholder_id}"),
             crate::search_source::SearchSource::Youtube,
+            None,
         ),
     };
     let duration = track.duration_secs.map_or_else(String::new, |seconds| {
@@ -475,6 +494,7 @@ pub(crate) fn portable_track_to_song(track: PortableTrack) -> crate::api::Song {
     });
     let mut song = crate::api::Song::remote(video_id, track.title, track.artist, duration);
     song.source = source;
+    song.playable = playable;
     song.album = track.album;
     song.duration_secs = track.duration_secs;
     song.isrc = track.isrc;

@@ -953,7 +953,9 @@ fn catalog_for_song(song: &Song) -> Option<PortableCatalogId> {
             id: song.video_id.clone(),
         });
     }
-    if song.source == SearchSource::All {
+    // Schema v1 has no server/account-scoped identity. Omitting the catalog key keeps the
+    // sanitized metadata without pretending an opaque row id is a portable server identity.
+    if matches!(song.source, SearchSource::OpenSubsonic | SearchSource::All) {
         return None;
     }
     let prefix = format!("{}:", song.source.id_prefix());
@@ -1133,6 +1135,7 @@ fn source_sort_key(source: SearchSource) -> &'static str {
         SearchSource::Audius => "audius",
         SearchSource::Jamendo => "jamendo",
         SearchSource::InternetArchive => "internet_archive",
+        SearchSource::OpenSubsonic => "open_subsonic",
         SearchSource::RadioBrowser => "radio_browser",
         SearchSource::All => "all",
     }

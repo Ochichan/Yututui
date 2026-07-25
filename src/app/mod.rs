@@ -83,6 +83,20 @@ mod search_types;
 pub use search_types::*;
 mod types;
 pub use types::*;
+mod server_library;
+pub use server_library::{
+    LibrarySource, SERVER_LIBRARY_PAGE_LIMIT, ServerLibraryCommand, ServerLibraryDetailTarget,
+    ServerLibraryEvent, ServerLibraryFailure, ServerLibraryState,
+};
+mod server_settings;
+pub use server_settings::{
+    MusicServerBusy, MusicServerCommand, MusicServerCredentialMode, MusicServerEvent,
+    MusicServerFailure, MusicServerHealth, MusicServerIdentityIntent, MusicServerRefreshOutcome,
+    MusicServerSettingsState, MusicServerSetupField, MusicServerSetupForm, MusicServerSetupInput,
+    MusicServerSummary, MusicServerWizard, SyncArea,
+};
+mod server;
+pub use server::{ServerEvent, ServerUiState};
 
 mod automatic_sync;
 mod bootstrap;
@@ -410,6 +424,8 @@ pub struct App {
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
+    /// OpenSubsonic browsing and redacted settings state, isolated from the local library.
+    pub server: ServerUiState,
     /// Cross-frame cache of the visible library rows (dedup + filter are O(library) and
     /// used to run on every frame *and* every navigation event). Keyed on the source
     /// revisions/lengths + tab + filter; see `library_reducer`. Interior mutability so

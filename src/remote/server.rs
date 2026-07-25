@@ -548,6 +548,7 @@ fn default_capabilities() -> Vec<String> {
         super::PERSONAL_EXPORT_CAPABILITY.to_string(),
         super::PERSONAL_STATE_V2_CAPABILITY.to_string(),
         super::WEB_DAV_SYNC_CAPABILITY.to_string(),
+        super::OPEN_SUBSONIC_CAPABILITY.to_string(),
         RETAINED_REQUEST_OUTCOMES_CAPABILITY.to_string(),
         // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
         // delivers initial snapshots through the owner-lane Publisher.
@@ -558,7 +559,10 @@ fn default_capabilities() -> Vec<String> {
 fn secondary_capabilities() -> Vec<String> {
     default_capabilities()
         .into_iter()
-        .filter(|capability| capability != super::WEB_DAV_SYNC_CAPABILITY)
+        .filter(|capability| {
+            capability != super::WEB_DAV_SYNC_CAPABILITY
+                && capability != super::OPEN_SUBSONIC_CAPABILITY
+        })
         .collect()
 }
 
@@ -574,14 +578,19 @@ fn standalone_capabilities_advertise_personal_export() {
     assert!(default_capabilities().contains(&super::PERSONAL_EXPORT_CAPABILITY.to_string()));
     assert!(default_capabilities().contains(&super::PERSONAL_STATE_V2_CAPABILITY.to_string()));
     assert!(default_capabilities().contains(&super::WEB_DAV_SYNC_CAPABILITY.to_string()));
+    assert!(default_capabilities().contains(&super::OPEN_SUBSONIC_CAPABILITY.to_string()));
 }
 
 #[cfg(test)]
 #[test]
-fn secondary_capabilities_do_not_advertise_personal_sync_mutation() {
+fn secondary_capabilities_do_not_advertise_owner_bound_integrations() {
     assert!(
         !secondary_capabilities().contains(&super::WEB_DAV_SYNC_CAPABILITY.to_string()),
         "a read-only --new-instance must not invite a WebDAV mutation"
+    );
+    assert!(
+        !secondary_capabilities().contains(&super::OPEN_SUBSONIC_CAPABILITY.to_string()),
+        "a read-only --new-instance must not advertise the primary owner's music server"
     );
     assert!(secondary_capabilities().contains(&"status".to_string()));
     assert!(secondary_capabilities().contains(&"events-v8".to_string()));

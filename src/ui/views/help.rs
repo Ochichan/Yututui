@@ -8,7 +8,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{ActiveSearchSurface, App, Mode};
+use crate::app::{ActiveSearchSurface, App, LibrarySource, Mode};
 use crate::keymap::{self, Action, KeyContext, KeyMap};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -261,12 +261,28 @@ fn visible_keymap(app: &App) -> &KeyMap {
 
 fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     let keymap = visible_keymap(app);
+    let server_library_active = app.mode == Mode::Library
+        && !app.local_dedicated_mode
+        && app.server.library.source == LibrarySource::OpenSubsonic;
     let mut out = Vec::new();
     for (ctx, actions) in keymap::groups() {
         let mut rows: Vec<(String, String)> = actions
             .iter()
+            .copied()
+            .filter(|action| {
+                !server_library_active
+                    || ctx != KeyContext::Library
+                    || matches!(
+                        action,
+                        Action::Confirm
+                            | Action::Enqueue
+                            | Action::PlayAll
+                            | Action::AddToPlaylist
+                            | Action::Back
+                    )
+            })
             .map(|action| {
-                let key = keymap.chord(ctx, *action).map_or_else(
+                let key = keymap.chord(ctx, action).map_or_else(
                     || "—".to_owned(),
                     |chord| keymap::format_chord_for_display(chord, app.retro_mode()),
                 );
@@ -282,6 +298,52 @@ fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
             rows.insert(0, fixed_enter_row(Action::Confirm.human_label_for(ctx)));
         }
         out.push((ctx.title().to_owned(), rows));
+    }
+    if server_library_active {
+        let mapped = |action| {
+            keymap.chord(KeyContext::Common, action).map_or_else(
+                || "—".to_owned(),
+                |chord| keymap::format_chord_for_display(chord, app.retro_mode()),
+            )
+        };
+        out.push((
+            t!(
+                "Music server library",
+                "음악 서버 보관함",
+                "音楽サーバーライブラリ"
+            )
+            .to_owned(),
+            vec![
+                (
+                    mapped(Action::FocusPrev),
+                    t!("Previous section", "이전 섹션", "前のセクション").to_owned(),
+                ),
+                (
+                    mapped(Action::FocusNext),
+                    t!("Next section", "다음 섹션", "次のセクション").to_owned(),
+                ),
+                fixed_help_row("1–5", "Choose section", "섹션 선택", "セクションを選択"),
+                fixed_help_row(
+                    "[",
+                    "Previous server page",
+                    "이전 서버 페이지",
+                    "前のサーバーページ",
+                ),
+                fixed_help_row(
+                    "]",
+                    "Next server page",
+                    "다음 서버 페이지",
+                    "次のサーバーページ",
+                ),
+                fixed_help_row(
+                    "Left",
+                    "Return to local library",
+                    "로컬 보관함으로 돌아가기",
+                    "ローカルライブラリに戻る",
+                ),
+                fixed_help_row("Esc", "Back one level", "한 단계 뒤로", "1段階戻る"),
+            ],
+        ));
     }
     if app.mode == Mode::Search && app.active_search_surface() == ActiveSearchSurface::Local {
         out.push((
@@ -1028,6 +1090,66 @@ mod tests {
             ("a".to_owned(), "Play whole tab".to_owned()),
         ] {
             assert!(library.contains(&row), "cheat-sheet should list {row:?}");
+        }
+    }
+
+    #[test]
+    fn server_library_help_lists_only_supported_library_actions_and_fixed_navigation() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut app = App::new(100);
+        app.mode = Mode::Library;
+        app.server.library.source = LibrarySource::OpenSubsonic;
+        let groups = help_groups(&app);
+
+        let library = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Library").then_some(rows))
+            .expect("Library group");
+        for supported in [
+            "Play selected",
+            "Add to queue",
+            "Play whole tab",
+            "Add to playlist",
+            "Close Library",
+        ] {
+            assert!(
+                library.iter().any(|(_, label)| label == supported),
+                "missing supported action {supported:?}"
+            );
+        }
+        for unsupported in [
+            "Favorite / unfavorite",
+            "Download track",
+            "Download whole list",
+            "Remove / delete",
+            "Filter library",
+        ] {
+            assert!(
+                library.iter().all(|(_, label)| label != unsupported),
+                "server Library must not advertise {unsupported:?}"
+            );
+        }
+
+        let server = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Music server library").then_some(rows))
+            .expect("contextual server group");
+        for row in [
+            ("⇧Tab", "Previous section"),
+            ("Tab", "Next section"),
+            ("1–5", "Choose section"),
+            ("[", "Previous server page"),
+            ("]", "Next server page"),
+            ("Left", "Return to local library"),
+            ("Esc", "Back one level"),
+        ] {
+            assert!(
+                server
+                    .iter()
+                    .any(|(key, label)| key == row.0 && label == row.1),
+                "missing server help row {row:?}"
+            );
         }
     }
 
