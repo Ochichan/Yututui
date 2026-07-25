@@ -23,8 +23,14 @@
     { id: 'internet_archive', label: 'Internet Archive' },
     { id: 'radio_browser', label: 'Radio Browser' },
   ]);
+  // The embedded GUI does not expose server setup until the GUI-parity milestone, but a daemon
+  // may already return a server group. Keep that source out of the selectable chips while still
+  // giving the result group a human label.
   const LABELS: Record<SearchSource, string> = $derived(
-    Object.fromEntries(SOURCES.map((s) => [s.id, s.label])) as Record<SearchSource, string>,
+    Object.fromEntries([
+      ...SOURCES.map((s) => [s.id, s.label]),
+      ['open_subsonic', 'Music server'],
+    ]) as Record<SearchSource, string>,
   );
 
   let query = $state('');
@@ -91,11 +97,13 @@
               {#each g.tracks as track (track.video_id)}
                 <TrackRow {track} ondblclick={() => search.play(track)}>
                   {#snippet actions()}
-                    <button
-                      class="enq"
-                      title={t('search.download')}
-                      onclick={() => downloads.download(track)}>⬇</button
-                    >
+                    {#if track.source !== 'open_subsonic'}
+                      <button
+                        class="enq"
+                        title={t('search.download')}
+                        onclick={() => downloads.download(track)}>⬇</button
+                      >
+                    {/if}
                     <button
                       class="enq"
                       title={t('search.addToQueue')}

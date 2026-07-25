@@ -50,11 +50,15 @@ pub fn render(frame: &mut Frame, app: &App) {
     // the overlay stack below still runs either way — modals capture keys, so they must
     // stay visible.
     let mut tier = layout::tier(area);
-    // Settings has a purpose-built narrow tab strip and list layout. Keep it reachable at the
-    // issue-114 keyboard-only acceptance width even though the playback surface still needs the
-    // 32-column Mini boundary for its transport controls.
+    // Settings and the transient Server Library have purpose-built narrow selectors. Keep those
+    // issue-114 keyboard-only surfaces reachable at 30 columns even though ordinary playback and
+    // local-library screens still need the 32-column Mini boundary for their transport controls.
+    let issue_114_narrow_surface = app.mode == Mode::Settings
+        || (app.mode == Mode::Library
+            && !app.local_dedicated_mode
+            && app.server.library.source == crate::app::LibrarySource::OpenSubsonic);
     if tier == layout::UiTier::Mini
-        && app.mode == Mode::Settings
+        && issue_114_narrow_surface
         && area.width >= 30
         && area.height >= layout::MINI_MIN_H
     {
@@ -193,6 +197,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Draw this move-only wizard at the top level so its fields and actions always win z-order.
     if app.personal_state.sync_ui.modal_open() {
         views::settings::render_sync_wizard(frame, app, area);
+    }
+    if app.server.settings.modal_open() {
+        views::settings::render_music_server_wizard(frame, app, area);
     }
     retro::scrub_frame(frame, app);
 }

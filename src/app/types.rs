@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[path = "types/library.rs"]
+mod library;
+pub use library::LibraryTab;
 #[path = "types/scroll_surface.rs"]
 mod scroll_surface;
 pub use scroll_surface::ScrollSurface;
@@ -183,6 +186,8 @@ pub enum Msg {
     Recorder(crate::recorder::job::RecorderEvent),
     /// Search results, playlist-track fetches, and artist-page fetches.
     Search(SearchMsg),
+    /// A redacted settings result or bounded OpenSubsonic library result.
+    Server(ServerEvent),
     /// Local-data work completed: a download scan or portable personal-data export.
     Data(DataMsg),
     /// Local Deck index load/scan result.
@@ -376,6 +381,10 @@ pub enum Cmd {
     UpdateSeen { tag: String },
     /// Search queries and remote search-row fetches.
     Search(SearchCmd),
+    /// Test, commit, refresh, or remove the one configured music-server profile.
+    MusicServer(MusicServerCommand),
+    /// Read-only OpenSubsonic library page/detail fetches.
+    ServerLibrary(ServerLibraryCommand),
     /// Persist a store to disk (or clear one) via the debounced persistence actor. The
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
     /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
@@ -702,6 +711,24 @@ pub enum MouseTarget {
     SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
+    /// Switch between the local YuTuTui library and the configured music-server library.
+    LibrarySource(LibrarySource),
+    /// One of the five read-only music-server library sections.
+    ServerLibrarySection(crate::open_subsonic::ServerLibrarySection),
+    /// A generation-stamped server row. Old frames fail closed after paging or drill-down.
+    ServerLibraryRow {
+        generation: u64,
+        index: usize,
+    },
+    ServerLibraryBack {
+        generation: u64,
+    },
+    ServerLibraryPreviousPage {
+        generation: u64,
+    },
+    ServerLibraryNextPage {
+        generation: u64,
+    },
     /// A Local Deck sidebar section, by index into [`LocalSection::ALL`].
     LocalNav(usize),
     /// A row in the Local Deck list, by display index.
@@ -738,6 +765,15 @@ pub enum MouseTarget {
     /// An action or detail row in the privacy-safe Sync settings projection. Clicking selects
     /// the row and delegates to the same action path as Enter; informational rows safely no-op.
     SettingsSyncRow(usize),
+    /// One of the four plain-language areas inside the top-level Sync settings tab.
+    SettingsSyncArea(SyncArea),
+    /// A redacted music-server settings action row.
+    SettingsMusicServerRow(usize),
+    /// A field/action in the move-only music-server setup wizard.
+    MusicServerWizardField(usize),
+    MusicServerWizardPrimary,
+    MusicServerWizardSecondary,
+    MusicServerWizardReveal,
     /// A field in the move-only Sync setup/join/recovery wizard.
     SyncWizardField(usize),
     /// The wizard's affirmative action (continue, approve, merge, remove, or finish).
@@ -1007,55 +1043,6 @@ pub enum ActiveSearchSurface {
 pub struct TrackLyrics {
     pub video_id: Arc<str>,
     pub lines: std::sync::Arc<[LyricLine]>,
-}
-
-/// The lists in the library view.
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum LibraryTab {
-    #[default]
-    All,
-    Favorites,
-    History,
-    RadioFavorites,
-    Radio,
-    Downloads,
-    Playlists,
-}
-
-impl LibraryTab {
-    pub const NORMAL: [Self; 5] = [
-        Self::All,
-        Self::Favorites,
-        Self::History,
-        Self::Downloads,
-        Self::Playlists,
-    ];
-
-    pub const RADIO_MODE: [Self; 2] = [Self::RadioFavorites, Self::Radio];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            LibraryTab::All => t!("All", "전체", "すべて"),
-            LibraryTab::Favorites => t!("Favorites", "즐겨찾기", "お気に入り"),
-            LibraryTab::History => t!("History", "기록", "履歴"),
-            LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요", "ラジオ高評価"),
-            LibraryTab::Radio => t!("Radio History", "라디오 히스토리", "ラジオ履歴"),
-            LibraryTab::Downloads => t!("Downloads", "다운로드", "ダウンロード"),
-            LibraryTab::Playlists => t!("Playlists", "플레이리스트", "プレイリスト"),
-        }
-    }
-
-    pub fn compact_label(self) -> &'static str {
-        match self {
-            LibraryTab::All => t!("All", "전체", "すべて"),
-            LibraryTab::Favorites => t!("Fav", "즐겨찾기", "お気に入り"),
-            LibraryTab::History => t!("Hist", "기록", "履歴"),
-            LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요", "ラジオ高評価"),
-            LibraryTab::Radio => t!("R-Hist", "라디오 기록", "ラジオ履歴"),
-            LibraryTab::Downloads => t!("Down", "다운", "DL"),
-            LibraryTab::Playlists => t!("Lists", "플리", "リスト"),
-        }
-    }
 }
 
 /// Pending confirmation for entering or leaving the dedicated Radio UI mode.

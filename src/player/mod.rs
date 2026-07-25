@@ -21,7 +21,7 @@ pub mod proto;
 pub mod recovery;
 pub mod video;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -67,30 +67,58 @@ impl MediaSourceContext {
 }
 
 /// One playback destination and its non-inferable source semantics.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PlaybackLoad {
-    url: String,
+    destination: crate::playback_target::PlaybackDestination,
     source_context: MediaSourceContext,
 }
 
 impl PlaybackLoad {
     pub fn new(url: impl Into<String>, source_context: MediaSourceContext) -> Self {
+        Self::from_destination(
+            crate::playback_target::PlaybackDestination::direct(url),
+            source_context,
+        )
+    }
+
+    pub fn from_destination(
+        destination: crate::playback_target::PlaybackDestination,
+        source_context: MediaSourceContext,
+    ) -> Self {
         Self {
-            url: url.into(),
+            destination,
             source_context,
         }
     }
 
+    /// Compatibility accessor for direct targets. Credentialed targets never expose an upstream
+    /// URL and return a stable marker instead.
     pub fn url(&self) -> &str {
-        &self.url
+        self.destination
+            .direct_target()
+            .unwrap_or("<credentialed-playback>")
     }
 
     pub fn as_str(&self) -> &str {
         self.url()
     }
 
+    pub const fn destination(&self) -> &crate::playback_target::PlaybackDestination {
+        &self.destination
+    }
+
     pub const fn source_context(&self) -> MediaSourceContext {
         self.source_context
+    }
+}
+
+impl std::fmt::Debug for PlaybackLoad {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlaybackLoad")
+            .field("destination", &self.destination)
+            .field("source_context", &self.source_context)
+            .finish()
     }
 }
 
@@ -104,13 +132,13 @@ impl std::ops::Deref for PlaybackLoad {
 
 impl PartialEq<str> for PlaybackLoad {
     fn eq(&self, other: &str) -> bool {
-        self.url == other
+        self.destination.direct_target() == Some(other)
     }
 }
 
 impl PartialEq<&str> for PlaybackLoad {
     fn eq(&self, other: &&str) -> bool {
-        self.url == *other
+        self.destination.direct_target() == Some(*other)
     }
 }
 
@@ -170,6 +198,13 @@ pub struct TrackedProperty {
 impl PlayerCmd {
     pub fn load(url: impl Into<String>, source_context: MediaSourceContext) -> Self {
         Self::Load(PlaybackLoad::new(url, source_context))
+    }
+
+    pub fn load_destination(
+        destination: crate::playback_target::PlaybackDestination,
+        source_context: MediaSourceContext,
+    ) -> Self {
+        Self::Load(PlaybackLoad::from_destination(destination, source_context))
     }
 
     pub fn interactive_seek(seconds: f64) -> Self {
@@ -462,7 +497,88 @@ pub struct PlayerHandle {
     /// Generation of the latest admitted Load, or zero when the latest boundary is Stop/no-media.
     expected_media_generation: Arc<AtomicU64>,
     file_generation_tx: tokio::sync::watch::Sender<u64>,
+    route_revocations: Arc<RouteRevocationRegistry>,
     long_form_seek_status: Arc<Mutex<SharedLongFormSeekStatus>>,
+}
+
+#[derive(Default)]
+struct RouteRevocationRegistry {
+    state: Mutex<RouteRevocationState>,
+}
+
+#[derive(Default)]
+struct RouteRevocationState {
+    latest_admitted_generation: u64,
+    routes: HashMap<u64, crate::playback_target::PlaybackRouteRevocationHandle>,
+}
+
+impl RouteRevocationRegistry {
+    fn install(
+        &self,
+        file_generation: u64,
+        revocation: crate::playback_target::PlaybackRouteRevocationHandle,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.latest_admitted_generation != file_generation {
+            drop(state);
+            revocation.revoke();
+            return false;
+        }
+        if let Some(previous) = state.routes.insert(file_generation, revocation) {
+            previous.revoke();
+        }
+        true
+    }
+
+    fn revoke(&self, file_generation: u64) {
+        if let Some(revocation) = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .routes
+            .remove(&file_generation)
+        {
+            revocation.revoke();
+        }
+    }
+
+    fn revoke_all(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for revocation in state.routes.values() {
+            revocation.revoke();
+        }
+        state.routes.clear();
+    }
+
+    fn advance_generation(&self, generation: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.latest_admitted_generation = generation;
+        for revocation in state.routes.values() {
+            revocation.revoke();
+        }
+        state.routes.clear();
+    }
+
+    fn rebase(&self, previous: u64, generation: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(revocation) = state.routes.remove(&previous)
+            && let Some(replaced) = state.routes.insert(generation, revocation)
+        {
+            replaced.revoke();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -696,6 +812,10 @@ impl PlayerHandle {
     fn publish_file_generation(&self, admission: Option<FileAdmission>) {
         if let Some(admission) = admission {
             self.file_generation_tx.send_replace(admission.generation);
+            // Successful admission is the public lifetime boundary. Revoke an active route
+            // immediately and reject a late validation from any earlier generation.
+            self.route_revocations
+                .advance_generation(admission.generation);
         }
     }
 
@@ -709,6 +829,7 @@ impl PlayerHandle {
             admitted_file_generation: Arc::new(AtomicU64::new(0)),
             expected_media_generation: Arc::new(AtomicU64::new(0)),
             file_generation_tx,
+            route_revocations: Arc::new(RouteRevocationRegistry::default()),
             long_form_seek_status: Arc::new(Mutex::new(SharedLongFormSeekStatus::new(
                 long_form_seek::CacheStatus {
                     requested: crate::config::LongFormSeekOptimization::Off,
@@ -751,6 +872,7 @@ impl Drop for PlayerHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mark_closed();
+        self.route_revocations.revoke_all();
     }
 }
 
@@ -883,6 +1005,33 @@ pub async fn spawn<F>(
 where
     F: Fn(PlayerEvent) + Send + Sync + 'static,
 {
+    spawn_with_route_provider(
+        emit,
+        data_dir,
+        cookies_file,
+        gapless,
+        audio,
+        crate::playback_target::PlaybackRouteProviderHandle::disabled(),
+    )
+    .await
+}
+
+/// Spawn guarded mpv with a credential-owning loopback route provider.
+///
+/// Direct local/public media still passes through the unchanged public destination validator.
+/// The provider is consulted only after a typed credentialed load has been admitted by the
+/// player actor.
+pub async fn spawn_with_route_provider<F>(
+    emit: F,
+    data_dir: Option<PathBuf>,
+    cookies_file: Option<PathBuf>,
+    gapless: bool,
+    audio: crate::config::AudioRuntimeConfig,
+    route_provider: crate::playback_target::PlaybackRouteProviderHandle,
+) -> Result<(PlayerHandle, Mpv)>
+where
+    F: Fn(PlayerEvent) + Send + Sync + 'static,
+{
     let ipc_path = mpv::ipc_path()?;
     // `data_dir` is supplied only to mutation-owning player processes. Derive cache ownership
     // from that same lease so a secondary/read-only instance cannot create packet-cache state.
@@ -932,15 +1081,18 @@ where
     let admitted_file_generation = Arc::new(AtomicU64::new(0));
     let expected_media_generation = Arc::new(AtomicU64::new(0));
     let (file_generation_tx, file_generation_rx) = tokio::sync::watch::channel(0);
-    tokio::spawn(ipc::run_actor(
+    let route_revocations = Arc::new(RouteRevocationRegistry::default());
+    tokio::spawn(ipc::run_actor(ipc::ActorInput {
         conn,
-        rx,
-        Arc::new(emit),
-        Arc::clone(&intentional_close),
+        cmd_rx: rx,
+        emit: Arc::new(emit),
+        intentional_close: Arc::clone(&intentional_close),
         file_generation_rx,
+        route_provider,
+        route_revocations: Arc::clone(&route_revocations),
         cache_runtime,
-        Arc::clone(&long_form_seek_status),
-    ));
+        cache_status: Arc::clone(&long_form_seek_status),
+    }));
 
     Ok((
         PlayerHandle {
@@ -950,6 +1102,7 @@ where
             admitted_file_generation,
             expected_media_generation,
             file_generation_tx,
+            route_revocations,
             long_form_seek_status,
         },
         mpv,

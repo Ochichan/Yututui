@@ -200,6 +200,29 @@ fn every_mode_uses_mini_until_the_bottom_layout_has_a_content_row() {
 }
 
 #[test]
+fn music_server_library_remains_reachable_at_issue_114_narrow_width() {
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Library;
+    app.server.library.source = LibrarySource::OpenSubsonic;
+
+    let buffer = render_app_buffer(&app, 30, 30);
+
+    assert_eq!(app.bridges.ui_tier.get(), UiTier::Full);
+    assert!(
+        buffer_contains(&buffer, t!("Recent", "최근", "最近")),
+        "the compact server section selector remains visible"
+    );
+
+    app.server.library.source = LibrarySource::Yututui;
+    render_mini(&app, 30, 30);
+    assert_eq!(
+        app.bridges.ui_tier.get(),
+        UiTier::Mini,
+        "the ordinary local-library transport keeps the existing boundary"
+    );
+}
+
+#[test]
 fn queue_pos_click_opens_the_queue_in_mini_even_with_the_bar_hidden() {
     let mut app = app_playing(3, 1);
     // Top layout: control_box_active() is false, but the mini renders the status line and

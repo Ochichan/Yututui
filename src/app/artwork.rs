@@ -866,12 +866,23 @@ impl App {
         {
             return None;
         }
-        Some(match &song.local_path {
-            Some(path) => ArtSource::Local(path.clone()),
-            None => ArtSource::Remote {
-                video_id: song.youtube_id()?.to_owned(),
+        if let Some(path) = &song.local_path {
+            return Some(ArtSource::Local(path.clone()));
+        }
+        if let Some(crate::api::PlayableRef::OpenSubsonic {
+            item,
+            cover_art_id: Some(cover_art_id),
+        }) = &song.playable
+        {
+            return Some(ArtSource::OpenSubsonic {
+                item: item.clone(),
+                cover_art_id: cover_art_id.clone(),
                 quality: self.config.album_art_quality,
-            },
+            });
+        }
+        Some(ArtSource::Remote {
+            video_id: song.youtube_id()?.to_owned(),
+            quality: self.config.album_art_quality,
         })
     }
 

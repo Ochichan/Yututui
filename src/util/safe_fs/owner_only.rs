@@ -104,6 +104,18 @@ pub fn read_owner_only_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8
     Ok(bytes)
 }
 
+/// Validate an existing current-user-only regular file without reading its contents.
+///
+/// This is used before an explicit reset inventories exact private-state artifacts. The later
+/// removal still repeats the identity check, so a path replacement between the two operations
+/// fails closed.
+pub fn validate_owner_only_file(path: &Path) -> io::Result<()> {
+    let file = platform::open(path)?;
+    platform::validate(&file)?;
+    let expected = platform::identity(&file)?;
+    platform::require_path_identity(path, &expected)
+}
+
 fn too_large() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,

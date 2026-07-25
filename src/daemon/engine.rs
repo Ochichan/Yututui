@@ -35,13 +35,13 @@ mod gui_search;
 mod gui_settings;
 mod keymap_theme;
 mod media_session;
+mod open_subsonic_runtime;
 mod persistence_gate;
 mod personal_export;
 pub(super) mod personal_sync;
 mod remote_dispatch;
 mod streaming;
 mod transport;
-
 use self::streaming::PendingStreamingRequest;
 #[cfg(test)]
 use self::streaming::StreamingRequestStage;
@@ -132,6 +132,7 @@ pub enum EngineEffect {
 pub struct DaemonEngine {
     maintainer: crate::util::background_task::BackgroundTask,
     player: Option<PlayerRuntime>,
+    open_subsonic: open_subsonic_runtime::OpenSubsonicOwner,
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
     playback: DaemonPlayback,
@@ -272,35 +273,30 @@ impl DaemonEngine {
             signals,
         };
         crate::persist::ensure_startup_recovery_coherent().map_err(EngineError::from)?;
-        // Orphan reaping can unlink lifeline records and kill child processes. It is safe only
-        // after all recovery-backed stores have established one coherent startup frontier.
+        // Reap only after recovery stores establish one coherent startup frontier.
         if let Some(dir) = data_dir() {
             player::lifetime::reap_orphans(&dir);
         }
         let mut engine = Self::with_state(state, Arc::new(emit));
         engine.install_personal_state(personal_state);
         engine.personal_state_device_id = personal_state_device_id;
-
-        // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
-        // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
+        // Optional server discovery must not hold local restore or player startup hostage.
+        open_subsonic_runtime::initialize(&mut engine);
+        // External tool discovery remains required for ordinary YouTube/local playback.
         crate::tools::init(&engine.config.tools).await;
-        // Keep the managed copy fresh for long daemon runs. No-op emit: the daemon
-        // has no status line and `check_and_update` already logs its outcomes.
+        // Keep the managed copy fresh; the daemon has no status-line emitter.
         engine.maintainer =
             crate::tools::ytdlp::spawn_maintainer(engine.config.tools.clone(), |_| {});
-
         if options.resume {
             engine.restore_session_cache(session_cache);
             if engine.queue.current().is_some() {
                 engine.load_current().await?;
             }
         }
-
         Ok(engine)
     }
 
-    /// Construct the engine from explicit state — the single init path [`start`] wraps
-    /// with disk loads, and the App↔Daemon parity harness constructs hermetically
+    /// Construct explicit state; [`start`] adds disk loads, while parity tests stay hermetic
     /// (docs/gui/10 §4; the engine must be buildable without touching `ProjectDirs`).
     pub(crate) fn with_state(
         state: EngineState,
@@ -327,6 +323,7 @@ impl DaemonEngine {
         Self {
             maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
             player: None,
+            open_subsonic: Default::default(),
             player_emit,
             queue,
             playback: DaemonPlayback {
@@ -464,6 +461,7 @@ impl DaemonEngine {
 
     /// Stop the daemon-owned long-lived tasks before persistence/scrobble teardown.
     pub async fn shutdown_background(&mut self) {
+        self.open_subsonic.shutdown().await;
         self.maintainer.shutdown().await;
     }
 
@@ -477,6 +475,7 @@ impl DaemonEngine {
     pub(crate) fn shutdown_media_owners(&mut self) {
         self.video_overlay = None;
         self.player = None;
+        self.open_subsonic.retire();
     }
 
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
@@ -1527,13 +1526,14 @@ impl DaemonEngine {
         }
 
         let emit = Arc::clone(&self.player_emit);
-        let (handle, guard) = player::spawn(
+        let (handle, guard) = player::spawn_with_route_provider(
             move |event| (emit)(event),
             data_dir(),
             self.config
                 .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
             self.config.audio.runtime(),
+            self.open_subsonic.route_provider(),
         )
         .await
         .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;

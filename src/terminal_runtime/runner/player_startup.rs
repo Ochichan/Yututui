@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::playback_target::PlaybackRouteProviderHandle;
 use crate::player::PlayerHandle;
 use crate::runtime::RuntimeEvent;
 use crate::{config, player, runtime};
@@ -90,6 +91,7 @@ pub(super) fn spawn_audio_player(
     data_dir: Option<std::path::PathBuf>,
     cfg: &config::PlayerRuntimeConfig,
     shutdown: player::lifetime::ShutdownLatch,
+    route_provider: PlaybackRouteProviderHandle,
 ) -> PlayerStartup {
     let cookies_file = cfg.cookies_file.clone();
     let gapless = cfg.gapless;
@@ -102,12 +104,13 @@ pub(super) fn spawn_audio_player(
         }
         match tokio::time::timeout(
             PLAYER_START_TIMEOUT,
-            player::spawn(
+            player::spawn_with_route_provider(
                 runtime::sink(worker_tx, RuntimeEvent::Player),
                 data_dir,
                 cookies_file,
                 gapless,
                 audio,
+                route_provider,
             ),
         )
         .await

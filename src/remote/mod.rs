@@ -50,6 +50,10 @@ pub const PERSONAL_STATE_V2_CAPABILITY: &str = "personal-state-v2";
 /// Advertised when the primary owner accepts non-secret manual WebDAV sync and device-revoke
 /// commands. Credentials remain in its owner-only private store and never cross local IPC.
 pub const WEB_DAV_SYNC_CAPABILITY: &str = "webdav-sync-v1";
+/// Advertised by primary owners that can search, browse, and safely proxy playback from the
+/// configured OpenSubsonic server. Secondary TUI instances remain read-only previews and do not
+/// advertise this owner-bound integration.
+pub const OPEN_SUBSONIC_CAPABILITY: &str = "opensubsonic-v1";
 
 /// Daemon/demo capability for the managed long-form seek preference and truthful runtime status.
 /// The standalone TUI owner intentionally does not advertise daemon-only GUI mutation support.

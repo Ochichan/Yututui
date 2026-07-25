@@ -37,6 +37,11 @@ impl App {
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
         }
+        // Music-server setup is move-only and Settings-owned. It captures input before global
+        // shortcuts so typed credentials can never trigger the screen underneath it.
+        if self.server.settings.modal_open() {
+            return self.on_key_music_server_settings(k);
+        }
         // Sync setup and pairing are Settings-owned, top-level modals. They keep ownership even
         // if the terminal shrinks to Mini or the underlying Settings screen is closed.
         if self.personal_state.sync_ui.modal_open() {

@@ -25,6 +25,7 @@ mod dispatch;
 mod event_policy;
 pub(crate) mod ingress;
 mod local_find;
+mod open_subsonic_runtime;
 mod persist_delivery;
 mod personal_sync_commit;
 pub(crate) mod player_delivery;
@@ -78,6 +79,16 @@ pub enum RuntimeEvent {
     /// Background app-update check result (newer release available + install method).
     Update(crate::update::UpdateEvent),
     Transfer(crate::transfer::actor::TransferEvent),
+    /// Owner-only completion carrying a newly constructed credential-owning server runtime.
+    /// The runner intercepts this before reducer conversion so no secret-bearing owner can enter
+    /// retained application state.
+    OpenSubsonicReloaded {
+        generation: u64,
+        result: Result<
+            Option<crate::open_subsonic::OpenSubsonicRuntime>,
+            crate::open_subsonic::ServiceError,
+        >,
+    },
     TelemetryWake,
 }
 
@@ -160,6 +171,9 @@ impl RuntimeEvent {
                 key: Key::UpdateCheck,
             },
             RuntimeEvent::Transfer(event) => transfer_event_policy(event),
+            RuntimeEvent::OpenSubsonicReloaded { .. } => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             RuntimeEvent::TelemetryWake => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -185,6 +199,7 @@ impl RuntimeEvent {
             RuntimeEvent::Tools(_) => "tools",
             RuntimeEvent::Update(_) => "update",
             RuntimeEvent::Transfer(_) => "transfer",
+            RuntimeEvent::OpenSubsonicReloaded { .. } => "open_subsonic_reloaded",
             RuntimeEvent::TelemetryWake => "telemetry_wake",
         }
     }
@@ -492,6 +507,11 @@ impl From<RuntimeEvent> for Msg {
                 Msg::UpdateChecked(status)
             }
             RuntimeEvent::Transfer(event) => Msg::Transfer(event),
+            RuntimeEvent::OpenSubsonicReloaded { .. } => {
+                unreachable!(
+                    "OpenSubsonicReloaded must be installed by the owner loop before Msg conversion"
+                )
+            }
             RuntimeEvent::TelemetryWake => {
                 unreachable!(
                     "TelemetryWake must be drained by the owner loop before Msg conversion"
@@ -581,6 +601,12 @@ pub struct RuntimeHandles {
     /// A deliberate secondary player may use playback/network actors, but every command capable
     /// of durable mutation is rejected before it reaches an actor or blocking worker.
     persistence_read_only: Option<std::sync::Arc<str>>,
+    /// Stable forwarding provider retained by every player generation.
+    open_subsonic_routes: crate::playback_target::PlaybackRouteProviderSlot,
+    /// Credential-owning actor/proxy guard; never projected into reducer state.
+    open_subsonic_runtime: Option<crate::open_subsonic::OpenSubsonicRuntime>,
+    /// Latest reload generation requested by the owner. Out-of-order candidates are dropped.
+    open_subsonic_reload_generation: u64,
 }
 
 fn settle_video_load_delivery(app: &mut App, result: DeliveryResult) -> Vec<Cmd> {
@@ -612,13 +638,16 @@ fn durable_mutation_rejection_reason(
 fn shutdown_event_is_retired(event: &RuntimeEvent) -> bool {
     matches!(
         event,
-        RuntimeEvent::TelemetryWake | RuntimeEvent::Signal(_) | RuntimeEvent::Player(_)
+        RuntimeEvent::TelemetryWake
+            | RuntimeEvent::Signal(_)
+            | RuntimeEvent::Player(_)
+            | RuntimeEvent::OpenSubsonicReloaded { .. }
     )
 }
 
 impl RuntimeHandles {
     #[allow(clippy::too_many_arguments)] // one-time construction in `run()`
-    pub fn new(
+    pub(crate) fn new(
         worker_tx: RuntimeSender,
         api_handle: crate::api::ApiHandle,
         lyrics_handle: crate::lyrics::LyricsHandle,
@@ -628,6 +657,7 @@ impl RuntimeHandles {
         ai_handle: Option<crate::ai::AiHandle>,
         scrobble_handle: crate::scrobble::ScrobbleHandle,
         persist: crate::persist::PersistHandle,
+        open_subsonic_routes: crate::playback_target::PlaybackRouteProviderSlot,
     ) -> Self {
         Self {
             worker_tx,
@@ -649,6 +679,9 @@ impl RuntimeHandles {
                 crate::persist::PersistenceAccess::Writable => None,
                 crate::persist::PersistenceAccess::ReadOnly { reason } => Some(reason),
             },
+            open_subsonic_routes,
+            open_subsonic_runtime: None,
+            open_subsonic_reload_generation: 0,
         }
     }
 

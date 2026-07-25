@@ -1,6 +1,9 @@
 //! Transport-neutral validation for playback targets before they cross into a player backend.
 
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use reqwest::header::{LOCATION, RANGE};
@@ -9,9 +12,326 @@ use reqwest::{Method, StatusCode, Url};
 use crate::search_source::SearchSource;
 
 pub(crate) const MAX_PLAYABLE_URL_BYTES: usize = 4096;
+const MIN_ROUTE_TOKEN_BYTES: usize = 22;
+const MAX_ROUTE_TOKEN_BYTES: usize = 128;
 const DNS_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_REDIRECTS: usize = 5;
+
+/// A playable destination whose credentials remain owned by an in-process provider.
+///
+/// The player transport deliberately sees only portable identifiers. It cannot construct an
+/// upstream URL or read credentials; a configured [`PlaybackRouteProvider`] must exchange this
+/// reference for one sealed loopback route after the load has passed player admission.
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub enum CredentialedPlaybackRef {
+    OpenSubsonic {
+        backend_id: String,
+        account_scope_id: String,
+        item_id: String,
+    },
+}
+
+impl std::fmt::Debug for CredentialedPlaybackRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OpenSubsonic { .. } => formatter.write_str("OpenSubsonic(..)"),
+        }
+    }
+}
+
+/// A direct local/public target or a credential-owning provider reference.
+#[derive(Clone, Eq, PartialEq)]
+pub enum PlaybackDestination {
+    Direct(String),
+    Credentialed(CredentialedPlaybackRef),
+}
+
+impl PlaybackDestination {
+    pub fn direct(target: impl Into<String>) -> Self {
+        Self::Direct(target.into())
+    }
+
+    pub fn direct_target(&self) -> Option<&str> {
+        match self {
+            Self::Direct(target) => Some(target),
+            Self::Credentialed(_) => None,
+        }
+    }
+
+    pub fn credentialed_target(&self) -> Option<&CredentialedPlaybackRef> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Credentialed(target) => Some(target),
+        }
+    }
+}
+
+impl From<String> for PlaybackDestination {
+    fn from(target: String) -> Self {
+        Self::Direct(target)
+    }
+}
+
+impl From<&str> for PlaybackDestination {
+    fn from(target: &str) -> Self {
+        Self::Direct(target.to_owned())
+    }
+}
+
+impl std::fmt::Debug for PlaybackDestination {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct(_) => formatter.write_str("Direct(<redacted>)"),
+            Self::Credentialed(target) => {
+                formatter.debug_tuple("Credentialed").field(target).finish()
+            }
+        }
+    }
+}
+
+/// Stable, URL-free reason returned by a route provider.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlaybackRouteError {
+    reason: &'static str,
+}
+
+impl PlaybackRouteError {
+    pub const fn new(reason: &'static str) -> Self {
+        Self { reason }
+    }
+
+    pub const fn reason(self) -> &'static str {
+        self.reason
+    }
+}
+
+impl std::fmt::Display for PlaybackRouteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason)
+    }
+}
+
+impl std::error::Error for PlaybackRouteError {}
+
+/// Immediate, idempotent revocation boundary for one local playback episode.
+pub trait PlaybackRouteRevocation: Send + Sync {
+    fn revoke(&self);
+}
+
+/// RAII ownership of one provider route. Dropping any pending or active load closes the route.
+pub struct PlaybackRouteLease {
+    revocation: Arc<dyn PlaybackRouteRevocation>,
+}
+
+impl PlaybackRouteLease {
+    pub fn new(revocation: Arc<dyn PlaybackRouteRevocation>) -> Self {
+        Self { revocation }
+    }
+
+    pub fn revoke(self) {
+        self.revocation.revoke();
+    }
+
+    pub(crate) fn revocation_handle(&self) -> PlaybackRouteRevocationHandle {
+        PlaybackRouteRevocationHandle {
+            revocation: Arc::clone(&self.revocation),
+        }
+    }
+}
+
+impl std::fmt::Debug for PlaybackRouteLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlaybackRouteLease(<redacted>)")
+    }
+}
+
+impl Drop for PlaybackRouteLease {
+    fn drop(&mut self) {
+        self.revocation.revoke();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PlaybackRouteRevocationHandle {
+    revocation: Arc<dyn PlaybackRouteRevocation>,
+}
+
+impl PlaybackRouteRevocationHandle {
+    pub(crate) fn revoke(&self) {
+        self.revocation.revoke();
+    }
+}
+
+impl std::fmt::Debug for PlaybackRouteRevocationHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlaybackRouteRevocationHandle(<redacted>)")
+    }
+}
+
+/// A provider-minted route accepted only through this opaque constructor.
+pub struct RoutedPlayback {
+    port: u16,
+    token: String,
+    lease: PlaybackRouteLease,
+}
+
+impl RoutedPlayback {
+    pub fn new(
+        port: u16,
+        token: String,
+        lease: PlaybackRouteLease,
+    ) -> Result<Self, PlaybackRouteError> {
+        if port == 0
+            || !(MIN_ROUTE_TOKEN_BYTES..=MAX_ROUTE_TOKEN_BYTES).contains(&token.len())
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(PlaybackRouteError::new("invalid_local_route"));
+        }
+        Ok(Self { port, token, lease })
+    }
+
+    pub(crate) fn into_parts(self) -> (SealedLoopbackUrl, PlaybackRouteLease) {
+        (
+            SealedLoopbackUrl(format!(
+                "http://127.0.0.1:{}/stream/{}",
+                self.port, self.token
+            )),
+            self.lease,
+        )
+    }
+}
+
+impl std::fmt::Debug for RoutedPlayback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RoutedPlayback(<redacted>)")
+    }
+}
+
+/// URL accepted only after a route provider supplied validated loopback coordinates.
+pub(crate) struct SealedLoopbackUrl(String);
+
+impl SealedLoopbackUrl {
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SealedLoopbackUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SealedLoopbackUrl(<redacted>)")
+    }
+}
+
+pub type PlaybackRouteFuture =
+    Pin<Box<dyn Future<Output = Result<RoutedPlayback, PlaybackRouteError>> + Send + 'static>>;
+
+pub trait PlaybackRouteProvider: Send + Sync {
+    fn open_route(
+        &self,
+        target: CredentialedPlaybackRef,
+        file_generation: u64,
+    ) -> PlaybackRouteFuture;
+}
+
+#[derive(Clone)]
+pub struct PlaybackRouteProviderHandle {
+    provider: Arc<dyn PlaybackRouteProvider>,
+}
+
+impl PlaybackRouteProviderHandle {
+    pub fn new(provider: Arc<dyn PlaybackRouteProvider>) -> Self {
+        Self { provider }
+    }
+
+    pub fn disabled() -> Self {
+        Self::new(Arc::new(DisabledPlaybackRouteProvider))
+    }
+
+    pub(crate) fn open_route(
+        &self,
+        target: CredentialedPlaybackRef,
+        file_generation: u64,
+    ) -> PlaybackRouteFuture {
+        self.provider.open_route(target, file_generation)
+    }
+}
+
+impl std::fmt::Debug for PlaybackRouteProviderHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlaybackRouteProviderHandle(<redacted>)")
+    }
+}
+
+/// Stable player-facing provider whose credential-owning backend can be replaced by its owner.
+///
+/// The player keeps this forwarding handle across server setup, removal, and transport restarts.
+/// A route request snapshots exactly one provider; replacing the slot cannot splice credentials
+/// or URLs between two profiles. The retired runtime separately revokes every route it minted.
+#[derive(Clone)]
+pub(crate) struct PlaybackRouteProviderSlot {
+    provider: Arc<RwLock<PlaybackRouteProviderHandle>>,
+}
+
+impl Default for PlaybackRouteProviderSlot {
+    fn default() -> Self {
+        Self {
+            provider: Arc::new(RwLock::new(PlaybackRouteProviderHandle::disabled())),
+        }
+    }
+}
+
+impl PlaybackRouteProviderSlot {
+    pub(crate) fn handle(&self) -> PlaybackRouteProviderHandle {
+        PlaybackRouteProviderHandle::new(Arc::new(self.clone()))
+    }
+
+    pub(crate) fn install(&self, provider: PlaybackRouteProviderHandle) {
+        *self
+            .provider
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = provider;
+    }
+
+    pub(crate) fn disable(&self) {
+        self.install(PlaybackRouteProviderHandle::disabled());
+    }
+}
+
+impl PlaybackRouteProvider for PlaybackRouteProviderSlot {
+    fn open_route(
+        &self,
+        target: CredentialedPlaybackRef,
+        file_generation: u64,
+    ) -> PlaybackRouteFuture {
+        let provider = self
+            .provider
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        provider.open_route(target, file_generation)
+    }
+}
+
+impl std::fmt::Debug for PlaybackRouteProviderSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PlaybackRouteProviderSlot(<redacted>)")
+    }
+}
+
+struct DisabledPlaybackRouteProvider;
+
+impl PlaybackRouteProvider for DisabledPlaybackRouteProvider {
+    fn open_route(
+        &self,
+        _target: CredentialedPlaybackRef,
+        _file_generation: u64,
+    ) -> PlaybackRouteFuture {
+        Box::pin(async { Err(PlaybackRouteError::new("route_provider_unavailable")) })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayableUrlError {
@@ -366,6 +686,99 @@ mod tests {
     use std::net::IpAddr;
 
     use super::*;
+
+    struct NoopRevocation;
+
+    impl PlaybackRouteRevocation for NoopRevocation {
+        fn revoke(&self) {}
+    }
+
+    fn lease() -> PlaybackRouteLease {
+        PlaybackRouteLease::new(Arc::new(NoopRevocation))
+    }
+
+    struct FixedRouteProvider;
+
+    impl PlaybackRouteProvider for FixedRouteProvider {
+        fn open_route(
+            &self,
+            _target: CredentialedPlaybackRef,
+            _file_generation: u64,
+        ) -> PlaybackRouteFuture {
+            Box::pin(async { RoutedPlayback::new(32123, "a".repeat(32), lease()) })
+        }
+    }
+
+    fn credentialed_target() -> CredentialedPlaybackRef {
+        CredentialedPlaybackRef::OpenSubsonic {
+            backend_id: "backend".to_owned(),
+            account_scope_id: "account".to_owned(),
+            item_id: "item".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_slot_switches_atomically_between_disabled_and_live() {
+        let slot = PlaybackRouteProviderSlot::default();
+        let player_handle = slot.handle();
+        assert!(
+            player_handle
+                .open_route(credentialed_target(), 1)
+                .await
+                .is_err()
+        );
+
+        slot.install(PlaybackRouteProviderHandle::new(Arc::new(
+            FixedRouteProvider,
+        )));
+        let route = player_handle
+            .open_route(credentialed_target(), 2)
+            .await
+            .expect("installed provider route");
+        let (url, _lease) = route.into_parts();
+        assert_eq!(
+            url.into_string(),
+            format!("http://127.0.0.1:32123/stream/{}", "a".repeat(32))
+        );
+
+        slot.disable();
+        assert!(
+            player_handle
+                .open_route(credentialed_target(), 3)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn destination_debug_never_prints_a_direct_or_credentialed_identity() {
+        let direct =
+            PlaybackDestination::Direct("https://example.test/audio?token=secret".to_owned());
+        let credentialed =
+            PlaybackDestination::Credentialed(CredentialedPlaybackRef::OpenSubsonic {
+                backend_id: "backend-secret".to_owned(),
+                account_scope_id: "account-secret".to_owned(),
+                item_id: "item-secret".to_owned(),
+            });
+        assert_eq!(format!("{direct:?}"), "Direct(<redacted>)");
+        let credentialed = format!("{credentialed:?}");
+        assert!(!credentialed.contains("backend-secret"));
+        assert!(!credentialed.contains("account-secret"));
+        assert!(!credentialed.contains("item-secret"));
+    }
+
+    #[test]
+    fn sealed_route_requires_a_high_entropy_url_safe_token() {
+        assert!(RoutedPlayback::new(1234, "too-short".to_owned(), lease()).is_err());
+        assert!(
+            RoutedPlayback::new(1234, "0123456789abcdef0123456789abcdef".to_owned(), lease())
+                .is_ok()
+        );
+        assert!(
+            RoutedPlayback::new(1234, "0123456789abcdef0123456789abcde!".to_owned(), lease())
+                .is_err()
+        );
+    }
 
     #[test]
     fn blocks_special_ipv4_ranges_beyond_std_private_helpers() {

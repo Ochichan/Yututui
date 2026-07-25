@@ -3,6 +3,7 @@
 //! that highlights the focused row is rebuilt fresh each frame from a `usize` index.
 
 mod dialogs;
+mod music_server;
 mod recording;
 mod spotify;
 mod sync;
@@ -10,6 +11,7 @@ mod sync_wizard;
 mod tabs;
 
 pub use dialogs::{render_confirm, render_conflict};
+pub(crate) use music_server::render_music_server_wizard;
 pub use recording::{render_recording_settings, render_recordings_browser};
 pub(super) use spotify::render_spotify_import_mode_dropdown_popup;
 pub use spotify::render_spotify_picker;
@@ -73,11 +75,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     render_tabs(frame, app, st, rows[0]);
+    if st.tab == SettingsTab::Sync {
+        music_server::render_sync_area_selector(frame, app, st, rows[1]);
+    }
     if st.tab == SettingsTab::Keys {
         render_keys(frame, app, st, rows[2]);
     } else if st.tab == SettingsTab::Sync {
-        let model = app.sync_settings_model();
-        render_sync(frame, app, st, &model, rows[2]);
+        match app.server.settings.area {
+            crate::app::SyncArea::Status => {
+                music_server::render_status(frame, app, st, rows[2]);
+            }
+            crate::app::SyncArea::PersonalState | crate::app::SyncArea::DevicesRecovery => {
+                let model = app.sync_settings_model();
+                render_sync(frame, app, st, &model, rows[2]);
+            }
+            crate::app::SyncArea::MusicServer => {
+                music_server::render_music_server(frame, app, st, rows[2]);
+            }
+        }
     } else {
         render_fields(frame, app, st, rows[2]);
     }

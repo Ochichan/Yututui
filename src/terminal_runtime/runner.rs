@@ -856,13 +856,13 @@ pub async fn run(
     // found a live descriptor but nothing was accepting/answering yet. The socket itself is
     // already bound (in `bind_or_detect`), so the single-instance guard is in force from launch.
 
-    // Spawn mpv off the startup path. Until the IPC actor is ready, reducer-emitted
-    // PlayerCmds are buffered by RuntimeHandles and replayed in order.
+    let open_subsonic_routes = crate::playback_target::PlaybackRouteProviderSlot::default();
     let mut player_startup = spawn_audio_player(
         worker_tx.clone(),
         player_registry_dir.clone(),
         &player_runtime,
         shutdown.clone(),
+        open_subsonic_routes.handle(),
     );
     let mut player_ready_pending = true;
     startup.mark("mpv_spawned");
@@ -922,7 +922,14 @@ pub async fn run(
         ai_handle,
         scrobble_handle,
         persist.clone(),
+        open_subsonic_routes.clone(),
     );
+    if let Some(data_root) = data_dir.clone() {
+        let _ = handles.spawn_open_subsonic_reload(
+            0,
+            crate::open_subsonic::OpenSubsonicPaths::for_data_root(data_root),
+        );
+    }
     let network_changes = crate::sync::NetworkChangeWatch::start();
 
     let automatic_sync_active = !persistence_read_only
@@ -1359,6 +1366,14 @@ pub async fn run(
                 }
                 continue;
             }
+            OwnerTurnInput::BufferedWorker(RuntimeEvent::OpenSubsonicReloaded {
+                generation,
+                result,
+            })
+            | OwnerTurnInput::Worker(RuntimeEvent::OpenSubsonicReloaded { generation, result }) => {
+                handles.install_open_subsonic_runtime(generation, result);
+                continue;
+            }
             OwnerTurnInput::BufferedWorker(mut event) | OwnerTurnInput::Worker(mut event) => {
                 if let RuntimeEvent::Player(player_event) = &mut event {
                     handles.reconcile_cache_safety_event(player_event);
@@ -1434,6 +1449,7 @@ pub async fn run(
                 player_registry_dir.clone(),
                 &player_runtime,
                 shutdown.clone(),
+                open_subsonic_routes.handle(),
             );
             player_ready_pending = true;
         }

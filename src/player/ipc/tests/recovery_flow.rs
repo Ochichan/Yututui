@@ -1,10 +1,17 @@
 use super::*;
 
+fn never_validated() -> LoadValidationOutcome {
+    LoadValidationOutcome::Validated {
+        url: "never".to_owned(),
+        route_lease: None,
+    }
+}
+
 #[tokio::test]
 async fn stop_cancels_a_hung_load_validation_without_reordering_prior_commands() {
     let task = tokio::spawn(async {
         std::future::pending::<()>().await;
-        LoadValidationOutcome::Validated("never".to_owned())
+        never_validated()
     });
     let mut validation = Some(PendingLoadValidation {
         request_id: 11,
@@ -31,7 +38,7 @@ async fn stop_cancels_a_hung_load_validation_without_reordering_prior_commands()
 async fn state_free_staging_does_not_guess_that_recovery_can_alias() {
     let task = tokio::spawn(async {
         std::future::pending::<()>().await;
-        LoadValidationOutcome::Validated("never".to_owned())
+        never_validated()
     });
     let mut validation = Some(PendingLoadValidation {
         request_id: 11,
@@ -93,7 +100,7 @@ async fn superseding_seek_during_recovery_validation_keeps_current_generation_di
     assert_eq!(state.issued_file_generation, 7);
     let task = tokio::spawn(async {
         std::future::pending::<()>().await;
-        LoadValidationOutcome::Validated("never".to_owned())
+        never_validated()
     });
     let mut validation = Some(PendingLoadValidation {
         request_id: 12,
@@ -167,7 +174,7 @@ async fn emergency_recovery_validation_retains_load_and_force_ram_only_after_use
     let candidate = reserve_file_generation(&mut state);
     let task = tokio::spawn(async {
         std::future::pending::<()>().await;
-        LoadValidationOutcome::Validated("never".to_owned())
+        never_validated()
     });
     let mut validation = Some(PendingLoadValidation {
         request_id: 12,
@@ -226,6 +233,7 @@ async fn validated_recovery_wait_keeps_physical_load_and_strips_only_resume_tran
         request_id: 21,
         file_generation: 8,
         url: "https://example.invalid/fresh-source".to_owned(),
+        route_lease: None,
         resume: resume::ResumeLoad::RestoreOwned(recovery_request(900.0, true)),
         source_context: super::super::super::MediaSourceContext::OnDemand,
         wait_for_cache_reset: true,
@@ -525,9 +533,12 @@ fn end_file_atomically_drops_recovery_post_load_lane_before_new_stop() {
 async fn rejected_handoff_reports_only_a_stable_media_agnostic_reason() {
     let (_generation_tx, generation_rx) = tokio::sync::watch::channel(1u64);
     let outcome = validate_load_until_superseded(
-        "https://listener:secret@example.invalid/live?token=signed-secret".to_owned(),
+        crate::playback_target::PlaybackDestination::Direct(
+            "https://listener:secret@example.invalid/live?token=signed-secret".to_owned(),
+        ),
         1,
         generation_rx,
+        crate::playback_target::PlaybackRouteProviderHandle::disabled(),
     )
     .await;
 
@@ -746,9 +757,13 @@ fn load_invalidates_in_flight_and_unsent_interactive_targets_but_keeps_exact_bar
 #[tokio::test]
 async fn admitted_new_generation_cancels_validation_before_channel_receive() {
     let (_generation_tx, generation_rx) = watch::channel(2);
-    let result =
-        validate_load_until_superseded("https://example.com/old".to_owned(), 1, generation_rx)
-            .await;
+    let result = validate_load_until_superseded(
+        crate::playback_target::PlaybackDestination::Direct("https://example.com/old".to_owned()),
+        1,
+        generation_rx,
+        crate::playback_target::PlaybackRouteProviderHandle::disabled(),
+    )
+    .await;
 
     assert!(matches!(result, LoadValidationOutcome::Superseded));
 }

@@ -100,12 +100,13 @@ fn finish_load_validation(
     validated: LoadValidationOutcome,
 ) -> Option<PendingLoadBoundary> {
     match validated {
-        LoadValidationOutcome::Validated(url) => {
+        LoadValidationOutcome::Validated { url, route_lease } => {
             let wait_for_cache_reset = prepare_load_replacement(state);
             Some(PendingLoadBoundary::Validated(ValidatedLoad {
                 request_id: pending.request_id,
                 file_generation: pending.file_generation,
                 url,
+                route_lease,
                 resume: pending.resume,
                 source_context: pending.source_context,
                 wait_for_cache_reset,
@@ -801,8 +802,12 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             "eof-reached" if value.as_bool() == Some(true) && !state.eof_emitted => {
                 state.eof_emitted = true;
                 if let Some(generation) = state.legacy_pending_end_generation.take() {
+                    revoke_playback_route(state, generation);
                     emit(PlayerEvent::file_scoped(generation, PlayerEvent::Eof));
                 } else {
+                    if let Some(generation) = state.active_file_generation {
+                        revoke_playback_route(state, generation);
+                    }
                     emit_file_event(emit, state, PlayerEvent::Eof);
                 }
             }
@@ -922,6 +927,9 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                 );
             }
             state.resume.cancel_pending_for_generation(generation);
+            if let Some(generation) = generation {
+                revoke_playback_route(state, generation);
+            }
             let preserve_generation = generation
                 .is_some_and(|generation| generation != state.issued_file_generation)
                 .then_some(state.issued_file_generation);
@@ -1043,6 +1051,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
                     );
                     state.failed_load_generations.insert(file_generation);
                     state.media_source_contexts.remove(&file_generation);
+                    revoke_playback_route(state, file_generation);
                     remove_legacy_load_generation(state, file_generation);
                     emit(PlayerEvent::file_scoped(
                         file_generation,

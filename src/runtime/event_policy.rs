@@ -9,7 +9,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::Remote(_, _) => EventPolicy::MustReplyOrBusy {
             lane: Lane::RemoteCommand,
         },
-        Msg::Data(_) => EventPolicy::MustDeliver {
+        Msg::Data(_) | Msg::Server(_) => EventPolicy::MustDeliver {
             lane: Lane::WorkResult,
         },
         Msg::Player(player) => player_msg_policy(player),

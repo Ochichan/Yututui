@@ -43,6 +43,7 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     DaemonEngine {
         maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
         player: None,
+        open_subsonic: Default::default(),
         player_emit: Arc::new(|_| {}),
         queue,
         playback: DaemonPlayback {

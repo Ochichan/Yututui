@@ -689,6 +689,8 @@ impl super::RuntimeHandles {
         app.settle_personal_sync_shutdown();
         let follow_ups =
             begin_player_shutdown_state(&mut self.player, &mut self.pending_player_intents, app);
+        // No credential-owning loopback listener or minted route outlives the audio owner.
+        self.retire_open_subsonic_runtime();
         for follow_up in follow_ups {
             self.dispatch(app, follow_up);
         }

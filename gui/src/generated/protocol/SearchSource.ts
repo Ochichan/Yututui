@@ -3,4 +3,4 @@
 /**
  * Search/playback source selected from the Search screen and persisted in config.
  */
-export type SearchSource = "youtube" | "sound_cloud" | "audius" | "jamendo" | "internet_archive" | "radio_browser" | "all";
+export type SearchSource = "youtube" | "sound_cloud" | "audius" | "jamendo" | "internet_archive" | "open_subsonic" | "radio_browser" | "all";

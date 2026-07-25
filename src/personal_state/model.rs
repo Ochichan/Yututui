@@ -202,7 +202,21 @@ impl PortableTrackKey {
             } => {
                 validate_id("backend id", backend_id, MAX_TRACK_ID_CHARS)?;
                 validate_id("account scope id", account_scope_id, MAX_TRACK_ID_CHARS)?;
-                validate_id("server item id", item_id, MAX_TRACK_ID_CHARS)
+                validate_id("server item id", item_id, MAX_TRACK_ID_CHARS)?;
+                crate::open_subsonic::BackendId::new(backend_id.as_str()).map_err(|_| {
+                    PersonalStateError::InvalidOperation("invalid OpenSubsonic backend identity")
+                })?;
+                crate::open_subsonic::AccountScopeId::new(account_scope_id.as_str()).map_err(
+                    |_| {
+                        PersonalStateError::InvalidOperation(
+                            "invalid OpenSubsonic account identity",
+                        )
+                    },
+                )?;
+                crate::open_subsonic::ItemId::new(item_id.as_str()).map_err(|_| {
+                    PersonalStateError::InvalidOperation("invalid OpenSubsonic item identity")
+                })?;
+                Ok(())
             }
             Self::LocalPlaceholder {
                 portable_placeholder_id,

@@ -213,7 +213,7 @@ impl App {
             self.dirty = true;
         }
         if entered_sync {
-            self.request_sync_ui_refresh()
+            self.select_sync_area(self.server.settings.area)
         } else {
             Vec::new()
         }

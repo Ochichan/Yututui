@@ -31,6 +31,11 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Transfer(_) => Some("transfer state"),
         Cmd::Data(DataCmd::PersonalSync { .. }) => Some("personal sync"),
         Cmd::Data(DataCmd::SyncUi(command)) if !command.is_read_only() => Some("personal sync"),
+        Cmd::MusicServer(
+            crate::app::MusicServerCommand::TestAndPrepare { .. }
+            | crate::app::MusicServerCommand::Commit { .. }
+            | crate::app::MusicServerCommand::Remove { .. },
+        ) => Some("music server settings"),
         Cmd::PlayerControl(_)
         | Cmd::VideoConnect { .. }
         | Cmd::VideoLoad(_)
@@ -38,6 +43,8 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::VideoToggleFullscreen
         | Cmd::VideoToggleMute
         | Cmd::Search(_)
+        | Cmd::MusicServer(crate::app::MusicServerCommand::Refresh { .. })
+        | Cmd::ServerLibrary(_)
         | Cmd::Data(
             DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_) | DataCmd::SyncUi(_),
         )
@@ -134,6 +141,12 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
             }
             app.start_pending_sync_ui_refresh()
         }
+        Cmd::MusicServer(_) => {
+            app.server.settings.busy = None;
+            app.server.settings.failure = Some(crate::app::MusicServerFailure::Storage);
+            app.dirty = true;
+            Vec::new()
+        }
         _ => Vec::new(),
     };
     app.set_status_error(match crate::i18n::current() {
@@ -174,5 +187,29 @@ mod tests {
             Some("read_only_secondary")
         );
         assert!(!app.personal_state.sync.in_progress);
+    }
+
+    #[test]
+    fn read_only_secondary_rejects_secret_bearing_server_setup_before_network_work() {
+        let setup = Cmd::MusicServer(crate::app::MusicServerCommand::TestAndPrepare {
+            generation: 1,
+            input: crate::app::MusicServerSetupInput {
+                display_name: zeroize::Zeroizing::new("Server".to_owned()),
+                origin: zeroize::Zeroizing::new("https://music.example.test".to_owned()),
+                username: zeroize::Zeroizing::new(String::new()),
+                secret: zeroize::Zeroizing::new("secret".to_owned()),
+                credential_mode: crate::app::MusicServerCredentialMode::ApiKey,
+                custom_ca_path: zeroize::Zeroizing::new(String::new()),
+                allow_lan_http: false,
+                identity_intent: crate::app::MusicServerIdentityIntent::Create,
+            },
+        });
+        let refresh = Cmd::MusicServer(crate::app::MusicServerCommand::Refresh { generation: 2 });
+
+        assert_eq!(
+            durable_mutation_component(&setup),
+            Some("music server settings")
+        );
+        assert_eq!(durable_mutation_component(&refresh), None);
     }
 }

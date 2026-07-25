@@ -15,17 +15,19 @@ pub enum SearchSource {
     Audius,
     Jamendo,
     InternetArchive,
+    OpenSubsonic,
     RadioBrowser,
     All,
 }
 
 impl SearchSource {
-    pub const CONCRETE: [SearchSource; 6] = [
+    pub const CONCRETE: [SearchSource; 7] = [
         SearchSource::Youtube,
         SearchSource::SoundCloud,
         SearchSource::Audius,
         SearchSource::Jamendo,
         SearchSource::InternetArchive,
+        SearchSource::OpenSubsonic,
         SearchSource::RadioBrowser,
     ];
 
@@ -36,6 +38,7 @@ impl SearchSource {
             SearchSource::Audius => "AU",
             SearchSource::Jamendo => "JA",
             SearchSource::InternetArchive => "IA",
+            SearchSource::OpenSubsonic => "SUB",
             SearchSource::RadioBrowser => "RAD",
             SearchSource::All => "ALL",
         }
@@ -48,6 +51,7 @@ impl SearchSource {
             SearchSource::Audius => "Audius",
             SearchSource::Jamendo => "Jamendo",
             SearchSource::InternetArchive => "Internet Archive",
+            SearchSource::OpenSubsonic => "Music server",
             SearchSource::RadioBrowser => "Radio Browser",
             SearchSource::All => "All enabled",
         }
@@ -60,6 +64,7 @@ impl SearchSource {
             SearchSource::Audius => "au",
             SearchSource::Jamendo => "ja",
             SearchSource::InternetArchive => "ia",
+            SearchSource::OpenSubsonic => "sub",
             SearchSource::RadioBrowser => "rad",
             SearchSource::All => "all",
         }
@@ -86,6 +91,8 @@ pub struct SearchConfig {
     pub audius: bool,
     pub jamendo: bool,
     pub internet_archive: bool,
+    /// Enabled only while a complete OpenSubsonic profile is active.
+    pub open_subsonic: bool,
     pub radio_browser: bool,
     /// Audius requires an app identifier on public API calls. Not a secret.
     pub audius_app_name: Option<String>,
@@ -103,6 +110,7 @@ impl Default for SearchConfig {
             audius: true,
             jamendo: true,
             internet_archive: true,
+            open_subsonic: false,
             radio_browser: true,
             audius_app_name: None,
             jamendo_client_id: None,
@@ -118,6 +126,7 @@ impl SearchConfig {
             SearchSource::Audius => self.audius,
             SearchSource::Jamendo => self.jamendo,
             SearchSource::InternetArchive => self.internet_archive,
+            SearchSource::OpenSubsonic => self.open_subsonic,
             SearchSource::RadioBrowser => self.radio_browser,
             SearchSource::All => true,
         }
@@ -130,6 +139,7 @@ impl SearchConfig {
             SearchSource::Audius => self.audius = enabled,
             SearchSource::Jamendo => self.jamendo = enabled,
             SearchSource::InternetArchive => self.internet_archive = enabled,
+            SearchSource::OpenSubsonic => self.open_subsonic = enabled,
             SearchSource::RadioBrowser => self.radio_browser = enabled,
             SearchSource::All => {}
         }
@@ -141,6 +151,17 @@ impl SearchConfig {
         SearchSource::CONCRETE
             .into_iter()
             .filter(|&source| self.is_enabled(source))
+            .collect()
+    }
+
+    /// Sources handled by the existing public-provider search client.
+    ///
+    /// OpenSubsonic owns credentials and origin policy in a separate actor, so it must never
+    /// reach the public-provider fan-out even when it participates in the app-level `All` view.
+    pub fn enabled_public_sources(&self) -> Vec<SearchSource> {
+        self.enabled_sources()
+            .into_iter()
+            .filter(|source| *source != SearchSource::OpenSubsonic)
             .collect()
     }
 
@@ -158,7 +179,12 @@ impl SearchConfig {
     pub fn streaming_enabled_sources(&self) -> Vec<SearchSource> {
         self.enabled_sources()
             .into_iter()
-            .filter(|source| *source != SearchSource::RadioBrowser)
+            .filter(|source| {
+                !matches!(
+                    *source,
+                    SearchSource::OpenSubsonic | SearchSource::RadioBrowser
+                )
+            })
             .collect()
     }
 
@@ -205,7 +231,11 @@ impl SearchConfig {
                     .unwrap_or(SearchSource::Youtube)
             };
         }
-        if source != SearchSource::RadioBrowser && self.is_enabled(source) {
+        if !matches!(
+            source,
+            SearchSource::OpenSubsonic | SearchSource::RadioBrowser
+        ) && self.is_enabled(source)
+        {
             source
         } else {
             self.streaming_enabled_sources()
@@ -281,10 +311,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn streaming_sources_exclude_radio_browser() {
-        let cfg = SearchConfig::default();
+    fn streaming_sources_exclude_live_radio_and_open_subsonic() {
+        let cfg = SearchConfig {
+            open_subsonic: true,
+            ..SearchConfig::default()
+        };
 
         assert!(cfg.enabled_sources().contains(&SearchSource::RadioBrowser));
+        assert!(cfg.enabled_sources().contains(&SearchSource::OpenSubsonic));
+        assert!(
+            !cfg.enabled_public_sources()
+                .contains(&SearchSource::OpenSubsonic)
+        );
         assert!(
             !cfg.streaming_enabled_sources()
                 .contains(&SearchSource::RadioBrowser)
@@ -292,6 +330,14 @@ mod tests {
         assert!(
             !cfg.selectable_streaming_sources()
                 .contains(&SearchSource::RadioBrowser)
+        );
+        assert!(
+            !cfg.streaming_enabled_sources()
+                .contains(&SearchSource::OpenSubsonic)
+        );
+        assert!(
+            !cfg.selectable_streaming_sources()
+                .contains(&SearchSource::OpenSubsonic)
         );
     }
 
@@ -310,5 +356,59 @@ mod tests {
         .normalized();
 
         assert_eq!(cfg.streaming_source, SearchSource::SoundCloud);
+    }
+
+    #[test]
+    fn open_subsonic_is_disabled_by_default_and_selectable_only_when_enabled() {
+        let mut cfg = SearchConfig::default();
+        assert!(!cfg.open_subsonic);
+        assert!(
+            !cfg.selectable_sources()
+                .contains(&SearchSource::OpenSubsonic)
+        );
+
+        cfg.set_enabled(SearchSource::OpenSubsonic, true);
+        assert!(
+            cfg.selectable_sources()
+                .contains(&SearchSource::OpenSubsonic)
+        );
+
+        let before = SearchSource::InternetArchive;
+        assert_eq!(cfg.cycled_source(before, true), SearchSource::OpenSubsonic);
+        assert_eq!(cfg.cycled_source(SearchSource::OpenSubsonic, false), before);
+
+        cfg.source = SearchSource::OpenSubsonic;
+        cfg.set_enabled(SearchSource::OpenSubsonic, false);
+        assert_eq!(cfg.source, SearchSource::Youtube);
+    }
+
+    #[test]
+    fn old_search_config_defaults_open_subsonic_to_off() {
+        let cfg: SearchConfig = serde_json::from_str("{}").unwrap();
+
+        assert!(!cfg.open_subsonic);
+        assert_eq!(cfg.source, SearchSource::Youtube);
+    }
+
+    #[test]
+    fn open_subsonic_never_normalizes_as_a_streaming_source() {
+        let cfg = SearchConfig {
+            streaming_source: SearchSource::OpenSubsonic,
+            youtube: false,
+            soundcloud: true,
+            audius: false,
+            jamendo: false,
+            internet_archive: false,
+            open_subsonic: true,
+            radio_browser: false,
+            ..SearchConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(cfg.streaming_source, SearchSource::SoundCloud);
+        assert!(
+            !cfg.streaming_enabled_sources()
+                .contains(&SearchSource::OpenSubsonic)
+        );
     }
 }

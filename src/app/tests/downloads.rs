@@ -226,6 +226,67 @@ fn downloadable_batch_skips_local_downloaded_and_dupes() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn open_subsonic_download_fixture() -> Song {
+    use crate::open_subsonic::{
+        AccountScopeId, BackendId, ItemId, OpenSubsonicItemRef, ServerSong,
+    };
+
+    Song::from_open_subsonic(ServerSong {
+        item: OpenSubsonicItemRef::new(
+            BackendId::new("test-backend").unwrap(),
+            AccountScopeId::new("test-account").unwrap(),
+            ItemId::new("test-song").unwrap(),
+        ),
+        title: "Server song".to_owned(),
+        artist: "Server artist".to_owned(),
+        artists: vec!["Server artist".to_owned()],
+        album: None,
+        album_id: None,
+        album_artist: None,
+        duration_secs: Some(180),
+        track_number: None,
+        disc_number: None,
+        year: None,
+        cover_art_id: None,
+        content_type: Some("audio/flac".to_owned()),
+        suffix: Some("flac".to_owned()),
+        starred: false,
+        user_rating: None,
+    })
+}
+
+#[test]
+fn music_server_download_is_rejected_before_queueing() {
+    let mut app = App::new(100);
+
+    let commands = app.start_download(open_subsonic_download_fixture());
+
+    assert!(commands.is_empty());
+    assert!(app.downloads.pending.is_empty());
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(
+        app.status.text,
+        t!(
+            "Music-server downloads are not available yet",
+            "음악 서버 곡 다운로드는 아직 지원하지 않아요",
+            "音楽サーバーの曲はまだダウンロードできません"
+        )
+    );
+}
+
+#[test]
+fn music_server_download_is_removed_from_bulk_batches() {
+    let app = App::new(100);
+
+    let batch = app.downloadable_batch(vec![
+        open_subsonic_download_fixture(),
+        fsong("youtube-song", "YouTube song", "Artist"),
+    ]);
+
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].video_id, "youtube-song");
+}
+
 #[test]
 fn downloadable_batch_retries_a_manifest_record_whose_file_is_missing() {
     let mut app = App::new(100);

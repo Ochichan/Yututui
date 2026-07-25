@@ -193,6 +193,16 @@ impl App {
         if self.library_ui.filter_editing {
             return self.on_key_library_filter(k);
         }
+        // The remote server is a separate read-only surface. Dispatch it before local tab,
+        // filter, favorite, and delete actions so a server row can never mutate local stores.
+        if !self.local_dedicated_mode && self.server.library.source == LibrarySource::OpenSubsonic {
+            return self.on_key_server_library(k);
+        }
+        // Horizontal navigation enters the configured-server source selector. Local Library
+        // otherwise has no left/right list action, so this is additive and remapping-safe.
+        if !self.local_dedicated_mode && k.code == KeyCode::Right {
+            return self.select_library_source(LibrarySource::OpenSubsonic);
+        }
         // Esc isn't a Library keybinding, but with a filter applied it should clear it — the
         // natural "get me out of this filtered view" gesture, matching the box's Esc-to-cancel.
         if k.code == KeyCode::Esc && !self.library_ui.filter_query.is_empty() {

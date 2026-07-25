@@ -30,6 +30,7 @@ pub mod lyrics;
 pub mod media;
 pub mod mousemap;
 pub mod notify;
+pub mod open_subsonic;
 pub(crate) mod owner_event_policy;
 pub mod paths;
 pub mod persist;

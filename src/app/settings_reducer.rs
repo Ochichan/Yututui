@@ -271,22 +271,15 @@ impl App {
             .keymap
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
+        if on_sync_tab && let Some(commands) = self.on_sync_settings_action(action, k) {
+            return commands;
+        }
         match action {
             // `q`/Esc commit the draft before leaving the screen. The action name stays
             // SettingsCancel for compatibility with existing keybinding ids.
             Some(Action::SettingsCancel | Action::Back) => self.close_settings(),
             Some(Action::FocusNext) => self.settings_switch_tab(true),
             Some(Action::FocusPrev) => self.settings_switch_tab(false),
-            Some(Action::MoveUp) if on_sync_tab => {
-                self.personal_state.sync_ui.move_row(-1);
-                self.dirty = true;
-                Vec::new()
-            }
-            Some(Action::MoveDown) if on_sync_tab => {
-                self.personal_state.sync_ui.move_row(1);
-                self.dirty = true;
-                Vec::new()
-            }
             Some(Action::MoveUp) => {
                 self.settings_move_row(-1);
                 Vec::new()
@@ -305,7 +298,6 @@ impl App {
             }
             Some(Action::ChangeDecrease) if !on_keys_tab => self.settings_change(-1),
             Some(Action::ChangeIncrease) if !on_keys_tab => self.settings_change(1),
-            Some(Action::Confirm) if on_sync_tab => self.activate_sync_row(),
             Some(Action::Confirm) => {
                 if on_mouse_binding {
                     self.settings_change_mouse_binding(1);
@@ -504,7 +496,7 @@ impl App {
             self.dirty = true;
         }
         if entered_sync {
-            self.request_sync_ui_refresh()
+            self.select_sync_area(self.server.settings.area)
         } else {
             Vec::new()
         }

@@ -1074,7 +1074,6 @@ async fn current_status() -> Result<StatusSnapshot, ClientError> {
     let response = client::send(RemoteCommand::Status).await?;
     response.status.ok_or(ClientError::MalformedResponse)
 }
-
 fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
     let exe = match &options.executable {
         Some(path) => path.clone(),

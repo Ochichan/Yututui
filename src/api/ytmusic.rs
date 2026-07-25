@@ -22,6 +22,7 @@ use crate::util::{format, http, sanitize};
 
 mod artist;
 mod official_video_search;
+mod provider_search;
 mod search_fallback;
 mod transfer_api;
 mod video_metadata;
@@ -425,7 +426,8 @@ impl YtMusicApi {
         let mut seen = HashSet::new();
         let mut errors = Vec::new();
         let mut timed_out = false;
-        for source in config.enabled_sources() {
+        let enabled_sources = config.enabled_public_sources();
+        for (index, source) in enabled_sources.iter().copied().enumerate() {
             // Check the operation budget *before* starting each source (each source already has
             // its own per-request network timeout, so total time is bounded by this deadline
             // plus at most one source's timeout — without paying `sources × timeout`). Checking
@@ -433,7 +435,7 @@ impl YtMusicApi {
             if std::time::Instant::now() >= deadline {
                 timed_out = true;
                 tracing::warn!(
-                    remaining = config.enabled_sources().len() - errors.len(),
+                    remaining = enabled_sources.len().saturating_sub(index),
                     "search hit the operation deadline; returning partial results"
                 );
                 break;
@@ -486,6 +488,9 @@ impl YtMusicApi {
             SearchSource::Audius => audius_search(query, config, SEARCH_RESULT_LIMIT).await,
             SearchSource::Jamendo => jamendo_search(query, config, SEARCH_RESULT_LIMIT).await,
             SearchSource::InternetArchive => archive_search(query, SEARCH_RESULT_LIMIT).await,
+            SearchSource::OpenSubsonic => {
+                bail!("music server search is handled by the OpenSubsonic actor")
+            }
             SearchSource::RadioBrowser => radio_browser_search(query, SEARCH_RESULT_LIMIT).await,
             SearchSource::All => bail!("internal error: nested ALL source search"),
         }
@@ -563,26 +568,6 @@ impl YtMusicApi {
 /// way (public YouTube, no auth) — hence `pub(crate)` and a caller-chosen `limit`.
 pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>> {
     ytdlp_flat_search(SearchSource::Youtube, "ytsearch", query, limit).await
-}
-
-async fn search_external_source(
-    source: SearchSource,
-    query: &str,
-    config: &SearchConfig,
-    limit: usize,
-) -> Result<Vec<Song>> {
-    match source {
-        SearchSource::SoundCloud => {
-            ytdlp_flat_search(SearchSource::SoundCloud, "scsearch", query, limit).await
-        }
-        SearchSource::Audius => audius_search(query, config, limit).await,
-        SearchSource::Jamendo => jamendo_search(query, config, limit).await,
-        SearchSource::InternetArchive => archive_search(query, limit).await,
-        SearchSource::Youtube => ytdlp_search(query, limit).await,
-        SearchSource::RadioBrowser | SearchSource::All => {
-            bail!("{} is not a track recommendation source", source.label())
-        }
-    }
 }
 
 async fn ytdlp_flat_search(
@@ -698,7 +683,7 @@ pub(crate) async fn related_tracks_from_source(
 
             for query in streaming_queries(seed, mode) {
                 let search_limit = (limit * 2).clamp(limit, 50);
-                match search_external_source(source, &query, config, search_limit).await {
+                match provider_search::search(source, &query, config, search_limit).await {
                     Ok(songs) => {
                         had_success = true;
                         for song in songs {
@@ -723,6 +708,9 @@ pub(crate) async fn related_tracks_from_source(
         }
         SearchSource::RadioBrowser => {
             bail!("Radio Browser streams are not used for track recommendations")
+        }
+        SearchSource::OpenSubsonic => {
+            bail!("Music server is not used for automatic recommendations")
         }
         SearchSource::All => bail!("internal error: nested ALL streaming source search"),
     }
