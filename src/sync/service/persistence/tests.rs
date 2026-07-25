@@ -1,5 +1,174 @@
 use super::tests::shutdown_fixture;
 use super::*;
+use crate::personal_state::{EngagementKind, PortableTrack, PortableTrackKey};
+
+const COMPACTION_NOW: i64 = 2_000_000_000;
+
+fn expired_engagement_state(fixture: &super::tests::ShutdownFixture) -> PersonalStateV2 {
+    let state = append_operation_as(
+        &fixture.initial,
+        &fixture.device_id,
+        Operation::RecordEngagement {
+            event_id: "expired-persistence-event".to_owned(),
+            track: PortableTrack {
+                key: PortableTrackKey::Catalog {
+                    provider: "youtube".to_owned(),
+                    exact_catalog_id: "expired-persistence-track".to_owned(),
+                },
+                title: "Expired persistence track".to_owned(),
+                artist: "Persistence artist".to_owned(),
+                album: None,
+                duration_secs: Some(180),
+                isrc: None,
+            },
+            engagement: EngagementKind::Play,
+            played_duration_ms: Some(90_000),
+            total_duration_ms: Some(180_000),
+            artist_key: "persistence artist".to_owned(),
+        },
+        1,
+    )
+    .unwrap();
+    PersonalStateCommit::prepare_for_runtime(state, 7)
+        .unwrap()
+        .state()
+        .clone()
+}
+
+fn compacted_state(observed: &PersonalStateV2, device_id: &DeviceId) -> PersonalStateV2 {
+    let candidate = crate::personal_state::plan_engagement_compaction(
+        observed,
+        device_id,
+        COMPACTION_NOW,
+        false,
+    )
+    .unwrap()
+    .unwrap()
+    .candidate;
+    PersonalStateCommit::prepare_for_runtime(candidate, 7)
+        .unwrap()
+        .state()
+        .clone()
+}
+
+fn compacted_candidate(
+    fixture: &super::tests::ShutdownFixture,
+    observed: &PersonalStateV2,
+    compacted: PersonalStateV2,
+) -> PreparedManualSync {
+    let mut candidate = fixture.candidate.clone();
+    candidate.expected_local_revision = observed.revision;
+    candidate.state = compacted;
+    candidate
+}
+
+#[test]
+fn initial_and_reconcile_accept_valid_compaction_but_reject_plain_deletion() {
+    let fixture = shutdown_fixture();
+    let observed = expired_engagement_state(&fixture);
+    let compacted = compacted_state(&observed, &fixture.device_id);
+    assert!(verified_state_extension(&observed, &compacted).unwrap());
+
+    let initial = PersonalSyncPersistence::initial(
+        observed.clone(),
+        7,
+        compacted_candidate(&fixture, &observed, compacted.clone()),
+        PersonalSyncApplyKind::SyncNow,
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture.root.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        initial.state().compaction_checkpoint,
+        compacted.compaction_checkpoint
+    );
+
+    let reconciled = PersonalSyncPersistence::reconcile(
+        observed.clone(),
+        observed.clone(),
+        compacted,
+        7,
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture.root.clone()),
+    )
+    .unwrap();
+    assert!(reconciled.state().compaction_checkpoint.is_some());
+
+    let mut deleted = observed.clone();
+    deleted
+        .operations
+        .retain(|operation| !matches!(operation.operation, Operation::RecordEngagement { .. }));
+    deleted.revision = deleted.revision.saturating_add(1);
+    deleted.projection_fingerprint = None;
+    let deleted = PersonalStateCommit::prepare_for_runtime(deleted, 7)
+        .unwrap()
+        .state()
+        .clone();
+    assert!(!verified_state_extension(&observed, &deleted).unwrap());
+    assert!(matches!(
+        PersonalSyncPersistence::reconcile(
+            observed.clone(),
+            observed,
+            deleted,
+            7,
+            fixture.personal_paths.clone(),
+            SyncPaths::for_data_root(fixture.root.clone()),
+        ),
+        Err(SyncServiceError::LocalStateChanged)
+    ));
+}
+
+#[test]
+fn shutdown_rebases_raced_local_mutation_after_compacted_candidate() {
+    let fixture = shutdown_fixture();
+    let observed = expired_engagement_state(&fixture);
+    let compacted = compacted_state(&observed, &fixture.device_id);
+    let current = append_operation_as(
+        &observed,
+        &fixture.device_id,
+        Operation::SetAvoidArtist {
+            artist_key: "raced-after-compaction".to_owned(),
+            avoid: true,
+        },
+        COMPACTION_NOW,
+    )
+    .unwrap();
+    let current = PersonalStateCommit::prepare_for_runtime(current, 7)
+        .unwrap()
+        .state()
+        .clone();
+
+    let writer = PersonalSyncPersistence::shutdown(
+        observed.clone(),
+        current,
+        7,
+        compacted_candidate(&fixture, &observed, compacted.clone()),
+        &fixture.device_id,
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture.root.clone()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        writer.state().compaction_checkpoint,
+        compacted.compaction_checkpoint
+    );
+    assert!(
+        !writer
+            .state()
+            .operations
+            .iter()
+            .any(|operation| matches!(operation.operation, Operation::RecordEngagement { .. }))
+    );
+    assert!(writer.state().operations.iter().any(|operation| matches!(
+        operation.operation,
+        Operation::SetAvoidArtist {
+            ref artist_key,
+            avoid: true
+        } if artist_key == "raced-after-compaction"
+    )));
+    assert!(verified_state_extension(&compacted, writer.state()).unwrap());
+}
 
 #[test]
 fn pairing_join_retargets_three_times_from_the_durable_import_baseline() {

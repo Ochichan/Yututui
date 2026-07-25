@@ -84,6 +84,7 @@ pub use search_types::*;
 mod types;
 pub use types::*;
 
+mod automatic_sync;
 mod bootstrap;
 mod data_export;
 mod feedback;

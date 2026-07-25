@@ -143,6 +143,7 @@ pub struct DaemonEngine {
     signals: Signals,
     station: StationStore,
     personal_state: crate::personal_state::PersonalStateV2,
+    personal_state_revision_guard: crate::sync::OwnerRevisionGuard,
     personal_state_device_id: Option<crate::personal_state::DeviceId>,
     personal_sync_in_progress: bool,
     #[cfg(test)]
@@ -277,7 +278,7 @@ impl DaemonEngine {
             player::lifetime::reap_orphans(&dir);
         }
         let mut engine = Self::with_state(state, Arc::new(emit));
-        engine.personal_state = personal_state;
+        engine.install_personal_state(personal_state);
         engine.personal_state_device_id = personal_state_device_id;
 
         // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
@@ -350,6 +351,7 @@ impl DaemonEngine {
             library_invalidations: 0,
             signals,
             station,
+            personal_state_revision_guard: Default::default(),
             personal_state,
             personal_state_device_id: None,
             personal_sync_in_progress: false,

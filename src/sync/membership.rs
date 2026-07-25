@@ -217,6 +217,38 @@ impl MembershipChain {
         Ok(verified)
     }
 
+    /// Verify and reconstruct the exact historical membership named by an authenticated object.
+    ///
+    /// The complete chain is verified first, then the requested prefix is independently replayed.
+    /// This permits durable signatures made by a device that was active at that epoch to remain
+    /// valid after a later membership addition, revocation, or recovery.
+    pub(crate) fn verify_epoch_head(
+        &self,
+        anchor: &MembershipAnchor,
+        epoch: u64,
+        head_hash: &str,
+    ) -> Result<VerifiedMembership, VaultError> {
+        let current = self.verify(anchor)?;
+        let root_epoch = self.root.payload.membership_epoch;
+        let change_count: usize = epoch
+            .checked_sub(root_epoch)
+            .and_then(|count| count.try_into().ok())
+            .filter(|count: &usize| *count <= self.changes.len())
+            .ok_or(VaultError::MembershipFork)?;
+        if epoch > current.epoch {
+            return Err(VaultError::MembershipFork);
+        }
+        let historical = Self {
+            root: self.root.clone(),
+            changes: self.changes[..change_count].to_vec(),
+        }
+        .verify(anchor)?;
+        if historical.epoch != epoch || historical.head_hash != head_hash {
+            return Err(VaultError::MembershipFork);
+        }
+        Ok(historical)
+    }
+
     pub fn append_device_action(
         &mut self,
         anchor: &MembershipAnchor,

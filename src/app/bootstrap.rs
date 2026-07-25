@@ -11,6 +11,7 @@ impl App {
             &StationStore::default(),
         )
         .unwrap_or_default();
+        let revision_guard = crate::sync::OwnerRevisionGuard::new(personal_state.revision);
         Self {
             should_quit: false,
             dirty: true,
@@ -32,6 +33,7 @@ impl App {
             personal_export: PersonalDataExportState::default(),
             personal_state: PersonalStateRuntime {
                 ledger: personal_state,
+                revision_guard,
                 sync_ui: SyncUiState::default(),
                 ..PersonalStateRuntime::default()
             },

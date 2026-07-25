@@ -593,7 +593,7 @@ pub async fn run(
         station,
         romanization,
     } = persistent;
-    app.personal_state.ledger = personal_state;
+    app.personal_state.replace_ledger(personal_state);
     app.personal_state.device_id = personal_state_device_id;
     app.library = Arc::new(library);
     app.signals = Arc::new(signals);
@@ -923,6 +923,19 @@ pub async fn run(
         scrobble_handle,
         persist.clone(),
     );
+    let network_changes = crate::sync::NetworkChangeWatch::start();
+
+    let automatic_sync_active = !persistence_read_only
+        && app.personal_state.device_id.is_some()
+        && crate::sync::SyncPaths::current()
+            .ok()
+            .and_then(|paths| crate::sync::service::read_status(&paths).ok())
+            .is_some_and(|status| status.configured);
+    if automatic_sync_active {
+        for command in app.enable_automatic_sync() {
+            handles.dispatch(&mut app, command);
+        }
+    }
 
     if let Some(cmd) = app.take_beginner_startup_persist() {
         handles.dispatch(&mut app, cmd);
@@ -1089,6 +1102,7 @@ pub async fn run(
 
     enum OwnerTurnInput {
         Local(Msg),
+        NetworkReconnect,
         BufferedWorker(RuntimeEvent),
         Worker(RuntimeEvent),
     }
@@ -1122,6 +1136,10 @@ pub async fn run(
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
+        let waiting_for_connectivity = app.automatic_sync_waiting_for_connectivity();
+        if !waiting_for_connectivity && let Some(network_changes) = network_changes.as_ref() {
+            network_changes.park();
+        }
         let input = if let Some(pending) =
             pending_worker_events.pop_current(|event| handles.player_event_is_current(event))
         {
@@ -1136,6 +1154,9 @@ pub async fn run(
                     handles.begin_player_shutdown(&mut app);
                     break 'owner;
                 },
+                _ = crate::sync::NetworkChangeWatch::changed_or_pending(
+                    network_changes.as_ref()
+                ), if waiting_for_connectivity => OwnerTurnInput::NetworkReconnect,
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     media.retry_deadline().unwrap_or_else(Instant::now)
                 )), if media.retry_deadline().is_some() => {
@@ -1273,6 +1294,9 @@ pub async fn run(
                     perf.maybe_log(&app);
                     continue;
                 },
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    app.automatic_sync_deadline().unwrap_or_else(Instant::now)
+                )), if app.automatic_sync_deadline().is_some() => OwnerTurnInput::Local(Msg::AutomaticSyncTick),
                 _ = status_tick.tick(), if app.status_visible() || app.lyrics.delay_osd_until.is_some() => OwnerTurnInput::Local(Msg::StatusTick),
                 _ = lyrics_tick.tick(), if app.lyrics_clock_active() => OwnerTurnInput::Local(Msg::LyricsTick),
                 _ = anim_tick.tick(), if app.animation_active() => OwnerTurnInput::Local(Msg::AnimTick),
@@ -1297,7 +1321,7 @@ pub async fn run(
             match input {
                 OwnerTurnInput::BufferedWorker(event) => pending_worker_events.push_front(event),
                 OwnerTurnInput::Worker(event) => pending_shutdown_events.push_back(event),
-                OwnerTurnInput::Local(_) => {}
+                OwnerTurnInput::Local(_) | OwnerTurnInput::NetworkReconnect => {}
             }
             handles.begin_player_shutdown(&mut app);
             break;
@@ -1305,6 +1329,12 @@ pub async fn run(
 
         let msg = match input {
             OwnerTurnInput::Local(msg) => msg,
+            OwnerTurnInput::NetworkReconnect => {
+                for command in app.note_webdav_connectivity() {
+                    handles.dispatch(&mut app, command);
+                }
+                continue;
+            }
             // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here, between reducer
             // turns, and never become a Msg. Keeping it as RuntimeEvent through the shutdown
             // latch check preserves the correlated request if shutdown wins this turn.

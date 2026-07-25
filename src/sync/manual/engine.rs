@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
-use crate::personal_state::{DeviceId, OperationEnvelope, PersonalStateV2, merge};
+use crate::personal_state::{
+    DeviceId, OperationEnvelope, PersonalStateV2, engagement_compaction_leader, merge,
+    operation_survives_checkpoint, plan_engagement_compaction,
+};
 
 use super::super::batch::{
     BatchAcceptance, BatchAnchor, SignedOperationBatch, apply_operation_batch,
@@ -12,20 +14,16 @@ use super::super::crypto::{
 };
 use super::super::membership::{MembershipAnchor, MembershipChain, VerifiedMembership};
 use super::super::{
-    ListCost, ListLimits, MAX_BATCH_OPERATIONS, MAX_BATCH_PLAINTEXT_BYTES, MAX_VAULT_PAYLOAD_BYTES,
-    ObjectCondition, ObjectKey, ObjectMetadata, ObjectWriteResult, VaultDeadline, VaultError,
-    VaultTransport,
+    MAX_BATCH_OPERATIONS, MAX_BATCH_PLAINTEXT_BYTES, MAX_VAULT_PAYLOAD_BYTES, ObjectCondition,
+    ObjectKey, ObjectMetadata, ObjectWriteResult, VaultDeadline, VaultError, VaultTransport,
+    authorize_compaction, verify_compaction_authorization,
 };
+use super::budget::ManualSyncBudget;
 use super::protocol::{SignedDeviceHead, SignedVaultManifest, segment_bounds};
 
 const MAX_SYNC_ATTEMPTS: usize = 8;
-const MAX_LISTED_OBJECTS: usize = 10_000;
-const MAX_READ_REQUESTS: usize = 20_000;
-const MAX_LIST_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SCANNED_COLLECTIONS: usize = 10_000;
-const MAX_SCANNED_RESOURCES: usize = 10_000;
-const MAX_SYNC_DURATION: Duration = Duration::from_secs(5 * 60);
 const SMALL_OBJECT_LIMIT: usize = 2 * 1024 * 1024;
+type ReadBudget = ManualSyncBudget;
 
 /// A hook supplied by the primary state owner.
 ///
@@ -65,6 +63,13 @@ pub struct ManualSyncSummary {
     pub uploaded_segments: usize,
     pub checkpoint_written: bool,
     pub manifest_written: bool,
+    pub compacted_engagement_operations: usize,
+    pub compaction_acknowledgements_written: usize,
+    pub compaction_quorum_reached: bool,
+    pub compacted_segments_deleted: usize,
+    pub old_checkpoints_deleted: usize,
+    pub obsolete_compaction_acknowledgements_retained: usize,
+    pub compaction_gc_deferred: bool,
     pub remote_writes: usize,
 }
 
@@ -169,6 +174,24 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
 
         let (mut remote_state, stream_anchors, mut summary) =
             self.download_visible_segments(input, &checkpoint, &remote_membership, budget)?;
+        let maintenance = super::maintenance::acknowledge_and_collect(
+            self.transport,
+            input,
+            revision_guard,
+            &checkpoint,
+            &remote_membership,
+            budget,
+        )?;
+        summary.compaction_acknowledgements_written = maintenance.acknowledgements_written;
+        summary.compaction_quorum_reached = maintenance.quorum.is_some();
+        summary.compacted_segments_deleted = maintenance.segments_deleted;
+        summary.old_checkpoints_deleted = maintenance.checkpoints_deleted;
+        summary.obsolete_compaction_acknowledgements_retained =
+            maintenance.obsolete_acknowledgements_retained;
+        summary.compaction_gc_deferred = maintenance.gc_deferred;
+        summary.remote_writes = summary
+            .remote_writes
+            .saturating_add(maintenance.remote_writes);
         let selected_membership = select_membership(
             input.membership,
             &manifest.payload.membership,
@@ -223,6 +246,69 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
 
         if merged.device_registry != selected_verified.devices {
             return Err(VaultError::RegistryMismatch);
+        }
+        let local_device_id = DeviceId::new(input.device.device_id())
+            .map_err(|_| VaultError::InvalidDeviceIdentity)?;
+        let remote_compaction = checkpoint.payload.state.compaction_checkpoint.as_ref();
+        let merged_compaction = merged.compaction_checkpoint.as_ref();
+        if remote_compaction != merged_compaction {
+            let (Some(previous), Some(descendant), Some(quorum)) = (
+                remote_compaction,
+                merged_compaction,
+                maintenance.quorum.as_ref(),
+            ) else {
+                return Err(VaultError::InvalidEncryptedObject);
+            };
+            if !is_adjacent_compaction_transition(previous, descendant)
+                || !quorum.authorizes(previous, &remote_membership)
+            {
+                return Err(VaultError::InvalidEncryptedObject);
+            }
+            verify_compaction_authorization(
+                &merged.dataset_id,
+                descendant,
+                &selected_membership,
+                input.membership_anchor,
+            )?;
+        }
+        let prior_compaction_has_quorum = merged_compaction.is_some_and(|compaction| {
+            maintenance
+                .quorum
+                .as_ref()
+                .is_some_and(|quorum| quorum.authorizes(compaction, &selected_verified))
+        });
+        if engagement_compaction_leader(&merged).as_ref() == Some(&local_device_id)
+            && let Some(plan) = plan_engagement_compaction(
+                &merged,
+                &local_device_id,
+                crate::signals::unix_now(),
+                prior_compaction_has_quorum,
+            )
+            .map_err(|_| VaultError::InvalidEncryptedObject)?
+        {
+            summary.compacted_engagement_operations = plan.pruned_engagement_operations;
+            let mut candidate = plan.candidate;
+            let compaction = candidate
+                .compaction_checkpoint
+                .as_mut()
+                .ok_or(VaultError::InvalidEncryptedObject)?;
+            compaction.leader_authorization = Some(authorize_compaction(
+                &candidate.dataset_id,
+                compaction,
+                &selected_verified,
+                local_device_id.clone(),
+                input.device,
+                checkpoint
+                    .payload
+                    .checkpoint_sequence
+                    .checked_add(1)
+                    .ok_or(VaultError::InvalidEncryptedObject)?,
+                &checkpoint.hash()?,
+            )?);
+            candidate
+                .validate()
+                .map_err(|_| VaultError::InvalidEncryptedObject)?;
+            merged = candidate;
         }
         let remote_changed =
             !sync_equivalent(&checkpoint.payload.state, &merged) || membership_advanced;
@@ -1010,12 +1096,7 @@ impl<'a, T: VaultTransport + ?Sized> ManualSyncEngine<'a, T> {
         condition: ObjectCondition,
         budget: &mut ReadBudget,
     ) -> Result<ObjectWriteResult, VaultError> {
-        budget.check_deadline()?;
-        let result = self
-            .transport
-            .put_with_deadline(key, object, condition, budget.deadline);
-        budget.check_deadline()?;
-        result
+        budget.put(self.transport, key, object, condition)
     }
 
     fn list_device_segments(
@@ -1042,162 +1123,6 @@ struct UploadSummary {
     operations: usize,
     segments: usize,
     writes: usize,
-}
-
-pub struct ManualSyncBudget {
-    consumed: usize,
-    requests: usize,
-    listed_objects: usize,
-    list_response_bytes: usize,
-    scanned_collections: usize,
-    scanned_resources: usize,
-    deadline: VaultDeadline,
-}
-
-type ReadBudget = ManualSyncBudget;
-
-impl Default for ManualSyncBudget {
-    fn default() -> Self {
-        Self::with_deadline(VaultDeadline::from_now(MAX_SYNC_DURATION))
-    }
-}
-
-impl ManualSyncBudget {
-    pub fn with_deadline(deadline: VaultDeadline) -> Self {
-        Self {
-            consumed: 0,
-            requests: 0,
-            listed_objects: 0,
-            list_response_bytes: 0,
-            scanned_collections: 0,
-            scanned_resources: 0,
-            deadline,
-        }
-    }
-
-    pub fn check_deadline(&self) -> Result<(), VaultError> {
-        self.deadline.check()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn consumed_requests(&self) -> usize {
-        self.requests
-    }
-
-    pub fn get<T: VaultTransport + ?Sized>(
-        &mut self,
-        transport: &T,
-        key: &ObjectKey,
-        max_bytes: usize,
-    ) -> Result<Option<(EncryptedObject, ObjectMetadata)>, VaultError> {
-        self.check_deadline()?;
-        self.consume_requests(1)?;
-        let result = transport.get_with_deadline(key, max_bytes, self.deadline);
-        self.check_deadline()?;
-        let result = result?;
-        if let Some((object, metadata)) = &result {
-            let actual_length: u64 = object
-                .as_bytes()
-                .len()
-                .try_into()
-                .map_err(|_| VaultError::PayloadTooLarge)?;
-            self.consume_ciphertext(metadata.content_length.max(actual_length))?;
-        }
-        Ok(result)
-    }
-
-    fn list<T: VaultTransport + ?Sized>(
-        &mut self,
-        transport: &T,
-        prefix: &ObjectKey,
-    ) -> Result<Vec<ObjectMetadata>, VaultError> {
-        self.check_deadline()?;
-        let limits = self.list_limits()?;
-        let outcome = transport.list_with_limits(prefix, limits, self.deadline);
-        self.check_deadline()?;
-        let outcome = outcome?;
-        outcome.validate(limits)?;
-        self.consume_list_cost(outcome.cost)?;
-        Ok(outcome.objects)
-    }
-
-    fn consume_ciphertext(&mut self, bytes: u64) -> Result<(), VaultError> {
-        let bytes: usize = bytes.try_into().map_err(|_| VaultError::PayloadTooLarge)?;
-        self.consume(bytes)
-    }
-
-    fn consume(&mut self, bytes: usize) -> Result<(), VaultError> {
-        self.consumed = self
-            .consumed
-            .checked_add(bytes)
-            .ok_or(VaultError::PayloadTooLarge)?;
-        if self.consumed > MAX_VAULT_PAYLOAD_BYTES {
-            return Err(VaultError::PayloadTooLarge);
-        }
-        Ok(())
-    }
-
-    fn consume_requests(&mut self, requests: usize) -> Result<(), VaultError> {
-        self.requests = self
-            .requests
-            .checked_add(requests)
-            .ok_or(VaultError::ResourceLimitExceeded)?;
-        if self.requests > MAX_READ_REQUESTS {
-            return Err(VaultError::ResourceLimitExceeded);
-        }
-        Ok(())
-    }
-
-    fn list_limits(&self) -> Result<ListLimits, VaultError> {
-        Ok(ListLimits {
-            requests: remaining(MAX_READ_REQUESTS, self.requests)?,
-            response_bytes: remaining(MAX_LIST_RESPONSE_BYTES, self.list_response_bytes)?,
-            scanned_collections: remaining(MAX_SCANNED_COLLECTIONS, self.scanned_collections)?,
-            scanned_resources: remaining(MAX_SCANNED_RESOURCES, self.scanned_resources)?,
-            returned_objects: remaining(MAX_LISTED_OBJECTS, self.listed_objects)?,
-        })
-    }
-
-    fn consume_list_cost(&mut self, cost: ListCost) -> Result<(), VaultError> {
-        self.consume_requests(cost.requests)?;
-        self.list_response_bytes = checked_total(
-            self.list_response_bytes,
-            cost.response_bytes,
-            MAX_LIST_RESPONSE_BYTES,
-        )?;
-        self.scanned_collections = checked_total(
-            self.scanned_collections,
-            cost.scanned_collections,
-            MAX_SCANNED_COLLECTIONS,
-        )?;
-        self.scanned_resources = checked_total(
-            self.scanned_resources,
-            cost.scanned_resources,
-            MAX_SCANNED_RESOURCES,
-        )?;
-        self.listed_objects = self
-            .listed_objects
-            .checked_add(cost.returned_objects)
-            .ok_or(VaultError::ResourceLimitExceeded)?;
-        if self.listed_objects > MAX_LISTED_OBJECTS {
-            return Err(VaultError::ResourceLimitExceeded);
-        }
-        Ok(())
-    }
-}
-
-fn remaining(maximum: usize, consumed: usize) -> Result<usize, VaultError> {
-    maximum
-        .checked_sub(consumed)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(VaultError::ResourceLimitExceeded)
-}
-
-fn checked_total(current: usize, added: usize, maximum: usize) -> Result<usize, VaultError> {
-    current
-        .checked_add(added)
-        .filter(|total| *total <= maximum)
-        .ok_or(VaultError::ResourceLimitExceeded)
 }
 
 fn validate_input(input: &ManualSyncInput<'_>) -> Result<(), VaultError> {
@@ -1277,6 +1202,9 @@ fn pending_local_operations(
             Some(_) => return Err(VaultError::InvalidEncryptedObject),
             None => {}
         }
+        if !operation_survives_checkpoint(remote.compaction_checkpoint.as_ref(), operation) {
+            continue;
+        }
         if remote_dots.contains(&operation.stamp.dot) {
             return Err(VaultError::InvalidEncryptedObject);
         }
@@ -1351,6 +1279,14 @@ fn sync_equivalent(left: &PersonalStateV2, right: &PersonalStateV2) -> bool {
         && left.version_vector == right.version_vector
         && left.operations == right.operations
         && left.compaction_checkpoint == right.compaction_checkpoint
+}
+
+pub(super) fn is_adjacent_compaction_transition(
+    remote: &crate::personal_state::CompactionCheckpoint,
+    local: &crate::personal_state::CompactionCheckpoint,
+) -> bool {
+    remote.compaction_generation.checked_add(1) == Some(local.compaction_generation)
+        && local.previous_checkpoint_hash.as_deref() == Some(remote.checkpoint_id.as_str())
 }
 
 fn canonical_checkpoint_state(state: &PersonalStateV2) -> PersonalStateV2 {

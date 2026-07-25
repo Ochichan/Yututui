@@ -163,6 +163,8 @@ pub enum Msg {
     /// Periodic wake-up while transient status or lyric-sync OSD state is showing. Lets the
     /// reducer expire the status after [`STATUS_TTL`] and collapse the OSD after three seconds.
     StatusTick,
+    /// Monotonic owner-lane wake for a due automatic personal-state synchronization.
+    AutomaticSyncTick,
     /// 100 ms synced-lyrics clock. The runtime arms it only while the full Player lyric panel is
     /// visible and actively playing; the reducer redraws only when the stored active row changes.
     LyricsTick,
@@ -211,6 +213,8 @@ pub enum Msg {
         store: crate::persist::StoreKind,
         error: String,
     },
+    #[rustfmt::skip]
+    PersonalStatePersisted { revision: u64, state_identity: String },
     /// A streaming/autoplay pipeline message — a prefetched/resolved direct URL, related-track
     /// candidates, the metadata-preflighted picks, a fallback failure, or the DJ Gem reranker's
     /// chosen picks. See [`StreamingMsg`].
@@ -327,6 +331,7 @@ pub enum DataCmd {
         action: PersonalSyncAction,
         attempt: u8,
         personal_state: Box<crate::personal_state::PersonalStateV2>,
+        revision_guard: crate::sync::OwnerRevisionGuard,
         reply: PersonalSyncReply,
     },
     SyncUi(SyncUiCommand),

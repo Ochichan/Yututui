@@ -132,9 +132,10 @@ impl App {
                         self.plan_transfer_playlist_commit(request, patch, true)
                     }
                     TargetFlushOutcome::CommittedExact => {
+                        let previous_personal_revision = self.personal_state.ledger.revision;
                         self.playlists = std::sync::Arc::new(candidate);
                         if let Some(personal_state) = personal_state {
-                            self.personal_state.ledger = personal_state;
+                            self.personal_state.replace_ledger(personal_state);
                         }
                         self.reconcile_playlists_reload();
                         self.dirty = true;
@@ -143,7 +144,11 @@ impl App {
                                 outcome,
                             ),
                         ));
-                        Vec::new()
+                        if self.personal_state.ledger.revision != previous_personal_revision {
+                            self.note_personal_state_mutation()
+                        } else {
+                            Vec::new()
+                        }
                     }
                 }
             }
@@ -477,6 +482,54 @@ mod tests {
         };
         assert_eq!(outcome.rows[0].checkpoint_index, 4);
         assert_eq!(outcome.rows[0].result, AddResult::Added);
+    }
+
+    #[test]
+    fn exact_transfer_commit_arms_the_automatic_sync_debounce() {
+        let mut app = App::new(50);
+        let (commit, mut reply) = begin(&mut app, 6);
+        let prepared = app
+            .reconcile_personal_state(&commit.candidate)
+            .and_then(|state| {
+                crate::personal_state::PersonalStateCommit::prepare_for_runtime(
+                    state,
+                    commit.candidate.revision(),
+                )
+            })
+            .unwrap();
+        let now = std::time::Instant::now();
+        let startup = app.personal_state.sync.scheduler.enable(now).unwrap();
+        let _ = app.personal_state.sync.scheduler.finish(
+            startup,
+            crate::sync::SyncAttemptOutcome::Succeeded,
+            now,
+        );
+        let before = std::time::Instant::now();
+
+        assert!(
+            app.on_transfer_playlist_persisted_with_personal_state(
+                *commit,
+                TargetFlushOutcome::CommittedExact,
+                prepared.state().clone(),
+            )
+            .is_empty()
+        );
+
+        let due = app
+            .personal_state
+            .sync
+            .scheduler
+            .next_deadline()
+            .expect("transfer mutation debounce");
+        assert!(due >= before + crate::sync::LOCAL_MUTATION_DEBOUNCE);
+        assert!(
+            due <= std::time::Instant::now() + crate::sync::LOCAL_MUTATION_DEBOUNCE,
+            "the transfer mutation must replace the 15-minute fallback"
+        );
+        assert!(matches!(
+            reply.try_recv().expect("durable reply"),
+            Ok(LocalPlaylistOwnerReply::Applied(_))
+        ));
     }
 
     #[test]

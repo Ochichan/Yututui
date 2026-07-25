@@ -1,18 +1,18 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::personal_state::{
-    CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
-    PersonalStateV2, PortableTrack, PortableTrackKey, Rating, VersionVector, append_operation_as,
-    project,
+    CausalStamp, CompactionCheckpoint, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope,
+    OperationOrigin, PersonalStateV2, PortableTrack, PortableTrackKey, Rating, VersionVector,
+    append_operation_as, project,
 };
 
 use super::super::crypto::{DeviceSecretMaterial, EncryptedObject, sha256_domain_hex};
 use super::super::{
     CheckpointAnchor, ListCost, ListLimits, ListOutcome, MAX_VAULT_PAYLOAD_BYTES, MembershipAction,
-    MembershipAnchor, MembershipChain, ObjectCondition, ObjectKey, ObjectMetadata,
-    ObjectWriteResult, RecoveryKit, SignedMembershipRoot, VaultDeadline, VaultError,
-    VaultTransport,
+    MembershipAnchor, MembershipChain, ObjectCondition, ObjectDeleteResult, ObjectKey,
+    ObjectMetadata, ObjectWriteResult, OwnerRevisionGuard, RecoveryKit, SignedMembershipRoot,
+    VaultDeadline, VaultError, VaultTransport,
 };
 use super::*;
 
@@ -27,6 +27,9 @@ struct MemoryTransport {
     next_reported_length: Cell<Option<u64>>,
     list_cost: Cell<Option<(usize, usize, usize, usize)>>,
     observed_list_limits: RefCell<Vec<ListLimits>>,
+    revision_flip_on_get: RefCell<Option<(ObjectKey, OwnerRevisionGuard, u64)>>,
+    revision_flipped: Cell<bool>,
+    mutations_after_flip: Cell<usize>,
 }
 
 impl MemoryTransport {
@@ -42,6 +45,9 @@ impl MemoryTransport {
             next_reported_length: Cell::new(None),
             list_cost: Cell::new(None),
             observed_list_limits: RefCell::new(Vec::new()),
+            revision_flip_on_get: RefCell::new(None),
+            revision_flipped: Cell::new(false),
+            mutations_after_flip: Cell::new(0),
         }
     }
 
@@ -92,6 +98,16 @@ impl MemoryTransport {
     fn observed_list_limits(&self) -> Vec<ListLimits> {
         self.observed_list_limits.borrow().clone()
     }
+
+    fn flip_revision_on_get(&self, key: ObjectKey, guard: OwnerRevisionGuard, revision: u64) {
+        *self.revision_flip_on_get.borrow_mut() = Some((key, guard, revision));
+        self.revision_flipped.set(false);
+        self.mutations_after_flip.set(0);
+    }
+
+    fn mutations_after_flip(&self) -> usize {
+        self.mutations_after_flip.get()
+    }
 }
 
 impl VaultTransport for MemoryTransport {
@@ -100,6 +116,21 @@ impl VaultTransport for MemoryTransport {
         key: &ObjectKey,
         max_bytes: usize,
     ) -> Result<Option<(EncryptedObject, ObjectMetadata)>, VaultError> {
+        let revision_flip = {
+            let mut staged = self.revision_flip_on_get.borrow_mut();
+            if staged
+                .as_ref()
+                .is_some_and(|(staged_key, _, _)| staged_key == key)
+            {
+                staged.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, guard, revision)) = revision_flip {
+            guard.publish(revision);
+            self.revision_flipped.set(true);
+        }
         if self.hide_once.borrow().as_ref() == Some(key) {
             self.hide_once.borrow_mut().take();
             return Ok(None);
@@ -141,6 +172,10 @@ impl VaultTransport for MemoryTransport {
         object: &EncryptedObject,
         condition: ObjectCondition,
     ) -> Result<ObjectWriteResult, VaultError> {
+        if self.revision_flipped.get() {
+            self.mutations_after_flip
+                .set(self.mutations_after_flip.get().saturating_add(1));
+        }
         if !object.is_locally_produced() {
             return Err(VaultError::InvalidEncryptedObject);
         }
@@ -179,6 +214,18 @@ impl VaultTransport for MemoryTransport {
         } else {
             ObjectWriteResult::Created(result_metadata)
         })
+    }
+
+    fn delete(
+        &self,
+        _key: &ObjectKey,
+        _expected_etag: &str,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        if self.revision_flipped.get() {
+            self.mutations_after_flip
+                .set(self.mutations_after_flip.get().saturating_add(1));
+        }
+        Err(VaultError::RemoteUnsupported)
     }
 
     fn list(
@@ -595,6 +642,50 @@ fn stale_revision_is_rejected_before_any_remote_write() {
 }
 
 #[test]
+fn live_owner_content_change_at_same_revision_stops_subsequent_remote_mutations() {
+    let fixture = fixture(2);
+    let transport = MemoryTransport::new();
+    let bootstrap = synchronize(
+        &transport,
+        &fixture,
+        0,
+        &fixture.state,
+        &CheckpointAnchor::default(),
+    );
+    let changed = rate(
+        &bootstrap.state,
+        &fixture.devices[0],
+        "local-race",
+        Rating::Liked,
+    );
+    let guard = OwnerRevisionGuard::new(changed.revision);
+    transport.flip_revision_on_get(
+        manifest_key(&changed.dataset_id).unwrap(),
+        guard.clone(),
+        changed.revision,
+    );
+    let writes_before = transport.writes();
+    let input = ManualSyncInput {
+        local_state: &changed,
+        membership: &fixture.membership,
+        membership_anchor: &fixture.anchor,
+        device: &fixture.devices[0],
+        checkpoint_anchor: &bootstrap.checkpoint_anchor,
+        bootstrap_checkpoint: None,
+        expected_local_revision: changed.revision,
+    };
+
+    assert_eq!(
+        ManualSyncEngine::new(&transport)
+            .synchronize(&input, &guard)
+            .err(),
+        Some(VaultError::RevisionConflict)
+    );
+    assert_eq!(transport.writes(), writes_before);
+    assert_eq!(transport.mutations_after_flip(), 0);
+}
+
+#[test]
 fn expired_whole_sync_deadline_fails_before_transport_io() {
     let fixture = fixture(2);
     let transport = MemoryTransport::new();
@@ -863,5 +954,38 @@ fn unreadable_head_with_uncheckpointed_segments_is_rejected() {
         )
         .err(),
         Some(VaultError::DecryptionFailed)
+    );
+}
+
+#[test]
+fn local_compaction_publication_requires_the_immediate_remote_generation() {
+    fn checkpoint(
+        generation: u64,
+        checkpoint_id: char,
+        previous_checkpoint_hash: Option<char>,
+    ) -> CompactionCheckpoint {
+        CompactionCheckpoint {
+            checkpoint_id: checkpoint_id.to_string().repeat(64),
+            compaction_generation: generation,
+            coverage: VersionVector::default(),
+            previous_checkpoint_hash: previous_checkpoint_hash
+                .map(|hash| hash.to_string().repeat(64)),
+            retained_engagement_operations: BTreeSet::new(),
+            leader_authorization: None,
+            acknowledged_by: BTreeSet::new(),
+        }
+    }
+
+    let remote_first = checkpoint(1, 'a', None);
+    let local_second = checkpoint(2, 'b', Some('a'));
+    let local_third = checkpoint(3, 'c', Some('b'));
+
+    assert!(super::engine::is_adjacent_compaction_transition(
+        &remote_first,
+        &local_second
+    ));
+    assert!(
+        !super::engine::is_adjacent_compaction_transition(&remote_first, &local_third),
+        "a local C3 cannot be published over remote C1 without proving C2 quorum"
     );
 }

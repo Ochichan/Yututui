@@ -69,11 +69,14 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
         Msg::TrackResolved { .. } => EventPolicy::DropIfStale {
             stale_key: Key::ResolverVideo,
         },
-        Msg::Noop | Msg::StatusTick | Msg::LyricsTick | Msg::AnimTick | Msg::RecordingTick => {
-            EventPolicy::BestEffort {
-                reason: "loop-owned ticks and inert messages are redraw/status hints",
-            }
-        }
+        Msg::Noop
+        | Msg::StatusTick
+        | Msg::AutomaticSyncTick
+        | Msg::LyricsTick
+        | Msg::AnimTick
+        | Msg::RecordingTick => EventPolicy::BestEffort {
+            reason: "loop-owned ticks and inert messages are redraw/status hints",
+        },
         Msg::Key(_)
         | Msg::MouseClick { .. }
         | Msg::MouseDoubleClick { .. }
@@ -105,6 +108,7 @@ pub(super) fn app_msg_policy(msg: &Msg) -> EventPolicy {
             | crate::app::DownloadMsg::DirError { .. },
         )
         | Msg::PersistFailed { .. }
+        | Msg::PersonalStatePersisted { .. }
         | Msg::Ai(_)
         | Msg::Scrobble(_)
         | Msg::Tools(

@@ -108,7 +108,7 @@ impl PersonalStateCommit {
         state.validate()?;
         let projection = project(&state)?;
         if state.projection_fingerprint.as_deref() != Some(projection.fingerprint.as_str()) {
-            state.revision = state.revision.saturating_add(1);
+            state.revision = state.next_revision()?;
         }
         state.device_registry = projection.device_registry.clone();
         state.version_vector = projection.version_vector.clone();

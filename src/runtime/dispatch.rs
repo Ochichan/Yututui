@@ -184,6 +184,7 @@ impl RuntimeHandles {
                     action,
                     attempt,
                     personal_state,
+                    revision_guard,
                     reply,
                 } => {
                     let emitter = self.background_tasks.emitter(self.worker_tx.clone());
@@ -196,15 +197,26 @@ impl RuntimeHandles {
                                 .map_err(crate::sync::service::SyncServiceError::from)
                                 .and_then(|paths| {
                                     let revoke_target = match &action {
-                                        crate::app::PersonalSyncAction::SyncNow => None,
+                                        crate::app::PersonalSyncAction::SyncNow
+                                        | crate::app::PersonalSyncAction::AutomaticSync => None,
                                         crate::app::PersonalSyncAction::Revoke(device_id) => {
                                             Some(device_id)
                                         }
                                     };
-                                    crate::sync::service::prepare_owner_sync(
+                                    let kind = if matches!(
+                                        action,
+                                        crate::app::PersonalSyncAction::AutomaticSync
+                                    ) {
+                                        crate::sync::service::SyncAttemptKind::Automatic
+                                    } else {
+                                        crate::sync::service::SyncAttemptKind::Manual
+                                    };
+                                    crate::sync::service::prepare_owner_sync_as(
                                         &personal_state,
                                         revoke_target,
                                         &paths,
+                                        kind,
+                                        &revision_guard,
                                     )
                                 })
                         },

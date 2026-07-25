@@ -11,6 +11,7 @@ const MAX_STALE_RETRIES: u8 = 3;
 #[derive(Clone)]
 pub enum PersonalSyncAction {
     SyncNow,
+    AutomaticSync,
     Revoke(crate::personal_state::DeviceId),
 }
 
@@ -24,6 +25,8 @@ pub struct PersonalSyncReply(std::sync::Arc<PersonalSyncReplyInner>);
 struct PersonalSyncReplyInner {
     remote: std::sync::Mutex<Option<crate::remote::RemoteReply>>,
     tui_flow_id: Option<u64>,
+    token: std::sync::Mutex<Option<crate::sync::SyncAttemptToken>>,
+    automatic: bool,
 }
 
 impl PersonalSyncReply {
@@ -31,6 +34,8 @@ impl PersonalSyncReply {
         Self(std::sync::Arc::new(PersonalSyncReplyInner {
             remote: std::sync::Mutex::new(Some(reply)),
             tui_flow_id: None,
+            token: std::sync::Mutex::new(None),
+            automatic: false,
         }))
     }
 
@@ -38,11 +43,42 @@ impl PersonalSyncReply {
         Self(std::sync::Arc::new(PersonalSyncReplyInner {
             remote: std::sync::Mutex::new(None),
             tui_flow_id: Some(flow_id),
+            token: std::sync::Mutex::new(None),
+            automatic: false,
+        }))
+    }
+
+    pub(super) fn automatic(token: crate::sync::SyncAttemptToken) -> Self {
+        Self(std::sync::Arc::new(PersonalSyncReplyInner {
+            remote: std::sync::Mutex::new(None),
+            tui_flow_id: None,
+            token: std::sync::Mutex::new(Some(token)),
+            automatic: true,
         }))
     }
 
     pub(crate) fn tui_flow_id(&self) -> Option<u64> {
         self.0.tui_flow_id
+    }
+
+    fn bind_token(&self, token: crate::sync::SyncAttemptToken) {
+        *self
+            .0
+            .token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token);
+    }
+
+    pub(super) fn token(&self) -> Option<crate::sync::SyncAttemptToken> {
+        *self
+            .0
+            .token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn is_automatic(&self) -> bool {
+        self.0.automatic
     }
 
     pub(crate) fn respond(&self, response: crate::remote::proto::RemoteResponse) {
@@ -104,6 +140,9 @@ pub struct PersonalSyncPersisted {
 pub(crate) struct PersonalSyncState {
     pub(crate) in_progress: bool,
     pub(crate) pending_reply: Option<PersonalSyncReply>,
+    pub(super) scheduler: crate::sync::AutomaticSyncScheduler,
+    pub(super) deferred_automatic: Option<crate::sync::SyncAttemptToken>,
+    last_automatic_failure: Option<SyncServiceError>,
     shutdown_context: Option<PersonalSyncShutdownContext>,
 }
 
@@ -115,8 +154,23 @@ pub(crate) struct PersonalSyncState {
 pub(crate) struct PersonalStateRuntime {
     pub(crate) ledger: crate::personal_state::PersonalStateV2,
     pub(crate) device_id: Option<crate::personal_state::DeviceId>,
+    pub(crate) revision_guard: crate::sync::OwnerRevisionGuard,
     pub(crate) sync: PersonalSyncState,
     pub(crate) sync_ui: SyncUiState,
+}
+
+impl PersonalStateRuntime {
+    pub(crate) fn replace_ledger(&mut self, state: crate::personal_state::PersonalStateV2) {
+        if self.ledger != state {
+            self.revision_guard.publish(state.revision);
+        }
+        self.ledger = state;
+    }
+
+    fn guard_for_revision(&self, revision: u64) -> crate::sync::OwnerRevisionGuard {
+        debug_assert_eq!(self.ledger.revision, revision);
+        self.revision_guard.clone()
+    }
 }
 
 #[derive(Clone)]
@@ -145,11 +199,18 @@ impl App {
         self.start_personal_sync_with_reply(action, PersonalSyncReply::tui(flow_id))
     }
 
-    fn start_personal_sync_with_reply(
+    pub(super) fn start_personal_sync_with_reply(
         &mut self,
         action: PersonalSyncAction,
         reply: PersonalSyncReply,
     ) -> Vec<Cmd> {
+        if self.personal_state.sync_ui.remote_mutation_in_progress() {
+            reply.respond(RemoteResponse::err_with_message(
+                "sync_busy",
+                "personal sync is already running".to_owned(),
+            ));
+            return Vec::new();
+        }
         if self.personal_state.sync.in_progress {
             if let Some(flow_id) = reply.tui_flow_id() {
                 self.finish_tui_personal_sync_error(flow_id, SyncServiceError::LocalStateChanged);
@@ -160,27 +221,59 @@ impl App {
             ));
             return Vec::new();
         }
+        if !reply.is_automatic() {
+            let token = match self
+                .personal_state
+                .sync
+                .scheduler
+                .begin_manual(std::time::Instant::now())
+            {
+                Ok(token) => token,
+                Err(_) => {
+                    if let Some(flow_id) = reply.tui_flow_id() {
+                        self.finish_tui_personal_sync_error(
+                            flow_id,
+                            SyncServiceError::LocalStateChanged,
+                        );
+                    }
+                    reply.respond(RemoteResponse::err_with_message(
+                        "sync_busy",
+                        "personal sync is already running".to_owned(),
+                    ));
+                    return Vec::new();
+                }
+            };
+            reply.bind_token(token);
+        }
         if self.personal_state.device_id.is_none() {
             if let Some(flow_id) = reply.tui_flow_id() {
                 self.finish_tui_personal_sync_error(flow_id, SyncServiceError::NotConfigured);
             }
             reply.respond(sync_error_response(SyncServiceError::NotConfigured));
+            let _ = self.finish_personal_sync_schedule(&reply, SyncServiceError::NotConfigured);
             return Vec::new();
         }
         self.personal_state.sync.in_progress = true;
         self.personal_state.sync.pending_reply = Some(reply.clone());
-        self.status.text = crate::t!(
-            "Syncing personal state…",
-            "개인 상태 동기화 중…",
-            "個人状態を同期中…"
-        )
-        .to_owned();
-        self.status.kind = StatusKind::Info;
-        self.dirty = true;
+        if !reply.is_automatic() {
+            self.status.text = crate::t!(
+                "Syncing personal state…",
+                "개인 상태 동기화 중…",
+                "個人状態を同期中…"
+            )
+            .to_owned();
+            self.status.kind = StatusKind::Info;
+            self.dirty = true;
+        }
+        let personal_state = self.personal_state.ledger.clone();
+        let revision_guard = self
+            .personal_state
+            .guard_for_revision(personal_state.revision);
         vec![Cmd::Data(DataCmd::PersonalSync {
             action,
             attempt: 1,
-            personal_state: Box::new(self.personal_state.ledger.clone()),
+            personal_state: Box::new(personal_state),
+            revision_guard,
             reply,
         })]
     }
@@ -195,8 +288,7 @@ impl App {
         let current_state = match self.reconcile_personal_state(&self.playlists) {
             Ok(state) => state,
             Err(_) => {
-                self.finish_personal_sync_error(&prepared.reply, SyncServiceError::Storage);
-                return Vec::new();
+                return self.finish_personal_sync_error(&prepared.reply, SyncServiceError::Storage);
             }
         };
         match prepared.result {
@@ -229,10 +321,7 @@ impl App {
                     },
                 )))]
             }
-            Err(error) => {
-                self.finish_personal_sync_error(&prepared.reply, error);
-                Vec::new()
-            }
+            Err(error) => self.finish_personal_sync_error(&prepared.reply, error),
         }
     }
 
@@ -249,15 +338,14 @@ impl App {
         } = persisted;
         match outcome {
             PersonalSyncPersistOutcome::Failed(error) => {
-                self.finish_personal_sync_error(&commit.reply, error);
-                Vec::new()
+                self.finish_personal_sync_error(&commit.reply, error)
             }
             PersonalSyncPersistOutcome::Superseded => {
                 let current = match self.reconcile_personal_state(&self.playlists) {
                     Ok(state) => state,
                     Err(_) => {
-                        self.finish_personal_sync_error(&commit.reply, SyncServiceError::Storage);
-                        return Vec::new();
+                        return self
+                            .finish_personal_sync_error(&commit.reply, SyncServiceError::Storage);
                     }
                 };
                 self.retry_personal_sync(commit.action, commit.attempt, current, commit.reply)
@@ -266,19 +354,18 @@ impl App {
                 let current = match self.reconcile_personal_state(&self.playlists) {
                     Ok(state) => state,
                     Err(_) => {
-                        self.finish_personal_sync_error(&commit.reply, SyncServiceError::Storage);
-                        return Vec::new();
+                        return self
+                            .finish_personal_sync_error(&commit.reply, SyncServiceError::Storage);
                     }
                 };
                 if current != commit.observed_local_state {
                     let local_device = match &self.personal_state.device_id {
                         Some(device) => device,
                         None => {
-                            self.finish_personal_sync_error(
+                            return self.finish_personal_sync_error(
                                 &commit.reply,
                                 SyncServiceError::NotConfigured,
                             );
-                            return Vec::new();
                         }
                     };
                     let rebased = match rebase_local_operations(
@@ -289,8 +376,7 @@ impl App {
                     ) {
                         Ok(state) => state,
                         Err(error) => {
-                            self.finish_personal_sync_error(&commit.reply, error);
-                            return Vec::new();
+                            return self.finish_personal_sync_error(&commit.reply, error);
                         }
                     };
                     commit.observed_local_state = current;
@@ -302,8 +388,7 @@ impl App {
                     return vec![Cmd::Persist(PersistCmd::PersonalSyncCommit(commit))];
                 }
                 if let Err(error) = self.install_personal_sync_runtime(*durable_state) {
-                    self.finish_personal_sync_error(&commit.reply, error);
-                    return Vec::new();
+                    return self.finish_personal_sync_error(&commit.reply, error);
                 }
                 self.personal_state.sync.in_progress = false;
                 self.personal_state.sync.pending_reply = None;
@@ -312,18 +397,19 @@ impl App {
                 commit.reply.respond(RemoteResponse::ok(message.clone()));
                 if let Some(flow_id) = commit.reply.tui_flow_id() {
                     self.finish_tui_personal_sync(flow_id, &commit.action, &commit.summary);
-                    return Vec::new();
-                } else {
+                } else if !commit.reply.is_automatic() {
                     self.status.text = message;
                     self.status.kind = StatusKind::Info;
                     self.dirty = true;
                 }
-                Vec::new()
+                self.personal_state.sync.last_automatic_failure = None;
+                self.finish_personal_sync_schedule_success(&commit.reply)
             }
         }
     }
 
     pub(crate) fn settle_personal_sync_shutdown(&mut self) {
+        self.disable_automatic_sync();
         self.personal_state.sync.in_progress = false;
         if let Some(reply) = self.personal_state.sync.pending_reply.take() {
             reply.respond(RemoteResponse::err(
@@ -400,26 +486,44 @@ impl App {
         reply: PersonalSyncReply,
     ) -> Vec<Cmd> {
         if attempt >= MAX_STALE_RETRIES {
-            self.finish_personal_sync_error(&reply, SyncServiceError::LocalStateChanged);
-            return Vec::new();
+            return self.finish_personal_sync_error(&reply, SyncServiceError::LocalStateChanged);
         }
+        let revision_guard = self
+            .personal_state
+            .guard_for_revision(current_state.revision);
         vec![Cmd::Data(DataCmd::PersonalSync {
             action,
             attempt: attempt.saturating_add(1),
             personal_state: Box::new(current_state),
+            revision_guard,
             reply,
         })]
     }
 
-    fn finish_personal_sync_error(&mut self, reply: &PersonalSyncReply, error: SyncServiceError) {
+    fn finish_personal_sync_error(
+        &mut self,
+        reply: &PersonalSyncReply,
+        error: SyncServiceError,
+    ) -> Vec<Cmd> {
+        let automatic_failure = match error {
+            SyncServiceError::RateLimited(_) => SyncServiceError::Offline,
+            error => error,
+        };
         self.personal_state.sync.in_progress = false;
         self.personal_state.sync.pending_reply = None;
+        self.personal_state.sync.shutdown_context = None;
         reply.respond(sync_error_response(error));
         if let Some(flow_id) = reply.tui_flow_id() {
             self.finish_tui_personal_sync_error(flow_id, error);
-        } else {
+        } else if !reply.is_automatic()
+            || self.personal_state.sync.last_automatic_failure != Some(automatic_failure)
+        {
             self.set_status_error(error.to_string());
         }
+        if reply.is_automatic() {
+            self.personal_state.sync.last_automatic_failure = Some(automatic_failure);
+        }
+        self.finish_personal_sync_schedule(reply, error)
     }
 
     pub(in crate::app) fn install_personal_sync_runtime(
@@ -433,7 +537,7 @@ impl App {
         .map_err(SyncServiceError::from)?;
         let (library, mut playlists, signals, station) = prepared.runtime_stores();
         playlists.inherit_revision_from(&self.playlists);
-        self.personal_state.ledger = prepared.state().clone();
+        self.personal_state.replace_ledger(prepared.state().clone());
         self.library = Arc::new(library);
         self.playlists = Arc::new(playlists);
         self.signals = Arc::new(signals);
@@ -575,6 +679,35 @@ mod tests {
             second_response.try_recv().unwrap().reason.as_deref(),
             Some("sync_busy")
         );
+    }
+
+    #[test]
+    fn delayed_max_revision_persist_event_cannot_confirm_different_live_content() {
+        let mut app = App::new(50);
+        let mut durable = app.personal_state.ledger.clone();
+        durable.revision = u64::MAX;
+        let stale_identity = durable.identity().unwrap();
+        let mut live = durable;
+        live.metadata.source_app_version = "different-live-content".to_owned();
+        app.personal_state.replace_ledger(live);
+
+        let now = std::time::Instant::now();
+        let startup = app.personal_state.sync.scheduler.enable(now).unwrap();
+        let _ = app.personal_state.sync.scheduler.finish(
+            startup,
+            crate::sync::SyncAttemptOutcome::Succeeded,
+            now,
+        );
+        let fallback = app.personal_state.sync.scheduler.next_deadline();
+
+        assert!(
+            app.update(Msg::PersonalStatePersisted {
+                revision: u64::MAX,
+                state_identity: stale_identity,
+            })
+            .is_empty()
+        );
+        assert_eq!(app.personal_state.sync.scheduler.next_deadline(), fallback);
     }
 
     #[test]
@@ -796,6 +929,7 @@ mod tests {
             Cmd::Data(DataCmd::PersonalSync {
                 attempt,
                 personal_state,
+                revision_guard,
                 ..
             }),
         ] = commands.as_slice()
@@ -804,9 +938,44 @@ mod tests {
         };
         assert_eq!(*attempt, 2);
         assert_eq!(personal_state.revision, app.personal_state.ledger.revision);
+        assert_eq!(revision_guard.current(), personal_state.revision);
+        let mut next = app.personal_state.ledger.clone();
+        next.revision = next.revision.checked_add(1).unwrap();
+        app.personal_state.replace_ledger(next);
+        assert_eq!(revision_guard.current(), personal_state.revision + 1);
         assert!(response.try_recv().is_err());
         assert!(app.personal_state.sync.in_progress);
         assert!(app.personal_state.sync.shutdown_context.is_none());
+    }
+
+    #[test]
+    fn rate_limit_and_offline_share_one_automatic_failure_notification() {
+        let mut app = App::new(50);
+        app.personal_state.device_id =
+            Some(crate::personal_state::DeviceId::new("device-a").unwrap());
+        let first_token = app
+            .personal_state
+            .sync
+            .scheduler
+            .enable(std::time::Instant::now())
+            .unwrap();
+        let first_reply = PersonalSyncReply::automatic(first_token);
+        app.personal_state.sync.in_progress = true;
+
+        let _ = app.finish_personal_sync_error(
+            &first_reply,
+            SyncServiceError::RateLimited(Some(std::time::Duration::from_secs(75))),
+        );
+        let first_message = app.status.text.clone();
+        assert!(first_message.contains("75 seconds"));
+
+        let retry_due = app.personal_state.sync.scheduler.next_deadline().unwrap();
+        let retry_token = app.personal_state.sync.scheduler.poll(retry_due).unwrap();
+        let retry_reply = PersonalSyncReply::automatic(retry_token);
+        app.personal_state.sync.in_progress = true;
+        let _ = app.finish_personal_sync_error(&retry_reply, SyncServiceError::Offline);
+
+        assert_eq!(app.status.text, first_message);
     }
 
     #[test]

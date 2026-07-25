@@ -420,6 +420,13 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Persist(crate::persist::PersistEvent::WriteFailed { store, error }) => {
                 Msg::PersistFailed { store, error }
             }
+            RuntimeEvent::Persist(crate::persist::PersistEvent::PersonalStateCommitted {
+                revision,
+                state_identity,
+            }) => Msg::PersonalStatePersisted {
+                revision,
+                state_identity,
+            },
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }

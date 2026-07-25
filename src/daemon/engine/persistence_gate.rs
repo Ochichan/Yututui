@@ -225,7 +225,7 @@ impl DaemonEngine {
         }
         let (library, mut playlists, signals, station) = commit.runtime_stores();
         let playlists_changed = playlists.inherit_revision_from(&self.playlists);
-        self.personal_state = installed.clone();
+        self.install_personal_state(installed.clone());
         self.library = library;
         self.playlists = playlists;
         self.signals = signals;
@@ -274,21 +274,28 @@ impl DaemonEngine {
                 "failed to resolve personal-state storage: {error}"
             ))
         })?;
-        match save_store(StoreKind::Playlists, || {
-            commit
-                .commit(&paths)
-                .map(|_| ())
-                .map_err(std::io::Error::other)
+        let installed = match save_store(StoreKind::Playlists, || {
+            commit.commit(&paths).map_err(std::io::Error::other)
         }) {
-            Ok(()) => {
-                self.personal_state = commit.state().clone();
-                Ok(())
-            }
+            Ok(installed) => installed,
             Err(error) => {
                 let message = format!("failed to save daemon transfer playlists: {error}");
                 self.record_persistence_failure("daemon transfer playlists", error);
-                Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
+                return Err(
+                    crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message),
+                );
             }
+        };
+        if installed != *commit.state() {
+            let error = std::io::Error::other(
+                "personal state changed while the daemon transfer was installing",
+            );
+            let message = format!("failed to save daemon transfer playlists: {error}");
+            self.record_persistence_failure("daemon transfer playlists", error);
+            Err(crate::transfer::local_playlist::LocalPlaylistStoreError::resumable(message))
+        } else {
+            self.install_personal_state(installed);
+            Ok(())
         }
     }
 

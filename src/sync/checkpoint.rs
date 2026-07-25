@@ -124,7 +124,7 @@ impl SignedCheckpoint {
             batch_anchors,
             state,
         };
-        validate_payload(&payload, &verified)?;
+        validate_payload(&payload, &verified, membership_anchor)?;
         let signature = sign_serializable(CHECKPOINT_SIGNATURE_DOMAIN, signing_key, &payload)?;
         let checkpoint = Self { payload, signature };
         checkpoint.verify(membership_anchor)?;
@@ -137,7 +137,7 @@ impl SignedCheckpoint {
         membership_anchor: &MembershipAnchor,
     ) -> Result<VerifiedMembership, VaultError> {
         let verified = self.payload.membership.verify(membership_anchor)?;
-        validate_payload(&self.payload, &verified)?;
+        validate_payload(&self.payload, &verified, membership_anchor)?;
         let signer = active_signer(&verified, &self.payload.signer_device_id)?;
         verify_serializable(
             CHECKPOINT_SIGNATURE_DOMAIN,
@@ -274,6 +274,7 @@ fn classify_anchor(
 fn validate_payload(
     payload: &CheckpointPayload,
     membership: &VerifiedMembership,
+    membership_anchor: &MembershipAnchor,
 ) -> Result<(), VaultError> {
     if payload.kind != CHECKPOINT_KIND
         || payload.schema_version != super::VAULT_SCHEMA_VERSION
@@ -300,6 +301,25 @@ fn validate_payload(
         .is_some_and(|checkpoint| !checkpoint.acknowledged_by.is_empty())
     {
         return Err(VaultError::InvalidEncryptedObject);
+    }
+    if let Some(compaction) = payload.state.compaction_checkpoint.as_ref() {
+        super::compaction::verify_compaction_authorization(
+            &payload.dataset_id,
+            compaction,
+            &payload.membership,
+            membership_anchor,
+        )?;
+        let authorization = compaction
+            .leader_authorization
+            .as_ref()
+            .ok_or(VaultError::InvalidEncryptedObject)?;
+        if payload.checkpoint_sequence < authorization.introducing_checkpoint_sequence
+            || (payload.checkpoint_sequence == authorization.introducing_checkpoint_sequence
+                && payload.previous_checkpoint_hash.as_deref()
+                    != Some(authorization.introducing_checkpoint_parent_hash.as_str()))
+        {
+            return Err(VaultError::InvalidEncryptedObject);
+        }
     }
     if payload.state.device_registry != membership.devices {
         return Err(VaultError::RegistryMismatch);
@@ -822,8 +842,11 @@ mod tests {
         let mut fixture = fixture();
         fixture.state.compaction_checkpoint = Some(CompactionCheckpoint {
             checkpoint_id: "compaction-one".to_owned(),
+            compaction_generation: 1,
             coverage: VersionVector::default(),
             previous_checkpoint_hash: None,
+            retained_engagement_operations: BTreeSet::new(),
+            leader_authorization: None,
             acknowledged_by: BTreeSet::from([fixture.device_one.device_id.clone()]),
         });
         assert_eq!(

@@ -172,6 +172,20 @@ impl super::super::App {
         form: SyncConnectionForm,
         join: bool,
     ) -> Vec<super::super::Cmd> {
+        if self.personal_state.sync.in_progress {
+            self.personal_state.sync_ui.wizard = Some(if join {
+                SyncWizard::Join {
+                    form,
+                    confirm: true,
+                }
+            } else {
+                SyncWizard::Setup {
+                    form,
+                    confirm: true,
+                }
+            });
+            return Vec::new();
+        }
         let input = match form.into_input(join) {
             Ok(input) => input,
             Err(error) => {
@@ -208,6 +222,15 @@ impl super::super::App {
         review: Option<Box<PairingReview>>,
     ) -> Vec<super::super::Cmd> {
         if self.personal_state.sync_ui.busy.is_some() {
+            self.personal_state.sync_ui.wizard = Some(SyncWizard::Host {
+                code,
+                expires_at_unix,
+                host,
+                review,
+            });
+            return Vec::new();
+        }
+        if key.code == KeyCode::Enter && review.is_some() && self.personal_state.sync.in_progress {
             self.personal_state.sync_ui.wizard = Some(SyncWizard::Host {
                 code,
                 expires_at_unix,

@@ -4,16 +4,18 @@
 //! WebDAV request construction live in the adapter; automatic scheduling is intentionally a
 //! later layer.
 
+mod budget;
 mod engine;
+mod maintenance;
 mod protocol;
 
 use crate::personal_state::DeviceId;
 
 use super::{ObjectKey, VaultError};
 
+pub use budget::ManualSyncBudget;
 pub use engine::{
-    LocalRevisionGuard, ManualSyncBudget, ManualSyncCandidate, ManualSyncEngine, ManualSyncInput,
-    ManualSyncSummary,
+    LocalRevisionGuard, ManualSyncCandidate, ManualSyncEngine, ManualSyncInput, ManualSyncSummary,
 };
 pub use protocol::{
     DeviceHeadPayload, SignedDeviceHead, SignedVaultManifest, VaultManifestPayload,

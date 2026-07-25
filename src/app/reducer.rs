@@ -1112,6 +1112,7 @@ impl App {
                 return self.handle_api_mode_resolved(mode, had_cookie);
             }
             Msg::StatusTick => return self.handle_status_tick(),
+            Msg::AutomaticSyncTick => return self.poll_automatic_sync(),
             Msg::LyricsTick => {
                 if self.lyrics_tick_at(Instant::now()) {
                     self.dirty = true;
@@ -1191,6 +1192,22 @@ impl App {
             } => return self.apply_deleted_downloads(root, deleted, failed),
             Msg::PersistFailed { store, error } => {
                 return self.handle_persist_failed(store, error);
+            }
+            Msg::PersonalStatePersisted {
+                revision,
+                state_identity,
+            } => {
+                return if self.personal_state.ledger.revision == revision
+                    && self
+                        .personal_state
+                        .ledger
+                        .identity()
+                        .is_ok_and(|identity| identity == state_identity)
+                {
+                    self.note_personal_state_mutation()
+                } else {
+                    Vec::new()
+                };
             }
             Msg::Streaming(sm) => return self.handle_streaming(sm),
             // --- DJ Gem assistant intents ---------------------------------------

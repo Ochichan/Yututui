@@ -61,7 +61,8 @@ pub fn plan_import(
         || candidate.version_vector != current.version_vector
         || candidate.compaction_checkpoint != current.compaction_checkpoint;
     if changed {
-        candidate.revision = candidate.revision.max(current.revision).saturating_add(1);
+        candidate.revision =
+            PersonalStateV2::revision_after(candidate.revision.max(current.revision))?;
         candidate.projection_fingerprint = None;
     } else {
         candidate.revision = current.revision;
@@ -150,7 +151,7 @@ pub fn plan_join_import(
         ));
     }
 
-    candidate.revision = authenticated_remote.revision.saturating_add(1);
+    candidate.revision = authenticated_remote.next_revision()?;
     validate_join_import_extension(authenticated_remote, &candidate, local_device_id)?;
     let summary = summarize(&before, &after, 1, 0, true);
     Ok(ImportPlan { candidate, summary })

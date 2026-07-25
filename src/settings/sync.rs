@@ -477,6 +477,11 @@ pub fn audit_action_label(action: SyncAuditAction) -> &'static str {
             "개인 데이터를 동기화했습니다",
             "個人データを同期しました"
         ),
+        SyncAuditAction::AutomaticSync => t!(
+            "Personal data was synced automatically",
+            "개인 데이터를 자동으로 동기화했습니다",
+            "個人データを自動同期しました"
+        ),
         SyncAuditAction::PairCreate => t!(
             "A device connection was started",
             "기기 연결을 시작했습니다",

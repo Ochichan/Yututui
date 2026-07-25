@@ -163,6 +163,7 @@ mod tests {
             action: crate::app::PersonalSyncAction::SyncNow,
             attempt: 1,
             personal_state: Box::new(crate::personal_state::PersonalStateV2::default()),
+            revision_guard: crate::sync::OwnerRevisionGuard::default(),
             reply: crate::app::PersonalSyncReply::new(reply.into()),
         });
 

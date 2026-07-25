@@ -4,8 +4,11 @@
 //! configuration, merge policy, and live-state publication remain in separate owners so a WebDAV
 //! failure cannot bypass the local-first persistence path.
 
+pub mod automatic;
 mod batch;
 mod checkpoint;
+mod compaction;
+mod connectivity;
 mod crypto;
 mod error;
 mod local_state;
@@ -15,11 +18,17 @@ mod pairing;
 mod private_store;
 mod profile;
 mod recovery;
+mod revision_guard;
 pub mod service;
 mod transport;
 pub mod webdav;
 mod worker;
 
+pub use automatic::{
+    AutomaticSyncScheduler, AutomaticSyncTrigger, BACKOFF_MAX, BACKOFF_MIN, BackoffJitter,
+    FALLBACK_INTERVAL, LOCAL_MUTATION_DEBOUNCE, SyncAttemptKind, SyncAttemptOutcome,
+    SyncAttemptToken, SyncFinish, SyncStartError,
+};
 pub use batch::{
     BatchAcceptance, BatchAnchor, OperationBatchPayload, SignedOperationBatch,
     apply_operation_batch,
@@ -28,6 +37,11 @@ pub use checkpoint::{
     CheckpointAcceptance, CheckpointAnchor, CheckpointBatchAnchor, CheckpointPayload,
     SignedCheckpoint,
 };
+pub use compaction::{
+    CompactionAckPayload, SignedCompactionAck, authorize_compaction, compaction_ack_key,
+    compaction_ack_prefix, compaction_quorum, verify_compaction_authorization,
+};
+pub(crate) use connectivity::NetworkChangeWatch;
 pub use crypto::{
     DeviceSecretMaterial, EncryptedObject, decrypt_json_with_identity, encrypt_json_to_recipients,
 };
@@ -51,9 +65,10 @@ pub use private_store::{
 };
 pub use profile::{MAX_CUSTOM_CA_PEM_BYTES, SyncPaths, WebDavProfile, WebDavProfileStore};
 pub use recovery::{RecoveryKit, RecoveryResult};
+pub use revision_guard::OwnerRevisionGuard;
 pub use transport::{
-    FileVaultTransport, ListCost, ListLimits, ListOutcome, ObjectCondition, ObjectKey,
-    ObjectMetadata, ObjectWriteResult, VaultDeadline, VaultTransport,
+    FileVaultTransport, ListCost, ListLimits, ListOutcome, ObjectCondition, ObjectDeleteResult,
+    ObjectKey, ObjectMetadata, ObjectWriteResult, VaultDeadline, VaultTransport,
 };
 pub(crate) use worker::spawn_detached_prepare;
 

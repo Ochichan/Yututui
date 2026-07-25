@@ -396,7 +396,7 @@ fn validate_binding(binding: &TransitionBinding) -> Result<(), SyncServiceError>
         || binding.schema_version != TRANSITION_SCHEMA_VERSION
         || binding.device_id.is_empty()
         || binding.expected_private_revision == 0
-        || binding.target_private_revision != binding.expected_private_revision.saturating_add(1)
+        || binding.expected_private_revision.checked_add(1) != Some(binding.target_private_revision)
         || binding.checkpoint_sequence == 0
         || !valid_hash(&binding.expected_personal_hash)
         || !valid_hash(&binding.candidate_personal_hash)
