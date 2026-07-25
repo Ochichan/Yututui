@@ -43,7 +43,7 @@ fn admit_personal_state(handle: &PersistHandle, app: &mut App) -> DeliveryResult
         }
     };
     let (library, playlists, signals, station) = commit.runtime_stores();
-    app.personal_state.ledger = commit.state().clone();
+    app.personal_state.replace_ledger(commit.state().clone());
     app.library = std::sync::Arc::new(library);
     app.playlists = std::sync::Arc::new(playlists);
     app.signals = std::sync::Arc::new(signals);
@@ -119,7 +119,7 @@ mod tests {
         let handle = crate::persist::spawn();
         let mut app = App::new(50);
         let (state, device_id) = synced_state();
-        app.personal_state.ledger = state;
+        app.personal_state.replace_ledger(state);
         app.personal_state.device_id = Some(device_id.clone());
         app.library_mut().toggle_favorite(&crate::api::Song::remote(
             "bound-rating",

@@ -122,6 +122,11 @@ impl<'a> OperationAppender<'a> {
         operation: Operation,
         recorded_at_unix: i64,
     ) -> Result<Dot, PersonalStateError> {
+        // A different durable state must never reuse the terminal revision. The transaction
+        // coordinator advances this revision when it publishes the candidate; rejecting here
+        // keeps a MAX-valued imported ledger immutable instead of manufacturing same-revision
+        // content which a detached sync worker could mistake for its original snapshot.
+        let _ = self.state.next_revision()?;
         let sequence = self.next_sequence()?;
         let dot = Dot {
             device_id: self.device.clone(),

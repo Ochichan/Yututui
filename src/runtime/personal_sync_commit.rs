@@ -123,6 +123,9 @@ fn prepare_writer(
             candidate.as_ref().clone(),
             match &commit.action {
                 crate::app::PersonalSyncAction::SyncNow => PersonalSyncApplyKind::SyncNow,
+                crate::app::PersonalSyncAction::AutomaticSync => {
+                    PersonalSyncApplyKind::AutomaticSync
+                }
                 crate::app::PersonalSyncAction::Revoke(device_id) => {
                     PersonalSyncApplyKind::Revoke(device_id.clone())
                 }
@@ -292,7 +295,7 @@ mod tests {
         assert!(attempts.load(Ordering::Acquire) >= 2);
         let failures = failures.lock().unwrap();
         assert_eq!(failures.len(), 1);
-        let crate::persist::PersistEvent::WriteFailed { store, error } = &failures[0];
+        let (store, error) = failures[0].write_failure().unwrap();
         assert_eq!(*store, crate::persist::StoreKind::PersonalState);
         assert!(error.contains("temporary storage failure"));
     }

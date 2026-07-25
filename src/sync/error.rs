@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Duration;
 
 /// A redacted error from the encrypted personal-state vault.
 ///
@@ -47,6 +48,7 @@ pub enum VaultError {
     RemoteAuthentication,
     RemoteCertificate,
     RemoteUnavailable,
+    RemoteRateLimited(Option<Duration>),
     RemoteUnsupported,
     StorageFailed,
     StorageBusy,
@@ -99,6 +101,14 @@ impl fmt::Display for VaultError {
             Self::RemoteAuthentication => "the remote credential was rejected",
             Self::RemoteCertificate => "the remote certificate could not be verified",
             Self::RemoteUnavailable => "the remote service is unavailable",
+            Self::RemoteRateLimited(Some(delay)) => {
+                return write!(
+                    f,
+                    "the remote service asked the client to retry in {} seconds",
+                    delay.as_secs()
+                );
+            }
+            Self::RemoteRateLimited(None) => "the remote service asked the client to retry later",
             Self::RemoteUnsupported => "the remote service is not supported",
             Self::StorageFailed => "the protected state could not be stored",
             Self::StorageBusy => "the protected state is in use",

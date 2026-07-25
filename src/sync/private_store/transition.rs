@@ -92,7 +92,7 @@ impl PrivateStore {
         target_revision: u64,
         payload_hash: &str,
     ) -> Result<(), VaultError> {
-        if target_revision != expected_revision.saturating_add(1) {
+        if expected_revision.checked_add(1) != Some(target_revision) {
             return Err(VaultError::InvalidPrivateStore);
         }
         let bytes = Zeroizing::new(

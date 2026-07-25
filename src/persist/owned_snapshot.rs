@@ -114,6 +114,20 @@ impl OwnedSnapshot {
         }
     }
 
+    pub(super) fn ordinary_personal_state_commit(
+        &self,
+    ) -> Option<Result<(u64, String), crate::personal_state::PersonalStateError>> {
+        match self {
+            Self::PersonalState(value) => Some(
+                value
+                    .state()
+                    .identity()
+                    .map(|identity| (value.state().revision, identity)),
+            ),
+            _ => None,
+        }
+    }
+
     pub(super) fn write(&self) -> std::io::Result<()> {
         match self {
             Self::PersonalState(value) => {

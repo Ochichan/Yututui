@@ -7,10 +7,27 @@ use crate::sync::service::{AppliedManualSync, PreparedManualSync, SyncServiceErr
 #[derive(Clone)]
 pub(in crate::daemon) enum PersonalSyncAction {
     SyncNow,
+    AutomaticSync,
     Revoke(DeviceId),
 }
 
 impl DaemonEngine {
+    pub(in crate::daemon) fn install_personal_state(
+        &mut self,
+        state: crate::personal_state::PersonalStateV2,
+    ) {
+        if self.personal_state != state {
+            self.personal_state_revision_guard.publish(state.revision);
+        }
+        self.personal_state = state;
+    }
+
+    pub(in crate::daemon) fn personal_state_revision_guard(
+        &self,
+    ) -> crate::sync::OwnerRevisionGuard {
+        self.personal_state_revision_guard.clone()
+    }
+
     pub(in crate::daemon) fn set_personal_sync_in_progress(&mut self, in_progress: bool) {
         self.personal_sync_in_progress = in_progress;
     }
@@ -78,6 +95,15 @@ impl DaemonEngine {
                 &personal_paths,
                 &sync_paths,
             )?,
+            PersonalSyncAction::AutomaticSync => {
+                crate::sync::service::apply_prepared_automatic_sync_now(
+                    &current_state,
+                    self.playlists.revision(),
+                    candidate,
+                    &personal_paths,
+                    &sync_paths,
+                )?
+            }
             PersonalSyncAction::Revoke(device_id) => {
                 crate::sync::service::apply_prepared_revoke_now(
                     &current_state,
@@ -91,6 +117,25 @@ impl DaemonEngine {
         };
         self.install_personal_sync_runtime(&applied)?;
         Ok(applied)
+    }
+
+    pub(in crate::daemon) fn personal_state_revision(&self) -> u64 {
+        self.personal_state.revision
+    }
+
+    pub(in crate::daemon) fn personal_sync_device_id(&self) -> Option<&DeviceId> {
+        self.personal_state_device_id.as_ref()
+    }
+
+    pub(in crate::daemon) fn automatic_sync_is_configured(&self) -> bool {
+        if self.personal_state_device_id.is_none() {
+            return false;
+        }
+        let Ok(paths) = self.personal_state_paths() else {
+            return false;
+        };
+        crate::sync::service::read_status(&crate::sync::SyncPaths::for_data_root(paths.data_root))
+            .is_ok_and(|status| status.configured)
     }
 
     #[cfg(test)]
@@ -113,7 +158,7 @@ impl DaemonEngine {
             .commit(&self.personal_state_paths)
             .expect("commit daemon personal-sync fixture");
         let (library, playlists, signals, station) = commit.runtime_stores();
-        self.personal_state = installed;
+        self.install_personal_state(installed);
         self.personal_state_device_id = Some(device_id);
         self.library = library;
         self.playlists = playlists;
@@ -133,7 +178,7 @@ impl DaemonEngine {
         .map_err(SyncServiceError::from)?;
         let (library, mut playlists, signals, station) = prepared.runtime_stores();
         let playlists_changed = playlists.inherit_revision_from(&self.playlists);
-        self.personal_state = prepared.state().clone();
+        self.install_personal_state(prepared.state().clone());
         self.library = library;
         self.playlists = playlists;
         self.signals = signals;
@@ -190,7 +235,7 @@ mod tests {
         .unwrap();
         let installed = commit.commit(&engine.personal_state_paths).unwrap();
         let (library, playlists, signals, station) = commit.runtime_stores();
-        engine.personal_state = installed;
+        engine.install_personal_state(installed);
         engine.personal_state_device_id = Some(device_id.clone());
         engine.library = library;
         engine.playlists = playlists;

@@ -71,7 +71,8 @@ impl super::super::App {
         if !self.personal_state.sync_ui.is_current(flow_id) {
             return Vec::new();
         }
-        match event {
+        let webdav_connectivity = successful_webdav_work(&event);
+        let mut commands = match event {
             SyncUiEvent::Refreshed {
                 request_id, result, ..
             } => {
@@ -359,7 +360,11 @@ impl super::super::App {
                     Vec::new()
                 }
             },
+        };
+        if webdav_connectivity {
+            commands.extend(self.note_webdav_connectivity());
         }
+        commands
     }
 
     fn sync_worker_failed(&mut self, error: crate::sync::service::SyncServiceError) {
@@ -386,6 +391,9 @@ impl super::super::App {
         flow_id: u64,
     ) -> Vec<super::super::Cmd> {
         self.personal_state.sync_ui.auto_poll_enabled = true;
+        if self.personal_state.sync.in_progress {
+            return Vec::new();
+        }
         self.personal_state.sync_ui.busy = Some(SyncBusy::PairJoinPoll);
         self.personal_state.sync_ui.last_poll_unix = Some(crate::signals::unix_now());
         vec![super::super::Cmd::Data(super::super::DataCmd::SyncUi(
@@ -445,6 +453,27 @@ impl super::super::App {
         }
     }
 }
+
+fn successful_webdav_work(event: &SyncUiEvent) -> bool {
+    match event {
+        SyncUiEvent::SetupPrepared { result, .. } => result.is_ok(),
+        SyncUiEvent::HostCreated { result, .. } => result.is_ok(),
+        SyncUiEvent::HostPolled { result, .. } => result.is_ok(),
+        SyncUiEvent::HostApprovalPrepared { result, .. } => result.is_ok(),
+        SyncUiEvent::JoinStarted { result, .. } => result.is_ok(),
+        // A pending join can return `Ok(None)` only after successfully reading the WebDAV
+        // request/approval objects. `Ok(Some(_))` may instead be rebuilt from a cached local
+        // checkpoint, so it is deliberately not connectivity evidence.
+        SyncUiEvent::JoinPolled { result, .. } => matches!(result.as_ref(), Ok(None)),
+        SyncUiEvent::Refreshed { .. }
+        | SyncUiEvent::RecoveryExported { .. }
+        | SyncUiEvent::HostCancelled { .. }
+        | SyncUiEvent::JoinResumed { .. }
+        | SyncUiEvent::JoinDiscarded { .. }
+        | SyncUiEvent::JoinActivationPrepared { .. } => false,
+    }
+}
+
 fn sync_event_flow_id(event: &SyncUiEvent) -> u64 {
     match event {
         SyncUiEvent::Refreshed { flow_id, .. }
@@ -486,6 +515,7 @@ fn host_error_can_retry(error: crate::sync::service::SyncServiceError) -> bool {
             | E::Authentication
             | E::Certificate
             | E::Offline
+            | E::RateLimited(_)
             | E::LocalStateChanged
             | E::Storage
     )
@@ -501,5 +531,48 @@ fn localized_discard_error(error: crate::sync::service::SyncServiceError) -> Str
         )
         .to_owned(),
         _ => localized_sync_error(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_refresh_and_recovery_results_are_not_connectivity_evidence() {
+        assert!(!successful_webdav_work(&SyncUiEvent::Refreshed {
+            flow_id: 1,
+            request_id: 1,
+            result: Box::new(Ok(crate::sync::service::SyncOverview {
+                status: crate::sync::service::SyncStatusReport::default(),
+                lifecycle: crate::sync::service::SyncLifecycleState::Absent,
+                devices: Vec::new(),
+                audit: Vec::new(),
+            })),
+        }));
+        assert!(!successful_webdav_work(&SyncUiEvent::RecoveryExported {
+            flow_id: 1,
+            result: Box::new(Ok(crate::sync::service::RecoveryExportResult {
+                checksum: "redacted-checksum".to_owned(),
+            })),
+        }));
+    }
+
+    #[test]
+    fn join_poll_waiting_result_proves_webdav_connectivity() {
+        assert!(successful_webdav_work(&SyncUiEvent::JoinPolled {
+            flow_id: 1,
+            result: Box::new(Ok(None)),
+        }));
+    }
+
+    #[test]
+    fn join_poll_does_not_start_while_personal_sync_owns_the_lane() {
+        let mut app = super::super::super::App::new(50);
+        app.personal_state.sync.in_progress = true;
+
+        assert!(app.start_join_poll(1).is_empty());
+        assert!(app.personal_state.sync_ui.busy.is_none());
+        assert!(app.personal_state.sync_ui.auto_poll_enabled);
     }
 }

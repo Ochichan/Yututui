@@ -4,6 +4,8 @@
 //! follows at most three exact-origin redirects, and never includes endpoint or credential text in
 //! its errors. Merge policy, retries, scheduling, and primary-writer ownership live above it.
 
+mod delete;
+mod retry_after;
 mod xml;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -26,9 +28,9 @@ use super::crypto::{
     encrypt_json_to_recipients, random_id_hex, sha256_domain_hex,
 };
 use super::{
-    EncryptedObject, ListCost, ListLimits, ListOutcome, ObjectCondition, ObjectKey, ObjectMetadata,
-    ObjectWriteResult, VaultCredential, VaultCredentialKind, VaultDeadline, VaultError,
-    VaultTransport,
+    EncryptedObject, ListCost, ListLimits, ListOutcome, ObjectCondition, ObjectDeleteResult,
+    ObjectKey, ObjectMetadata, ObjectWriteResult, VaultCredential, VaultCredentialKind,
+    VaultDeadline, VaultError, VaultTransport,
 };
 
 pub const MAX_PROPFIND_BYTES: usize = 4 * 1024 * 1024;
@@ -76,7 +78,7 @@ pub enum WebDavError {
     Conflict,
     PreconditionFailed,
     Locked,
-    RateLimited,
+    RateLimited(Option<Duration>),
     ServerUnavailable,
     UnexpectedStatus(u16),
     ResourceLimitExceeded,
@@ -119,7 +121,14 @@ impl fmt::Display for WebDavError {
                 f.write_str("the WebDAV resource changed before it was written")
             }
             Self::Locked => f.write_str("the WebDAV resource is locked"),
-            Self::RateLimited => f.write_str("the WebDAV server asked the client to retry later"),
+            Self::RateLimited(Some(delay)) => write!(
+                f,
+                "the WebDAV server asked the client to retry in {} seconds",
+                delay.as_secs()
+            ),
+            Self::RateLimited(None) => {
+                f.write_str("the WebDAV server asked the client to retry later")
+            }
             Self::ServerUnavailable => f.write_str("the WebDAV server is temporarily unavailable"),
             Self::UnexpectedStatus(status) => {
                 write!(f, "the WebDAV server returned HTTP {status}")
@@ -292,7 +301,7 @@ impl WebDavClient {
         let request = self.authenticated_request(Method::OPTIONS, self.base.clone(), credential)?;
         let response = self.execute(request).await?;
         if response.status() != StatusCode::OK && response.status() != StatusCode::NO_CONTENT {
-            return Err(status_error(response.status()));
+            return Err(status_error(&response));
         }
         parse_capabilities(response.headers())
     }
@@ -326,7 +335,7 @@ impl WebDavClient {
         match response.status() {
             StatusCode::CREATED => Ok(CollectionWriteResult::Created),
             StatusCode::METHOD_NOT_ALLOWED => Ok(CollectionWriteResult::AlreadyPresent),
-            status => Err(status_error(status)),
+            _ => Err(status_error(&response)),
         }
     }
 
@@ -367,7 +376,7 @@ impl WebDavClient {
 
         let response = self.execute(request).await?;
         if response.status() != StatusCode::MULTI_STATUS {
-            return Err(status_error(response.status()));
+            return Err(status_error(&response));
         }
         let response_url = response.url().clone();
         let bytes = read_limited(response, max_body_bytes).await?;
@@ -416,7 +425,7 @@ impl WebDavClient {
             return Ok(None);
         }
         if response.status() != StatusCode::OK {
-            return Err(status_error(response.status()));
+            return Err(status_error(&response));
         }
         let etag = strong_etag(response.headers())?;
         let bytes = await_with_deadline(deadline, read_limited(response, body_limit)).await?;
@@ -485,9 +494,22 @@ impl WebDavClient {
             return Err(WebDavError::PreconditionFailed);
         }
         if status.is_server_error() {
-            return self
+            let server_error = status_error(&response);
+            let readback = self
                 .verify_ambiguous_put(key, object, credential, deadline)
                 .await;
+            return match (readback, server_error) {
+                (Ok(result), _) => Ok(result),
+                (
+                    Err(WebDavError::RateLimited(readback_delay)),
+                    WebDavError::RateLimited(server_delay),
+                ) => Err(WebDavError::RateLimited(longer_retry_after(
+                    server_delay,
+                    readback_delay,
+                ))),
+                (Err(_), error @ WebDavError::RateLimited(_)) => Err(error),
+                (Err(error), _) => Err(error),
+            };
         }
         let created = match (&condition, status) {
             (ObjectCondition::CreateOnly, StatusCode::CREATED) => true,
@@ -496,7 +518,7 @@ impl WebDavClient {
             | (ObjectCondition::Match(_), StatusCode::CREATED) => {
                 return Err(WebDavError::MethodUnsupported);
             }
-            _ => return Err(status_error(status)),
+            _ => return Err(status_error(&response)),
         };
 
         if let Some(etag) = optional_etag(response.headers())?
@@ -818,7 +840,7 @@ impl WebDavClient {
                 | WebDavError::RequestFailed
                 | WebDavError::MethodUnsupported
                 | WebDavError::Locked
-                | WebDavError::RateLimited
+                | WebDavError::RateLimited(_)
                 | WebDavError::ServerUnavailable),
             ) => Err(error),
             Err(_) => Err(WebDavError::AmbiguousWrite),
@@ -1116,6 +1138,30 @@ impl VaultTransport for BlockingWebDavTransport {
         .map_err(|error| map_vault_error(error, TransportOperation::Put))
     }
 
+    fn delete(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        self.block_on(self.client.delete(key, expected_etag, &self.credential))
+            .map_err(|error| map_vault_error(error, TransportOperation::Delete))
+    }
+
+    fn delete_with_deadline(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+        deadline: VaultDeadline,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        self.block_on(self.client.delete_with_deadline(
+            key,
+            expected_etag,
+            &self.credential,
+            deadline,
+        ))
+        .map_err(|error| map_vault_error(error, TransportOperation::Delete))
+    }
+
     fn list(
         &self,
         prefix: &ObjectKey,
@@ -1144,6 +1190,7 @@ impl VaultTransport for BlockingWebDavTransport {
 enum TransportOperation {
     Get,
     Put,
+    Delete,
     List,
 }
 
@@ -1155,9 +1202,9 @@ fn map_vault_error(error: WebDavError, operation: TransportOperation) -> VaultEr
         }
         WebDavError::CertificateFailed => VaultError::RemoteCertificate,
         WebDavError::MethodUnsupported => VaultError::RemoteUnsupported,
+        WebDavError::RateLimited(delay) => VaultError::RemoteRateLimited(delay),
         WebDavError::RequestFailed
         | WebDavError::Locked
-        | WebDavError::RateLimited
         | WebDavError::ServerUnavailable
         | WebDavError::AmbiguousWrite => VaultError::RemoteUnavailable,
         WebDavError::ResourceLimitExceeded => VaultError::ResourceLimitExceeded,
@@ -1420,8 +1467,8 @@ fn classify_request_error(error: &reqwest::Error) -> WebDavError {
     WebDavError::RequestFailed
 }
 
-fn status_error(status: StatusCode) -> WebDavError {
-    match status {
+fn status_error(response: &Response) -> WebDavError {
+    match response.status() {
         StatusCode::UNAUTHORIZED => WebDavError::AuthenticationRequired,
         StatusCode::FORBIDDEN => WebDavError::PermissionDenied,
         StatusCode::NOT_FOUND => WebDavError::NotFound,
@@ -1431,14 +1478,33 @@ fn status_error(status: StatusCode) -> WebDavError {
         StatusCode::CONFLICT => WebDavError::Conflict,
         StatusCode::PRECONDITION_FAILED => WebDavError::PreconditionFailed,
         StatusCode::LOCKED => WebDavError::Locked,
-        StatusCode::TOO_MANY_REQUESTS => WebDavError::RateLimited,
+        StatusCode::TOO_MANY_REQUESTS => WebDavError::RateLimited(retry_after(response.headers())),
+        StatusCode::SERVICE_UNAVAILABLE => retry_after(response.headers())
+            .map_or(WebDavError::ServerUnavailable, |delay| {
+                WebDavError::RateLimited(Some(delay))
+            }),
         status if status.is_server_error() => WebDavError::ServerUnavailable,
         status => WebDavError::UnexpectedStatus(status.as_u16()),
     }
 }
 
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    retry_after::parse(headers)
+}
+
+fn longer_retry_after(left: Option<Duration>, right: Option<Duration>) -> Option<Duration> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    }
+}
+
+#[cfg(test)]
+mod delete_tests;
 #[cfg(test)]
 mod proxy_tests;
+#[cfg(test)]
+mod put_retry_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -392,7 +392,7 @@ async fn run_owner_loop(
             initial_effects,
         ));
     }
-
+    personal_sync.enable_automatic(&mut engine, &event_tx, &shutdown);
     'owner: loop {
         effect_tasks.reap_finished();
         gui_search_pending.prune_closed();
@@ -408,6 +408,10 @@ async fn run_owner_loop(
                 _ = shutdown.wait() => {
                     engine.suppress_transport_recovery_for_shutdown();
                     break 'owner;
+                },
+                wake = personal_sync.wait_for_automatic_wake() => {
+                    personal_sync.handle_automatic_wake(wake, &mut engine, &event_tx, &shutdown);
+                    continue;
                 },
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
                     media.retry_deadline().unwrap_or_else(Instant::now)
@@ -733,6 +737,7 @@ async fn run_owner_loop(
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
+        personal_sync.observe(&mut engine, &event_tx, &shutdown);
         // Queue/session/settings mutations can invalidate an in-flight autoplay request even
         // when the seed id still exists. Settle that owner generation before publishing this
         // turn so a later pool/preflight result cannot mutate the replacement session.

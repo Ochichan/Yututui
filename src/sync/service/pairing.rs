@@ -1292,9 +1292,7 @@ pub(super) fn prepare_pairing_join_commit(
     // Joining replaces the fresh device's local dataset with the authenticated remote dataset.
     // PersonalState transactions are still ordered by one local revision counter, so the first
     // remote candidate must be strictly newer than whichever local ledger is currently visible.
-    candidate.revision = candidate
-        .revision
-        .max(current_state.revision.saturating_add(1));
+    candidate.revision = candidate.revision.max(current_state.next_revision()?);
     let commit = PersonalStateCommit::prepare_for_runtime(candidate, playlist_revision)?;
     if commit.state().revision <= current_state.revision {
         return Err(SyncServiceError::LocalStateChanged);

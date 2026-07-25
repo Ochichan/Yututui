@@ -1,6 +1,8 @@
 use crate::personal_state::{PersonalStatePaths, PersonalStateV2};
 
-use super::{SyncServiceError, load_personal_state_read_only, read_status, sync_now};
+use super::{
+    SyncAttemptKind, SyncServiceError, load_personal_state_read_only, read_status, sync_now,
+};
 use crate::sync::{
     SyncAuditOutcome, SyncAuditStore, SyncFailureKind, SyncHealthState, SyncHealthStore, SyncPaths,
 };
@@ -51,6 +53,7 @@ fn public_errors_and_reasons_are_redacted_fixed_vocabulary() {
         SyncServiceError::Authentication,
         SyncServiceError::Certificate,
         SyncServiceError::Offline,
+        SyncServiceError::RateLimited(Some(std::time::Duration::from_secs(75))),
         SyncServiceError::InvalidRemoteData,
         SyncServiceError::LocalStateChanged,
         SyncServiceError::Storage,
@@ -70,8 +73,9 @@ fn owner_prepare_failure_is_retained_without_replacing_the_primary_error() {
     let paths = SyncPaths::for_data_root(temp.0.clone());
     std::fs::create_dir_all(paths.root()).unwrap();
 
-    let result =
-        super::track_owner_preparation::<()>(&paths, || Err(SyncServiceError::Authentication));
+    let result = super::track_owner_preparation::<()>(&paths, SyncAttemptKind::Manual, || {
+        Err(SyncServiceError::Authentication)
+    });
 
     assert_eq!(result, Err(SyncServiceError::Authentication));
     let health = SyncHealthStore::new(paths.health())
@@ -98,7 +102,9 @@ fn owner_prepare_error_wins_when_health_storage_is_unavailable() {
     std::fs::write(temp.0.join("sync"), b"not a directory").unwrap();
     let paths = SyncPaths::for_data_root(temp.0.clone());
 
-    let result = super::track_owner_preparation::<()>(&paths, || Err(SyncServiceError::Offline));
+    let result = super::track_owner_preparation::<()>(&paths, SyncAttemptKind::Manual, || {
+        Err(SyncServiceError::Offline)
+    });
 
     assert_eq!(result, Err(SyncServiceError::Offline));
 }

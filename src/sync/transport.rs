@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -67,6 +68,12 @@ pub enum ObjectWriteResult {
     Created(ObjectMetadata),
     Updated(ObjectMetadata),
     AlreadyPresent(ObjectMetadata),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectDeleteResult {
+    Deleted,
+    AlreadyAbsent,
 }
 
 /// One whole-operation deadline shared by all transport calls and retry attempts.
@@ -219,6 +226,34 @@ pub trait VaultTransport {
         result
     }
 
+    /// Delete one exact object generation.
+    ///
+    /// `expected_etag` must be the strong entity tag returned by a prior GET or bounded listing.
+    /// Implementations must fail closed instead of deleting a replacement object.
+    fn delete(
+        &self,
+        _key: &ObjectKey,
+        _expected_etag: &str,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        Err(VaultError::RemoteUnsupported)
+    }
+
+    /// Delete one exact object generation under a caller-owned whole-operation deadline.
+    ///
+    /// The compatibility implementation is appropriate for deterministic transports. Network
+    /// transports must override it so the request and any ambiguity readback share one deadline.
+    fn delete_with_deadline(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+        deadline: VaultDeadline,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        deadline.check()?;
+        let result = self.delete(key, expected_etag);
+        deadline.check()?;
+        result
+    }
+
     fn list(
         &self,
         prefix: &ObjectKey,
@@ -303,11 +338,28 @@ impl FileVaultTransport {
     }
 
     fn acquire_lock(&self) -> Result<crate::util::safe_fs::AdvisoryFileLock, VaultError> {
-        let deadline = Instant::now() + LOCK_WAIT;
+        self.acquire_lock_until(None)
+    }
+
+    fn acquire_lock_until(
+        &self,
+        operation_deadline: Option<VaultDeadline>,
+    ) -> Result<crate::util::safe_fs::AdvisoryFileLock, VaultError> {
+        let lock_deadline = Instant::now() + LOCK_WAIT;
         loop {
+            if let Some(deadline) = operation_deadline {
+                deadline.check()?;
+            }
             match crate::util::safe_fs::try_lock_private_file(&self.lock_path) {
                 Ok(Some(lock)) => return Ok(lock),
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+                Ok(None) if Instant::now() < lock_deadline => {
+                    let delay = operation_deadline
+                        .map(VaultDeadline::remaining)
+                        .transpose()?
+                        .unwrap_or(Duration::from_millis(5))
+                        .min(Duration::from_millis(5));
+                    thread::sleep(delay);
+                }
                 Ok(None) => return Err(VaultError::StorageBusy),
                 Err(_) => return Err(VaultError::StorageFailed),
             }
@@ -343,6 +395,83 @@ impl FileVaultTransport {
             .map_err(|_| VaultError::InvalidEncryptedObject)?;
         let metadata = metadata_for(key, &bytes)?;
         Ok(Some((object, metadata)))
+    }
+
+    fn delete_locked(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+        deadline: Option<VaultDeadline>,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        if expected_etag.len() != 64
+            || !expected_etag
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(VaultError::PreconditionFailed);
+        }
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
+        let path = self.path_for(key)?;
+        let parent = path.parent().ok_or(VaultError::InvalidObjectKey)?;
+        let relative_parent = parent
+            .strip_prefix(&self.root)
+            .map_err(|_| VaultError::InvalidObjectKey)?;
+        let pinned_parent = match crate::util::safe_fs::PinnedDir::open_private_existing(
+            &self.root,
+            relative_parent,
+        ) {
+            Ok(parent) => parent,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ObjectDeleteResult::AlreadyAbsent);
+            }
+            Err(_) => return Err(VaultError::StorageFailed),
+        };
+        let basename = path.file_name().ok_or(VaultError::InvalidObjectKey)?;
+        let generation = match pinned_parent.open_child_readonly(basename) {
+            Ok(generation) => generation,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ObjectDeleteResult::AlreadyAbsent);
+            }
+            Err(_) => return Err(VaultError::StorageFailed),
+        };
+        let file = generation
+            .file()
+            .and_then(std::fs::File::try_clone)
+            .map_err(|_| VaultError::StorageFailed)?;
+        let metadata = file.metadata().map_err(|_| VaultError::StorageFailed)?;
+        let hard_limit = super::MAX_VAULT_PAYLOAD_BYTES
+            .saturating_add(CIPHERTEXT_OVERHEAD_LIMIT)
+            .min(super::crypto::MAX_ENCRYPTED_OBJECT_BYTES);
+        if metadata.len() > hard_limit as u64 {
+            return Err(VaultError::PayloadTooLarge);
+        }
+        let mut bytes = Vec::new();
+        file.take(hard_limit.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| VaultError::StorageFailed)?;
+        if bytes.len() > hard_limit {
+            return Err(VaultError::PayloadTooLarge);
+        }
+        if metadata_for(key, &bytes)?.etag != expected_etag {
+            return Err(VaultError::PreconditionFailed);
+        }
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
+        generation
+            .remove_from_private_parent()
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound => {
+                    VaultError::PreconditionFailed
+                }
+                _ => VaultError::StorageFailed,
+            })?;
+        if let Some(deadline) = deadline {
+            deadline.check()?;
+        }
+        Ok(ObjectDeleteResult::Deleted)
     }
 }
 
@@ -400,6 +529,25 @@ impl VaultTransport for FileVaultTransport {
             Some(_) => Ok(ObjectWriteResult::Updated(metadata)),
             None => Ok(ObjectWriteResult::Created(metadata)),
         }
+    }
+
+    fn delete(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        let _lock = self.acquire_lock()?;
+        self.delete_locked(key, expected_etag, None)
+    }
+
+    fn delete_with_deadline(
+        &self,
+        key: &ObjectKey,
+        expected_etag: &str,
+        deadline: VaultDeadline,
+    ) -> Result<ObjectDeleteResult, VaultError> {
+        let _lock = self.acquire_lock_until(Some(deadline))?;
+        self.delete_locked(key, expected_etag, Some(deadline))
     }
 
     fn list(

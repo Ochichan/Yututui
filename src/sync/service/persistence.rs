@@ -16,22 +16,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::personal_state::{
     DeviceId, Operation, OperationEnvelope, OperationOrigin, PersonalStateCommit,
-    PersonalStatePaths, PersonalStateV2, append_operation_as, load_ledger,
+    PersonalStatePaths, PersonalStateV2, append_operation_as, load_ledger, merge,
 };
 
 use super::super::{EnrollmentState, PrivateStore, SyncPaths};
 use super::devices::record_revoke_success;
 use super::manual::{
-    PreparedManualSync, record_sync_failure, record_sync_started, record_sync_success,
+    PreparedManualSync, record_sync_failure, record_sync_failure_as, record_sync_started,
+    record_sync_success, record_sync_success_as,
 };
 use super::{
-    PreparedPairingApproval, PreparedPairingJoinActivation, PreparedSetup, SyncServiceError,
-    apply_manual_sync, recover_pending_anchor_transition,
+    PreparedPairingApproval, PreparedPairingJoinActivation, PreparedSetup, SyncAttemptKind,
+    SyncServiceError, apply_manual_sync, recover_pending_anchor_transition,
 };
 
 #[derive(Clone)]
 pub enum PersonalSyncApplyKind {
     SyncNow,
+    AutomaticSync,
     Revoke(DeviceId),
     PairApprove(Box<PreparedPairingApproval>),
 }
@@ -201,6 +203,16 @@ impl PersonalSyncPersistence {
         accepted_states.dedup();
         let commit = PersonalStateCommit::prepare_for_runtime(candidate, playlist_revision)?;
         let target_state = commit.state().clone();
+        let mut extends_accepted_state = false;
+        for accepted in &accepted_states {
+            if verified_state_extension(accepted, &target_state)? {
+                extends_accepted_state = true;
+                break;
+            }
+        }
+        if !extends_accepted_state {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
         Ok(Self(Arc::new(PersonalSyncPersistenceInner {
             write: PersonalSyncWrite::Reconcile {
                 accepted_states,
@@ -466,6 +478,14 @@ impl PersonalSyncPersistence {
                 PersonalSyncApplyKind::SyncNow => {
                     let _ = record_sync_success(&self.0.sync_paths, now, &candidate.summary);
                 }
+                PersonalSyncApplyKind::AutomaticSync => {
+                    let _ = record_sync_success_as(
+                        &self.0.sync_paths,
+                        now,
+                        &candidate.summary,
+                        SyncAttemptKind::Automatic,
+                    );
+                }
                 PersonalSyncApplyKind::Revoke(device_id) => {
                     let _ = record_revoke_success(
                         &self.0.sync_paths,
@@ -476,9 +496,19 @@ impl PersonalSyncPersistence {
                 }
                 PersonalSyncApplyKind::PairApprove(_) => {}
             },
-            Err(error) => {
-                let _ = record_sync_failure(&self.0.sync_paths, now, *error);
-            }
+            Err(error) => match action {
+                PersonalSyncApplyKind::AutomaticSync => {
+                    let _ = record_sync_failure_as(
+                        &self.0.sync_paths,
+                        now,
+                        *error,
+                        SyncAttemptKind::Automatic,
+                    );
+                }
+                _ => {
+                    let _ = record_sync_failure(&self.0.sync_paths, now, *error);
+                }
+            },
         }
         result
     }
@@ -515,7 +545,7 @@ impl PersonalSyncPersistence {
             == Some(candidate.checkpoint_anchor.checkpoint_sequence)
             && private.checkpoint_hash() == Some(target_hash);
         let revision_matches = private.revision() == candidate.expected_private_revision
-            || private.revision() == candidate.expected_private_revision.saturating_add(1);
+            || candidate.expected_private_revision.checked_add(1) == Some(private.revision());
         Ok(anchor_matches
             && revision_matches
             && private.dataset_id() == self.0.target_state.dataset_id
@@ -688,10 +718,20 @@ fn verified_state_extension(
     if base == extension {
         return Ok(true);
     }
-    if extension.revision <= base.revision
-        || extension.dataset_id != base.dataset_id
+    if extension.revision <= base.revision {
+        return Ok(false);
+    }
+    merge_preserves_extension(base, extension)
+}
+
+fn merge_preserves_extension(
+    base: &PersonalStateV2,
+    extension: &PersonalStateV2,
+) -> Result<bool, SyncServiceError> {
+    base.validate()?;
+    extension.validate()?;
+    if extension.dataset_id != base.dataset_id
         || extension.metadata != base.metadata
-        || extension.compaction_checkpoint != base.compaction_checkpoint
         || base
             .version_vector
             .0
@@ -700,18 +740,16 @@ fn verified_state_extension(
     {
         return Ok(false);
     }
-
-    let extension_by_id: BTreeMap<&str, &OperationEnvelope> = extension
-        .operations
-        .iter()
-        .map(|operation| (operation.operation_id.as_str(), operation))
-        .collect();
-    Ok(base.operations.iter().all(|operation| {
-        extension_by_id
-            .get(operation.operation_id.as_str())
-            .copied()
-            == Some(operation)
-    }))
+    // Personal-state merge owns the trust rules for compaction checkpoint ancestry, covered
+    // engagement pruning, and anti-resurrection. If joining the prior state into the candidate
+    // produces the candidate itself, it is either a plain operation extension or a legitimate
+    // compaction descendant. Arbitrary operation deletion cannot satisfy this fixed-point check.
+    let Ok((mut joined, _)) = merge(base, extension) else {
+        return Ok(false);
+    };
+    // This fingerprint is a local runtime projection cache, not part of causal merge identity.
+    joined.projection_fingerprint = extension.projection_fingerprint.clone();
+    Ok(joined == *extension)
 }
 
 fn shutdown_anchor_matches(
@@ -747,9 +785,13 @@ pub(crate) fn rebase_local_operations(
         || current.dataset_id != observed.dataset_id
         || durable.metadata != observed.metadata
         || current.metadata != observed.metadata
-        || durable.compaction_checkpoint != observed.compaction_checkpoint
         || current.compaction_checkpoint != observed.compaction_checkpoint
     {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    // Detached manual-sync candidates deliberately keep the observed local revision until the
+    // persistence owner prepares them. Their causal content must still be a merge fixed point.
+    if !merge_preserves_extension(observed, durable)? {
         return Err(SyncServiceError::LocalStateChanged);
     }
 
@@ -775,17 +817,6 @@ pub(crate) fn rebase_local_operations(
         .iter()
         .map(|operation| (operation.operation_id.as_str(), operation))
         .collect();
-    if observed_by_id
-        .iter()
-        .any(|(id, operation)| durable_by_id.get(id).copied() != Some(*operation))
-        || observed
-            .version_vector
-            .0
-            .iter()
-            .any(|(device, sequence)| durable.version_vector.observed(device) < *sequence)
-    {
-        return Err(SyncServiceError::LocalStateChanged);
-    }
     let mut additions: Vec<&OperationEnvelope> = current
         .operations
         .iter()
@@ -837,7 +868,7 @@ pub(crate) fn rebase_local_operations(
         appended = true;
     }
     if appended {
-        rebased.revision = durable.revision.max(current.revision).saturating_add(1);
+        rebased.revision = PersonalStateV2::revision_after(durable.revision.max(current.revision))?;
         rebased.projection_fingerprint = None;
         rebased.normalize()?;
     }

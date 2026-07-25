@@ -80,7 +80,7 @@ impl SyncActivationKind {
                     crate::personal_state::plan_join_import(durable, current, &device_id)?
                         .candidate;
                 if candidate != *current && candidate.revision <= current.revision {
-                    candidate.revision = current.revision.saturating_add(1);
+                    candidate.revision = current.next_revision()?;
                     candidate.projection_fingerprint = None;
                     candidate.normalize()?;
                 }
@@ -279,7 +279,11 @@ impl App {
                     .sync_ui
                     .finish_activation_success(&commit.kind);
                 self.dirty = true;
-                Vec::new()
+                if self.personal_state.device_id.is_some() {
+                    self.enable_automatic_sync()
+                } else {
+                    Vec::new()
+                }
             }
         }
     }

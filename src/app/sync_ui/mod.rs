@@ -194,6 +194,24 @@ pub(crate) enum SyncBusy {
     RecoveryExport,
 }
 
+impl SyncBusy {
+    /// Whether this worker may mutate the encrypted WebDAV vault.
+    ///
+    /// Personal sync shares one primary-owner network lane with these pairing/setup phases.
+    /// Poll-only host review, local recovery/refresh work, and the personal-sync variants
+    /// themselves deliberately stay outside this classification.
+    pub(crate) fn blocks_personal_sync(self) -> bool {
+        matches!(
+            self,
+            Self::Setup
+                | Self::PairHostCreate
+                | Self::PairHostApprove
+                | Self::PairJoinStart
+                | Self::PairJoinPoll
+        )
+    }
+}
+
 pub(crate) enum SyncWizard {
     Setup {
         form: SyncConnectionForm,
@@ -309,6 +327,10 @@ impl SyncUiState {
         self.busy.is_some() || self.status.state == SyncHealthState::Syncing
     }
 
+    pub(crate) fn remote_mutation_in_progress(&self) -> bool {
+        self.busy.is_some_and(SyncBusy::blocks_personal_sync)
+    }
+
     pub(crate) fn modal_open(&self) -> bool {
         self.wizard.as_ref().is_some_and(SyncWizard::is_modal)
     }
@@ -371,11 +393,12 @@ impl super::App {
     }
 
     pub(crate) fn start_pending_sync_ui_refresh(&mut self) -> Vec<super::Cmd> {
+        let mut commands = self.resume_automatic_sync_if_ready();
         if !self.personal_state.sync_ui.refresh_pending
             || self.personal_state.sync_ui.refresh_in_flight.is_some()
             || self.personal_state.sync_ui.busy.is_some()
         {
-            return Vec::new();
+            return commands;
         }
         let flow_id = self.personal_state.sync_ui.flow_id.max(1);
         if self.personal_state.sync_ui.flow_id == 0 {
@@ -385,14 +408,15 @@ impl super::App {
         self.personal_state.sync_ui.refresh_pending = false;
         self.personal_state.sync_ui.refresh_in_flight = Some(request_id);
         self.personal_state.sync_ui.busy = Some(SyncBusy::Refresh);
-        vec![super::Cmd::Data(super::DataCmd::SyncUi(
+        commands.push(super::Cmd::Data(super::DataCmd::SyncUi(
             SyncUiCommand::Refresh {
                 flow_id,
                 request_id,
                 state: Box::new(self.personal_state.ledger.clone()),
                 in_progress: self.personal_state.sync.in_progress,
             },
-        ))]
+        )));
+        commands
     }
 
     pub(in crate::app) fn finish_sync_ui_event(&mut self, event: SyncUiEvent) -> Vec<super::Cmd> {
@@ -499,7 +523,7 @@ pub(crate) fn localized_sync_error(error: crate::sync::service::SyncServiceError
             "서버 인증서를 확인할 수 없어요.",
             "サーバー証明書を確認できません。"
         ),
-        Error::Offline => crate::t!(
+        Error::Offline | Error::RateLimited(_) => crate::t!(
             "Offline — try again when the server is reachable.",
             "오프라인 — 서버에 연결되면 다시 시도하세요.",
             "オフライン — サーバーに接続できたら再試行してください。"
@@ -536,6 +560,31 @@ pub(crate) fn localized_sync_error(error: crate::sync::service::SyncServiceError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_sync_blocking_busy_variants_are_exact() {
+        for busy in [
+            SyncBusy::Setup,
+            SyncBusy::PairHostCreate,
+            SyncBusy::PairHostApprove,
+            SyncBusy::PairJoinStart,
+            SyncBusy::PairJoinPoll,
+        ] {
+            assert!(busy.blocks_personal_sync());
+        }
+        for busy in [
+            SyncBusy::Refresh,
+            SyncBusy::SyncNow,
+            SyncBusy::PairHostPoll,
+            SyncBusy::PairHostCancel,
+            SyncBusy::PairJoinDiscard,
+            SyncBusy::PairJoinApply,
+            SyncBusy::Revoke,
+            SyncBusy::RecoveryExport,
+        ] {
+            assert!(!busy.blocks_personal_sync());
+        }
+    }
 
     #[test]
     fn local_device_is_never_a_revoke_row() {

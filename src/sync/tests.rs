@@ -678,6 +678,90 @@ fn file_transport_is_conditional_idempotent_and_ciphertext_only() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn file_transport_delete_is_exact_idempotent_and_deadline_bounded() {
+    let fixture = bootstrap();
+    let directory = test_directory("transport-delete");
+    let transport = FileVaultTransport::create(directory.clone()).unwrap();
+    let key = ObjectKey::new("yututui/v2/dataset-integration/checkpoints/1/obsolete.age").unwrap();
+    let metadata = match transport
+        .put(
+            &key,
+            &fixture.encrypted_checkpoint,
+            ObjectCondition::CreateOnly,
+        )
+        .unwrap()
+    {
+        ObjectWriteResult::Created(metadata) => metadata,
+        other => panic!("unexpected write result: {other:?}"),
+    };
+
+    assert_eq!(
+        transport.delete(&key, &"0".repeat(64)),
+        Err(VaultError::PreconditionFailed)
+    );
+    assert!(
+        transport
+            .get(&key, MAX_VAULT_PAYLOAD_BYTES)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        transport.delete_with_deadline(&key, &metadata.etag, VaultDeadline::expired()),
+        Err(VaultError::RemoteUnavailable)
+    );
+    assert!(
+        transport
+            .get(&key, MAX_VAULT_PAYLOAD_BYTES)
+            .unwrap()
+            .is_some()
+    );
+
+    assert_eq!(
+        transport.delete(&key, &metadata.etag).unwrap(),
+        ObjectDeleteResult::Deleted
+    );
+    assert!(
+        transport
+            .get(&key, MAX_VAULT_PAYLOAD_BYTES)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        transport.delete(&key, &metadata.etag).unwrap(),
+        ObjectDeleteResult::AlreadyAbsent
+    );
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn file_transport_delete_never_follows_a_parent_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_directory("transport-delete-symlink");
+    let outside = test_directory("transport-delete-outside");
+    let outside_v2 = outside.join("v2");
+    crate::util::safe_fs::ensure_private_dir(&outside_v2).unwrap();
+    let outside_object = outside_v2.join("obsolete.age");
+    std::fs::write(&outside_object, b"must remain").unwrap();
+    symlink(&outside, root.join("redirect")).unwrap();
+    let transport = FileVaultTransport::open(root.clone()).unwrap();
+
+    assert_eq!(
+        transport.delete(
+            &ObjectKey::new("redirect/v2/obsolete.age").unwrap(),
+            &"0".repeat(64),
+        ),
+        Err(VaultError::StorageFailed)
+    );
+    assert_eq!(std::fs::read(&outside_object).unwrap(), b"must remain");
+
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn recovery_export_preserves_user_directory_permissions_and_never_replaces() {

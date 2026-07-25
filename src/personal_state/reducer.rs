@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use super::compaction::{
+    operation_survives_checkpoint, retained_engagement_operation_ids, select_checkpoint,
+};
 use super::legacy::{
     ENGAGEMENT_EVENTS_MAX, FAVORITES_MAX, HISTORY_MAX, LegacyPlayEvent, LegacyPlaylist,
     LegacyPlaylistEntry, LegacyProjection, LegacySignals, LegacyStation, LegacyTrackSignal,
@@ -14,7 +17,6 @@ use super::{
     VersionVector,
 };
 
-const RAW_EVENT_RETENTION_SECS: i64 = 365 * 24 * 60 * 60;
 const ARTIST_WEIGHT_MIN: f32 = -2.0;
 const ARTIST_WEIGHT_MAX: f32 = 2.0;
 
@@ -162,13 +164,19 @@ pub fn merge(
             }
         }
     }
+    let checkpoint = select_checkpoint(
+        merged.compaction_checkpoint.as_ref(),
+        remote.compaction_checkpoint.as_ref(),
+    )?;
+    operations.retain(|_, operation| operation_survives_checkpoint(checkpoint.as_ref(), operation));
+    summary.added_operations = operations
+        .values()
+        .filter(|operation| !local_ids.contains(operation.operation_id.as_str()))
+        .count();
     merged.operations = operations.into_values().collect();
     merged.version_vector.merge(&remote.version_vector);
     merged.device_registry = derive_device_registry(&merged.operations)?;
-    merged.compaction_checkpoint = choose_checkpoint(
-        merged.compaction_checkpoint.as_ref(),
-        remote.compaction_checkpoint.as_ref(),
-    );
+    merged.compaction_checkpoint = checkpoint;
     merged.revision = local.revision.max(remote.revision);
     merged.projection_fingerprint = None;
     merged.normalize()?;
@@ -390,7 +398,8 @@ pub(crate) fn project_at(
     apply_disliked_projection(&mut legacy.signals, &ratings);
     legacy.radio_favorites = projected_radio(&radio);
 
-    let retained_events = retained_events(events.into_values(), now_unix);
+    let retained_operation_ids = retained_engagement_operation_ids(&state.operations, now_unix);
+    let retained_events = retained_events(events.into_values(), &retained_operation_ids);
     apply_engagement_projection(&mut legacy, &retained_events);
     apply_rating_affinity_delta(&mut legacy.signals, &baseline_ratings, &ratings);
 
@@ -483,7 +492,7 @@ fn update_optional_register<T>(
     }
 }
 
-fn stamp_order(
+pub(crate) fn stamp_order(
     candidate: &CausalStamp,
     candidate_id: &str,
     current: &CausalStamp,
@@ -546,28 +555,16 @@ fn projected_radio(
 
 fn retained_events(
     events: impl IntoIterator<Item = EngagementEvent>,
-    now_unix: i64,
+    retained_operation_ids: &[String],
 ) -> Vec<EngagementEvent> {
-    let cutoff = now_unix.saturating_sub(RAW_EVENT_RETENTION_SECS);
     let mut events = events
         .into_iter()
-        .filter(|event| {
-            event.envelope.stamp.recorded_at_unix == 0
-                || event.envelope.stamp.recorded_at_unix >= cutoff
-        })
-        .collect::<Vec<_>>();
-    events.sort_by(|left, right| {
-        right
-            .envelope
-            .stamp
-            .recorded_at_unix
-            .cmp(&left.envelope.stamp.recorded_at_unix)
-            .then(right.envelope.stamp.dot.cmp(&left.envelope.stamp.dot))
-            .then(left.event_id.cmp(&right.event_id))
-    });
-    events.truncate(ENGAGEMENT_EVENTS_MAX);
-    events.reverse();
-    events
+        .map(|event| (event.envelope.operation_id.clone(), event))
+        .collect::<HashMap<_, _>>();
+    retained_operation_ids
+        .iter()
+        .filter_map(|operation_id| events.remove(operation_id))
+        .collect()
 }
 
 fn apply_engagement_projection(legacy: &mut LegacyProjection, events: &[EngagementEvent]) {
@@ -988,33 +985,4 @@ fn empty_legacy() -> LegacyProjection {
         signals: LegacySignals::default(),
         station: LegacyStation::default(),
     }
-}
-
-fn choose_checkpoint(
-    left: Option<&super::CompactionCheckpoint>,
-    right: Option<&super::CompactionCheckpoint>,
-) -> Option<super::CompactionCheckpoint> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(
-            if checkpoint_order(left, right).is_ge() {
-                left
-            } else {
-                right
-            }
-            .clone(),
-        ),
-        (Some(checkpoint), None) | (None, Some(checkpoint)) => Some(checkpoint.clone()),
-        (None, None) => None,
-    }
-}
-
-fn checkpoint_order(
-    left: &super::CompactionCheckpoint,
-    right: &super::CompactionCheckpoint,
-) -> Ordering {
-    let left_coverage = left.coverage.0.values().copied().sum::<u64>();
-    let right_coverage = right.coverage.0.values().copied().sum::<u64>();
-    left_coverage
-        .cmp(&right_coverage)
-        .then(left.checkpoint_id.cmp(&right.checkpoint_id))
 }

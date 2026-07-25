@@ -1,17 +1,17 @@
 use crate::personal_state::{DeviceId, DeviceRegistry, PersonalStateCommit, PersonalStateV2};
 
 use super::super::manual::{
-    ManualSyncBudget, ManualSyncCandidate, ManualSyncEngine, ManualSyncInput, ManualSyncSummary,
-    manifest_key,
+    LocalRevisionGuard, ManualSyncBudget, ManualSyncCandidate, ManualSyncEngine, ManualSyncInput,
+    ManualSyncSummary, manifest_key,
 };
 use super::super::{
     CheckpointAnchor, EnrollmentState, MAX_VAULT_PAYLOAD_BYTES, MembershipAnchor, MembershipChain,
-    PrivateStore, PrivateStoreSnapshot, SyncAuditAction, SyncAuditEntry, SyncAuditOutcome,
-    SyncAuditStore, SyncFailureKind, SyncHealthStore, SyncPaths, VaultError, VaultTransport,
+    OwnerRevisionGuard, PrivateStore, PrivateStoreSnapshot, SyncAuditAction, SyncAuditEntry,
+    SyncAuditOutcome, SyncAuditStore, SyncFailureKind, SyncHealthStore, SyncPaths, VaultTransport,
     WebDavProfile, WebDavProfileStore,
 };
 use super::transition::{AnchorActivationKind, commit_with_anchor_transition};
-use super::{SyncServiceError, open_saved_webdav_transport};
+use super::{SyncAttemptKind, SyncServiceError, open_saved_webdav_transport};
 
 /// A network-produced candidate which contains no endpoint, credential, or private key.
 #[derive(Clone)]
@@ -42,9 +42,24 @@ pub fn prepare_manual_sync(
     local_state: &PersonalStateV2,
     paths: &SyncPaths,
 ) -> Result<PreparedManualSync, SyncServiceError> {
-    prepare_manual_sync_using(local_state, paths, open_saved_webdav_transport)
+    let revision_guard = OwnerRevisionGuard::new(local_state.revision);
+    prepare_manual_sync_guarded(local_state, paths, &revision_guard)
 }
 
+pub(super) fn prepare_manual_sync_guarded<G: LocalRevisionGuard>(
+    local_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    revision_guard: &G,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    prepare_manual_sync_using_guarded(
+        local_state,
+        paths,
+        revision_guard,
+        open_saved_webdav_transport,
+    )
+}
+
+#[cfg(test)]
 pub(super) fn prepare_manual_sync_using<T, F>(
     local_state: &PersonalStateV2,
     paths: &SyncPaths,
@@ -53,6 +68,21 @@ pub(super) fn prepare_manual_sync_using<T, F>(
 where
     T: VaultTransport,
     F: FnOnce(&WebDavProfile, &super::super::VaultCredential) -> Result<T, SyncServiceError>,
+{
+    let revision_guard = OwnerRevisionGuard::new(local_state.revision);
+    prepare_manual_sync_using_guarded(local_state, paths, &revision_guard, open)
+}
+
+fn prepare_manual_sync_using_guarded<T, F, G>(
+    local_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    revision_guard: &G,
+    open: F,
+) -> Result<PreparedManualSync, SyncServiceError>
+where
+    T: VaultTransport,
+    F: FnOnce(&WebDavProfile, &super::super::VaultCredential) -> Result<T, SyncServiceError>,
+    G: LocalRevisionGuard,
 {
     let private_store = PrivateStore::new(paths.private_store())?;
     let private = private_store.load()?;
@@ -65,7 +95,7 @@ where
     let transport = open(&profile, credential)?;
     // Setup or the fresh pairing join already proved the saved profile's WebDAV behavior.
     // Re-running that state-changing probe here would rewrite its marker on every no-op sync.
-    prepare_manual_sync_with_transport(local_state, &private, &transport)
+    prepare_manual_sync_with_transport_guarded(local_state, &private, &transport, revision_guard)
 }
 
 pub fn prepare_manual_sync_with_transport<T: VaultTransport + ?Sized>(
@@ -73,14 +103,51 @@ pub fn prepare_manual_sync_with_transport<T: VaultTransport + ?Sized>(
     private: &PrivateStoreSnapshot,
     transport: &T,
 ) -> Result<PreparedManualSync, SyncServiceError> {
-    let mut budget = ManualSyncBudget::default();
-    prepare_manual_sync_with_budget(local_state, private, transport, &mut budget)
+    let revision_guard = OwnerRevisionGuard::new(local_state.revision);
+    prepare_manual_sync_with_transport_guarded(local_state, private, transport, &revision_guard)
 }
 
+fn prepare_manual_sync_with_transport_guarded<T: VaultTransport + ?Sized, G: LocalRevisionGuard>(
+    local_state: &PersonalStateV2,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+    revision_guard: &G,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    let mut budget = ManualSyncBudget::default();
+    prepare_manual_sync_with_budget_guarded(
+        local_state,
+        private,
+        transport,
+        revision_guard,
+        &mut budget,
+    )
+}
+
+#[cfg(test)]
 pub(super) fn prepare_manual_sync_with_budget<T: VaultTransport + ?Sized>(
     local_state: &PersonalStateV2,
     private: &PrivateStoreSnapshot,
     transport: &T,
+    budget: &mut ManualSyncBudget,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    let revision_guard = OwnerRevisionGuard::new(local_state.revision);
+    prepare_manual_sync_with_budget_guarded(
+        local_state,
+        private,
+        transport,
+        &revision_guard,
+        budget,
+    )
+}
+
+pub(super) fn prepare_manual_sync_with_budget_guarded<
+    T: VaultTransport + ?Sized,
+    G: LocalRevisionGuard,
+>(
+    local_state: &PersonalStateV2,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+    revision_guard: &G,
     budget: &mut ManualSyncBudget,
 ) -> Result<PreparedManualSync, SyncServiceError> {
     validate_active_private(local_state, private)?;
@@ -113,17 +180,7 @@ pub(super) fn prepare_manual_sync_with_budget<T: VaultTransport + ?Sized>(
         checkpoint_anchor,
         expected_local_revision,
         summary,
-    } = ManualSyncEngine::new(transport).synchronize_with_budget(
-        &input,
-        &|expected| {
-            if expected == local_state.revision {
-                Ok(())
-            } else {
-                Err(VaultError::RevisionConflict)
-            }
-        },
-        budget,
-    )?;
+    } = ManualSyncEngine::new(transport).synchronize_with_budget(&input, revision_guard, budget)?;
     Ok(PreparedManualSync {
         state,
         membership,
@@ -229,6 +286,41 @@ pub fn apply_prepared_sync_now(
     personal_paths: &crate::personal_state::PersonalStatePaths,
     sync_paths: &SyncPaths,
 ) -> Result<AppliedManualSync, SyncServiceError> {
+    apply_prepared_sync_now_as(
+        current_state,
+        playlist_revision,
+        candidate,
+        personal_paths,
+        sync_paths,
+        SyncAttemptKind::Manual,
+    )
+}
+
+pub fn apply_prepared_automatic_sync_now(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    candidate: PreparedManualSync,
+    personal_paths: &crate::personal_state::PersonalStatePaths,
+    sync_paths: &SyncPaths,
+) -> Result<AppliedManualSync, SyncServiceError> {
+    apply_prepared_sync_now_as(
+        current_state,
+        playlist_revision,
+        candidate,
+        personal_paths,
+        sync_paths,
+        SyncAttemptKind::Automatic,
+    )
+}
+
+fn apply_prepared_sync_now_as(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    candidate: PreparedManualSync,
+    personal_paths: &crate::personal_state::PersonalStatePaths,
+    sync_paths: &SyncPaths,
+    kind: SyncAttemptKind,
+) -> Result<AppliedManualSync, SyncServiceError> {
     let now = crate::signals::unix_now();
     record_sync_started(sync_paths, now)?;
     let summary = candidate.summary.clone();
@@ -242,10 +334,10 @@ pub fn apply_prepared_sync_now(
     .map(|state| AppliedManualSync { state, summary });
     match &result {
         Ok(applied) => {
-            let _ = record_sync_success(sync_paths, now, &applied.summary);
+            let _ = record_sync_success_as(sync_paths, now, &applied.summary, kind);
         }
         Err(error) => {
-            let _ = record_sync_failure(sync_paths, now, *error);
+            let _ = record_sync_failure_as(sync_paths, now, *error, kind);
         }
     }
     result
@@ -266,6 +358,15 @@ pub(super) fn record_sync_success(
     now_unix: i64,
     summary: &ManualSyncSummary,
 ) -> Result<(), SyncServiceError> {
+    record_sync_success_as(paths, now_unix, summary, SyncAttemptKind::Manual)
+}
+
+pub(super) fn record_sync_success_as(
+    paths: &SyncPaths,
+    now_unix: i64,
+    summary: &ManualSyncSummary,
+    kind: SyncAttemptKind,
+) -> Result<(), SyncServiceError> {
     let health_store = SyncHealthStore::new(paths.health())?;
     let current = health_store.load(true)?;
     let _ = health_store.save(&current, current.succeeded(now_unix))?;
@@ -274,7 +375,7 @@ pub(super) fn record_sync_success(
     } else {
         SyncAuditOutcome::Succeeded
     };
-    let mut entry = SyncAuditEntry::new(now_unix, SyncAuditAction::ManualSync, outcome)?;
+    let mut entry = SyncAuditEntry::new(now_unix, audit_action(kind), outcome)?;
     entry.local_operations = summary.uploaded_operations;
     entry.remote_operations = summary.downloaded_operations;
     let _ = SyncAuditStore::new(paths.audit())?.append(now_unix, entry)?;
@@ -286,20 +387,32 @@ pub(super) fn record_sync_failure(
     now_unix: i64,
     error: SyncServiceError,
 ) -> Result<(), SyncServiceError> {
+    record_sync_failure_as(paths, now_unix, error, SyncAttemptKind::Manual)
+}
+
+pub(super) fn record_sync_failure_as(
+    paths: &SyncPaths,
+    now_unix: i64,
+    error: SyncServiceError,
+    kind: SyncAttemptKind,
+) -> Result<(), SyncServiceError> {
     let failure = error
         .failure_kind()
         .unwrap_or(SyncFailureKind::InvalidRemoteData);
     let health_store = SyncHealthStore::new(paths.health())?;
     let current = health_store.load(true)?;
     let _ = health_store.save(&current, current.failed(now_unix, failure))?;
-    let mut entry = SyncAuditEntry::new(
-        now_unix,
-        SyncAuditAction::ManualSync,
-        SyncAuditOutcome::Failed,
-    )?;
+    let mut entry = SyncAuditEntry::new(now_unix, audit_action(kind), SyncAuditOutcome::Failed)?;
     entry.failure = Some(failure);
     let _ = SyncAuditStore::new(paths.audit())?.append(now_unix, entry)?;
     Ok(())
+}
+
+fn audit_action(kind: SyncAttemptKind) -> SyncAuditAction {
+    match kind {
+        SyncAttemptKind::Manual => SyncAuditAction::ManualSync,
+        SyncAttemptKind::Automatic => SyncAuditAction::AutomaticSync,
+    }
 }
 
 pub(super) fn validate_active_context(

@@ -203,6 +203,7 @@ impl SyncHealthStore {
 pub enum SyncAuditAction {
     Setup,
     ManualSync,
+    AutomaticSync,
     PairCreate,
     PairJoin,
     RevokeDevice,
@@ -214,6 +215,7 @@ impl SyncAuditAction {
         match self {
             Self::Setup => "Personal sync was set up",
             Self::ManualSync => "Personal state was synced",
+            Self::AutomaticSync => "Personal state was synced automatically",
             Self::PairCreate => "A device connection was started",
             Self::PairJoin => "This device joined personal sync",
             Self::RevokeDevice => "A device was removed",

@@ -362,12 +362,41 @@ impl DeviceRecord {
 
 pub type DeviceRegistry = BTreeMap<DeviceId, DeviceRecord>;
 
+/// Vault-authenticated authorization for one engagement compaction transition.
+///
+/// The signature is created by the lowest device id active in the recorded membership epoch.
+/// Keeping the historical epoch and membership head with the portable checkpoint lets later
+/// vault checkpoints retain and verify the authorization even after membership changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionLeaderAuthorization {
+    pub membership_epoch: u64,
+    pub membership_head_hash: String,
+    pub leader_device_id: DeviceId,
+    pub introducing_checkpoint_sequence: u64,
+    pub introducing_checkpoint_parent_hash: String,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionCheckpoint {
     pub checkpoint_id: String,
+    /// Monotonic generation in the engagement-compaction lineage.
+    ///
+    /// This advances exactly once per compaction, allowing a portable replica to recognize a
+    /// valid newer checkpoint even when intermediate generations are no longer present.
+    pub compaction_generation: u64,
     pub coverage: VersionVector,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_checkpoint_hash: Option<String>,
+    /// Raw engagement operations deliberately retained by this checkpoint.
+    ///
+    /// Coverage is a version vector, so it can cover both pruned events and newer events that
+    /// remain useful as the bounded recent-history window. Keeping their operation ids in the
+    /// checkpoint lets merge discard only the covered events that were actually compacted.
+    #[serde(default)]
+    pub retained_engagement_operations: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_authorization: Option<CompactionLeaderAuthorization>,
     #[serde(default)]
     pub acknowledged_by: BTreeSet<DeviceId>,
 }
@@ -436,6 +465,22 @@ impl Default for PersonalStateV2 {
 }
 
 impl PersonalStateV2 {
+    pub(crate) fn next_revision(&self) -> Result<u64, PersonalStateError> {
+        Self::revision_after(self.revision)
+    }
+
+    pub(crate) fn revision_after(revision: u64) -> Result<u64, PersonalStateError> {
+        revision
+            .checked_add(1)
+            .ok_or(PersonalStateError::InvalidOperation(
+                "personal-state revision exhausted",
+            ))
+    }
+
+    pub(crate) fn identity(&self) -> Result<String, PersonalStateError> {
+        Ok(super::legacy::sha256_hex(&serde_json::to_vec(self)?))
+    }
+
     pub fn empty(dataset_id: String) -> Result<Self, PersonalStateError> {
         validate_id("dataset id", &dataset_id, 128)?;
         Ok(Self {
@@ -486,6 +531,11 @@ impl PersonalStateV2 {
             validate_device_record(device, true)?;
         }
         if let Some(checkpoint) = &self.compaction_checkpoint {
+            if checkpoint.compaction_generation == 0 {
+                return Err(PersonalStateError::InvalidOperation(
+                    "compaction generation is invalid",
+                ));
+            }
             validate_id("checkpoint id", &checkpoint.checkpoint_id, 256)?;
             if checkpoint.coverage.0.len() > MAX_DEVICES
                 || checkpoint.acknowledged_by.len() > MAX_DEVICES
@@ -502,6 +552,35 @@ impl PersonalStateV2 {
             }
             if let Some(previous_hash) = &checkpoint.previous_checkpoint_hash {
                 validate_id("previous checkpoint hash", previous_hash, 128)?;
+            }
+            if let Some(authorization) = &checkpoint.leader_authorization {
+                if authorization.membership_epoch == 0
+                    || authorization.introducing_checkpoint_sequence < 2
+                {
+                    return Err(PersonalStateError::InvalidOperation(
+                        "compaction authorization sequence is invalid",
+                    ));
+                }
+                validate_id(
+                    "compaction authorization membership head",
+                    &authorization.membership_head_hash,
+                    128,
+                )?;
+                validate_id(
+                    "compaction authorization leader device",
+                    authorization.leader_device_id.as_str(),
+                    MAX_TRACK_ID_CHARS,
+                )?;
+                validate_id(
+                    "compaction authorization checkpoint parent",
+                    &authorization.introducing_checkpoint_parent_hash,
+                    128,
+                )?;
+                validate_id(
+                    "compaction authorization signature",
+                    &authorization.signature,
+                    256,
+                )?;
             }
         }
 
@@ -566,6 +645,9 @@ impl PersonalStateV2 {
             return Err(PersonalStateError::InvalidOperation(
                 "device registry does not match membership operations",
             ));
+        }
+        if let Some(checkpoint) = &self.compaction_checkpoint {
+            super::compaction::validate_checkpoint(self, checkpoint)?;
         }
         Ok(())
     }

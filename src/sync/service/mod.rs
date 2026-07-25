@@ -14,13 +14,15 @@ mod transition;
 
 use std::fmt;
 
-use super::{SyncFailureKind, SyncPaths, VaultCredential, VaultError, WebDavProfile};
+use super::{
+    OwnerRevisionGuard, SyncFailureKind, SyncPaths, VaultCredential, VaultError, WebDavProfile,
+};
 use crate::personal_state::{DeviceId, PersonalStateV2};
 
 pub use devices::{DeviceSummary, apply_prepared_revoke_now, revoke_device, revoke_device_now};
 pub use manual::{
-    AppliedManualSync, PreparedManualSync, apply_manual_sync, apply_prepared_sync_now,
-    prepare_manual_sync, prepare_manual_sync_with_transport, sync_now,
+    AppliedManualSync, PreparedManualSync, apply_manual_sync, apply_prepared_automatic_sync_now,
+    apply_prepared_sync_now, prepare_manual_sync, prepare_manual_sync_with_transport, sync_now,
 };
 pub use pairing::{
     PairingHostInvite, PairingJoinPreview, PairingJoinWaiting, PairingReview,
@@ -45,6 +47,12 @@ pub use status::{
 };
 pub(crate) use transition::recover_pending_anchor_transition;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncAttemptKind {
+    Manual,
+    Automatic,
+}
+
 /// Prepare one primary-owner sync attempt while retaining redacted attempt/failure state.
 ///
 /// The TUI and daemon both use this entry point so a network failure is observable through the
@@ -56,21 +64,39 @@ pub fn prepare_owner_sync(
     revoke_target: Option<&DeviceId>,
     paths: &SyncPaths,
 ) -> Result<PreparedManualSync, SyncServiceError> {
-    track_owner_preparation(paths, || match revoke_target {
-        Some(target) => revoke_device(state, target, paths),
-        None => prepare_manual_sync(state, paths),
+    let revision_guard = OwnerRevisionGuard::new(state.revision);
+    prepare_owner_sync_as(
+        state,
+        revoke_target,
+        paths,
+        SyncAttemptKind::Manual,
+        &revision_guard,
+    )
+}
+
+pub fn prepare_owner_sync_as(
+    state: &PersonalStateV2,
+    revoke_target: Option<&DeviceId>,
+    paths: &SyncPaths,
+    kind: SyncAttemptKind,
+    revision_guard: &OwnerRevisionGuard,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    track_owner_preparation(paths, kind, || match revoke_target {
+        Some(target) => devices::revoke_device_guarded(state, target, paths, revision_guard),
+        None => manual::prepare_manual_sync_guarded(state, paths, revision_guard),
     })
 }
 
 fn track_owner_preparation<T>(
     paths: &SyncPaths,
+    kind: SyncAttemptKind,
     prepare: impl FnOnce() -> Result<T, SyncServiceError>,
 ) -> Result<T, SyncServiceError> {
     let now = crate::signals::unix_now();
     let _ = manual::record_sync_started(paths, now);
     let result = prepare();
     if let Err(error) = &result {
-        let _ = manual::record_sync_failure(paths, now, *error);
+        let _ = manual::record_sync_failure_as(paths, now, *error, kind);
     }
     result
 }
@@ -104,6 +130,7 @@ pub enum SyncServiceError {
     Authentication,
     Certificate,
     Offline,
+    RateLimited(Option<std::time::Duration>),
     InvalidRemoteData,
     LocalStateChanged,
     Storage,
@@ -125,6 +152,7 @@ impl SyncServiceError {
             Self::Authentication => "sync_authentication_failed",
             Self::Certificate => "sync_certificate_failed",
             Self::Offline => "sync_offline",
+            Self::RateLimited(_) => "sync_offline",
             Self::InvalidRemoteData => "sync_invalid_remote_data",
             Self::LocalStateChanged => "sync_local_state_changed",
             Self::Storage => "sync_storage_failed",
@@ -140,6 +168,7 @@ impl SyncServiceError {
             Self::Authentication => Some(SyncFailureKind::Authentication),
             Self::Certificate => Some(SyncFailureKind::Certificate),
             Self::Offline => Some(SyncFailureKind::Offline),
+            Self::RateLimited(_) => Some(SyncFailureKind::Offline),
             Self::PendingApproval => Some(SyncFailureKind::DeviceApproval),
             Self::InvalidRemoteData | Self::PairingRejected | Self::PairingNeedsCleanup => {
                 Some(SyncFailureKind::InvalidRemoteData)
@@ -168,6 +197,14 @@ impl fmt::Display for SyncServiceError {
             Self::Authentication => "the WebDAV credential was rejected",
             Self::Certificate => "the server certificate could not be verified",
             Self::Offline => "the sync server is unavailable",
+            Self::RateLimited(Some(delay)) => {
+                return write!(
+                    formatter,
+                    "the sync server asked to retry in {} seconds",
+                    delay.as_secs()
+                );
+            }
+            Self::RateLimited(None) => "the sync server asked to retry later",
             Self::InvalidRemoteData => "the encrypted remote state could not be verified",
             Self::LocalStateChanged => "local personal state changed; retrying is safe",
             Self::Storage => "personal sync state could not be stored",
@@ -190,6 +227,7 @@ impl From<VaultError> for SyncServiceError {
             VaultError::RemoteAuthentication => Self::Authentication,
             VaultError::RemoteCertificate => Self::Certificate,
             VaultError::RemoteUnavailable => Self::Offline,
+            VaultError::RemoteRateLimited(delay) => Self::RateLimited(delay),
             VaultError::RemoteUnsupported => Self::UnsupportedServer,
             VaultError::StorageFailed | VaultError::StorageBusy => Self::Storage,
             VaultError::PairingExpired | VaultError::PairingConsumed => Self::PairingExpired,
@@ -224,10 +262,10 @@ fn map_webdav_error(error: super::webdav::WebDavError) -> SyncServiceError {
         }
         WebDavError::CertificateFailed => SyncServiceError::Certificate,
         WebDavError::MethodUnsupported => SyncServiceError::UnsupportedServer,
-        WebDavError::RequestFailed
-        | WebDavError::RateLimited
-        | WebDavError::ServerUnavailable
-        | WebDavError::Locked => SyncServiceError::Offline,
+        WebDavError::RateLimited(delay) => SyncServiceError::RateLimited(delay),
+        WebDavError::RequestFailed | WebDavError::ServerUnavailable | WebDavError::Locked => {
+            SyncServiceError::Offline
+        }
         WebDavError::PreconditionFailed => SyncServiceError::LocalStateChanged,
         WebDavError::InvalidEndpoint
         | WebDavError::UnsupportedScheme

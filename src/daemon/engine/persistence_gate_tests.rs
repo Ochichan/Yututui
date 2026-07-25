@@ -110,7 +110,7 @@ fn mutating_commands() -> Vec<RemoteCommand> {
 fn synced_daemon_persistence_authors_changes_as_the_bound_device() {
     let mut engine = engine_with_queue(&[]);
     let (state, device_id) = synced_state();
-    engine.personal_state = state;
+    engine.install_personal_state(state);
     engine.personal_state_device_id = Some(device_id.clone());
     engine.library.toggle_favorite(&crate::api::Song::remote(
         "daemon-bound-rating",
@@ -134,6 +134,35 @@ fn synced_daemon_persistence_authors_changes_as_the_bound_device() {
         })
         .expect("rating operation");
     assert_eq!(rating.stamp.dot.device_id, device_id);
+}
+
+#[test]
+fn durable_personal_commit_immediately_retires_a_detached_worker() {
+    let mut engine = engine_with_queue(&[]);
+    let expected_revision = engine.personal_state_revision();
+    let worker_guard = engine.personal_state_revision_guard();
+    let (release_worker, wait_for_commit) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        wait_for_commit.recv().unwrap();
+        crate::sync::manual::LocalRevisionGuard::ensure_current(&worker_guard, expected_revision)
+    });
+
+    engine.library.toggle_favorite(&crate::api::Song::remote(
+        "guarded-after-commit",
+        "Guarded after commit",
+        "Artist",
+        "3:00",
+    ));
+    engine.save_library("revision fence test");
+
+    assert!(engine.personal_state_revision() > expected_revision);
+    // Stay inside this owner handler: no outer-loop `PersonalSync::observe` runs before the
+    // detached worker resumes and checks the fence published by the persistence gate.
+    release_worker.send(()).unwrap();
+    assert_eq!(
+        worker.join().unwrap(),
+        Err(crate::sync::VaultError::RevisionConflict)
+    );
 }
 
 #[test]

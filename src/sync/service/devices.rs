@@ -4,17 +4,21 @@ use crate::personal_state::{
     DeviceId, DeviceRecord, Operation, PersonalStateV2, append_operation_as,
 };
 
-use super::super::manual::ManualSyncBudget;
+use super::super::manual::{LocalRevisionGuard, ManualSyncBudget};
 use super::super::{
-    EnrollmentState, MembershipAction, PrivateStore, SyncAuditAction, SyncAuditEntry,
-    SyncAuditOutcome, SyncAuditStore, SyncHealthStore, SyncPaths, VaultTransport,
-    WebDavProfileStore,
+    EnrollmentState, MembershipAction, OwnerRevisionGuard, PrivateStore, SyncAuditAction,
+    SyncAuditEntry, SyncAuditOutcome, SyncAuditStore, SyncHealthStore, SyncPaths, VaultError,
+    VaultTransport, WebDavProfileStore,
 };
 use super::manual::{
-    AppliedManualSync, PreparedManualSync, membership_anchor, prepare_manual_sync_with_budget,
-    record_sync_failure, record_sync_started, validate_active_context,
+    AppliedManualSync, PreparedManualSync, membership_anchor,
+    prepare_manual_sync_with_budget_guarded, record_sync_failure, record_sync_started,
+    validate_active_context,
 };
 use super::{SyncServiceError, apply_manual_sync, open_saved_webdav_transport};
+
+#[cfg(test)]
+use super::manual::prepare_manual_sync_with_budget;
 
 const MAX_REVOKE_RACE_ATTEMPTS: usize = 8;
 
@@ -41,6 +45,16 @@ pub fn revoke_device(
     current_state: &PersonalStateV2,
     target: &DeviceId,
     paths: &SyncPaths,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    let revision_guard = OwnerRevisionGuard::new(current_state.revision);
+    revoke_device_guarded(current_state, target, paths, &revision_guard)
+}
+
+pub(super) fn revoke_device_guarded<G: LocalRevisionGuard>(
+    current_state: &PersonalStateV2,
+    target: &DeviceId,
+    paths: &SyncPaths,
+    revision_guard: &G,
 ) -> Result<PreparedManualSync, SyncServiceError> {
     let private_store = PrivateStore::new(paths.private_store())?;
     let private = private_store.load()?;
@@ -75,7 +89,7 @@ pub fn revoke_device(
     let transport = open_saved_webdav_transport(&profile, credential)?;
     // The persisted profile was capability-tested during setup or the fresh pairing join.
     // Revocation shares the normal sync transport and must not rewrite the probe marker.
-    revoke_with_transport(current_state, target, &private, &transport)
+    revoke_with_transport_guarded(current_state, target, &private, &transport, revision_guard)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,16 +191,36 @@ pub(super) fn record_revoke_success(
     Ok(())
 }
 
+#[cfg(test)]
 fn revoke_with_transport<T: VaultTransport + ?Sized>(
     current_state: &PersonalStateV2,
     target: &DeviceId,
     private: &super::super::PrivateStoreSnapshot,
     transport: &T,
 ) -> Result<PreparedManualSync, SyncServiceError> {
-    let mut budget = ManualSyncBudget::default();
-    revoke_with_transport_and_budget(current_state, target, private, transport, &mut budget)
+    let revision_guard = OwnerRevisionGuard::new(current_state.revision);
+    revoke_with_transport_guarded(current_state, target, private, transport, &revision_guard)
 }
 
+fn revoke_with_transport_guarded<T: VaultTransport + ?Sized, G: LocalRevisionGuard>(
+    current_state: &PersonalStateV2,
+    target: &DeviceId,
+    private: &super::super::PrivateStoreSnapshot,
+    transport: &T,
+    revision_guard: &G,
+) -> Result<PreparedManualSync, SyncServiceError> {
+    let mut budget = ManualSyncBudget::default();
+    revoke_with_transport_and_budget_guarded(
+        current_state,
+        target,
+        private,
+        transport,
+        revision_guard,
+        &mut budget,
+    )
+}
+
+#[cfg(test)]
 fn revoke_with_transport_and_budget<T: VaultTransport + ?Sized>(
     current_state: &PersonalStateV2,
     target: &DeviceId,
@@ -194,12 +228,37 @@ fn revoke_with_transport_and_budget<T: VaultTransport + ?Sized>(
     transport: &T,
     budget: &mut ManualSyncBudget,
 ) -> Result<PreparedManualSync, SyncServiceError> {
+    let revision_guard = OwnerRevisionGuard::new(current_state.revision);
+    revoke_with_transport_and_budget_guarded(
+        current_state,
+        target,
+        private,
+        transport,
+        &revision_guard,
+        budget,
+    )
+}
+
+fn revoke_with_transport_and_budget_guarded<T: VaultTransport + ?Sized, G: LocalRevisionGuard>(
+    current_state: &PersonalStateV2,
+    target: &DeviceId,
+    private: &super::super::PrivateStoreSnapshot,
+    transport: &T,
+    revision_guard: &G,
+    budget: &mut ManualSyncBudget,
+) -> Result<PreparedManualSync, SyncServiceError> {
     let mut completed_summary = super::super::manual::ManualSyncSummary::default();
     for attempt in 1..=MAX_REVOKE_RACE_ATTEMPTS {
         // Establish the target's latest authenticated high-water before freezing the revocation
         // cutoff. Revoking directly from the caller's snapshot can strand a valid unseen segment:
         // the resulting checkpoint must attest the exact accepted sequence.
-        let synced = prepare_manual_sync_with_budget(current_state, private, transport, budget)?;
+        let synced = prepare_manual_sync_with_budget_guarded(
+            current_state,
+            private,
+            transport,
+            revision_guard,
+            budget,
+        )?;
         merge_summary(&mut completed_summary, &synced.summary);
         if synced
             .state
@@ -212,7 +271,15 @@ fn revoke_with_transport_and_budget<T: VaultTransport + ?Sized>(
                 ..synced
             });
         }
-        match revoke_synced_state(current_state, target, private, transport, synced, budget) {
+        match revoke_synced_state(
+            current_state,
+            target,
+            private,
+            transport,
+            synced,
+            revision_guard,
+            budget,
+        ) {
             Ok(mut candidate) => {
                 merge_summary(&mut completed_summary, &candidate.summary);
                 candidate.summary = completed_summary;
@@ -229,12 +296,13 @@ fn revoke_with_transport_and_budget<T: VaultTransport + ?Sized>(
     Err(SyncServiceError::InvalidRemoteData)
 }
 
-fn revoke_synced_state<T: VaultTransport + ?Sized>(
+fn revoke_synced_state<T: VaultTransport + ?Sized, G: LocalRevisionGuard>(
     original_state: &PersonalStateV2,
     target: &DeviceId,
     private: &super::super::PrivateStoreSnapshot,
     transport: &T,
     synced: PreparedManualSync,
+    revision_guard: &G,
     budget: &mut ManualSyncBudget,
 ) -> Result<PreparedManualSync, SyncServiceError> {
     let anchor = membership_anchor(private)?;
@@ -273,18 +341,12 @@ fn revoke_synced_state<T: VaultTransport + ?Sized>(
         bootstrap_checkpoint: None,
         expected_local_revision: state.revision,
     };
+    let owner_guard = RevokeRevisionGuard {
+        inner: revision_guard,
+        owner_revision: original_state.revision,
+    };
     let candidate = super::super::manual::ManualSyncEngine::new(transport)
-        .synchronize_with_budget(
-            &input,
-            &|expected| {
-                if expected == state.revision {
-                    Ok(())
-                } else {
-                    Err(super::super::VaultError::RevisionConflict)
-                }
-            },
-            budget,
-        )?;
+        .synchronize_with_budget(&input, &owner_guard, budget)?;
     Ok(PreparedManualSync {
         state: candidate.state,
         membership: candidate.membership,
@@ -294,6 +356,17 @@ fn revoke_synced_state<T: VaultTransport + ?Sized>(
         local_device_id: local_device,
         summary: candidate.summary,
     })
+}
+
+struct RevokeRevisionGuard<'a, G> {
+    inner: &'a G,
+    owner_revision: u64,
+}
+
+impl<G: LocalRevisionGuard> LocalRevisionGuard for RevokeRevisionGuard<'_, G> {
+    fn ensure_current(&self, _synthetic_revision: u64) -> Result<(), VaultError> {
+        self.inner.ensure_current(self.owner_revision)
+    }
 }
 
 fn merge_summary(

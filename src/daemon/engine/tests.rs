@@ -33,6 +33,13 @@ pub(in crate::daemon) fn radio_station(id: &str) -> Song {
 pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
     let mut queue = Queue::default();
     queue.set(ids.iter().map(|id| song(id)).collect(), 0);
+    let personal_state = crate::personal_state::legacy_state(
+        &Library::default(),
+        &crate::playlists::Playlists::default(),
+        &Signals::default(),
+        &StationStore::default(),
+    )
+    .expect("default personal state");
     DaemonEngine {
         maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
         player: None,
@@ -48,13 +55,10 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
             speed: 1.0,
         },
         config: Config::default(),
-        personal_state: crate::personal_state::legacy_state(
-            &Library::default(),
-            &crate::playlists::Playlists::default(),
-            &Signals::default(),
-            &StationStore::default(),
-        )
-        .expect("default personal state"),
+        personal_state_revision_guard: crate::sync::OwnerRevisionGuard::new(
+            personal_state.revision,
+        ),
+        personal_state,
         personal_state_device_id: None,
         personal_sync_in_progress: false,
         personal_state_paths: personal_state_paths(),

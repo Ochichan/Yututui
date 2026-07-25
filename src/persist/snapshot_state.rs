@@ -88,6 +88,17 @@ impl PendingOperation {
         self.kind
     }
 
+    pub(super) fn ordinary_personal_state_commit(
+        &self,
+    ) -> Option<Result<(u64, String), crate::personal_state::PersonalStateError>> {
+        match self.action.as_ref() {
+            PendingAction::Save(snapshot) => snapshot.ordinary_personal_state_commit(),
+            PendingAction::DeleteRomanizedTitles => None,
+            #[cfg(test)]
+            PendingAction::TestDeleteRomanizedTitles { .. } => None,
+        }
+    }
+
     pub(super) fn action(&self) -> &PendingAction {
         self.action.as_ref()
     }

@@ -137,7 +137,24 @@ impl StoreKind {
 
 #[derive(Debug, Clone)]
 pub enum PersistEvent {
-    WriteFailed { store: StoreKind, error: String },
+    WriteFailed {
+        store: StoreKind,
+        error: String,
+    },
+    PersonalStateCommitted {
+        revision: u64,
+        state_identity: String,
+    },
+}
+
+#[cfg(test)]
+impl PersistEvent {
+    pub(crate) fn write_failure(&self) -> Option<(&StoreKind, &String)> {
+        match self {
+            Self::WriteFailed { store, error } => Some((store, error)),
+            Self::PersonalStateCommitted { .. } => None,
+        }
+    }
 }
 
 type EventSink = Arc<dyn Fn(PersistEvent) + Send + Sync + 'static>;
@@ -1471,10 +1488,20 @@ async fn write_stores_with_inflight_tracking(
                 );
             }
             Ok((Ok(()), operation)) => {
+                let personal_state_commit = operation.ordinary_personal_state_commit();
                 remove_inflight_if_order(inflight, kind, order);
                 panic_shadow.clear_through(kind, order);
                 retries.remove(&operation.kind());
                 completions.record(kind, order);
+                if let Some(Ok((revision, state_identity))) = personal_state_commit {
+                    emit_persist_event(
+                        events,
+                        PersistEvent::PersonalStateCommitted {
+                            revision,
+                            state_identity,
+                        },
+                    );
+                }
             }
         }
     }

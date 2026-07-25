@@ -1141,6 +1141,56 @@ fn divergent_commits_at_the_same_revision_are_rejected() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn terminal_revision_rejects_mutation_import_and_commit_preparation() {
+    let base = state_with_keyed_devices(&["revision-device"]);
+    let device = DeviceId::new("revision-device").unwrap();
+    let changed = append_operation_as(
+        &base,
+        &device,
+        Operation::SetRating {
+            track: track("revision-exhaustion"),
+            rating: Rating::Liked,
+        },
+        1,
+    )
+    .unwrap();
+
+    let mut exhausted = base.clone();
+    exhausted.revision = u64::MAX;
+    assert!(matches!(
+        append_operation_as(
+            &exhausted,
+            &device,
+            Operation::SetRating {
+                track: track("blocked-mutation"),
+                rating: Rating::Liked,
+            },
+            2,
+        ),
+        Err(PersonalStateError::InvalidOperation(
+            "personal-state revision exhausted"
+        ))
+    ));
+
+    assert!(matches!(
+        plan_import(&exhausted, &changed),
+        Err(PersonalStateError::InvalidOperation(
+            "personal-state revision exhausted"
+        ))
+    ));
+
+    let mut changed_at_max = changed;
+    changed_at_max.revision = u64::MAX;
+    changed_at_max.projection_fingerprint = None;
+    assert!(matches!(
+        PersonalStateCommit::prepare(changed_at_max),
+        Err(PersonalStateError::InvalidOperation(
+            "personal-state revision exhausted"
+        ))
+    ));
+}
+
 fn assert_projection_files_match(paths: &PersonalStatePaths, state: &PersonalStateV2) {
     let library: crate::library::Library =
         serde_json::from_slice(&std::fs::read(&paths.library).unwrap()).unwrap();

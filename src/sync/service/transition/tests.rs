@@ -363,6 +363,44 @@ fn actor_retry_after_ledger_install_finishes_recovery_without_a_second_transitio
     assert_transition_artifacts_removed(&fixture.sync_paths);
 }
 
+#[test]
+fn terminal_private_revision_cannot_alias_the_next_transition() {
+    let candidate_hash = "a".repeat(64);
+    let target_private_hash = "b".repeat(64);
+    let checkpoint_hash = "c".repeat(64);
+    let checkpoint_sequence = 2;
+    let activation_hash = super::activation_hash(
+        AnchorActivationKind::ManualSync,
+        &candidate_hash,
+        &target_private_hash,
+        checkpoint_sequence,
+        &checkpoint_hash,
+    );
+    let binding = super::TransitionBinding {
+        kind: super::TRANSITION_KIND.to_owned(),
+        schema_version: super::TRANSITION_SCHEMA_VERSION,
+        dataset_id: "terminal-private-revision".to_owned(),
+        device_id: "device-a".to_owned(),
+        activation_kind: AnchorActivationKind::ManualSync,
+        expected_personal_revision: 1,
+        expected_personal_hash: "d".repeat(64),
+        candidate_personal_revision: 2,
+        candidate_personal_hash: candidate_hash,
+        playlist_revision: 0,
+        expected_private_revision: u64::MAX,
+        target_private_revision: u64::MAX,
+        target_private_hash,
+        checkpoint_sequence,
+        checkpoint_hash,
+        activation_hash,
+    };
+
+    assert_eq!(
+        super::validate_binding(&binding),
+        Err(super::SyncServiceError::InvalidRemoteData)
+    );
+}
+
 fn assert_transition_artifacts_removed(paths: &SyncPaths) {
     for path in [
         paths.anchor_transition_manifest(),
