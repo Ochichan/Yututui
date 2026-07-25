@@ -4,7 +4,8 @@ use age::secrecy::SecretString;
 
 use crate::personal_state::{
     CausalStamp, DeviceId, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin,
-    PersonalStateV2, VersionVector, append_operation_as,
+    PersonalStateCommit, PersonalStatePaths, PersonalStateV2, VersionVector, append_operation_as,
+    load_ledger,
 };
 use crate::sync::{
     CheckpointAnchor, DeviceSecretMaterial, FileVaultTransport, MembershipAction, MembershipAnchor,
@@ -50,6 +51,101 @@ struct JoinFixture {
     expires_at_unix: i64,
     invite_id: String,
     _root: TempRoot,
+}
+
+struct HostFixture {
+    paths: SyncPaths,
+    personal_paths: PersonalStatePaths,
+    state: PersonalStateV2,
+    private: PrivateStoreSnapshot,
+    remote: FileVaultTransport,
+    _root: TempRoot,
+}
+
+fn host_fixture() -> HostFixture {
+    let root = TempRoot::new();
+    let paths = SyncPaths::for_data_root(root.0.clone());
+    let personal_paths = PersonalStatePaths::for_data_root(root.0.clone());
+    let recovery = RecoveryKit::generate("dataset-host", None).unwrap();
+    let host = DeviceSecretMaterial::generate_for("device-host").unwrap();
+    let host_record = device_record(&host, "Host");
+    let state = initial_state("dataset-host", &host_record);
+    let membership_root = SignedMembershipRoot::create(
+        state.dataset_id.clone(),
+        recovery.recovery_recipient(),
+        &recovery.signing_key().unwrap(),
+        host_record.clone(),
+    )
+    .unwrap();
+    let root_hash = membership_root.hash().unwrap();
+    let anchor = MembershipAnchor::RootHash(root_hash.clone());
+    let membership = MembershipChain::new(membership_root);
+    let checkpoint = SignedCheckpoint::create(
+        membership.clone(),
+        &anchor,
+        host_record.device_id,
+        host.signing_key(),
+        &CheckpointAnchor::default(),
+        state.clone(),
+    )
+    .unwrap();
+    let mut private = PrivateStoreSnapshot::pending_ledger_commit(
+        host,
+        recovery.recovery_recipient(),
+        recovery.recovery_verifying_key().unwrap(),
+        root_hash,
+        &checkpoint,
+    )
+    .unwrap();
+    private.set_credential(test_credential());
+    private.mark_active(&checkpoint, &state).unwrap();
+    PrivateStore::new(paths.private_store())
+        .unwrap()
+        .create(&mut private)
+        .unwrap();
+    let mut profile =
+        WebDavProfile::new(&state.dataset_id, private.device(), "https://example.test").unwrap();
+    WebDavProfileStore::new(paths.profile())
+        .unwrap()
+        .create(&mut profile, private.device())
+        .unwrap();
+    let installed = PersonalStateCommit::prepare_for_runtime(state, 0)
+        .unwrap()
+        .commit(&personal_paths)
+        .unwrap();
+    let remote = FileVaultTransport::create(root.0.join("remote")).unwrap();
+    let empty_anchor = CheckpointAnchor::default();
+    let input = ManualSyncInput {
+        local_state: &installed,
+        membership: &membership,
+        membership_anchor: &anchor,
+        device: private.device(),
+        checkpoint_anchor: &empty_anchor,
+        bootstrap_checkpoint: Some(&checkpoint),
+        expected_local_revision: installed.revision,
+    };
+    let bootstrapped = ManualSyncEngine::new(&remote)
+        .synchronize(&input, &|expected| {
+            if expected == installed.revision {
+                Ok(())
+            } else {
+                Err(VaultError::RevisionConflict)
+            }
+        })
+        .unwrap();
+    assert_eq!(bootstrapped.state, installed);
+    HostFixture {
+        paths,
+        personal_paths,
+        state: installed,
+        private,
+        remote,
+        _root: root,
+    }
+}
+
+fn test_credential() -> VaultCredential {
+    VaultCredential::bearer_token(SecretString::from("test-token".to_owned())).unwrap()
 }
 
 fn join_fixture() -> JoinFixture {
@@ -247,6 +343,671 @@ fn put_pairing_handoff(remote: &FileVaultTransport, fixture: &JoinFixture) {
             .put(&key, object, ObjectCondition::CreateOnly)
             .unwrap();
     }
+}
+
+fn start_join_for_host(
+    fixture: &HostFixture,
+    host: &PairingHostInvite,
+    name: &str,
+    now_unix: i64,
+) -> (SyncPaths, PairingJoinWaiting) {
+    let join_root = fixture._root.0.join(name);
+    crate::util::safe_fs::ensure_private_dir(&join_root).unwrap();
+    let join_paths = SyncPaths::for_data_root(join_root);
+    let waiting = start_pairing_join_with_transport(
+        &join_paths,
+        "https://example.test".to_owned(),
+        None,
+        test_credential(),
+        host.code(),
+        "Joining device".to_owned(),
+        now_unix,
+        &fixture.remote,
+    )
+    .unwrap();
+    (join_paths, waiting)
+}
+
+fn prepare_host_approval(
+    fixture: &HostFixture,
+    host: &mut PairingHostInvite,
+    join_name: &str,
+    now_unix: i64,
+) -> PreparedPairingApproval {
+    let _ = start_join_for_host(fixture, host, join_name, now_unix);
+    let review = poll_pairing_request_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        host,
+        now_unix + 1,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap()
+    .unwrap();
+    prepare_pairing_approval_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        host,
+        review,
+        now_unix + 2,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap()
+}
+
+fn poll_pending_pairing_join_once_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    private_store: &PrivateStore,
+    private: &mut PrivateStoreSnapshot,
+    journal: &JoinPairingSnapshot,
+    transport: &T,
+    now_unix: i64,
+) -> Result<Option<PairingJoinPreview>, SyncServiceError> {
+    match resume_pending_approval_with_transport(
+        current_state,
+        paths,
+        private_store,
+        private,
+        journal,
+        transport,
+        now_unix,
+    ) {
+        Ok(preview) => Ok(Some(preview)),
+        Err(SyncServiceError::PendingApproval) if now_unix > journal.expires_at_unix() => {
+            Err(SyncServiceError::PairingExpired)
+        }
+        Err(SyncServiceError::PendingApproval) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[test]
+fn start_and_one_shot_poll_wait_then_return_approved_preview() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let (join_paths, waiting) = start_join_for_host(&fixture, &host, "join-one-shot", now + 1);
+    assert!(!waiting.resumed);
+    assert!(waiting.expires_at_unix > now);
+
+    let review = poll_pairing_request_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        &mut host,
+        now + 2,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(review.device_id, waiting.device_id);
+
+    let private_store = PrivateStore::new(join_paths.private_store()).unwrap();
+    let mut joining_private = private_store.load().unwrap();
+    let journal = JoinPairingStore::new(&join_paths)
+        .load(joining_private.device())
+        .unwrap()
+        .unwrap();
+    let local = PersonalStateV2::empty("dataset-local".to_owned()).unwrap();
+    assert!(
+        poll_pending_pairing_join_once_with_transport(
+            &local,
+            &join_paths,
+            &private_store,
+            &mut joining_private,
+            &journal,
+            &fixture.remote,
+            now + 3,
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        private_store.load().unwrap().enrollment(),
+        EnrollmentState::PendingApproval
+    );
+
+    let prepared = prepare_pairing_approval_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        &mut host,
+        review,
+        now + 4,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let preview = poll_pending_pairing_join_once_with_transport(
+        &local,
+        &join_paths,
+        &private_store,
+        &mut joining_private,
+        &journal,
+        &fixture.remote,
+        now + 5,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(preview.device_id, waiting.device_id);
+    assert_eq!(
+        preview.target_state().device_registry,
+        prepared.candidate().state.device_registry
+    );
+    assert_eq!(
+        private_store.load().unwrap().enrollment(),
+        EnrollmentState::PendingLedgerCommit
+    );
+}
+
+#[test]
+fn prepared_host_approval_does_not_install_ledger_until_apply() {
+    fn assert_clone_send_sync<T: Clone + Send + Sync>(_: &T) {}
+
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let before = load_ledger(&fixture.personal_paths).unwrap().unwrap();
+    let prepared = prepare_host_approval(&fixture, &mut host, "join-prepare", now + 1);
+    assert!(host_pairing_needs_review(&fixture.state, &fixture.paths).unwrap());
+    assert_clone_send_sync(&prepared);
+    assert_eq!(
+        load_ledger(&fixture.personal_paths).unwrap().unwrap(),
+        before
+    );
+    assert!(
+        !before
+            .device_registry
+            .contains_key(prepared.target_device_id())
+    );
+    assert!(
+        prepared
+            .candidate()
+            .state
+            .device_registry
+            .contains_key(prepared.target_device_id())
+    );
+    assert_eq!(
+        prepared.clone().into_candidate().state,
+        prepared.candidate().state
+    );
+
+    let installed = apply_prepared_pairing_approval(
+        &before,
+        0,
+        &fixture.personal_paths,
+        &fixture.paths,
+        prepared.clone(),
+    )
+    .unwrap();
+    assert!(
+        installed
+            .device_registry
+            .contains_key(prepared.target_device_id())
+    );
+    assert_eq!(
+        load_ledger(&fixture.personal_paths).unwrap().unwrap(),
+        installed
+    );
+    assert!(!fixture.paths.pairing_host_state().exists());
+    assert!(!host_pairing_needs_review(&installed, &fixture.paths).unwrap());
+    finalize_prepared_pairing_approval(&installed, &fixture.paths, &prepared).unwrap();
+}
+
+#[test]
+fn host_rejects_a_valid_but_substituted_checkpoint_readback() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let _ = start_join_for_host(&fixture, &host, "join-substituted-checkpoint", now + 1);
+    let review = poll_pairing_request_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        &mut host,
+        now + 2,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap()
+    .unwrap();
+    let target_device = review.payload.device.clone();
+    let anchor = membership_anchor(&fixture.private).unwrap();
+    let base =
+        prepare_manual_sync_with_transport(&fixture.state, &fixture.private, &fixture.remote)
+            .unwrap();
+    let prepared = commit_pairing_membership(
+        &fixture.state,
+        &fixture.private,
+        &anchor,
+        &fixture.remote,
+        base,
+        &target_device,
+        host.expires_at_unix(),
+    )
+    .unwrap();
+
+    let host_id = DeviceId::new(fixture.private.device_id()).unwrap();
+    let alternate_state = append_operation_as(
+        &prepared.state,
+        &host_id,
+        Operation::SetAvoidArtist {
+            artist_key: "substituted-checkpoint".to_owned(),
+            avoid: true,
+        },
+        now + 3,
+    )
+    .unwrap();
+    let previous_anchor = super::super::manual::checkpoint_anchor(&fixture.private).unwrap();
+    let alternate = SignedCheckpoint::create(
+        prepared.membership.clone(),
+        &anchor,
+        host_id,
+        fixture.private.device().signing_key(),
+        &previous_anchor,
+        alternate_state,
+    )
+    .unwrap();
+    let expected_hash = prepared
+        .checkpoint_anchor
+        .checkpoint_hash
+        .as_deref()
+        .unwrap();
+    assert_ne!(alternate.hash().unwrap(), expected_hash);
+    let alternate = alternate.encrypt(&anchor).unwrap();
+    let key = checkpoint_key(
+        &fixture.state.dataset_id,
+        prepared.membership.verify(&anchor).unwrap().epoch,
+        expected_hash,
+    )
+    .unwrap();
+    let (_, metadata) = fixture
+        .remote
+        .get(&key, MAX_VAULT_PAYLOAD_BYTES)
+        .unwrap()
+        .unwrap();
+    fixture
+        .remote
+        .put(
+            &key,
+            &alternate,
+            crate::sync::ObjectCondition::Match(metadata.etag),
+        )
+        .unwrap();
+
+    assert_eq!(
+        load_prepared_checkpoint(
+            &fixture.state,
+            &anchor,
+            &fixture.remote,
+            fixture.private.device(),
+            &prepared,
+        ),
+        Err(SyncServiceError::InvalidRemoteData)
+    );
+}
+
+#[test]
+fn pairing_approval_persistence_rebases_and_finalizes_idempotently() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let prepared = prepare_host_approval(&fixture, &mut host, "join-rebase", now + 1);
+    let host_device = DeviceId::new(fixture.private.device_id()).unwrap();
+    let local = append_operation_as(
+        &fixture.state,
+        &host_device,
+        Operation::SetAvoidArtist {
+            artist_key: "approval-in-flight-artist".to_owned(),
+            avoid: true,
+        },
+        now + 3,
+    )
+    .unwrap();
+    let local = PersonalStateCommit::prepare_for_runtime(local, 0)
+        .unwrap()
+        .commit(&fixture.personal_paths)
+        .unwrap();
+    let retargeted = prepared.retarget(&fixture.state, &local).unwrap();
+    assert_eq!(
+        retargeted.candidate().expected_local_revision,
+        local.revision
+    );
+    assert!(
+        retargeted
+            .candidate()
+            .state
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation.operation,
+                Operation::SetAvoidArtist {
+                    ref artist_key,
+                    avoid: true
+                } if artist_key == "approval-in-flight-artist"
+            ))
+    );
+
+    let writer = crate::sync::service::PersonalSyncPersistence::pairing_approval_activation(
+        fixture.state.clone(),
+        local.clone(),
+        0,
+        prepared.clone(),
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture._root.0.clone()),
+    )
+    .unwrap();
+    let target = writer.state().clone();
+    writer.write().unwrap();
+    assert!(writer.committed());
+    assert_eq!(
+        load_ledger(&fixture.personal_paths).unwrap(),
+        Some(target.clone())
+    );
+    assert!(!fixture.paths.pairing_host_state().exists());
+
+    let retry = crate::sync::service::PersonalSyncPersistence::pairing_approval_activation(
+        fixture.state.clone(),
+        local,
+        0,
+        prepared,
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture._root.0.clone()),
+    )
+    .unwrap();
+    assert_eq!(retry.state(), &target);
+    retry.write().unwrap();
+    assert!(retry.committed());
+    assert!(!fixture.paths.pairing_host_state().exists());
+}
+
+#[test]
+fn pairing_join_activation_retargets_and_retries_the_exact_target() {
+    let fixture = join_fixture();
+    let personal_paths = PersonalStatePaths::for_data_root(fixture._root.0.clone());
+    let local_device = DeviceSecretMaterial::generate_for("pre-join-local-device").unwrap();
+    let local_record = device_record(&local_device, "Local before join");
+    let observed =
+        PersonalStateCommit::prepare_for_runtime(initial_state("dataset-local", &local_record), 0)
+            .unwrap()
+            .state()
+            .clone();
+    let joining_device = DeviceId::new(fixture.private.device_id()).unwrap();
+    let initial_plan = crate::personal_state::plan_join_import(
+        &fixture.checkpoint.payload.state,
+        &observed,
+        &joining_device,
+    )
+    .unwrap();
+    let activation = PairingJoinPreview {
+        summary: initial_plan.summary,
+        device_id: joining_device.as_str().to_owned(),
+        candidate: initial_plan.candidate,
+        checkpoint: fixture.checkpoint.clone(),
+        expected_local_revision: observed.revision,
+        expected_private_revision: fixture.private.revision(),
+    }
+    .into_activation();
+
+    let latest = append_operation_as(
+        &observed,
+        &local_record.device_id,
+        Operation::SetAvoidArtist {
+            artist_key: "join-in-flight-artist".to_owned(),
+            avoid: true,
+        },
+        2_000,
+    )
+    .unwrap();
+    let latest = PersonalStateCommit::prepare_for_runtime(latest, 0)
+        .unwrap()
+        .commit(&personal_paths)
+        .unwrap();
+    let retargeted = activation.retarget(&latest).unwrap();
+    assert_eq!(retargeted.expected_local_revision(), latest.revision);
+    assert_eq!(
+        activation.target_state_for(&latest).unwrap(),
+        retargeted.target_state().clone()
+    );
+
+    let writer = crate::sync::service::PersonalSyncPersistence::pairing_join_activation(
+        latest.clone(),
+        0,
+        activation.clone(),
+        personal_paths.clone(),
+        SyncPaths::for_data_root(fixture._root.0.clone()),
+    )
+    .unwrap();
+    let target = writer.state().clone();
+    assert!(
+        target
+            .operations
+            .iter()
+            .any(|operation| matches!(operation.operation, Operation::LegacyBaseline { .. }))
+    );
+    writer.write().unwrap();
+    assert!(writer.committed());
+    assert_eq!(load_ledger(&personal_paths).unwrap(), Some(target.clone()));
+    assert_eq!(
+        PrivateStore::new(fixture.paths.private_store())
+            .unwrap()
+            .load()
+            .unwrap()
+            .enrollment(),
+        EnrollmentState::Active
+    );
+
+    let retry = crate::sync::service::PersonalSyncPersistence::pairing_join_activation(
+        latest,
+        0,
+        activation,
+        personal_paths.clone(),
+        SyncPaths::for_data_root(fixture._root.0.clone()),
+    )
+    .unwrap();
+    assert_eq!(retry.state(), &target);
+    retry.write().unwrap();
+    assert!(retry.committed());
+}
+
+#[test]
+fn cancelling_host_invite_invalidates_bound_request_and_rotates_code() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let old_code = host.code().to_owned();
+    let old_invite_id = host.invite.invite_id().to_owned();
+    let _ = start_join_for_host(&fixture, &host, "join-cancel", now + 1);
+    assert!(
+        poll_pairing_request_with_transport(
+            &fixture.state,
+            &fixture.paths,
+            &mut host,
+            now + 2,
+            &fixture.private,
+            &fixture.remote,
+        )
+        .unwrap()
+        .is_some()
+    );
+
+    cancel_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        &host,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    for path in [
+        fixture.paths.pairing_host_state(),
+        fixture.paths.pairing_host_locator(),
+        fixture.paths.pairing_host_request(),
+    ] {
+        assert!(!path.exists());
+    }
+    assert!(matches!(
+        poll_pairing_request_with_transport(
+            &fixture.state,
+            &fixture.paths,
+            &mut host,
+            now + 3,
+            &fixture.private,
+            &fixture.remote,
+        ),
+        Err(SyncServiceError::LocalStateChanged)
+    ));
+    let old_request_key =
+        dataset_pairing_key(&fixture.state.dataset_id, &old_invite_id, "request.age").unwrap();
+    assert!(
+        fixture
+            .remote
+            .get(&old_request_key, MAX_VAULT_PAYLOAD_BYTES)
+            .unwrap()
+            .is_some()
+    );
+
+    let replacement = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now + 4,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    assert_ne!(replacement.code(), old_code);
+    assert_ne!(replacement.invite.invite_id(), old_invite_id);
+}
+
+#[test]
+fn cancelling_host_invite_is_rejected_after_handoff_exists() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let prepared = prepare_host_approval(&fixture, &mut host, "join-handoff", now + 1);
+    assert!(
+        prepared
+            .candidate()
+            .state
+            .device_registry
+            .contains_key(prepared.target_device_id())
+    );
+    assert_eq!(
+        cancel_pairing_invite_with_transport(
+            &fixture.state,
+            &fixture.paths,
+            &host,
+            &fixture.private,
+            &fixture.remote,
+        ),
+        Err(SyncServiceError::AlreadyConfigured)
+    );
+    assert!(fixture.paths.pairing_host_state().is_file());
+    assert!(fixture.paths.pairing_host_approval().is_file());
+}
+
+#[test]
+fn cancelling_host_invite_is_rejected_after_remote_commit_before_handoff() {
+    let fixture = host_fixture();
+    let now = crate::signals::unix_now();
+    let mut host = create_pairing_invite_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        now,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap();
+    let _ = start_join_for_host(&fixture, &host, "join-commit-before-handoff", now + 1);
+    let review = poll_pairing_request_with_transport(
+        &fixture.state,
+        &fixture.paths,
+        &mut host,
+        now + 2,
+        &fixture.private,
+        &fixture.remote,
+    )
+    .unwrap()
+    .unwrap();
+    HostPairingStore::new(&fixture.paths)
+        .bind_request(
+            fixture.private.device(),
+            &mut host.durable,
+            &review.sealed.encrypted,
+            &review.payload.device.device_id,
+        )
+        .unwrap();
+    let anchor = membership_anchor(&fixture.private).unwrap();
+    let base =
+        prepare_manual_sync_with_transport(&fixture.state, &fixture.private, &fixture.remote)
+            .unwrap();
+    commit_pairing_membership(
+        &fixture.state,
+        &fixture.private,
+        &anchor,
+        &fixture.remote,
+        base,
+        &review.payload.device,
+        host.expires_at_unix(),
+    )
+    .unwrap();
+    assert!(host.durable.has_bound_request());
+    assert!(!host.durable.has_handoff());
+
+    assert_eq!(
+        cancel_pairing_invite_with_transport(
+            &fixture.state,
+            &fixture.paths,
+            &host,
+            &fixture.private,
+            &fixture.remote,
+        ),
+        Err(SyncServiceError::AlreadyConfigured)
+    );
+    assert!(fixture.paths.pairing_host_state().is_file());
 }
 
 #[test]

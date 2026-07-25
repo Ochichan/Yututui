@@ -2,7 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use age::secrecy::SecretString;
 
-use crate::personal_state::{PersonalStateCommit, PersonalStatePaths, legacy_state, load_ledger};
+use crate::personal_state::{
+    CausalStamp, Dot, Operation, OperationEnvelope, OperationOrigin, PersonalStateCommit,
+    PersonalStatePaths, legacy_state, load_ledger,
+};
 use crate::sync::{
     EncryptedObject, EnrollmentState, FileVaultTransport, ObjectCondition, ObjectKey,
     ObjectMetadata, ObjectWriteResult, PrivateStore, SyncPaths, VaultCredential, VaultError,
@@ -80,29 +83,22 @@ fn setup_resumes_after_remote_bootstrap_and_pre_marker_local_failure() {
     let transport =
         FileVaultTransport::create(fixture.root.0.join("remote")).expect("file vault transport");
     let recovery_file = fixture.root.0.join("recovery.json");
-    let prepared = prepare(
+    let initial = prepare_initial(
         &fixture.state,
         0,
         request(recovery_file.clone()),
         &fixture.sync_paths,
     )
     .expect("prepare setup");
-    let checksum = prepared
+    let checksum = initial
         .private
         .setup_recovery_checksum()
         .expect("recovery marker")
         .to_owned();
 
-    let error = setup_with_transport_using(
-        prepared,
-        &fixture.personal_paths,
-        &fixture.sync_paths,
-        &transport,
-        || Err(SyncServiceError::Storage),
-    )
-    .err()
-    .expect("injected local failure");
-    assert_eq!(error, SyncServiceError::Storage);
+    let prepared = prepare_setup_with_transport(initial, &fixture.sync_paths, &transport)
+        .expect("remote setup");
+    assert_eq!(prepared.recovery_checksum(), checksum);
     assert!(recovery_file.is_file());
     assert_eq!(
         load_ledger(&fixture.personal_paths)
@@ -119,26 +115,17 @@ fn setup_resumes_after_remote_bootstrap_and_pre_marker_local_failure() {
     assert!(!fixture.sync_paths.health().exists());
     assert!(!fixture.sync_paths.audit().exists());
 
-    let mut pending =
-        load_pending_setup(&fixture.sync_paths, "https://dav.example.test/state", None)
-            .expect("load pending setup")
-            .expect("pending setup");
-    let remote = load_resumable_remote_setup(&fixture.state, 0, &pending, &transport)
-        .expect("validate remote setup")
-        .expect("published remote setup");
-    pending.private.set_credential(
-        VaultCredential::bearer_token(SecretString::from("replacement-token"))
-            .expect("replacement credential"),
-    );
-    let result = finish_resumed_setup(
+    let pending = load_saved_pending_setup(&fixture.sync_paths).expect("load saved pending setup");
+    let prepared = prepared_saved_setup_with_transport(&fixture.state, 0, pending, &transport)
+        .expect("prepare resumed setup");
+    let result = apply_prepared_setup(
         &fixture.state,
         0,
         &fixture.personal_paths,
         &fixture.sync_paths,
-        pending,
-        remote,
+        prepared,
     )
-    .expect("resume setup");
+    .expect("apply resumed setup");
 
     assert!(result.resumed);
     assert_eq!(result.recovery_checksum, checksum);
@@ -164,25 +151,18 @@ fn confirmed_missing_manifest_cleans_credentials_and_profile_after_bootstrap_fai
         FileVaultTransport::create(fixture.root.0.join("remote")).expect("file vault transport");
     let failing = RejectWrites(&transport);
     let recovery_file = fixture.root.0.join("recovery.json");
-    let prepared = prepare(
+    let initial = prepare_initial(
         &fixture.state,
         0,
-        request(recovery_file),
+        request(recovery_file.clone()),
         &fixture.sync_paths,
     )
     .expect("prepare setup");
 
-    assert!(
-        setup_with_transport(
-            prepared,
-            &fixture.personal_paths,
-            &fixture.sync_paths,
-            &failing,
-        )
-        .is_err()
-    );
+    assert!(prepare_setup_with_transport(initial, &fixture.sync_paths, &failing).is_err());
     assert!(!fixture.sync_paths.private_store().exists());
     assert!(!fixture.sync_paths.profile().exists());
+    assert!(!recovery_file.exists());
     assert!(!fixture.sync_paths.health().exists());
     assert!(!fixture.sync_paths.audit().exists());
 }
@@ -190,7 +170,7 @@ fn confirmed_missing_manifest_cleans_credentials_and_profile_after_bootstrap_fai
 #[test]
 fn pending_setup_rejects_a_different_endpoint_without_changing_local_state() {
     let fixture = fixture();
-    let prepared = prepare(
+    let prepared = prepare_initial(
         &fixture.state,
         0,
         request(fixture.root.0.join("recovery.json")),
@@ -229,6 +209,237 @@ fn pending_setup_rejects_a_different_endpoint_without_changing_local_state() {
     );
 }
 
+#[test]
+fn detached_setup_prepares_without_installing_and_applies_the_exact_target() {
+    let fixture = fixture();
+    let transport =
+        FileVaultTransport::create(fixture.root.0.join("remote")).expect("file vault transport");
+    let initial = prepare_initial(
+        &fixture.state,
+        0,
+        request(fixture.root.0.join("recovery.json")),
+        &fixture.sync_paths,
+    )
+    .expect("initial setup");
+    let prepared = prepare_setup_with_transport(initial, &fixture.sync_paths, &transport)
+        .expect("remote bootstrap");
+    let target = prepared.target_state(&fixture.state).expect("exact target");
+    assert_eq!(target, prepared.checkpoint.payload.state);
+    assert_eq!(
+        load_ledger(&fixture.personal_paths)
+            .expect("load ledger")
+            .expect("ledger"),
+        fixture.state
+    );
+    assert_eq!(
+        PrivateStore::new(fixture.sync_paths.private_store())
+            .expect("private store")
+            .load()
+            .expect("pending private")
+            .enrollment(),
+        EnrollmentState::PendingLedgerCommit
+    );
+
+    let result = apply_prepared_setup(
+        &fixture.state,
+        0,
+        &fixture.personal_paths,
+        &fixture.sync_paths,
+        prepared,
+    )
+    .expect("apply setup");
+    assert_eq!(result.state, target);
+    assert_eq!(
+        PrivateStore::new(fixture.sync_paths.private_store())
+            .expect("private store")
+            .load()
+            .expect("active private")
+            .enrollment(),
+        EnrollmentState::Active
+    );
+}
+
+#[test]
+fn detached_setup_rebases_a_contiguous_local_suffix_after_the_bootstrap() {
+    let fixture = fixture();
+    let transport =
+        FileVaultTransport::create(fixture.root.0.join("remote")).expect("file vault transport");
+    let initial = prepare_initial(
+        &fixture.state,
+        0,
+        request(fixture.root.0.join("recovery.json")),
+        &fixture.sync_paths,
+    )
+    .expect("initial setup");
+    let prepared = prepare_setup_with_transport(initial, &fixture.sync_paths, &transport)
+        .expect("remote bootstrap");
+    let local = append_unkeyed_local_operation(
+        &fixture.state,
+        Operation::SetAvoidArtist {
+            artist_key: "in-flight-artist".to_owned(),
+            avoid: true,
+        },
+    );
+    let local = PersonalStateCommit::prepare_for_runtime(local, 0)
+        .expect("prepare local suffix")
+        .commit(&fixture.personal_paths)
+        .expect("commit local suffix");
+
+    let target = prepared.target_state(&local).expect("rebased target");
+    let bootstrap_sequence = prepared
+        .checkpoint
+        .payload
+        .state
+        .version_vector
+        .observed(prepared.device_id());
+    let rebased = target
+        .operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.operation,
+                Operation::SetAvoidArtist {
+                    ref artist_key,
+                    avoid: true
+                } if artist_key == "in-flight-artist"
+            )
+        })
+        .expect("rebased local operation");
+    assert_eq!(rebased.origin, OperationOrigin::Local);
+    assert_eq!(rebased.stamp.dot.device_id, *prepared.device_id());
+    assert_eq!(rebased.stamp.dot.sequence, bootstrap_sequence + 1);
+    assert_eq!(
+        rebased.stamp.observed,
+        prepared.checkpoint.payload.state.version_vector
+    );
+
+    let result = apply_prepared_setup(
+        &local,
+        0,
+        &fixture.personal_paths,
+        &fixture.sync_paths,
+        prepared,
+    )
+    .expect("apply rebased setup");
+    assert_eq!(result.state, target);
+}
+
+#[test]
+fn setup_activation_persistence_retries_the_exact_target_idempotently() {
+    let fixture = fixture();
+    let transport =
+        FileVaultTransport::create(fixture.root.0.join("remote")).expect("file vault transport");
+    let initial = prepare_initial(
+        &fixture.state,
+        0,
+        request(fixture.root.0.join("recovery.json")),
+        &fixture.sync_paths,
+    )
+    .expect("initial setup");
+    let prepared = prepare_setup_with_transport(initial, &fixture.sync_paths, &transport)
+        .expect("remote bootstrap");
+    let local = append_unkeyed_local_operation(
+        &fixture.state,
+        Operation::SetAvoidArtist {
+            artist_key: "activation-retry-artist".to_owned(),
+            avoid: true,
+        },
+    );
+    let local = PersonalStateCommit::prepare_for_runtime(local, 0)
+        .expect("prepare local suffix")
+        .commit(&fixture.personal_paths)
+        .expect("commit local suffix");
+
+    let writer = crate::sync::service::PersonalSyncPersistence::setup_activation(
+        local.clone(),
+        0,
+        prepared.clone(),
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture.root.0.clone()),
+    )
+    .expect("prepare owner activation");
+    let target = writer.state().clone();
+    writer.write().expect("first activation write");
+    assert!(writer.committed());
+    assert_eq!(
+        load_ledger(&fixture.personal_paths).expect("load activated ledger"),
+        Some(target.clone())
+    );
+
+    let retry = crate::sync::service::PersonalSyncPersistence::setup_activation(
+        local,
+        0,
+        prepared,
+        fixture.personal_paths.clone(),
+        SyncPaths::for_data_root(fixture.root.0.clone()),
+    )
+    .expect("recreate unacknowledged activation");
+    assert_eq!(retry.state(), &target);
+    retry.write().expect("idempotent activation retry");
+    assert!(retry.committed());
+    assert_eq!(
+        PrivateStore::new(fixture.sync_paths.private_store())
+            .expect("private store")
+            .load()
+            .expect("active private")
+            .enrollment(),
+        EnrollmentState::Active
+    );
+}
+
+#[test]
+fn ambiguous_bootstrap_failure_retains_pending_keys_and_new_recovery_file() {
+    let fixture = fixture();
+    let recovery_file = fixture.root.0.join("recovery.json");
+    let initial = prepare_initial(
+        &fixture.state,
+        0,
+        request(recovery_file.clone()),
+        &fixture.sync_paths,
+    )
+    .expect("initial setup");
+
+    assert!(
+        prepare_setup_with_transport(initial, &fixture.sync_paths, &UnavailableTransport).is_err()
+    );
+    assert!(fixture.sync_paths.private_store().exists());
+    assert!(fixture.sync_paths.profile().exists());
+    assert!(recovery_file.exists());
+}
+
+fn append_unkeyed_local_operation(
+    state: &PersonalStateV2,
+    operation: Operation,
+) -> PersonalStateV2 {
+    let device_id = state
+        .device_registry
+        .values()
+        .find(|device| !device.revoked && device.device_id.as_str() != "legacy")
+        .expect("local device")
+        .device_id
+        .clone();
+    let sequence = state.version_vector.observed(&device_id) + 1;
+    let dot = Dot {
+        device_id: device_id.clone(),
+        sequence,
+    };
+    let mut candidate = state.clone();
+    candidate.operations.push(OperationEnvelope {
+        operation_id: format!("{}:{sequence}", device_id.as_str()),
+        stamp: CausalStamp {
+            dot: dot.clone(),
+            observed: state.version_vector.clone(),
+            recorded_at_unix: 123,
+        },
+        origin: OperationOrigin::Local,
+        operation,
+    });
+    candidate.version_vector.observe(&dot);
+    candidate.projection_fingerprint = None;
+    candidate.normalize().expect("normalize local suffix");
+    candidate
+}
+
 struct RejectWrites<'a>(&'a FileVaultTransport);
 
 impl VaultTransport for RejectWrites<'_> {
@@ -255,5 +466,34 @@ impl VaultTransport for RejectWrites<'_> {
         max_resources: usize,
     ) -> Result<Vec<ObjectMetadata>, VaultError> {
         self.0.list(prefix, max_resources)
+    }
+}
+
+struct UnavailableTransport;
+
+impl VaultTransport for UnavailableTransport {
+    fn get(
+        &self,
+        _key: &ObjectKey,
+        _max_bytes: usize,
+    ) -> Result<Option<(EncryptedObject, ObjectMetadata)>, VaultError> {
+        Err(VaultError::StorageFailed)
+    }
+
+    fn put(
+        &self,
+        _key: &ObjectKey,
+        _object: &EncryptedObject,
+        _condition: ObjectCondition,
+    ) -> Result<ObjectWriteResult, VaultError> {
+        Err(VaultError::StorageFailed)
+    }
+
+    fn list(
+        &self,
+        _prefix: &ObjectKey,
+        _max_resources: usize,
+    ) -> Result<Vec<ObjectMetadata>, VaultError> {
+        Err(VaultError::StorageFailed)
     }
 }

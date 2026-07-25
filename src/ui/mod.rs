@@ -49,7 +49,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     // render pass knows it). Below the mini thresholds the whole UI is the miniplayer;
     // the overlay stack below still runs either way — modals capture keys, so they must
     // stay visible.
-    let tier = layout::tier(area);
+    let mut tier = layout::tier(area);
+    // Settings has a purpose-built narrow tab strip and list layout. Keep it reachable at the
+    // issue-114 keyboard-only acceptance width even though the playback surface still needs the
+    // 32-column Mini boundary for its transport controls.
+    if tier == layout::UiTier::Mini
+        && app.mode == Mode::Settings
+        && area.width >= 30
+        && area.height >= layout::MINI_MIN_H
+    {
+        tier = layout::UiTier::Full;
+    }
     app.bridges.ui_tier.set(tier);
     if tier == layout::UiTier::Mini {
         views::mini::render(frame, app, area);
@@ -178,6 +188,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.tool_setup.is_some() {
         views::onboarding::render_tool_setup(frame, app, area);
+    }
+    // Sync setup and device lifecycle are Settings-owned but remain visible in Mini layout.
+    // Draw this move-only wizard at the top level so its fields and actions always win z-order.
+    if app.personal_state.sync_ui.modal_open() {
+        views::settings::render_sync_wizard(frame, app, area);
     }
     retro::scrub_frame(frame, app);
 }

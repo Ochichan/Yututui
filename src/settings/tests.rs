@@ -120,8 +120,9 @@ fn tabs_step_and_wrap() {
     assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::Graphics);
     assert_eq!(SettingsTab::Graphics.stepped(true), SettingsTab::Ai);
     assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Accounts);
-    assert_eq!(SettingsTab::Accounts.stepped(true), SettingsTab::General); // wraps
-    assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Accounts); // wraps back
+    assert_eq!(SettingsTab::Accounts.stepped(true), SettingsTab::Sync);
+    assert_eq!(SettingsTab::Sync.stepped(true), SettingsTab::General); // wraps
+    assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Sync); // wraps back
 }
 
 #[test]

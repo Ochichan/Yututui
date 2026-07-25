@@ -235,12 +235,19 @@ impl<'a> TransitionStore<'a> {
         )?;
         checkpoint(AnchorCommitPoint::PrivateInstalled).map_err(|_| SyncServiceError::Storage)?;
         let completed_pair_join = binding.activation_kind == AnchorActivationKind::PairJoin;
-        self.complete_locked()?;
         if completed_pair_join {
-            let _ = remove_owner_only_file_durable(self.paths.pending_join_checkpoint());
-            let _ = remove_owner_only_file_durable(self.paths.pending_join_state());
-            let _ = remove_owner_only_file_durable(self.paths.pending_join_request());
+            // The signed join journal retains the one-time code. Keep the outer committed marker
+            // until every secret-bearing join artifact is durably gone, so a crash or deletion
+            // failure is retried by the same authenticated roll-forward on next startup.
+            for path in [
+                self.paths.pending_join_checkpoint(),
+                self.paths.pending_join_state(),
+                self.paths.pending_join_request(),
+            ] {
+                remove_owner_only_file_durable(path).map_err(|_| SyncServiceError::Storage)?;
+            }
         }
+        self.complete_locked()?;
         Ok(Some(installed))
     }
 }
@@ -301,6 +308,7 @@ fn commit_with_anchor_transition_using(
         return Err(SyncServiceError::InvalidRemoteData);
     }
     if target_private.enrollment() != EnrollmentState::Active
+        || target_private.dataset_id() != commit.state().dataset_id
         || target_private.checkpoint_sequence() != Some(checkpoint_sequence)
         || target_private.checkpoint_hash() != Some(checkpoint_hash)
     {
@@ -319,7 +327,9 @@ fn commit_with_anchor_transition_using(
     if installed != *current_state {
         return Err(SyncServiceError::LocalStateChanged);
     }
-    if commit.state().dataset_id != current_state.dataset_id {
+    if activation_kind != AnchorActivationKind::PairJoin
+        && commit.state().dataset_id != current_state.dataset_id
+    {
         return Err(SyncServiceError::InvalidRemoteData);
     }
     let candidate_bytes =
@@ -345,7 +355,7 @@ fn commit_with_anchor_transition_using(
     let binding = TransitionBinding {
         kind: TRANSITION_KIND.to_owned(),
         schema_version: TRANSITION_SCHEMA_VERSION,
-        dataset_id: current_state.dataset_id.clone(),
+        dataset_id: commit.state().dataset_id.clone(),
         device_id: target_private.device_id().to_owned(),
         activation_kind,
         expected_personal_revision: current_state.revision,

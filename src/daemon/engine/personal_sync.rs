@@ -15,6 +15,16 @@ impl DaemonEngine {
         self.personal_sync_in_progress = in_progress;
     }
 
+    pub(in crate::daemon) fn personal_sync_status(&self) -> crate::sync::service::SyncStatusReport {
+        match self.personal_state_paths() {
+            Ok(paths) => crate::sync::service::read_current_status_at(
+                &crate::sync::SyncPaths::for_data_root(paths.data_root),
+                self.personal_sync_in_progress,
+            ),
+            Err(_) => crate::sync::service::read_current_status(self.personal_sync_in_progress),
+        }
+    }
+
     pub(in crate::daemon) fn personal_sync_source(
         &mut self,
     ) -> Result<

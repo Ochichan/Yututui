@@ -4,7 +4,7 @@ use age::secrecy::{ExposeSecret, SecretString};
 
 use crate::personal_state::{
     CausalStamp, DeviceRecord, Dot, Operation, OperationEnvelope, OperationOrigin, VersionVector,
-    legacy_state, plan_join_import,
+    append_operation_as, legacy_state, plan_join_import,
 };
 use crate::sync::{
     CheckpointAnchor, MembershipAnchor, MembershipChain, RecoveryKit, SignedCheckpoint,
@@ -212,6 +212,108 @@ fn pending_setup_recovery_confirmation_is_signed_and_cleared_on_activation() {
             .expect("reload active setup")
             .setup_recovery_checksum(),
         None
+    );
+}
+
+#[test]
+fn setup_activation_accepts_a_contiguous_local_non_membership_suffix() {
+    let mut fixture = pending_ledger_fixture();
+    fixture
+        .snapshot
+        .confirm_setup_recovery("e".repeat(SHA256_HEX_BYTES))
+        .expect("confirm setup recovery");
+    let device_id = DeviceId::new(fixture.snapshot.device_id()).expect("device id");
+    let first = append_operation_as(
+        &fixture.state,
+        &device_id,
+        Operation::SetAvoidArtist {
+            artist_key: "first-local".to_owned(),
+            avoid: true,
+        },
+        10,
+    )
+    .expect("first local operation");
+    let candidate = append_operation_as(
+        &first,
+        &device_id,
+        Operation::SetAvoidArtist {
+            artist_key: "second-local".to_owned(),
+            avoid: true,
+        },
+        11,
+    )
+    .expect("second local operation");
+    let expected_hash = fixture.checkpoint.hash().expect("checkpoint hash");
+
+    fixture
+        .snapshot
+        .mark_active_after_setup(&fixture.checkpoint, &candidate)
+        .expect("activate setup extension");
+    assert_eq!(fixture.snapshot.enrollment(), EnrollmentState::Active);
+    assert_eq!(
+        fixture.snapshot.checkpoint_hash(),
+        Some(expected_hash.as_str())
+    );
+}
+
+#[test]
+fn setup_activation_rejects_foreign_membership_and_tampered_operations() {
+    let fixture = pending_ledger_fixture();
+    let device_id = DeviceId::new(fixture.snapshot.device_id()).expect("device id");
+    let local = append_operation_as(
+        &fixture.state,
+        &device_id,
+        Operation::SetAvoidArtist {
+            artist_key: "local".to_owned(),
+            avoid: true,
+        },
+        10,
+    )
+    .expect("local operation");
+
+    let mut foreign = local.clone();
+    foreign
+        .operations
+        .iter_mut()
+        .find(|operation| matches!(operation.operation, Operation::SetAvoidArtist { .. }))
+        .expect("local addition")
+        .origin = OperationOrigin::WebDav;
+    assert_setup_activation_rejected(fixture, foreign);
+
+    let fixture = pending_ledger_fixture();
+    let device_id = DeviceId::new(fixture.snapshot.device_id()).expect("device id");
+    let membership = append_operation_as(
+        &fixture.state,
+        &device_id,
+        Operation::RevokeDevice {
+            device_id: device_id.clone(),
+        },
+        10,
+    )
+    .expect("membership operation");
+    assert_setup_activation_rejected(fixture, membership);
+
+    let fixture = pending_ledger_fixture();
+    let mut tampered = fixture.state.clone();
+    tampered.operations[0].stamp.recorded_at_unix += 1;
+    tampered.normalize().expect("structurally valid tamper");
+    assert_setup_activation_rejected(fixture, tampered);
+}
+
+fn assert_setup_activation_rejected(mut fixture: PendingLedgerFixture, candidate: PersonalStateV2) {
+    fixture
+        .snapshot
+        .confirm_setup_recovery("e".repeat(SHA256_HEX_BYTES))
+        .expect("confirm setup recovery");
+    assert_eq!(
+        fixture
+            .snapshot
+            .mark_active_after_setup(&fixture.checkpoint, &candidate),
+        Err(VaultError::InvalidPrivateStore)
+    );
+    assert_eq!(
+        fixture.snapshot.enrollment(),
+        EnrollmentState::PendingLedgerCommit
     );
 }
 

@@ -30,6 +30,7 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Scrobble(_) => Some("scrobble state"),
         Cmd::Transfer(_) => Some("transfer state"),
         Cmd::Data(DataCmd::PersonalSync { .. }) => Some("personal sync"),
+        Cmd::Data(DataCmd::SyncUi(command)) if !command.is_read_only() => Some("personal sync"),
         Cmd::PlayerControl(_)
         | Cmd::VideoConnect { .. }
         | Cmd::VideoLoad(_)
@@ -37,7 +38,9 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::VideoToggleFullscreen
         | Cmd::VideoToggleMute
         | Cmd::Search(_)
-        | Cmd::Data(DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_))
+        | Cmd::Data(
+            DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_) | DataCmd::SyncUi(_),
+        )
         | Cmd::Download(DownloadCmd::Scan(_))
         | Cmd::FetchLyrics(_)
         | Cmd::Resolve { .. }
@@ -107,6 +110,14 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
                 ));
             Vec::new()
         }
+        Cmd::Persist(crate::app::PersistCmd::SyncActivationCommit(commit)) => {
+            app.personal_state.sync.in_progress = false;
+            if app.personal_state.sync_ui.is_current(commit.flow_id) {
+                app.personal_state.sync_ui.busy = None;
+                app.queue_sync_ui_refresh();
+            }
+            app.start_pending_sync_ui_refresh()
+        }
         Cmd::Data(DataCmd::PersonalSync { reply, .. }) => {
             app.personal_state.sync.in_progress = false;
             app.personal_state.sync.pending_reply = None;
@@ -115,6 +126,13 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
                 "the read-only secondary cannot change personal sync state".to_owned(),
             ));
             Vec::new()
+        }
+        Cmd::Data(DataCmd::SyncUi(command)) => {
+            if app.personal_state.sync_ui.is_current(command.flow_id()) {
+                app.personal_state.sync_ui.busy = None;
+                app.queue_sync_ui_refresh();
+            }
+            app.start_pending_sync_ui_refresh()
         }
         _ => Vec::new(),
     };

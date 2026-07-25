@@ -20,6 +20,9 @@ pub(super) fn admit(handle: &PersistHandle, app: &mut App, command: PersistCmd) 
         PersistCmd::PersonalSyncCommit(_) => {
             unreachable!("targeted sync persistence is dispatched before snapshot markers")
         }
+        PersistCmd::SyncActivationCommit(_) => {
+            unreachable!("targeted sync activation is dispatched before snapshot markers")
+        }
     }
 }
 

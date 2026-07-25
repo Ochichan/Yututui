@@ -4,6 +4,7 @@
 //! store is exported or synchronized, and the offline recovery identity is never accepted by its
 //! API or represented by its on-disk schema.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::personal_state::{
-    DeviceId, DevicePublicIdentity, PersonalStateV2, validate_join_import_extension,
+    DeviceId, DevicePublicIdentity, Operation, OperationEnvelope, OperationOrigin, PersonalStateV2,
+    validate_join_import_extension,
 };
 use crate::util::safe_fs::{
     AdvisoryFileLock, read_owner_only_limited, remove_owner_only_file_durable, sync_parent_dir,
@@ -28,7 +30,9 @@ use super::error::VaultError;
 use super::membership::MembershipAnchor;
 use super::pairing::ApprovedPairing;
 
+mod credential;
 mod transition;
+pub use credential::{VaultCredential, VaultCredentialKind};
 
 const PRIVATE_STORE_KIND: &str = "yututui_vault_private_store";
 const PRIVATE_STORE_SCHEMA_VERSION: u32 = 1;
@@ -58,13 +62,6 @@ pub enum EnrollmentState {
     Revoked,
 }
 
-/// Authentication form used by the state-vault WebDAV endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VaultCredentialKind {
-    Password,
-    BearerToken,
-}
-
 /// Restart-safe context for one joining device's encrypted approval.
 ///
 /// It contains neither the one-time pairing code nor any WebDAV credential, and intentionally
@@ -89,50 +86,6 @@ impl Drop for PendingPairing {
     fn drop(&mut self) {
         self.invite_id.zeroize();
         self.request_nonce.zeroize();
-    }
-}
-
-/// A WebDAV credential whose secret values have no `Debug`, `Clone`, or serde implementation.
-pub struct VaultCredential {
-    kind: VaultCredentialKind,
-    username: Option<SecretString>,
-    secret: SecretString,
-}
-
-impl VaultCredential {
-    pub fn password(
-        username: impl Into<String>,
-        password: SecretString,
-    ) -> Result<Self, VaultError> {
-        let username = username.into();
-        validate_credential_part(&username, MAX_USERNAME_BYTES, false)?;
-        validate_credential_part(password.expose_secret(), MAX_CREDENTIAL_BYTES, true)?;
-        Ok(Self {
-            kind: VaultCredentialKind::Password,
-            username: Some(SecretString::from(username)),
-            secret: password,
-        })
-    }
-
-    pub fn bearer_token(token: SecretString) -> Result<Self, VaultError> {
-        validate_credential_part(token.expose_secret(), MAX_CREDENTIAL_BYTES, true)?;
-        Ok(Self {
-            kind: VaultCredentialKind::BearerToken,
-            username: None,
-            secret: token,
-        })
-    }
-
-    pub fn kind(&self) -> VaultCredentialKind {
-        self.kind
-    }
-
-    pub fn username(&self) -> Option<&SecretString> {
-        self.username.as_ref()
-    }
-
-    pub fn secret(&self) -> &SecretString {
-        &self.secret
     }
 }
 
@@ -448,6 +401,52 @@ impl PrivateStoreSnapshot {
         Ok(())
     }
 
+    /// Activate the first device after committing its signed bootstrap plus local in-flight work.
+    ///
+    /// The retained rollback anchor is always the exact signed bootstrap checkpoint. The
+    /// committed ledger may only append a contiguous sequence of ordinary local operations by
+    /// this device; membership, authenticated operations, metadata, compaction state, and causal
+    /// coverage from every other device remain immutable.
+    pub fn mark_active_after_setup(
+        &mut self,
+        bootstrap_checkpoint: &SignedCheckpoint,
+        committed_candidate: &PersonalStateV2,
+    ) -> Result<(), VaultError> {
+        if self.enrollment != EnrollmentState::PendingLedgerCommit
+            || self.trust_anchors.is_none()
+            || self.setup_recovery_checksum.is_none()
+            || self.pending_pairing.is_some()
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        let trust_anchors = self
+            .trust_anchors
+            .as_ref()
+            .ok_or(VaultError::InvalidPrivateStore)?;
+        let (dataset_id, bootstrap_anchor) =
+            verified_pending_ledger(&self.device, trust_anchors, bootstrap_checkpoint)?;
+        let local_device_id =
+            DeviceId::new(self.device.device_id()).map_err(|_| VaultError::InvalidPrivateStore)?;
+        if dataset_id != self.dataset_id
+            || self.pending_ledger_anchor.as_ref() != Some(&bootstrap_anchor)
+            || validate_setup_activation_extension(
+                &bootstrap_checkpoint.payload.state,
+                committed_candidate,
+                &local_device_id,
+            )
+            .is_err()
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+
+        self.checkpoint_anchor = Some(bootstrap_anchor.checkpoint);
+        self.pending_ledger_anchor = None;
+        self.pending_pairing = None;
+        self.setup_recovery_checksum = None;
+        self.enrollment = EnrollmentState::Active;
+        Ok(())
+    }
+
     /// Activate a newly approved device after committing its deletion-free local merge.
     ///
     /// The signed approval checkpoint remains the retained rollback anchor. The committed ledger
@@ -534,6 +533,89 @@ impl PrivateStoreSnapshot {
     pub fn clear_credential(&mut self) {
         self.credential = None;
     }
+}
+
+fn validate_setup_activation_extension(
+    authenticated: &PersonalStateV2,
+    candidate: &PersonalStateV2,
+    local_device_id: &DeviceId,
+) -> Result<(), VaultError> {
+    authenticated
+        .validate()
+        .map_err(|_| VaultError::InvalidPrivateStore)?;
+    candidate
+        .validate()
+        .map_err(|_| VaultError::InvalidPrivateStore)?;
+    if authenticated.dataset_id != candidate.dataset_id
+        || authenticated.device_registry != candidate.device_registry
+        || authenticated.compaction_checkpoint != candidate.compaction_checkpoint
+        || authenticated.metadata != candidate.metadata
+        || candidate.revision < authenticated.revision
+    {
+        return Err(VaultError::InvalidPrivateStore);
+    }
+
+    let authenticated_by_id: BTreeMap<&str, &OperationEnvelope> = authenticated
+        .operations
+        .iter()
+        .map(|operation| (operation.operation_id.as_str(), operation))
+        .collect();
+    if authenticated.operations.iter().any(|operation| {
+        candidate
+            .operations
+            .iter()
+            .find(|candidate| candidate.operation_id == operation.operation_id)
+            != Some(operation)
+    }) {
+        return Err(VaultError::InvalidPrivateStore);
+    }
+
+    let mut additions = candidate
+        .operations
+        .iter()
+        .filter(|operation| !authenticated_by_id.contains_key(operation.operation_id.as_str()))
+        .collect::<Vec<_>>();
+    if candidate.operations.len() != authenticated.operations.len() + additions.len() {
+        return Err(VaultError::InvalidPrivateStore);
+    }
+    if additions.is_empty() {
+        return if candidate == authenticated {
+            Ok(())
+        } else {
+            Err(VaultError::InvalidPrivateStore)
+        };
+    }
+
+    additions.sort_by(|left, right| {
+        left.stamp
+            .dot
+            .cmp(&right.stamp.dot)
+            .then(left.operation_id.cmp(&right.operation_id))
+    });
+    let mut expected_vector = authenticated.version_vector.clone();
+    for addition in additions {
+        let expected_sequence = expected_vector
+            .observed(local_device_id)
+            .checked_add(1)
+            .ok_or(VaultError::InvalidPrivateStore)?;
+        if addition.origin != OperationOrigin::Local
+            || addition.stamp.dot.device_id != *local_device_id
+            || addition.stamp.dot.sequence != expected_sequence
+            || addition.stamp.observed != expected_vector
+            || addition.operation_id != format!("{}:{expected_sequence}", local_device_id.as_str())
+            || matches!(
+                addition.operation,
+                Operation::AddDevice { .. } | Operation::RevokeDevice { .. }
+            )
+        {
+            return Err(VaultError::InvalidPrivateStore);
+        }
+        expected_vector.observe(&addition.stamp.dot);
+    }
+    if candidate.version_vector != expected_vector {
+        return Err(VaultError::InvalidPrivateStore);
+    }
+    Ok(())
 }
 
 /// A durable, compare-and-swap owner of one private sync store file.
@@ -812,17 +894,16 @@ impl DiskPrivateStore {
                 None => (None, None, None),
             };
         let credential = snapshot.credential.as_ref().map(|credential| {
-            let kind = match credential.kind {
+            let kind = match credential.kind() {
                 VaultCredentialKind::Password => DiskVaultCredentialKind::Password,
                 VaultCredentialKind::BearerToken => DiskVaultCredentialKind::BearerToken,
             };
             DiskVaultCredential {
                 kind,
                 username: credential
-                    .username
-                    .as_ref()
+                    .username()
                     .map(|username| username.expose_secret().to_owned()),
-                secret: credential.secret.expose_secret().to_owned(),
+                secret: credential.secret().expose_secret().to_owned(),
             }
         });
         let pending_pairing = snapshot

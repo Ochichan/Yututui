@@ -198,17 +198,24 @@ impl App {
     }
 
     /// Select a Settings tab by index into [`SettingsTab::ALL`] (from a tab click).
-    pub(in crate::app) fn settings_select_tab(&mut self, index: usize) {
+    pub(in crate::app) fn settings_select_tab(&mut self, index: usize) -> Vec<Cmd> {
+        let mut entered_sync = false;
         if let Some(st) = self.settings.as_mut()
             && let Some(&tab) = SettingsTab::ALL.get(index)
         {
             st.tab = tab;
+            entered_sync = tab == SettingsTab::Sync;
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
             // The new tab has a different row set; drop the old offset so it starts at the top.
             self.bridges.reset_settings_scroll();
             self.dirty = true;
+        }
+        if entered_sync {
+            self.request_sync_ui_refresh()
+        } else {
+            Vec::new()
         }
     }
 

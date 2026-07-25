@@ -69,6 +69,7 @@ mod settings_ui;
 mod source_recovery;
 mod startup_playback;
 mod streaming_extend;
+mod sync_settings;
 mod text_cursor_rendering;
 mod track_transitions;
 mod transport_recovery;

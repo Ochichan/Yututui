@@ -7,6 +7,7 @@ mod devices;
 mod manual;
 mod pairing;
 mod persistence;
+mod recovery_export;
 mod setup;
 mod status;
 mod transition;
@@ -22,16 +23,25 @@ pub use manual::{
     prepare_manual_sync, prepare_manual_sync_with_transport, sync_now,
 };
 pub use pairing::{
-    PairingHostInvite, PairingJoinPreview, PairingReview, apply_pairing_join,
-    approve_pairing_request, begin_pairing_join, cancel_pairing_join, create_pairing_invite,
-    defer_pairing_join, poll_pairing_request, resume_pairing_join,
+    PairingHostInvite, PairingJoinPreview, PairingJoinWaiting, PairingReview,
+    PreparedPairingApproval, PreparedPairingJoinActivation, apply_pairing_join,
+    apply_prepared_pairing_approval, apply_prepared_pairing_join, approve_pairing_request,
+    begin_pairing_join, cancel_pairing_invite, cancel_pairing_join, create_pairing_invite,
+    defer_pairing_join, finalize_prepared_pairing_approval, poll_pairing_join,
+    poll_pairing_request, prepare_pairing_approval, prepare_pairing_join_activation,
+    resume_pairing_join, start_pairing_join,
 };
-pub(crate) use persistence::rebase_local_operations;
 pub use persistence::{PersonalSyncApplyKind, PersonalSyncPersistence};
-pub use setup::{SetupRequest, SetupResult, setup};
+pub(crate) use persistence::{rebase_local_operations, verify_activation_extension};
+pub use recovery_export::{RecoveryExportResult, export_recovery_kit};
+pub use setup::{
+    PreparedSetup, SetupRequest, SetupResult, apply_prepared_setup, prepare_setup,
+    resume_prepared_setup, setup,
+};
 pub use status::{
-    LocalSyncSnapshot, SyncStatusReport, load_local_snapshot, load_personal_state_read_only,
-    read_audit, read_current_status, read_devices, read_status,
+    LocalSyncSnapshot, SyncLifecycleState, SyncOverview, SyncStatusReport, load_local_snapshot,
+    load_personal_state_read_only, read_audit, read_current_status, read_current_status_at,
+    read_devices, read_lifecycle, read_overview, read_status,
 };
 pub(crate) use transition::recover_pending_anchor_transition;
 

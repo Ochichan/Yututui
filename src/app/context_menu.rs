@@ -216,7 +216,8 @@ impl App {
     /// Whether another modal owns input. The queue and search-filter popups are deliberately
     /// excluded: their semantic rows are valid context-menu targets.
     fn context_menu_blocked(&self) -> bool {
-        self.overlays.help_visible
+        self.personal_state.sync_ui.modal_open()
+            || self.overlays.help_visible
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
             || self.overlays.why_gem_video_id.is_some()

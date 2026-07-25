@@ -9,6 +9,19 @@ impl App {
         row: u16,
         multi: bool,
     ) -> Vec<Cmd> {
+        // The Sync wizard is rendered last and owns the whole screen while open. Only its
+        // explicit controls act; every other click is consumed to prevent click-through.
+        if self.personal_state.sync_ui.modal_open() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::SyncWizardField(_)
+                    | MouseTarget::SyncWizardPrimary
+                    | MouseTarget::SyncWizardSecondary
+                    | MouseTarget::SyncWizardReveal),
+                ) => self.on_sync_wizard_mouse_target(target),
+                _ => Vec::new(),
+            };
+        }
         if self.tool_setup.is_some() {
             return self
                 .mouse_target_at(col, row)
@@ -625,10 +638,34 @@ impl App {
                 Vec::new()
             }
             MouseTarget::SettingsTab(i) if self.mode == Mode::Settings => {
-                self.settings_select_tab(i);
-                Vec::new()
+                self.settings_select_tab(i)
             }
             MouseTarget::SettingsTab(_) => Vec::new(),
+            MouseTarget::SettingsSyncRow(index)
+                if self.mode == Mode::Settings
+                    && self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|settings| settings.tab == SettingsTab::Sync)
+                    && index < self.sync_settings_model().rows.len() =>
+            {
+                self.personal_state.sync_ui.row = index;
+                self.dirty = true;
+                self.activate_sync_row()
+            }
+            MouseTarget::SettingsSyncRow(_) => Vec::new(),
+            target @ (MouseTarget::SyncWizardField(_)
+            | MouseTarget::SyncWizardPrimary
+            | MouseTarget::SyncWizardSecondary
+            | MouseTarget::SyncWizardReveal) => {
+                if self.personal_state.sync_ui.modal_open() {
+                    self.on_sync_wizard_mouse_target(target)
+                } else {
+                    // A stale hit map after the modal closes must fail closed instead of
+                    // reaching the Settings surface underneath it.
+                    Vec::new()
+                }
+            }
             MouseTarget::SettingsChange { row, delta } if self.mode == Mode::Settings => {
                 if self.settings_close_spotify_import_mode_dropdown() {
                     return Vec::new();

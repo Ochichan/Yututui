@@ -57,6 +57,12 @@ fn exact_pairing_artifacts_survive_every_host_restart_boundary() {
         .expect("durably bind request");
     let restarted = store.load(&host).unwrap().expect("reload request");
     assert!(restarted.has_bound_request());
+    assert!(
+        store
+            .locator(&restarted)
+            .expect("reload signed locator")
+            .is_locally_produced()
+    );
     assert!(store.request_matches(&restarted, &request.encrypted, &joining_id));
     assert_eq!(
         store.request(&restarted).unwrap().as_bytes(),
@@ -83,6 +89,8 @@ fn exact_pairing_artifacts_survive_every_host_restart_boundary() {
     let handoff = store.load_handoff(&restarted).unwrap();
     assert_eq!(handoff.checkpoint.as_bytes(), checkpoint.as_bytes());
     assert_eq!(handoff.approval.as_bytes(), approval.as_bytes());
+    assert!(handoff.checkpoint.is_locally_produced());
+    assert!(handoff.approval.is_locally_produced());
 }
 
 #[test]

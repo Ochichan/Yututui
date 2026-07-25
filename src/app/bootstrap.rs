@@ -32,6 +32,7 @@ impl App {
             personal_export: PersonalDataExportState::default(),
             personal_state: PersonalStateRuntime {
                 ledger: personal_state,
+                sync_ui: SyncUiState::default(),
                 ..PersonalStateRuntime::default()
             },
             playback: Playback {

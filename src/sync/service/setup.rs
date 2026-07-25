@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
 use crate::personal_state::{
-    DeviceId, DeviceRecord, Operation, OperationOrigin, PersonalStateCommit, PersonalStateV2,
-    append_operation_as,
+    DeviceId, DeviceRecord, Operation, OperationEnvelope, OperationOrigin, PersonalStateCommit,
+    PersonalStateV2, append_operation_as, load_ledger,
 };
+use crate::util::safe_fs::remove_owner_only_file_durable;
 
 use super::super::manual::{
     ManualSyncEngine, ManualSyncInput, ManualSyncSummary, SignedVaultManifest, manifest_key,
@@ -17,7 +19,7 @@ use super::super::{
     WebDavProfileStore, decrypt_json_with_identity,
 };
 use super::transition::{AnchorActivationKind, commit_with_anchor_transition};
-use super::{SyncServiceError, map_webdav_error};
+use super::{SyncServiceError, map_webdav_error, open_saved_webdav_transport};
 
 /// Secret-bearing setup input. It intentionally implements neither `Debug` nor `Clone`.
 pub struct SetupRequest {
@@ -36,9 +38,79 @@ pub struct SetupResult {
     pub resumed: bool,
 }
 
-struct PreparedSetup {
+/// Redacted result of completing the remote setup handshake.
+///
+/// The WebDAV endpoint, credential, private device keys, and recovery-kit path remain only in
+/// their owner-only stores. This value is therefore safe to clone across the detached worker and
+/// primary-owner boundary, but intentionally has no `Debug` implementation.
+#[derive(Clone)]
+pub struct PreparedSetup {
+    observed_state: PersonalStateV2,
+    checkpoint: SignedCheckpoint,
+    expected_private_revision: u64,
+    device_id: DeviceId,
+    recovery_checksum: String,
+    summary: ManualSyncSummary,
+    resumed: bool,
+}
+
+impl PreparedSetup {
+    /// The exact local revision observed before the network handshake began.
+    pub fn expected_local_revision(&self) -> u64 {
+        self.observed_state.revision
+    }
+
+    /// The pending private-store revision that must still be visible at activation.
+    pub fn expected_private_revision(&self) -> u64 {
+        self.expected_private_revision
+    }
+
+    pub fn device_id(&self) -> &DeviceId {
+        &self.device_id
+    }
+
+    pub fn recovery_checksum(&self) -> &str {
+        &self.recovery_checksum
+    }
+
+    pub fn summary(&self) -> &ManualSyncSummary {
+        &self.summary
+    }
+
+    pub fn resumed(&self) -> bool {
+        self.resumed
+    }
+
+    /// Compute the exact owner candidate without performing any file or network I/O.
+    ///
+    /// Local personal-state operations recorded while setup was in flight are re-authored after
+    /// the signed bootstrap checkpoint. Only the contiguous, local, non-membership suffix owned
+    /// by this device is accepted.
+    pub fn target_state(
+        &self,
+        current_state: &PersonalStateV2,
+    ) -> Result<PersonalStateV2, SyncServiceError> {
+        let additions =
+            validate_observed_local_suffix(&self.observed_state, current_state, &self.device_id)?;
+        let mut target = self.checkpoint.payload.state.clone();
+        for addition in additions {
+            target = append_operation_as(
+                &target,
+                &self.device_id,
+                addition.operation.clone(),
+                addition.stamp.recorded_at_unix,
+            )?;
+        }
+        if target != self.checkpoint.payload.state {
+            target.revision = target.revision.max(current_state.revision);
+            target.projection_fingerprint = None;
+        }
+        Ok(PersonalStateCommit::prepare(target)?.state().clone())
+    }
+}
+
+struct InitialSetup {
     expected_state: PersonalStateV2,
-    playlist_revision: u64,
     commit: PersonalStateCommit,
     private: PrivateStoreSnapshot,
     profile: WebDavProfile,
@@ -46,6 +118,7 @@ struct PreparedSetup {
     membership_anchor: MembershipAnchor,
     checkpoint: SignedCheckpoint,
     device_id: DeviceId,
+    recovery_file: PathBuf,
 }
 
 struct PendingSetup {
@@ -54,7 +127,6 @@ struct PendingSetup {
 }
 
 struct ResumableRemoteSetup {
-    commit: PersonalStateCommit,
     checkpoint: SignedCheckpoint,
     summary: ManualSyncSummary,
 }
@@ -66,6 +138,26 @@ pub fn setup(
     sync_paths: &SyncPaths,
     request: SetupRequest,
 ) -> Result<SetupResult, SyncServiceError> {
+    let prepared = prepare_setup(current_state, playlist_revision, sync_paths, request)?;
+    apply_prepared_setup(
+        current_state,
+        playlist_revision,
+        personal_paths,
+        sync_paths,
+        prepared,
+    )
+}
+
+/// Complete capability testing and the encrypted remote bootstrap without installing a ledger.
+///
+/// This is intended for a detached network worker. It durably retains the pending private keys,
+/// credential, profile, and confirmed recovery marker so an ambiguous response can be resumed.
+pub fn prepare_setup(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    sync_paths: &SyncPaths,
+    request: SetupRequest,
+) -> Result<PreparedSetup, SyncServiceError> {
     if let Some(mut pending) = load_pending_setup(
         sync_paths,
         &request.endpoint,
@@ -93,14 +185,8 @@ pub fn setup(
             load_resumable_remote_setup(current_state, playlist_revision, &pending, &transport)?
         {
             pending.private.set_credential(request.credential);
-            return finish_resumed_setup(
-                current_state,
-                playlist_revision,
-                personal_paths,
-                sync_paths,
-                pending,
-                remote,
-            );
+            PrivateStore::new(sync_paths.private_store())?.save(&mut pending.private)?;
+            return prepared_resumed_setup(current_state, pending, remote);
         }
 
         cleanup_pending_setup(
@@ -115,8 +201,39 @@ pub fn setup(
         request.custom_ca_pem.as_deref(),
         &request.credential,
     )?;
-    let prepared = prepare(current_state, playlist_revision, request, sync_paths)?;
-    setup_with_transport(prepared, personal_paths, sync_paths, &transport)
+    let initial = prepare_initial(current_state, playlist_revision, request, sync_paths)?;
+    prepare_setup_with_transport(initial, sync_paths, &transport)
+}
+
+/// Resume an already-published setup using only owner-only durable state.
+///
+/// No form values or recovery path are required after a close or crash. The stored credential is
+/// used only to authenticate and revalidate the exact encrypted bootstrap selected by the remote
+/// manifest.
+pub fn resume_prepared_setup(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    sync_paths: &SyncPaths,
+) -> Result<PreparedSetup, SyncServiceError> {
+    let pending = load_saved_pending_setup(sync_paths)?;
+    let credential = pending
+        .private
+        .credential()
+        .ok_or(SyncServiceError::MissingCredential)?;
+    let transport = open_saved_webdav_transport(&pending.profile, credential)?;
+    prepared_saved_setup_with_transport(current_state, playlist_revision, pending, &transport)
+}
+
+fn prepared_saved_setup_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    pending: PendingSetup,
+    transport: &T,
+) -> Result<PreparedSetup, SyncServiceError> {
+    let remote =
+        load_resumable_remote_setup(current_state, playlist_revision, &pending, transport)?
+            .ok_or(SyncServiceError::InvalidRemoteData)?;
+    prepared_resumed_setup(current_state, pending, remote)
 }
 
 pub(super) fn checked_webdav_transport(
@@ -140,12 +257,12 @@ pub(super) fn checked_webdav_transport(
     Ok(transport)
 }
 
-fn prepare(
+fn prepare_initial(
     current_state: &PersonalStateV2,
     playlist_revision: u64,
     request: SetupRequest,
     sync_paths: &SyncPaths,
-) -> Result<PreparedSetup, SyncServiceError> {
+) -> Result<InitialSetup, SyncServiceError> {
     ensure_setup_absent(sync_paths)?;
     let local = unkeyed_local_device(current_state)?;
     let device = DeviceSecretMaterial::generate_for(local.device_id.as_str())?;
@@ -205,9 +322,8 @@ fn prepare(
         &request.endpoint,
         request.custom_ca_pem.as_deref(),
     )?;
-    Ok(PreparedSetup {
+    Ok(InitialSetup {
         expected_state: current_state.clone(),
-        playlist_revision,
         commit,
         private,
         profile,
@@ -215,47 +331,41 @@ fn prepare(
         membership_anchor,
         checkpoint,
         device_id: local.device_id.clone(),
+        recovery_file: request.recovery_file,
     })
 }
 
-fn setup_with_transport<T: VaultTransport + ?Sized>(
-    prepared: PreparedSetup,
-    personal_paths: &crate::personal_state::PersonalStatePaths,
+fn prepare_setup_with_transport<T: VaultTransport + ?Sized>(
+    mut initial: InitialSetup,
     sync_paths: &SyncPaths,
     transport: &T,
-) -> Result<SetupResult, SyncServiceError> {
-    setup_with_transport_using(prepared, personal_paths, sync_paths, transport, || Ok(()))
-}
-
-fn setup_with_transport_using<T: VaultTransport + ?Sized>(
-    mut prepared: PreparedSetup,
-    personal_paths: &crate::personal_state::PersonalStatePaths,
-    sync_paths: &SyncPaths,
-    transport: &T,
-    before_local_commit: impl FnOnce() -> Result<(), SyncServiceError>,
-) -> Result<SetupResult, SyncServiceError> {
+) -> Result<PreparedSetup, SyncServiceError> {
     let private_store = PrivateStore::new(sync_paths.private_store())?;
     let profile_store = WebDavProfileStore::new(sync_paths.profile())?;
-    private_store.create(&mut prepared.private)?;
-    if let Err(error) = profile_store.create(&mut prepared.profile, prepared.private.device()) {
+    if let Err(error) = private_store.create(&mut initial.private) {
+        remove_new_recovery_file(&initial.recovery_file)?;
+        return Err(error.into());
+    }
+    if let Err(error) = profile_store.create(&mut initial.profile, initial.private.device()) {
         private_store
-            .remove(prepared.private.revision())
+            .remove(initial.private.revision())
             .map_err(|_| SyncServiceError::Storage)?;
+        remove_new_recovery_file(&initial.recovery_file)?;
         return Err(error.into());
     }
 
     let checkpoint_anchor = CheckpointAnchor::default();
     let input = ManualSyncInput {
-        local_state: prepared.commit.state(),
-        membership: &prepared.membership,
-        membership_anchor: &prepared.membership_anchor,
-        device: prepared.private.device(),
+        local_state: initial.commit.state(),
+        membership: &initial.membership,
+        membership_anchor: &initial.membership_anchor,
+        device: initial.private.device(),
         checkpoint_anchor: &checkpoint_anchor,
-        bootstrap_checkpoint: Some(&prepared.checkpoint),
-        expected_local_revision: prepared.commit.state().revision,
+        bootstrap_checkpoint: Some(&initial.checkpoint),
+        expected_local_revision: initial.commit.state().revision,
     };
     let candidate = match ManualSyncEngine::new(transport).synchronize(&input, &|expected| {
-        if expected == prepared.commit.state().revision {
+        if expected == initial.commit.state().revision {
             Ok(())
         } else {
             Err(super::super::VaultError::RevisionConflict)
@@ -265,68 +375,104 @@ fn setup_with_transport_using<T: VaultTransport + ?Sized>(
         Err(error) => {
             // Once the manifest may be visible, local keys and the confirmed recovery marker are
             // the only safe way to finish the exact bootstrap. A conclusive missing read means no
-            // usable vault was published, so credentials/profile can be removed immediately.
+            // usable vault was published, so all newly created local setup artifacts can be
+            // removed immediately. An unavailable or ambiguous read deliberately retains them.
             if transport
                 .get(
-                    &manifest_key(&prepared.commit.state().dataset_id)?,
+                    &manifest_key(&initial.commit.state().dataset_id)?,
                     MAX_VAULT_PAYLOAD_BYTES,
                 )
                 .is_ok_and(|remote| remote.is_none())
             {
-                cleanup_pending_setup(&private_store, &prepared.private, &profile_store)?;
+                cleanup_pending_setup(&private_store, &initial.private, &profile_store)?;
+                remove_new_recovery_file(&initial.recovery_file)?;
             }
             return Err(error.into());
         }
     };
-    if candidate.state != *prepared.commit.state()
-        || candidate.membership != prepared.membership
+    if candidate.state != *initial.commit.state()
+        || candidate.membership != initial.membership
         || candidate.checkpoint_anchor.checkpoint_sequence
-            != prepared.checkpoint.payload.checkpoint_sequence
+            != initial.checkpoint.payload.checkpoint_sequence
         || candidate.checkpoint_anchor.checkpoint_hash.as_deref()
-            != Some(prepared.checkpoint.hash()?.as_str())
+            != Some(initial.checkpoint.hash()?.as_str())
     {
         return Err(SyncServiceError::InvalidRemoteData);
     }
 
-    before_local_commit()?;
-    let checkpoint_hash = prepared.checkpoint.hash()?;
-    let recovery_checksum = prepared
+    let recovery_checksum = initial
         .private
         .setup_recovery_checksum()
         .ok_or(SyncServiceError::RecoveryKitNotConfirmed)?
         .to_owned();
-    prepared
-        .private
-        .mark_active(&prepared.checkpoint, prepared.commit.state())?;
-    let installed = commit_with_anchor_transition(
-        &prepared.expected_state,
-        &prepared.commit,
-        personal_paths,
-        sync_paths,
-        &mut prepared.private,
-        AnchorActivationKind::Setup,
-        prepared.checkpoint.payload.checkpoint_sequence,
-        &checkpoint_hash,
-        prepared.playlist_revision,
-    )?;
-    let _ = record_setup_success(sync_paths, candidate.summary.remote_writes);
-    Ok(SetupResult {
-        state: installed,
-        device_id: prepared.device_id,
+    Ok(PreparedSetup {
+        observed_state: initial.expected_state,
+        checkpoint: initial.checkpoint,
+        expected_private_revision: initial.private.revision(),
+        device_id: initial.device_id,
         recovery_checksum,
         summary: candidate.summary,
         resumed: false,
     })
 }
 
-fn finish_resumed_setup(
+/// Install one previously prepared setup through the owner-only cross-store transaction.
+///
+/// The caller-provided current state must still be the exact durable ledger. A stale detached
+/// result is never allowed to overwrite a newer owner state.
+pub fn apply_prepared_setup(
     current_state: &PersonalStateV2,
     playlist_revision: u64,
     personal_paths: &crate::personal_state::PersonalStatePaths,
     sync_paths: &SyncPaths,
-    mut pending: PendingSetup,
-    remote: ResumableRemoteSetup,
+    prepared: PreparedSetup,
 ) -> Result<SetupResult, SyncServiceError> {
+    if load_ledger(personal_paths)?.as_ref() != Some(current_state) {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    let target = prepared.target_state(current_state)?;
+    let commit = PersonalStateCommit::prepare_for_runtime(target.clone(), playlist_revision)?;
+    if commit.state() != &target {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+
+    let mut private = PrivateStore::new(sync_paths.private_store())?.load()?;
+    if private.revision() != prepared.expected_private_revision
+        || private.enrollment() != EnrollmentState::PendingLedgerCommit
+        || private.dataset_id() != target.dataset_id
+        || private.device_id() != prepared.device_id.as_str()
+        || private.setup_recovery_checksum() != Some(prepared.recovery_checksum.as_str())
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    let checkpoint_hash = prepared.checkpoint.hash()?;
+    private.mark_active_after_setup(&prepared.checkpoint, commit.state())?;
+    let installed = commit_with_anchor_transition(
+        current_state,
+        &commit,
+        personal_paths,
+        sync_paths,
+        &mut private,
+        AnchorActivationKind::Setup,
+        prepared.checkpoint.payload.checkpoint_sequence,
+        &checkpoint_hash,
+        playlist_revision,
+    )?;
+    let _ = record_setup_success(sync_paths, prepared.summary.remote_writes);
+    Ok(SetupResult {
+        state: installed,
+        device_id: prepared.device_id,
+        recovery_checksum: prepared.recovery_checksum,
+        summary: prepared.summary,
+        resumed: prepared.resumed,
+    })
+}
+
+fn prepared_resumed_setup(
+    current_state: &PersonalStateV2,
+    pending: PendingSetup,
+    remote: ResumableRemoteSetup,
+) -> Result<PreparedSetup, SyncServiceError> {
     let recovery_checksum = pending
         .private
         .setup_recovery_checksum()
@@ -334,29 +480,19 @@ fn finish_resumed_setup(
         .to_owned();
     let device_id = DeviceId::new(pending.private.device_id())
         .map_err(|_| SyncServiceError::InvalidRemoteData)?;
-    let checkpoint_hash = remote.checkpoint.hash()?;
-    pending
-        .private
-        .mark_active(&remote.checkpoint, remote.commit.state())?;
-    let installed = commit_with_anchor_transition(
-        current_state,
-        &remote.commit,
-        personal_paths,
-        sync_paths,
-        &mut pending.private,
-        AnchorActivationKind::Setup,
-        remote.checkpoint.payload.checkpoint_sequence,
-        &checkpoint_hash,
-        playlist_revision,
-    )?;
-    let _ = record_setup_success(sync_paths, 0);
-    Ok(SetupResult {
-        state: installed,
+    Ok(PreparedSetup {
+        observed_state: current_state.clone(),
+        checkpoint: remote.checkpoint,
+        expected_private_revision: pending.private.revision(),
         device_id,
         recovery_checksum,
         summary: remote.summary,
         resumed: true,
     })
+}
+
+fn remove_new_recovery_file(path: &std::path::Path) -> Result<(), SyncServiceError> {
+    remove_owner_only_file_durable(path).map_err(|_| SyncServiceError::Storage)
 }
 
 fn load_resumable_remote_setup<T: VaultTransport + ?Sized>(
@@ -435,14 +571,13 @@ fn load_resumable_remote_setup<T: VaultTransport + ?Sized>(
     {
         return Err(SyncServiceError::InvalidRemoteData);
     }
-    let commit = validate_setup_extension(
+    let _ = validate_setup_extension(
         current_state,
         playlist_revision,
         pending.private.device(),
         &checkpoint.payload.state,
     )?;
     Ok(Some(ResumableRemoteSetup {
-        commit,
         checkpoint,
         summary: ManualSyncSummary {
             attempts: 1,
@@ -500,6 +635,88 @@ fn validate_setup_extension(
         return Err(SyncServiceError::InvalidRemoteData);
     }
     Ok(commit)
+}
+
+fn validate_observed_local_suffix<'a>(
+    observed: &PersonalStateV2,
+    current: &'a PersonalStateV2,
+    local_device: &DeviceId,
+) -> Result<Vec<&'a OperationEnvelope>, SyncServiceError> {
+    observed.validate()?;
+    current.validate()?;
+    if PersonalStateCommit::prepare(observed.clone())?.state() != observed
+        || PersonalStateCommit::prepare(current.clone())?.state() != current
+        || observed.dataset_id != current.dataset_id
+        || observed.device_registry != current.device_registry
+        || observed.compaction_checkpoint != current.compaction_checkpoint
+        || observed.metadata != current.metadata
+        || current.revision < observed.revision
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+
+    let current_by_id: BTreeMap<&str, &OperationEnvelope> = current
+        .operations
+        .iter()
+        .map(|operation| (operation.operation_id.as_str(), operation))
+        .collect();
+    if observed.operations.iter().any(|operation| {
+        current_by_id.get(operation.operation_id.as_str()).copied() != Some(operation)
+    }) {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+
+    let observed_by_id: BTreeMap<&str, &OperationEnvelope> = observed
+        .operations
+        .iter()
+        .map(|operation| (operation.operation_id.as_str(), operation))
+        .collect();
+    let mut additions = current
+        .operations
+        .iter()
+        .filter(|operation| !observed_by_id.contains_key(operation.operation_id.as_str()))
+        .collect::<Vec<_>>();
+    if current.operations.len() != observed.operations.len() + additions.len() {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    if additions.is_empty() {
+        return if current == observed {
+            Ok(additions)
+        } else {
+            Err(SyncServiceError::LocalStateChanged)
+        };
+    }
+
+    additions.sort_by(|left, right| {
+        left.stamp
+            .dot
+            .cmp(&right.stamp.dot)
+            .then(left.operation_id.cmp(&right.operation_id))
+    });
+    let mut expected_vector = observed.version_vector.clone();
+    for addition in &additions {
+        let expected_sequence = expected_vector
+            .observed(local_device)
+            .checked_add(1)
+            .ok_or(SyncServiceError::LocalStateChanged)?;
+        if addition.origin != OperationOrigin::Local
+            || addition.stamp.dot.device_id != *local_device
+            || addition.stamp.dot.sequence != expected_sequence
+            || addition.stamp.observed != expected_vector
+            || addition.operation_id != format!("{}:{expected_sequence}", local_device.as_str())
+            || matches!(
+                addition.operation,
+                Operation::AddDevice { .. } | Operation::RevokeDevice { .. }
+            )
+        {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
+        expected_vector.observe(&addition.stamp.dot);
+    }
+    if current.version_vector != expected_vector {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    Ok(additions)
 }
 
 fn unkeyed_local_device(state: &PersonalStateV2) -> Result<&DeviceRecord, SyncServiceError> {
@@ -567,6 +784,28 @@ fn load_pending_setup(
         return Err(SyncServiceError::InvalidRemoteData);
     }
     Ok(Some(PendingSetup { private, profile }))
+}
+
+fn load_saved_pending_setup(paths: &SyncPaths) -> Result<PendingSetup, SyncServiceError> {
+    if !regular_file_exists(paths.private_store())? || !regular_file_exists(paths.profile())? {
+        return Err(SyncServiceError::NotConfigured);
+    }
+    let private = PrivateStore::new(paths.private_store())?
+        .load()
+        .map_err(|_| SyncServiceError::InvalidRemoteData)?;
+    if private.enrollment() != EnrollmentState::PendingLedgerCommit
+        || private.setup_recovery_checksum().is_none()
+        || private.pending_pairing()?.is_some()
+    {
+        return Err(SyncServiceError::AlreadyConfigured);
+    }
+    let profile = WebDavProfileStore::new(paths.profile())?
+        .load(private.device())
+        .map_err(|_| SyncServiceError::InvalidRemoteData)?;
+    if profile.dataset_id() != private.dataset_id() || profile.device_id() != private.device_id() {
+        return Err(SyncServiceError::InvalidRemoteData);
+    }
+    Ok(PendingSetup { private, profile })
 }
 
 fn cleanup_pending_setup(

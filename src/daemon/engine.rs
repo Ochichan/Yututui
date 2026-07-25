@@ -899,9 +899,7 @@ impl DaemonEngine {
                         mime: None,
                     })
             }),
-            personal_sync: Some(crate::sync::service::read_current_status(
-                self.personal_sync_in_progress,
-            )),
+            personal_sync: Some(self.personal_sync_status()),
         }
     }
 

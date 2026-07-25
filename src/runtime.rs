@@ -30,6 +30,8 @@ mod personal_sync_commit;
 pub(crate) mod player_delivery;
 mod read_only;
 mod recorder_recovery;
+mod sync_activation_commit;
+mod sync_ui_worker;
 mod task_set;
 mod transfer_commit;
 
