@@ -47,6 +47,12 @@ fn settings_tab_cycles_through_all_tabs() {
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Accounts);
+    let cmds = app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Sync);
+    assert!(cmds.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Data(DataCmd::SyncUi(SyncUiCommand::Refresh { .. }))
+    )));
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
 }

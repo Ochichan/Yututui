@@ -19,16 +19,36 @@ pub enum PersonalSyncAction {
 /// Debug is deliberately absent so retained outcome diagnostics cannot accidentally expand to
 /// transport internals.
 #[derive(Clone)]
-pub struct PersonalSyncReply(std::sync::Arc<std::sync::Mutex<Option<crate::remote::RemoteReply>>>);
+pub struct PersonalSyncReply(std::sync::Arc<PersonalSyncReplyInner>);
+
+struct PersonalSyncReplyInner {
+    remote: std::sync::Mutex<Option<crate::remote::RemoteReply>>,
+    tui_flow_id: Option<u64>,
+}
 
 impl PersonalSyncReply {
     pub(crate) fn new(reply: crate::remote::RemoteReply) -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(Some(reply))))
+        Self(std::sync::Arc::new(PersonalSyncReplyInner {
+            remote: std::sync::Mutex::new(Some(reply)),
+            tui_flow_id: None,
+        }))
+    }
+
+    pub(crate) fn tui(flow_id: u64) -> Self {
+        Self(std::sync::Arc::new(PersonalSyncReplyInner {
+            remote: std::sync::Mutex::new(None),
+            tui_flow_id: Some(flow_id),
+        }))
+    }
+
+    pub(crate) fn tui_flow_id(&self) -> Option<u64> {
+        self.0.tui_flow_id
     }
 
     pub(crate) fn respond(&self, response: crate::remote::proto::RemoteResponse) {
         let mut reply = self
             .0
+            .remote
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(reply) = reply.take() {
@@ -96,12 +116,16 @@ pub(crate) struct PersonalStateRuntime {
     pub(crate) ledger: crate::personal_state::PersonalStateV2,
     pub(crate) device_id: Option<crate::personal_state::DeviceId>,
     pub(crate) sync: PersonalSyncState,
+    pub(crate) sync_ui: SyncUiState,
 }
 
 #[derive(Clone)]
-struct PersonalSyncShutdownContext {
-    observed_state: crate::personal_state::PersonalStateV2,
-    candidate: crate::sync::service::PreparedManualSync,
+enum PersonalSyncShutdownContext {
+    Manual {
+        observed_state: Box<crate::personal_state::PersonalStateV2>,
+        candidate: Box<crate::sync::service::PreparedManualSync>,
+    },
+    Activation(Box<SyncActivationCommit>),
 }
 
 impl App {
@@ -110,8 +134,26 @@ impl App {
         action: PersonalSyncAction,
         reply: crate::remote::RemoteReply,
     ) -> Vec<Cmd> {
-        let reply = PersonalSyncReply::new(reply);
+        self.start_personal_sync_with_reply(action, PersonalSyncReply::new(reply))
+    }
+
+    pub(in crate::app) fn start_personal_sync_for_tui(
+        &mut self,
+        action: PersonalSyncAction,
+        flow_id: u64,
+    ) -> Vec<Cmd> {
+        self.start_personal_sync_with_reply(action, PersonalSyncReply::tui(flow_id))
+    }
+
+    fn start_personal_sync_with_reply(
+        &mut self,
+        action: PersonalSyncAction,
+        reply: PersonalSyncReply,
+    ) -> Vec<Cmd> {
         if self.personal_state.sync.in_progress {
+            if let Some(flow_id) = reply.tui_flow_id() {
+                self.finish_tui_personal_sync_error(flow_id, SyncServiceError::LocalStateChanged);
+            }
             reply.respond(RemoteResponse::err_with_message(
                 "sync_busy",
                 "personal sync is already running".to_owned(),
@@ -119,6 +161,9 @@ impl App {
             return Vec::new();
         }
         if self.personal_state.device_id.is_none() {
+            if let Some(flow_id) = reply.tui_flow_id() {
+                self.finish_tui_personal_sync_error(flow_id, SyncServiceError::NotConfigured);
+            }
             reply.respond(sync_error_response(SyncServiceError::NotConfigured));
             return Vec::new();
         }
@@ -164,10 +209,11 @@ impl App {
                 ),
             Ok(candidate) => {
                 let summary = candidate.summary.clone();
-                self.personal_state.sync.shutdown_context = Some(PersonalSyncShutdownContext {
-                    observed_state: current_state.clone(),
-                    candidate: candidate.clone(),
-                });
+                self.personal_state.sync.shutdown_context =
+                    Some(PersonalSyncShutdownContext::Manual {
+                        observed_state: Box::new(current_state.clone()),
+                        candidate: Box::new(candidate.clone()),
+                    });
                 vec![Cmd::Persist(PersistCmd::PersonalSyncCommit(Box::new(
                     PersonalSyncCommit {
                         action: prepared.action,
@@ -264,9 +310,14 @@ impl App {
                 self.personal_state.sync.shutdown_context = None;
                 let message = sync_summary(&commit.action, &commit.summary);
                 commit.reply.respond(RemoteResponse::ok(message.clone()));
-                self.status.text = message;
-                self.status.kind = StatusKind::Info;
-                self.dirty = true;
+                if let Some(flow_id) = commit.reply.tui_flow_id() {
+                    self.finish_tui_personal_sync(flow_id, &commit.action, &commit.summary);
+                    return Vec::new();
+                } else {
+                    self.status.text = message;
+                    self.status.kind = StatusKind::Info;
+                    self.dirty = true;
+                }
                 Vec::new()
             }
         }
@@ -293,21 +344,52 @@ impl App {
         let current = self
             .reconcile_personal_state(&self.playlists)
             .map_err(SyncServiceError::from)?;
-        let local_device = self
-            .personal_state
-            .device_id
-            .as_ref()
-            .ok_or(SyncServiceError::NotConfigured)?;
-        crate::sync::service::PersonalSyncPersistence::shutdown(
-            context.observed_state.clone(),
-            current,
-            self.playlists.revision(),
-            context.candidate.clone(),
-            local_device,
-            personal_paths,
-            sync_paths,
-        )
+        match context {
+            PersonalSyncShutdownContext::Manual {
+                observed_state,
+                candidate,
+            } => {
+                let local_device = self
+                    .personal_state
+                    .device_id
+                    .as_ref()
+                    .ok_or(SyncServiceError::NotConfigured)?;
+                crate::sync::service::PersonalSyncPersistence::shutdown(
+                    observed_state.as_ref().clone(),
+                    current,
+                    self.playlists.revision(),
+                    candidate.as_ref().clone(),
+                    local_device,
+                    personal_paths,
+                    sync_paths,
+                )
+            }
+            PersonalSyncShutdownContext::Activation(commit) => commit.shutdown_persistence(
+                current,
+                self.playlists.revision(),
+                personal_paths,
+                sync_paths,
+            ),
+        }
         .map(Some)
+    }
+
+    pub(in crate::app) fn retain_sync_activation_shutdown_context(
+        &mut self,
+        commit: &SyncActivationCommit,
+    ) {
+        self.personal_state.sync.shutdown_context = Some(PersonalSyncShutdownContext::Activation(
+            Box::new(commit.clone()),
+        ));
+    }
+
+    pub(in crate::app) fn clear_sync_activation_shutdown_context(&mut self) {
+        if matches!(
+            self.personal_state.sync.shutdown_context,
+            Some(PersonalSyncShutdownContext::Activation(_))
+        ) {
+            self.personal_state.sync.shutdown_context = None;
+        }
     }
 
     fn retry_personal_sync(
@@ -333,10 +415,14 @@ impl App {
         self.personal_state.sync.in_progress = false;
         self.personal_state.sync.pending_reply = None;
         reply.respond(sync_error_response(error));
-        self.set_status_error(error.to_string());
+        if let Some(flow_id) = reply.tui_flow_id() {
+            self.finish_tui_personal_sync_error(flow_id, error);
+        } else {
+            self.set_status_error(error.to_string());
+        }
     }
 
-    fn install_personal_sync_runtime(
+    pub(in crate::app) fn install_personal_sync_runtime(
         &mut self,
         state: crate::personal_state::PersonalStateV2,
     ) -> Result<(), SyncServiceError> {

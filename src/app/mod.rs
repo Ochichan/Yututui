@@ -173,8 +173,18 @@ mod settings_reducer;
 mod spotify_import_reducer;
 mod stream_metadata;
 mod streaming_reducer;
+mod sync_activation;
+mod sync_ui;
 pub(in crate::app) use clipboard::{copy_to_clipboard, spotify_auth_url_status};
 pub use streaming_reducer::StreamingMsg;
+pub use sync_activation::{SyncActivationCommit, SyncActivationPersisted};
+pub(crate) use sync_activation::{
+    SyncActivationCommitStage, SyncActivationKind, SyncActivationPersistOutcome,
+};
+pub(crate) use sync_ui::{
+    ConnectionField as SyncConnectionField, FormError as SyncFormError, SyncConnectionForm,
+    SyncJoinRequest, SyncRecoveryForm, SyncUiCommand, SyncUiEvent, SyncUiState, SyncWizard,
+};
 
 /// Autoplay/streaming and play-error breaker thresholds used by App reducers. Re-exported so
 /// this module's submodules keep resolving the names; refill admission itself lives in the

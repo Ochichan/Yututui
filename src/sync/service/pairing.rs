@@ -1,6 +1,10 @@
 mod durable;
 #[path = "pairing/join_durable.rs"]
 mod join_durable;
+#[path = "pairing/lifecycle.rs"]
+mod lifecycle;
+#[path = "pairing/storage.rs"]
+mod storage;
 
 use std::thread;
 use std::time::Duration;
@@ -8,27 +12,35 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::personal_state::{
-    DeviceId, ImportSummary, Operation, PersonalStateCommit, PersonalStateV2, append_operation_as,
+    DeviceId, DeviceRecord, Operation, PersonalStateCommit, PersonalStateV2, append_operation_as,
     plan_join_import,
 };
 
 use super::super::manual::{ManualSyncEngine, ManualSyncInput};
 use super::super::{
     DeviceSecretMaterial, EncryptedObject, EnrollmentState, MAX_VAULT_PAYLOAD_BYTES,
-    MembershipAction, ObjectCondition, ObjectKey, PairingCode, PairingInvite,
-    PairingRequestPayload, PrivateStore, PrivateStoreSnapshot, SealedPairingApproval,
-    SealedPairingRequest, SyncAuditAction, SyncAuditEntry, SyncAuditOutcome, SyncAuditStore,
-    SyncHealthStore, SyncPaths, VaultCredential, VaultError, VaultTransport, WebDavProfile,
-    WebDavProfileStore,
+    MembershipAction, PairingCode, PairingInvite, PairingRequestPayload, PrivateStore,
+    PrivateStoreSnapshot, SealedPairingApproval, SealedPairingRequest, SyncAuditAction,
+    SyncAuditEntry, SyncAuditOutcome, SyncAuditStore, SyncHealthStore, SyncPaths, VaultCredential,
+    VaultError, VaultTransport, WebDavProfile, WebDavProfileStore,
 };
 use super::manual::{
     PreparedManualSync, load_remote_membership, membership_anchor, membership_prefix_for_registry,
-    prepare_manual_sync_with_transport, validate_active_context,
+    prepare_manual_sync_with_transport, validate_active_context, validate_active_private,
 };
 use super::transition::{AnchorActivationKind, commit_with_anchor_transition};
 use super::{SyncServiceError, apply_manual_sync, open_saved_webdav_transport};
 use durable::{HostPairingSnapshot, HostPairingStore};
 use join_durable::{JoinPairingSnapshot, JoinPairingStore};
+pub use lifecycle::{
+    PairingJoinPreview, PairingJoinWaiting, PreparedPairingApproval, PreparedPairingJoinActivation,
+};
+#[cfg(test)]
+use storage::fetch_join_checkpoint;
+use storage::{
+    checkpoint_key, dataset_pairing_key, global_pairing_key, load_or_fetch_join_checkpoint,
+    persist_join_checkpoint, put_immutable_or_verify, regular_file_exists, validate_locator,
+};
 
 const LOCATOR_KIND: &str = "yututui_pairing_locator";
 const PAIRING_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -73,13 +85,21 @@ pub struct PairingReview {
     payload: PairingRequestPayload,
 }
 
-pub struct PairingJoinPreview {
-    pub summary: ImportSummary,
-    pub device_id: String,
-    candidate: PersonalStateV2,
-    checkpoint: super::super::SignedCheckpoint,
-    expected_local_revision: u64,
-    expected_private_revision: u64,
+pub(super) fn host_pairing_needs_review(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+) -> Result<bool, SyncServiceError> {
+    let private = PrivateStore::new(paths.private_store())?.load()?;
+    validate_active_private(current_state, &private)?;
+    let Some(durable) = HostPairingStore::new(paths).load(private.device())? else {
+        return Ok(false);
+    };
+    if durable.dataset_id() != current_state.dataset_id
+        || durable.host_device_id() != private.device_id()
+    {
+        return Err(SyncServiceError::InvalidRemoteData);
+    }
+    Ok(durable.has_bound_request() || durable.has_handoff())
 }
 
 pub fn create_pairing_invite(
@@ -95,6 +115,17 @@ pub fn create_pairing_invite(
         .credential()
         .ok_or(SyncServiceError::MissingCredential)?;
     let transport = open_saved_webdav_transport(&profile, credential)?;
+    create_pairing_invite_with_transport(current_state, paths, now_unix, &private, &transport)
+}
+
+fn create_pairing_invite_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    now_unix: i64,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+) -> Result<PairingHostInvite, SyncServiceError> {
+    validate_active_private(current_state, private)?;
     let host_store = HostPairingStore::new(paths);
     if let Some(durable) = host_store.load(private.device())? {
         if durable.dataset_id() != current_state.dataset_id
@@ -111,7 +142,7 @@ pub fn create_pairing_invite(
             let invite = durable.invite()?;
             let locator = host_store.locator(&durable)?;
             put_immutable_or_verify(
-                &transport,
+                transport,
                 &global_pairing_key(invite.invite_id(), "locator.age")?,
                 &locator,
             )?;
@@ -122,8 +153,8 @@ pub fn create_pairing_invite(
             });
         }
     }
-    let anchor = membership_anchor(&private)?;
-    let remote = load_remote_membership(current_state, &private, &anchor, &transport)?;
+    let anchor = membership_anchor(private)?;
+    let remote = load_remote_membership(current_state, private, &anchor, transport)?;
     let local = membership_prefix_for_registry(&remote, &anchor, &current_state.device_registry)?;
     let verified = local.verify(&anchor)?;
     let invite = PairingInvite::create(
@@ -148,7 +179,7 @@ pub fn create_pairing_invite(
         &encrypted,
     )?;
     put_immutable_or_verify(
-        &transport,
+        transport,
         &global_pairing_key(invite.invite_id(), "locator.age")?,
         &encrypted,
     )?;
@@ -157,6 +188,57 @@ pub fn create_pairing_invite(
         durable,
         resumed: false,
     })
+}
+
+/// Cancel an uncommitted host invitation, including a request that the user rejected.
+///
+/// Immutable remote request objects are harmless without a signed handoff and expire naturally.
+/// Once a handoff exists, cancellation is refused because the joining device may already be an
+/// active remote member; the prepared approval must instead be installed and finalized.
+pub fn cancel_pairing_invite(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    host: &PairingHostInvite,
+) -> Result<(), SyncServiceError> {
+    let private = PrivateStore::new(paths.private_store())?.load()?;
+    let profile = WebDavProfileStore::new(paths.profile())?.load(private.device())?;
+    let credential = private
+        .credential()
+        .ok_or(SyncServiceError::MissingCredential)?;
+    let transport = open_saved_webdav_transport(&profile, credential)?;
+    cancel_pairing_invite_with_transport(current_state, paths, host, &private, &transport)
+}
+
+fn cancel_pairing_invite_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    host: &PairingHostInvite,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+) -> Result<(), SyncServiceError> {
+    validate_host_identity(current_state, paths, private, host)?;
+    if host.durable.has_handoff() {
+        return Err(SyncServiceError::AlreadyConfigured);
+    }
+    if let Some(request_device_id) = host.durable.request_device_id() {
+        // A lost response may leave the remote AddDevice/checkpoint committed before the local
+        // handoff journal is written. Re-read authenticated membership before deleting the only
+        // recovery context; an active target must resume/finalize instead of becoming an orphan.
+        let anchor = membership_anchor(private)?;
+        let membership = load_remote_membership(current_state, private, &anchor, transport)?;
+        let verified = membership.verify(&anchor)?;
+        let request_device_id =
+            DeviceId::new(request_device_id).map_err(|_| SyncServiceError::InvalidRemoteData)?;
+        if verified
+            .devices
+            .get(&request_device_id)
+            .is_some_and(|device| !device.revoked)
+        {
+            return Err(SyncServiceError::AlreadyConfigured);
+        }
+    }
+    HostPairingStore::new(paths).remove()?;
+    Ok(())
 }
 
 pub fn poll_pairing_request(
@@ -173,6 +255,19 @@ pub fn poll_pairing_request(
         .credential()
         .ok_or(SyncServiceError::MissingCredential)?;
     let transport = open_saved_webdav_transport(&profile, credential)?;
+    poll_pairing_request_with_transport(current_state, paths, host, now_unix, &private, &transport)
+}
+
+fn poll_pairing_request_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    host: &mut PairingHostInvite,
+    now_unix: i64,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+) -> Result<Option<PairingReview>, SyncServiceError> {
+    validate_host_identity(current_state, paths, private, host)?;
+    validate_active_private(current_state, private)?;
     let host_store = HostPairingStore::new(paths);
     let key = dataset_pairing_key(
         &current_state.dataset_id,
@@ -218,8 +313,18 @@ pub fn poll_pairing_request(
         )?;
         payload
     };
-    let identity = payload
-        .device
+    let fingerprint = pairing_fingerprint(&payload.device)?;
+    Ok(Some(PairingReview {
+        device_id: payload.device.device_id.as_str().to_owned(),
+        device_name: payload.device.name.clone(),
+        fingerprint,
+        sealed,
+        payload,
+    }))
+}
+
+fn pairing_fingerprint(device: &DeviceRecord) -> Result<String, SyncServiceError> {
+    let identity = device
         .public_identity
         .as_ref()
         .ok_or(SyncServiceError::InvalidRemoteData)?;
@@ -230,13 +335,7 @@ pub fn poll_pairing_request(
             identity.ed25519_verifying_key.as_bytes(),
         ],
     );
-    Ok(Some(PairingReview {
-        device_id: payload.device.device_id.as_str().to_owned(),
-        device_name: payload.device.name.clone(),
-        fingerprint: fingerprint[..16].to_owned(),
-        sealed,
-        payload,
-    }))
+    Ok(fingerprint[..16].to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,49 +346,95 @@ pub fn approve_pairing_request(
     paths: &SyncPaths,
     host: &mut PairingHostInvite,
     review: PairingReview,
-    _now_unix: i64,
+    now_unix: i64,
 ) -> Result<PersonalStateV2, SyncServiceError> {
+    let prepared = prepare_pairing_approval(current_state, paths, host, review, now_unix)?;
+    apply_prepared_pairing_approval(
+        current_state,
+        playlist_revision,
+        personal_paths,
+        paths,
+        prepared,
+    )
+}
+
+/// Publish an authenticated approval handoff without installing its local ledger candidate.
+///
+/// This is the network-worker half of host approval. The caller must route the returned candidate
+/// through the primary persistence owner, then call [`finalize_prepared_pairing_approval`].
+pub fn prepare_pairing_approval(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    host: &mut PairingHostInvite,
+    review: PairingReview,
+    now_unix: i64,
+) -> Result<PreparedPairingApproval, SyncServiceError> {
     let private_store = PrivateStore::new(paths.private_store())?;
     let private = private_store.load()?;
     validate_host_identity(current_state, paths, &private, host)?;
     let profile = WebDavProfileStore::new(paths.profile())?.load(private.device())?;
     validate_active_context(current_state, &private, &profile)?;
+    let credential = private
+        .credential()
+        .ok_or(SyncServiceError::MissingCredential)?;
+    let transport = open_saved_webdav_transport(&profile, credential)?;
+    prepare_pairing_approval_with_transport(
+        current_state,
+        paths,
+        host,
+        review,
+        now_unix,
+        &private,
+        &transport,
+    )
+}
+
+fn prepare_pairing_approval_with_transport<T: VaultTransport + ?Sized>(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    host: &mut PairingHostInvite,
+    review: PairingReview,
+    now_unix: i64,
+    private: &PrivateStoreSnapshot,
+    transport: &T,
+) -> Result<PreparedPairingApproval, SyncServiceError> {
+    validate_host_identity(current_state, paths, private, host)?;
+    validate_active_private(current_state, private)?;
     let authenticated_request = host.invite.review_bound_request(&review.sealed)?;
     if authenticated_request != review.payload {
         return Err(SyncServiceError::PairingRejected);
     }
+    let target_device = authenticated_request.device;
+    let target_device_name = target_device.name.clone();
+    let target_fingerprint = pairing_fingerprint(&target_device)?;
     let host_store = HostPairingStore::new(paths);
     host_store.bind_request(
         private.device(),
         &mut host.durable,
         &review.sealed.encrypted,
-        &review.payload.device.device_id,
+        &target_device.device_id,
     )?;
-    let credential = private
-        .credential()
-        .ok_or(SyncServiceError::MissingCredential)?;
-    let transport = open_saved_webdav_transport(&profile, credential)?;
-    let anchor = membership_anchor(&private)?;
-    let mut prepared = prepare_manual_sync_with_transport(current_state, &private, &transport)?;
-    if !pairing_device_is_active(&prepared, &review.payload.device) && !host.durable.has_handoff() {
-        if crate::signals::unix_now() > host.expires_at_unix() {
+    let anchor = membership_anchor(private)?;
+    let mut prepared = prepare_manual_sync_with_transport(current_state, private, transport)?;
+    if !pairing_device_is_active(&prepared, &target_device) && !host.durable.has_handoff() {
+        if now_unix > host.expires_at_unix() {
             host_store.remove()?;
             return Err(SyncServiceError::PairingExpired);
         }
         prepared = match commit_pairing_membership(
             current_state,
-            &private,
+            private,
             &anchor,
-            &transport,
+            transport,
             prepared,
-            &review.payload.device,
+            &target_device,
             host.expires_at_unix(),
         ) {
             Ok(prepared) => prepared,
             Err(SyncServiceError::PairingExpired) => {
                 let detected =
-                    prepare_manual_sync_with_transport(current_state, &private, &transport)?;
-                if !pairing_device_is_active(&detected, &review.payload.device) {
+                    prepare_manual_sync_with_transport(current_state, private, transport)?;
+                if !pairing_device_is_active(&detected, &target_device) {
                     host_store.remove()?;
                     return Err(SyncServiceError::PairingExpired);
                 }
@@ -298,13 +443,19 @@ pub fn approve_pairing_request(
             Err(error) => return Err(error),
         };
     }
-    if !pairing_device_is_active(&prepared, &review.payload.device) {
+    if !pairing_device_is_active(&prepared, &target_device) {
         return Err(SyncServiceError::InvalidRemoteData);
     }
 
     if !host.durable.has_handoff() {
         let (encrypted_checkpoint, checkpoint_hash, membership_head_hash) =
-            load_prepared_checkpoint(current_state, &anchor, &transport, &prepared)?;
+            load_prepared_checkpoint(
+                current_state,
+                &anchor,
+                transport,
+                private.device(),
+                &prepared,
+            )?;
         let approval = host.invite.approve_committed(
             &review.sealed,
             prepared.membership.clone(),
@@ -324,32 +475,80 @@ pub fn approve_pairing_request(
     publish_pairing_handoff(
         current_state,
         host.invite.invite_id(),
-        &transport,
+        transport,
         &handoff.checkpoint,
         &handoff.approval,
     )?;
+    Ok(PreparedPairingApproval {
+        candidate: prepared,
+        target_device,
+        target_device_name,
+        target_fingerprint,
+        invite_id: host.invite.invite_id().to_owned(),
+    })
+}
 
-    let summary = prepared.summary.clone();
-    // Publish the complete, authenticated join handoff before installing the owner's local
-    // projection. If the local commit then fails, both devices can recover from the already
-    // published checkpoint; the reverse order could strand an added device with no approval.
+/// Install a prepared host approval through the same exact manual-sync transaction as the CLI.
+pub fn apply_prepared_pairing_approval(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    personal_paths: &crate::personal_state::PersonalStatePaths,
+    paths: &SyncPaths,
+    prepared: PreparedPairingApproval,
+) -> Result<PersonalStateV2, SyncServiceError> {
     let installed = apply_manual_sync(
         current_state,
         playlist_revision,
-        prepared,
+        prepared.candidate.clone(),
         personal_paths,
         paths,
     )?;
+    finalize_prepared_pairing_approval(&installed, paths, &prepared)?;
+    Ok(installed)
+}
+
+/// Remove the durable host invite only after its exact target is present in the installed ledger.
+///
+/// This step is idempotent so a persistence acknowledgement lost after the ledger transaction can
+/// be retried without regenerating or republishing any secret-bearing pairing object.
+pub fn finalize_prepared_pairing_approval(
+    installed_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    prepared: &PreparedPairingApproval,
+) -> Result<(), SyncServiceError> {
+    let private = PrivateStore::new(paths.private_store())?.load()?;
+    validate_active_private(installed_state, &private)?;
+    if installed_state.dataset_id != prepared.candidate.state.dataset_id
+        || prepared.candidate.local_device_id.as_str() != private.device_id()
+        || installed_state
+            .device_registry
+            .get(&prepared.target_device.device_id)
+            != Some(&prepared.target_device)
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    let host_store = HostPairingStore::new(paths);
+    let Some(durable) = host_store.load(private.device())? else {
+        return Ok(());
+    };
+    if durable.dataset_id() != installed_state.dataset_id
+        || durable.host_device_id() != private.device_id()
+        || durable.invite_id() != prepared.invite_id
+        || durable.request_device_id() != Some(prepared.target_device.device_id.as_str())
+        || !durable.has_handoff()
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    host_store.remove()?;
     let _ = record_pairing_audit(
         paths,
         crate::signals::unix_now(),
         SyncAuditAction::PairCreate,
-        Some(review.device_id),
-        summary.uploaded_operations,
-        summary.downloaded_operations,
+        Some(prepared.target_device.device_id.as_str().to_owned()),
+        prepared.candidate.summary.uploaded_operations,
+        prepared.candidate.summary.downloaded_operations,
     );
-    host_store.remove()?;
-    Ok(installed)
+    Ok(())
 }
 
 fn pairing_device_is_active(
@@ -428,6 +627,7 @@ fn load_prepared_checkpoint<T: VaultTransport + ?Sized>(
     current_state: &PersonalStateV2,
     anchor: &super::super::MembershipAnchor,
     transport: &T,
+    device: &DeviceSecretMaterial,
     prepared: &PreparedManualSync,
 ) -> Result<(EncryptedObject, String, String), SyncServiceError> {
     let checkpoint_hash = prepared
@@ -436,7 +636,7 @@ fn load_prepared_checkpoint<T: VaultTransport + ?Sized>(
         .clone()
         .ok_or(SyncServiceError::InvalidRemoteData)?;
     let verified_membership = prepared.membership.verify(anchor)?;
-    let checkpoint_key = super::super::manual::checkpoint_key(
+    let checkpoint_key = checkpoint_key(
         &current_state.dataset_id,
         verified_membership.epoch,
         &checkpoint_hash,
@@ -444,8 +644,19 @@ fn load_prepared_checkpoint<T: VaultTransport + ?Sized>(
     let (encrypted_checkpoint, _) = transport
         .get(&checkpoint_key, MAX_VAULT_PAYLOAD_BYTES)?
         .ok_or(SyncServiceError::InvalidRemoteData)?;
+    let checkpoint =
+        super::super::SignedCheckpoint::decrypt_for_device(&encrypted_checkpoint, device, anchor)?;
+    if checkpoint.hash()? != checkpoint_hash
+        || checkpoint.payload.checkpoint_sequence != prepared.checkpoint_anchor.checkpoint_sequence
+        || checkpoint.payload.membership != prepared.membership
+        || checkpoint.payload.state != prepared.state
+    {
+        return Err(SyncServiceError::InvalidRemoteData);
+    }
     Ok((
-        encrypted_checkpoint,
+        // A complete age decrypt, membership/signature validation, and exact signed payload/hash
+        // comparison above make this readback safe to stage and publish to the joining device.
+        encrypted_checkpoint.authenticated_after_verification(),
         checkpoint_hash,
         verified_membership.head_hash,
     ))
@@ -493,8 +704,7 @@ fn merge_sync_summary(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn begin_pairing_join(
-    current_state: &PersonalStateV2,
+pub fn start_pairing_join(
     paths: &SyncPaths,
     endpoint: String,
     custom_ca_pem: Option<Vec<u8>>,
@@ -502,13 +712,36 @@ pub fn begin_pairing_join(
     code: &str,
     device_name: String,
     now_unix: i64,
-) -> Result<PairingJoinPreview, SyncServiceError> {
+) -> Result<PairingJoinWaiting, SyncServiceError> {
+    let transport =
+        super::setup::checked_webdav_transport(&endpoint, custom_ca_pem.as_deref(), &credential)?;
+    start_pairing_join_with_transport(
+        paths,
+        endpoint,
+        custom_ca_pem,
+        credential,
+        code,
+        device_name,
+        now_unix,
+        &transport,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_pairing_join_with_transport<T: VaultTransport + ?Sized>(
+    paths: &SyncPaths,
+    endpoint: String,
+    custom_ca_pem: Option<Vec<u8>>,
+    credential: VaultCredential,
+    code: &str,
+    device_name: String,
+    now_unix: i64,
+    transport: &T,
+) -> Result<PairingJoinWaiting, SyncServiceError> {
     let code = PairingCode::parse(code)?;
     let invite_id = PairingInvite::invite_id_for_code(&code)?;
-    let probe =
-        super::setup::checked_webdav_transport(&endpoint, custom_ca_pem.as_deref(), &credential)?;
     let locator_key = global_pairing_key(&invite_id, "locator.age")?;
-    let (encrypted_locator, _) = probe
+    let (encrypted_locator, _) = transport
         .get(&locator_key, MAX_VAULT_PAYLOAD_BYTES)?
         .ok_or(SyncServiceError::PairingRejected)?;
     let locator: PairingLocator =
@@ -540,7 +773,7 @@ pub fn begin_pairing_join(
             let request = join_store.request(&journal)?;
             let request_key =
                 dataset_pairing_key(journal.dataset_id(), journal.invite_id(), "request.age")?;
-            if let Some((remote, _)) = probe.get(&request_key, MAX_VAULT_PAYLOAD_BYTES)?
+            if let Some((remote, _)) = transport.get(&request_key, MAX_VAULT_PAYLOAD_BYTES)?
                 && remote.as_bytes() != request.as_bytes()
             {
                 return Err(SyncServiceError::InvalidRemoteData);
@@ -552,14 +785,17 @@ pub fn begin_pairing_join(
         }
         // A request without its signed journal, private keys, or profile cannot recover or
         // authorize anything. Discarding this local ciphertext does not change remote state.
-        crate::util::safe_fs::remove_owner_only_file_durable(paths.pending_join_request())
-            .map_err(|_| SyncServiceError::Storage)?;
-        crate::util::safe_fs::remove_owner_only_file_durable(paths.pending_join_checkpoint())
-            .map_err(|_| SyncServiceError::Storage)?;
+        for path in [
+            paths.pending_join_request(),
+            paths.pending_join_checkpoint(),
+        ] {
+            if regular_file_exists(path)? {
+                crate::util::safe_fs::remove_owner_only_file_durable(path)
+                    .map_err(|_| SyncServiceError::Storage)?;
+            }
+        }
     }
-    drop(probe);
-
-    let (mut private, profile, sealed_request, request_nonce, device_id) = if existing_private {
+    let (sealed_request, device_id) = if existing_private {
         let private = private_store.load()?;
         let expected_profile = WebDavProfile::with_custom_ca(
             locator.dataset_id.clone(),
@@ -614,16 +850,10 @@ pub fn begin_pairing_join(
             private.device(),
             now_unix,
         )?;
-        let profile = load_or_create_join_profile(
-            &profile_store,
-            existing_profile,
-            &private,
-            expected_profile,
-        )?;
-        let request_nonce = pending.request_nonce().to_owned();
+        load_or_create_join_profile(&profile_store, existing_profile, &private, expected_profile)?;
         let device_id =
             DeviceId::new(private.device_id()).map_err(|_| SyncServiceError::PairingRejected)?;
-        (private, profile, sealed_request, request_nonce, device_id)
+        (sealed_request, device_id)
     } else {
         let device_id = DeviceId::new(format!(
             "dev-{}",
@@ -662,77 +892,74 @@ pub fn begin_pairing_join(
             // can reconstruct the missing profile without minting a second device identity.
             return Err(error.into());
         }
-        (private, profile, sealed_request, request_nonce, device_id)
+        (sealed_request, device_id)
     };
-    let credential = private
-        .credential()
-        .ok_or(SyncServiceError::MissingCredential)?;
-    let transport = open_saved_webdav_transport(&profile, credential)?;
-    (|| {
-        let request_key = dataset_pairing_key(
-            &locator.dataset_id,
-            &sealed_request.invite_id,
-            "request.age",
-        )?;
-        put_immutable_or_verify(&transport, &request_key, &sealed_request.encrypted)?;
+    let request_key = dataset_pairing_key(
+        &locator.dataset_id,
+        &sealed_request.invite_id,
+        "request.age",
+    )?;
+    put_immutable_or_verify(transport, &request_key, &sealed_request.encrypted)?;
+    Ok(PairingJoinWaiting {
+        device_id: device_id.as_str().to_owned(),
+        expires_at_unix: locator.expires_at_unix,
+        resumed: existing_private,
+    })
+}
 
-        let wait_until = locator
-            .expires_at_unix
-            .min(now_unix.saturating_add(MAX_PAIRING_WAIT_SECONDS));
-        let approval_key = dataset_pairing_key(
-            &locator.dataset_id,
-            &sealed_request.invite_id,
-            "approval.age",
-        )?;
-        let encrypted_approval = poll_until_present(&transport, &approval_key, wait_until)?;
-        let checkpoint_key = dataset_pairing_key(
-            &locator.dataset_id,
-            &sealed_request.invite_id,
-            "checkpoint.age",
-        )?;
-        let encrypted_checkpoint = poll_until_present(&transport, &checkpoint_key, wait_until)?;
-        let sealed_approval = SealedPairingApproval {
-            invite_id: sealed_request.invite_id,
-            encrypted: encrypted_approval,
-        };
-        let approved = super::super::ApprovedPairing::open(
-            &code,
-            &sealed_approval,
-            &request_nonce,
-            private.device(),
-            &encrypted_checkpoint,
-            crate::signals::unix_now(),
-        )?;
-        match private.enrollment() {
-            EnrollmentState::PendingApproval => {
-                private.approve(&approved)?;
-                private_store.save(&mut private)?;
-            }
-            EnrollmentState::PendingLedgerCommit => {
-                private.validate_approved_pairing(&approved)?;
-            }
-            EnrollmentState::Active | EnrollmentState::Revoked => {
-                return Err(SyncServiceError::AlreadyConfigured);
+/// Preserve the CLI's blocking behavior on top of the one-shot lifecycle API.
+#[allow(clippy::too_many_arguments)]
+pub fn begin_pairing_join(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    endpoint: String,
+    custom_ca_pem: Option<Vec<u8>>,
+    credential: VaultCredential,
+    code: &str,
+    device_name: String,
+    now_unix: i64,
+) -> Result<PairingJoinPreview, SyncServiceError> {
+    let _waiting = start_pairing_join(
+        paths,
+        endpoint,
+        custom_ca_pem,
+        credential,
+        code,
+        device_name,
+        now_unix,
+    )?;
+    loop {
+        if let Some(preview) = poll_pairing_join(current_state, paths, crate::signals::unix_now())?
+        {
+            return Ok(preview);
+        }
+        thread::sleep(PAIRING_POLL_INTERVAL);
+    }
+}
+
+/// Perform one bounded read of the approval lifecycle.
+///
+/// `Ok(None)` means the host has not completed approval yet. No sleep or retry occurs here.
+pub fn poll_pairing_join(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    now_unix: i64,
+) -> Result<Option<PairingJoinPreview>, SyncServiceError> {
+    match resume_pairing_join(current_state, paths) {
+        Ok(preview) => Ok(Some(preview)),
+        Err(SyncServiceError::PendingApproval) => {
+            let expires_at_unix = JoinPairingStore::new(paths)
+                .load_authenticated()?
+                .map(|(journal, _)| journal.expires_at_unix())
+                .ok_or(SyncServiceError::PairingNeedsCleanup)?;
+            if now_unix > expires_at_unix {
+                Err(SyncServiceError::PairingExpired)
+            } else {
+                Ok(None)
             }
         }
-        // Trust anchors must become durable before the code-independent checkpoint artifact.
-        // If the following write is interrupted, `resume_pairing_join` authenticates and restores
-        // the exact immutable checkpoint from WebDAV using those anchors and the retained invite.
-        persist_join_checkpoint(paths, approved.encrypted_checkpoint())?;
-        let plan = plan_join_import(
-            &approved.signed_checkpoint().payload.state,
-            current_state,
-            &device_id,
-        )?;
-        Ok(PairingJoinPreview {
-            summary: plan.summary,
-            device_id: device_id.as_str().to_owned(),
-            candidate: plan.candidate,
-            checkpoint: approved.signed_checkpoint().clone(),
-            expected_local_revision: current_state.revision,
-            expected_private_revision: private.revision(),
-        })
-    })()
+        Err(error) => Err(error),
+    }
 }
 
 fn load_or_create_join_profile(
@@ -960,18 +1187,78 @@ pub fn apply_pairing_join(
     paths: &SyncPaths,
     preview: PairingJoinPreview,
 ) -> Result<PersonalStateV2, SyncServiceError> {
+    let prepared = prepare_pairing_join_activation(current_state, paths, preview)?;
+    apply_prepared_pairing_join(
+        current_state,
+        playlist_revision,
+        personal_paths,
+        paths,
+        prepared,
+    )
+}
+
+/// Validate and detach a join activation without writing the ledger or private store.
+pub fn prepare_pairing_join_activation(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    preview: PairingJoinPreview,
+) -> Result<PreparedPairingJoinActivation, SyncServiceError> {
+    validate_pairing_join_preview(current_state, paths, &preview)?;
+    Ok(preview.into_activation())
+}
+
+/// Apply a clone-safe join activation on the persistence-owner lane.
+pub fn apply_prepared_pairing_join(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    personal_paths: &crate::personal_state::PersonalStatePaths,
+    paths: &SyncPaths,
+    prepared: PreparedPairingJoinActivation,
+) -> Result<PersonalStateV2, SyncServiceError> {
+    let preview = prepared.preview;
+    validate_pairing_join_preview(current_state, paths, &preview)?;
+    apply_pairing_join_exact(
+        current_state,
+        playlist_revision,
+        personal_paths,
+        paths,
+        preview,
+    )
+}
+
+fn validate_pairing_join_preview(
+    current_state: &PersonalStateV2,
+    paths: &SyncPaths,
+    preview: &PairingJoinPreview,
+) -> Result<(), SyncServiceError> {
     if current_state.revision != preview.expected_local_revision {
         return Err(SyncServiceError::LocalStateChanged);
     }
-    let private_store = PrivateStore::new(paths.private_store())?;
-    let mut private = private_store.load()?;
+    let private = PrivateStore::new(paths.private_store())?.load()?;
     if private.revision() != preview.expected_private_revision
         || private.enrollment() != EnrollmentState::PendingLedgerCommit
         || private.device_id() != preview.device_id
     {
         return Err(SyncServiceError::LocalStateChanged);
     }
-    let commit = PersonalStateCommit::prepare_for_runtime(preview.candidate, playlist_revision)?;
+    if preview.candidate.dataset_id != private.dataset_id()
+        || preview.checkpoint.payload.dataset_id != private.dataset_id()
+    {
+        return Err(SyncServiceError::InvalidRemoteData);
+    }
+    Ok(())
+}
+
+fn apply_pairing_join_exact(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    personal_paths: &crate::personal_state::PersonalStatePaths,
+    paths: &SyncPaths,
+    preview: PairingJoinPreview,
+) -> Result<PersonalStateV2, SyncServiceError> {
+    let private_store = PrivateStore::new(paths.private_store())?;
+    let mut private = private_store.load()?;
+    let commit = prepare_pairing_join_commit(current_state, playlist_revision, preview.candidate)?;
     private.mark_active_after_join(&preview.checkpoint, commit.state())?;
     let checkpoint_sequence = preview.checkpoint.payload.checkpoint_sequence;
     let checkpoint_hash = preview.checkpoint.hash()?;
@@ -986,9 +1273,6 @@ pub fn apply_pairing_join(
         &checkpoint_hash,
         playlist_revision,
     )?;
-    let _ = crate::util::safe_fs::remove_owner_only_file_durable(paths.pending_join_checkpoint());
-    let _ = JoinPairingStore::new(paths).remove_state();
-    let _ = crate::util::safe_fs::remove_owner_only_file_durable(paths.pending_join_request());
     let _ = record_pairing_audit(
         paths,
         crate::signals::unix_now(),
@@ -998,6 +1282,24 @@ pub fn apply_pairing_join(
         0,
     );
     Ok(installed)
+}
+
+pub(super) fn prepare_pairing_join_commit(
+    current_state: &PersonalStateV2,
+    playlist_revision: u64,
+    mut candidate: PersonalStateV2,
+) -> Result<PersonalStateCommit, SyncServiceError> {
+    // Joining replaces the fresh device's local dataset with the authenticated remote dataset.
+    // PersonalState transactions are still ordered by one local revision counter, so the first
+    // remote candidate must be strictly newer than whichever local ledger is currently visible.
+    candidate.revision = candidate
+        .revision
+        .max(current_state.revision.saturating_add(1));
+    let commit = PersonalStateCommit::prepare_for_runtime(candidate, playlist_revision)?;
+    if commit.state().revision <= current_state.revision {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
+    Ok(commit)
 }
 
 /// Leave an authenticated join staged for a later code-independent `--resume`.
@@ -1117,157 +1419,6 @@ fn validate_host_identity(
         return Err(SyncServiceError::LocalStateChanged);
     }
     Ok(())
-}
-
-fn validate_locator(
-    locator: &PairingLocator,
-    invite_id: &str,
-    now_unix: i64,
-) -> Result<(), SyncServiceError> {
-    if locator.kind != LOCATOR_KIND
-        || locator.schema_version != super::super::VAULT_SCHEMA_VERSION
-        || locator.invite_id != invite_id
-        || locator.expires_at_unix > now_unix.saturating_add(MAX_PAIRING_WAIT_SECONDS)
-        || crate::personal_state::PersonalStateV2::empty(locator.dataset_id.clone()).is_err()
-    {
-        return Err(SyncServiceError::PairingRejected);
-    }
-    if locator.expires_at_unix < now_unix {
-        return Err(SyncServiceError::PairingExpired);
-    }
-    Ok(())
-}
-
-fn poll_until_present<T: VaultTransport + ?Sized>(
-    transport: &T,
-    key: &ObjectKey,
-    wait_until_unix: i64,
-) -> Result<EncryptedObject, SyncServiceError> {
-    loop {
-        if let Some((object, _)) = transport.get(key, MAX_VAULT_PAYLOAD_BYTES)? {
-            return Ok(object);
-        }
-        if crate::signals::unix_now() > wait_until_unix {
-            return Err(SyncServiceError::PairingExpired);
-        }
-        thread::sleep(PAIRING_POLL_INTERVAL);
-    }
-}
-
-fn put_immutable_or_verify<T: VaultTransport + ?Sized>(
-    transport: &T,
-    key: &ObjectKey,
-    object: &EncryptedObject,
-) -> Result<(), SyncServiceError> {
-    match transport.put(key, object, ObjectCondition::CreateOnly) {
-        Ok(_) => Ok(()),
-        Err(VaultError::PreconditionFailed) => {
-            let (existing, _) = transport
-                .get(key, MAX_VAULT_PAYLOAD_BYTES)?
-                .ok_or(SyncServiceError::InvalidRemoteData)?;
-            if existing.as_bytes() == object.as_bytes() {
-                Ok(())
-            } else {
-                Err(SyncServiceError::InvalidRemoteData)
-            }
-        }
-        Err(error) => match transport.get(key, MAX_VAULT_PAYLOAD_BYTES) {
-            Ok(Some((existing, _))) if existing.as_bytes() == object.as_bytes() => Ok(()),
-            Ok(Some(_)) => Err(SyncServiceError::InvalidRemoteData),
-            Ok(None) | Err(_) => Err(error.into()),
-        },
-    }
-}
-
-fn global_pairing_key(invite_id: &str, file: &str) -> Result<ObjectKey, SyncServiceError> {
-    pairing_key(None, invite_id, file)
-}
-
-fn dataset_pairing_key(
-    dataset_id: &str,
-    invite_id: &str,
-    file: &str,
-) -> Result<ObjectKey, SyncServiceError> {
-    pairing_key(Some(dataset_id), invite_id, file)
-}
-
-fn pairing_key(
-    dataset_id: Option<&str>,
-    invite_id: &str,
-    file: &str,
-) -> Result<ObjectKey, SyncServiceError> {
-    let key = match dataset_id {
-        Some(dataset_id) => {
-            format!("yututui/v2/{dataset_id}/pairing/{invite_id}/{file}")
-        }
-        None => format!("yututui/v2/pairing/{invite_id}/{file}"),
-    };
-    ObjectKey::new(key).map_err(Into::into)
-}
-
-fn regular_file_exists(path: &std::path::Path) -> Result<bool, SyncServiceError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
-        Ok(_) => Err(SyncServiceError::Storage),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(SyncServiceError::Storage),
-    }
-}
-
-fn persist_join_checkpoint(
-    paths: &SyncPaths,
-    checkpoint: &EncryptedObject,
-) -> Result<(), SyncServiceError> {
-    if regular_file_exists(paths.pending_join_checkpoint())? {
-        let current = read_join_checkpoint(paths)?;
-        if current.as_bytes() == checkpoint.as_bytes() {
-            return Ok(());
-        }
-        return Err(SyncServiceError::InvalidRemoteData);
-    }
-    crate::util::safe_fs::write_owner_only_atomic(
-        paths.pending_join_checkpoint(),
-        checkpoint.as_bytes(),
-    )
-    .map_err(|_| SyncServiceError::Storage)
-}
-
-fn read_join_checkpoint(paths: &SyncPaths) -> Result<EncryptedObject, SyncServiceError> {
-    let bytes = crate::util::safe_fs::read_owner_only_limited(
-        paths.pending_join_checkpoint(),
-        super::super::crypto::MAX_ENCRYPTED_OBJECT_BYTES as u64,
-    )
-    .map_err(|_| SyncServiceError::Storage)?;
-    EncryptedObject::from_bytes(bytes).map_err(Into::into)
-}
-
-fn load_or_fetch_join_checkpoint(
-    paths: &SyncPaths,
-    private: &PrivateStoreSnapshot,
-    profile: &WebDavProfile,
-    invite_id: &str,
-) -> Result<(EncryptedObject, bool), SyncServiceError> {
-    if regular_file_exists(paths.pending_join_checkpoint())? {
-        return read_join_checkpoint(paths).map(|checkpoint| (checkpoint, false));
-    }
-    let credential = private
-        .credential()
-        .ok_or(SyncServiceError::MissingCredential)?;
-    let transport = open_saved_webdav_transport(profile, credential)?;
-    fetch_join_checkpoint(&transport, private.dataset_id(), invite_id)
-        .map(|checkpoint| (checkpoint, true))
-}
-
-fn fetch_join_checkpoint<T: VaultTransport + ?Sized>(
-    transport: &T,
-    dataset_id: &str,
-    invite_id: &str,
-) -> Result<EncryptedObject, SyncServiceError> {
-    let key = dataset_pairing_key(dataset_id, invite_id, "checkpoint.age")?;
-    transport
-        .get(&key, MAX_VAULT_PAYLOAD_BYTES)?
-        .map(|(checkpoint, _)| checkpoint)
-        .ok_or(SyncServiceError::PendingApproval)
 }
 
 fn record_pairing_audit(

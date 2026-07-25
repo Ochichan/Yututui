@@ -348,7 +348,7 @@ impl App {
         self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
-        if self.overlays.why_gem_video_id.is_some() {
+        if self.personal_state.sync_ui.modal_open() || self.overlays.why_gem_video_id.is_some() {
             self.cancel_seekbar_scrub();
             self.interaction.ai_transcript_drag = None;
             return Vec::new();

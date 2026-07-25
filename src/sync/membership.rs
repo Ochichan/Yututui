@@ -556,7 +556,10 @@ fn validate_device(device: &DeviceRecord) -> Result<(), VaultError> {
     if device.revoked
         || super::crypto::validate_device_id(device.device_id.as_str()).is_err()
         || device.name.chars().count() > 1_024
-        || device.name.chars().any(char::is_control)
+        || device
+            .name
+            .chars()
+            .any(DeviceRecord::is_forbidden_name_char)
     {
         return Err(VaultError::InvalidDeviceIdentity);
     }
@@ -597,4 +600,35 @@ fn ensure_unique_device_identity(
 
 fn validate_dataset_id(dataset_id: &str) -> Result<(), VaultError> {
     super::crypto::validate_dataset_id(dataset_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::crypto::DeviceSecretMaterial;
+
+    #[test]
+    fn remote_membership_device_names_reject_invisible_and_bidi_controls() {
+        let secrets = DeviceSecretMaterial::generate_for("membership-name-validation").unwrap();
+
+        for character in [
+            '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{202a}',
+            '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}',
+            '\u{2069}', '\u{feff}',
+        ] {
+            let device = DeviceRecord {
+                device_id: DeviceId::new(secrets.device_id()).unwrap(),
+                name: format!("remote{character}device"),
+                revoked: false,
+                public_identity: Some(secrets.public_identity()),
+            };
+
+            assert_eq!(
+                validate_device(&device),
+                Err(VaultError::InvalidDeviceIdentity),
+                "U+{:04X} must be rejected at membership ingress",
+                u32::from(character)
+            );
+        }
+    }
 }

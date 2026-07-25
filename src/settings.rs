@@ -30,6 +30,7 @@ mod color_picker;
 mod display;
 mod field_meta;
 pub(crate) mod gui_mutation;
+pub mod sync;
 pub use actions::{FieldKind, PersonalDataExportStatus};
 pub use color_picker::{
     COLOR_PICKER_CHOICE_COUNT, ColorPickerChoice, ColorPickerSelection, ColorPickerState,
@@ -64,16 +65,19 @@ pub enum SettingsTab {
     /// External accounts: Last.fm / ListenBrainz scrobbling (and later Spotify), as
     /// per-service sub-categories.
     Accounts,
+    /// Encrypted personal-state sync. This tab has its own render/navigation path.
+    Sync,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 6] = [
+    pub const ALL: [SettingsTab; 7] = [
         SettingsTab::General,
         SettingsTab::Playback,
         SettingsTab::Keys,
         SettingsTab::Graphics,
         SettingsTab::Ai,
         SettingsTab::Accounts,
+        SettingsTab::Sync,
     ];
 
     pub fn label(self) -> &'static str {
@@ -84,6 +88,7 @@ impl SettingsTab {
             SettingsTab::Graphics => t!("Graphics", "그래픽", "グラフィック"),
             SettingsTab::Ai => t!("DJ Gem", "DJ Gem", "DJ Gem"),
             SettingsTab::Accounts => t!("Accounts", "계정", "アカウント"),
+            SettingsTab::Sync => t!("Sync", "동기화", "同期"),
         }
     }
 
@@ -238,7 +243,7 @@ impl SettingsTab {
             ],
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
-            SettingsTab::Keys => Vec::new(),
+            SettingsTab::Keys | SettingsTab::Sync => Vec::new(),
         }
     }
 
@@ -251,7 +256,7 @@ impl SettingsTab {
             SettingsTab::Graphics => graphics_sections(),
             SettingsTab::Accounts => accounts_sections(),
             SettingsTab::Ai => ai_sections(),
-            SettingsTab::General | SettingsTab::Keys => Vec::new(),
+            SettingsTab::General | SettingsTab::Keys | SettingsTab::Sync => Vec::new(),
         }
     }
 }
@@ -1022,15 +1027,16 @@ impl SettingsState {
             | SettingsTab::Keys
             | SettingsTab::Graphics
             | SettingsTab::Ai
-            | SettingsTab::Accounts => {}
+            | SettingsTab::Accounts
+            | SettingsTab::Sync => {}
         }
         sections
     }
 
-    /// The field the cursor is on, or `None` when the tab has no `Field`s (the Keys tab, which
-    /// edits bindings instead). `saturating_sub` matches the view's row clamp; `get` keeps this
-    /// panic-free even for an empty tab, so callers reached on any tab (e.g. the per-keystroke
-    /// "is this a color row?" check) stay sound.
+    /// The field the cursor is on, or `None` when the tab has no `Field`s (Keys and Sync use
+    /// dedicated presentation paths). `saturating_sub` matches the view's row clamp; `get`
+    /// keeps this panic-free even for an empty tab, so callers reached on any tab (e.g. the
+    /// per-keystroke "is this a color row?" check) stay sound.
     pub fn current_field(&self) -> Option<Field> {
         let fields = self.fields();
         fields

@@ -173,6 +173,9 @@ impl App {
         if st.tab == SettingsTab::Keys {
             return None;
         }
+        if st.tab == SettingsTab::Sync {
+            return Some(self.sync_settings_model().rows.len());
+        }
         let fields = st.fields();
         // `st.sections()` (not `st.tab.sections()`) so the scroll length matches the
         // visibility-filtered field list in every mode.

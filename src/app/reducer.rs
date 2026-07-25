@@ -37,6 +37,7 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let mut cmds = self.dispatch(msg);
+        cmds.extend(self.start_pending_sync_ui_refresh());
         // A refill is scoped to the exact queue membership/order snapshot it started from.
         // Observe revisions after every owner reduction so an admitted manual replacement cannot
         // leave an old same-seed chain eligible merely because that video id is still present.
@@ -201,7 +202,7 @@ impl App {
         if self.expire_lyrics_delay_osd(Instant::now()) {
             self.dirty = true;
         }
-        Vec::new()
+        self.poll_sync_ui_if_due()
     }
 
     fn handle_player(&mut self, pm: PlayerMsg) -> Vec<Cmd> {
@@ -1008,6 +1009,19 @@ impl App {
         {
             return Vec::new();
         }
+        // The Settings-owned Sync wizard captures every pointer event. Ordinary clicks keep
+        // flowing through its hit-tested modal route. The paired double-click is consumed so the
+        // first press cannot both open and immediately confirm a destructive step.
+        if self.personal_state.sync_ui.modal_open() {
+            match &msg {
+                Msg::MouseDoubleClick { .. }
+                | Msg::MouseRightClick { .. }
+                | Msg::MouseRightDoubleClick { .. }
+                | Msg::MouseDrag { .. }
+                | Msg::MouseScroll { .. } => return Vec::new(),
+                _ => {}
+            }
+        }
         // A picker-opening/applying press owns its paired double-click. Check this before the
         // open-modal route: the second press of a swatch double-click arrives after the first has
         // opened the picker and must not be reinterpreted against the newly rendered popup.
@@ -1081,6 +1095,12 @@ impl App {
             }
             Msg::Data(DataMsg::PersonalSyncPersisted(persisted)) => {
                 return self.finish_personal_sync_persistence(*persisted);
+            }
+            Msg::Data(DataMsg::SyncActivationPersisted(persisted)) => {
+                return self.finish_sync_activation_persistence(*persisted);
+            }
+            Msg::Data(DataMsg::SyncUi(event)) => {
+                return self.finish_sync_ui_event(event);
             }
             Msg::Media(cmd) => return self.apply_media(cmd),
             Msg::MediaArtworkReady(ready) => {

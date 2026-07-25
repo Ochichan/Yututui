@@ -6,6 +6,10 @@
 
 use super::*;
 
+#[path = "types/scroll_surface.rs"]
+mod scroll_surface;
+pub use scroll_surface::ScrollSurface;
+
 /// Pending owner-mediated transfer commit. The candidate is intentionally not installed into
 /// live App state until this exact persistence generation is confirmed.
 pub struct TransferPlaylistCommit {
@@ -277,6 +281,8 @@ pub enum DataMsg {
     PersonalSyncPrepared(Box<PersonalSyncPrepared>),
     /// Exact persistence-actor result for a detached WebDAV candidate or its local rebase.
     PersonalSyncPersisted(Box<PersonalSyncPersisted>),
+    SyncActivationPersisted(Box<SyncActivationPersisted>),
+    SyncUi(SyncUiEvent),
 }
 
 /// Events produced by the portable personal-data export worker.
@@ -323,6 +329,7 @@ pub enum DataCmd {
         personal_state: Box<crate::personal_state::PersonalStateV2>,
         reply: PersonalSyncReply,
     },
+    SyncUi(SyncUiCommand),
 }
 
 /// Effects in the portable personal-data export domain.
@@ -488,6 +495,7 @@ pub enum PersistCmd {
     TransferPlaylistCommit(Box<TransferPlaylistCommit>),
     /// Install one WebDAV candidate through the PersonalState persistence ordering lane.
     PersonalSyncCommit(Box<PersonalSyncCommit>),
+    SyncActivationCommit(Box<SyncActivationCommit>),
 }
 
 /// Blocking Local Deck work requested by the reducer.
@@ -722,6 +730,17 @@ pub enum MouseTarget {
     MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
     SettingsTab(usize),
+    /// An action or detail row in the privacy-safe Sync settings projection. Clicking selects
+    /// the row and delegates to the same action path as Enter; informational rows safely no-op.
+    SettingsSyncRow(usize),
+    /// A field in the move-only Sync setup/join/recovery wizard.
+    SyncWizardField(usize),
+    /// The wizard's affirmative action (continue, approve, merge, remove, or finish).
+    SyncWizardPrimary,
+    /// The wizard's non-affirmative action (back, cancel, or reject).
+    SyncWizardSecondary,
+    /// Reveal or mask the currently focused secret field. The target carries no secret value.
+    SyncWizardReveal,
     /// A clickable value control on a Settings field row — the checkbox of a toggle or the
     /// `<` / `>` arrow of a Select/Slider. Carries the field-row index and the nudge direction,
     /// so a click is the mouse equivalent of ←/→ on that row.
@@ -864,27 +883,6 @@ pub enum MouseTarget {
 pub struct MouseButtonRegion {
     pub rect: Rect,
     pub target: MouseTarget,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollSurface {
-    Library,
-    Search,
-    LocalFind,
-    /// The search results-filter popup's list.
-    SearchFilter,
-    /// The artist detail screen's top-songs list.
-    ArtistSongs,
-    /// The artist detail screen's albums/singles list.
-    ArtistAlbums,
-    AiTranscript,
-    AiSuggestions,
-    Settings,
-    Queue,
-    /// The radio "now playing" (지듣노) card's title line — marquee-only, no scrollbar.
-    NowPlaying,
-    /// The player/mini/docked title row — marquee-only, no scrollbar.
-    PlayerTitle,
 }
 
 /// Who authored a line in the DJ Gem chat transcript.

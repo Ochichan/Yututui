@@ -140,7 +140,10 @@ impl<'a> HostPairingStore<'a> {
         if ciphertext_hash(LOCATOR_HASH_DOMAIN, &locator) != snapshot.locator_ciphertext_hash {
             return Err(VaultError::InvalidPrivateStore);
         }
-        Ok(locator)
+        // `snapshot` was authenticated with the host signing key when it was loaded. Restoring
+        // the exact ciphertext bound by that signed hash is therefore equivalent to restoring a
+        // locally produced object after a crash before the first remote PUT.
+        Ok(locator.authenticated_after_verification())
     }
 
     pub fn bind_request(
@@ -262,8 +265,11 @@ impl<'a> HostPairingStore<'a> {
             return Err(VaultError::InvalidPrivateStore);
         }
         Ok(DurableHandoff {
-            checkpoint,
-            approval,
+            // The owner-signed journal binds both exact ciphertext hashes. Only after that
+            // signature and the hashes above have been verified may restart-restored bytes regain
+            // locally-produced provenance and cross the vault transport's upload boundary.
+            checkpoint: checkpoint.authenticated_after_verification(),
+            approval: approval.authenticated_after_verification(),
         })
     }
 
@@ -345,6 +351,14 @@ impl HostPairingSnapshot {
 
     pub fn host_device_id(&self) -> &str {
         &self.host_device_id
+    }
+
+    pub fn invite_id(&self) -> &str {
+        &self.invite_id
+    }
+
+    pub fn request_device_id(&self) -> Option<&str> {
+        self.request_device_id.as_deref()
     }
 
     pub fn same_durable_record(&self, other: &Self) -> bool {

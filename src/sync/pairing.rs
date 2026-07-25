@@ -746,7 +746,10 @@ fn validate_request_proof(
 fn validate_device(device: &DeviceRecord) -> Result<(), VaultError> {
     if device.revoked
         || device.name.chars().count() > 1_024
-        || device.name.chars().any(char::is_control)
+        || device
+            .name
+            .chars()
+            .any(DeviceRecord::is_forbidden_name_char)
         || super::crypto::validate_device_id(device.device_id.as_str()).is_err()
     {
         return Err(VaultError::InvalidDeviceIdentity);
@@ -818,4 +821,34 @@ fn device_add_position(
             }
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_pairing_device_names_reject_invisible_and_bidi_controls() {
+        let secrets = DeviceSecretMaterial::generate_for("pairing-name-validation").unwrap();
+
+        for character in [
+            '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{202a}',
+            '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}',
+            '\u{2069}', '\u{feff}',
+        ] {
+            let device = DeviceRecord {
+                device_id: DeviceId::new(secrets.device_id()).unwrap(),
+                name: format!("remote{character}device"),
+                revoked: false,
+                public_identity: Some(secrets.public_identity()),
+            };
+
+            assert_eq!(
+                validate_device(&device),
+                Err(VaultError::InvalidDeviceIdentity),
+                "U+{:04X} must be rejected at pairing ingress",
+                u32::from(character)
+            );
+        }
+    }
 }

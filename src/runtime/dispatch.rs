@@ -162,11 +162,24 @@ impl RuntimeHandles {
             Cmd::Persist(PersistCmd::PersonalSyncCommit(commit)) => {
                 self.dispatch_personal_sync_commit(app, commit);
             }
+            Cmd::Persist(PersistCmd::SyncActivationCommit(commit)) => {
+                self.dispatch_sync_activation_commit(app, commit);
+            }
             Cmd::Persist(p) => {
                 let result = persist_delivery::admit(&self.persist, app, p);
                 report_actor_delivery(app, "persistence", result);
             }
             Cmd::Data(cmd) => match cmd {
+                DataCmd::SyncUi(command) => {
+                    let emitter = self.background_tasks.emitter(self.worker_tx.clone());
+                    self.background_tasks
+                        .spawn_blocking("sync_settings", move || {
+                            let event = super::sync_ui_worker::run(command);
+                            emitter.emit_terminal_blocking(RuntimeEvent::App(Msg::Data(
+                                crate::app::DataMsg::SyncUi(event),
+                            )));
+                        });
+                }
                 DataCmd::PersonalSync {
                     action,
                     attempt,

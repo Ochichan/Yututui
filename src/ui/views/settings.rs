@@ -5,11 +5,16 @@
 mod dialogs;
 mod recording;
 mod spotify;
+mod sync;
+mod sync_wizard;
+mod tabs;
 
 pub use dialogs::{render_confirm, render_conflict};
 pub use recording::{render_recording_settings, render_recordings_browser};
 pub(super) use spotify::render_spotify_import_mode_dropdown_popup;
 pub use spotify::render_spotify_picker;
+pub(crate) use sync::render_sync;
+pub(crate) use sync_wizard::render_sync_wizard;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -70,6 +75,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_tabs(frame, app, st, rows[0]);
     if st.tab == SettingsTab::Keys {
         render_keys(frame, app, st, rows[2]);
+    } else if st.tab == SettingsTab::Sync {
+        let model = app.sync_settings_model();
+        render_sync(frame, app, st, &model, rows[2]);
     } else {
         render_fields(frame, app, st, rows[2]);
     }
@@ -107,6 +115,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 "내보내기 · 암호화되지 않은 JSON · 개인 감상 기록 포함",
                 "エクスポート · 暗号化されないJSON · 個人の再生履歴を含む"
             )
+        )
+    } else if st.tab == SettingsTab::Sync {
+        format!(
+            "{}/{} {}  ·  {} {}  ·  {} {}  ·  {} {}",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            t!("select", "선택", "選択"),
+            k(Action::Confirm),
+            t!("open", "열기", "開く"),
+            k(Action::FocusNext),
+            t!("switch tab", "탭 전환", "タブ切替"),
+            k(Action::SettingsCancel),
+            t!("close", "닫기", "閉じる"),
         )
     } else if st.tab == SettingsTab::Keys {
         let mouse_row = st.row >= keymap::editable_entries().len();
@@ -512,48 +533,7 @@ fn build_keys_column(
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
-    let theme = &st.draft.theme;
-    let active = Style::default()
-        .fg(theme.color(R::SelectionFg))
-        .bg(theme.color(R::SelectionBg))
-        .add_modifier(Modifier::BOLD);
-    let muted = theme.style(R::TextMuted);
-    // A single space between tabs (matching the old `Tabs` divider). Each tab cell is
-    // " label " (one cell of padding each side, as `Tabs` padded), and its hit rect is
-    // computed by walking the x cursor with the same width math ratatui lays the spans with.
-    const DIVIDER: &str = " ";
-    let mut spans = Vec::new();
-    let mut x = area.x;
-    for (i, t) in crate::settings::SettingsTab::ALL
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        if i > 0 {
-            spans.push(Span::styled(DIVIDER, muted));
-            x = x.saturating_add(buttons::text_width(DIVIDER));
-        }
-        let label = format!(" {} ", t.label());
-        let w = buttons::text_width(&label);
-        app.register_mouse_button(
-            Rect {
-                x,
-                y: area.y,
-                width: w,
-                height: 1,
-            },
-            MouseTarget::SettingsTab(i),
-        );
-        x = x.saturating_add(w);
-        let style = if st.tab == t {
-            // A brief accent wash right after a tab switch (identity when off).
-            crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Inner, active)
-        } else {
-            muted
-        };
-        spans.push(Span::styled(label, style));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    tabs::render(frame, app, st, area);
 }
 
 /// The list's selection marker. `HighlightSpacing::Always` reserves its width on *every* row

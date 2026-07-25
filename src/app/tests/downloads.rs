@@ -1139,7 +1139,7 @@ fn settings_scroll_resets_on_tab_switch() {
     app.bridges.settings_keys_scroll[0].wheel(false, 4, 30);
     assert_eq!(app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0), 4);
 
-    app.settings_switch_tab(true);
+    let _ = app.settings_switch_tab(true);
 
     assert_eq!(
         app.bridges.settings_scroll.resolve(0, 10, 50, 0),

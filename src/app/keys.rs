@@ -37,6 +37,11 @@ impl App {
         if self.tool_setup.is_some() {
             return self.on_key_tool_setup(k);
         }
+        // Sync setup and pairing are Settings-owned, top-level modals. They keep ownership even
+        // if the terminal shrinks to Mini or the underlying Settings screen is closed.
+        if self.personal_state.sync_ui.modal_open() {
+            return self.on_key_sync_wizard(k);
+        }
         // Beginner Mode's F6 focus bridge runs before ordinary surface routing, while every
         // established overlay keeps precedence. Unowned keys continue through unchanged.
         if !self.beginner_higher_overlay_open()
@@ -571,7 +576,8 @@ impl App {
     fn mini_mode_owns_modal(&self) -> bool {
         match self.mode {
             Mode::Settings => {
-                self.overlays.spotify_picker.is_some()
+                self.personal_state.sync_ui.modal_open()
+                    || self.overlays.spotify_picker.is_some()
                     || self.settings.as_ref().is_some_and(|s| {
                         s.spotify_import_mode_dropdown.is_some() || s.color_picker.is_some()
                     })
@@ -621,6 +627,12 @@ impl App {
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        if matches!(
+            self.personal_state.sync_ui.wizard.as_ref(),
+            Some(SyncWizard::Setup { .. } | SyncWizard::Join { .. } | SyncWizard::Recovery(_))
+        ) {
+            return true;
+        }
         if self
             .overlays
             .audio_output_picker

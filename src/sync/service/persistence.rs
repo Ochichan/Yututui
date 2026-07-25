@@ -4,13 +4,19 @@
 //! candidate locally. It is retry-safe because the target ledger and private checkpoint anchor
 //! are both checked before a repeated write is accepted as complete.
 
+#[path = "persistence/activation.rs"]
+mod activation;
+#[cfg(test)]
+#[path = "persistence/tests.rs"]
+mod activation_tests;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::personal_state::{
-    DeviceId, OperationEnvelope, PersonalStateCommit, PersonalStatePaths, PersonalStateV2,
-    append_operation_as, load_ledger,
+    DeviceId, Operation, OperationEnvelope, OperationOrigin, PersonalStateCommit,
+    PersonalStatePaths, PersonalStateV2, append_operation_as, load_ledger,
 };
 
 use super::super::{EnrollmentState, PrivateStore, SyncPaths};
@@ -18,12 +24,16 @@ use super::devices::record_revoke_success;
 use super::manual::{
     PreparedManualSync, record_sync_failure, record_sync_started, record_sync_success,
 };
-use super::{SyncServiceError, apply_manual_sync, recover_pending_anchor_transition};
+use super::{
+    PreparedPairingApproval, PreparedPairingJoinActivation, PreparedSetup, SyncServiceError,
+    apply_manual_sync, recover_pending_anchor_transition,
+};
 
 #[derive(Clone)]
 pub enum PersonalSyncApplyKind {
     SyncNow,
     Revoke(DeviceId),
+    PairApprove(Box<PreparedPairingApproval>),
 }
 
 /// A clone-cheap, panic-frontier-safe personal-sync write owned by the persistence actor.
@@ -42,20 +52,30 @@ enum PersonalSyncWrite {
     Initial {
         current_state: PersonalStateV2,
         playlist_revision: u64,
-        candidate: PreparedManualSync,
+        candidate: Box<PreparedManualSync>,
         action: PersonalSyncApplyKind,
     },
     Reconcile {
-        expected_state: PersonalStateV2,
-        alternate_expected_state: PersonalStateV2,
+        accepted_states: Vec<PersonalStateV2>,
         commit: Box<PersonalStateCommit>,
+    },
+    Setup {
+        current_state: PersonalStateV2,
+        playlist_revision: u64,
+        prepared: Box<PreparedSetup>,
+    },
+    PairJoin {
+        current_state: PersonalStateV2,
+        playlist_revision: u64,
+        prepared: Box<PreparedPairingJoinActivation>,
     },
     Shutdown {
         current_state: PersonalStateV2,
         accepted_states: Vec<PersonalStateV2>,
         playlist_revision: u64,
-        candidate: PreparedManualSync,
+        candidate: Box<PreparedManualSync>,
         commit: Box<PersonalStateCommit>,
+        pairing_approval: Option<Box<PreparedPairingApproval>>,
     },
 }
 
@@ -71,6 +91,11 @@ impl PersonalSyncPersistence {
     ) -> Result<Self, SyncServiceError> {
         if candidate.expected_local_revision != current_state.revision {
             return Err(SyncServiceError::LocalStateChanged);
+        }
+        if let PersonalSyncApplyKind::PairApprove(prepared) = &action
+            && !same_manual_sync_candidate(&candidate, prepared.candidate())
+        {
+            return Err(SyncServiceError::InvalidRemoteData);
         }
         let prepared_current =
             PersonalStateCommit::prepare_for_runtime(current_state.clone(), playlist_revision)?;
@@ -88,8 +113,55 @@ impl PersonalSyncPersistence {
             write: PersonalSyncWrite::Initial {
                 current_state,
                 playlist_revision,
-                candidate,
+                candidate: Box::new(candidate),
                 action,
+            },
+            target_state,
+            personal_paths,
+            sync_paths,
+            committed: AtomicBool::new(false),
+        })))
+    }
+
+    /// Validate and own a host approval whose in-flight local suffix was deterministically
+    /// re-authored after the authenticated remote checkpoint.
+    ///
+    /// Unlike an ordinary manual-sync candidate, the target cannot be a byte-for-byte extension
+    /// of `current_state`: local operations which raced the remote membership write may need fresh
+    /// dots. Recompute that target here from the sealed approval plus both owner snapshots, then
+    /// require it to retain the exact network-observed prefix before admitting the writer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pairing_approval_activation(
+        observed_state: PersonalStateV2,
+        current_state: PersonalStateV2,
+        playlist_revision: u64,
+        prepared: PreparedPairingApproval,
+        personal_paths: PersonalStatePaths,
+        sync_paths: SyncPaths,
+    ) -> Result<Self, SyncServiceError> {
+        let prepared = prepared.retarget(&observed_state, &current_state)?;
+        let mut candidate = prepared.candidate().clone();
+        if candidate.expected_local_revision != current_state.revision {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
+        let prepared_current =
+            PersonalStateCommit::prepare_for_runtime(current_state.clone(), playlist_revision)?;
+        if prepared_current.state() != &current_state {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
+        let target =
+            PersonalStateCommit::prepare_for_runtime(candidate.state.clone(), playlist_revision)?;
+        candidate.state = target.state().clone();
+        if !verified_state_extension(&observed_state, &candidate.state)? {
+            return Err(SyncServiceError::InvalidRemoteData);
+        }
+        let target_state = candidate.state.clone();
+        Ok(Self(Arc::new(PersonalSyncPersistenceInner {
+            write: PersonalSyncWrite::Initial {
+                current_state,
+                playlist_revision,
+                candidate: Box::new(candidate),
+                action: PersonalSyncApplyKind::PairApprove(Box::new(prepared)),
             },
             target_state,
             personal_paths,
@@ -107,12 +179,31 @@ impl PersonalSyncPersistence {
         personal_paths: PersonalStatePaths,
         sync_paths: SyncPaths,
     ) -> Result<Self, SyncServiceError> {
+        Self::reconcile_accepted(
+            vec![expected_state, alternate_expected_state],
+            candidate,
+            playlist_revision,
+            personal_paths,
+            sync_paths,
+        )
+    }
+
+    fn reconcile_accepted(
+        mut accepted_states: Vec<PersonalStateV2>,
+        candidate: PersonalStateV2,
+        playlist_revision: u64,
+        personal_paths: PersonalStatePaths,
+        sync_paths: SyncPaths,
+    ) -> Result<Self, SyncServiceError> {
+        if accepted_states.is_empty() {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
+        accepted_states.dedup();
         let commit = PersonalStateCommit::prepare_for_runtime(candidate, playlist_revision)?;
         let target_state = commit.state().clone();
         Ok(Self(Arc::new(PersonalSyncPersistenceInner {
             write: PersonalSyncWrite::Reconcile {
-                expected_state,
-                alternate_expected_state,
+                accepted_states,
                 commit: Box::new(commit),
             },
             target_state,
@@ -131,8 +222,66 @@ impl PersonalSyncPersistence {
         observed_state: PersonalStateV2,
         current_state: PersonalStateV2,
         playlist_revision: u64,
+        candidate: PreparedManualSync,
+        local_device: &DeviceId,
+        personal_paths: PersonalStatePaths,
+        sync_paths: SyncPaths,
+    ) -> Result<Self, SyncServiceError> {
+        Self::shutdown_with_context(
+            observed_state,
+            current_state,
+            playlist_revision,
+            candidate,
+            local_device,
+            Vec::new(),
+            None,
+            personal_paths,
+            sync_paths,
+        )
+    }
+
+    /// Preserve a host pairing approval when its activation completion is retired at shutdown.
+    ///
+    /// The initial activation target and the last reconcile target are accepted in addition to the
+    /// ordinary manual-sync race states. This covers a reconcile writer which became durable just
+    /// before owner ingress closed, while still applying the original checkpoint transition when
+    /// it did not.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pairing_approval_activation_shutdown(
+        observed_state: PersonalStateV2,
+        current_state: PersonalStateV2,
+        playlist_revision: u64,
+        committed_activation_state: PersonalStateV2,
+        possible_reconcile_state: Option<PersonalStateV2>,
+        prepared: PreparedPairingApproval,
+        personal_paths: PersonalStatePaths,
+        sync_paths: SyncPaths,
+    ) -> Result<Self, SyncServiceError> {
+        let mut accepted_states = vec![committed_activation_state];
+        accepted_states.extend(possible_reconcile_state);
+        let local_device = prepared.candidate().local_device_id.clone();
+        Self::shutdown_with_context(
+            observed_state,
+            current_state,
+            playlist_revision,
+            prepared.candidate().clone(),
+            &local_device,
+            accepted_states,
+            Some(prepared),
+            personal_paths,
+            sync_paths,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn shutdown_with_context(
+        observed_state: PersonalStateV2,
+        current_state: PersonalStateV2,
+        playlist_revision: u64,
         mut candidate: PreparedManualSync,
         local_device: &DeviceId,
+        additional_accepted_states: Vec<PersonalStateV2>,
+        pairing_approval: Option<PreparedPairingApproval>,
         personal_paths: PersonalStatePaths,
         sync_paths: SyncPaths,
     ) -> Result<Self, SyncServiceError> {
@@ -168,6 +317,7 @@ impl PersonalSyncPersistence {
             prepared_current.clone(),
             candidate.state.clone(),
         ];
+        accepted_states.extend(additional_accepted_states);
         accepted_states.dedup();
 
         Ok(Self(Arc::new(PersonalSyncPersistenceInner {
@@ -175,8 +325,9 @@ impl PersonalSyncPersistence {
                 current_state: prepared_current,
                 accepted_states,
                 playlist_revision,
-                candidate,
+                candidate: Box::new(candidate),
                 commit: Box::new(commit),
+                pairing_approval: pairing_approval.map(Box::new),
             },
             target_state,
             personal_paths,
@@ -206,23 +357,43 @@ impl PersonalSyncPersistence {
                 action,
             } => self.write_initial(current_state, *playlist_revision, candidate, action)?,
             PersonalSyncWrite::Reconcile {
-                expected_state,
-                alternate_expected_state,
+                accepted_states,
                 commit,
-            } => self.write_reconciliation(expected_state, alternate_expected_state, commit)?,
+            } => self.write_reconciliation(accepted_states, commit)?,
+            PersonalSyncWrite::Setup {
+                current_state,
+                playlist_revision,
+                prepared,
+            } => self.write_setup(current_state, *playlist_revision, prepared)?,
+            PersonalSyncWrite::PairJoin {
+                current_state,
+                playlist_revision,
+                prepared,
+            } => self.write_pair_join(current_state, *playlist_revision, prepared)?,
             PersonalSyncWrite::Shutdown {
                 current_state,
                 accepted_states,
                 playlist_revision,
                 candidate,
                 commit,
-            } => self.write_shutdown(
-                current_state,
-                accepted_states,
-                *playlist_revision,
-                candidate,
-                commit,
-            )?,
+                pairing_approval,
+            } => {
+                let installed = self.write_shutdown(
+                    current_state,
+                    accepted_states,
+                    *playlist_revision,
+                    candidate,
+                    commit,
+                )?;
+                if let Some(prepared) = pairing_approval {
+                    super::finalize_prepared_pairing_approval(
+                        &installed,
+                        &self.0.sync_paths,
+                        prepared,
+                    )?;
+                }
+                installed
+            }
         };
         if installed != self.0.target_state {
             return Err(SyncServiceError::LocalStateChanged);
@@ -259,6 +430,13 @@ impl PersonalSyncPersistence {
             return Err(SyncServiceError::LocalStateChanged);
         }
         if self.initial_target_is_already_durable(candidate)? {
+            if let PersonalSyncApplyKind::PairApprove(prepared) = action {
+                super::finalize_prepared_pairing_approval(
+                    &self.0.target_state,
+                    &self.0.sync_paths,
+                    prepared,
+                )?;
+            }
             return Ok(self.0.target_state.clone());
         }
 
@@ -267,13 +445,21 @@ impl PersonalSyncPersistence {
         let result = (|| {
             self.ensure_current_state_durable(current_state, playlist_revision)?;
             after_current_durable()?;
-            apply_manual_sync(
+            let installed = apply_manual_sync(
                 current_state,
                 playlist_revision,
                 candidate.clone(),
                 &self.0.personal_paths,
                 &self.0.sync_paths,
-            )
+            )?;
+            if let PersonalSyncApplyKind::PairApprove(prepared) = action {
+                super::finalize_prepared_pairing_approval(
+                    &installed,
+                    &self.0.sync_paths,
+                    prepared,
+                )?;
+            }
+            Ok(installed)
         })();
         match &result {
             Ok(_) => match action {
@@ -288,6 +474,7 @@ impl PersonalSyncPersistence {
                         &candidate.summary,
                     );
                 }
+                PersonalSyncApplyKind::PairApprove(_) => {}
             },
             Err(error) => {
                 let _ = record_sync_failure(&self.0.sync_paths, now, *error);
@@ -338,8 +525,7 @@ impl PersonalSyncPersistence {
 
     fn write_reconciliation(
         &self,
-        expected_state: &PersonalStateV2,
-        alternate_expected_state: &PersonalStateV2,
+        accepted_states: &[PersonalStateV2],
         commit: &PersonalStateCommit,
     ) -> Result<PersonalStateV2, SyncServiceError> {
         let _ = recover_pending_anchor_transition(&self.0.personal_paths, &self.0.sync_paths)?;
@@ -348,7 +534,7 @@ impl PersonalSyncPersistence {
         if installed == self.0.target_state {
             return Ok(installed);
         }
-        if !reconciliation_base_matches(&installed, expected_state, alternate_expected_state) {
+        if !accepted_states.iter().any(|state| state == &installed) {
             return Err(SyncServiceError::LocalStateChanged);
         }
         let installed = commit.commit(&self.0.personal_paths)?;
@@ -448,6 +634,16 @@ impl PersonalSyncPersistence {
     }
 }
 
+fn same_manual_sync_candidate(left: &PreparedManualSync, right: &PreparedManualSync) -> bool {
+    left.state == right.state
+        && left.membership == right.membership
+        && left.checkpoint_anchor == right.checkpoint_anchor
+        && left.expected_local_revision == right.expected_local_revision
+        && left.expected_private_revision == right.expected_private_revision
+        && left.local_device_id == right.local_device_id
+        && left.summary == right.summary
+}
+
 fn roll_forward_verified_extension(
     installed: PersonalStateV2,
     current: &PersonalStateV2,
@@ -467,6 +663,17 @@ fn roll_forward_verified_extension(
     let installed = commit.commit(personal_paths)?;
     if installed == *current {
         Ok(installed)
+    } else {
+        Err(SyncServiceError::LocalStateChanged)
+    }
+}
+
+pub(crate) fn verify_activation_extension(
+    base: &PersonalStateV2,
+    extension: &PersonalStateV2,
+) -> Result<(), SyncServiceError> {
+    if verified_state_extension(base, extension)? {
+        Ok(())
     } else {
         Err(SyncServiceError::LocalStateChanged)
     }
@@ -505,14 +712,6 @@ fn verified_state_extension(
             .copied()
             == Some(operation)
     }))
-}
-
-fn reconciliation_base_matches(
-    installed: &PersonalStateV2,
-    durable_sync_state: &PersonalStateV2,
-    observed_local_state: &PersonalStateV2,
-) -> bool {
-    installed == durable_sync_state || installed == observed_local_state
 }
 
 fn shutdown_anchor_matches(
@@ -576,6 +775,17 @@ pub(crate) fn rebase_local_operations(
         .iter()
         .map(|operation| (operation.operation_id.as_str(), operation))
         .collect();
+    if observed_by_id
+        .iter()
+        .any(|(id, operation)| durable_by_id.get(id).copied() != Some(*operation))
+        || observed
+            .version_vector
+            .0
+            .iter()
+            .any(|(device, sequence)| durable.version_vector.observed(device) < *sequence)
+    {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
     let mut additions: Vec<&OperationEnvelope> = current
         .operations
         .iter()
@@ -587,6 +797,30 @@ pub(crate) fn rebase_local_operations(
             .cmp(&right.stamp.dot)
             .then(left.operation_id.cmp(&right.operation_id))
     });
+
+    let mut expected_vector = observed.version_vector.clone();
+    for addition in &additions {
+        let expected_sequence = expected_vector
+            .observed(local_device)
+            .checked_add(1)
+            .ok_or(SyncServiceError::LocalStateChanged)?;
+        if addition.origin != OperationOrigin::Local
+            || addition.stamp.dot.device_id != *local_device
+            || addition.stamp.dot.sequence != expected_sequence
+            || addition.stamp.observed != expected_vector
+            || addition.operation_id != format!("{}:{expected_sequence}", local_device.as_str())
+            || matches!(
+                addition.operation,
+                Operation::AddDevice { .. } | Operation::RevokeDevice { .. }
+            )
+        {
+            return Err(SyncServiceError::LocalStateChanged);
+        }
+        expected_vector.observe(&addition.stamp.dot);
+    }
+    if current.version_vector != expected_vector {
+        return Err(SyncServiceError::LocalStateChanged);
+    }
 
     let mut rebased = durable.clone();
     let mut appended = false;
@@ -627,14 +861,14 @@ mod tests {
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
-    struct ShutdownFixture {
-        root: std::path::PathBuf,
-        personal_paths: PersonalStatePaths,
-        initial: PersonalStateV2,
-        local: PersonalStateV2,
-        candidate: PreparedManualSync,
-        device_id: DeviceId,
-        checkpoint_sequence: u64,
+    pub(super) struct ShutdownFixture {
+        pub(super) root: std::path::PathBuf,
+        pub(super) personal_paths: PersonalStatePaths,
+        pub(super) initial: PersonalStateV2,
+        pub(super) local: PersonalStateV2,
+        pub(super) candidate: PreparedManualSync,
+        pub(super) device_id: DeviceId,
+        pub(super) checkpoint_sequence: u64,
     }
 
     impl Drop for ShutdownFixture {
@@ -643,7 +877,7 @@ mod tests {
         }
     }
 
-    fn shutdown_fixture() -> ShutdownFixture {
+    pub(super) fn shutdown_fixture() -> ShutdownFixture {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "yututui-sync-shutdown-{}-{sequence}",
@@ -819,9 +1053,10 @@ mod tests {
         let unrelated =
             PersonalStateV2::empty("persistence-unrelated".to_owned()).expect("other state");
 
-        assert!(reconciliation_base_matches(&durable, &durable, &local));
-        assert!(reconciliation_base_matches(&local, &durable, &local));
-        assert!(!reconciliation_base_matches(&unrelated, &durable, &local));
+        let accepted = [durable.clone(), local.clone()];
+        assert!(accepted.contains(&durable));
+        assert!(accepted.contains(&local));
+        assert!(!accepted.contains(&unrelated));
     }
 
     #[test]

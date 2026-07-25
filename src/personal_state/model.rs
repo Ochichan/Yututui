@@ -350,6 +350,16 @@ pub struct DeviceRecord {
     pub public_identity: Option<DevicePublicIdentity>,
 }
 
+impl DeviceRecord {
+    /// Characters that are unsafe in portable device names and their one-line projections.
+    ///
+    /// Keep this policy here so the ledger validator, setup form, and redacted Settings model
+    /// cannot disagree about invisible or bidirectional formatting characters.
+    pub(crate) fn is_forbidden_name_char(character: char) -> bool {
+        forbidden_char(character)
+    }
+}
+
 pub type DeviceRegistry = BTreeMap<DeviceId, DeviceRecord>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -896,7 +906,8 @@ fn forbidden_char(character: char) -> bool {
     character.is_control()
         || matches!(
             character,
-            '\u{200b}'
+            '\u{061c}'
+                | '\u{200b}'
                 | '\u{200c}'
                 | '\u{200d}'
                 | '\u{200e}'
@@ -905,4 +916,31 @@ fn forbidden_char(character: char) -> bool {
                 | '\u{2066}'..='\u{2069}'
                 | '\u{feff}'
         )
+}
+
+#[cfg(test)]
+mod forbidden_character_tests {
+    use super::{DeviceRecord, validate_text};
+
+    #[test]
+    fn device_names_reject_every_forbidden_format_character_and_controls() {
+        for character in [
+            '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{200e}', '\u{200f}', '\u{202a}',
+            '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}',
+            '\u{2069}', '\u{feff}', '\0', '\n', '\u{007f}', '\u{0085}',
+        ] {
+            assert!(
+                DeviceRecord::is_forbidden_name_char(character),
+                "U+{:04X} must be forbidden",
+                u32::from(character)
+            );
+            assert!(
+                validate_text("device name", &format!("safe{character}name")).is_err(),
+                "U+{:04X} must fail portable text validation",
+                u32::from(character)
+            );
+        }
+        assert!(!DeviceRecord::is_forbidden_name_char('한'));
+        assert!(validate_text("device name", "Living room 노트북").is_ok());
+    }
 }
