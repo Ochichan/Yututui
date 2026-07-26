@@ -3,6 +3,9 @@
 use super::{RuntimeHandles, persist_delivery};
 use crate::app::{App, PersistCmd};
 
+mod playlists;
+pub(super) use playlists::PendingOpenSubsonicPlaylistProjection;
+
 /// The durable bridge store can expose at most 20,000 rating plus 20,000 engagement imports.
 ///
 /// This owner-side set is only a hand-off ledger. Refusing new hand-offs at the same aggregate
@@ -142,10 +145,23 @@ fn poll_rating_projection_receipt(
 }
 
 fn bridge_import_tracking_has_capacity(
-    pending: &std::collections::BTreeMap<String, String>,
+    pending: &std::collections::BTreeMap<String, Vec<String>>,
     committed: &std::collections::BTreeSet<String>,
 ) -> bool {
     pending.len().saturating_add(committed.len()) < OWNER_BRIDGE_IMPORT_TRACKING_MAX
+}
+
+fn bridge_import_is_covered(app: &App, envelope_ids: &[String]) -> bool {
+    // Empty means the current durable playlist deletion superseded an older remote observation.
+    // The enclosing personal-state commit identity is still checked by the caller.
+    envelope_ids.is_empty()
+        || envelope_ids.iter().all(|envelope_id| {
+            app.personal_state
+                .ledger
+                .operations
+                .iter()
+                .any(|operation| operation.operation_id == envelope_id.as_str())
+        })
 }
 
 impl RuntimeHandles {
@@ -183,8 +199,8 @@ impl RuntimeHandles {
                 return;
             }
         }
-        let envelope_id = match app.apply_open_subsonic_bridge_import(&import) {
-            Ok(envelope_id) => envelope_id,
+        let envelope_ids = match app.apply_open_subsonic_bridge_import(&import) {
+            Ok(envelope_ids) => envelope_ids,
             Err(error) => {
                 tracing::warn!(%error, "music server observation could not be merged");
                 return;
@@ -193,7 +209,7 @@ impl RuntimeHandles {
         match persist_delivery::admit(&self.persist, app, PersistCmd::Library) {
             Ok(_) => {
                 self.open_subsonic_pending_imports
-                    .insert(operation_id, envelope_id);
+                    .insert(operation_id, envelope_ids);
                 debug_assert!(
                     self.open_subsonic_pending_imports
                         .len()
@@ -227,13 +243,7 @@ impl RuntimeHandles {
         let committed = self
             .open_subsonic_pending_imports
             .iter()
-            .filter(|(_, envelope_id)| {
-                app.personal_state
-                    .ledger
-                    .operations
-                    .iter()
-                    .any(|operation| operation.operation_id == envelope_id.as_str())
-            })
+            .filter(|(_, envelope_ids)| bridge_import_is_covered(app, envelope_ids))
             .map(|(acknowledgement_id, _)| acknowledgement_id.clone())
             .collect::<Vec<_>>();
         for acknowledgement_id in committed {
@@ -294,44 +304,53 @@ impl RuntimeHandles {
             self.open_subsonic_committed_imports.remove(&operation_id);
         }
 
-        match poll_rating_projection_receipt(&mut self.open_subsonic_pending_rating) {
-            RatingProjectionReceipt::Idle => {}
-            RatingProjectionReceipt::Waiting => return,
-            RatingProjectionReceipt::Durable(identity) => {
-                self.open_subsonic_rating_identity = Some(identity);
-            }
-            RatingProjectionReceipt::Retry(Some(error)) => {
-                tracing::warn!(
-                    reason = %error,
-                    "music server ratings are waiting for local durability"
-                );
-            }
-            RatingProjectionReceipt::Retry(None) => {}
-        }
+        let rating_waiting =
+            match poll_rating_projection_receipt(&mut self.open_subsonic_pending_rating) {
+                RatingProjectionReceipt::Idle => false,
+                RatingProjectionReceipt::Waiting => true,
+                RatingProjectionReceipt::Durable(identity) => {
+                    self.open_subsonic_rating_identity = Some(identity);
+                    false
+                }
+                RatingProjectionReceipt::Retry(Some(error)) => {
+                    tracing::warn!(
+                        reason = %error,
+                        "music server ratings are waiting for local durability"
+                    );
+                    false
+                }
+                RatingProjectionReceipt::Retry(None) => false,
+            };
+        let playlist_waiting = self.poll_open_subsonic_playlist_projection();
 
         let Ok(identity) = app.personal_state.ledger.identity() else {
             return;
         };
-        if self.open_subsonic_rating_identity.as_deref() == Some(identity.as_str()) {
-            return;
-        }
-        let winners =
+        if !rating_waiting
+            && self.open_subsonic_rating_identity.as_deref() != Some(identity.as_str())
+        {
             match crate::personal_state::open_subsonic_rating_winners(&app.personal_state.ledger) {
-                Ok(winners) => winners,
+                Ok(winners) => {
+                    if let Ok(receipt) = handle.reconcile_ratings(winners) {
+                        self.open_subsonic_pending_rating =
+                            Some(PendingOpenSubsonicRatingProjection {
+                                identity: identity.clone(),
+                                receipt,
+                            });
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(%error, "music server rating projection could not be prepared");
-                    return;
                 }
-            };
-        if let Ok(receipt) = handle.reconcile_ratings(winners) {
-            self.open_subsonic_pending_rating =
-                Some(PendingOpenSubsonicRatingProjection { identity, receipt });
+            }
         }
+        self.reconcile_open_subsonic_playlists(app, &handle, &identity, playlist_waiting);
     }
 
     pub(crate) fn reset_open_subsonic_rating_projection(&mut self) {
         self.open_subsonic_rating_identity = None;
         self.open_subsonic_pending_rating = None;
+        self.reset_open_subsonic_playlist_projection();
     }
 
     /// Give already-ready bridge receipts one final owner-lane pump without waiting for the
@@ -341,14 +360,21 @@ impl RuntimeHandles {
         &mut self,
         _app: &App,
     ) -> Result<(), crate::open_subsonic::ServiceError> {
+        let mut projection_error = None;
         match poll_rating_projection_receipt(&mut self.open_subsonic_pending_rating) {
             RatingProjectionReceipt::Durable(identity) => {
                 self.open_subsonic_rating_identity = Some(identity);
             }
-            RatingProjectionReceipt::Retry(Some(error)) => return Err(error),
+            RatingProjectionReceipt::Retry(Some(error)) => projection_error = Some(error),
             RatingProjectionReceipt::Idle
             | RatingProjectionReceipt::Waiting
             | RatingProjectionReceipt::Retry(None) => {}
+        }
+        if let Some(error) = self.poll_open_subsonic_playlist_for_shutdown() {
+            projection_error.get_or_insert(error);
+        }
+        if let Some(error) = projection_error {
+            return Err(error);
         }
 
         loop {
@@ -615,7 +641,8 @@ mod tests {
     use super::{
         OWNER_BRIDGE_IMPORT_TRACKING_MAX, PendingOpenSubsonicRatingProjection,
         PendingOpenSubsonicScrobble, RatingProjectionReceipt, admit_pending_scrobble,
-        bridge_import_tracking_has_capacity, poll_rating_projection_receipt,
+        bridge_import_is_covered, bridge_import_tracking_has_capacity,
+        poll_rating_projection_receipt,
     };
 
     fn pending(
@@ -818,5 +845,16 @@ mod tests {
         assert_eq!(committed.len(), OWNER_BRIDGE_IMPORT_TRACKING_MAX);
         assert!(pending.is_empty());
         assert!(!committed.contains("overflow-import"));
+    }
+
+    #[test]
+    fn owner_commit_covers_stale_playlist_retirement_without_an_envelope() {
+        let app = crate::app::App::new(50);
+
+        assert!(bridge_import_is_covered(&app, &[]));
+        assert!(!bridge_import_is_covered(
+            &app,
+            &["not-in-the-ledger".to_owned()]
+        ));
     }
 }

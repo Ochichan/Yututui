@@ -47,6 +47,17 @@ impl App {
         if self.personal_state.sync_ui.modal_open() {
             return self.on_key_sync_wizard(k);
         }
+        if self.server.library.playlist_create.is_some() {
+            return self.on_key_server_playlist_create(k);
+        }
+        if self.server.library.playlist_recovery.is_some() {
+            return self.on_key_server_playlist_recovery(k);
+        }
+        // A server-playlist preview owns input through preparation and apply. Enter/`y`
+        // confirms a ready preview once; every other key backs out without leaking to Library.
+        if self.server.library.playlist_preview.is_some() {
+            return self.on_key_server_playlist_preview(k);
+        }
         // Beginner Mode's F6 focus bridge runs before ordinary surface routing, while every
         // established overlay keeps precedence. Unowned keys continue through unchanged.
         if !self.beginner_higher_overlay_open()

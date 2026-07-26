@@ -2,6 +2,9 @@
 
 use super::DaemonEngine;
 
+mod playlists;
+pub(super) use playlists::PendingOpenSubsonicPlaylistProjection;
+
 pub(super) struct PendingOpenSubsonicScrobble {
     event_id: String,
     kind: crate::open_subsonic::OpenSubsonicScrobbleKind,
@@ -16,6 +19,35 @@ pub(super) struct PendingOpenSubsonicScrobble {
 pub(super) struct PendingOpenSubsonicRatingProjection {
     identity: String,
     receipt: crate::open_subsonic::OpenSubsonicRatingReceipt,
+}
+
+enum ProjectionReceipt {
+    Idle,
+    Waiting,
+    Durable(String),
+    Retry(Option<crate::open_subsonic::ServiceError>),
+}
+
+fn poll_rating_projection_receipt(
+    pending: &mut Option<PendingOpenSubsonicRatingProjection>,
+) -> ProjectionReceipt {
+    let Some(receipt) = pending.as_mut().map(|pending| &mut pending.receipt) else {
+        return ProjectionReceipt::Idle;
+    };
+    match receipt.try_recv() {
+        Ok(Ok(())) => {
+            ProjectionReceipt::Durable(pending.take().expect("rating receipt was present").identity)
+        }
+        Ok(Err(error)) => {
+            *pending = None;
+            ProjectionReceipt::Retry(Some(error))
+        }
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => ProjectionReceipt::Waiting,
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            *pending = None;
+            ProjectionReceipt::Retry(None)
+        }
+    }
 }
 
 fn same_server_track(
@@ -110,7 +142,7 @@ impl DaemonEngine {
     pub(in crate::daemon) fn apply_open_subsonic_bridge_import(
         &mut self,
         import: &crate::open_subsonic::OpenSubsonicBridgeImport,
-    ) -> Result<String, crate::personal_state::PersonalStateError> {
+    ) -> Result<Vec<String>, crate::personal_state::PersonalStateError> {
         let current = match &self.personal_state_device_id {
             Some(device_id) => crate::personal_state::reconcile_runtime_as(
                 &self.personal_state,
@@ -128,35 +160,24 @@ impl DaemonEngine {
                 &self.station,
             )?,
         };
-        let (candidate, envelope_id) = match &self.personal_state_device_id {
-            Some(device_id) => {
-                let envelope_id = crate::personal_state::external_operation_envelope_id(
-                    device_id,
-                    import.operation_id(),
-                )?;
-                let candidate = crate::personal_state::append_external_operation_as(
+        let (candidate, envelope_ids) = if import.remote_playlist_is_absent(&current)? {
+            // Persist the current deletion before acknowledging an older event which was already
+            // admitted to the owner queue. An empty envelope list is the durable retirement marker.
+            (current, Vec::new())
+        } else {
+            let operations = import.external_operations();
+            match &self.personal_state_device_id {
+                Some(device_id) => crate::personal_state::append_external_operations_as(
                     &current,
                     device_id,
-                    import.operation_id().to_owned(),
                     import.origin()?,
-                    import.operation(),
-                    import.observed_at_unix(),
-                )?;
-                (candidate, envelope_id)
-            }
-            None => {
-                let envelope_id = crate::personal_state::external_operation_envelope_id_for_state(
+                    &operations,
+                )?,
+                None => crate::personal_state::append_external_operations(
                     &current,
-                    import.operation_id(),
-                )?;
-                let candidate = crate::personal_state::append_external_operation(
-                    &current,
-                    import.operation_id().to_owned(),
                     import.origin()?,
-                    import.operation(),
-                    import.observed_at_unix(),
-                )?;
-                (candidate, envelope_id)
+                    &operations,
+                )?,
             }
         };
         let commit = crate::personal_state::PersonalStateCommit::prepare_for_runtime(
@@ -180,7 +201,7 @@ impl DaemonEngine {
             self.bump_playlists_rev();
         }
         self.library_invalidations = self.library_invalidations.wrapping_add(1);
-        Ok(envelope_id)
+        Ok(envelope_ids)
     }
 
     pub(in crate::daemon) fn accept_open_subsonic_bridge_import(
@@ -226,28 +247,24 @@ impl DaemonEngine {
 
     pub(in crate::daemon) fn maintain_open_subsonic_bridge(&mut self) {
         self.drive_open_subsonic_scrobbles();
-        if let Some(pending) = self.open_subsonic_pending_rating.as_mut() {
-            match pending.receipt.try_recv() {
-                Ok(Ok(())) => {
-                    let pending = self
-                        .open_subsonic_pending_rating
-                        .take()
-                        .expect("rating receipt was present");
-                    self.open_subsonic_rating_identity = Some(pending.identity);
+        let rating_waiting =
+            match poll_rating_projection_receipt(&mut self.open_subsonic_pending_rating) {
+                ProjectionReceipt::Idle => false,
+                ProjectionReceipt::Waiting => true,
+                ProjectionReceipt::Durable(identity) => {
+                    self.open_subsonic_rating_identity = Some(identity);
+                    false
                 }
-                Ok(Err(error)) => {
+                ProjectionReceipt::Retry(Some(error)) => {
                     tracing::warn!(
                         reason = %error,
                         "music server ratings are waiting for local durability"
                     );
-                    self.open_subsonic_pending_rating = None;
+                    false
                 }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return,
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    self.open_subsonic_pending_rating = None;
-                }
-            }
-        }
+                ProjectionReceipt::Retry(None) => false,
+            };
+        let playlist_waiting = self.poll_open_subsonic_playlist_projection();
         let Some(handle) = crate::open_subsonic::current_handle() else {
             return;
         };
@@ -255,21 +272,25 @@ impl DaemonEngine {
         let Ok(identity) = self.personal_state.identity() else {
             return;
         };
-        if self.open_subsonic_rating_identity.as_deref() == Some(identity.as_str()) {
-            return;
-        }
-        let winners =
+        if !rating_waiting
+            && self.open_subsonic_rating_identity.as_deref() != Some(identity.as_str())
+        {
             match crate::personal_state::open_subsonic_rating_winners(&self.personal_state) {
-                Ok(winners) => winners,
+                Ok(winners) => {
+                    if let Ok(receipt) = handle.reconcile_ratings(winners) {
+                        self.open_subsonic_pending_rating =
+                            Some(PendingOpenSubsonicRatingProjection {
+                                identity: identity.clone(),
+                                receipt,
+                            });
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(%error, "music server rating projection could not be prepared");
-                    return;
                 }
-            };
-        if let Ok(receipt) = handle.reconcile_ratings(winners) {
-            self.open_subsonic_pending_rating =
-                Some(PendingOpenSubsonicRatingProjection { identity, receipt });
+            }
         }
+        self.reconcile_open_subsonic_playlists(&handle, &identity, playlist_waiting);
     }
 
     /// Poll only receipts which are already ready. An unresolved Submission remains protected by
@@ -586,18 +607,19 @@ mod tests {
             observed_at_unix: 100,
         };
 
-        let envelope_id = engine.apply_open_subsonic_bridge_import(&import).unwrap();
+        let envelope_ids = engine.apply_open_subsonic_bridge_import(&import).unwrap();
         assert_eq!(
             engine.apply_open_subsonic_bridge_import(&import).unwrap(),
-            envelope_id
+            envelope_ids
         );
+        let envelope_id = &envelope_ids[0];
 
         assert_eq!(
             engine
                 .personal_state
                 .operations
                 .iter()
-                .filter(|operation| operation.operation_id == envelope_id)
+                .filter(|operation| operation.operation_id == *envelope_id)
                 .count(),
             1
         );

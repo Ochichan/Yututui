@@ -21,6 +21,7 @@ use crate::personal_state::{
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 mod aggregate_continuation;
+mod playlists;
 mod rating_projection;
 mod scrobble_delivery;
 
@@ -45,11 +46,12 @@ async fn fixture(
         None,
     )
     .unwrap();
-    let private_state = OpenSubsonicPrivateState::new(
+    let mut private_state = OpenSubsonicPrivateState::new(
         backend_id.clone(),
         account_scope_id.clone(),
         ServerCredential::api_key(SecretString::from("test-api-key".to_owned())).unwrap(),
     );
+    private_state.bind_api_key_username("owner").unwrap();
     let bridge_state = OpenSubsonicBridgeState::new(backend_id, account_scope_id);
     let mut store_set = OpenSubsonicStoreSet::new(profile, private_state, bridge_state).unwrap();
     let root = std::env::temp_dir().join(format!(

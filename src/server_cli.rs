@@ -12,11 +12,13 @@ use serde::Serialize;
 
 use yututui::open_subsonic::{
     CredentialKind, NativeHistoryHealth, OpenSubsonicPaths, OpenSubsonicStatus,
-    OpenSubsonicStatusKind, OutboundScrobbleResolution, ServerCredential, ServerFeature,
-    SetupIdentityIntent, SetupInput, commit_setup, commit_store_set, list_scrobble_attention_ids,
+    OpenSubsonicStatusKind, OutboundScrobbleResolution, PlaylistCreateAttention, ServerCredential,
+    ServerFeature, SetupIdentityIntent, SetupInput, abandon_playlist_create_attention,
+    commit_setup, commit_store_set, list_playlist_create_attention, list_scrobble_attention_ids,
     load_store_set, read_status, remove_profile, resolve_scrobble_attention,
     test_and_prepare_setup, test_connection_read_only,
 };
+use yututui::personal_state::PlaylistId;
 
 const EXIT_OK: i32 = 0;
 const EXIT_RUNTIME: i32 = 1;
@@ -50,6 +52,10 @@ Commands:
                     Treat one report as unsent and retry it
   scrobbles mark-sent <OPAQUE_ID>
                     Treat one report as sent without retrying it
+  playlists pending [--json]
+                    List local IDs for playlist creates needing a decision
+  playlists abandon <LOCAL_PLAYLIST_ID>
+                    Forget one create guard without deleting either copy
   remove            Remove the profile and credentials; keep local personal data
 
 Passwords and API keys are prompted with echo disabled and are never accepted as arguments.
@@ -66,6 +72,8 @@ enum Command {
     ScrobblesList { json: bool },
     ScrobbleRetry { event_id: String },
     ScrobbleMarkSent { event_id: String },
+    PlaylistCreatesPending { json: bool },
+    PlaylistCreateAbandon { local_playlist_id: String },
     Remove,
 }
 
@@ -88,12 +96,29 @@ struct JsonStatus<'a> {
     detailed_history_enabled: bool,
     detailed_history_status: &'static str,
     playback_reports_needing_decision: usize,
+    playlist_creates_needing_decision: usize,
+    playlist_create_attention: Vec<JsonPlaylistCreateAttention<'a>>,
+    playlist_links_needing_decision: usize,
+    playlist_updates_needing_reconnect: usize,
+    playlist_contents_needing_review: usize,
 }
 
 #[derive(Serialize)]
 struct JsonScrobbleAttention<'a> {
     count: usize,
     opaque_ids: &'a [String],
+}
+
+#[derive(Serialize)]
+struct JsonPlaylistCreateAttention<'a> {
+    local_playlist_id: &'a str,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct JsonPlaylistCreateAttentionList<'a> {
+    count: usize,
+    pending: Vec<JsonPlaylistCreateAttention<'a>>,
 }
 
 pub fn run(args: &[String]) -> i32 {
@@ -117,6 +142,10 @@ pub fn run(args: &[String]) -> i32 {
         Command::ScrobbleMarkSent { event_id } => {
             run_scrobble_resolution(&event_id, OutboundScrobbleResolution::MarkSent)
         }
+        Command::PlaylistCreatesPending { json } => run_playlist_creates_pending(json),
+        Command::PlaylistCreateAbandon { local_playlist_id } => {
+            run_playlist_create_abandon(&local_playlist_id)
+        }
         Command::Remove => run_remove(),
     };
     match result {
@@ -138,6 +167,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "remove" => no_args(&args[1..], Command::Remove, "remove"),
         "history" => parse_history(&args[1..]),
         "scrobbles" => parse_scrobbles(&args[1..]),
+        "playlists" => parse_playlists(&args[1..]),
         "status" => match &args[1..] {
             [] => Ok(Command::Status { json: false }),
             [flag] if flag == "--json" => Ok(Command::Status { json: true }),
@@ -145,6 +175,25 @@ fn parse(args: &[String]) -> Result<Command, String> {
             _ => Err("status only accepts `--json`".to_owned()),
         },
         other => Err(format!("unknown command `{other}`")),
+    }
+}
+
+fn parse_playlists(args: &[String]) -> Result<Command, String> {
+    match args {
+        [action] if action == "pending" => Ok(Command::PlaylistCreatesPending { json: false }),
+        [action, flag] if action == "pending" && flag == "--json" => {
+            Ok(Command::PlaylistCreatesPending { json: true })
+        }
+        [action, local_playlist_id] if action == "abandon" => Ok(Command::PlaylistCreateAbandon {
+            local_playlist_id: local_playlist_id.clone(),
+        }),
+        [flag] | [_, flag] if matches!(flag.as_str(), "-h" | "--help" | "help") => {
+            Ok(Command::Help)
+        }
+        [] => Err("playlists requires `pending` or `abandon <LOCAL_PLAYLIST_ID>`".to_owned()),
+        _ => {
+            Err("playlists accepts `pending [--json]` or `abandon <LOCAL_PLAYLIST_ID>`".to_owned())
+        }
     }
 }
 
@@ -333,6 +382,36 @@ fn run_scrobble_resolution(
     Ok(())
 }
 
+fn run_playlist_creates_pending(json: bool) -> Result<(), String> {
+    initialize_reader()?;
+    let attention = list_playlist_create_attention(&paths()?).map_err(|error| error.to_string())?;
+    if json {
+        println!("{}", render_json_playlist_create_attention(&attention)?);
+    } else {
+        for line in human_playlist_create_attention_lines(&attention) {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+fn run_playlist_create_abandon(local_playlist_id: &str) -> Result<(), String> {
+    let local_playlist_id = PlaylistId::new(local_playlist_id.to_owned()).map_err(|_| {
+        "playlist recovery requires the exact local ID from `playlists pending`".to_owned()
+    })?;
+    initialize_writer()?;
+    if !confirm(
+        "A server copy may already exist. Forget only the retry guard and leave both copies untouched? [y/N]: ",
+    )? {
+        println!("Pending playlist creation was not changed.");
+        return Ok(());
+    }
+    abandon_playlist_create_attention(&paths()?, &local_playlist_id)
+        .map_err(|error| error.to_string())?;
+    println!("Pending playlist creation was forgotten; neither copy was deleted.");
+    Ok(())
+}
+
 fn run_history_enable() -> Result<(), String> {
     initialize_writer()?;
     let paths = paths()?;
@@ -431,6 +510,8 @@ fn checked_status(paths: &OpenSubsonicPaths) -> Result<OpenSubsonicStatus, Strin
 }
 
 fn render_json_status(status: &OpenSubsonicStatus) -> Result<String, String> {
+    let playlist_create_attention =
+        json_playlist_create_attention(&status.playlist_create_attention);
     let value = JsonStatus {
         status: status_label(status.kind),
         display_name: status.display_name.as_deref(),
@@ -442,8 +523,35 @@ fn render_json_status(status: &OpenSubsonicStatus) -> Result<String, String> {
         detailed_history_enabled: status.native_history_enabled,
         detailed_history_status: history_status_label(status.native_history_health),
         playback_reports_needing_decision: status.outbound_scrobbles_needing_attention,
+        playlist_creates_needing_decision: status.playlist_creates_needing_attention,
+        playlist_create_attention,
+        playlist_links_needing_decision: status.playlist_links_needing_decision,
+        playlist_updates_needing_reconnect: status.playlist_projections_needing_attention,
+        playlist_contents_needing_review: status.playlist_contents_needing_attention,
     };
     serde_json::to_string_pretty(&value).map_err(|_| "could not encode status JSON".to_owned())
+}
+
+fn render_json_playlist_create_attention(
+    attention: &[PlaylistCreateAttention],
+) -> Result<String, String> {
+    serde_json::to_string_pretty(&JsonPlaylistCreateAttentionList {
+        count: attention.len(),
+        pending: json_playlist_create_attention(attention),
+    })
+    .map_err(|_| "could not encode playlist-create JSON".to_owned())
+}
+
+fn json_playlist_create_attention(
+    attention: &[PlaylistCreateAttention],
+) -> Vec<JsonPlaylistCreateAttention<'_>> {
+    attention
+        .iter()
+        .map(|pending| JsonPlaylistCreateAttention {
+            local_playlist_id: pending.local_playlist_id.as_str(),
+            state: pending.state.label(),
+        })
+        .collect()
 }
 
 fn render_json_scrobble_list(ids: &[String]) -> Result<String, String> {
@@ -462,6 +570,26 @@ fn human_scrobble_list_lines(ids: &[String]) -> Vec<String> {
     lines.push(playback_report_attention_summary(ids.len()));
     lines.extend(ids.iter().cloned());
     lines.push("Choose `retry <OPAQUE_ID>` or `mark-sent <OPAQUE_ID>` for each report.".to_owned());
+    lines
+}
+
+fn human_playlist_create_attention_lines(attention: &[PlaylistCreateAttention]) -> Vec<String> {
+    if attention.is_empty() {
+        return vec!["No server playlist creations need a decision.".to_owned()];
+    }
+    let mut lines = Vec::with_capacity(attention.len().saturating_add(2));
+    lines.push(playlist_create_attention_summary(attention.len()));
+    lines.extend(attention.iter().map(|pending| {
+        format!(
+            "{}  {}",
+            pending.local_playlist_id.as_str(),
+            pending.state.label()
+        )
+    }));
+    lines.push(
+        "Use `ytt server playlists abandon <LOCAL_PLAYLIST_ID>` only after checking the server."
+            .to_owned(),
+    );
     lines
 }
 
@@ -501,13 +629,55 @@ fn print_human_status(status: &OpenSubsonicStatus) {
         }
         OpenSubsonicStatusKind::NeedsAttention => {
             println!("Needs attention");
+            let mut showed_recovery = false;
             if status.outbound_scrobbles_needing_attention > 0 {
+                showed_recovery = true;
                 println!(
                     "{}",
                     playback_report_attention_summary(status.outbound_scrobbles_needing_attention)
                 );
                 println!("{}", playback_report_attention_action());
-            } else {
+            }
+            if status.playlist_creates_needing_attention > 0 {
+                showed_recovery = true;
+                println!(
+                    "{}",
+                    playlist_create_attention_summary(status.playlist_creates_needing_attention)
+                );
+                for pending in &status.playlist_create_attention {
+                    println!(
+                        "{}  {}",
+                        pending.local_playlist_id.as_str(),
+                        pending.state.label()
+                    );
+                }
+                println!("Action: review them with `ytt server playlists pending`.");
+            }
+            if status.playlist_links_needing_decision > 0 {
+                showed_recovery = true;
+                println!(
+                    "{}",
+                    playlist_link_attention_summary(status.playlist_links_needing_decision)
+                );
+                println!("{}", playlist_link_attention_action());
+            }
+            if status.playlist_projections_needing_attention > 0 {
+                showed_recovery = true;
+                println!(
+                    "{} playlist update(s) need a successful reconnect before retrying.",
+                    status.playlist_projections_needing_attention
+                );
+                println!("Action: update and test the connection settings.");
+            }
+            if status.playlist_contents_needing_attention > 0 {
+                showed_recovery = true;
+                println!(
+                    "{} linked playlist(s) contain tracks from outside this server account.",
+                    status.playlist_contents_needing_attention
+                );
+                println!("Action: review those local playlists in Server Library.");
+            }
+            if !showed_recovery {
                 println!("Action: update the connection settings");
             }
             println!(
@@ -516,6 +686,26 @@ fn print_human_status(status: &OpenSubsonicStatus) {
             );
         }
     }
+}
+
+fn playlist_create_attention_summary(count: usize) -> String {
+    if count == 1 {
+        "1 server playlist creation needs a decision.".to_owned()
+    } else {
+        format!("{count} server playlist creations need a decision.")
+    }
+}
+
+fn playlist_link_attention_summary(count: usize) -> String {
+    if count == 1 {
+        "1 linked server playlist is missing and needs a decision.".to_owned()
+    } else {
+        format!("{count} linked server playlists are missing and need a decision.")
+    }
+}
+
+fn playlist_link_attention_action() -> &'static str {
+    "Action: open Server Library and choose Restore, Unlink, or Delete local too."
 }
 
 fn playback_report_attention_summary(count: usize) -> String {
@@ -742,7 +932,8 @@ mod tests {
     use super::*;
     use yututui::open_subsonic::{
         ConfiguredPrivateOrigin, OpenSubsonicBridgeState, OpenSubsonicPrivateState,
-        OpenSubsonicProfile, OpenSubsonicStoreSet, StoreRevisions, commit_store_set,
+        OpenSubsonicProfile, OpenSubsonicStoreSet, PlaylistCreateRecoveryState, StoreRevisions,
+        commit_store_set,
     };
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -921,6 +1112,54 @@ mod tests {
     }
 
     #[test]
+    fn playlist_create_recovery_parser_and_output_use_only_local_ids() {
+        assert_eq!(
+            parse(&args(&["playlists", "pending"])),
+            Ok(Command::PlaylistCreatesPending { json: false })
+        );
+        assert_eq!(
+            parse(&args(&["playlists", "pending", "--json"])),
+            Ok(Command::PlaylistCreatesPending { json: true })
+        );
+        assert_eq!(
+            parse(&args(&["playlists", "abandon", "local-opaque"])),
+            Ok(Command::PlaylistCreateAbandon {
+                local_playlist_id: "local-opaque".to_owned(),
+            })
+        );
+        assert!(parse(&args(&["playlists", "abandon"])).is_err());
+        assert!(parse(&args(&["playlists", "pending", "--verbose"])).is_err());
+        assert!(SERVER_USAGE.contains("playlists pending [--json]"));
+        assert!(SERVER_USAGE.contains("playlists abandon <LOCAL_PLAYLIST_ID>"));
+
+        let attention = vec![
+            PlaylistCreateAttention {
+                local_playlist_id: PlaylistId::new("local-a").unwrap(),
+                state: PlaylistCreateRecoveryState::ServerIdentityUnknown,
+            },
+            PlaylistCreateAttention {
+                local_playlist_id: PlaylistId::new("local-b").unwrap(),
+                state: PlaylistCreateRecoveryState::ReadbackNeeded,
+            },
+        ];
+        let json = render_json_playlist_create_attention(&attention).unwrap();
+        assert!(json.contains(r#""local_playlist_id": "local-a""#));
+        assert!(json.contains(r#""state": "server_identity_unknown""#));
+        assert!(json.contains(r#""state": "readback_needed""#));
+        assert!(!json.contains("server-known"));
+        assert!(!json.contains("Private name"));
+
+        let human = human_playlist_create_attention_lines(&attention);
+        assert_eq!(human[0], "2 server playlist creations need a decision.");
+        assert_eq!(human[1], "local-a  server_identity_unknown");
+        assert_eq!(human[2], "local-b  readback_needed");
+        assert_eq!(
+            human_playlist_create_attention_lines(&[]),
+            vec!["No server playlist creations need a decision."]
+        );
+    }
+
+    #[test]
     fn destructive_scrobble_choices_default_to_no() {
         for rejected in ["", "n", "no", "later", "1"] {
             assert!(!is_affirmative_confirmation(rejected));
@@ -1013,6 +1252,9 @@ mod tests {
         assert!(json.contains(r#""status": "needs_attention""#));
         assert!(json.contains(r#""detailed_history_status": "off""#));
         assert!(json.contains(r#""playback_reports_needing_decision": 0"#));
+        assert!(json.contains(r#""playlist_creates_needing_decision": 0"#));
+        assert!(json.contains(r#""playlist_links_needing_decision": 0"#));
+        assert!(json.contains(r#""playlist_contents_needing_review": 0"#));
         assert!(json.contains("Offline fixture"));
         assert!(!json.contains("json-secret-sentinel"));
         assert!(!json.contains("https://"));
@@ -1032,6 +1274,36 @@ mod tests {
         assert_eq!(
             playback_report_attention_action(),
             "Action: review them with `ytt server scrobbles list`."
+        );
+        playback_attention.playlist_creates_needing_attention = 1;
+        playback_attention.playlist_create_attention = vec![PlaylistCreateAttention {
+            local_playlist_id: PlaylistId::new("local-status").unwrap(),
+            state: PlaylistCreateRecoveryState::ReadbackNeeded,
+        }];
+        playback_attention.playlist_links_needing_decision = 1;
+        playback_attention.playlist_projections_needing_attention = 2;
+        playback_attention.playlist_contents_needing_attention = 3;
+        let json = render_json_status(&playback_attention).unwrap();
+        assert!(json.contains(r#""playlist_creates_needing_decision": 1"#));
+        assert!(json.contains(r#""local_playlist_id": "local-status""#));
+        assert!(json.contains(r#""playlist_links_needing_decision": 1"#));
+        assert!(json.contains(r#""playlist_updates_needing_reconnect": 2"#));
+        assert!(json.contains(r#""playlist_contents_needing_review": 3"#));
+        assert_eq!(
+            playlist_create_attention_summary(1),
+            "1 server playlist creation needs a decision."
+        );
+        assert_eq!(
+            playlist_link_attention_summary(1),
+            "1 linked server playlist is missing and needs a decision."
+        );
+        assert_eq!(
+            playlist_link_attention_summary(2),
+            "2 linked server playlists are missing and need a decision."
+        );
+        assert_eq!(
+            playlist_link_attention_action(),
+            "Action: open Server Library and choose Restore, Unlink, or Delete local too."
         );
         let _ = std::fs::remove_dir_all(root);
     }

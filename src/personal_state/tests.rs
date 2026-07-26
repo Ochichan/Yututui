@@ -8,6 +8,7 @@ use super::transaction::{CommitPoint, TargetFile};
 use super::*;
 
 mod external_observations;
+mod playlists;
 
 fn track(id: &str) -> PortableTrack {
     PortableTrack {

@@ -176,6 +176,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.library_ui.confirm_download.is_some() {
         views::library::render_confirm_download(frame, app, area);
     }
+    // Explicit server-playlist imports and links always show their deletion-free preview above
+    // the library before anything can be applied.
+    if app.server.library.playlist_preview.is_some() {
+        views::server_playlist_preview::render(frame, app, area);
+    }
+    if app.server.library.playlist_create.is_some() {
+        views::server_playlist_create::render(frame, app, area);
+    }
+    if app.server.library.playlist_recovery.is_some() {
+        views::server_playlist_recovery::render(frame, app, area);
+    }
     // The add-to-playlist picker floats over whichever screen opened it.
     if app.playlist_picker.is_some() {
         views::library::render_playlist_picker(frame, app, area);

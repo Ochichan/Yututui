@@ -4,14 +4,21 @@
 //! material is move-only, zeroized on drop, and reaches durable storage only after the
 //! connection test has produced a prepared core transaction.
 
+mod playlist_create_recovery;
+mod state;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{App, Cmd, MouseTarget, PersistCmd, StatusKind};
 use crate::keymap::Action;
-use crate::open_subsonic::PreparedSetup;
+use crate::open_subsonic::{PlaylistCreateAttention, PreparedSetup};
 use crate::search_source::SearchSource;
 use crate::util::text_edit::TextCursor;
+
+pub use state::{
+    MusicServerHealth, MusicServerHistoryHealth, MusicServerSettingsState, MusicServerSummary,
+};
 
 const MAX_SETUP_DISPLAY_NAME_BYTES: usize = 1_024;
 const MAX_SETUP_ORIGIN_BYTES: usize = 4_096;
@@ -60,45 +67,6 @@ impl SyncArea {
             (index + Self::ALL.len() - 1) % Self::ALL.len()
         };
         Self::ALL[next]
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MusicServerHealth {
-    #[default]
-    Off,
-    UpToDate,
-    NeedsAttention,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MusicServerHistoryHealth {
-    #[default]
-    Off,
-    Probing,
-    Detailed,
-    PlayCountsOnly,
-    UpdatePassword,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MusicServerSummary {
-    pub health: MusicServerHealth,
-    pub configured: bool,
-    pub display_name: Option<String>,
-    pub credential_kind: Option<MusicServerCredentialMode>,
-    pub lan_http: bool,
-    pub custom_ca: bool,
-    pub history: MusicServerHistoryHealth,
-    /// Ambiguously delivered playback reports awaiting an explicit user decision.
-    pub playback_reports_needing_decision: usize,
-}
-
-impl MusicServerSummary {
-    pub fn display_name(&self) -> &str {
-        self.display_name
-            .as_deref()
-            .unwrap_or_else(|| crate::t!("Music server", "음악 서버", "音楽サーバー"))
     }
 }
 
@@ -230,6 +198,10 @@ pub enum MusicServerCommand {
     Remove {
         generation: u64,
     },
+    AbandonPlaylistCreate {
+        generation: u64,
+        local_playlist_id: crate::personal_state::PlaylistId,
+    },
 }
 
 pub enum MusicServerEvent {
@@ -253,6 +225,10 @@ pub enum MusicServerEvent {
         generation: u64,
         result: Result<(), MusicServerFailure>,
     },
+    PlaylistCreateAbandoned {
+        generation: u64,
+        result: Result<MusicServerSummary, MusicServerFailure>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,6 +244,7 @@ pub enum MusicServerBusy {
     Saving,
     History,
     Removing,
+    PlaylistRecovery,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -431,46 +408,7 @@ pub enum MusicServerWizard {
     Setup(MusicServerSetupForm),
     Waiting,
     RemoveConfirm,
-}
-
-/// Settings/UI state. It intentionally has no `Debug`/`Clone` because `wizard` may own secrets.
-pub struct MusicServerSettingsState {
-    pub area: SyncArea,
-    pub selected: usize,
-    pub generation: u64,
-    pub busy: Option<MusicServerBusy>,
-    pub summary: MusicServerSummary,
-    pub failure: Option<MusicServerFailure>,
-    pub wizard: Option<MusicServerWizard>,
-}
-
-impl Default for MusicServerSettingsState {
-    fn default() -> Self {
-        Self {
-            area: SyncArea::Status,
-            selected: 0,
-            generation: 0,
-            busy: None,
-            summary: MusicServerSummary::default(),
-            failure: None,
-            wizard: None,
-        }
-    }
-}
-
-impl MusicServerSettingsState {
-    pub fn row_count(&self) -> usize {
-        if self.summary.configured { 4 } else { 2 }
-    }
-
-    pub fn modal_open(&self) -> bool {
-        self.wizard.is_some()
-    }
-
-    pub(in crate::app) fn next_generation(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1).max(1);
-        self.generation
-    }
+    AbandonPlaylistCreateConfirm(PlaylistCreateAttention),
 }
 
 impl App {
@@ -609,6 +547,12 @@ impl App {
         }
         self.server.settings.selected = row;
         if self.server.settings.summary.configured {
+            let has_pending_create = !self
+                .server
+                .settings
+                .summary
+                .playlist_create_attention
+                .is_empty();
             match row {
                 0 => self.request_music_server_status(),
                 1 => {
@@ -616,7 +560,8 @@ impl App {
                     Vec::new()
                 }
                 2 => self.activate_music_server_history(),
-                3 => {
+                3 if has_pending_create => self.open_playlist_create_abandon_confirmation(),
+                3 | 4 => {
                     self.server.settings.wizard = Some(MusicServerWizard::RemoveConfirm);
                     self.dirty = true;
                     Vec::new()
@@ -650,7 +595,11 @@ impl App {
     fn on_key_music_server_wizard(&mut self, key: KeyEvent) -> Vec<Cmd> {
         let durable_change_in_flight = matches!(
             self.server.settings.busy,
-            Some(MusicServerBusy::Saving | MusicServerBusy::Removing)
+            Some(
+                MusicServerBusy::Saving
+                    | MusicServerBusy::Removing
+                    | MusicServerBusy::PlaylistRecovery
+            )
         );
         if durable_change_in_flight {
             return Vec::new();
@@ -677,6 +626,15 @@ impl App {
         ) {
             return match key.code {
                 KeyCode::Enter => self.start_music_server_remove(),
+                _ => Vec::new(),
+            };
+        }
+        if matches!(
+            self.server.settings.wizard,
+            Some(MusicServerWizard::AbandonPlaylistCreateConfirm(_))
+        ) {
+            return match key.code {
+                KeyCode::Enter => self.start_abandon_playlist_create(),
                 _ => Vec::new(),
             };
         }
@@ -851,7 +809,11 @@ impl App {
             MouseTarget::MusicServerWizardSecondary
                 if matches!(
                     self.server.settings.busy,
-                    Some(MusicServerBusy::Saving | MusicServerBusy::Removing)
+                    Some(
+                        MusicServerBusy::Saving
+                            | MusicServerBusy::Removing
+                            | MusicServerBusy::PlaylistRecovery
+                    )
                 ) =>
             {
                 Vec::new()
@@ -867,6 +829,9 @@ impl App {
             MouseTarget::MusicServerWizardPrimary => match self.server.settings.wizard.as_ref() {
                 Some(MusicServerWizard::Setup(_)) => self.start_music_server_setup(),
                 Some(MusicServerWizard::RemoveConfirm) => self.start_music_server_remove(),
+                Some(MusicServerWizard::AbandonPlaylistCreateConfirm(_)) => {
+                    self.start_abandon_playlist_create()
+                }
                 Some(MusicServerWizard::Waiting) | None => Vec::new(),
             },
             MouseTarget::MusicServerWizardReveal => {
@@ -913,7 +878,8 @@ impl App {
             | MusicServerEvent::Prepared { generation, .. }
             | MusicServerEvent::Committed { generation, .. }
             | MusicServerEvent::HistoryDisabled { generation, .. }
-            | MusicServerEvent::Removed { generation, .. } => *generation,
+            | MusicServerEvent::Removed { generation, .. }
+            | MusicServerEvent::PlaylistCreateAbandoned { generation, .. } => *generation,
         };
         if event_generation != self.server.settings.generation {
             return Vec::new();
@@ -1068,6 +1034,9 @@ impl App {
                 };
                 self.dirty = true;
                 commands
+            }
+            MusicServerEvent::PlaylistCreateAbandoned { result, .. } => {
+                self.finish_playlist_create_abandoned(result)
             }
         }
     }
@@ -1309,6 +1278,11 @@ mod tests {
                 custom_ca: false,
                 history: MusicServerHistoryHealth::Off,
                 playback_reports_needing_decision: 0,
+                playlist_creates_needing_decision: 0,
+                playlist_create_attention: Vec::new(),
+                playlist_links_needing_decision: 0,
+                playlist_projections_needing_decision: 0,
+                playlist_contents_needing_decision: 0,
             }),
         });
 
@@ -1343,6 +1317,11 @@ mod tests {
                 custom_ca: false,
                 history: MusicServerHistoryHealth::Off,
                 playback_reports_needing_decision: 0,
+                playlist_creates_needing_decision: 0,
+                playlist_create_attention: Vec::new(),
+                playlist_links_needing_decision: 0,
+                playlist_projections_needing_decision: 0,
+                playlist_contents_needing_decision: 0,
             }),
         });
 
@@ -1369,6 +1348,11 @@ mod tests {
                 custom_ca: false,
                 history: MusicServerHistoryHealth::Off,
                 playback_reports_needing_decision: 0,
+                playlist_creates_needing_decision: 0,
+                playlist_create_attention: Vec::new(),
+                playlist_links_needing_decision: 0,
+                playlist_projections_needing_decision: 0,
+                playlist_contents_needing_decision: 0,
             }),
         });
 
@@ -1407,6 +1391,11 @@ mod tests {
                         custom_ca: false,
                         history: MusicServerHistoryHealth::Off,
                         playback_reports_needing_decision: 0,
+                        playlist_creates_needing_decision: 0,
+                        playlist_create_attention: Vec::new(),
+                        playlist_links_needing_decision: 0,
+                        playlist_projections_needing_decision: 0,
+                        playlist_contents_needing_decision: 0,
                     },
                     failure: Some(failure),
                 }),

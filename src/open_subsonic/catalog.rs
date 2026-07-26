@@ -4,7 +4,7 @@ use super::client::{BinaryPayload, Endpoint, OpenSubsonicClient, ServerError};
 use super::model::{
     AccountScopeId, AlbumId, ArtistId, BackendId, CoverArtId, OpenSubsonicItemRef, ServerAlbum,
     ServerArtist, ServerLibraryDetail, ServerLibraryPage, ServerLibraryRow, ServerLibrarySection,
-    ServerPlaylist, ServerPlaylistId, ServerPlaylistSummary, ServerSong,
+    ServerPlaylist, ServerPlaylistAccess, ServerPlaylistId, ServerPlaylistSummary, ServerSong,
 };
 use super::private_store::ServerCredential;
 use super::wire::{
@@ -459,51 +459,50 @@ fn artist(raw: RawArtist) -> Option<ServerArtist> {
 }
 
 fn playlist_summary(raw: RawPlaylistSummary) -> Option<ServerPlaylistSummary> {
-    playlist_fields(
-        raw.id,
-        raw.name,
-        raw.owner,
-        raw.song_count,
-        raw.duration,
-        raw.public,
-        raw.cover_art,
-    )
+    playlist_fields(raw)
 }
 
 fn playlist(raw: &RawPlaylist) -> Option<ServerPlaylistSummary> {
-    playlist_fields(
-        raw.id.clone(),
-        raw.name.clone(),
-        raw.owner.clone(),
-        raw.song_count,
-        raw.duration,
-        raw.public,
-        raw.cover_art.clone(),
-    )
+    playlist_fields(RawPlaylistSummary {
+        id: raw.id.clone(),
+        name: raw.name.clone(),
+        owner: raw.owner.clone(),
+        readonly: raw.readonly,
+        song_count: raw.song_count,
+        duration: raw.duration,
+        public: raw.public,
+        cover_art: raw.cover_art.clone(),
+    })
 }
 
-fn playlist_fields(
-    id: Option<String>,
-    name: Option<String>,
-    owner: Option<String>,
-    song_count: Option<u64>,
-    duration: Option<u64>,
-    public: Option<bool>,
-    cover_art: Option<String>,
-) -> Option<ServerPlaylistSummary> {
+fn playlist_fields(raw: RawPlaylistSummary) -> Option<ServerPlaylistSummary> {
+    let owner_evidence = raw.owner.as_deref().and_then(exact_owner_evidence);
     Some(ServerPlaylistSummary {
-        id: ServerPlaylistId::new(id?).ok()?,
-        name: name
+        id: ServerPlaylistId::new(raw.id?).ok()?,
+        name: raw
+            .name
             .map(|value| crate::api::sanitize_metadata_text(&value, 300))
             .filter(|value| !value.is_empty())?,
-        owner: owner
+        owner: raw
+            .owner
             .map(|value| crate::api::sanitize_metadata_text(&value, 200))
             .filter(|value| !value.is_empty()),
-        song_count: song_count.and_then(to_u32),
-        duration_secs: duration.and_then(to_u32),
-        public,
-        cover_art_id: cover_art.and_then(|id| CoverArtId::new(id).ok()),
+        song_count: raw.song_count.and_then(to_u32),
+        duration_secs: raw.duration.and_then(to_u32),
+        public: raw.public,
+        cover_art_id: raw.cover_art.and_then(|id| CoverArtId::new(id).ok()),
+        access: ServerPlaylistAccess::ReadOnly,
+        link: None,
+        readonly_evidence: raw.readonly,
+        owner_evidence,
     })
+}
+
+fn exact_owner_evidence(owner: &str) -> Option<String> {
+    const MAX_OWNER_EVIDENCE_CHARS: usize = 1_024;
+
+    let sanitized = crate::api::sanitize_metadata_text(owner, MAX_OWNER_EVIDENCE_CHARS);
+    (!sanitized.is_empty() && sanitized == owner).then_some(sanitized)
 }
 
 fn album_with_songs_summary(raw: &RawAlbumWithSongs) -> Option<ServerAlbum> {
@@ -638,5 +637,36 @@ mod tests {
             ..RawPlaylist::default()
         };
         assert_eq!(raw.entry.len(), 2);
+    }
+
+    #[test]
+    fn playlist_catalog_defaults_readonly_and_keeps_exact_access_evidence() {
+        let summary = playlist_summary(RawPlaylistSummary {
+            id: Some("playlist".to_owned()),
+            name: Some("Playlist".to_owned()),
+            owner: Some("alice".to_owned()),
+            readonly: Some(false),
+            ..RawPlaylistSummary::default()
+        })
+        .unwrap();
+        assert_eq!(summary.access, ServerPlaylistAccess::ReadOnly);
+        assert_eq!(summary.owner.as_deref(), Some("alice"));
+        assert_eq!(summary.readonly_evidence(), Some(false));
+        assert_eq!(summary.owner_evidence(), Some("alice"));
+    }
+
+    #[test]
+    fn sanitized_display_owner_is_never_accepted_as_owner_evidence() {
+        let summary = playlist_summary(RawPlaylistSummary {
+            id: Some("playlist".to_owned()),
+            name: Some("Playlist".to_owned()),
+            owner: Some(" alice ".to_owned()),
+            readonly: Some(false),
+            ..RawPlaylistSummary::default()
+        })
+        .unwrap();
+        assert_eq!(summary.owner.as_deref(), Some("alice"));
+        assert_eq!(summary.owner_evidence(), None);
+        assert_eq!(summary.access, ServerPlaylistAccess::ReadOnly);
     }
 }

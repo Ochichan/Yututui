@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod linked_playlists;
+
 impl RuntimeHandles {
     pub fn dispatch(&mut self, app: &mut App, cmd: Cmd) {
         self.background_tasks.reap_finished();
@@ -355,6 +357,71 @@ impl RuntimeHandles {
                             },
                         );
                     }
+                    crate::app::MusicServerCommand::AbandonPlaylistCreate {
+                        generation,
+                        local_playlist_id,
+                    } => {
+                        self.background_tasks.spawn_cancellable(
+                            "music_server_playlist_create_abandon",
+                            async move {
+                                let abandoned = if let Some(handle) =
+                                    crate::open_subsonic::current_handle()
+                                {
+                                    handle
+                                        .abandon_playlist_create(local_playlist_id)
+                                        .await
+                                        .map_err(|error| {
+                                            music_server_failure(
+                                                crate::open_subsonic::ServiceError::Server(error),
+                                            )
+                                        })
+                                } else {
+                                    tokio::task::spawn_blocking(move || {
+                                        let paths =
+                                            crate::open_subsonic::OpenSubsonicPaths::current()
+                                                .map_err(
+                                                    crate::open_subsonic::ServiceError::from,
+                                                )?;
+                                        crate::open_subsonic::abandon_playlist_create_attention(
+                                            &paths,
+                                            &local_playlist_id,
+                                        )
+                                    })
+                                    .await
+                                    .map_err(|_| crate::app::MusicServerFailure::Unavailable)
+                                    .and_then(|result| result.map_err(music_server_failure))
+                                };
+                                let result = match abandoned {
+                                    Ok(()) => tokio::task::spawn_blocking(|| {
+                                        let paths =
+                                            crate::open_subsonic::OpenSubsonicPaths::current()
+                                                .map_err(
+                                                    crate::open_subsonic::ServiceError::from,
+                                                )?;
+                                        crate::open_subsonic::read_status(&paths)
+                                    })
+                                    .await
+                                    .map_err(|_| crate::app::MusicServerFailure::Unavailable)
+                                    .and_then(|result| {
+                                        result
+                                            .map(music_server_summary)
+                                            .map_err(music_server_failure)
+                                    }),
+                                    Err(error) => Err(error),
+                                };
+                                emitter
+                                    .emit_terminal(RuntimeEvent::App(Msg::Server(
+                                        crate::app::ServerEvent::Settings(
+                                            crate::app::MusicServerEvent::PlaylistCreateAbandoned {
+                                                generation,
+                                                result,
+                                            },
+                                        ),
+                                    )))
+                                    .await;
+                            },
+                        );
+                    }
                 }
             }
             Cmd::ServerLibrary(command) => {
@@ -421,6 +488,69 @@ impl RuntimeHandles {
                                             },
                                         ),
                                     )))
+                                    .await;
+                            }
+                            crate::app::ServerLibraryCommand::PreparePlaylist {
+                                generation,
+                                server_playlist_id,
+                                kind,
+                            } => {
+                                emitter
+                                    .emit_terminal(
+                                        linked_playlists::prepare_playlist(
+                                            generation,
+                                            server_playlist_id,
+                                            kind,
+                                        )
+                                        .await,
+                                    )
+                                    .await;
+                            }
+                            crate::app::ServerLibraryCommand::ApplyPlaylistPreview {
+                                generation,
+                                preview_id,
+                                server_playlist_id,
+                            } => {
+                                emitter
+                                    .emit_terminal(
+                                        linked_playlists::apply_playlist_preview(
+                                            generation,
+                                            preview_id,
+                                            server_playlist_id,
+                                        )
+                                        .await,
+                                    )
+                                    .await;
+                            }
+                            crate::app::ServerLibraryCommand::CreateLinkedPlaylist {
+                                generation,
+                                snapshot,
+                            } => {
+                                emitter
+                                    .emit_terminal(
+                                        linked_playlists::create_linked_playlist(
+                                            generation, snapshot,
+                                        )
+                                        .await,
+                                    )
+                                    .await;
+                            }
+                            crate::app::ServerLibraryCommand::RecoverPlaylist {
+                                generation,
+                                action,
+                                server_playlist_id,
+                                snapshot,
+                            } => {
+                                emitter
+                                    .emit_terminal(
+                                        linked_playlists::recover_playlist(
+                                            generation,
+                                            action,
+                                            server_playlist_id,
+                                            snapshot,
+                                        )
+                                        .await,
+                                    )
                                     .await;
                             }
                         }
@@ -1108,7 +1238,13 @@ async fn refresh_music_server_runtime(
             let mut summary = crate::open_subsonic::read_status(&paths)
                 .map(music_server_summary)
                 .unwrap_or(local_summary);
-            summary.health = live_music_server_health(summary.playback_reports_needing_decision);
+            summary.health = live_music_server_health(
+                summary.playback_reports_needing_decision,
+                summary.playlist_creates_needing_decision,
+                summary.playlist_links_needing_decision,
+                summary.playlist_projections_needing_decision,
+                summary.playlist_contents_needing_decision,
+            );
             summary.configured = true;
             crate::app::MusicServerRefreshOutcome {
                 summary,
@@ -1256,6 +1392,11 @@ fn music_server_summary(
         lan_http: status.uses_lan_http,
         custom_ca: status.uses_custom_ca,
         playback_reports_needing_decision: status.outbound_scrobbles_needing_attention,
+        playlist_creates_needing_decision: status.playlist_creates_needing_attention,
+        playlist_create_attention: status.playlist_create_attention,
+        playlist_links_needing_decision: status.playlist_links_needing_decision,
+        playlist_projections_needing_decision: status.playlist_projections_needing_attention,
+        playlist_contents_needing_decision: status.playlist_contents_needing_attention,
         history: match status.native_history_health {
             crate::open_subsonic::NativeHistoryHealth::Off => {
                 crate::app::MusicServerHistoryHealth::Off
@@ -1278,8 +1419,17 @@ fn music_server_summary(
 
 pub(super) const fn live_music_server_health(
     playback_reports_needing_decision: usize,
+    playlist_creates_needing_decision: usize,
+    playlist_links_needing_decision: usize,
+    playlist_projections_needing_decision: usize,
+    playlist_contents_needing_decision: usize,
 ) -> crate::app::MusicServerHealth {
-    if playback_reports_needing_decision == 0 {
+    if playback_reports_needing_decision == 0
+        && playlist_creates_needing_decision == 0
+        && playlist_links_needing_decision == 0
+        && playlist_projections_needing_decision == 0
+        && playlist_contents_needing_decision == 0
+    {
         crate::app::MusicServerHealth::UpToDate
     } else {
         crate::app::MusicServerHealth::NeedsAttention

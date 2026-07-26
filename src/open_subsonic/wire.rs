@@ -38,6 +38,7 @@ pub(crate) struct RawResponse {
     pub server_version: Option<String>,
     pub open_subsonic: Option<bool>,
     pub error: Option<RawApiError>,
+    pub token_info: Option<RawTokenInfo>,
     #[serde(default, deserialize_with = "deserialize_extensions")]
     pub open_subsonic_extensions: Vec<RawExtension>,
     pub search_result3: Option<RawSearchResult3>,
@@ -48,6 +49,11 @@ pub(crate) struct RawResponse {
     pub album: Option<RawAlbumWithSongs>,
     pub artist: Option<RawArtistWithAlbums>,
     pub song: Option<RawChild>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RawTokenInfo {
+    pub username: Option<String>,
 }
 
 impl RawResponse {
@@ -109,6 +115,7 @@ pub(crate) struct RawPlaylist {
     pub id: Option<String>,
     pub name: Option<String>,
     pub owner: Option<String>,
+    pub readonly: Option<bool>,
     pub song_count: Option<u64>,
     pub duration: Option<u64>,
     pub public: Option<bool>,
@@ -123,6 +130,7 @@ pub(crate) struct RawPlaylistSummary {
     pub id: Option<String>,
     pub name: Option<String>,
     pub owner: Option<String>,
+    pub readonly: Option<bool>,
     pub song_count: Option<u64>,
     pub duration: Option<u64>,
     pub public: Option<bool>,
@@ -500,12 +508,63 @@ mod tests {
     }
 
     #[test]
+    fn token_info_preserves_the_authenticated_username() {
+        let response =
+            decode(br#"{"subsonic-response":{"status":"ok","tokenInfo":{"username":"alice"}}}"#)
+                .unwrap();
+        assert_eq!(
+            response
+                .token_info
+                .and_then(|token_info| token_info.username)
+                .as_deref(),
+            Some("alice")
+        );
+    }
+
+    #[test]
     fn failed_envelope_is_not_treated_as_http_success() {
         assert!(matches!(
             decode(
                 br#"{"subsonic-response":{"status":"failed","error":{"code":40,"message":"bad"}}}"#
             ),
             Err(WireError::ApiFailure(Some(40)))
+        ));
+    }
+
+    #[test]
+    fn playlist_readonly_preserves_true_false_and_absent() {
+        for (raw, expected) in [
+            (
+                br#"{"subsonic-response":{"status":"ok","playlist":{"readonly":true}}}"#.as_slice(),
+                Some(true),
+            ),
+            (
+                br#"{"subsonic-response":{"status":"ok","playlist":{"readonly":false}}}"#
+                    .as_slice(),
+                Some(false),
+            ),
+            (
+                br#"{"subsonic-response":{"status":"ok","playlist":{}}}"#.as_slice(),
+                None,
+            ),
+        ] {
+            assert_eq!(decode(raw).unwrap().playlist.unwrap().readonly, expected);
+        }
+        let response = decode(
+            br#"{"subsonic-response":{"status":"ok","playlists":{"playlist":[{"readonly":false}]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            response.playlists.unwrap().playlist[0].readonly,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn playlist_readonly_rejects_non_boolean_values() {
+        assert!(matches!(
+            decode(br#"{"subsonic-response":{"status":"ok","playlist":{"readonly":"false"}}}"#),
+            Err(WireError::InvalidResponse)
         ));
     }
 

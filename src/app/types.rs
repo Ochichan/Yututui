@@ -383,7 +383,7 @@ pub enum Cmd {
     Search(SearchCmd),
     /// Test, commit, refresh, or remove the one configured music-server profile.
     MusicServer(MusicServerCommand),
-    /// Read-only OpenSubsonic library page/detail fetches.
+    /// OpenSubsonic library fetches and explicit playlist preview/apply requests.
     ServerLibrary(ServerLibraryCommand),
     /// Persist a store to disk (or clear one) via the debounced persistence actor. The
     /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
@@ -867,6 +867,18 @@ pub enum MouseTarget {
     ConfirmSettings,
     /// Cancel button on a Settings confirmation modal.
     CancelSettings,
+    /// Apply button on a prepared server-playlist import/link preview.
+    ConfirmServerPlaylistPreview,
+    /// Back button on a server-playlist import/link preview.
+    CancelServerPlaylistPreview,
+    /// Create-and-link button on the local-to-server playlist confirmation.
+    ConfirmServerPlaylistCreate,
+    /// Back button on the local-to-server playlist confirmation.
+    CancelServerPlaylistCreate,
+    /// Confirm a destructive linked-playlist recovery action.
+    ConfirmServerPlaylistRecovery,
+    /// Back out of a linked-playlist recovery confirmation.
+    CancelServerPlaylistRecovery,
     /// Confirm button on the radio-mode confirmation modal.
     ConfirmRadioMode,
     /// Cancel button on the radio-mode confirmation modal.

@@ -11,6 +11,7 @@ use crate::app::{
     App, MouseTarget, MusicServerBusy, MusicServerCredentialMode, MusicServerHealth,
     MusicServerHistoryHealth, MusicServerSetupField, MusicServerWizard, SyncArea,
 };
+use crate::open_subsonic::{PlaylistCreateAttention, PlaylistCreateRecoveryState};
 use crate::settings::SettingsState;
 use crate::settings::sync::health_label;
 use crate::t;
@@ -124,7 +125,18 @@ pub(crate) fn render_status(frame: &mut Frame, app: &App, settings: &SettingsSta
         ])),
         rows[2],
     );
-    let server_detail = if server.playback_reports_needing_decision > 0 {
+    let server_detail = if server.playlist_creates_needing_decision > 0 {
+        playlist_create_attention_detail(
+            server.playlist_creates_needing_decision,
+            &server.playlist_create_attention,
+        )
+    } else if server.playlist_links_needing_decision > 0 {
+        playlist_link_attention_detail(server.playlist_links_needing_decision)
+    } else if server.playlist_contents_needing_decision > 0 {
+        playlist_content_attention_detail(server.playlist_contents_needing_decision)
+    } else if server.playlist_projections_needing_decision > 0 {
+        playlist_projection_attention_detail(server.playlist_projections_needing_decision)
+    } else if server.playback_reports_needing_decision > 0 {
         playback_report_attention_detail(server.playback_reports_needing_decision)
     } else if server.configured {
         t!(
@@ -143,13 +155,18 @@ pub(crate) fn render_status(frame: &mut Frame, app: &App, settings: &SettingsSta
     };
     frame.render_widget(
         Paragraph::new(server_detail)
-            .style(
-                theme.style(if server.playback_reports_needing_decision > 0 {
+            .style(theme.style(
+                if server.playback_reports_needing_decision > 0
+                    || server.playlist_creates_needing_decision > 0
+                    || server.playlist_links_needing_decision > 0
+                    || server.playlist_contents_needing_decision > 0
+                    || server.playlist_projections_needing_decision > 0
+                {
                     R::Error
                 } else {
                     R::TextMuted
-                }),
-            )
+                },
+            ))
             .wrap(Wrap { trim: true }),
         rows[3],
     );
@@ -193,7 +210,18 @@ pub(crate) fn render_music_server(
     );
     let detail = app.server.settings.failure.map_or_else(
         || {
-            if summary.playback_reports_needing_decision > 0 {
+            if summary.playlist_creates_needing_decision > 0 {
+                playlist_create_attention_detail(
+                    summary.playlist_creates_needing_decision,
+                    &summary.playlist_create_attention,
+                )
+            } else if summary.playlist_links_needing_decision > 0 {
+                playlist_link_attention_detail(summary.playlist_links_needing_decision)
+            } else if summary.playlist_contents_needing_decision > 0 {
+                playlist_content_attention_detail(summary.playlist_contents_needing_decision)
+            } else if summary.playlist_projections_needing_decision > 0 {
+                playlist_projection_attention_detail(summary.playlist_projections_needing_decision)
+            } else if summary.playback_reports_needing_decision > 0 {
                 playback_report_attention_detail(summary.playback_reports_needing_decision)
             } else if summary.configured {
                 let auth = summary
@@ -221,8 +249,12 @@ pub(crate) fn render_music_server(
         },
         |failure| format!("{}  ·  {}", failure.label(), failure.recovery_label()),
     );
-    let detail_is_error =
-        app.server.settings.failure.is_some() || summary.playback_reports_needing_decision > 0;
+    let detail_is_error = app.server.settings.failure.is_some()
+        || summary.playback_reports_needing_decision > 0
+        || summary.playlist_creates_needing_decision > 0
+        || summary.playlist_links_needing_decision > 0
+        || summary.playlist_contents_needing_decision > 0
+        || summary.playlist_projections_needing_decision > 0;
     frame.render_widget(
         Paragraph::new(detail)
             .style(theme.style(if detail_is_error {
@@ -234,13 +266,24 @@ pub(crate) fn render_music_server(
         rows[1],
     );
 
-    let labels: Vec<&str> = if summary.configured {
-        vec![
-            t!("Test connection", "연결 테스트", "接続テスト"),
-            t!("Edit connection", "연결 정보 수정", "接続情報を編集"),
-            history_action_label(summary.history),
-            t!("Remove server", "서버 제거", "サーバーを削除"),
-        ]
+    let labels: Vec<String> = if summary.configured {
+        let mut labels = vec![
+            t!("Test connection", "연결 테스트", "接続テスト").to_owned(),
+            t!("Edit connection", "연결 정보 수정", "接続情報を編集").to_owned(),
+            history_action_label(summary.history).to_owned(),
+        ];
+        if !summary.playlist_create_attention.is_empty() {
+            labels.push(
+                t!(
+                    "Review pending create",
+                    "보류 생성 확인",
+                    "保留中の作成を確認"
+                )
+                .to_owned(),
+            );
+        }
+        labels.push(t!("Remove server", "서버 제거", "サーバーを削除").to_owned());
+        labels
     } else {
         vec![
             t!(
@@ -250,6 +293,9 @@ pub(crate) fn render_music_server(
             ),
             t!("Check again", "다시 확인", "再確認"),
         ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     };
     for (index, label) in labels.iter().enumerate().take(rows[2].height as usize) {
         let selected = index == app.server.settings.selected;
@@ -288,6 +334,84 @@ fn playback_report_attention_detail(count: usize) -> String {
             format!("{count} reports need a decision.\nytt server scrobbles list"),
             format!("재생 보고 {count}건 확인 필요\nytt server scrobbles list"),
             format!("再生レポート{count}件・確認が必要\nytt server scrobbles list")
+        )
+    }
+}
+
+fn playlist_create_attention_detail(count: usize, attention: &[PlaylistCreateAttention]) -> String {
+    let summary = if count == 1 {
+        t!(
+            "Review 1 playlist creation",
+            "플레이리스트 생성 1건 확인",
+            "プレイリスト作成1件を確認"
+        )
+        .to_owned()
+    } else {
+        t!(
+            format!("Review {count} playlist creations"),
+            format!("플레이리스트 생성 {count}건 확인"),
+            format!("プレイリスト作成{count}件を確認")
+        )
+    };
+    attention.first().map_or_else(
+        || format!("{summary}\nytt server playlists pending"),
+        |pending| {
+            format!(
+                "{summary}\n{}: {}",
+                t!("Local ID", "로컬 ID", "ローカルID"),
+                pending.local_playlist_id.as_str()
+            )
+        },
+    )
+}
+
+fn playlist_projection_attention_detail(count: usize) -> String {
+    if count == 1 {
+        t!(
+            "1 playlist update needs a reconnect\nEdit connection to retry",
+            "플레이리스트 업데이트 1건 재연결 필요\n연결 정보를 수정해 다시 시도",
+            "プレイリスト更新1件・再接続が必要\n接続を編集して再試行"
+        )
+        .to_owned()
+    } else {
+        t!(
+            format!("{count} playlist updates need a reconnect\nEdit connection to retry"),
+            format!("플레이리스트 업데이트 {count}건 재연결 필요\n연결 정보를 수정해 다시 시도"),
+            format!("プレイリスト更新{count}件・再接続が必要\n接続を編集して再試行")
+        )
+    }
+}
+
+fn playlist_content_attention_detail(count: usize) -> String {
+    if count == 1 {
+        t!(
+            "Mixed tracks: 1 linked list\nReview in Server Library",
+            "다른 출처 곡: 연결 목록 1개\n서버 보관함에서 확인",
+            "別の曲あり：連携リスト1件\nサーバーライブラリで確認"
+        )
+        .to_owned()
+    } else {
+        t!(
+            format!("Mixed tracks: {count} linked lists\nReview in Server Library"),
+            format!("다른 출처 곡: 연결 목록 {count}개\n서버 보관함에서 확인"),
+            format!("別の曲あり：連携リスト{count}件\nサーバーライブラリで確認")
+        )
+    }
+}
+
+fn playlist_link_attention_detail(count: usize) -> String {
+    if count == 1 {
+        t!(
+            "1 server playlist is missing\nLibrary: choose what to keep",
+            "서버 목록 1개가 사라짐\n보관함: 남길 항목 선택",
+            "サーバー側で1件消失\nライブラリ：残すものを選択"
+        )
+        .to_owned()
+    } else {
+        t!(
+            format!("{count} server playlists are missing\nLibrary: choose what to keep"),
+            format!("서버 목록 {count}개가 사라짐\n보관함: 남길 항목 선택"),
+            format!("サーバー側で{count}件消失\nライブラリ：残すものを選択")
         )
     }
 }
@@ -357,6 +481,7 @@ pub(crate) fn render_music_server_wizard(frame: &mut Frame, app: &App, area: Rec
         64,
         match wizard {
             MusicServerWizard::Setup(_) => 16,
+            MusicServerWizard::AbandonPlaylistCreateConfirm(_) => 13,
             MusicServerWizard::Waiting | MusicServerWizard::RemoveConfirm => 8,
         },
     );
@@ -387,6 +512,14 @@ pub(crate) fn render_music_server_wizard(frame: &mut Frame, app: &App, area: Rec
                 Some(MusicServerBusy::Removing) => {
                     (t!("Removing…", "제거하는 중…", "削除しています…"), false)
                 }
+                Some(MusicServerBusy::PlaylistRecovery) => (
+                    t!(
+                        "Forgetting the pending create…",
+                        "보류 중인 생성을 잊는 중…",
+                        "保留中の作成を破棄しています…"
+                    ),
+                    false,
+                ),
                 _ => (t!("Working…", "처리 중…", "処理中…"), true),
             };
             let detail = if cancel_allowed {
@@ -439,6 +572,100 @@ pub(crate) fn render_music_server_wizard(frame: &mut Frame, app: &App, area: Rec
                 },
                 MouseTarget::MusicServerWizardSecondary,
             );
+        }
+        MusicServerWizard::AbandonPlaylistCreateConfirm(attention) => {
+            let state = playlist_create_recovery_state_label(attention.state);
+            let rows = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+            frame.render_widget(
+                Paragraph::new(t!(
+                    "A server copy may already exist.",
+                    "서버 복사본이 이미 있을 수 있어요.",
+                    "サーバーにコピーが既に存在する場合があります。"
+                ))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true })
+                .style(app.theme.style(R::Warning).add_modifier(Modifier::BOLD)),
+                rows[0],
+            );
+            frame.render_widget(
+                Paragraph::new(playlist_create_local_id_line(attention, rows[1].width))
+                    .alignment(Alignment::Center)
+                    .style(app.theme.style(R::TextPrimary)),
+                rows[1],
+            );
+            frame.render_widget(
+                Paragraph::new(crate::ui::text::truncate_owned_to_width(
+                    format!("{}: {state}", t!("State", "상태", "状態")),
+                    usize::from(rows[2].width),
+                ))
+                .alignment(Alignment::Center)
+                .style(app.theme.style(R::TextMuted)),
+                rows[2],
+            );
+            frame.render_widget(
+                Paragraph::new(t!(
+                    "Forget only the retry guard. Neither copy is deleted.",
+                    "재시도 보호만 잊으며 어느 복사본도 삭제하지 않아요.",
+                    "再試行ガードだけを破棄し、どちらのコピーも削除しません。"
+                ))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true })
+                .style(app.theme.style(R::TextMuted)),
+                rows[3],
+            );
+
+            let forget_full = t!(" Enter: Forget ", " Enter: 잊기 ", " Enter: 破棄 ");
+            let back_full = t!(" Esc: Back ", " Esc: 뒤로 ", " Esc: 戻る ");
+            let full_width = buttons::text_width(forget_full)
+                .saturating_add(2)
+                .saturating_add(buttons::text_width(back_full));
+            let (forget, back) = if full_width <= rows[5].width {
+                (forget_full, back_full)
+            } else {
+                (
+                    t!(" Forget ", " 잊기 ", " 破棄 "),
+                    t!(" Back ", " 뒤로 ", " 戻る "),
+                )
+            };
+            buttons::render_segments(
+                frame,
+                app,
+                rows[5],
+                &[
+                    buttons::Seg::button(MouseTarget::MusicServerWizardPrimary, forget),
+                    buttons::Seg::label("  "),
+                    buttons::Seg::button(MouseTarget::MusicServerWizardSecondary, back),
+                ],
+                app.theme.style(R::Warning).add_modifier(Modifier::BOLD),
+                crate::ui::confirm_gap_style(app),
+                Alignment::Center,
+            );
+        }
+    }
+}
+
+fn playlist_create_local_id_line(attention: &PlaylistCreateAttention, width: u16) -> String {
+    let label = t!("Local ID: ", "로컬 ID: ", "ローカルID: ");
+    let available = usize::from(width).saturating_sub(usize::from(buttons::text_width(label)));
+    let id = crate::ui::text::middle_to_width(attention.local_playlist_id.as_str(), available);
+    crate::ui::text::truncate_owned_to_width(format!("{label}{id}"), usize::from(width))
+}
+
+fn playlist_create_recovery_state_label(state: PlaylistCreateRecoveryState) -> &'static str {
+    match state {
+        PlaylistCreateRecoveryState::ServerIdentityUnknown => {
+            t!("server ID unknown", "서버 ID 미확인", "サーバーID不明")
+        }
+        PlaylistCreateRecoveryState::ReadbackNeeded => {
+            t!("readback needed", "재조회 필요", "再取得が必要")
         }
     }
 }
@@ -753,6 +980,175 @@ mod tests {
             let detail = playback_report_attention_detail(2);
             assert_eq!(detail, expected);
             assert!(detail.lines().all(|line| buttons::text_width(line) <= 30));
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn playlist_create_attention_copy_is_localized_and_fits_narrow_layout() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        for (language, expected) in [
+            (
+                crate::i18n::Language::English,
+                "Review 2 playlist creations\nLocal ID: local-a",
+            ),
+            (
+                crate::i18n::Language::Korean,
+                "플레이리스트 생성 2건 확인\n로컬 ID: local-a",
+            ),
+            (
+                crate::i18n::Language::Japanese,
+                "プレイリスト作成2件を確認\nローカルID: local-a",
+            ),
+        ] {
+            crate::i18n::set_language(language);
+            let attention = vec![PlaylistCreateAttention {
+                local_playlist_id: crate::personal_state::PlaylistId::new("local-a").unwrap(),
+                state: PlaylistCreateRecoveryState::ServerIdentityUnknown,
+            }];
+            let detail = playlist_create_attention_detail(2, &attention);
+            assert_eq!(detail, expected);
+            assert!(detail.lines().all(|line| buttons::text_width(line) <= 30));
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn missing_playlist_copy_is_localized_and_asks_what_to_keep() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        for (language, expected, reconnect_word) in [
+            (
+                crate::i18n::Language::English,
+                "2 server playlists are missing\nLibrary: choose what to keep",
+                "reconnect",
+            ),
+            (
+                crate::i18n::Language::Korean,
+                "서버 목록 2개가 사라짐\n보관함: 남길 항목 선택",
+                "재연결",
+            ),
+            (
+                crate::i18n::Language::Japanese,
+                "サーバー側で2件消失\nライブラリ：残すものを選択",
+                "再接続",
+            ),
+        ] {
+            crate::i18n::set_language(language);
+            let detail = playlist_link_attention_detail(2);
+            assert_eq!(detail, expected);
+            assert!(!detail.contains(reconnect_word));
+            assert!(detail.lines().all(|line| buttons::text_width(line) <= 30));
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn playlist_create_abandon_confirmation_warns_and_exposes_the_local_id() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        for (language, warning, action) in [
+            (crate::i18n::Language::English, "mayalreadyexist", "Forget"),
+            (crate::i18n::Language::Korean, "이미있을수", "잊기"),
+            (crate::i18n::Language::Japanese, "既に存在する場合", "破棄"),
+        ] {
+            crate::i18n::set_language(language);
+            let mut app = App::new(50);
+            app.server.settings.wizard = Some(MusicServerWizard::AbandonPlaylistCreateConfirm(
+                PlaylistCreateAttention {
+                    local_playlist_id: crate::personal_state::PlaylistId::new("local-a").unwrap(),
+                    state: PlaylistCreateRecoveryState::ServerIdentityUnknown,
+                },
+            ));
+            let text = draw_wizard(&app, 30, 30);
+            let comparable: String = text
+                .chars()
+                .filter(|ch| ch.is_alphanumeric() || *ch == '-')
+                .collect();
+            assert!(comparable.contains("local-a"), "{language:?}: {text:?}");
+            assert!(comparable.contains(warning), "{language:?}: {text:?}");
+            assert!(comparable.contains(action), "{language:?}: {text:?}");
+            assert!(
+                comparable.contains("Enter") && comparable.contains("Esc"),
+                "{language:?}: {text:?}"
+            );
+            let forget = app
+                .hits
+                .rect_of_target(MouseTarget::MusicServerWizardPrimary)
+                .expect("visible Forget button");
+            let back = app
+                .hits
+                .rect_of_target(MouseTarget::MusicServerWizardSecondary)
+                .expect("visible Back button");
+            assert_eq!(forget.height, 1, "{language:?}: {forget:?}");
+            assert_eq!(back.height, 1, "{language:?}: {back:?}");
+            assert_eq!(forget.y, back.y, "{language:?}");
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn maximum_local_id_keeps_both_ends_without_hiding_narrow_recovery_controls() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        let local_id = format!("head-{}-tail", "x".repeat(502));
+        assert_eq!(local_id.chars().count(), 512);
+
+        for (language, warning, safety, action) in [
+            (
+                crate::i18n::Language::English,
+                "mayalreadyexist",
+                "Neithercopyisdeleted",
+                "Forget",
+            ),
+            (
+                crate::i18n::Language::Korean,
+                "이미있을수",
+                "어느복사본도삭제하지않아요",
+                "잊기",
+            ),
+            (
+                crate::i18n::Language::Japanese,
+                "既に存在する場合",
+                "どちらのコピーも削除しません",
+                "破棄",
+            ),
+        ] {
+            crate::i18n::set_language(language);
+            let mut app = App::new(50);
+            app.server.settings.wizard = Some(MusicServerWizard::AbandonPlaylistCreateConfirm(
+                PlaylistCreateAttention {
+                    local_playlist_id: crate::personal_state::PlaylistId::new(local_id.clone())
+                        .unwrap(),
+                    state: PlaylistCreateRecoveryState::ReadbackNeeded,
+                },
+            ));
+
+            let text = draw_wizard(&app, 30, 30);
+            let comparable: String = text
+                .chars()
+                .filter(|character| character.is_alphanumeric() || *character == '-')
+                .collect();
+            for expected in ["head-", "-tail", warning, safety, action, "Enter", "Esc"] {
+                assert!(
+                    comparable.contains(expected),
+                    "{language:?}, missing {expected:?}: {text:?}"
+                );
+            }
+            assert!(text.contains('…'), "{language:?}: {text:?}");
+
+            let forget = app
+                .hits
+                .rect_of_target(MouseTarget::MusicServerWizardPrimary)
+                .expect("visible Forget button");
+            let back = app
+                .hits
+                .rect_of_target(MouseTarget::MusicServerWizardSecondary)
+                .expect("visible Back button");
+            assert_eq!(forget.height, 1, "{language:?}: {forget:?}");
+            assert_eq!(back.height, 1, "{language:?}: {back:?}");
+            assert_eq!(forget.y, back.y, "{language:?}");
         }
         crate::i18n::set_language(original);
     }

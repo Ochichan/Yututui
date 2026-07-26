@@ -33,6 +33,35 @@ impl App {
                 _ => Vec::new(),
             };
         }
+        if self.server.library.playlist_create.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistCreate
+                    | MouseTarget::CancelServerPlaylistCreate),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_create(),
+            };
+        }
+        if self.server.library.playlist_recovery.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistRecovery
+                    | MouseTarget::CancelServerPlaylistRecovery),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_recovery(),
+            };
+        }
+        // Server-playlist previews are modal. Only the explicit Apply/Back buttons act; an
+        // outside click backs out and stale hit targets fail closed in `route_mouse_target`.
+        if self.server.library.playlist_preview.is_some() {
+            return match self.mouse_target_at(col, row) {
+                Some(
+                    target @ (MouseTarget::ConfirmServerPlaylistPreview
+                    | MouseTarget::CancelServerPlaylistPreview),
+                ) => self.on_mouse_target(target),
+                _ => self.cancel_server_playlist_preview(),
+            };
+        }
         if self.tool_setup.is_some() {
             return self
                 .mouse_target_at(col, row)
@@ -927,6 +956,43 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmServerPlaylistPreview
+                if self.server.library.playlist_preview.is_some() =>
+            {
+                self.apply_server_playlist_preview()
+            }
+            MouseTarget::CancelServerPlaylistPreview
+                if self.server.library.playlist_preview.is_some() =>
+            {
+                self.cancel_server_playlist_preview()
+            }
+            MouseTarget::ConfirmServerPlaylistPreview
+            | MouseTarget::CancelServerPlaylistPreview => Vec::new(),
+            MouseTarget::ConfirmServerPlaylistCreate
+                if self.server.library.playlist_create.is_some() =>
+            {
+                self.apply_server_playlist_create()
+            }
+            MouseTarget::CancelServerPlaylistCreate
+                if self.server.library.playlist_create.is_some() =>
+            {
+                self.cancel_server_playlist_create()
+            }
+            MouseTarget::ConfirmServerPlaylistCreate | MouseTarget::CancelServerPlaylistCreate => {
+                Vec::new()
+            }
+            MouseTarget::ConfirmServerPlaylistRecovery
+                if self.server.library.playlist_recovery.is_some() =>
+            {
+                self.apply_server_playlist_recovery()
+            }
+            MouseTarget::CancelServerPlaylistRecovery
+                if self.server.library.playlist_recovery.is_some() =>
+            {
+                self.cancel_server_playlist_recovery()
+            }
+            MouseTarget::ConfirmServerPlaylistRecovery
+            | MouseTarget::CancelServerPlaylistRecovery => Vec::new(),
             MouseTarget::ConfirmRadioMode => {
                 let Some(confirm) = self.radio_mode.pending_radio_mode_confirm else {
                     return Vec::new();

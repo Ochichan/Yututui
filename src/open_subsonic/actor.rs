@@ -1,8 +1,13 @@
 //! Long-lived credential owner plus setup/status lifecycle facade.
 
+mod playlist_catalog;
+mod playlist_ownership;
+mod playlists;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use age::secrecy::ExposeSecret as _;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 use zeroize::Zeroize;
@@ -10,7 +15,7 @@ use zeroize::Zeroize;
 use super::bridge_event::{OpenSubsonicBridgeSink, OpenSubsonicScrobbleKind};
 use super::bridge_runtime::BridgeRuntime;
 pub use super::bridge_runtime::OutboundScrobbleResolution;
-use super::capabilities::ServerCapabilities;
+use super::capabilities::{ServerCapabilities, ServerFeature};
 use super::catalog::OpenSubsonicCatalog;
 use super::client::{BinaryPayload, OpenSubsonicClient, ServerError};
 use super::model::{
@@ -18,6 +23,9 @@ use super::model::{
     ServerLibraryDetail, ServerLibraryPage, ServerLibrarySection, ServerPlaylistId, ServerSong,
 };
 use super::origin::ConfiguredPrivateOrigin;
+use super::playlist_create_recovery::{
+    PlaylistCreateAttention, playlist_create_attention_from_state,
+};
 use super::private_store::{CredentialKind, OpenSubsonicPrivateState, ServerCredential};
 use super::profile::{OpenSubsonicPaths, OpenSubsonicProfile, StoreError};
 use super::proxy::{
@@ -30,6 +38,19 @@ use super::transaction::{
 };
 use super::{NativeHistoryHealth, OpenSubsonicBridgeState};
 use crate::personal_state::OpenSubsonicRatingWinner;
+
+use playlist_catalog::{
+    PlaylistCatalogSession, finalize_detail_playlist_access, finalize_page_playlist_access,
+};
+use playlists::PlaylistPreviewCache;
+pub(crate) use playlists::remote_fingerprint as playlist_snapshot_fingerprint;
+pub use playlists::{PlaylistMergePreview, PlaylistPreviewMode, PlaylistPreviewTarget};
+
+#[derive(Default)]
+struct ActorPlaylistState {
+    previews: PlaylistPreviewCache,
+    catalog_session: PlaylistCatalogSession,
+}
 
 const ACTOR_CAPACITY: usize = 32;
 const BRIDGE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -157,6 +178,16 @@ pub struct OpenSubsonicStatus {
     pub native_history_health: NativeHistoryHealth,
     /// Bounded count of opaque outbound reports requiring an explicit delivery decision.
     pub outbound_scrobbles_needing_attention: usize,
+    /// Replay-unsafe playlist creates requiring an explicit keep/abandon decision.
+    pub playlist_creates_needing_attention: usize,
+    /// Redacted local identities and recovery states for replay-unsafe playlist creates.
+    pub playlist_create_attention: Vec<PlaylistCreateAttention>,
+    /// Linked playlists deleted on the server and awaiting an explicit keep/restore decision.
+    pub playlist_links_needing_decision: usize,
+    /// Linked playlist writes that exhausted bounded verification and require reconnection.
+    pub playlist_projections_needing_attention: usize,
+    /// Linked local playlists containing tracks outside this exact server/account.
+    pub playlist_contents_needing_attention: usize,
 }
 
 impl OpenSubsonicStatus {
@@ -172,6 +203,11 @@ impl OpenSubsonicStatus {
             native_history_enabled: false,
             native_history_health: NativeHistoryHealth::Off,
             outbound_scrobbles_needing_attention: 0,
+            playlist_creates_needing_attention: 0,
+            playlist_create_attention: Vec::new(),
+            playlist_links_needing_decision: 0,
+            playlist_projections_needing_attention: 0,
+            playlist_contents_needing_attention: 0,
         }
     }
 
@@ -187,6 +223,11 @@ impl OpenSubsonicStatus {
             native_history_enabled: false,
             native_history_health: NativeHistoryHealth::Off,
             outbound_scrobbles_needing_attention: 0,
+            playlist_creates_needing_attention: 0,
+            playlist_create_attention: Vec::new(),
+            playlist_links_needing_decision: 0,
+            playlist_projections_needing_attention: 0,
+            playlist_contents_needing_attention: 0,
         }
     }
 }
@@ -257,6 +298,16 @@ pub async fn test_and_prepare_setup(
     let mut private_state =
         OpenSubsonicPrivateState::new(backend_id.clone(), account_scope_id.clone(), credential);
     if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+        if private_state.credential_kind() == CredentialKind::Password {
+            require_same_account_owner(
+                current
+                    .as_ref()
+                    .ok_or(ServiceError::InvalidSetup)?
+                    .private_state
+                    .credential(),
+                private_state.credential(),
+            )?;
+        }
         private_state.preserve_native_history_from(
             &current
                 .as_ref()
@@ -276,15 +327,64 @@ pub async fn test_and_prepare_setup(
     // Candidates are identity-coherent at revision zero; commit assigns the next shared store
     // revision after its optimistic check.
     bridge_state.set_revision(0);
-    let store_set = OpenSubsonicStoreSet::new(profile, private_state, bridge_state)?;
+    let mut store_set = OpenSubsonicStoreSet::new(profile, private_state, bridge_state)?;
     let client = OpenSubsonicClient::connect(&store_set.profile).await?;
     let capabilities =
         ServerCapabilities::probe(&client, store_set.private_state.credential()).await?;
+    if store_set.private_state.credential_kind() == CredentialKind::ApiKey {
+        if capabilities.supports(ServerFeature::ApiKeyAuthentication) {
+            let username = client
+                .api_key_username(store_set.private_state.credential())
+                .await?;
+            store_set
+                .private_state
+                .bind_api_key_username(username)
+                .map_err(ServiceError::Store)?;
+            if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+                require_same_account_owner(
+                    current
+                        .as_ref()
+                        .ok_or(ServiceError::InvalidSetup)?
+                        .private_state
+                        .credential(),
+                    store_set.private_state.credential(),
+                )?;
+            }
+        } else if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+            // An unbound API key cannot prove that a replacement credential still belongs to the
+            // same account. Preserve neither the account scope nor its linked-playlist authority.
+            // The caller must choose ReplaceServerOrAccount instead.
+            return Err(ServiceError::InvalidSetup);
+        }
+    }
+    if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+        store_set
+            .bridge_state
+            .requeue_playlist_projections_needing_attention();
+    }
     Ok(PreparedSetup {
         expected,
         store_set: Some(store_set),
         capabilities,
     })
+}
+
+fn require_same_account_owner(
+    previous: &ServerCredential,
+    candidate: &ServerCredential,
+) -> Result<(), ServiceError> {
+    let previous = previous
+        .username()
+        .ok_or(ServiceError::InvalidSetup)?
+        .expose_secret();
+    let candidate = candidate
+        .username()
+        .ok_or(ServiceError::InvalidSetup)?
+        .expose_secret();
+    if previous != candidate {
+        return Err(ServiceError::InvalidSetup);
+    }
+    Ok(())
 }
 
 pub fn commit_setup(
@@ -393,8 +493,21 @@ fn status_from_store_set(store_set: &OpenSubsonicStoreSet) -> OpenSubsonicStatus
         .bridge_state
         .outbound_scrobble_attention_ids()
         .len();
+    let playlist_create_attention = playlist_create_attention_from_state(&store_set.bridge_state);
+    let playlist_creates_needing_attention = playlist_create_attention.len();
+    let playlist_links_needing_decision = store_set.bridge_state.playlist_links_needing_decision();
+    let playlist_projections_needing_attention = store_set
+        .bridge_state
+        .playlist_projections_needing_attention();
+    let playlist_contents_needing_attention =
+        store_set.bridge_state.playlist_contents_needing_attention();
     OpenSubsonicStatus {
-        kind: if outbound_scrobbles_needing_attention == 0 {
+        kind: if outbound_scrobbles_needing_attention == 0
+            && playlist_creates_needing_attention == 0
+            && playlist_links_needing_decision == 0
+            && playlist_projections_needing_attention == 0
+            && playlist_contents_needing_attention == 0
+        {
             OpenSubsonicStatusKind::UpToDate
         } else {
             OpenSubsonicStatusKind::NeedsAttention
@@ -408,6 +521,11 @@ fn status_from_store_set(store_set: &OpenSubsonicStoreSet) -> OpenSubsonicStatus
         native_history_enabled,
         native_history_health,
         outbound_scrobbles_needing_attention,
+        playlist_creates_needing_attention,
+        playlist_create_attention,
+        playlist_links_needing_decision,
+        playlist_projections_needing_attention,
+        playlist_contents_needing_attention,
     }
 }
 
@@ -794,6 +912,7 @@ async fn run_actor(
     let mut bridge_active = false;
     let mut last_native_history_error = None;
     let mut native_history_was_truncated = false;
+    let mut playlists = ActorPlaylistState::default();
 
     loop {
         if let Err(error) = activate_bridge_if_needed(
@@ -833,6 +952,8 @@ async fn run_actor(
                     &client,
                     &summary,
                     &bridge,
+                    bridge.is_writable() && bridge_active,
+                    &mut playlists,
                 )
                 .await;
             }
@@ -1023,6 +1144,8 @@ async fn handle_actor_command(
     client: &OpenSubsonicClient,
     summary: &OpenSubsonicProfileSummary,
     bridge: &BridgeRuntime,
+    playlist_mutations_allowed: bool,
+    playlists: &mut ActorPlaylistState,
 ) {
     match command {
         ActorCommand::Search {
@@ -1044,18 +1167,48 @@ async fn handle_actor_command(
         }
         ActorCommand::LibraryPage { request, mut reply } => {
             let catalog = catalog(store_set, client);
-            let result = tokio::select! {
+            let page_plan = match playlists
+                .catalog_session
+                .start_page(request, &store_set.bridge_state)
+            {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
+            let (catalog_offset, catalog_limit) = page_plan.remote_window();
+            let mut result = tokio::select! {
                 _ = reply.closed() => return,
                 result = catalog.library_page(
                     request.section,
-                    request.offset,
-                    request.limit,
+                    catalog_offset,
+                    catalog_limit,
                 ) => result,
             };
             if let Ok(page) = &result
                 && let Err(error) = bridge.observe_page(store_set, page)
             {
                 tracing::warn!(reason = %error, "music server observations were not persisted");
+            }
+            if let Ok(page) = &mut result {
+                finalize_page_playlist_access(
+                    page,
+                    store_set.private_state.credential(),
+                    &store_set.bridge_state,
+                );
+            }
+            let finish_result = match &mut result {
+                Ok(page) => playlists.catalog_session.finish_page(
+                    page,
+                    &store_set.bridge_state,
+                    request,
+                    &page_plan,
+                ),
+                Err(_) => Ok(()),
+            };
+            if let Err(error) = finish_result {
+                result = Err(error);
             }
             let _ = reply.send(result);
         }
@@ -1068,7 +1221,7 @@ async fn handle_actor_command(
                     ServerLibraryDetailRequest::Playlist(id) => catalog.playlist_detail(&id).await,
                 }
             };
-            let result = tokio::select! {
+            let mut result = tokio::select! {
                 _ = reply.closed() => return,
                 result = operation => result,
             };
@@ -1076,6 +1229,13 @@ async fn handle_actor_command(
                 && let Err(error) = bridge.observe_detail(store_set, detail)
             {
                 tracing::warn!(reason = %error, "music server observations were not persisted");
+            }
+            if let Ok(detail) = &mut result {
+                finalize_detail_playlist_access(
+                    detail,
+                    store_set.private_state.credential(),
+                    &store_set.bridge_state,
+                );
             }
             let _ = reply.send(result);
         }
@@ -1125,6 +1285,14 @@ async fn handle_actor_command(
             if let Some(error) = failed {
                 tracing::warn!(reason = %error, "music server ratings will retry");
             }
+        }
+        ActorCommand::Playlist(command) => {
+            let Some(command) = playlist_ownership::authorize(command, playlist_mutations_allowed)
+            else {
+                return;
+            };
+            playlists::handle_command(command, &mut playlists.previews, store_set, client, bridge)
+                .await;
         }
         ActorCommand::AcknowledgeBridgeImport { operation_id } => {
             if let Err(error) = bridge.acknowledge_import(store_set, &operation_id) {
@@ -1223,6 +1391,7 @@ enum ActorCommand {
         winners: Vec<OpenSubsonicRatingWinner>,
         reply: oneshot::Sender<Result<(), ServiceError>>,
     },
+    Playlist(playlists::PlaylistActorCommand),
     AcknowledgeBridgeImport {
         operation_id: String,
     },
@@ -1252,6 +1421,9 @@ pub type OpenSubsonicScrobbleReceipt = oneshot::Receiver<Result<(), ServiceError
 
 /// Correlated proof that a rating projection crossed the bridge-store fsync boundary.
 pub type OpenSubsonicRatingReceipt = oneshot::Receiver<Result<(), ServiceError>>;
+
+/// Correlated proof that linked playlist projection crossed the bridge-store fsync boundary.
+pub type OpenSubsonicPlaylistReceipt = oneshot::Receiver<Result<(), ServiceError>>;
 
 fn proxy_error(error: ServerError) -> ProxyUpstreamError {
     let reason = match error {

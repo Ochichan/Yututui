@@ -89,8 +89,9 @@ mod tests {
 
     #[test]
     fn api_key_auth_excludes_every_legacy_parameter() {
-        let credential =
+        let mut credential =
             ServerCredential::api_key(SecretString::from("api-secret".to_owned())).unwrap();
+        credential.bind_api_key_username("alice").unwrap();
         let auth = AuthParameters::fresh(&credential).unwrap();
         assert_eq!(
             auth.fields(),
