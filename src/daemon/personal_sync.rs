@@ -40,6 +40,32 @@ pub(super) struct Finished {
 }
 
 impl PersonalSync {
+    /// Builds an owner host that already holds one in-flight manual request.
+    ///
+    /// `Pending` is private to this module, so the App↔daemon parity suite cannot reach the
+    /// busy state through ordinary construction. It needs that state to assert both owners
+    /// reject a second concurrent request the same way.
+    #[cfg(test)]
+    pub(super) fn with_pending_for_test(
+        scheduler: crate::sync::AutomaticSyncScheduler,
+        token: crate::sync::SyncAttemptToken,
+        reply: RemoteReply,
+    ) -> Self {
+        Self {
+            next_generation: 1,
+            pending: Some(Pending {
+                generation: 1,
+                attempt: 1,
+                action: PersonalSyncAction::SyncNow,
+                token,
+                reply: Some(reply),
+            }),
+            scheduler,
+            observed_revision: None,
+            network_changes: None,
+        }
+    }
+
     pub(super) fn start(
         &mut self,
         action: PersonalSyncAction,
