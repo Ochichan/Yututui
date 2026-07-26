@@ -11,14 +11,14 @@ use sha2::{Digest as _, Sha256};
 
 use super::actor::ServiceError;
 use super::bridge_event::{
-    OpenSubsonicBridgeImport, OpenSubsonicBridgeSink, OpenSubsonicScrobbleKind,
-    portable_server_track,
+    OpenSubsonicBridgeSink, OpenSubsonicScrobbleKind, portable_server_track,
 };
 use super::bridge_store::{
     AggregatePlayShadow, BridgeMutationError, HistoryCursor, MAX_UNCERTAIN_SCROBBLE_READBACKS,
     NativeHistoryHealth, OutboundScrobbleDelivery, OutboundScrobbleEcho, OutboundScrobbleKind,
     PendingEngagementImport, PendingNativeMetadataRow, PendingOutboundScrobble,
-    PendingRatingImport, PendingRatingProjection, PendingRatingProjectionStage, RatingShadow,
+    PendingPlaylistProjectionStage, PendingRatingImport, PendingRatingProjection,
+    PendingRatingProjectionStage, RatingShadow,
 };
 use super::catalog::OpenSubsonicCatalog;
 use super::client::MutationDeliveryError;
@@ -35,7 +35,8 @@ use super::transaction::{
     OpenSubsonicStoreSet, commit_store_set, load_store_set, load_store_set_read_only,
 };
 use crate::personal_state::{
-    EngagementKind, OpenSubsonicRatingWinner, OperationOrigin, PortableTrack, PortableTrackKey,
+    EngagementKind, OpenSubsonicRatingWinner, OperationOrigin, PlaylistId, PortableTrack,
+    PortableTrackKey,
 };
 
 const NATIVE_CURSOR: &str = "navidrome-native";
@@ -46,9 +47,11 @@ const STANDARD_ALBUM_CONCURRENCY: usize = 4;
 const NATIVE_HISTORY_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 const STANDARD_HISTORY_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+mod emission;
 mod history_metadata;
 mod history_support;
 mod outbound_resolution;
+mod playlists;
 
 pub(super) use history_support::completed_history_overlap;
 use history_support::{
@@ -110,12 +113,14 @@ pub(crate) struct BridgeRuntime {
 #[derive(Default)]
 struct RetryCursors {
     lane_after: Option<RetryLane>,
+    playlist_after: Option<PlaylistId>,
     rating_after: Option<ItemId>,
     outbound_after: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RetryLane {
+    Playlist,
     Rating,
     Outbound,
 }
@@ -474,6 +479,7 @@ impl BridgeRuntime {
         store_set
             .bridge_state
             .remove_engagement_import(operation_id);
+        store_set.bridge_state.remove_playlist_import(operation_id);
         if let Err(error) = store_set
             .bridge_state
             .materialize_pending_aggregate_ranges()
@@ -496,6 +502,9 @@ impl BridgeRuntime {
         }
         self.emit_pending(store_set);
         match self.next_retry_lane(store_set) {
+            Some(RetryLane::Playlist) => {
+                self.flush_one_playlist_projection(store_set, client).await
+            }
             Some(RetryLane::Rating) => self.flush_rating_projections(store_set, client).await,
             Some(RetryLane::Outbound) => self.flush_outbound_scrobbles(store_set, client).await,
             None => Ok(()),
@@ -683,16 +692,52 @@ impl BridgeRuntime {
             .outbound_scrobbles()
             .iter()
             .any(|pending| pending.delivery != OutboundScrobbleDelivery::NeedsAttention);
+        // Linked playlists are also periodic read work: a mobile/server edit must reach the
+        // local ledger even when YuTuTui has no pending write.
+        let has_playlist =
+            store_set
+                .bridge_state
+                .playlist_links()
+                .iter()
+                .any(|(playlist_id, link)| {
+                    let pending = store_set
+                        .bridge_state
+                        .pending_playlist_projections()
+                        .get(playlist_id);
+                    let in_flight = pending.is_some_and(|pending| {
+                        matches!(
+                            pending.stage,
+                            PendingPlaylistProjectionStage::Ambiguous
+                                | PendingPlaylistProjectionStage::Readback
+                        )
+                    });
+                    link.state == super::bridge_store::PlaylistLinkState::Linked
+                        && (!link.content_needs_attention || in_flight)
+                        && store_set
+                            .bridge_state
+                            .pending_playlist_import(playlist_id)
+                            .is_none()
+                        && pending.is_none_or(|pending| {
+                            pending.stage != PendingPlaylistProjectionStage::NeedsAttention
+                        })
+                });
         let mut cursors = self
             .retry_cursors
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let order = if cursors.lane_after == Some(RetryLane::Rating) {
-            [RetryLane::Outbound, RetryLane::Rating]
-        } else {
-            [RetryLane::Rating, RetryLane::Outbound]
+        let order = match cursors.lane_after {
+            Some(RetryLane::Playlist) => {
+                [RetryLane::Rating, RetryLane::Outbound, RetryLane::Playlist]
+            }
+            Some(RetryLane::Rating) => {
+                [RetryLane::Outbound, RetryLane::Playlist, RetryLane::Rating]
+            }
+            Some(RetryLane::Outbound) | None => {
+                [RetryLane::Playlist, RetryLane::Rating, RetryLane::Outbound]
+            }
         };
         let selected = order.into_iter().find(|lane| match lane {
+            RetryLane::Playlist => has_playlist,
             RetryLane::Rating => has_rating,
             RetryLane::Outbound => has_outbound,
         });
@@ -1071,38 +1116,6 @@ impl BridgeRuntime {
 
         store_set.bridge_state = before;
         Err(error.into())
-    }
-
-    pub(crate) fn emit_pending(&self, store_set: &OpenSubsonicStoreSet) {
-        let Some(sink) = &self.sink else {
-            return;
-        };
-        let ratings = store_set.bridge_state.pending_rating_imports().iter().map(
-            |(operation_id, pending)| OpenSubsonicBridgeImport::Rating {
-                operation_id: operation_id.clone(),
-                track: pending.track.clone(),
-                rating: pending.mapped,
-                observed_at_unix: pending.observed_at_unix,
-            },
-        );
-        let engagements = store_set
-            .bridge_state
-            .pending_engagement_imports()
-            .iter()
-            .map(
-                |(operation_id, pending)| OpenSubsonicBridgeImport::Engagement {
-                    operation_id: operation_id.clone(),
-                    track: pending.track.clone(),
-                    engagement: pending.engagement,
-                    played_duration_ms: pending.played_duration_ms,
-                    total_duration_ms: pending.total_duration_ms,
-                    artist_key: pending.artist_key.clone(),
-                    observed_at_unix: pending.observed_at_unix,
-                },
-            );
-        for event in ratings.chain(engagements) {
-            sink(event);
-        }
     }
 }
 

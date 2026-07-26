@@ -96,6 +96,20 @@ impl<T> Register<T> {
             *self = Self::new(envelope, value);
         }
     }
+
+    fn merge(&mut self, candidate: Self) {
+        if self.from_baseline
+            || stamp_order(
+                &candidate.stamp,
+                &candidate.operation_id,
+                &self.stamp,
+                &self.operation_id,
+            )
+            .is_gt()
+        {
+            *self = candidate;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -111,6 +125,12 @@ struct EntryRegisters {
     track: Register<PortableTrack>,
     removed: Register<bool>,
     position: Register<Option<PlaylistEntryId>>,
+}
+
+#[derive(Clone, Default)]
+struct PendingEntryRegisters {
+    removed: Option<Register<bool>>,
+    position: Option<Register<Option<PlaylistEntryId>>>,
 }
 
 #[derive(Clone)]
@@ -203,6 +223,8 @@ pub(crate) fn project_at(
     let mut ratings = BTreeMap::<PortableTrackKey, Register<(PortableTrack, Rating)>>::new();
     let mut radio = BTreeMap::<PortableTrackKey, Register<(PortableTrack, bool)>>::new();
     let mut playlists = BTreeMap::<PlaylistId, PlaylistRegisters>::new();
+    let mut pending_playlist_entries =
+        BTreeMap::<(PlaylistId, PlaylistEntryId), PendingEntryRegisters>::new();
     let mut station_profile = None::<Register<(Option<String>, crate::station::Explore)>>;
     let mut avoided = BTreeMap::<String, Register<bool>>::new();
     let mut events = BTreeMap::<String, EngagementEvent>::new();
@@ -335,6 +357,8 @@ pub(crate) fn project_at(
                 track,
                 after_entry_id,
             } => {
+                let pending =
+                    pending_playlist_entries.remove(&(playlist_id.clone(), entry_id.clone()));
                 let playlist = playlists
                     .entry(playlist_id.clone())
                     .or_insert_with(|| empty_playlist(envelope, playlist_id, "Playlist"));
@@ -351,6 +375,14 @@ pub(crate) fn project_at(
                 entry.track.update(envelope, track.clone());
                 entry.removed.update(envelope, false);
                 entry.position.update(envelope, after_entry_id.clone());
+                if let Some(pending) = pending {
+                    if let Some(removed) = pending.removed {
+                        entry.removed.merge(removed);
+                    }
+                    if let Some(position) = pending.position {
+                        entry.position.merge(position);
+                    }
+                }
             }
             Operation::MovePlaylistEntry {
                 playlist_id,
@@ -362,6 +394,15 @@ pub(crate) fn project_at(
                     .and_then(|playlist| playlist.entries.get_mut(entry_id))
                 {
                     entry.position.update(envelope, after_entry_id.clone());
+                } else {
+                    let pending = pending_playlist_entries
+                        .entry((playlist_id.clone(), entry_id.clone()))
+                        .or_default();
+                    update_optional_register(
+                        &mut pending.position,
+                        envelope,
+                        after_entry_id.clone(),
+                    );
                 }
             }
             Operation::RemovePlaylistEntry {
@@ -374,6 +415,11 @@ pub(crate) fn project_at(
                     .and_then(|playlist| playlist.entries.get_mut(entry_id))
                 {
                     entry.removed.update(envelope, *removed);
+                } else {
+                    let pending = pending_playlist_entries
+                        .entry((playlist_id.clone(), entry_id.clone()))
+                        .or_default();
+                    update_optional_register(&mut pending.removed, envelope, *removed);
                 }
             }
             Operation::SetStationProfile { query, explore } => {

@@ -35,8 +35,14 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
             crate::app::MusicServerCommand::TestAndPrepare { .. }
             | crate::app::MusicServerCommand::Commit { .. }
             | crate::app::MusicServerCommand::DisableHistory { .. }
-            | crate::app::MusicServerCommand::Remove { .. },
+            | crate::app::MusicServerCommand::Remove { .. }
+            | crate::app::MusicServerCommand::AbandonPlaylistCreate { .. },
         ) => Some("music server settings"),
+        Cmd::ServerLibrary(
+            crate::app::ServerLibraryCommand::ApplyPlaylistPreview { .. }
+            | crate::app::ServerLibraryCommand::CreateLinkedPlaylist { .. }
+            | crate::app::ServerLibraryCommand::RecoverPlaylist { .. },
+        ) => Some("music server playlist"),
         Cmd::PlayerControl(_)
         | Cmd::VideoConnect { .. }
         | Cmd::VideoLoad(_)
@@ -45,7 +51,11 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::VideoToggleMute
         | Cmd::Search(_)
         | Cmd::MusicServer(crate::app::MusicServerCommand::Refresh { .. })
-        | Cmd::ServerLibrary(_)
+        | Cmd::ServerLibrary(
+            crate::app::ServerLibraryCommand::LoadPage { .. }
+            | crate::app::ServerLibraryCommand::LoadDetail { .. }
+            | crate::app::ServerLibraryCommand::PreparePlaylist { .. },
+        )
         | Cmd::Data(
             DataCmd::ScanDownloads(_) | DataCmd::PersonalDataExport(_) | DataCmd::SyncUi(_),
         )
@@ -148,6 +158,36 @@ pub(super) fn reject_mutation(app: &mut App, cmd: &Cmd, component: &str, reason:
             app.dirty = true;
             Vec::new()
         }
+        Cmd::ServerLibrary(crate::app::ServerLibraryCommand::ApplyPlaylistPreview {
+            generation,
+            ..
+        }) => app.update(Msg::Server(crate::app::ServerEvent::Library(
+            crate::app::ServerLibraryEvent::PlaylistApplied {
+                generation: *generation,
+                result: Err(crate::app::ServerLibraryFailure::Unavailable),
+            },
+        ))),
+        Cmd::ServerLibrary(crate::app::ServerLibraryCommand::CreateLinkedPlaylist {
+            generation,
+            snapshot,
+        }) => app.update(Msg::Server(crate::app::ServerEvent::Library(
+            crate::app::ServerLibraryEvent::PlaylistCreated {
+                generation: *generation,
+                local_playlist_id: snapshot.playlist_id.clone(),
+                result: Err(crate::app::ServerLibraryFailure::Unavailable),
+            },
+        ))),
+        Cmd::ServerLibrary(crate::app::ServerLibraryCommand::RecoverPlaylist {
+            generation,
+            action,
+            ..
+        }) => app.update(Msg::Server(crate::app::ServerEvent::Library(
+            crate::app::ServerLibraryEvent::PlaylistRecovered {
+                generation: *generation,
+                action: *action,
+                result: Err(crate::app::ServerLibraryFailure::Unavailable),
+            },
+        ))),
         _ => Vec::new(),
     };
     app.set_status_error(match crate::i18n::current() {
@@ -212,5 +252,40 @@ mod tests {
             Some("music server settings")
         );
         assert_eq!(durable_mutation_component(&refresh), None);
+    }
+
+    #[test]
+    fn read_only_secondary_settles_linked_playlist_create_without_actor_work() {
+        let snapshot = crate::personal_state::PersonalPlaylistSnapshot {
+            playlist_id: crate::personal_state::PlaylistId::new("local").unwrap(),
+            name: "Local".to_owned(),
+            entries: Vec::new(),
+        };
+        let mut app = App::new(50);
+        app.server.library.playlist_create = Some(crate::app::ServerPlaylistCreateModal {
+            generation: 7,
+            snapshot: snapshot.clone(),
+            stage: crate::app::ServerPlaylistCreateStage::Applying,
+        });
+        let command = Cmd::ServerLibrary(crate::app::ServerLibraryCommand::CreateLinkedPlaylist {
+            generation: 7,
+            snapshot,
+        });
+
+        assert_eq!(
+            durable_mutation_component(&command),
+            Some("music server playlist")
+        );
+        assert!(
+            reject_mutation(
+                &mut app,
+                &command,
+                "music server playlist",
+                "test writer lease"
+            )
+            .is_empty()
+        );
+        assert!(app.server.library.playlist_create.is_none());
+        assert_eq!(app.status.kind, crate::app::StatusKind::Error);
     }
 }

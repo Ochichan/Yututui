@@ -1,4 +1,4 @@
-//! Read-only music-server library renderer.
+//! Music-server library renderer with explicit playlist access markers.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::{App, LibrarySource, MouseTarget, ScrollSurface};
 use crate::open_subsonic::model::{
     LibraryWarning, ServerLibraryDetail, ServerLibraryRow, ServerLibrarySection,
+    ServerPlaylistAccess,
 };
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -416,7 +417,31 @@ fn server_row_text(app: &App, index: usize) -> String {
                     let count = playlist.song_count.map_or_else(String::new, |count| {
                         format!("  ·  {count} {}", t!("songs", "곡", "曲"))
                     });
-                    format!("☷ {}{count}", playlist.name)
+                    let linked = match playlist.link.as_ref().map(|link| link.health) {
+                        Some(crate::open_subsonic::ServerPlaylistLinkHealth::NeedsAttention) => {
+                            format!(
+                                "  ·  {}",
+                                t!(
+                                    "Linked playlist needs attention",
+                                    "연결된 목록 확인 필요",
+                                    "連携リストを確認"
+                                )
+                            )
+                        }
+                        Some(crate::open_subsonic::ServerPlaylistLinkHealth::ServerMissing) => {
+                            format!(
+                                "  ·  {}",
+                                t!("Server copy missing", "서버 복사본 없음", "サーバー側なし")
+                            )
+                        }
+                        Some(crate::open_subsonic::ServerPlaylistLinkHealth::UpToDate) | None
+                            if playlist.access == ServerPlaylistAccess::Linked =>
+                        {
+                            format!("  ·  {}", t!("Linked", "연결됨", "リンク済み"))
+                        }
+                        _ => String::new(),
+                    };
+                    format!("☷ {}{count}{linked}", playlist.name)
                 }
             }),
     }
@@ -442,6 +467,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::open_subsonic::{ServerLibraryPage, ServerPlaylistId, ServerPlaylistSummary};
 
     fn draw_server_library(app: &App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -547,6 +573,50 @@ mod tests {
                 assert!(width <= 28, "{language:?} compact row is {width} cells");
             }
         }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn linked_playlist_marker_is_localized_and_absent_for_unlinked_rows() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        let mut app = App::new(50);
+        app.server.library.page = Some(ServerLibraryPage {
+            section: ServerLibrarySection::Playlists,
+            rows: vec![ServerLibraryRow::Playlist(ServerPlaylistSummary {
+                id: ServerPlaylistId::new("playlist").unwrap(),
+                name: "Road Trip".to_owned(),
+                owner: Some("owner".to_owned()),
+                song_count: Some(2),
+                duration_secs: None,
+                public: Some(false),
+                cover_art_id: None,
+                access: ServerPlaylistAccess::Linked,
+                link: None,
+                readonly_evidence: Some(false),
+                owner_evidence: Some("owner".to_owned()),
+            })],
+            next_offset: None,
+            warning: None,
+        });
+        for (language, marker) in [
+            (crate::i18n::Language::English, "Linked"),
+            (crate::i18n::Language::Korean, "연결됨"),
+            (crate::i18n::Language::Japanese, "リンク済み"),
+        ] {
+            crate::i18n::set_language(language);
+            assert!(server_row_text(&app, 0).contains(marker));
+        }
+        if let Some(ServerLibraryRow::Playlist(playlist)) = app
+            .server
+            .library
+            .page
+            .as_mut()
+            .and_then(|page| page.rows.first_mut())
+        {
+            playlist.access = ServerPlaylistAccess::Server;
+        }
+        assert!(!server_row_text(&app, 0).contains("リンク済み"));
         crate::i18n::set_language(original);
     }
 }

@@ -193,7 +193,31 @@ pub struct ServerArtist {
     pub cover_art_id: Option<CoverArtId>,
 }
 
+/// Redacted playlist access state safe for library and TUI surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerPlaylistAccess {
+    /// The current password-authenticated account is the exact remote owner.
+    Server,
+    /// Remote write authority could not be proven.
+    ReadOnly,
+    /// A higher durable store explicitly linked this playlist for synchronization.
+    Linked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerPlaylistLinkHealth {
+    UpToDate,
+    NeedsAttention,
+    ServerMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPlaylistLinkSummary {
+    pub local_playlist_id: crate::personal_state::PlaylistId,
+    pub health: ServerPlaylistLinkHealth,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ServerPlaylistSummary {
     pub id: ServerPlaylistId,
     pub name: String,
@@ -202,12 +226,111 @@ pub struct ServerPlaylistSummary {
     pub duration_secs: Option<u32>,
     pub public: Option<bool>,
     pub cover_art_id: Option<CoverArtId>,
+    pub access: ServerPlaylistAccess,
+    pub link: Option<ServerPlaylistLinkSummary>,
+    pub(crate) readonly_evidence: Option<bool>,
+    pub(crate) owner_evidence: Option<String>,
+}
+
+impl fmt::Debug for ServerPlaylistSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ServerPlaylistSummary")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("owner", &self.owner)
+            .field("song_count", &self.song_count)
+            .field("duration_secs", &self.duration_secs)
+            .field("public", &self.public)
+            .field("cover_art_id", &self.cover_art_id)
+            .field("access", &self.access)
+            .field("link", &self.link)
+            .finish()
+    }
+}
+
+impl ServerPlaylistSummary {
+    pub(crate) const fn readonly_evidence(&self) -> Option<bool> {
+        self.readonly_evidence
+    }
+
+    pub(crate) fn owner_evidence(&self) -> Option<&str> {
+        self.owner_evidence.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerPlaylist {
     pub summary: ServerPlaylistSummary,
     pub entries: Vec<ServerSong>,
+}
+
+/// Exact playlist detail used only at the server-write boundary.
+///
+/// Unlike the tolerant catalog projection, this snapshot is constructed only when every remote
+/// occurrence is a valid music entry. It deliberately has no `Debug`, `Display`, or serde
+/// implementation: the remote owner and access-control fields are protocol state, not UI/log
+/// metadata.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ServerPlaylistWriteSnapshot {
+    backend_id: BackendId,
+    account_scope_id: AccountScopeId,
+    id: ServerPlaylistId,
+    name: String,
+    owner: Option<String>,
+    read_only: Option<bool>,
+    entries: Vec<ServerSong>,
+}
+
+impl ServerPlaylistWriteSnapshot {
+    pub(crate) fn new(
+        backend_id: BackendId,
+        account_scope_id: AccountScopeId,
+        id: ServerPlaylistId,
+        name: String,
+        owner: Option<String>,
+        read_only: Option<bool>,
+        entries: Vec<ServerSong>,
+    ) -> Self {
+        Self {
+            backend_id,
+            account_scope_id,
+            id,
+            name,
+            owner,
+            read_only,
+            entries,
+        }
+    }
+
+    pub(crate) fn backend_id(&self) -> &BackendId {
+        &self.backend_id
+    }
+
+    pub(crate) fn account_scope_id(&self) -> &AccountScopeId {
+        &self.account_scope_id
+    }
+
+    pub(crate) fn id(&self) -> &ServerPlaylistId {
+        &self.id
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
+    /// `None` is intentionally distinct from `Some(false)`.
+    pub(crate) const fn read_only(&self) -> Option<bool> {
+        self.read_only
+    }
+
+    pub(crate) fn entries(&self) -> &[ServerSong] {
+        &self.entries
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,5 +480,53 @@ mod tests {
             item("ab", "c", "d").stable_track_id(),
             item("a", "bc", "d").stable_track_id()
         );
+    }
+
+    #[test]
+    fn write_snapshot_preserves_unknown_readonly_without_log_traits() {
+        let snapshot = ServerPlaylistWriteSnapshot::new(
+            BackendId::new("backend").unwrap(),
+            AccountScopeId::new("account").unwrap(),
+            ServerPlaylistId::new("playlist").unwrap(),
+            "Playlist".to_owned(),
+            Some("owner".to_owned()),
+            None,
+            Vec::new(),
+        );
+        assert_eq!(snapshot.backend_id().as_str(), "backend");
+        assert_eq!(snapshot.account_scope_id().as_str(), "account");
+        assert_eq!(snapshot.id().as_str(), "playlist");
+        assert_eq!(snapshot.name(), "Playlist");
+        assert_eq!(snapshot.owner(), Some("owner"));
+        assert_eq!(snapshot.read_only(), None);
+        assert!(snapshot.entries().is_empty());
+    }
+
+    #[test]
+    fn playlist_access_states_are_redacted_and_distinct() {
+        assert_eq!(format!("{:?}", ServerPlaylistAccess::Server), "Server");
+        assert_eq!(format!("{:?}", ServerPlaylistAccess::ReadOnly), "ReadOnly");
+        assert_eq!(format!("{:?}", ServerPlaylistAccess::Linked), "Linked");
+    }
+
+    #[test]
+    fn playlist_summary_debug_excludes_internal_access_evidence() {
+        let summary = ServerPlaylistSummary {
+            id: ServerPlaylistId::new("playlist").unwrap(),
+            name: "Playlist".to_owned(),
+            owner: None,
+            song_count: None,
+            duration_secs: None,
+            public: None,
+            cover_art_id: None,
+            access: ServerPlaylistAccess::ReadOnly,
+            link: None,
+            readonly_evidence: Some(false),
+            owner_evidence: Some("internal-owner-sentinel".to_owned()),
+        };
+        let rendered = format!("{summary:?}");
+        assert!(!rendered.contains("internal-owner-sentinel"));
+        assert!(!rendered.contains("readonly_evidence"));
+        assert!(!rendered.contains("owner_evidence"));
     }
 }

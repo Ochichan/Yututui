@@ -31,11 +31,27 @@ fn live_connection_does_not_hide_playback_reports_needing_a_decision() {
     use crate::app::MusicServerHealth;
 
     assert_eq!(
-        super::super::dispatch::live_music_server_health(0),
+        super::super::dispatch::live_music_server_health(0, 0, 0, 0, 0),
         MusicServerHealth::UpToDate
     );
     assert_eq!(
-        super::super::dispatch::live_music_server_health(1),
+        super::super::dispatch::live_music_server_health(1, 0, 0, 0, 0),
+        MusicServerHealth::NeedsAttention
+    );
+    assert_eq!(
+        super::super::dispatch::live_music_server_health(0, 1, 0, 0, 0),
+        MusicServerHealth::NeedsAttention
+    );
+    assert_eq!(
+        super::super::dispatch::live_music_server_health(0, 0, 1, 0, 0),
+        MusicServerHealth::NeedsAttention
+    );
+    assert_eq!(
+        super::super::dispatch::live_music_server_health(0, 0, 0, 1, 0),
+        MusicServerHealth::NeedsAttention
+    );
+    assert_eq!(
+        super::super::dispatch::live_music_server_health(0, 0, 0, 0, 1),
         MusicServerHealth::NeedsAttention
     );
 }

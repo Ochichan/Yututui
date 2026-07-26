@@ -1,11 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use age::secrecy::SecretString;
+use age::secrecy::{ExposeSecret as _, SecretString};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+use super::playlist_catalog::merge_missing_playlist_recovery_rows;
 use super::*;
-use crate::open_subsonic::bridge_store::RatingShadow;
+use crate::open_subsonic::bridge_store::{
+    PendingPlaylistProjection, PendingPlaylistProjectionStage, PlaylistLink, PlaylistLinkState,
+    PlaylistShadow, RatingShadow,
+};
 use crate::open_subsonic::rating::RawServerRating;
+use crate::open_subsonic::{
+    ServerLibraryRow, ServerPlaylistAccess, ServerPlaylistLinkHealth, ServerPlaylistSummary,
+};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 static LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -23,10 +30,361 @@ fn status_never_contains_origin_or_credentials() {
         native_history_enabled: false,
         native_history_health: NativeHistoryHealth::Off,
         outbound_scrobbles_needing_attention: 0,
+        playlist_creates_needing_attention: 0,
+        playlist_create_attention: Vec::new(),
+        playlist_links_needing_decision: 0,
+        playlist_projections_needing_attention: 0,
+        playlist_contents_needing_attention: 0,
     };
     let rendered = format!("{status:?}");
     assert!(!rendered.contains("https://"));
     assert!(!rendered.contains("sentinel-secret"));
+}
+
+fn playlist_summary_for_access(
+    owner: Option<&str>,
+    owner_evidence: Option<&str>,
+    readonly_evidence: Option<bool>,
+) -> ServerPlaylistSummary {
+    ServerPlaylistSummary {
+        id: ServerPlaylistId::new("playlist").unwrap(),
+        name: "Playlist".to_owned(),
+        owner: owner.map(str::to_owned),
+        song_count: Some(0),
+        duration_secs: None,
+        public: None,
+        cover_art_id: None,
+        access: ServerPlaylistAccess::ReadOnly,
+        link: None,
+        readonly_evidence,
+        owner_evidence: owner_evidence.map(str::to_owned),
+    }
+}
+
+fn empty_playlist_bridge_state() -> OpenSubsonicBridgeState {
+    OpenSubsonicBridgeState::new(
+        BackendId::new("backend").unwrap(),
+        AccountScopeId::new("account").unwrap(),
+    )
+}
+
+#[test]
+fn actor_exposes_server_access_only_for_exact_credential_owner() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut page = ServerLibraryPage {
+        section: ServerLibrarySection::Playlists,
+        rows: vec![
+            ServerLibraryRow::Playlist(playlist_summary_for_access(
+                Some("alice"),
+                Some("alice"),
+                Some(false),
+            )),
+            ServerLibraryRow::Playlist(playlist_summary_for_access(
+                Some("bob"),
+                Some("bob"),
+                Some(false),
+            )),
+            ServerLibraryRow::Playlist(playlist_summary_for_access(
+                Some("alice"),
+                Some("alice"),
+                None,
+            )),
+            ServerLibraryRow::Playlist(playlist_summary_for_access(
+                Some("alice"),
+                None,
+                Some(false),
+            )),
+        ],
+        next_offset: None,
+        warning: None,
+    };
+    finalize_page_playlist_access(&mut page, &password, &empty_playlist_bridge_state());
+    let accesses = page
+        .rows
+        .iter()
+        .map(|row| match row {
+            ServerLibraryRow::Playlist(summary) => summary.access,
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        accesses,
+        [
+            ServerPlaylistAccess::Server,
+            ServerPlaylistAccess::ReadOnly,
+            ServerPlaylistAccess::ReadOnly,
+            ServerPlaylistAccess::ReadOnly,
+        ]
+    );
+
+    let api_key =
+        ServerCredential::api_key(SecretString::from("server-api-key".to_owned())).unwrap();
+    finalize_page_playlist_access(&mut page, &api_key, &empty_playlist_bridge_state());
+    assert!(page.rows.iter().all(|row| matches!(
+        row,
+        ServerLibraryRow::Playlist(ServerPlaylistSummary {
+            access: ServerPlaylistAccess::ReadOnly,
+            ..
+        })
+    )));
+
+    let mut bound_api_key =
+        ServerCredential::api_key(SecretString::from("server-api-key".to_owned())).unwrap();
+    bound_api_key.bind_api_key_username("alice").unwrap();
+    finalize_page_playlist_access(&mut page, &bound_api_key, &empty_playlist_bridge_state());
+    assert!(matches!(
+        &page.rows[0],
+        ServerLibraryRow::Playlist(ServerPlaylistSummary {
+            access: ServerPlaylistAccess::Server,
+            ..
+        })
+    ));
+    assert!(page.rows[1..].iter().all(|row| matches!(
+        row,
+        ServerLibraryRow::Playlist(ServerPlaylistSummary {
+            access: ServerPlaylistAccess::ReadOnly,
+            ..
+        })
+    )));
+}
+
+#[test]
+fn actor_applies_the_same_access_rule_to_playlist_detail() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut detail = ServerLibraryDetail::PlaylistEntries(crate::open_subsonic::ServerPlaylist {
+        summary: playlist_summary_for_access(Some("alice"), Some("alice"), Some(false)),
+        entries: Vec::new(),
+    });
+    finalize_detail_playlist_access(&mut detail, &password, &empty_playlist_bridge_state());
+    assert!(matches!(
+        detail,
+        ServerLibraryDetail::PlaylistEntries(crate::open_subsonic::ServerPlaylist {
+            summary: ServerPlaylistSummary {
+                access: ServerPlaylistAccess::Server,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn actor_marks_linked_rows_and_surfaces_missing_server_recovery_rows() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut bridge_state = empty_playlist_bridge_state();
+    bridge_state
+        .upsert_playlist_link(PlaylistLink {
+            local_playlist_id: crate::personal_state::PlaylistId::new("local").unwrap(),
+            server_playlist_id: ServerPlaylistId::new("missing-server").unwrap(),
+            managed_by_yututui: true,
+            state: PlaylistLinkState::ServerMissing,
+            content_needs_attention: false,
+            shadow: PlaylistShadow {
+                name: "Keep me".to_owned(),
+                occurrences: Vec::new(),
+                verified_at_unix: 100,
+            },
+        })
+        .unwrap();
+    let mut page = ServerLibraryPage {
+        section: ServerLibrarySection::Playlists,
+        rows: Vec::new(),
+        next_offset: None,
+        warning: None,
+    };
+
+    finalize_page_playlist_access(&mut page, &password, &bridge_state);
+    merge_missing_playlist_recovery_rows(&mut page, &bridge_state, 0, 50);
+
+    let ServerLibraryRow::Playlist(summary) = &page.rows[0] else {
+        panic!("missing playlist recovery row");
+    };
+    assert_eq!(summary.id.as_str(), "missing-server");
+    assert_eq!(summary.access, ServerPlaylistAccess::Linked);
+    assert_eq!(
+        summary.link.as_ref().map(|link| link.health),
+        Some(ServerPlaylistLinkHealth::ServerMissing)
+    );
+    assert_eq!(
+        summary
+            .link
+            .as_ref()
+            .map(|link| link.local_playlist_id.as_str()),
+        Some("local")
+    );
+}
+
+#[test]
+fn actor_keeps_server_missing_recovery_action_when_content_also_needs_attention() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut bridge_state = empty_playlist_bridge_state();
+    bridge_state
+        .upsert_playlist_link(PlaylistLink {
+            local_playlist_id: crate::personal_state::PlaylistId::new("local").unwrap(),
+            server_playlist_id: ServerPlaylistId::new("playlist").unwrap(),
+            managed_by_yututui: true,
+            state: PlaylistLinkState::ServerMissing,
+            content_needs_attention: true,
+            shadow: PlaylistShadow {
+                name: "Keep me".to_owned(),
+                occurrences: Vec::new(),
+                verified_at_unix: 100,
+            },
+        })
+        .unwrap();
+    let mut page = ServerLibraryPage {
+        section: ServerLibrarySection::Playlists,
+        rows: vec![ServerLibraryRow::Playlist(playlist_summary_for_access(
+            Some("alice"),
+            Some("alice"),
+            Some(false),
+        ))],
+        next_offset: None,
+        warning: None,
+    };
+
+    finalize_page_playlist_access(&mut page, &password, &bridge_state);
+
+    let ServerLibraryRow::Playlist(summary) = &page.rows[0] else {
+        panic!("playlist row");
+    };
+    assert_eq!(
+        summary.link.as_ref().map(|link| link.health),
+        Some(ServerPlaylistLinkHealth::ServerMissing),
+        "the actionable restore/unlink recovery state must not be hidden by content attention"
+    );
+}
+
+#[test]
+fn actor_surfaces_a_dormant_projection_as_link_attention() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut bridge_state = empty_playlist_bridge_state();
+    let local_playlist_id = crate::personal_state::PlaylistId::new("local").unwrap();
+    bridge_state
+        .upsert_playlist_link(PlaylistLink {
+            local_playlist_id: local_playlist_id.clone(),
+            server_playlist_id: ServerPlaylistId::new("playlist").unwrap(),
+            managed_by_yututui: true,
+            state: PlaylistLinkState::Linked,
+            content_needs_attention: false,
+            shadow: PlaylistShadow {
+                name: "Playlist".to_owned(),
+                occurrences: Vec::new(),
+                verified_at_unix: 100,
+            },
+        })
+        .unwrap();
+    bridge_state
+        .queue_playlist_projection(
+            local_playlist_id,
+            PendingPlaylistProjection {
+                desired_name: "Local edit".to_owned(),
+                ordered_entry_ids: Vec::new(),
+                ordered_item_ids: Vec::new(),
+                stage: PendingPlaylistProjectionStage::NeedsAttention,
+                base_remote_fingerprint: "fingerprint".to_owned(),
+            },
+        )
+        .unwrap();
+    let mut page = ServerLibraryPage {
+        section: ServerLibrarySection::Playlists,
+        rows: vec![ServerLibraryRow::Playlist(playlist_summary_for_access(
+            Some("alice"),
+            Some("alice"),
+            Some(false),
+        ))],
+        next_offset: None,
+        warning: None,
+    };
+
+    finalize_page_playlist_access(&mut page, &password, &bridge_state);
+
+    let ServerLibraryRow::Playlist(summary) = &page.rows[0] else {
+        panic!("playlist row");
+    };
+    assert_eq!(summary.access, ServerPlaylistAccess::Linked);
+    assert_eq!(
+        summary.link.as_ref().map(|link| link.health),
+        Some(ServerPlaylistLinkHealth::NeedsAttention)
+    );
+}
+
+#[test]
+fn actor_surfaces_current_and_durable_playlist_access_attention() {
+    let password =
+        ServerCredential::password("alice", SecretString::from("server-password".to_owned()))
+            .unwrap();
+    let mut bridge_state = empty_playlist_bridge_state();
+    let local_playlist_id = crate::personal_state::PlaylistId::new("local").unwrap();
+    let mut link = PlaylistLink {
+        local_playlist_id,
+        server_playlist_id: ServerPlaylistId::new("playlist").unwrap(),
+        managed_by_yututui: true,
+        state: PlaylistLinkState::Linked,
+        content_needs_attention: false,
+        shadow: PlaylistShadow {
+            name: "Playlist".to_owned(),
+            occurrences: Vec::new(),
+            verified_at_unix: 100,
+        },
+    };
+    bridge_state.upsert_playlist_link(link.clone()).unwrap();
+
+    for (owner, read_only) in [("mallory", Some(false)), ("alice", None)] {
+        let mut page = ServerLibraryPage {
+            section: ServerLibrarySection::Playlists,
+            rows: vec![ServerLibraryRow::Playlist(playlist_summary_for_access(
+                Some(owner),
+                Some(owner),
+                read_only,
+            ))],
+            next_offset: None,
+            warning: None,
+        };
+
+        finalize_page_playlist_access(&mut page, &password, &bridge_state);
+
+        let ServerLibraryRow::Playlist(summary) = &page.rows[0] else {
+            panic!("playlist row");
+        };
+        assert_eq!(
+            summary.link.as_ref().map(|link| link.health),
+            Some(ServerPlaylistLinkHealth::NeedsAttention)
+        );
+    }
+
+    link.state = PlaylistLinkState::AccessNeedsAttention;
+    bridge_state.upsert_playlist_link(link).unwrap();
+    let mut page = ServerLibraryPage {
+        section: ServerLibrarySection::Playlists,
+        rows: vec![ServerLibraryRow::Playlist(playlist_summary_for_access(
+            Some("alice"),
+            Some("alice"),
+            Some(false),
+        ))],
+        next_offset: None,
+        warning: None,
+    };
+
+    finalize_page_playlist_access(&mut page, &password, &bridge_state);
+
+    let ServerLibraryRow::Playlist(summary) = &page.rows[0] else {
+        panic!("playlist row");
+    };
+    assert_eq!(
+        summary.link.as_ref().map(|link| link.health),
+        Some(ServerPlaylistLinkHealth::NeedsAttention)
+    );
 }
 
 #[test]
@@ -182,6 +540,335 @@ fn setup_input_is_move_only_and_accepts_secret_credential() {
         SetupIdentityIntent::Create,
     );
     assert_eq!(input.identity_intent, SetupIdentityIntent::Create);
+}
+
+#[test]
+fn same_account_update_requires_matching_exact_owner_for_password_candidates() {
+    let previous_password =
+        ServerCredential::password("alice", SecretString::from("old-password".to_owned())).unwrap();
+    let same_password =
+        ServerCredential::password("alice", SecretString::from("new-password".to_owned())).unwrap();
+    let changed_password =
+        ServerCredential::password("bob", SecretString::from("new-password".to_owned())).unwrap();
+    assert_eq!(
+        require_same_account_owner(&previous_password, &same_password),
+        Ok(())
+    );
+    assert_eq!(
+        require_same_account_owner(&previous_password, &changed_password),
+        Err(ServiceError::InvalidSetup)
+    );
+
+    let mut bound_api_key =
+        ServerCredential::api_key(SecretString::from("old-api-key".to_owned())).unwrap();
+    bound_api_key.bind_api_key_username("alice").unwrap();
+    assert_eq!(
+        require_same_account_owner(&bound_api_key, &same_password),
+        Ok(()),
+        "an API-key to password update may preserve scope only with the same exact owner"
+    );
+    let unbound_api_key =
+        ServerCredential::api_key(SecretString::from("legacy-api-key".to_owned())).unwrap();
+    assert_eq!(
+        require_same_account_owner(&unbound_api_key, &same_password),
+        Err(ServiceError::InvalidSetup),
+        "legacy API keys without owner evidence must use Replace"
+    );
+}
+
+#[tokio::test]
+async fn api_key_setup_binds_token_info_owner_without_sending_legacy_username_auth() {
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let replies = [
+            (
+                "/rest/getOpenSubsonicExtensions.view?",
+                r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"apiKeyAuthentication","versions":[1]}]}}"#,
+            ),
+            (
+                "/rest/ping.view?",
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+            ),
+            (
+                "/rest/tokenInfo.view?",
+                r#"{"subsonic-response":{"status":"ok","tokenInfo":{"username":"alice"}}}"#,
+            ),
+        ];
+        for (expected_endpoint, body) in replies {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request_head(&mut stream).await;
+            let target = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
+                .unwrap();
+            assert!(target.starts_with(expected_endpoint), "{target}");
+            if expected_endpoint.contains("tokenInfo") {
+                let query = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
+                let fields = query.query_pairs().collect::<Vec<_>>();
+                assert!(
+                    fields
+                        .iter()
+                        .any(|(name, value)| name == "apiKey" && value == "setup-api-key")
+                );
+                assert!(fields.iter().all(|(name, _)| name != "u"));
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "yututui-open-subsonic-token-info-{}-{id}",
+        std::process::id()
+    ));
+    crate::util::safe_fs::ensure_private_dir(&root).unwrap();
+    let paths = OpenSubsonicPaths::for_data_root(root.clone());
+    let input = SetupInput::new(
+        "API-key server",
+        format!("http://127.0.0.1:{port}/"),
+        true,
+        None,
+        ServerCredential::api_key(SecretString::from("setup-api-key".to_owned())).unwrap(),
+        SetupIdentityIntent::Create,
+    );
+
+    let prepared = test_and_prepare_setup(&paths, input).await.unwrap();
+    commit_setup(&paths, prepared).unwrap();
+    server.await.unwrap();
+    let stored = load_store_set(&paths).unwrap().unwrap();
+    assert_eq!(
+        stored
+            .private_state
+            .credential()
+            .username()
+            .unwrap()
+            .expose_secret(),
+        "alice"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn unbound_api_key_update_cannot_preserve_account_scope_without_token_info() {
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let replies = [
+            (
+                "/rest/getOpenSubsonicExtensions.view?",
+                r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}}"#,
+            ),
+            (
+                "/rest/ping.view?",
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+            ),
+            (
+                "/rest/getOpenSubsonicExtensions.view?",
+                r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}}"#,
+            ),
+            (
+                "/rest/ping.view?",
+                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+            ),
+        ];
+        for (expected_endpoint, body) in replies {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request_head(&mut stream).await;
+            let target = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
+                .unwrap();
+            assert!(target.starts_with(expected_endpoint), "{target}");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "yututui-open-subsonic-unbound-api-key-{}-{id}",
+        std::process::id()
+    ));
+    crate::util::safe_fs::ensure_private_dir(&root).unwrap();
+    let paths = OpenSubsonicPaths::for_data_root(root.clone());
+    let create = SetupInput::new(
+        "Legacy API-key server",
+        format!("http://127.0.0.1:{port}/"),
+        true,
+        None,
+        ServerCredential::api_key(SecretString::from("old-api-key".to_owned())).unwrap(),
+        SetupIdentityIntent::Create,
+    );
+    let initial = commit_setup(
+        &paths,
+        test_and_prepare_setup(&paths, create).await.unwrap(),
+    )
+    .unwrap();
+    let update = SetupInput::new(
+        "Updated API-key server",
+        format!("http://127.0.0.1:{port}/"),
+        true,
+        None,
+        ServerCredential::api_key(SecretString::from("new-api-key".to_owned())).unwrap(),
+        SetupIdentityIntent::UpdateSameServerAndAccount,
+    );
+
+    assert!(matches!(
+        test_and_prepare_setup(&paths, update).await,
+        Err(ServiceError::InvalidSetup)
+    ));
+    server.await.unwrap();
+    let retained = read_status(&paths).unwrap();
+    assert_eq!(retained.backend_id, initial.backend_id);
+    assert_eq!(retained.account_scope_id, initial.account_scope_id);
+    assert_eq!(retained.display_name, initial.display_name);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn same_account_setup_requeues_playlist_access_for_verification_once() {
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let replies = [
+            r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}}"#,
+            r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+            r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}}"#,
+            r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+        ];
+        for body in replies {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _request = read_request_head(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "yututui-open-subsonic-playlist-requeue-{}-{id}",
+        std::process::id()
+    ));
+    crate::util::safe_fs::ensure_private_dir(&root).unwrap();
+    let paths = OpenSubsonicPaths::for_data_root(root.clone());
+    let create = SetupInput::new(
+        "Test server",
+        format!("http://127.0.0.1:{port}/"),
+        true,
+        None,
+        ServerCredential::password("alice", SecretString::from("old-secret".to_owned())).unwrap(),
+        SetupIdentityIntent::Create,
+    );
+    commit_setup(
+        &paths,
+        test_and_prepare_setup(&paths, create).await.unwrap(),
+    )
+    .unwrap();
+
+    let mut current = load_store_set(&paths).unwrap().unwrap();
+    let expected = current.revisions();
+    let local_playlist_id = crate::personal_state::PlaylistId::new("local").unwrap();
+    current
+        .bridge_state
+        .upsert_playlist_link(PlaylistLink {
+            local_playlist_id: local_playlist_id.clone(),
+            server_playlist_id: ServerPlaylistId::new("playlist").unwrap(),
+            managed_by_yututui: true,
+            state: PlaylistLinkState::AccessNeedsAttention,
+            content_needs_attention: false,
+            shadow: PlaylistShadow {
+                name: "Playlist".to_owned(),
+                occurrences: Vec::new(),
+                verified_at_unix: 100,
+            },
+        })
+        .unwrap();
+    current
+        .bridge_state
+        .queue_playlist_projection(
+            local_playlist_id.clone(),
+            PendingPlaylistProjection {
+                desired_name: "Local edit".to_owned(),
+                ordered_entry_ids: Vec::new(),
+                ordered_item_ids: Vec::new(),
+                stage: PendingPlaylistProjectionStage::NeedsAttention,
+                base_remote_fingerprint: "fingerprint".to_owned(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        current
+            .bridge_state
+            .playlist_projections_needing_attention(),
+        1,
+        "link and projection attention for one local playlist are counted once"
+    );
+    commit_store_set(&paths, expected, &mut current).unwrap();
+
+    let update = SetupInput::new(
+        "Updated server",
+        format!("http://127.0.0.1:{port}/"),
+        true,
+        None,
+        ServerCredential::password("alice", SecretString::from("new-secret".to_owned())).unwrap(),
+        SetupIdentityIntent::UpdateSameServerAndAccount,
+    );
+    let prepared = test_and_prepare_setup(&paths, update).await.unwrap();
+    let candidate = prepared.store_set.as_ref().unwrap();
+    assert_eq!(
+        candidate
+            .bridge_state
+            .playlist_link(&local_playlist_id)
+            .map(|link| link.state),
+        Some(PlaylistLinkState::Linked)
+    );
+    assert_eq!(
+        candidate
+            .bridge_state
+            .pending_playlist_projections()
+            .get(&local_playlist_id)
+            .map(|pending| pending.stage),
+        Some(PendingPlaylistProjectionStage::Queued)
+    );
+    assert_eq!(
+        candidate
+            .bridge_state
+            .playlist_projections_needing_attention(),
+        0
+    );
+    commit_setup(&paths, prepared).unwrap();
+    server.await.unwrap();
+
+    let durable = load_store_set(&paths).unwrap().unwrap();
+    assert_eq!(
+        durable
+            .bridge_state
+            .playlist_link(&local_playlist_id)
+            .map(|link| link.state),
+        Some(PlaylistLinkState::Linked)
+    );
+    assert_eq!(
+        durable
+            .bridge_state
+            .pending_playlist_projections()
+            .get(&local_playlist_id)
+            .map(|pending| pending.stage),
+        Some(PendingPlaylistProjectionStage::Queued)
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 struct LifecycleFixture {
@@ -498,7 +1185,7 @@ async fn tested_setup_commits_all_stores_and_remove_is_local_only() {
         format!("http://127.0.0.1:{port}/"),
         true,
         None,
-        ServerCredential::api_key(SecretString::from("secret".to_owned())).unwrap(),
+        ServerCredential::password("alice", SecretString::from("secret".to_owned())).unwrap(),
         SetupIdentityIntent::Create,
     );
     let prepared = test_and_prepare_setup(&paths, input).await.unwrap();
@@ -550,7 +1237,8 @@ async fn tested_setup_commits_all_stores_and_remove_is_local_only() {
         format!("http://127.0.0.1:{port}/"),
         true,
         None,
-        ServerCredential::api_key(SecretString::from("updated-secret".to_owned())).unwrap(),
+        ServerCredential::password("alice", SecretString::from("updated-secret".to_owned()))
+            .unwrap(),
         SetupIdentityIntent::UpdateSameServerAndAccount,
     );
     crate::open_subsonic::transaction::fail_after_commit_marker_once_for_test();
@@ -615,7 +1303,8 @@ async fn tested_setup_commits_all_stores_and_remove_is_local_only() {
         format!("http://127.0.0.1:{port}/"),
         true,
         None,
-        ServerCredential::api_key(SecretString::from("replacement-secret".to_owned())).unwrap(),
+        ServerCredential::password("bob", SecretString::from("replacement-secret".to_owned()))
+            .unwrap(),
         SetupIdentityIntent::ReplaceServerOrAccount,
     );
     let replaced = commit_setup(

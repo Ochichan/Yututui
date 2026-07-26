@@ -24,6 +24,7 @@ core	2	src/persist/recovery.rs	ConfigRecoveryTransactionState
 core	3	src/player/recovery.rs	RecoveryEpisodeState
 core	8	src/runtime/player_delivery.rs	RuntimePlayerLifecycle
 core	4	src/daemon/engine/transport.rs	TransportRecoveryState
+core	2	src/app/server_library/playlist_recovery.rs	ServerPlaylistRecoveryStage
 
 # Typed transition, plan, mode, and result projections.
 transition	2	src/persist/writer_lease.rs	InitializedWriterState
@@ -43,6 +44,7 @@ core	3	src/player/ipc/resume.rs	ResumeTelemetryPhase
 core	4	src/player/ipc/resume.rs	ResumeStage
 transition	3	src/player/ipc/resume.rs	TelemetryCompletion
 transition	3	src/player/ipc/resume.rs	PositionDisposition
+transition	5	src/app/server_library/playlist_recovery.rs	ServerPlaylistRecoveryAction
 
 # Recovery classifications which are not retained lifecycle state.
 support	7	src/runtime/delivery_reporting.rs	ActorRejectionRecovery
@@ -51,3 +53,4 @@ support	2	src/persist/recovery.rs	ConfigRecoveryReceipt
 support	2	src/persist/recovery.rs	RecoveryLockError
 support	3	src/persist/recovery.rs	StartupRecoveryFailure
 support	6	src/player/recovery.rs	RecoverableSourceFailure
+support	2	src/open_subsonic/playlist_create_recovery.rs	PlaylistCreateRecoveryState

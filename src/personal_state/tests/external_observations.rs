@@ -131,3 +131,124 @@ fn external_observations_use_device_scoped_envelopes_and_portable_event_dedupe()
     assert_eq!(winner_ab, winner_ba);
     assert_eq!(winner_ab.rating, Rating::Disliked);
 }
+
+#[test]
+fn external_playlist_batch_is_atomic_and_partial_replay_appends_only_missing_operations() {
+    let device = DeviceId::new("device-a").unwrap();
+    let state = state_with_keyed_devices(&[device.as_str()]);
+    let playlist_id = PlaylistId::new("playlist-a").unwrap();
+    let first_entry = PlaylistEntryId::new("entry-a").unwrap();
+    let second_entry = PlaylistEntryId::new("entry-b").unwrap();
+    let origin = OperationOrigin::OpenSubsonic {
+        backend_id: "backend-a".to_owned(),
+    };
+    let batch = vec![
+        ExternalOperationInput {
+            acknowledgement_id: "playlist-name".to_owned(),
+            operation: Operation::UpsertPlaylist {
+                playlist_id: playlist_id.clone(),
+                name: "Server mix".to_owned(),
+            },
+            recorded_at_unix: 10,
+        },
+        ExternalOperationInput {
+            acknowledgement_id: "playlist-entry-a".to_owned(),
+            operation: Operation::UpsertPlaylistEntry {
+                playlist_id: playlist_id.clone(),
+                entry_id: first_entry.clone(),
+                track: open_subsonic_track("song-a"),
+                after_entry_id: None,
+            },
+            recorded_at_unix: 10,
+        },
+        ExternalOperationInput {
+            acknowledgement_id: "playlist-entry-b".to_owned(),
+            operation: Operation::UpsertPlaylistEntry {
+                playlist_id: playlist_id.clone(),
+                entry_id: second_entry.clone(),
+                track: open_subsonic_track("song-b"),
+                after_entry_id: Some(first_entry),
+            },
+            recorded_at_unix: 10,
+        },
+    ];
+
+    let partial = append_external_operation_as(
+        &state,
+        &device,
+        batch[0].acknowledgement_id.clone(),
+        origin.clone(),
+        batch[0].operation.clone(),
+        batch[0].recorded_at_unix,
+    )
+    .unwrap();
+    let (completed, envelope_ids) =
+        append_external_operations_as(&partial, &device, origin.clone(), &batch).unwrap();
+    assert_eq!(completed.operations.len(), partial.operations.len() + 2);
+    assert!(envelope_ids.iter().all(|id| {
+        completed
+            .operations
+            .iter()
+            .any(|operation| &operation.operation_id == id)
+    }));
+
+    let (replayed, replay_ids) =
+        append_external_operations_as(&completed, &device, origin.clone(), &batch).unwrap();
+    assert_eq!(replayed, completed);
+    assert_eq!(replay_ids, envelope_ids);
+
+    let mut conflicting = batch.clone();
+    conflicting[1].operation = Operation::RemovePlaylistEntry {
+        playlist_id,
+        entry_id: second_entry,
+        removed: true,
+    };
+    assert_eq!(
+        append_external_operations_as(&completed, &device, origin, &conflicting),
+        Err(PersonalStateError::ConflictingOperationId)
+    );
+}
+
+#[test]
+fn external_playlist_batch_rejects_one_wrong_backend_without_appending_anything() {
+    let device = DeviceId::new("device-a").unwrap();
+    let state = state_with_keyed_devices(&[device.as_str()]);
+    let playlist_id = PlaylistId::new("playlist-a").unwrap();
+    let mut wrong_track = open_subsonic_track("wrong");
+    let PortableTrackKey::OpenSubsonic { backend_id, .. } = &mut wrong_track.key else {
+        unreachable!();
+    };
+    *backend_id = "backend-b".to_owned();
+    let batch = [
+        ExternalOperationInput {
+            acknowledgement_id: "playlist-name".to_owned(),
+            operation: Operation::UpsertPlaylist {
+                playlist_id: playlist_id.clone(),
+                name: "Server mix".to_owned(),
+            },
+            recorded_at_unix: 10,
+        },
+        ExternalOperationInput {
+            acknowledgement_id: "wrong-entry".to_owned(),
+            operation: Operation::UpsertPlaylistEntry {
+                playlist_id,
+                entry_id: PlaylistEntryId::new("entry").unwrap(),
+                track: wrong_track,
+                after_entry_id: None,
+            },
+            recorded_at_unix: 10,
+        },
+    ];
+    assert!(
+        append_external_operations_as(
+            &state,
+            &device,
+            OperationOrigin::OpenSubsonic {
+                backend_id: "backend-a".to_owned(),
+            },
+            &batch,
+        )
+        .is_err()
+    );
+    assert_eq!(state.operations.len(), 1);
+}

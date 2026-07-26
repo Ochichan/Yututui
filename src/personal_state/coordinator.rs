@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use super::legacy::{
     LegacyPlaylist, LegacyPlaylistEntry, LegacyProjection, rating_from_legacy, sha256_hex,
     stable_hash,
@@ -9,6 +11,20 @@ use super::{
     PersonalStateError, PersonalStateV2, PlaylistEntryId, PlaylistId, PortableTrack,
     PortableTrackKey, project, refresh_device_registry,
 };
+
+const MAX_EXTERNAL_OPERATION_BATCH: usize = 4_096;
+
+/// One operation in an external bridge batch.
+///
+/// The acknowledgement ID is portable bridge state. The ledger wraps it in a deterministic
+/// device-scoped envelope so two devices may observe and merge the same server change safely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalOperationInput {
+    pub acknowledgement_id: String,
+    pub operation: Operation,
+    pub recorded_at_unix: i64,
+}
 
 /// Convert mutations visible in the four runtime projections into causal v2 operations.
 pub(crate) fn reconcile_runtime(
@@ -124,6 +140,31 @@ pub fn append_external_operation(
     )
 }
 
+/// Append one external batch under an explicitly enrolled local device.
+///
+/// The candidate is built and validated in memory before it is returned, so callers can persist
+/// every playlist entry change in one Personal State transaction. Replaying a completely or
+/// partially present batch is an idempotent no-op; conflicting reuse of any acknowledgement ID
+/// rejects the whole candidate.
+pub fn append_external_operations_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    origin: OperationOrigin,
+    operations: &[ExternalOperationInput],
+) -> Result<(PersonalStateV2, Vec<String>), PersonalStateError> {
+    append_external_operations_inner(state, local_device_id, origin, operations, true)
+}
+
+/// Append one external batch for the deterministic unsynced single-device ledger.
+pub fn append_external_operations(
+    state: &PersonalStateV2,
+    origin: OperationOrigin,
+    operations: &[ExternalOperationInput],
+) -> Result<(PersonalStateV2, Vec<String>), PersonalStateError> {
+    let local_device_id = local_device(state)?;
+    append_external_operations_inner(state, &local_device_id, origin, operations, false)
+}
+
 /// Return the stable ledger envelope ID for one external acknowledgement on one local device.
 ///
 /// The bridge acknowledgement remains portable across devices. Only the surrounding ledger
@@ -150,13 +191,6 @@ pub fn external_operation_envelope_id(
     Ok(format!("external-{}", sha256_hex(&material)))
 }
 
-pub(crate) fn external_operation_envelope_id_for_state(
-    state: &PersonalStateV2,
-    acknowledgement_id: &str,
-) -> Result<String, PersonalStateError> {
-    external_operation_envelope_id(&local_device(state)?, acknowledgement_id)
-}
-
 fn validate_external_origin(
     origin: &OperationOrigin,
     operation: &Operation,
@@ -164,23 +198,89 @@ fn validate_external_origin(
     let OperationOrigin::OpenSubsonic { backend_id } = origin else {
         return Ok(());
     };
-    let track = match operation {
-        Operation::SetRating { track, .. } | Operation::RecordEngagement { track, .. } => track,
-        _ => {
-            return Err(PersonalStateError::InvalidOperation(
-                "OpenSubsonic origin requires a track observation",
-            ));
-        }
-    };
-    match &track.key {
-        PortableTrackKey::OpenSubsonic {
-            backend_id: track_backend,
-            ..
-        } if track_backend == backend_id => Ok(()),
+    match operation {
+        Operation::SetRating { track, .. }
+        | Operation::RecordEngagement { track, .. }
+        | Operation::UpsertPlaylistEntry { track, .. } => match &track.key {
+            PortableTrackKey::OpenSubsonic {
+                backend_id: track_backend,
+                ..
+            } if track_backend == backend_id => Ok(()),
+            _ => Err(PersonalStateError::InvalidOperation(
+                "OpenSubsonic origin does not match track backend",
+            )),
+        },
+        Operation::UpsertPlaylist { .. }
+        | Operation::DeletePlaylist { .. }
+        | Operation::MovePlaylistEntry { .. }
+        | Operation::RemovePlaylistEntry { .. } => Ok(()),
         _ => Err(PersonalStateError::InvalidOperation(
-            "OpenSubsonic origin does not match track backend",
+            "OpenSubsonic origin requires a rating, engagement, or playlist observation",
         )),
     }
+}
+
+fn append_external_operations_inner(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    origin: OperationOrigin,
+    operations: &[ExternalOperationInput],
+    require_keyed: bool,
+) -> Result<(PersonalStateV2, Vec<String>), PersonalStateError> {
+    if matches!(origin, OperationOrigin::Local) {
+        return Err(PersonalStateError::InvalidOperation(
+            "external operation origin cannot be local",
+        ));
+    }
+    if operations.is_empty() || operations.len() > MAX_EXTERNAL_OPERATION_BATCH {
+        return Err(PersonalStateError::InvalidOperation(
+            "external operation batch size is invalid",
+        ));
+    }
+    state.validate()?;
+    validate_local_device_binding(state, local_device_id, require_keyed)?;
+
+    let mut acknowledgement_ids = HashSet::with_capacity(operations.len());
+    let mut envelope_ids = Vec::with_capacity(operations.len());
+    for input in operations {
+        if !acknowledgement_ids.insert(input.acknowledgement_id.as_str()) {
+            return Err(PersonalStateError::ConflictingOperationId);
+        }
+        validate_external_origin(&origin, &input.operation)?;
+        let envelope_id =
+            external_operation_envelope_id(local_device_id, &input.acknowledgement_id)?;
+        if let Some(existing) = state
+            .operations
+            .iter()
+            .find(|existing| existing.operation_id == envelope_id)
+            && (existing.origin != origin || existing.operation != input.operation)
+        {
+            return Err(PersonalStateError::ConflictingOperationId);
+        }
+        envelope_ids.push(envelope_id);
+    }
+
+    let mut candidate = state.clone();
+    let mut appender = OperationAppender::new(&mut candidate, local_device_id.clone());
+    for (input, envelope_id) in operations.iter().zip(&envelope_ids) {
+        if appender
+            .state
+            .operations
+            .iter()
+            .any(|existing| existing.operation_id == *envelope_id)
+        {
+            continue;
+        }
+        appender.append_with_metadata(
+            Some(envelope_id.clone()),
+            origin.clone(),
+            input.operation.clone(),
+            input.recorded_at_unix,
+        )?;
+    }
+    refresh_device_registry(&mut candidate)?;
+    candidate.normalize()?;
+    Ok((candidate, envelope_ids))
 }
 
 fn append_operation_with_origin_as(

@@ -20,5 +20,8 @@ mod player_lyrics;
 mod queue_actions;
 pub mod search;
 pub mod server_library;
+pub mod server_playlist_create;
+pub mod server_playlist_preview;
+pub mod server_playlist_recovery;
 pub mod settings;
 pub mod why_ai;

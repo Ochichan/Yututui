@@ -9,7 +9,7 @@ use super::native_history::NativeHistoryCredential;
 use super::profile::StoreError;
 
 pub(crate) const PRIVATE_KIND: &str = "yututui_open_subsonic_private";
-pub(crate) const PRIVATE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const PRIVATE_SCHEMA_VERSION: u32 = 3;
 pub(crate) const MAX_PRIVATE_BYTES: u64 = 256 * 1024;
 const MAX_USERNAME_BYTES: usize = 1_024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
@@ -39,6 +39,23 @@ impl ServerCredential {
             username: None,
             secret: key,
         })
+    }
+
+    /// Attach the account identity proven by the authenticated `tokenInfo` endpoint.
+    ///
+    /// The username is private ownership evidence only. API-key requests continue to omit the
+    /// legacy `u` authentication parameter as required by the OpenSubsonic extension.
+    pub(crate) fn bind_api_key_username(
+        &mut self,
+        username: impl Into<String>,
+    ) -> Result<(), StoreError> {
+        if self.kind != CredentialKind::ApiKey {
+            return Err(StoreError::InvalidState);
+        }
+        let username = username.into();
+        validate_credential_part(&username, MAX_USERNAME_BYTES)?;
+        self.username = Some(SecretString::from(username));
+        Ok(())
     }
 
     pub fn password(
@@ -119,6 +136,13 @@ impl OpenSubsonicPrivateState {
 
     pub fn native_history_enabled(&self) -> bool {
         !matches!(self.native_history, NativeHistorySetting::Off)
+    }
+
+    pub(crate) fn bind_api_key_username(
+        &mut self,
+        username: impl Into<String>,
+    ) -> Result<(), StoreError> {
+        self.credential.bind_api_key_username(username)
     }
 
     pub fn enable_native_history_reusing_server_password(&mut self) -> Result<(), StoreError> {
@@ -300,7 +324,7 @@ pub(crate) fn decode_private(bytes: &[u8]) -> Result<OpenSubsonicPrivateState, S
     }
     let disk: DiskPrivateState =
         serde_json::from_slice(bytes).map_err(|_| StoreError::InvalidState)?;
-    if disk.kind != PRIVATE_KIND || !matches!(disk.schema_version, 1 | PRIVATE_SCHEMA_VERSION) {
+    if disk.kind != PRIVATE_KIND || !matches!(disk.schema_version, 1 | 2 | PRIVATE_SCHEMA_VERSION) {
         return Err(StoreError::InvalidState);
     }
     if disk.schema_version == 1
@@ -311,14 +335,23 @@ pub(crate) fn decode_private(bytes: &[u8]) -> Result<OpenSubsonicPrivateState, S
         return Err(StoreError::InvalidState);
     }
     let credential = match disk.credential_kind {
-        DiskCredentialKind::ApiKey if disk.username.is_none() => {
-            ServerCredential::api_key(SecretString::from(disk.secret.clone()))?
+        DiskCredentialKind::ApiKey
+            if disk.schema_version < PRIVATE_SCHEMA_VERSION && disk.username.is_some() =>
+        {
+            return Err(StoreError::InvalidState);
+        }
+        DiskCredentialKind::ApiKey => {
+            let mut credential =
+                ServerCredential::api_key(SecretString::from(disk.secret.clone()))?;
+            if let Some(username) = disk.username.clone() {
+                credential.bind_api_key_username(username)?;
+            }
+            credential
         }
         DiskCredentialKind::Password => {
             let username = disk.username.clone().ok_or(StoreError::InvalidState)?;
             ServerCredential::password(username, SecretString::from(disk.secret.clone()))?
         }
-        DiskCredentialKind::ApiKey => return Err(StoreError::InvalidState),
     };
     let native_history = match (
         disk.credential_kind,
@@ -403,6 +436,29 @@ mod tests {
     }
 
     #[test]
+    fn token_info_username_round_trips_as_private_api_key_owner_evidence() {
+        let mut credential =
+            ServerCredential::api_key(SecretString::from("secret-key".to_owned())).unwrap();
+        credential.bind_api_key_username("alice").unwrap();
+        let state = OpenSubsonicPrivateState::new(
+            BackendId::new("backend").unwrap(),
+            AccountScopeId::new("account").unwrap(),
+            credential,
+        );
+
+        let bytes = encode_private(&state).unwrap();
+        let disk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(disk["schema_version"], PRIVATE_SCHEMA_VERSION);
+        assert_eq!(disk["username"], "alice");
+        let decoded = decode_private(&bytes).unwrap();
+        assert_eq!(decoded.credential_kind(), CredentialKind::ApiKey);
+        assert_eq!(
+            decoded.credential().username().unwrap().expose_secret(),
+            "alice"
+        );
+    }
+
+    #[test]
     fn password_round_trip_preserves_account_binding() {
         let mut state = OpenSubsonicPrivateState::new(
             BackendId::new("backend").unwrap(),
@@ -461,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_one_migrates_to_disabled_schema_two() {
+    fn schema_one_migrates_to_current_schema_with_history_disabled() {
         let legacy = br#"{
             "kind":"yututui_open_subsonic_private",
             "schema_version":1,
@@ -476,8 +532,27 @@ mod tests {
         assert!(!state.native_history_enabled());
         let encoded = encode_private(&state).unwrap();
         let disk: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(disk["schema_version"], 2);
+        assert_eq!(disk["schema_version"], PRIVATE_SCHEMA_VERSION);
         assert_eq!(disk["native_history_enabled"], false);
+    }
+
+    #[test]
+    fn schema_two_api_key_without_owner_evidence_remains_readable() {
+        let legacy = br#"{
+            "kind":"yututui_open_subsonic_private",
+            "schema_version":2,
+            "revision":7,
+            "backend_id":"backend",
+            "account_scope_id":"account",
+            "credential_kind":"api_key",
+            "username":null,
+            "secret":"legacy-api-key",
+            "native_history_enabled":false
+        }"#;
+
+        let state = decode_private(legacy).unwrap();
+        assert_eq!(state.credential_kind(), CredentialKind::ApiKey);
+        assert!(state.credential().username().is_none());
     }
 
     #[test]

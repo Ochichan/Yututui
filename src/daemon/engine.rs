@@ -136,6 +136,9 @@ pub struct DaemonEngine {
     open_subsonic: open_subsonic_runtime::OpenSubsonicOwner,
     open_subsonic_rating_identity: Option<String>,
     open_subsonic_pending_rating: Option<open_subsonic_bridge::PendingOpenSubsonicRatingProjection>,
+    open_subsonic_playlist_identity: Option<String>,
+    open_subsonic_pending_playlist:
+        Option<open_subsonic_bridge::PendingOpenSubsonicPlaylistProjection>,
     open_subsonic_pending_scrobbles: VecDeque<open_subsonic_bridge::PendingOpenSubsonicScrobble>,
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
@@ -322,6 +325,8 @@ impl DaemonEngine {
             open_subsonic: Default::default(),
             open_subsonic_rating_identity: None,
             open_subsonic_pending_rating: None,
+            open_subsonic_playlist_identity: None,
+            open_subsonic_pending_playlist: None,
             open_subsonic_pending_scrobbles: VecDeque::new(),
             player_emit,
             queue,

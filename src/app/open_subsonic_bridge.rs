@@ -8,43 +8,30 @@ impl App {
     pub(crate) fn apply_open_subsonic_bridge_import(
         &mut self,
         import: &crate::open_subsonic::OpenSubsonicBridgeImport,
-    ) -> Result<String, crate::personal_state::PersonalStateError> {
+    ) -> Result<Vec<String>, crate::personal_state::PersonalStateError> {
         let current = self.reconcile_personal_state(&self.playlists)?;
-        let operation = import.operation();
+        if import.remote_playlist_is_absent(&current)? {
+            // The event may already have crossed the must-deliver owner queue before the bridge
+            // observed the local deletion and retired its source record. Keep the current local
+            // winner; the runtime still persists this snapshot before acknowledging the import.
+            self.install_personal_state_runtime(current)?;
+            return Ok(Vec::new());
+        }
         let origin = import.origin()?;
-        let (candidate, envelope_id) = match &self.personal_state.device_id {
-            Some(device_id) => {
-                let envelope_id = crate::personal_state::external_operation_envelope_id(
-                    device_id,
-                    import.operation_id(),
-                )?;
-                let candidate = crate::personal_state::append_external_operation_as(
-                    &current,
-                    device_id,
-                    import.operation_id().to_owned(),
-                    origin,
-                    operation,
-                    import.observed_at_unix(),
-                )?;
-                (candidate, envelope_id)
-            }
+        let operations = import.external_operations();
+        let (candidate, envelope_ids) = match &self.personal_state.device_id {
+            Some(device_id) => crate::personal_state::append_external_operations_as(
+                &current,
+                device_id,
+                origin,
+                &operations,
+            )?,
             None => {
-                let envelope_id = crate::personal_state::external_operation_envelope_id_for_state(
-                    &current,
-                    import.operation_id(),
-                )?;
-                let candidate = crate::personal_state::append_external_operation(
-                    &current,
-                    import.operation_id().to_owned(),
-                    origin,
-                    operation,
-                    import.observed_at_unix(),
-                )?;
-                (candidate, envelope_id)
+                crate::personal_state::append_external_operations(&current, origin, &operations)?
             }
         };
         self.install_personal_state_runtime(candidate)?;
-        Ok(envelope_id)
+        Ok(envelope_ids)
     }
 }
 
@@ -92,18 +79,19 @@ mod tests {
             observed_at_unix: 100,
         };
 
-        let envelope_id = app.apply_open_subsonic_bridge_import(&import).unwrap();
+        let envelope_ids = app.apply_open_subsonic_bridge_import(&import).unwrap();
         assert_eq!(
             app.apply_open_subsonic_bridge_import(&import).unwrap(),
-            envelope_id
+            envelope_ids
         );
+        let envelope_id = &envelope_ids[0];
 
         assert_eq!(
             app.personal_state
                 .ledger
                 .operations
                 .iter()
-                .filter(|operation| operation.operation_id == envelope_id)
+                .filter(|operation| operation.operation_id == *envelope_id)
                 .count(),
             1
         );

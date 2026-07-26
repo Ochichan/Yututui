@@ -5,7 +5,7 @@ use super::{MusicServerEvent, MusicServerSettingsState, ServerLibraryEvent, Serv
 /// All OpenSubsonic UI state owned by the primary reducer.
 #[derive(Default)]
 pub struct ServerUiState {
-    /// Read-only source, paging, and drill-down state.
+    /// Browsing plus explicit deletion-free playlist import/link previews.
     pub library: ServerLibraryState,
     /// Redacted connection status plus the move-only setup wizard.
     pub settings: MusicServerSettingsState,

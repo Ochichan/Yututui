@@ -155,6 +155,7 @@ impl App {
             || self.local_mode.find.refine_popup.open
             || self.local_import_confirmation_open()
             || self.overlays.pending_settings_confirm.is_some()
+            || self.server.library.playlist_modal_open()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()

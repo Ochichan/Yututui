@@ -1,18 +1,31 @@
-//! Read-only OpenSubsonic library state and reducer.
+//! OpenSubsonic library state, reducer, and explicit playlist-preview flow.
 //!
 //! The local YuTuTui library remains authoritative and fully usable when this surface is
-//! unavailable. Server pages are bounded, generation-stamped snapshots; no server rating or
-//! playlist mutation is reachable from this module.
+//! unavailable. Server pages are bounded, generation-stamped snapshots. Playlist imports and
+//! links are separately generation-stamped, deletion-free previews which require confirmation.
+
+mod playlist_preview;
+pub use playlist_preview::{
+    ServerPlaylistPreviewKind, ServerPlaylistPreviewModal, ServerPlaylistPreviewStage,
+};
+mod playlist_create;
+pub use playlist_create::{ServerPlaylistCreateModal, ServerPlaylistCreateStage};
+mod playlist_recovery;
+pub use playlist_recovery::{
+    ServerPlaylistRecoveryAction, ServerPlaylistRecoveryModal, ServerPlaylistRecoveryStage,
+};
 
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Cmd, Mode, MouseTarget, StatusKind};
 use crate::api::Song;
 use crate::keymap::{Action, Chord, KeyContext};
+use crate::open_subsonic::PlaylistMergePreview;
 use crate::open_subsonic::model::{
     AlbumId, ArtistId, ServerLibraryDetail, ServerLibraryPage, ServerLibraryRow,
     ServerLibrarySection, ServerPlaylistId, ServerSong,
 };
+use crate::personal_state::PlaylistId;
 
 pub const SERVER_LIBRARY_PAGE_LIMIT: u32 = 50;
 const SERVER_LIBRARY_MAX_OFFSET: u32 = 20_000;
@@ -93,6 +106,26 @@ pub enum ServerLibraryCommand {
         generation: u64,
         target: ServerLibraryDetailTarget,
     },
+    PreparePlaylist {
+        generation: u64,
+        server_playlist_id: ServerPlaylistId,
+        kind: ServerPlaylistPreviewKind,
+    },
+    ApplyPlaylistPreview {
+        generation: u64,
+        preview_id: String,
+        server_playlist_id: ServerPlaylistId,
+    },
+    CreateLinkedPlaylist {
+        generation: u64,
+        snapshot: crate::personal_state::PersonalPlaylistSnapshot,
+    },
+    RecoverPlaylist {
+        generation: u64,
+        action: ServerPlaylistRecoveryAction,
+        server_playlist_id: ServerPlaylistId,
+        snapshot: Option<crate::personal_state::PersonalPlaylistSnapshot>,
+    },
 }
 
 pub enum ServerLibraryEvent {
@@ -104,6 +137,24 @@ pub enum ServerLibraryEvent {
     DetailLoaded {
         generation: u64,
         result: Result<ServerLibraryDetail, ServerLibraryFailure>,
+    },
+    PlaylistPrepared {
+        generation: u64,
+        result: Result<PlaylistMergePreview, ServerLibraryFailure>,
+    },
+    PlaylistApplied {
+        generation: u64,
+        result: Result<PlaylistId, ServerLibraryFailure>,
+    },
+    PlaylistCreated {
+        generation: u64,
+        local_playlist_id: PlaylistId,
+        result: Result<ServerPlaylistId, ServerLibraryFailure>,
+    },
+    PlaylistRecovered {
+        generation: u64,
+        action: ServerPlaylistRecoveryAction,
+        result: Result<(), ServerLibraryFailure>,
     },
 }
 
@@ -124,6 +175,12 @@ pub struct ServerLibraryState {
     pub generation: u64,
     pub busy: Option<ServerLibraryBusy>,
     pub failure: Option<ServerLibraryFailure>,
+    pub playlist_preview: Option<ServerPlaylistPreviewModal>,
+    preview_generation: u64,
+    pub playlist_create: Option<ServerPlaylistCreateModal>,
+    create_generation: u64,
+    pub playlist_recovery: Option<ServerPlaylistRecoveryModal>,
+    recovery_generation: u64,
 }
 
 impl Default for ServerLibraryState {
@@ -139,14 +196,41 @@ impl Default for ServerLibraryState {
             generation: 0,
             busy: None,
             failure: None,
+            playlist_preview: None,
+            preview_generation: 0,
+            playlist_create: None,
+            create_generation: 0,
+            playlist_recovery: None,
+            recovery_generation: 0,
         }
     }
 }
 
 impl ServerLibraryState {
+    pub fn playlist_modal_open(&self) -> bool {
+        self.playlist_preview.is_some()
+            || self.playlist_create.is_some()
+            || self.playlist_recovery.is_some()
+    }
+
     fn next_generation(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1).max(1);
         self.generation
+    }
+
+    fn next_preview_generation(&mut self) -> u64 {
+        self.preview_generation = self.preview_generation.wrapping_add(1).max(1);
+        self.preview_generation
+    }
+
+    fn next_create_generation(&mut self) -> u64 {
+        self.create_generation = self.create_generation.wrapping_add(1).max(1);
+        self.create_generation
+    }
+
+    fn next_recovery_generation(&mut self) -> u64 {
+        self.recovery_generation = self.recovery_generation.wrapping_add(1).max(1);
+        self.recovery_generation
     }
 
     pub fn rows_len(&self) -> usize {
@@ -225,6 +309,12 @@ impl ServerLibraryState {
         self.selected = 0;
         self.failure = None;
         self.busy = None;
+        self.playlist_preview = None;
+        self.next_preview_generation();
+        self.playlist_create = None;
+        self.next_create_generation();
+        self.playlist_recovery = None;
+        self.next_recovery_generation();
         self.next_generation();
     }
 }
@@ -268,6 +358,12 @@ impl App {
         // returning to the local library while a server request is in flight must not leave a
         // stale `busy` latch that prevents a later fresh server request.
         self.server.library.next_generation();
+        self.server.library.next_preview_generation();
+        self.server.library.playlist_preview = None;
+        self.server.library.next_create_generation();
+        self.server.library.playlist_create = None;
+        self.server.library.next_recovery_generation();
+        self.server.library.playlist_recovery = None;
         self.server.library.busy = None;
         self.server.library.source = source;
         self.server.library.selected = 0;
@@ -598,6 +694,16 @@ impl App {
         let event_generation = match &event {
             ServerLibraryEvent::PageLoaded { generation, .. }
             | ServerLibraryEvent::DetailLoaded { generation, .. } => *generation,
+            ServerLibraryEvent::PlaylistPrepared { .. }
+            | ServerLibraryEvent::PlaylistApplied { .. } => {
+                return self.finish_server_playlist_preview_event(event);
+            }
+            ServerLibraryEvent::PlaylistCreated { .. } => {
+                return self.finish_server_playlist_create_event(event);
+            }
+            ServerLibraryEvent::PlaylistRecovered { .. } => {
+                return self.finish_server_playlist_recovery_event(event);
+            }
         };
         if event_generation != self.server.library.generation
             || self.server.library.source != LibrarySource::OpenSubsonic
@@ -641,6 +747,16 @@ impl App {
                     self.status.text = failure.label().to_owned();
                 }
             },
+            ServerLibraryEvent::PlaylistPrepared { .. }
+            | ServerLibraryEvent::PlaylistApplied { .. } => unreachable!(
+                "playlist events return through finish_server_playlist_preview_event above"
+            ),
+            ServerLibraryEvent::PlaylistCreated { .. } => unreachable!(
+                "playlist creation returns through finish_server_playlist_create_event above"
+            ),
+            ServerLibraryEvent::PlaylistRecovered { .. } => unreachable!(
+                "playlist recovery returns through finish_server_playlist_recovery_event above"
+            ),
         }
         self.dirty = true;
         Vec::new()
@@ -800,6 +916,10 @@ mod tests {
                         duration_secs: None,
                         public: None,
                         cover_art_id: None,
+                        access: crate::open_subsonic::ServerPlaylistAccess::ReadOnly,
+                        link: None,
+                        readonly_evidence: None,
+                        owner_evidence: None,
                     },
                     entries,
                 },

@@ -628,15 +628,21 @@ pub struct RuntimeHandles {
     open_subsonic_runtime: Option<crate::open_subsonic::OpenSubsonicRuntime>,
     /// Latest reload generation requested by the owner. Out-of-order candidates are dropped.
     open_subsonic_reload_generation: u64,
-    /// Bridge acknowledgement IDs mapped to their device-scoped ledger envelope while persistence
-    /// is outstanding.
-    open_subsonic_pending_imports: std::collections::BTreeMap<String, String>,
+    /// Bridge acknowledgement IDs mapped to their device-scoped ledger envelopes while persistence
+    /// is outstanding. An empty list is a stale remote playlist observation retired by the current
+    /// local deletion; it still waits for that personal-state snapshot's durability boundary.
+    open_subsonic_pending_imports: std::collections::BTreeMap<String, Vec<String>>,
     /// Imports known durable and waiting for bridge-store acknowledgement.
     open_subsonic_committed_imports: std::collections::BTreeSet<String>,
     /// Ledger identity last admitted to the server rating projection.
     open_subsonic_rating_identity: Option<String>,
     /// Ledger identity awaiting proof that its rating projection crossed the bridge-store fsync.
     open_subsonic_pending_rating: Option<open_subsonic_bridge::PendingOpenSubsonicRatingProjection>,
+    /// Ledger identity last admitted to linked server-playlist projection.
+    open_subsonic_playlist_identity: Option<String>,
+    /// Ledger identity awaiting proof that playlist projection crossed the bridge-store fsync.
+    open_subsonic_pending_playlist:
+        Option<open_subsonic_bridge::PendingOpenSubsonicPlaylistProjection>,
     /// Exact playback reports retained while a runtime generation is being replaced.
     open_subsonic_pending_scrobbles:
         std::collections::VecDeque<open_subsonic_bridge::PendingOpenSubsonicScrobble>,
@@ -719,6 +725,8 @@ impl RuntimeHandles {
             open_subsonic_committed_imports: std::collections::BTreeSet::new(),
             open_subsonic_rating_identity: None,
             open_subsonic_pending_rating: None,
+            open_subsonic_playlist_identity: None,
+            open_subsonic_pending_playlist: None,
             open_subsonic_pending_scrobbles: std::collections::VecDeque::new(),
         }
     }

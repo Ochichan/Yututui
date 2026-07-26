@@ -46,6 +46,8 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         open_subsonic: Default::default(),
         open_subsonic_rating_identity: None,
         open_subsonic_pending_rating: None,
+        open_subsonic_playlist_identity: None,
+        open_subsonic_pending_playlist: None,
         open_subsonic_pending_scrobbles: VecDeque::new(),
         player_emit: Arc::new(|_| {}),
         queue,

@@ -174,6 +174,51 @@ pub fn tail_to_width(s: &str, max: usize) -> String {
     out
 }
 
+/// Keep both ends of an identifier visible, inserting one ellipsis when it does not fit.
+/// Display-width accounting is CJK-aware and no character is split.
+pub fn middle_to_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    if max == 1 {
+        return "…".to_owned();
+    }
+
+    let available = max - 1;
+    let head_limit = available.div_ceil(2);
+    let tail_limit = available / 2;
+
+    let mut head_end = 0usize;
+    let mut head_width = 0usize;
+    for (index, character) in s.char_indices() {
+        let width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if head_width.saturating_add(width) > head_limit {
+            break;
+        }
+        head_end = index + character.len_utf8();
+        head_width = head_width.saturating_add(width);
+    }
+
+    let mut tail_start = s.len();
+    let mut tail_width = 0usize;
+    for (index, character) in s.char_indices().rev() {
+        if index < head_end {
+            break;
+        }
+        let width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if tail_width.saturating_add(width) > tail_limit {
+            break;
+        }
+        tail_start = index;
+        tail_width = tail_width.saturating_add(width);
+    }
+
+    format!("{}…{}", &s[..head_end], &s[tail_start..])
+}
+
 /// Word-wrap `text` to at most `width` display cells per line (CJK-aware). Splits on
 /// whitespace, collapses runs of whitespace to a single break, and hard-breaks a single
 /// word longer than `width` at the cell boundary so nothing ever overflows. `width` is
@@ -313,6 +358,15 @@ mod tests {
         assert_eq!(truncate_to_width("가나다", 6), "가나다");
         assert_eq!(truncate_to_width("abcdef", 3), "abc");
         assert_eq!(truncate_to_width("", 4), "");
+    }
+
+    #[test]
+    fn middle_truncation_keeps_both_identifier_ends() {
+        assert_eq!(middle_to_width("head-0123456789-tail", 12), "head-0…-tail");
+        assert_eq!(middle_to_width("가나다라마바사", 9), "가나…바사");
+        assert_eq!(middle_to_width("abcdef", 1), "…");
+        assert_eq!(middle_to_width("abcdef", 0), "");
+        assert_eq!(middle_to_width("short", 8), "short");
     }
 
     #[test]
