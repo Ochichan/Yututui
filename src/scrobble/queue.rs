@@ -27,19 +27,111 @@ use serde::{Deserialize, Serialize};
 use super::service::{ScrobbleTrack, ServiceKind};
 use crate::util::safe_fs;
 
-/// Compaction keeps at most this many entries (newest first) — a two-week offline stretch
-/// of heavy listening fits comfortably; beyond that the oldest listens are the right loss.
+mod audit;
+
+/// External scrobble services keep at most this many pending listens. Exact music-server
+/// submissions have an independent, larger retention budget below.
 pub const QUEUE_CAP: usize = 2000;
+/// Exact OpenSubsonic submissions are local-first engagement events, not best-effort third-party
+/// scrobbles. Keep a full personal-state event window even when external services hit their cap.
+pub const OPEN_SUBSONIC_QUEUE_CAP: usize = 20_000;
 /// Last.fm silently ignores scrobbles older than two weeks; stop owing it those. Other
 /// services (ListenBrainz imports) accept arbitrary ages and keep their markers.
 const LASTFM_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
-/// Queue reads cap at this size; the CAP-compaction keeps real files far below it.
-const QUEUE_READ_MAX: u64 = 4 * 1024 * 1024;
+/// Personal-state payloads share the repository-wide 192 MiB interpretation ceiling. The normal
+/// 22,000-entry post-compaction queue stays much smaller, while this permits recovery from a
+/// pre-compaction exact-event backlog.
+const QUEUE_READ_MAX: u64 = 192 * 1024 * 1024;
+/// Refuse adversarial line-count growth before allocating an unbounded parsed queue.
+const QUEUE_RESOURCE_MAX: usize = 40_000;
+const MAX_EXACT_EVENT_ID_BYTES: usize = 1_024;
+const MAX_EXACT_TRACK_KEY_BYTES: usize = 2_048;
 static ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
 static BOOT_NONCE: OnceLock<String> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct QueueDropKinds {
+    generic: bool,
+    open_subsonic: bool,
+    scope_retired: bool,
+}
+
+/// Exact loss description produced before compaction mutates the durable queue.
+///
+/// Keeping marker categories separate prevents the generic 2,000-listen policy from silently
+/// consuming the larger exact OpenSubsonic budget. IDs make the audit write idempotent across a
+/// crash between its fsync and the queue replacement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueDropSummary {
+    records: std::collections::BTreeMap<String, QueueDropKinds>,
+}
+
+impl QueueDropSummary {
+    pub(crate) fn note_generic(&mut self, entry_id: &str) {
+        self.records.entry(entry_id.to_owned()).or_default().generic = true;
+    }
+
+    pub(crate) fn note_open_subsonic(&mut self, entry_id: &str) {
+        self.records
+            .entry(entry_id.to_owned())
+            .or_default()
+            .open_subsonic = true;
+    }
+
+    pub(crate) fn note_scope_retired(&mut self, entry_id: &str) {
+        self.records
+            .entry(entry_id.to_owned())
+            .or_default()
+            .scope_retired = true;
+    }
+
+    pub fn generic_dropped(&self) -> usize {
+        self.records.values().filter(|kinds| kinds.generic).count()
+    }
+
+    pub fn open_subsonic_dropped(&self) -> usize {
+        self.records
+            .values()
+            .filter(|kinds| kinds.open_subsonic)
+            .count()
+    }
+
+    pub fn scope_retired(&self) -> usize {
+        self.records
+            .values()
+            .filter(|kinds| kinds.scope_retired)
+            .count()
+    }
+
+    pub fn affected_entries(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Whether an atomic queue replacement installed every marker removal described here.
+    ///
+    /// A rewrite error may be reported after the replacement reached disk. The actor retains the
+    /// bounded summary and checks the next strict load before publishing a permanent-loss event.
+    pub(crate) fn is_installed_in(&self, entries: &[QueueEntry]) -> bool {
+        self.records.iter().all(|(entry_id, kinds)| {
+            entries
+                .iter()
+                .find(|entry| entry.id == entry_id.as_str())
+                .is_none_or(|entry| {
+                    (!kinds.generic || entry.pending.is_empty())
+                        && (!kinds.open_subsonic || !entry.open_subsonic_pending)
+                        && (!kinds.scope_retired || !entry.open_subsonic_pending)
+                })
+        })
+    }
+}
+
 /// One queued listen. The field names are a stable on-disk format (JSONL, one per line).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueEntry {
     /// Unique per listen, stable across reloads (dedupe key). New entries use
     /// `"{ts}-{boot nonce}-{monotonic seq}"`; old JSONL used `"{ts}-{track key}"`.
@@ -47,6 +139,8 @@ pub struct QueueEntry {
     /// Stable track identity. Added after the original id format; old entries derive this from id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub track_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_subsonic_item: Option<crate::open_subsonic::OpenSubsonicItemRef>,
     /// Listen start, unix seconds (the scrobble timestamp).
     pub ts: i64,
     pub artist: String,
@@ -57,6 +151,20 @@ pub struct QueueEntry {
     pub duration: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
+    /// An exact OpenSubsonic submission still needs confirmation that the credential owner's
+    /// bridge store crossed its durability boundary. This marker is independent from external
+    /// scrobble-service delivery and survives restarts with the same `id`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_subsonic_pending: bool,
+    /// This exact marker crossed the source journal's pre-handoff durability boundary. Once set,
+    /// the credential owner may have accepted the event even if its acknowledgement has not
+    /// returned, so retention compaction must never evict it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_subsonic_handoff_started: bool,
+    /// The bridge has durably queued this exact event, so restart must replay only the source
+    /// acknowledgement and never the server submission itself.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_subsonic_bridge_durable: bool,
     /// Services that still owe this listen a delivery.
     pub pending: Vec<ServiceKind>,
 }
@@ -64,16 +172,24 @@ pub struct QueueEntry {
 impl QueueEntry {
     pub fn from_track(track: &ScrobbleTrack, pending: Vec<ServiceKind>) -> Self {
         Self {
-            id: next_entry_id(track.started_unix),
+            id: next_event_id(track.started_unix),
             track_key: track.key.clone(),
+            open_subsonic_item: track.open_subsonic_item.clone(),
             ts: track.started_unix,
             artist: track.artist.clone(),
             title: track.title.clone(),
             album: track.album.clone(),
             duration: track.duration_secs,
             origin_url: track.origin_url.clone(),
+            open_subsonic_pending: track.open_subsonic_item.is_some(),
+            open_subsonic_handoff_started: false,
+            open_subsonic_bridge_durable: false,
             pending,
         }
+    }
+
+    pub fn has_pending_delivery(&self) -> bool {
+        self.open_subsonic_pending || !self.pending.is_empty()
     }
 
     pub fn to_track(&self) -> ScrobbleTrack {
@@ -83,6 +199,7 @@ impl QueueEntry {
             } else {
                 self.track_key.clone()
             },
+            open_subsonic_item: self.open_subsonic_item.clone(),
             artist: self.artist.clone(),
             title: self.title.clone(),
             album: self.album.clone(),
@@ -91,9 +208,48 @@ impl QueueEntry {
             started_unix: self.ts,
         }
     }
+
+    fn validate_on_disk(&self) -> bool {
+        if self.open_subsonic_bridge_durable
+            && (!self.open_subsonic_pending || !self.open_subsonic_handoff_started)
+        {
+            return false;
+        }
+        if self.open_subsonic_handoff_started && !self.open_subsonic_pending {
+            return false;
+        }
+        if !self.open_subsonic_pending {
+            return true;
+        }
+        self.open_subsonic_item.is_some()
+            && valid_exact_component(&self.id, MAX_EXACT_EVENT_ID_BYTES)
+            && valid_exact_component(&self.track_key, MAX_EXACT_TRACK_KEY_BYTES)
+    }
 }
 
-fn next_entry_id(started_unix: i64) -> String {
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn valid_exact_component(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{feff}'
+                )
+        })
+}
+
+/// Allocate one process-unique playback event ID.
+///
+/// The scrobble actor also uses this at the exact OpenSubsonic threshold so the same owner event
+/// keeps one identity across deferred delivery and bridge-store retries.
+pub(crate) fn next_event_id(started_unix: i64) -> String {
     let seq = ENTRY_SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{started_unix}-{}-{seq}", boot_nonce())
 }
@@ -122,8 +278,8 @@ fn legacy_track_key_from_id(id: &str) -> String {
         .unwrap_or_else(|| id.to_owned())
 }
 
-/// What [`QueueFile::load`] found: parsed entries (id-deduped, keep-first) plus how many
-/// lines were corrupt (skipped, never fatal — one mangled line must not strand the rest).
+/// What [`QueueFile::load`] found. Any malformed input makes the whole snapshot unreadable so a
+/// later compaction can never erase an exact marker hidden in a torn or future-schema line.
 #[derive(Debug, Default)]
 pub struct LoadedQueue {
     pub entries: Vec<QueueEntry>,
@@ -327,19 +483,83 @@ impl QueueFile {
                 };
             }
         };
-        let text = String::from_utf8_lossy(&bytes);
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                return LoadedQueue {
+                    corrupt: 1,
+                    read_failed: true,
+                    ..LoadedQueue::default()
+                };
+            }
+        };
         let mut out = LoadedQueue::default();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::HashMap::<String, usize>::new();
+        let mut resources = 0usize;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<QueueEntry>(line) {
-                Ok(e) if seen.insert(e.id.clone()) => out.entries.push(e),
-                Ok(_) => {} // duplicate id (crash between submit and rewrite): keep-first
-                Err(_) => out.corrupt += 1,
+            resources = resources.saturating_add(1);
+            if resources > QUEUE_RESOURCE_MAX {
+                tracing::warn!(
+                    resources,
+                    limit = QUEUE_RESOURCE_MAX,
+                    "scrobble queue resource limit exceeded; leaving it intact"
+                );
+                return LoadedQueue {
+                    read_failed: true,
+                    ..LoadedQueue::default()
+                };
             }
+            match serde_json::from_str::<QueueEntry>(line) {
+                Ok(entry) if !entry.validate_on_disk() => {
+                    return LoadedQueue {
+                        corrupt: out.corrupt.saturating_add(1),
+                        read_failed: true,
+                        ..LoadedQueue::default()
+                    };
+                }
+                Ok(entry) => {
+                    if let Some(position) = seen.get(&entry.id).copied() {
+                        if out.entries[position] != entry {
+                            return LoadedQueue {
+                                corrupt: out.corrupt.saturating_add(1),
+                                read_failed: true,
+                                ..LoadedQueue::default()
+                            };
+                        }
+                    } else {
+                        seen.insert(entry.id.clone(), out.entries.len());
+                        out.entries.push(entry);
+                    }
+                }
+                Err(_) => {
+                    return LoadedQueue {
+                        corrupt: out.corrupt.saturating_add(1),
+                        read_failed: true,
+                        ..LoadedQueue::default()
+                    };
+                }
+            }
+        }
+        if out
+            .entries
+            .iter()
+            .filter(|entry| entry.open_subsonic_pending && entry.open_subsonic_handoff_started)
+            .count()
+            > OPEN_SUBSONIC_QUEUE_CAP
+        {
+            tracing::warn!(
+                limit = OPEN_SUBSONIC_QUEUE_CAP,
+                "protected music server handoff marker limit exceeded; leaving queue intact"
+            );
+            return LoadedQueue {
+                corrupt: out.corrupt.saturating_add(1),
+                read_failed: true,
+                ..LoadedQueue::default()
+            };
         }
         out
     }
@@ -403,6 +623,26 @@ impl QueueFile {
         Ok(safe_fs::try_lock_private_file(&lock_path)?
             .map(|guard| QueueFlushLock { _guard: guard }))
     }
+
+    /// Persist a loss record before installing a capped queue replacement.
+    pub(super) fn record_drop_audit_locked(
+        &self,
+        summary: &QueueDropSummary,
+        observed_at_unix: i64,
+        _lock: &QueueFlushLock,
+    ) -> std::io::Result<()> {
+        audit::record(&self.path, summary, observed_at_unix)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drop_audit_counts(&self) -> std::io::Result<(u64, u64, usize)> {
+        audit::counts(&self.path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scope_retirement_audit_count(&self) -> std::io::Result<u64> {
+        audit::scope_retired_count(&self.path)
+    }
 }
 
 #[cfg(test)]
@@ -419,23 +659,50 @@ pub struct QueueFlushLock {
     _guard: safe_fs::AdvisoryFileLock,
 }
 
-/// Compaction policy, pure so it's testable: age out Last.fm markers past two weeks,
-/// drop fully-delivered entries, and cap to the newest [`QUEUE_CAP`] by timestamp.
-/// Returns the surviving entries plus how many were dropped by the cap.
-pub fn compact(mut entries: Vec<QueueEntry>, now_unix: i64) -> (Vec<QueueEntry>, usize) {
+/// Compaction policy, pure so it's testable: age out Last.fm markers past two weeks, drop
+/// fully-delivered entries, then cap generic and exact-server markers independently.
+pub fn compact(mut entries: Vec<QueueEntry>, now_unix: i64) -> (Vec<QueueEntry>, QueueDropSummary) {
     let lastfm_cutoff = now_unix - LASTFM_MAX_AGE.as_secs() as i64;
     for e in &mut entries {
         if e.ts < lastfm_cutoff {
             e.pending.retain(|s| *s != ServiceKind::Lastfm);
         }
     }
-    entries.retain(|e| !e.pending.is_empty());
-    let mut dropped = 0;
-    if entries.len() > QUEUE_CAP {
-        entries.sort_by_key(|e| e.ts);
-        dropped = entries.len() - QUEUE_CAP;
-        entries.drain(..dropped);
+    entries.retain(QueueEntry::has_pending_delivery);
+    entries.sort_by(|left, right| left.ts.cmp(&right.ts).then_with(|| left.id.cmp(&right.id)));
+
+    let mut dropped = QueueDropSummary::default();
+    let open_subsonic_excess = entries
+        .iter()
+        .filter(|entry| entry.open_subsonic_pending)
+        .count()
+        .saturating_sub(OPEN_SUBSONIC_QUEUE_CAP);
+    for entry in entries
+        .iter_mut()
+        .rev()
+        .filter(|entry| entry.open_subsonic_pending && !entry.open_subsonic_handoff_started)
+        .take(open_subsonic_excess)
+    {
+        entry.open_subsonic_pending = false;
+        entry.open_subsonic_handoff_started = false;
+        entry.open_subsonic_bridge_durable = false;
+        dropped.note_open_subsonic(&entry.id);
     }
+
+    let generic_excess = entries
+        .iter()
+        .filter(|entry| !entry.pending.is_empty())
+        .count()
+        .saturating_sub(QUEUE_CAP);
+    for entry in entries
+        .iter_mut()
+        .filter(|entry| !entry.pending.is_empty())
+        .take(generic_excess)
+    {
+        entry.pending.clear();
+        dropped.note_generic(&entry.id);
+    }
+    entries.retain(QueueEntry::has_pending_delivery);
     (entries, dropped)
 }
 
@@ -459,14 +726,29 @@ mod tests {
         QueueEntry {
             id: format!("{ts}-{id_key}"),
             track_key: id_key.to_owned(),
+            open_subsonic_item: None,
             ts,
             artist: "artist".to_owned(),
             title: "title".to_owned(),
             album: None,
             duration: Some(200),
             origin_url: None,
+            open_subsonic_pending: false,
+            open_subsonic_handoff_started: false,
+            open_subsonic_bridge_durable: false,
             pending,
         }
+    }
+
+    fn server_entry(id_key: &str, ts: i64, pending: Vec<ServiceKind>) -> QueueEntry {
+        let mut entry = entry(id_key, ts, pending);
+        entry.open_subsonic_item = Some(crate::open_subsonic::OpenSubsonicItemRef::new(
+            crate::open_subsonic::BackendId::new("server-backend").unwrap(),
+            crate::open_subsonic::AccountScopeId::new("account-scope").unwrap(),
+            crate::open_subsonic::ItemId::new(id_key).unwrap(),
+        ));
+        entry.open_subsonic_pending = true;
+        entry
     }
 
     #[test]
@@ -493,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_lines_are_skipped_not_fatal() {
+    fn corrupt_json_fails_closed_without_returning_a_partial_queue() {
         let (dir, q) = temp_queue("corrupt");
         let a = entry("a", 100, vec![ServiceKind::Lastfm]);
         q.append(&a).unwrap();
@@ -501,13 +783,14 @@ mod tests {
         let b = entry("b", 200, vec![ServiceKind::Lastfm]);
         q.append(&b).unwrap();
         let loaded = q.load();
-        assert_eq!(loaded.entries, vec![a, b]);
+        assert!(loaded.read_failed);
+        assert!(loaded.entries.is_empty());
         assert_eq!(loaded.corrupt, 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn jsonl_loader_handles_deterministic_corrupt_corpus() {
+    fn jsonl_loader_fails_closed_on_deterministic_corrupt_corpus() {
         let (dir, q) = temp_queue("corrupt-corpus");
         let a = entry("a", 100, vec![ServiceKind::Lastfm]);
         let b = entry("b", 200, vec![ServiceKind::ListenBrainz]);
@@ -533,10 +816,31 @@ mod tests {
 
         let loaded = q.load();
 
-        assert!(!loaded.read_failed);
-        assert_eq!(loaded.entries, vec![a, b]);
-        assert!(loaded.corrupt >= 128);
+        assert!(loaded.read_failed);
+        assert!(loaded.entries.is_empty());
+        assert_eq!(loaded.corrupt, 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_utf8_and_invalid_exact_marker_shape_fail_closed() {
+        let (utf8_dir, utf8_queue) = temp_queue("invalid-utf8");
+        std::fs::create_dir_all(utf8_queue.path().parent().unwrap()).unwrap();
+        std::fs::write(utf8_queue.path(), [0xff, b'\n']).unwrap();
+        let loaded = utf8_queue.load();
+        assert!(loaded.read_failed);
+        assert!(loaded.entries.is_empty());
+
+        let (shape_dir, shape_queue) = temp_queue("invalid-exact-shape");
+        let mut malformed = entry("server", 100, Vec::new());
+        malformed.open_subsonic_pending = true;
+        shape_queue.append(&malformed).unwrap();
+        let loaded = shape_queue.load();
+        assert!(loaded.read_failed);
+        assert!(loaded.entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(utf8_dir);
+        let _ = std::fs::remove_dir_all(shape_dir);
     }
 
     #[test]
@@ -544,7 +848,8 @@ mod tests {
         let (dir, q) = temp_queue("oversize");
         std::fs::create_dir_all(q.path().parent().unwrap()).unwrap();
         // A file just over the read cap must not read as an empty queue.
-        std::fs::write(q.path(), vec![b'x'; (QUEUE_READ_MAX as usize) + 1]).unwrap();
+        let file = std::fs::File::create(q.path()).unwrap();
+        file.set_len(QUEUE_READ_MAX + 1).unwrap();
         let loaded = q.load();
         assert!(
             loaded.read_failed,
@@ -571,8 +876,27 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_ids_keep_first() {
-        let (dir, q) = temp_queue("dupe");
+    fn identical_duplicate_ids_are_an_idempotent_single_entry() {
+        let (dir, q) = temp_queue("identical-dupe");
+        let a = entry(
+            "a",
+            100,
+            vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz],
+        );
+        q.append(&a).unwrap();
+        q.append(&a).unwrap();
+
+        let loaded = q.load();
+
+        assert!(!loaded.read_failed);
+        assert_eq!(loaded.corrupt, 0);
+        assert_eq!(loaded.entries, vec![a]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conflicting_duplicate_ids_fail_closed_and_preserve_the_journal() {
+        let (dir, q) = temp_queue("conflicting-dupe");
         let a = entry(
             "a",
             100,
@@ -582,7 +906,14 @@ mod tests {
         a_later.pending = vec![ServiceKind::Lastfm];
         q.append(&a).unwrap();
         q.append(&a_later).unwrap();
-        assert_eq!(q.load().entries, vec![a]);
+        let before = std::fs::read(q.path()).unwrap();
+
+        let loaded = q.load();
+
+        assert!(loaded.read_failed);
+        assert_eq!(loaded.corrupt, 1);
+        assert!(loaded.entries.is_empty());
+        assert_eq!(std::fs::read(q.path()).unwrap(), before);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -600,7 +931,7 @@ mod tests {
             entry("fresh", now - 60, vec![ServiceKind::Lastfm]),
         ];
         let (kept, dropped) = compact(entries, now);
-        assert_eq!(dropped, 0);
+        assert!(dropped.is_empty());
         // old-lastfm lost its only marker → gone; old-both keeps LB only.
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].pending, vec![ServiceKind::ListenBrainz]);
@@ -620,9 +951,185 @@ mod tests {
             })
             .collect();
         let (kept, dropped) = compact(entries, now);
-        assert_eq!(dropped, 10);
+        assert_eq!(dropped.generic_dropped(), 10);
+        assert_eq!(dropped.open_subsonic_dropped(), 0);
         assert_eq!(kept.len(), QUEUE_CAP);
         assert!(kept.iter().all(|e| e.ts >= now - 100_000 + 10));
+    }
+
+    #[test]
+    fn generic_cap_clears_external_markers_without_dropping_exact_server_events() {
+        let now = 10_000_000;
+        let entries = (0..QUEUE_CAP + 10)
+            .map(|index| {
+                server_entry(
+                    &format!("song-{index}"),
+                    now - 100_000 + index as i64,
+                    vec![ServiceKind::ListenBrainz],
+                )
+            })
+            .collect();
+
+        let (kept, dropped) = compact(entries, now);
+
+        assert_eq!(kept.len(), QUEUE_CAP + 10);
+        assert_eq!(dropped.generic_dropped(), 10);
+        assert_eq!(dropped.open_subsonic_dropped(), 0);
+        assert!(kept.iter().all(|entry| entry.open_subsonic_pending));
+        assert_eq!(
+            kept.iter()
+                .filter(|entry| !entry.pending.is_empty())
+                .count(),
+            QUEUE_CAP
+        );
+    }
+
+    #[test]
+    fn exact_server_cap_is_independent_and_drops_only_its_newest_unstarted_markers() {
+        let now = 10_000_000;
+        let entries = (0..OPEN_SUBSONIC_QUEUE_CAP + 10)
+            .map(|index| {
+                server_entry(
+                    &format!("song-{index}"),
+                    now - 100_000 + index as i64,
+                    Vec::new(),
+                )
+            })
+            .collect();
+
+        let (kept, dropped) = compact(entries, now);
+
+        assert_eq!(kept.len(), OPEN_SUBSONIC_QUEUE_CAP);
+        assert_eq!(dropped.generic_dropped(), 0);
+        assert_eq!(dropped.open_subsonic_dropped(), 10);
+        assert!(
+            kept.iter()
+                .all(|entry| entry.ts < now - 100_000 + OPEN_SUBSONIC_QUEUE_CAP as i64)
+        );
+    }
+
+    #[test]
+    fn exact_cap_never_evicts_started_or_awaiting_source_handoffs() {
+        let now = 10_000_000;
+        let mut entries = (0..OPEN_SUBSONIC_QUEUE_CAP)
+            .map(|index| {
+                let mut entry = server_entry(
+                    &format!("protected-{index}"),
+                    now - 100_000 + index as i64,
+                    Vec::new(),
+                );
+                entry.open_subsonic_handoff_started = true;
+                entry
+            })
+            .collect::<Vec<_>>();
+        entries[0].open_subsonic_bridge_durable = true;
+        let newest = server_entry("never-handed-off", now, Vec::new());
+        entries.push(newest.clone());
+
+        let (kept, dropped) = compact(entries, now);
+
+        assert_eq!(kept.len(), OPEN_SUBSONIC_QUEUE_CAP);
+        assert_eq!(dropped.open_subsonic_dropped(), 1);
+        assert!(
+            kept.iter().any(
+                |entry| entry.id.ends_with("protected-0") && entry.open_subsonic_bridge_durable
+            )
+        );
+        assert!(kept.iter().all(|entry| entry.open_subsonic_handoff_started));
+        assert!(!kept.iter().any(|entry| entry.id == newest.id));
+    }
+
+    #[test]
+    fn drop_audit_is_durable_and_idempotent_across_queue_reopen() {
+        let (dir, queue) = temp_queue("drop-audit");
+        let now = 10_000_000;
+        let entries = (0..QUEUE_CAP + 3)
+            .map(|index| {
+                entry(
+                    &format!("track-{index}"),
+                    now - 100_000 + index as i64,
+                    vec![ServiceKind::ListenBrainz],
+                )
+            })
+            .collect();
+        let (_kept, dropped) = compact(entries, now);
+        let lock = queue.try_lock().unwrap();
+        queue
+            .record_drop_audit_locked(&dropped, now, &lock)
+            .unwrap();
+        drop(lock);
+
+        let reopened = QueueFile::at(queue.path().to_path_buf());
+        let lock = reopened.try_lock().unwrap();
+        reopened
+            .record_drop_audit_locked(&dropped, now + 1, &lock)
+            .unwrap();
+        drop(lock);
+
+        assert_eq!(reopened.drop_audit_counts().unwrap(), (3, 0, 1));
+        let audit_path = queue.path().with_extension("drops.json");
+        let serialized = std::fs::read_to_string(&audit_path).unwrap();
+        assert!(!serialized.contains("track-0"));
+        assert!(!serialized.contains("https://"));
+        assert!(!serialized.contains(&dir.to_string_lossy().to_string()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(audit_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn capped_exact_queue_and_audit_survive_reopen() {
+        let (dir, queue) = temp_queue("exact-cap-reopen");
+        let now = 10_000_000;
+        let entries = (0..OPEN_SUBSONIC_QUEUE_CAP + 2)
+            .map(|index| {
+                server_entry(
+                    &format!("song-{index}"),
+                    now - 100_000 + index as i64,
+                    Vec::new(),
+                )
+            })
+            .collect();
+        let (kept, dropped) = compact(entries, now);
+        let lock = queue.try_lock().unwrap();
+        queue
+            .record_drop_audit_locked(&dropped, now, &lock)
+            .unwrap();
+        queue.rewrite_locked(&kept, &lock).unwrap();
+        drop(lock);
+
+        let reopened = QueueFile::at(queue.path().to_path_buf());
+        let loaded = reopened.load();
+        assert!(!loaded.read_failed);
+        assert_eq!(loaded.entries.len(), OPEN_SUBSONIC_QUEUE_CAP);
+        assert!(
+            loaded
+                .entries
+                .iter()
+                .all(|entry| entry.open_subsonic_pending)
+        );
+        assert_eq!(reopened.drop_audit_counts().unwrap(), (0, 2, 1));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn excessive_resource_count_is_read_failed_not_a_partial_queue() {
+        let (dir, queue) = temp_queue("resource-count");
+        std::fs::create_dir_all(queue.path().parent().unwrap()).unwrap();
+        let rows = "{}\n".repeat(QUEUE_RESOURCE_MAX + 1);
+        std::fs::write(queue.path(), rows).unwrap();
+
+        let loaded = queue.load();
+
+        assert!(loaded.read_failed);
+        assert!(loaded.entries.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -692,8 +1199,14 @@ mod tests {
 
     #[test]
     fn queue_entry_round_trips_scrobble_track() {
+        let (dir, queue) = temp_queue("server-item-round-trip");
         let track = ScrobbleTrack {
             key: "dQw4w9WgXcQ".to_owned(),
+            open_subsonic_item: Some(crate::open_subsonic::OpenSubsonicItemRef::new(
+                crate::open_subsonic::BackendId::new("server-backend").unwrap(),
+                crate::open_subsonic::AccountScopeId::new("account-scope").unwrap(),
+                crate::open_subsonic::ItemId::new("song-42").unwrap(),
+            )),
             artist: "아이유".to_owned(),
             title: "Love wins all".to_owned(),
             album: Some("The Winning".to_owned()),
@@ -705,12 +1218,19 @@ mod tests {
         assert!(e.id.starts_with("1751400000-"));
         assert_eq!(e.track_key, "dQw4w9WgXcQ");
         assert_eq!(e.to_track(), track);
+        queue.append(&e).unwrap();
+        let loaded = queue.load();
+        assert!(!loaded.read_failed);
+        assert_eq!(loaded.entries, vec![e]);
+        assert_eq!(loaded.entries[0].to_track(), track);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn same_second_same_track_entries_get_distinct_ids() {
         let track = ScrobbleTrack {
             key: "same".to_owned(),
+            open_subsonic_item: None,
             artist: "artist".to_owned(),
             title: "title".to_owned(),
             album: None,
@@ -732,12 +1252,16 @@ mod tests {
         let entry = QueueEntry {
             id: "100-old-key".to_owned(),
             track_key: String::new(),
+            open_subsonic_item: None,
             ts: 100,
             artist: "artist".to_owned(),
             title: "title".to_owned(),
             album: None,
             duration: None,
             origin_url: None,
+            open_subsonic_pending: false,
+            open_subsonic_handoff_started: false,
+            open_subsonic_bridge_durable: false,
             pending: vec![ServiceKind::Lastfm],
         };
 

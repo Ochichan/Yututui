@@ -1,11 +1,14 @@
 //! Daemon ownership for the OpenSubsonic actor and loopback playback proxy.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::{DaemonEngine, data_dir};
 
 const RETRY_MIN: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+
+pub(super) type OpenSubsonicReadySink = Arc<dyn Fn() + Send + Sync>;
 
 fn next_retry(delay: Duration) -> Duration {
     delay.saturating_mul(2).min(RETRY_MAX)
@@ -28,7 +31,12 @@ impl Default for OpenSubsonicOwner {
 }
 
 impl OpenSubsonicOwner {
-    fn start(&mut self, paths: Option<crate::open_subsonic::OpenSubsonicPaths>) {
+    fn start(
+        &mut self,
+        paths: Option<crate::open_subsonic::OpenSubsonicPaths>,
+        sink: crate::open_subsonic::OpenSubsonicBridgeSink,
+        ready: OpenSubsonicReadySink,
+    ) {
         self.retire();
         let Some(paths) = paths else {
             return;
@@ -42,10 +50,16 @@ impl OpenSubsonicOwner {
                     // The loader already runs off the daemon owner path, and every DNS/API step
                     // inside `load_actor` has its own bound. Do not impose a shorter aggregate
                     // deadline that can permanently reject a valid but slower server.
-                    match crate::open_subsonic::load_actor(&paths).await {
+                    match crate::open_subsonic::load_actor_with_bridge_sink(
+                        &paths,
+                        Some(sink.clone()),
+                    )
+                    .await
+                    {
                         Ok(Some(runtime)) => {
                             runtime.activate();
                             routes.install(runtime.route_provider());
+                            ready();
                             // This task owns the actor and proxy until daemon shutdown.
                             std::future::pending::<()>().await;
                             drop(runtime);
@@ -82,9 +96,13 @@ impl OpenSubsonicOwner {
     }
 }
 
-pub(super) fn initialize(engine: &mut DaemonEngine) {
+pub(super) fn initialize(
+    engine: &mut DaemonEngine,
+    sink: crate::open_subsonic::OpenSubsonicBridgeSink,
+    ready: OpenSubsonicReadySink,
+) {
     let paths = data_dir().map(crate::open_subsonic::OpenSubsonicPaths::for_data_root);
-    engine.open_subsonic.start(paths);
+    engine.open_subsonic.start(paths, sink, ready);
 }
 
 #[cfg(test)]

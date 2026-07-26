@@ -11,6 +11,10 @@ impl App {
         use crate::scrobble::ScrobbleEvent;
         self.dirty = true;
         match event {
+            ScrobbleEvent::OpenSubsonic { .. } => {
+                // The runtime owner intercepts this durable work item before App reduction.
+                Vec::new()
+            }
             ScrobbleEvent::AuthUrl(url) => {
                 let opened = crate::util::browser::open_in_browser_checked(&url);
                 // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak

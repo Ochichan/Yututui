@@ -17,6 +17,7 @@
 //!   vs `true` with nothing loaded). The script then must keep them equal.
 
 mod harness;
+mod rating_recommendation;
 
 use std::sync::Arc;
 
@@ -887,7 +888,7 @@ async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
 
     for step in ["liked", "disliked", "neutral"] {
         let command = RemoteCommand::Rate {
-            video_id: "v1".to_owned(),
+            video_id: "b".to_owned(),
             rating: RateChange::Cycle,
         };
         let app_response = app_apply(&mut app, command.clone());
@@ -908,10 +909,30 @@ async fn track_rating_cycle_and_recommendation_projection_stay_in_parity() {
 }
 
 #[tokio::test]
+async fn media_like_repairs_dislike_and_clears_like_in_parity() {
+    let (mut app, mut engine) = hermetic_pair();
+    for _ in 0..2 {
+        let command = RemoteCommand::Rate {
+            video_id: "b".to_owned(),
+            rating: RateChange::Cycle,
+        };
+        app_apply(&mut app, command.clone());
+        engine.handle_remote(command).await;
+    }
+    assert!(app.signals.is_disliked("b"));
+
+    for step in ["liked", "neutral"] {
+        app.update(Msg::Media(MediaCommand::Like));
+        let (shutdown, effects) = engine.handle_media(MediaCommand::Like).await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_parity(&format!("media like {step}"), &app, &engine);
+    }
+}
+
+#[tokio::test]
 async fn radio_station_rating_cycle_stays_in_parity() {
-    // The radio branch of the rating cycle is dual-implemented by hand (App
-    // player.rs vs daemon gui_rate) — pin it: the cycle toggles radio-favorite
-    // membership, which projects through TrackModel.favorite on both owners.
+    // The shared reducer keeps binary station favorites out of track-rating signals.
     let (mut app, mut engine) = hermetic_pair();
     let mut station = Song::remote("st1", "station-st1", "", "");
     station.playable = Some(crate::api::PlayableRef::RadioStream {

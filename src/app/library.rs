@@ -418,15 +418,14 @@ impl App {
             Some(Action::Favorite) => {
                 if let Some(song) = self.selected_library_song() {
                     let rows_before = self.library_len();
-                    self.library_mut().toggle_favorite(&song);
+                    let commands = self.toggle_song_favorite_rating(&song);
                     // Un-favoriting can remove the row (Favorites/All tab): re-clamp and
                     // drop the now-stale picks. Tabs where the row list is unchanged
                     // (e.g. History) keep the selection.
                     if self.library_len() != rows_before {
                         self.clamp_library_selection();
                     }
-                    self.dirty = true;
-                    return vec![Cmd::Persist(PersistCmd::Library)];
+                    return commands;
                 }
                 Vec::new()
             }

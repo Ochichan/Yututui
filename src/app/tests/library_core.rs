@@ -195,8 +195,17 @@ fn favorite_from_search_results() {
     app.search.selected = 1;
     app.search.focus = SearchFocus::Results;
     app.mode = Mode::Search;
+    let selected = app.search.results[1].clone();
+    crate::rating::set(
+        std::sync::Arc::make_mut(&mut app.library),
+        std::sync::Arc::make_mut(&mut app.signals),
+        &selected,
+        crate::personal_state::Rating::Disliked,
+        1,
+    );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(app.library.is_favorite("id1"));
+    assert!(!app.signals.is_disliked("id1"));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))

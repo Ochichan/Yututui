@@ -3,8 +3,11 @@
 //! [`super::ScrobbleHandle::observe`]; talks back only for auth results and rare
 //! service-health notices (scrobbling itself is fire-and-forget from the app's view).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::Receiver;
@@ -14,7 +17,10 @@ use tokio::sync::oneshot;
 use super::lastfm::{LastfmClient, SCROBBLE_BATCH_MAX, SessionPoll};
 use super::listenbrainz::ListenBrainzClient;
 use super::monitor::{ScrobbleAction, ScrobbleMonitor};
-use super::queue::{QUEUE_CAP, QueueEntry, QueueFile, QueueFlushLock, compact};
+use super::queue::{
+    OPEN_SUBSONIC_QUEUE_CAP, QUEUE_CAP, QueueDropSummary, QueueEntry, QueueFile, QueueFlushLock,
+    compact,
+};
 use super::service::{ScrobbleError, ScrobbleService, ScrobbleTrack, ServiceKind};
 use super::{
     ObservationBatch, PendingCommands, ScrobbleHandle, ScrobbleSettings, ShutdownRequest,
@@ -22,6 +28,12 @@ use super::{
 };
 use crate::util::backpressure::{SCROBBLE_CONTROL_QUEUE, SCROBBLE_QUEUE, bounded_channel};
 use crate::util::delivery::DeliveryError;
+
+mod open_subsonic_ack;
+pub use open_subsonic_ack::OpenSubsonicSubmissionAck;
+#[cfg(test)]
+use open_subsonic_ack::{MARKER_ACK_IDLE, MARKER_ACK_QUEUED, OpenSubsonicMarkerAckStage};
+use open_subsonic_ack::{OpenSubsonicMarkerAckRequest, PendingOpenSubsonicMarkerAcks};
 
 /// Debounce between a queue append and the flush that delivers it.
 const FLUSH_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -53,6 +65,10 @@ pub enum ScrobbleCmd {
 }
 
 /// Events back to the app. No `Debug`: `AuthDone` carries the session key.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "submission events cross a bounded channel and retaining the full track avoids a second allocation"
+)]
 pub enum ScrobbleEvent {
     /// Open this URL for the user (and show it, in case the browser can't launch).
     AuthUrl(String),
@@ -70,11 +86,21 @@ pub enum ScrobbleEvent {
     QueueStalled {
         pending: usize,
     },
-    /// The offline queue exceeded its retention cap and oldest entries were dropped.
+    /// A queue retention category exceeded its cap and eligible delivery markers were dropped.
     /// `dropped` is the actor-lifetime cumulative total, so a latest-value event transport
     /// may coalesce repeated notifications without understating permanent data loss.
     QueueDropped {
         dropped: usize,
+    },
+    /// An exact OpenSubsonic item crossed a playback threshold. Delivery to the server
+    /// bridge stays on the playback owner's durable work lane; the scrobble actor never
+    /// owns server credentials or mutates the bridge store directly.
+    OpenSubsonic {
+        event_id: String,
+        kind: crate::open_subsonic::OpenSubsonicScrobbleKind,
+        track: ScrobbleTrack,
+        /// Present only for durable submissions. Now-playing remains an ephemeral notification.
+        confirmation: Option<OpenSubsonicSubmissionAck>,
     },
 }
 
@@ -236,9 +262,12 @@ struct Actor {
     auth_task: Option<tokio::task::JoinHandle<()>>,
     next_flush: Option<Instant>,
     last_stall_notice: Option<Instant>,
-    /// Threshold crossings whose durable append failed. The bound matches the on-disk retention
-    /// cap; overflow follows the same explicit oldest-first loss policy as queue compaction.
+    /// Threshold crossings whose durable append failed. Either retention category may briefly
+    /// exceed its cap while the redacted loss audit is unavailable; command ingress pauses until
+    /// retry resolves that durable boundary.
     pending_appends: VecDeque<QueueEntry>,
+    pending_generic_appends: usize,
+    pending_open_subsonic_appends: usize,
     /// Queue ownership retained across an ambiguous append result. A retry uses `append_locked`
     /// with this exact guard, avoiding self-deadlock and excluding cross-process resubmission.
     pending_append_lock: Option<QueueFlushLock>,
@@ -248,9 +277,24 @@ struct Actor {
     /// Latches append-health notifications so a full disk produces one failure and one recovery
     /// event instead of a toast on every observation/retry.
     append_failure_active: bool,
+    /// A malformed/unreadable queue is fail-closed and surfaces one needs-attention event until a
+    /// later strict load succeeds.
+    queue_read_failure_active: bool,
     /// Actor-lifetime cumulative permanent loss. Events publish this total rather than a delta,
     /// which makes replacement/coalescing safe under event-channel pressure.
     dropped_total: usize,
+    /// A cap replacement whose write acknowledgement was ambiguous. The next strict queue load
+    /// decides whether the audited removal was installed before publishing its loss notification.
+    pending_queue_drop_outcome: Option<QueueDropSummary>,
+    /// Separate from the observation inbox so a bridge durability acknowledgement never waits
+    /// behind heartbeat coalescing or participates in its shutdown admission barrier.
+    open_subsonic_ack_tx: tokio::sync::mpsc::Sender<OpenSubsonicMarkerAckRequest>,
+    /// Owner-confirmed markers waiting for one successful atomic queue rewrite.
+    pending_open_subsonic_acks: HashMap<String, PendingOpenSubsonicMarkerAcks>,
+    /// Durable submissions are announced once per actor lifetime unless the credential owner's
+    /// bounded queue explicitly defers them. The shared flag permits a same-process retry while
+    /// the map remains bounded by the exact durable queue cap.
+    announced_open_subsonic: HashMap<String, Arc<AtomicBool>>,
     /// In-flight love/unlove sub-tasks keyed by `(artist, title)`. A newer toggle for the same
     /// track aborts the prior one (last-writer-wins) so rapid liking can't settle the wrong way.
     love_tasks: HashMap<(String, String), tokio::task::JoinHandle<()>>,
@@ -264,6 +308,7 @@ async fn run_actor(
     emit: EventSink,
     queue: Option<QueueFile>,
 ) {
+    let (open_subsonic_ack_tx, mut open_subsonic_ack_rx) = bounded_channel(SCROBBLE_CONTROL_QUEUE);
     let http = reqwest::Client::builder()
         .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(15))
@@ -283,15 +328,22 @@ async fn run_actor(
         next_flush: None,
         last_stall_notice: None,
         pending_appends: VecDeque::new(),
+        pending_generic_appends: 0,
+        pending_open_subsonic_appends: 0,
         pending_append_lock: None,
         pending_compaction: None,
         append_failure_active: false,
+        queue_read_failure_active: false,
         dropped_total: 0,
+        pending_queue_drop_outcome: None,
+        open_subsonic_ack_tx,
+        pending_open_subsonic_acks: HashMap::new(),
+        announced_open_subsonic: HashMap::new(),
         love_tasks: HashMap::new(),
     };
-    // Leftovers from the previous run (crash, offline quit) get an early delivery try —
-    // but only when something could receive them.
-    if actor.settings.any_active() {
+    // Leftovers from the previous run include durable OpenSubsonic submissions even when no
+    // external scrobble service is active, so every writable queue gets an early replay pass.
+    if actor.queue.is_some() {
         actor.schedule_flush(FLUSH_ON_START);
     }
 
@@ -309,7 +361,12 @@ async fn run_actor(
                     break;
                 }
             },
-            cmd = rx.recv() => match cmd {
+            acknowledgement = open_subsonic_ack_rx.recv() => {
+                if let Some(event_id) = acknowledgement {
+                    actor.confirm_open_subsonic_submission(event_id);
+                }
+            },
+            cmd = rx.recv(), if actor.accepts_command_ingress() => match cmd {
                 None => break,
                 Some(ScrobbleCmd::Observe(obs)) => {
                     // Commit durable actions before polling any ephemeral network work. If
@@ -487,7 +544,76 @@ fn emit_queue_drop(dropped_total: &mut usize, emit: &EventSink, dropped: usize) 
     });
 }
 
+fn publish_queue_drop(dropped_total: &mut usize, emit: &EventSink, dropped: &QueueDropSummary) {
+    tracing::warn!(
+        generic_dropped = dropped.generic_dropped(),
+        open_subsonic_dropped = dropped.open_subsonic_dropped(),
+        "scrobble queue exceeded a retention cap; dropped eligible markers"
+    );
+    emit_queue_drop(dropped_total, emit, dropped.affected_entries());
+}
+
+fn announce_open_subsonic_submission(
+    emit: &EventSink,
+    acknowledgement_tx: &tokio::sync::mpsc::Sender<OpenSubsonicMarkerAckRequest>,
+    announced: &mut HashMap<String, Arc<AtomicBool>>,
+    entry: &QueueEntry,
+) {
+    if !entry.open_subsonic_pending
+        || !entry.open_subsonic_handoff_started
+        || entry.open_subsonic_item.is_none()
+    {
+        return;
+    }
+    let (deferred_submission, should_emit) = match announced.entry(entry.id.clone()) {
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            let signal = Arc::new(AtomicBool::new(false));
+            slot.insert(Arc::clone(&signal));
+            (signal, true)
+        }
+        std::collections::hash_map::Entry::Occupied(slot) => {
+            let signal = Arc::clone(slot.get());
+            let retry = signal.swap(false, Ordering::AcqRel);
+            (signal, retry)
+        }
+    };
+    if !should_emit {
+        return;
+    }
+    (emit)(ScrobbleEvent::OpenSubsonic {
+        event_id: entry.id.clone(),
+        kind: crate::open_subsonic::OpenSubsonicScrobbleKind::Submission,
+        track: entry.to_track(),
+        confirmation: Some(OpenSubsonicSubmissionAck::with_bridge_marker_state(
+            entry.id.clone(),
+            acknowledgement_tx.clone(),
+            entry.open_subsonic_bridge_durable,
+            deferred_submission,
+        )),
+    });
+}
+
+fn prune_announced_open_subsonic(
+    announced: &mut HashMap<String, Arc<AtomicBool>>,
+    durable_entries: &[QueueEntry],
+) {
+    let pending = durable_entries
+        .iter()
+        .filter(|entry| entry.open_subsonic_pending)
+        .map(|entry| entry.id.as_str())
+        .collect::<HashSet<_>>();
+    announced.retain(|event_id, _| pending.contains(event_id.as_str()));
+    debug_assert!(announced.len() <= OPEN_SUBSONIC_QUEUE_CAP);
+}
+
 impl Actor {
+    fn accepts_command_ingress(&self) -> bool {
+        // Stop polling the bounded inbox after an accepted batch crosses either cap. Flush,
+        // acknowledgement, and shutdown lanes remain live while its loss audit is retried.
+        self.pending_generic_appends <= QUEUE_CAP
+            && self.pending_open_subsonic_appends <= OPEN_SUBSONIC_QUEUE_CAP
+    }
+
     fn record_observation_batch(&mut self, batch: ObservationBatch) -> Vec<ScrobbleTrack> {
         let (first, tail) = batch.into_parts();
         let mut actions = self.monitor.observe(&first, self.settings.local_files);
@@ -509,8 +635,13 @@ impl Actor {
                 // now-playing request. Shutdown is allowed to cancel those network
                 // awaits, but it must never cancel the durable queue append that was
                 // produced by the same observation.
-                ScrobbleAction::NowPlaying(track) => now_playing.push(track),
-                ScrobbleAction::Scrobble(track) => self.enqueue_scrobble(track),
+                ScrobbleAction::NowPlaying(track) => {
+                    self.emit_open_subsonic_now_playing(&track);
+                    now_playing.push(track);
+                }
+                ScrobbleAction::Scrobble(track) => {
+                    self.enqueue_scrobble(track);
+                }
                 ScrobbleAction::Love {
                     artist,
                     title,
@@ -519,6 +650,38 @@ impl Actor {
             }
         }
         now_playing
+    }
+
+    fn emit_open_subsonic_now_playing(&self, track: &ScrobbleTrack) {
+        if track.open_subsonic_item.is_some() {
+            (self.emit)(ScrobbleEvent::OpenSubsonic {
+                event_id: super::queue::next_event_id(track.started_unix),
+                kind: crate::open_subsonic::OpenSubsonicScrobbleKind::NowPlaying,
+                track: track.clone(),
+                confirmation: None,
+            });
+        }
+    }
+
+    fn confirm_open_subsonic_submission(&mut self, request: OpenSubsonicMarkerAckRequest) {
+        let event_id = request.event_id.clone();
+        if !self.pending_open_subsonic_acks.contains_key(&event_id)
+            && self.pending_open_subsonic_acks.len() >= OPEN_SUBSONIC_QUEUE_CAP
+        {
+            // The durable JSONL marker remains untouched and will replay on restart. Never evict
+            // an already accepted acknowledgement merely to make room for another one.
+            tracing::warn!(
+                capacity = OPEN_SUBSONIC_QUEUE_CAP,
+                "music server acknowledgement hand-off is full; durable marker remains queued"
+            );
+            request.retry();
+        } else {
+            self.pending_open_subsonic_acks
+                .entry(event_id)
+                .or_default()
+                .push(request);
+        }
+        self.schedule_flush(Duration::ZERO);
     }
 
     /// Now-playing is ephemeral: one attempt per service, never queued.
@@ -558,7 +721,7 @@ impl Actor {
             pending.push(ServiceKind::ListenBrainz);
         }
         let Some(_queue) = &self.queue else { return };
-        if pending.is_empty() {
+        if pending.is_empty() && track.open_subsonic_item.is_none() {
             return;
         }
         // Clock-skew guard: Last.fm rejects future timestamps.
@@ -566,17 +729,16 @@ impl Actor {
         if track.started_unix > now_unix + 60 {
             track.started_unix = now_unix - 1;
         }
-        let entry = QueueEntry::from_track(&track, pending);
-        if self.pending_appends.len() == QUEUE_CAP {
-            self.pending_appends.pop_front();
-            tracing::warn!(
-                capacity = QUEUE_CAP,
-                "pending scrobble append queue full; dropped oldest entry"
-            );
-            emit_queue_drop(&mut self.dropped_total, &self.emit, 1);
-        }
-        self.pending_appends.push_back(entry);
+        self.retain_pending_append(QueueEntry::from_track(&track, pending));
         let _ = self.retry_pending_appends();
+    }
+
+    fn retain_pending_append(&mut self, entry: QueueEntry) {
+        if entry.has_pending_delivery() {
+            self.pending_generic_appends += usize::from(!entry.pending.is_empty());
+            self.pending_open_subsonic_appends += usize::from(entry.open_subsonic_pending);
+            self.pending_appends.push_back(entry);
+        }
     }
 
     /// Retry retained appends in listen order. An append error can be ambiguous (the line may
@@ -585,6 +747,103 @@ impl Actor {
     /// stays held from the first uncertain result through its successful retry so another process
     /// cannot observe, submit, and remove that id between attempts.
     fn retry_pending_appends(&mut self) -> Result<(), DeliveryError> {
+        let generic_excess = self.pending_generic_appends.saturating_sub(QUEUE_CAP);
+        let exact_excess = self
+            .pending_open_subsonic_appends
+            .saturating_sub(OPEN_SUBSONIC_QUEUE_CAP);
+        if generic_excess > 0 || exact_excess > 0 {
+            if self.pending_append_lock.is_none() {
+                let lock = match self
+                    .queue
+                    .as_ref()
+                    .expect("pending appends require a durable queue")
+                    .try_lock_result()
+                {
+                    Ok(Some(lock)) => lock,
+                    Ok(None) => {
+                        self.note_append_failure(None);
+                        return Err(DeliveryError::Busy);
+                    }
+                    Err(error) => {
+                        self.note_append_failure(Some(&error));
+                        return Err(DeliveryError::Saturated);
+                    }
+                };
+                self.pending_append_lock = Some(lock);
+            }
+            let mut dropped = QueueDropSummary::default();
+            let generic_ids = self
+                .pending_appends
+                .iter()
+                .filter(|entry| !entry.pending.is_empty())
+                .take(generic_excess)
+                .map(|entry| entry.id.clone())
+                .collect::<HashSet<_>>();
+            for entry_id in &generic_ids {
+                dropped.note_generic(entry_id);
+            }
+            let exact_ids = self
+                .pending_appends
+                .iter()
+                .rev()
+                .filter(|entry| entry.open_subsonic_pending && !entry.open_subsonic_handoff_started)
+                .take(exact_excess)
+                .map(|entry| entry.id.clone())
+                .collect::<HashSet<_>>();
+            for entry_id in &exact_ids {
+                dropped.note_open_subsonic(entry_id);
+            }
+            if generic_ids.len() != generic_excess || exact_ids.len() != exact_excess {
+                tracing::error!(
+                    generic_excess,
+                    generic_eligible = generic_ids.len(),
+                    excess = exact_excess,
+                    eligible = exact_ids.len(),
+                    "protected pending delivery marker cannot be evicted from append memory"
+                );
+                self.note_append_failure(None);
+                return Err(DeliveryError::Saturated);
+            }
+            let audit = self
+                .queue
+                .as_ref()
+                .expect("pending appends require a durable queue")
+                .record_drop_audit_locked(
+                    &dropped,
+                    crate::signals::unix_now(),
+                    self.pending_append_lock
+                        .as_ref()
+                        .expect("pending overflow audit owns the queue lock"),
+                );
+            if let Err(error) = audit {
+                self.note_append_failure(Some(&error));
+                return Err(DeliveryError::Saturated);
+            }
+            for entry in &mut self.pending_appends {
+                if generic_ids.contains(&entry.id) {
+                    entry.pending.clear();
+                }
+                if exact_ids.contains(&entry.id) {
+                    entry.open_subsonic_pending = false;
+                    entry.open_subsonic_handoff_started = false;
+                    entry.open_subsonic_bridge_durable = false;
+                }
+            }
+            self.pending_appends
+                .retain(QueueEntry::has_pending_delivery);
+            self.pending_generic_appends = self
+                .pending_appends
+                .iter()
+                .filter(|entry| !entry.pending.is_empty())
+                .count();
+            self.pending_open_subsonic_appends = self
+                .pending_appends
+                .iter()
+                .filter(|entry| entry.open_subsonic_pending)
+                .count();
+            publish_queue_drop(&mut self.dropped_total, &self.emit, &dropped);
+        }
+
         let mut appended = 0usize;
         while let Some(entry) = self.pending_appends.front().cloned() {
             if self.pending_append_lock.is_none() {
@@ -618,7 +877,16 @@ impl Actor {
                 );
             match result {
                 Ok(()) => {
-                    self.pending_appends.pop_front();
+                    let appended_entry = self
+                        .pending_appends
+                        .pop_front()
+                        .expect("the appended entry remains at the queue front");
+                    self.pending_generic_appends = self
+                        .pending_generic_appends
+                        .saturating_sub(usize::from(!appended_entry.pending.is_empty()));
+                    self.pending_open_subsonic_appends = self
+                        .pending_open_subsonic_appends
+                        .saturating_sub(usize::from(appended_entry.open_subsonic_pending));
                     // A confirmed append ends this ownership interval. A later pending entry
                     // obtains a fresh guard so other processes are not excluded unnecessarily.
                     self.pending_append_lock = None;
@@ -832,16 +1100,142 @@ impl Actor {
         if loaded.read_failed {
             // Present but unreadable: skip the whole round so we never compact-to-empty and
             // delete a queue we simply couldn't read. Retried on the next natural flush.
+            if !self.queue_read_failure_active {
+                self.queue_read_failure_active = true;
+                (self.emit)(ScrobbleEvent::QueueStalled { pending: 1 });
+            }
             self.schedule_flush(FLUSH_RETRY);
             return Err(DeliveryError::Saturated);
+        }
+        if self.queue_read_failure_active {
+            self.queue_read_failure_active = false;
+            (self.emit)(ScrobbleEvent::QueueStalled { pending: 0 });
         }
         if loaded.corrupt > 0 {
             tracing::warn!(corrupt = loaded.corrupt, "scrobble queue had corrupt lines");
         }
-        let (mut entries, capped) = compact(loaded.entries, crate::signals::unix_now());
-        if capped > 0 {
-            tracing::warn!(dropped = capped, "scrobble queue over cap; dropped oldest");
-            emit_queue_drop(&mut self.dropped_total, &self.emit, capped);
+        let mut entries = loaded.entries;
+        if let Some(pending) = self.pending_queue_drop_outcome.take()
+            && pending.is_installed_in(&entries)
+        {
+            publish_queue_drop(&mut self.dropped_total, &self.emit, &pending);
+        }
+        let applying_open_subsonic_acks = !self.pending_open_subsonic_acks.is_empty();
+        let mut scope_retirements = QueueDropSummary::default();
+        for entry in &entries {
+            if entry.open_subsonic_pending
+                && self
+                    .pending_open_subsonic_acks
+                    .get(&entry.id)
+                    .is_some_and(|acks| !acks.scope_retired.is_empty())
+            {
+                scope_retirements.note_scope_retired(&entry.id);
+            }
+        }
+        if !scope_retirements.is_empty()
+            && let Err(error) = queue.record_drop_audit_locked(
+                &scope_retirements,
+                crate::signals::unix_now(),
+                &lock,
+            )
+        {
+            tracing::warn!(
+                error = %error,
+                retired = scope_retirements.scope_retired(),
+                "failed to persist retired music-server scope audit; source markers left intact"
+            );
+            self.schedule_flush(FLUSH_RETRY);
+            return Err(DeliveryError::Saturated);
+        }
+        let invalid_source_ack = entries.iter().any(|entry| {
+            entry.open_subsonic_pending
+                && !entry.open_subsonic_bridge_durable
+                && self
+                    .pending_open_subsonic_acks
+                    .get(&entry.id)
+                    .is_some_and(|acks| {
+                        acks.scope_retired.is_empty() && !acks.source_acknowledged.is_empty()
+                    })
+        });
+        if invalid_source_ack {
+            for (_, acknowledgements) in self.pending_open_subsonic_acks.drain() {
+                acknowledgements.retry();
+            }
+            tracing::warn!(
+                "music server source acknowledgement arrived before its intermediate marker"
+            );
+            self.schedule_flush(FLUSH_RETRY);
+            return Err(DeliveryError::Saturated);
+        }
+        for entry in &mut entries {
+            let Some(acknowledgements) = self.pending_open_subsonic_acks.get(&entry.id) else {
+                continue;
+            };
+            if entry.open_subsonic_pending && !acknowledgements.scope_retired.is_empty() {
+                entry.open_subsonic_pending = false;
+                entry.open_subsonic_handoff_started = false;
+                entry.open_subsonic_bridge_durable = false;
+                continue;
+            }
+            if entry.open_subsonic_pending && !acknowledgements.bridge_queued.is_empty() {
+                entry.open_subsonic_handoff_started = true;
+                entry.open_subsonic_bridge_durable = true;
+            }
+            if entry.open_subsonic_pending && !acknowledgements.source_acknowledged.is_empty() {
+                entry.open_subsonic_pending = false;
+                entry.open_subsonic_handoff_started = false;
+                entry.open_subsonic_bridge_durable = false;
+            }
+        }
+        let now_unix = crate::signals::unix_now();
+        let (mut entries, capped) = compact(entries, now_unix);
+        if !capped.is_empty()
+            && let Err(error) = queue.record_drop_audit_locked(&capped, now_unix, &lock)
+        {
+            tracing::warn!(
+                error = %error,
+                "failed to persist scrobble retention loss audit; queue left intact"
+            );
+            self.schedule_flush(FLUSH_RETRY);
+            return Err(DeliveryError::Saturated);
+        }
+        let mut started_handoffs = false;
+        for entry in &mut entries {
+            if entry.open_subsonic_pending && !entry.open_subsonic_handoff_started {
+                entry.open_subsonic_handoff_started = true;
+                started_handoffs = true;
+            }
+        }
+        if applying_open_subsonic_acks || !capped.is_empty() || started_handoffs {
+            // Commit every source-journal decision before exposing a surviving exact event to
+            // the credential owner. After this boundary, compaction protects the marker even if
+            // the bridge accepts it and the process crashes before its acknowledgement returns.
+            if let Err(error) = queue.rewrite_locked(&entries, &lock) {
+                if !capped.is_empty() {
+                    self.pending_queue_drop_outcome = Some(capped.clone());
+                }
+                tracing::warn!(
+                    error = %error,
+                    "failed to persist music server playback handoff state"
+                );
+                self.schedule_flush(FLUSH_RETRY);
+                return Err(DeliveryError::Saturated);
+            }
+            if !capped.is_empty() {
+                publish_queue_drop(&mut self.dropped_total, &self.emit, &capped);
+            }
+            prune_announced_open_subsonic(&mut self.announced_open_subsonic, &entries);
+            for (_, acknowledgements) in self.pending_open_subsonic_acks.drain() {
+                acknowledgements.mark_durable();
+            }
+        }
+        for entry in &entries {
+            announce_open_subsonic_submission(
+                &self.emit,
+                &self.open_subsonic_ack_tx,
+                &mut self.announced_open_subsonic,
+                entry,
+            );
         }
 
         if let Some(client) = self.lastfm.clone()
@@ -888,9 +1282,17 @@ impl Actor {
             self.schedule_flush(FLUSH_RETRY);
             return Err(DeliveryError::Saturated);
         }
-        let pending = entries.len();
-        if pending > 0 && self.settings.any_active() {
+        prune_announced_open_subsonic(&mut self.announced_open_subsonic, &entries);
+        for (_, acknowledgements) in self.pending_open_subsonic_acks.drain() {
+            acknowledgements.mark_durable();
+        }
+        let exact_pending = entries.iter().any(|entry| entry.open_subsonic_pending);
+        let external_pending = entries.iter().any(|entry| !entry.pending.is_empty());
+        if exact_pending || (external_pending && self.settings.any_active()) {
             self.schedule_flush(FLUSH_RETRY);
+        }
+        let pending = entries.len();
+        if external_pending && self.settings.any_active() {
             let notice_due = self
                 .last_stall_notice
                 .is_none_or(|t| t.elapsed() >= STALL_NOTICE_EVERY);
@@ -964,7 +1366,7 @@ async fn flush_service<S: ScrobbleService>(
                 e.pending.retain(|s| *s != kind);
             }
         }
-        entries.retain(|e| !e.pending.is_empty());
+        entries.retain(QueueEntry::has_pending_delivery);
         if let Err(e) = queue.rewrite_locked(entries, lock) {
             tracing::warn!(error = %e, "failed to compact scrobble queue after chunk");
             return Some(acknowledgements);
@@ -982,7 +1384,7 @@ fn apply_compaction_acks(entries: &mut Vec<QueueEntry>, acknowledgements: &[Comp
             }
         }
     }
-    entries.retain(|entry| !entry.pending.is_empty());
+    entries.retain(QueueEntry::has_pending_delivery);
 }
 
 fn retry_pending_compaction(

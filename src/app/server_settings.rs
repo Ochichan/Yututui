@@ -71,14 +71,27 @@ pub enum MusicServerHealth {
     NeedsAttention,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MusicServerHistoryHealth {
+    #[default]
+    Off,
+    Probing,
+    Detailed,
+    PlayCountsOnly,
+    UpdatePassword,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MusicServerSummary {
     pub health: MusicServerHealth,
     pub configured: bool,
     pub display_name: Option<String>,
-    pub credential_label: Option<String>,
+    pub credential_kind: Option<MusicServerCredentialMode>,
     pub lan_http: bool,
     pub custom_ca: bool,
+    pub history: MusicServerHistoryHealth,
+    /// Ambiguously delivered playback reports awaiting an explicit user decision.
+    pub playback_reports_needing_decision: usize,
 }
 
 impl MusicServerSummary {
@@ -211,6 +224,9 @@ pub enum MusicServerCommand {
         generation: u64,
         prepared: Box<PreparedSetup>,
     },
+    DisableHistory {
+        generation: u64,
+    },
     Remove {
         generation: u64,
     },
@@ -226,6 +242,10 @@ pub enum MusicServerEvent {
         result: Result<Box<PreparedSetup>, MusicServerFailure>,
     },
     Committed {
+        generation: u64,
+        result: Result<MusicServerSummary, MusicServerFailure>,
+    },
+    HistoryDisabled {
         generation: u64,
         result: Result<MusicServerSummary, MusicServerFailure>,
     },
@@ -246,6 +266,7 @@ pub enum MusicServerBusy {
     Refresh,
     Testing,
     Saving,
+    History,
     Removing,
 }
 
@@ -439,14 +460,14 @@ impl Default for MusicServerSettingsState {
 
 impl MusicServerSettingsState {
     pub fn row_count(&self) -> usize {
-        if self.summary.configured { 3 } else { 2 }
+        if self.summary.configured { 4 } else { 2 }
     }
 
     pub fn modal_open(&self) -> bool {
         self.wizard.is_some()
     }
 
-    fn next_generation(&mut self) -> u64 {
+    pub(in crate::app) fn next_generation(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1).max(1);
         self.generation
     }
@@ -594,7 +615,8 @@ impl App {
                     self.open_music_server_setup();
                     Vec::new()
                 }
-                2 => {
+                2 => self.activate_music_server_history(),
+                3 => {
                     self.server.settings.wizard = Some(MusicServerWizard::RemoveConfirm);
                     self.dirty = true;
                     Vec::new()
@@ -890,6 +912,7 @@ impl App {
             MusicServerEvent::Refreshed { generation, .. }
             | MusicServerEvent::Prepared { generation, .. }
             | MusicServerEvent::Committed { generation, .. }
+            | MusicServerEvent::HistoryDisabled { generation, .. }
             | MusicServerEvent::Removed { generation, .. } => *generation,
         };
         if event_generation != self.server.settings.generation {
@@ -981,6 +1004,42 @@ impl App {
                 self.dirty = true;
                 commands
             }
+            MusicServerEvent::HistoryDisabled { result, .. } => {
+                self.server.settings.busy = None;
+                match result {
+                    Ok(summary) => {
+                        let runtime_ready = summary.health == MusicServerHealth::UpToDate;
+                        self.server.settings.summary = summary;
+                        self.server.settings.failure =
+                            (!runtime_ready).then_some(MusicServerFailure::Connection);
+                        if runtime_ready {
+                            self.status.kind = StatusKind::Info;
+                            self.status.text = crate::t!(
+                                "Detailed history is off; standard server access was kept",
+                                "상세 이력을 껐어요. 일반 서버 연결은 그대로예요",
+                                "詳細履歴をオフにしました。通常のサーバー接続は保持されます"
+                            )
+                            .to_owned();
+                        } else {
+                            self.status.kind = StatusKind::Error;
+                            self.status.text = crate::t!(
+                                "Detailed history is off; the server needs attention",
+                                "상세 이력은 껐지만 서버 확인이 필요해요",
+                                "詳細履歴はオフですが、サーバーの確認が必要です"
+                            )
+                            .to_owned();
+                        }
+                    }
+                    Err(failure) => {
+                        self.server.settings.failure = Some(failure);
+                        self.server.settings.summary.health = MusicServerHealth::NeedsAttention;
+                        self.status.kind = StatusKind::Error;
+                        self.status.text = failure.label().to_owned();
+                    }
+                }
+                self.dirty = true;
+                Vec::new()
+            }
             MusicServerEvent::Removed { result, .. } => {
                 self.server.settings.busy = None;
                 let commands = match result {
@@ -1000,6 +1059,8 @@ impl App {
                     }
                     Err(failure) => {
                         self.server.settings.failure = Some(failure);
+                        self.server.settings.summary.health = MusicServerHealth::NeedsAttention;
+                        self.server.settings.wizard = None;
                         self.status.kind = StatusKind::Error;
                         self.status.text = failure.label().to_owned();
                         Vec::new()
@@ -1091,7 +1152,13 @@ mod tests {
     fn confirmed_remove_switches_to_non_cancellable_waiting_state() {
         let mut app = App::new(50);
         app.server.settings.summary.configured = true;
-        assert!(app.activate_music_server_row(2).is_empty());
+        app.server.settings.summary.history = MusicServerHistoryHealth::Detailed;
+        assert!(matches!(
+            app.activate_music_server_row(2).as_slice(),
+            [Cmd::MusicServer(MusicServerCommand::DisableHistory { .. })]
+        ));
+        app.server.settings.busy = None;
+        assert!(app.activate_music_server_row(3).is_empty());
         let commands = app.on_key_music_server_settings(key(KeyCode::Enter));
 
         assert_eq!(commands.len(), 1);
@@ -1237,9 +1304,11 @@ mod tests {
                 health: MusicServerHealth::UpToDate,
                 configured: true,
                 display_name: Some("Home server".to_owned()),
-                credential_label: Some("Password".to_owned()),
+                credential_kind: Some(MusicServerCredentialMode::Password),
                 lan_http: false,
                 custom_ca: false,
+                history: MusicServerHistoryHealth::Off,
+                playback_reports_needing_decision: 0,
             }),
         });
 
@@ -1269,9 +1338,11 @@ mod tests {
                 health: MusicServerHealth::UpToDate,
                 configured: true,
                 display_name: Some("Replacement".to_owned()),
-                credential_label: Some("API key".to_owned()),
+                credential_kind: Some(MusicServerCredentialMode::ApiKey),
                 lan_http: false,
                 custom_ca: false,
+                history: MusicServerHistoryHealth::Off,
+                playback_reports_needing_decision: 0,
             }),
         });
 
@@ -1293,9 +1364,11 @@ mod tests {
                 health: MusicServerHealth::NeedsAttention,
                 configured: true,
                 display_name: Some("Saved server".to_owned()),
-                credential_label: Some("Password".to_owned()),
+                credential_kind: Some(MusicServerCredentialMode::Password),
                 lan_http: false,
                 custom_ca: false,
+                history: MusicServerHistoryHealth::Off,
+                playback_reports_needing_decision: 0,
             }),
         });
 
@@ -1329,16 +1402,18 @@ mod tests {
                         health: MusicServerHealth::NeedsAttention,
                         configured: true,
                         display_name: Some("Saved server".to_owned()),
-                        credential_label: Some("Password".to_owned()),
+                        credential_kind: Some(MusicServerCredentialMode::Password),
                         lan_http: false,
                         custom_ca: false,
+                        history: MusicServerHistoryHealth::Off,
+                        playback_reports_needing_decision: 0,
                     },
                     failure: Some(failure),
                 }),
             });
 
             assert!(app.server.settings.summary.configured);
-            assert_eq!(app.server.settings.row_count(), 3);
+            assert_eq!(app.server.settings.row_count(), 4);
             assert_eq!(app.server.settings.failure, Some(failure));
             app.open_music_server_setup();
             let Some(MusicServerWizard::Setup(form)) = app.server.settings.wizard.as_ref() else {
@@ -1346,6 +1421,18 @@ mod tests {
             };
             assert_eq!(form.identity_intent, None);
         }
+    }
+
+    #[test]
+    fn playback_report_attention_keeps_the_configured_action_rows_stable() {
+        let mut state = MusicServerSettingsState::default();
+        state.summary.configured = true;
+        state.summary.health = MusicServerHealth::NeedsAttention;
+        state.summary.playback_reports_needing_decision = 3;
+
+        assert_eq!(state.row_count(), 4);
+        state.selected = state.row_count() - 1;
+        assert_eq!(state.selected, 3);
     }
 
     #[test]
@@ -1374,6 +1461,18 @@ mod tests {
                 if !config.search.open_subsonic
                     && config.search.source != SearchSource::OpenSubsonic
         ));
+
+        app.server.settings.summary.configured = true;
+        app.server.settings.wizard = Some(MusicServerWizard::Waiting);
+        app.finish_music_server_event(MusicServerEvent::Removed {
+            generation: 9,
+            result: Err(MusicServerFailure::Storage),
+        });
+        assert!(app.server.settings.wizard.is_none());
+        assert_eq!(
+            app.server.settings.summary.health,
+            MusicServerHealth::NeedsAttention
+        );
     }
 
     #[test]

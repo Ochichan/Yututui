@@ -252,6 +252,13 @@ pub enum PlayableRef {
 }
 
 impl Song {
+    pub fn open_subsonic_item(&self) -> Option<&OpenSubsonicItemRef> {
+        match &self.playable {
+            Some(PlayableRef::OpenSubsonic { item, .. }) => Some(item),
+            _ => None,
+        }
+    }
+
     pub fn remote(
         video_id: impl Into<String>,
         title: impl Into<String>,

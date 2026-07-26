@@ -2,6 +2,24 @@
 
 use super::*;
 
+pub(super) const SESSION_EVENTS_CAP: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DaemonOutcome {
+    FullPlay,
+    Skip,
+    QuickSkip,
+    Like,
+    Dislike,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct DaemonSessionEvent {
+    pub(super) artist_key: String,
+    pub(super) outcome: DaemonOutcome,
+    pub(super) completion: f32,
+}
+
 impl DaemonEngine {
     pub(super) fn record_session_event(
         &mut self,
@@ -17,6 +35,25 @@ impl DaemonEngine {
         while self.session_events.len() > SESSION_EVENTS_CAP {
             self.session_events.pop_front();
         }
+    }
+
+    pub(super) fn record_rating_session_event(
+        &mut self,
+        song: &Song,
+        change: crate::rating::RatingChange,
+    ) {
+        let Some(signal) = crate::rating::session_signal(song, change) else {
+            return;
+        };
+        let outcome = match signal {
+            crate::rating::SessionRatingSignal::Like => DaemonOutcome::Like,
+            crate::rating::SessionRatingSignal::Dislike => DaemonOutcome::Dislike,
+        };
+        self.record_session_event(
+            &crate::signals::normalize_artist(&song.artist),
+            outcome,
+            self.playback_completion(),
+        );
     }
 
     pub(super) fn session_cache_snapshot(&self) -> SessionCache {

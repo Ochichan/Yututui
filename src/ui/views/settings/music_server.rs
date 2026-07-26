@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use zeroize::Zeroizing;
 
 use crate::app::{
-    App, MouseTarget, MusicServerBusy, MusicServerHealth, MusicServerSetupField, MusicServerWizard,
-    SyncArea,
+    App, MouseTarget, MusicServerBusy, MusicServerCredentialMode, MusicServerHealth,
+    MusicServerHistoryHealth, MusicServerSetupField, MusicServerWizard, SyncArea,
 };
 use crate::settings::SettingsState;
 use crate::settings::sync::health_label;
@@ -124,22 +124,33 @@ pub(crate) fn render_status(frame: &mut Frame, app: &App, settings: &SettingsSta
         ])),
         rows[2],
     );
+    let server_detail = if server.playback_reports_needing_decision > 0 {
+        playback_report_attention_detail(server.playback_reports_needing_decision)
+    } else if server.configured {
+        t!(
+            "Server browsing is optional; local search and playback stay independent.",
+            "서버 탐색은 선택 사항이며 로컬 검색과 재생은 독립적으로 동작해요.",
+            "サーバー閲覧は任意で、ローカル検索と再生は独立して動作します。"
+        )
+        .to_owned()
+    } else {
+        t!(
+            "No music server is connected.",
+            "연결된 음악 서버가 없어요.",
+            "音楽サーバーは接続されていません。"
+        )
+        .to_owned()
+    };
     frame.render_widget(
-        Paragraph::new(if server.configured {
-            t!(
-                "Server browsing is optional; local search and playback stay independent.",
-                "서버 탐색은 선택 사항이며 로컬 검색과 재생은 독립적으로 동작해요.",
-                "サーバー閲覧は任意で、ローカル検索と再生は独立して動作します。"
+        Paragraph::new(server_detail)
+            .style(
+                theme.style(if server.playback_reports_needing_decision > 0 {
+                    R::Error
+                } else {
+                    R::TextMuted
+                }),
             )
-        } else {
-            t!(
-                "No music server is connected.",
-                "연결된 음악 서버가 없어요.",
-                "音楽サーバーは接続されていません。"
-            )
-        })
-        .style(theme.style(R::TextMuted))
-        .wrap(Wrap { trim: true }),
+            .wrap(Wrap { trim: true }),
         rows[3],
     );
 }
@@ -182,16 +193,22 @@ pub(crate) fn render_music_server(
     );
     let detail = app.server.settings.failure.map_or_else(
         || {
-            if summary.configured {
-                let auth = summary.credential_label.as_deref().unwrap_or("—");
+            if summary.playback_reports_needing_decision > 0 {
+                playback_report_attention_detail(summary.playback_reports_needing_decision)
+            } else if summary.configured {
+                let auth = summary
+                    .credential_kind
+                    .map(MusicServerCredentialMode::label)
+                    .unwrap_or("—");
                 format!(
-                    "{}  ·  {}",
+                    "{}  ·  {}  ·  {}",
                     auth,
                     if summary.lan_http {
                         t!("LAN HTTP allowed", "LAN HTTP 허용", "LAN HTTP 許可")
                     } else {
                         "HTTPS"
-                    }
+                    },
+                    history_health_label(summary.history, summary.credential_kind),
                 )
             } else {
                 t!(
@@ -204,9 +221,11 @@ pub(crate) fn render_music_server(
         },
         |failure| format!("{}  ·  {}", failure.label(), failure.recovery_label()),
     );
+    let detail_is_error =
+        app.server.settings.failure.is_some() || summary.playback_reports_needing_decision > 0;
     frame.render_widget(
         Paragraph::new(detail)
-            .style(theme.style(if app.server.settings.failure.is_some() {
+            .style(theme.style(if detail_is_error {
                 R::Error
             } else {
                 R::TextMuted
@@ -219,6 +238,7 @@ pub(crate) fn render_music_server(
         vec![
             t!("Test connection", "연결 테스트", "接続テスト"),
             t!("Edit connection", "연결 정보 수정", "接続情報を編集"),
+            history_action_label(summary.history),
             t!("Remove server", "서버 제거", "サーバーを削除"),
         ]
     } else {
@@ -252,6 +272,79 @@ pub(crate) fn render_music_server(
             rect,
         );
         app.register_mouse_button(rect, MouseTarget::SettingsMusicServerRow(index));
+    }
+}
+
+fn playback_report_attention_detail(count: usize) -> String {
+    if count == 1 {
+        t!(
+            "1 report needs a decision.\nytt server scrobbles list",
+            "재생 보고 1건 확인 필요\nytt server scrobbles list",
+            "再生レポート1件・確認が必要\nytt server scrobbles list"
+        )
+        .to_owned()
+    } else {
+        t!(
+            format!("{count} reports need a decision.\nytt server scrobbles list"),
+            format!("재생 보고 {count}건 확인 필요\nytt server scrobbles list"),
+            format!("再生レポート{count}件・確認が必要\nytt server scrobbles list")
+        )
+    }
+}
+
+fn history_health_label(
+    health: MusicServerHistoryHealth,
+    credential: Option<MusicServerCredentialMode>,
+) -> &'static str {
+    match health {
+        MusicServerHistoryHealth::Off => t!("Play counts only", "재생 횟수만", "再生回数のみ"),
+        MusicServerHistoryHealth::Probing => t!(
+            "Checking detailed history · play counts available",
+            "상세 이력 확인 중 · 재생 횟수 사용 가능",
+            "詳細履歴を確認中・再生回数は利用可能"
+        ),
+        MusicServerHistoryHealth::Detailed => t!(
+            "Detailed history available (experimental)",
+            "상세 이력 사용 가능 (실험적)",
+            "詳細履歴を利用可能（実験的）"
+        ),
+        MusicServerHistoryHealth::PlayCountsOnly => t!(
+            "Detailed history unavailable · play counts only",
+            "상세 이력 미지원 · 재생 횟수만",
+            "詳細履歴は未対応・再生回数のみ"
+        ),
+        MusicServerHistoryHealth::UpdatePassword
+            if credential == Some(MusicServerCredentialMode::Password) =>
+        {
+            t!(
+                "Update via: ytt server setup",
+                "다음 명령으로 업데이트: ytt server setup",
+                "次のコマンドで更新: ytt server setup"
+            )
+        }
+        MusicServerHistoryHealth::UpdatePassword => t!(
+            "Update via: ytt server history enable --experimental",
+            "다음 명령으로 업데이트: ytt server history enable --experimental",
+            "次のコマンドで更新: ytt server history enable --experimental"
+        ),
+    }
+}
+
+fn history_action_label(health: MusicServerHistoryHealth) -> &'static str {
+    match health {
+        MusicServerHistoryHealth::Off => t!(
+            "Enable detailed history in CLI",
+            "CLI에서 상세 이력 켜기",
+            "CLIで詳細履歴を有効化"
+        ),
+        MusicServerHistoryHealth::Probing
+        | MusicServerHistoryHealth::Detailed
+        | MusicServerHistoryHealth::PlayCountsOnly
+        | MusicServerHistoryHealth::UpdatePassword => t!(
+            "Turn off detailed history",
+            "상세 이력 끄기",
+            "詳細履歴をオフ"
+        ),
     }
 }
 
@@ -586,6 +679,80 @@ mod tests {
                     .iter()
                     .all(|area| !compact_area_label(*area).is_empty())
             );
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn history_health_labels_cover_every_state_and_language() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        for language in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::Korean,
+            crate::i18n::Language::Japanese,
+        ] {
+            crate::i18n::set_language(language);
+            for health in [
+                MusicServerHistoryHealth::Off,
+                MusicServerHistoryHealth::Probing,
+                MusicServerHistoryHealth::Detailed,
+                MusicServerHistoryHealth::PlayCountsOnly,
+                MusicServerHistoryHealth::UpdatePassword,
+            ] {
+                assert!(
+                    !history_health_label(health, Some(MusicServerCredentialMode::ApiKey))
+                        .is_empty()
+                );
+                assert!(!history_action_label(health).is_empty());
+            }
+            assert!(
+                history_health_label(
+                    MusicServerHistoryHealth::UpdatePassword,
+                    Some(MusicServerCredentialMode::ApiKey),
+                )
+                .contains("ytt server history enable --experimental")
+            );
+            assert!(
+                history_health_label(
+                    MusicServerHistoryHealth::UpdatePassword,
+                    Some(MusicServerCredentialMode::Password),
+                )
+                .contains("ytt server setup")
+            );
+            let expected = match language {
+                crate::i18n::Language::English => ("Password", "API key"),
+                crate::i18n::Language::Korean => ("비밀번호", "API 키"),
+                crate::i18n::Language::Japanese => ("パスワード", "APIキー"),
+            };
+            assert_eq!(MusicServerCredentialMode::Password.label(), expected.0);
+            assert_eq!(MusicServerCredentialMode::ApiKey.label(), expected.1);
+        }
+        crate::i18n::set_language(original);
+    }
+
+    #[test]
+    fn playback_report_attention_copy_is_localized_and_points_to_cli_recovery() {
+        let _guard = crate::i18n::lock_for_test();
+        let original = crate::i18n::current();
+        for (language, expected) in [
+            (
+                crate::i18n::Language::English,
+                "2 reports need a decision.\nytt server scrobbles list",
+            ),
+            (
+                crate::i18n::Language::Korean,
+                "재생 보고 2건 확인 필요\nytt server scrobbles list",
+            ),
+            (
+                crate::i18n::Language::Japanese,
+                "再生レポート2件・確認が必要\nytt server scrobbles list",
+            ),
+        ] {
+            crate::i18n::set_language(language);
+            let detail = playback_report_attention_detail(2);
+            assert_eq!(detail, expected);
+            assert!(detail.lines().all(|line| buttons::text_width(line) <= 30));
         }
         crate::i18n::set_language(original);
     }

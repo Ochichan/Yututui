@@ -40,6 +40,7 @@ impl std::fmt::Display for StoreError {
 impl std::error::Error for StoreError {}
 
 /// Fixed paths for the OpenSubsonic owner-only store set. Deliberately not `Debug`.
+#[derive(Clone)]
 pub struct OpenSubsonicPaths {
     root: PathBuf,
     profile: PathBuf,

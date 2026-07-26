@@ -26,6 +26,10 @@ pub(super) enum DaemonEvent {
     /// Scrobble-actor notices. The daemon has no UI and never runs the interactive auth
     /// flow (`ytt auth lastfm` does), so these only reach the log.
     Scrobble(crate::scrobble::ScrobbleEvent),
+    /// A durable, secret-free server observation waiting for the daemon personal-state owner.
+    OpenSubsonicBridge(crate::open_subsonic::OpenSubsonicBridgeImport),
+    /// The credential owner is active and initial local projections may now be submitted.
+    OpenSubsonicReady,
     /// The lyrics actor resolved (or failed to find) lines for a track. Fetches are
     /// gated on a live `lyrics` subscriber; see [`super::lyrics_host::LyricsHost`].
     Lyrics(crate::lyrics::LyricsEvent),
@@ -70,6 +74,11 @@ impl DaemonEvent {
                 key: Key::MediaArtVideo,
             },
             DaemonEvent::Scrobble(event) => scrobble_event_policy(event),
+            DaemonEvent::OpenSubsonicBridge(_) | DaemonEvent::OpenSubsonicReady => {
+                EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                }
+            }
             // The daemon lyrics host already gates fetches by subscriber and track generation.
             DaemonEvent::Lyrics(_) => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
@@ -118,6 +127,8 @@ impl DaemonEvent {
             DaemonEvent::Media(_) => "media",
             DaemonEvent::MediaArt(_) => "media_art",
             DaemonEvent::Scrobble(_) => "scrobble",
+            DaemonEvent::OpenSubsonicBridge(_) => "open_subsonic_bridge",
+            DaemonEvent::OpenSubsonicReady => "open_subsonic_ready",
             DaemonEvent::Lyrics(_) => "lyrics",
             DaemonEvent::Download(_) => "download",
             DaemonEvent::Transfer(_) => "transfer",

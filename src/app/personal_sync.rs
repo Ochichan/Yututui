@@ -530,11 +530,18 @@ impl App {
         &mut self,
         state: crate::personal_state::PersonalStateV2,
     ) -> Result<(), SyncServiceError> {
+        self.install_personal_state_runtime(state)
+            .map_err(SyncServiceError::from)
+    }
+
+    pub(crate) fn install_personal_state_runtime(
+        &mut self,
+        state: crate::personal_state::PersonalStateV2,
+    ) -> Result<(), crate::personal_state::PersonalStateError> {
         let prepared = crate::personal_state::PersonalStateCommit::prepare_for_runtime(
             state,
             self.playlists.revision(),
-        )
-        .map_err(SyncServiceError::from)?;
+        )?;
         let (library, mut playlists, signals, station) = prepared.runtime_stores();
         playlists.inherit_revision_from(&self.playlists);
         self.personal_state.replace_ledger(prepared.state().clone());

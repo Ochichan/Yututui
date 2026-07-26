@@ -6,6 +6,7 @@ use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
 
 mod coalescing;
 mod downloads;
+mod music_server;
 mod persistence;
 mod player_startup;
 mod policy;

@@ -11,9 +11,11 @@ use age::secrecy::SecretString;
 use serde::Serialize;
 
 use yututui::open_subsonic::{
-    CredentialKind, OpenSubsonicPaths, OpenSubsonicStatus, OpenSubsonicStatusKind,
-    ServerCredential, ServerFeature, SetupIdentityIntent, SetupInput, commit_setup, read_status,
-    remove_profile, test_and_prepare_setup, test_connection_read_only,
+    CredentialKind, NativeHistoryHealth, OpenSubsonicPaths, OpenSubsonicStatus,
+    OpenSubsonicStatusKind, OutboundScrobbleResolution, ServerCredential, ServerFeature,
+    SetupIdentityIntent, SetupInput, commit_setup, commit_store_set, list_scrobble_attention_ids,
+    load_store_set, read_status, remove_profile, resolve_scrobble_attention,
+    test_and_prepare_setup, test_connection_read_only,
 };
 
 const EXIT_OK: i32 = 0;
@@ -28,6 +30,8 @@ const MAX_PASSWORD_BYTES: usize = 64 * 1_024;
 const MAX_API_KEY_BYTES: usize = 2_048;
 const MAX_CA_PATH_BYTES: usize = 16 * 1_024;
 const MAX_CHOICE_BYTES: usize = 64;
+const OPAQUE_SCROBBLE_ID_PREFIX: &str = "sub-scrobble-";
+const OPAQUE_SCROBBLE_DIGEST_BYTES: usize = 64;
 
 const SERVER_USAGE: &str = "\
 Usage: ytt server <command>
@@ -37,17 +41,39 @@ Connect one OpenSubsonic or Navidrome music server.
 Commands:
   setup             Test and save a music server connection
   status [--json]   Show the redacted connection status
+  history enable --experimental
+                    Enable experimental detailed Navidrome history
+  history disable   Disable detailed history and remove its saved password
+  scrobbles list [--json]
+                    List opaque playback reports needing a decision
+  scrobbles retry <OPAQUE_ID>
+                    Treat one report as unsent and retry it
+  scrobbles mark-sent <OPAQUE_ID>
+                    Treat one report as sent without retrying it
   remove            Remove the profile and credentials; keep local personal data
 
 Passwords and API keys are prompted with echo disabled and are never accepted as arguments.
+Experimental detailed history is off by default and never disables standard server access.
 ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Help,
     Setup,
     Status { json: bool },
+    HistoryEnableExperimental,
+    HistoryDisable,
+    ScrobblesList { json: bool },
+    ScrobbleRetry { event_id: String },
+    ScrobbleMarkSent { event_id: String },
     Remove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryEnableAction {
+    Enable,
+    UpdateDedicatedPassword,
+    AlreadyEnabled,
 }
 
 #[derive(Serialize)]
@@ -59,6 +85,15 @@ struct JsonStatus<'a> {
     credential: Option<&'static str>,
     lan_http_enabled: bool,
     custom_ca_configured: bool,
+    detailed_history_enabled: bool,
+    detailed_history_status: &'static str,
+    playback_reports_needing_decision: usize,
+}
+
+#[derive(Serialize)]
+struct JsonScrobbleAttention<'a> {
+    count: usize,
+    opaque_ids: &'a [String],
 }
 
 pub fn run(args: &[String]) -> i32 {
@@ -73,6 +108,15 @@ pub fn run(args: &[String]) -> i32 {
         }
         Command::Setup => run_setup(),
         Command::Status { json } => run_status(json),
+        Command::HistoryEnableExperimental => run_history_enable(),
+        Command::HistoryDisable => run_history_disable(),
+        Command::ScrobblesList { json } => run_scrobbles_list(json),
+        Command::ScrobbleRetry { event_id } => {
+            run_scrobble_resolution(&event_id, OutboundScrobbleResolution::Retry)
+        }
+        Command::ScrobbleMarkSent { event_id } => {
+            run_scrobble_resolution(&event_id, OutboundScrobbleResolution::MarkSent)
+        }
         Command::Remove => run_remove(),
     };
     match result {
@@ -92,6 +136,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "-h" | "--help" | "help" => no_args(&args[1..], Command::Help, "help"),
         "setup" => no_args(&args[1..], Command::Setup, "setup"),
         "remove" => no_args(&args[1..], Command::Remove, "remove"),
+        "history" => parse_history(&args[1..]),
+        "scrobbles" => parse_scrobbles(&args[1..]),
         "status" => match &args[1..] {
             [] => Ok(Command::Status { json: false }),
             [flag] if flag == "--json" => Ok(Command::Status { json: true }),
@@ -99,6 +145,63 @@ fn parse(args: &[String]) -> Result<Command, String> {
             _ => Err("status only accepts `--json`".to_owned()),
         },
         other => Err(format!("unknown command `{other}`")),
+    }
+}
+
+fn parse_scrobbles(args: &[String]) -> Result<Command, String> {
+    match args {
+        [action] if action == "list" => Ok(Command::ScrobblesList { json: false }),
+        [action, flag] if action == "list" && flag == "--json" => {
+            Ok(Command::ScrobblesList { json: true })
+        }
+        [action, event_id] if action == "retry" && valid_opaque_scrobble_id(event_id) => {
+            Ok(Command::ScrobbleRetry {
+                event_id: event_id.clone(),
+            })
+        }
+        [action, event_id] if action == "mark-sent" && valid_opaque_scrobble_id(event_id) => {
+            Ok(Command::ScrobbleMarkSent {
+                event_id: event_id.clone(),
+            })
+        }
+        [flag] | [_, flag] if matches!(flag.as_str(), "-h" | "--help" | "help") => {
+            Ok(Command::Help)
+        }
+        [action, _] if matches!(action.as_str(), "retry" | "mark-sent") => {
+            Err("scrobble recovery requires the exact opaque ID from `scrobbles list`".to_owned())
+        }
+        [] => Err("scrobbles requires `list`, `retry`, or `mark-sent`".to_owned()),
+        _ => Err(
+            "scrobbles accepts `list [--json]`, `retry <OPAQUE_ID>`, or `mark-sent <OPAQUE_ID>`"
+                .to_owned(),
+        ),
+    }
+}
+
+fn valid_opaque_scrobble_id(value: &str) -> bool {
+    value
+        .strip_prefix(OPAQUE_SCROBBLE_ID_PREFIX)
+        .is_some_and(|digest| {
+            digest.len() == OPAQUE_SCROBBLE_DIGEST_BYTES
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
+}
+
+fn parse_history(args: &[String]) -> Result<Command, String> {
+    match args {
+        [action, flag] if action == "enable" && flag == "--experimental" => {
+            Ok(Command::HistoryEnableExperimental)
+        }
+        [action] if action == "enable" => {
+            Err("history enable requires the explicit `--experimental` flag".to_owned())
+        }
+        [action] if action == "disable" => Ok(Command::HistoryDisable),
+        [flag] if matches!(flag.as_str(), "-h" | "--help" | "help") => Ok(Command::Help),
+        [_, flag] if matches!(flag.as_str(), "-h" | "--help") => Ok(Command::Help),
+        [] => Err("history requires `enable --experimental` or `disable`".to_owned()),
+        _ => Err("history only accepts `enable --experimental` or `disable`".to_owned()),
     }
 }
 
@@ -187,6 +290,126 @@ fn run_status(json: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn run_scrobbles_list(json: bool) -> Result<(), String> {
+    initialize_reader()?;
+    let ids = list_scrobble_attention_ids(&paths()?).map_err(|error| error.to_string())?;
+    if json {
+        println!("{}", render_json_scrobble_list(&ids)?);
+    } else {
+        for line in human_scrobble_list_lines(&ids) {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+fn run_scrobble_resolution(
+    event_id: &str,
+    resolution: OutboundScrobbleResolution,
+) -> Result<(), String> {
+    initialize_writer()?;
+    let prompt = match resolution {
+        OutboundScrobbleResolution::Retry => {
+            "The server may already have this report. Retrying can count it twice. Retry? [y/N]: "
+        }
+        OutboundScrobbleResolution::MarkSent => {
+            "Treat this report as already sent and stop retrying? Local history is kept. [y/N]: "
+        }
+    };
+    if !confirm(prompt)? {
+        println!("Playback report was not changed.");
+        return Ok(());
+    }
+    resolve_scrobble_attention(&paths()?, event_id, resolution)
+        .map_err(|error| error.to_string())?;
+    match resolution {
+        OutboundScrobbleResolution::Retry => {
+            println!("Playback report will retry from a fresh server baseline.");
+        }
+        OutboundScrobbleResolution::MarkSent => {
+            println!("Playback report was marked as sent; local history was kept.");
+        }
+    }
+    Ok(())
+}
+
+fn run_history_enable() -> Result<(), String> {
+    initialize_writer()?;
+    let paths = paths()?;
+    let mut store_set = load_store_set(&paths)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "connect a music server before enabling detailed history".to_owned())?;
+    let action = history_enable_action(
+        store_set.private_state.native_history_enabled(),
+        store_set.bridge_state.native_history_health(),
+        store_set.private_state.credential_kind(),
+    );
+    if action == HistoryEnableAction::AlreadyEnabled {
+        println!("Experimental detailed history is already enabled.");
+        return Ok(());
+    }
+    let expected = store_set.revisions();
+    match store_set.private_state.credential_kind() {
+        CredentialKind::Password => store_set
+            .private_state
+            .enable_native_history_reusing_server_password()
+            .map_err(|error| error.to_string())?,
+        CredentialKind::ApiKey => {
+            let username = prompt_required("Navidrome username: ", MAX_USERNAME_BYTES)?;
+            let password = prompt_secret("Navidrome password: ", MAX_PASSWORD_BYTES)?;
+            store_set
+                .private_state
+                .enable_native_history_with_password(username, SecretString::from(password))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    store_set
+        .bridge_state
+        .set_native_history_health(NativeHistoryHealth::Probing);
+    commit_store_set(&paths, expected, &mut store_set).map_err(|error| error.to_string())?;
+    println!("Experimental detailed history is enabled.");
+    if action == HistoryEnableAction::UpdateDedicatedPassword {
+        println!("The detailed-history password was updated.");
+    }
+    println!("Standard OpenSubsonic access stays available if detailed history is unsupported.");
+    Ok(())
+}
+
+fn history_enable_action(
+    enabled: bool,
+    health: NativeHistoryHealth,
+    credential: CredentialKind,
+) -> HistoryEnableAction {
+    if !enabled {
+        return HistoryEnableAction::Enable;
+    }
+    if health == NativeHistoryHealth::UpdatePassword && credential == CredentialKind::ApiKey {
+        HistoryEnableAction::UpdateDedicatedPassword
+    } else {
+        HistoryEnableAction::AlreadyEnabled
+    }
+}
+
+fn run_history_disable() -> Result<(), String> {
+    initialize_writer()?;
+    let paths = paths()?;
+    let mut store_set = load_store_set(&paths)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no music server is connected".to_owned())?;
+    if !store_set.private_state.native_history_enabled() {
+        println!("Experimental detailed history is already off.");
+        return Ok(());
+    }
+    let expected = store_set.revisions();
+    store_set.private_state.disable_native_history();
+    store_set
+        .bridge_state
+        .set_native_history_health(NativeHistoryHealth::Off);
+    commit_store_set(&paths, expected, &mut store_set).map_err(|error| error.to_string())?;
+    println!("Experimental detailed history is off; standard server access was kept.");
+    Ok(())
+}
+
 fn checked_status(paths: &OpenSubsonicPaths) -> Result<OpenSubsonicStatus, String> {
     let mut stored = read_status(paths).map_err(|error| error.to_string())?;
     if stored.kind != OpenSubsonicStatusKind::UpToDate {
@@ -216,8 +439,30 @@ fn render_json_status(status: &OpenSubsonicStatus) -> Result<String, String> {
         credential: status.credential_kind.map(credential_label),
         lan_http_enabled: status.uses_lan_http,
         custom_ca_configured: status.uses_custom_ca,
+        detailed_history_enabled: status.native_history_enabled,
+        detailed_history_status: history_status_label(status.native_history_health),
+        playback_reports_needing_decision: status.outbound_scrobbles_needing_attention,
     };
     serde_json::to_string_pretty(&value).map_err(|_| "could not encode status JSON".to_owned())
+}
+
+fn render_json_scrobble_list(ids: &[String]) -> Result<String, String> {
+    serde_json::to_string_pretty(&JsonScrobbleAttention {
+        count: ids.len(),
+        opaque_ids: ids,
+    })
+    .map_err(|_| "could not encode playback-report JSON".to_owned())
+}
+
+fn human_scrobble_list_lines(ids: &[String]) -> Vec<String> {
+    if ids.is_empty() {
+        return vec!["No playback reports need a decision.".to_owned()];
+    }
+    let mut lines = Vec::with_capacity(ids.len().saturating_add(2));
+    lines.push(playback_report_attention_summary(ids.len()));
+    lines.extend(ids.iter().cloned());
+    lines.push("Choose `retry <OPAQUE_ID>` or `mark-sent <OPAQUE_ID>` for each report.".to_owned());
+    lines
 }
 
 fn run_remove() -> Result<(), String> {
@@ -249,12 +494,40 @@ fn print_human_status(status: &OpenSubsonicStatus) {
             if status.uses_custom_ca {
                 println!("Custom CA: configured");
             }
+            println!(
+                "History: {}",
+                history_status_human(status.native_history_health)
+            );
         }
         OpenSubsonicStatusKind::NeedsAttention => {
             println!("Needs attention");
-            println!("Action: update the connection settings");
+            if status.outbound_scrobbles_needing_attention > 0 {
+                println!(
+                    "{}",
+                    playback_report_attention_summary(status.outbound_scrobbles_needing_attention)
+                );
+                println!("{}", playback_report_attention_action());
+            } else {
+                println!("Action: update the connection settings");
+            }
+            println!(
+                "History: {}",
+                history_status_human(status.native_history_health)
+            );
         }
     }
+}
+
+fn playback_report_attention_summary(count: usize) -> String {
+    if count == 1 {
+        "1 playback report needs a decision.".to_owned()
+    } else {
+        format!("{count} playback reports need a decision.")
+    }
+}
+
+fn playback_report_attention_action() -> &'static str {
+    "Action: review them with `ytt server scrobbles list`."
 }
 
 fn status_label(kind: OpenSubsonicStatusKind) -> &'static str {
@@ -262,6 +535,28 @@ fn status_label(kind: OpenSubsonicStatusKind) -> &'static str {
         OpenSubsonicStatusKind::Off => "off",
         OpenSubsonicStatusKind::UpToDate => "up_to_date",
         OpenSubsonicStatusKind::NeedsAttention => "needs_attention",
+    }
+}
+
+fn history_status_label(health: NativeHistoryHealth) -> &'static str {
+    match health {
+        NativeHistoryHealth::Off => "off",
+        NativeHistoryHealth::Probing => "probing",
+        NativeHistoryHealth::Detailed => "detailed",
+        NativeHistoryHealth::PlayCountsOnly => "play_counts_only",
+        NativeHistoryHealth::UpdatePassword => "update_password",
+    }
+}
+
+fn history_status_human(health: NativeHistoryHealth) -> &'static str {
+    match health {
+        NativeHistoryHealth::Off => "play counts only (detailed history off)",
+        NativeHistoryHealth::Probing => "checking detailed history; play counts remain available",
+        NativeHistoryHealth::Detailed => "detailed history available (experimental)",
+        NativeHistoryHealth::PlayCountsOnly => "play counts only (detailed history unsupported)",
+        NativeHistoryHealth::UpdatePassword => {
+            "update the detailed-history password; play counts remain available"
+        }
     }
 }
 
@@ -279,18 +574,18 @@ fn initialize_reader() -> Result<(), String> {
 }
 
 fn initialize_writer() -> Result<(), String> {
-    match yututui::persist::initialize_persistence_writer(false) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            return Err(
-                "another ytt process owns settings; use its controls or close it and retry"
-                    .to_owned(),
-            );
-        }
-        Err(_) => return Err("could not secure the settings writer".to_owned()),
-    }
+    yututui::persist::initialize_persistence_writer(false)
+        .map_err(|error| writer_initialization_error(&error).to_owned())?;
     yututui::persist::preflight_all_startup_stores()
         .map_err(|_| "local recovery must be completed before changing the server".to_owned())
+}
+
+fn writer_initialization_error(error: &io::Error) -> &'static str {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        "another ytt process owns settings; use its controls or close it and retry"
+    } else {
+        "could not secure the settings writer"
+    }
 }
 
 fn paths() -> Result<OpenSubsonicPaths, String> {
@@ -422,13 +717,14 @@ fn prompt_custom_ca() -> Result<Option<Vec<u8>>, String> {
 }
 
 fn confirm(prompt: &str) -> Result<bool, String> {
-    Ok(matches!(
-        prompt_line(prompt, MAX_CHOICE_BYTES)?
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "y" | "yes"
-    ))
+    Ok(is_affirmative_confirmation(&prompt_line(
+        prompt,
+        MAX_CHOICE_BYTES,
+    )?))
+}
+
+fn is_affirmative_confirmation(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn usage_error(message: &str) -> i32 {
@@ -453,12 +749,27 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    fn opaque_scrobble_id(digit: char) -> String {
+        format!(
+            "{OPAQUE_SCROBBLE_ID_PREFIX}{}",
+            digit.to_string().repeat(64)
+        )
+    }
+
     #[test]
     fn parses_public_commands_without_secret_arguments() {
         assert_eq!(parse(&args(&["setup"])), Ok(Command::Setup));
         assert_eq!(
             parse(&args(&["status", "--json"])),
             Ok(Command::Status { json: true })
+        );
+        assert_eq!(
+            parse(&args(&["history", "enable", "--experimental"])),
+            Ok(Command::HistoryEnableExperimental)
+        );
+        assert_eq!(
+            parse(&args(&["history", "disable"])),
+            Ok(Command::HistoryDisable)
         );
         assert_eq!(parse(&args(&["remove"])), Ok(Command::Remove));
     }
@@ -470,15 +781,180 @@ mod tests {
     }
 
     #[test]
+    fn history_requires_explicit_opt_in_and_never_accepts_a_password_argument() {
+        assert!(parse(&args(&["history", "enable"])).is_err());
+        assert!(parse(&args(&["history", "--experimental"])).is_err());
+        assert!(
+            parse(&args(&[
+                "history",
+                "enable",
+                "--experimental",
+                "password-sentinel"
+            ]))
+            .is_err()
+        );
+        assert!(parse(&args(&["history", "disable", "--force"])).is_err());
+        assert!(SERVER_USAGE.contains("history enable --experimental"));
+        assert!(SERVER_USAGE.contains("off by default"));
+        assert!(!SERVER_USAGE.contains("password-sentinel"));
+    }
+
+    #[test]
+    fn enabled_api_key_history_prompts_again_only_when_password_needs_update() {
+        assert_eq!(
+            history_enable_action(
+                true,
+                NativeHistoryHealth::UpdatePassword,
+                CredentialKind::ApiKey
+            ),
+            HistoryEnableAction::UpdateDedicatedPassword
+        );
+        assert_eq!(
+            history_enable_action(true, NativeHistoryHealth::Detailed, CredentialKind::ApiKey),
+            HistoryEnableAction::AlreadyEnabled
+        );
+        assert_eq!(
+            history_enable_action(
+                true,
+                NativeHistoryHealth::UpdatePassword,
+                CredentialKind::Password
+            ),
+            HistoryEnableAction::AlreadyEnabled,
+            "the main server password is updated through server setup"
+        );
+    }
+
+    #[test]
     fn status_only_accepts_json() {
         assert!(parse(&args(&["status", "--verbose"])).is_err());
         assert_eq!(parse(&args(&["status", "-h"])), Ok(Command::Help));
     }
 
     #[test]
+    fn scrobble_recovery_parser_requires_an_exact_opaque_id() {
+        let retry_id = opaque_scrobble_id('a');
+        let mark_sent_id = opaque_scrobble_id('9');
+        assert_eq!(
+            parse(&args(&["scrobbles", "list"])),
+            Ok(Command::ScrobblesList { json: false })
+        );
+        assert_eq!(
+            parse(&args(&["scrobbles", "list", "--json"])),
+            Ok(Command::ScrobblesList { json: true })
+        );
+        assert_eq!(
+            parse(&["scrobbles".to_owned(), "retry".to_owned(), retry_id.clone()]),
+            Ok(Command::ScrobbleRetry { event_id: retry_id })
+        );
+        assert_eq!(
+            parse(&[
+                "scrobbles".to_owned(),
+                "mark-sent".to_owned(),
+                mark_sent_id.clone(),
+            ]),
+            Ok(Command::ScrobbleMarkSent {
+                event_id: mark_sent_id
+            })
+        );
+
+        for invalid in [
+            "sub-scrobble-short",
+            "sub-scrobble-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "https://secret.example/report",
+            "password-sentinel",
+        ] {
+            assert!(parse(&args(&["scrobbles", "retry", invalid])).is_err());
+            assert!(parse(&args(&["scrobbles", "mark-sent", invalid])).is_err());
+        }
+        assert!(
+            parse(&[
+                "scrobbles".to_owned(),
+                "retry".to_owned(),
+                opaque_scrobble_id('b'),
+                "credential-sentinel".to_owned(),
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            parse(&args(&["scrobbles", "retry", "--help"])),
+            Ok(Command::Help)
+        );
+        assert!(SERVER_USAGE.contains("scrobbles list [--json]"));
+        assert!(SERVER_USAGE.contains("scrobbles retry <OPAQUE_ID>"));
+        assert!(SERVER_USAGE.contains("scrobbles mark-sent <OPAQUE_ID>"));
+        assert!(!SERVER_USAGE.contains("credential-sentinel"));
+    }
+
+    #[test]
+    fn scrobble_recovery_output_contains_only_counts_and_opaque_ids() {
+        let ids = vec![opaque_scrobble_id('a'), opaque_scrobble_id('b')];
+        let json = render_json_scrobble_list(&ids).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 2);
+        assert_eq!(
+            object.get("count").and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            object
+                .get("opaque_ids")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(!json.contains("http"));
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("path"));
+
+        let human = human_scrobble_list_lines(&ids);
+        assert_eq!(human[0], "2 playback reports need a decision.");
+        assert_eq!(&human[1..=2], ids.as_slice());
+        assert_eq!(
+            human[3],
+            "Choose `retry <OPAQUE_ID>` or `mark-sent <OPAQUE_ID>` for each report."
+        );
+        assert_eq!(
+            human_scrobble_list_lines(&[]),
+            vec!["No playback reports need a decision."]
+        );
+    }
+
+    #[test]
+    fn destructive_scrobble_choices_default_to_no() {
+        for rejected in ["", "n", "no", "later", "1"] {
+            assert!(!is_affirmative_confirmation(rejected));
+        }
+        for accepted in ["y", "Y", "yes", " YES "] {
+            assert!(is_affirmative_confirmation(accepted));
+        }
+    }
+
+    #[test]
+    fn scrobble_mutation_reports_owner_rejection_without_error_details() {
+        let blocked = io::Error::new(io::ErrorKind::WouldBlock, "owner-secret-sentinel");
+        assert_eq!(
+            writer_initialization_error(&blocked),
+            "another ytt process owns settings; use its controls or close it and retry"
+        );
+        assert!(!writer_initialization_error(&blocked).contains("sentinel"));
+
+        let other = io::Error::new(io::ErrorKind::PermissionDenied, "path-secret-sentinel");
+        assert_eq!(
+            writer_initialization_error(&other),
+            "could not secure the settings writer"
+        );
+        assert!(!writer_initialization_error(&other).contains("sentinel"));
+    }
+
+    #[test]
     fn status_labels_are_stable() {
         assert_eq!(status_label(OpenSubsonicStatusKind::Off), "off");
         assert_eq!(credential_label(CredentialKind::ApiKey), "api_key");
+        assert_eq!(
+            history_status_label(NativeHistoryHealth::UpdatePassword),
+            "update_password"
+        );
     }
 
     #[test]
@@ -535,9 +1011,28 @@ mod tests {
         assert_eq!(status.kind, OpenSubsonicStatusKind::NeedsAttention);
         let json = render_json_status(&status).unwrap();
         assert!(json.contains(r#""status": "needs_attention""#));
+        assert!(json.contains(r#""detailed_history_status": "off""#));
+        assert!(json.contains(r#""playback_reports_needing_decision": 0"#));
         assert!(json.contains("Offline fixture"));
         assert!(!json.contains("json-secret-sentinel"));
         assert!(!json.contains("https://"));
+
+        let mut playback_attention = status;
+        playback_attention.outbound_scrobbles_needing_attention = 2;
+        let json = render_json_status(&playback_attention).unwrap();
+        assert!(json.contains(r#""playback_reports_needing_decision": 2"#));
+        assert_eq!(
+            playback_report_attention_summary(1),
+            "1 playback report needs a decision."
+        );
+        assert_eq!(
+            playback_report_attention_summary(2),
+            "2 playback reports need a decision."
+        );
+        assert_eq!(
+            playback_report_attention_action(),
+            "Action: review them with `ytt server scrobbles list`."
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

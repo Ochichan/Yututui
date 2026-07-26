@@ -9,14 +9,18 @@ mod import;
 pub(crate) mod legacy;
 mod model;
 mod reducer;
+mod server_rating;
 mod transaction;
 
 pub(crate) use compaction::operation_survives_checkpoint;
 pub use compaction::{
     EngagementCompactionPlan, engagement_compaction_leader, plan_engagement_compaction,
 };
-pub(crate) use coordinator::reconcile_runtime;
-pub use coordinator::{append_operation_as, reconcile_runtime_as};
+pub use coordinator::{
+    append_external_operation, append_external_operation_as, append_operation_as,
+    external_operation_envelope_id, reconcile_runtime_as,
+};
+pub(crate) use coordinator::{external_operation_envelope_id_for_state, reconcile_runtime};
 pub(crate) use import::validate_join_import_extension;
 pub use import::{ImportPlan, ImportSummary, plan_import, plan_join_import};
 pub use legacy::{LegacyProjection, legacy_state};
@@ -32,6 +36,7 @@ pub use model::{
 };
 pub(crate) use reducer::runtime_fingerprint;
 pub use reducer::{MergeSummary, PersonalProjection, merge, project};
+pub use server_rating::{OpenSubsonicRatingWinner, open_subsonic_rating_winners};
 pub use transaction::{PersonalStateCommit, PersonalStatePaths, recover_pending_transactions};
 pub(crate) use transaction::{load_ledger, load_ledger_read_only};
 

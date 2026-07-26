@@ -14,6 +14,10 @@ use super::profile::OpenSubsonicProfile;
 use super::proxy::{ProxyOrigin, StreamMethod, StreamRequest};
 use super::wire::{RawResponse, WireError};
 
+#[path = "endpoint.rs"]
+mod endpoint;
+pub(crate) use endpoint::Endpoint;
+
 const MAX_REDIRECTS: usize = 3;
 const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COVER_ART_BYTES: usize = 32 * 1024 * 1024;
@@ -34,6 +38,25 @@ pub enum ServerError {
     ResponseTooLarge,
     TemporarilyUnavailable,
     WrongAccountScope,
+}
+
+/// Delivery evidence for a non-idempotent server mutation.
+///
+/// Only failures which prove that the server did not apply the mutation may be retried
+/// automatically. Every other transport failure is ambiguous, even when its redacted public
+/// error is merely `Offline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutationDeliveryError {
+    DefinitelyNotApplied(ServerError),
+    Ambiguous(ServerError),
+}
+
+impl MutationDeliveryError {
+    pub(crate) const fn server_error(self) -> ServerError {
+        match self {
+            Self::DefinitelyNotApplied(error) | Self::Ambiguous(error) => error,
+        }
+    }
 }
 
 impl std::fmt::Display for ServerError {
@@ -70,39 +93,6 @@ pub struct ServerInfo {
 pub struct BinaryPayload {
     pub bytes: Vec<u8>,
     pub content_type: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Endpoint {
-    Ping,
-    Extensions,
-    Search3,
-    AlbumList2,
-    Artists,
-    Playlists,
-    Playlist,
-    Album,
-    Artist,
-    CoverArt,
-    Stream,
-}
-
-impl Endpoint {
-    fn method_name(self) -> &'static str {
-        match self {
-            Self::Ping => "ping",
-            Self::Extensions => "getOpenSubsonicExtensions",
-            Self::Search3 => "search3",
-            Self::AlbumList2 => "getAlbumList2",
-            Self::Artists => "getArtists",
-            Self::Playlists => "getPlaylists",
-            Self::Playlist => "getPlaylist",
-            Self::Album => "getAlbum",
-            Self::Artist => "getArtist",
-            Self::CoverArt => "getCoverArt",
-            Self::Stream => "stream",
-        }
-    }
 }
 
 /// DNS-pinned transport. Credentials remain in the caller/actor.
@@ -261,11 +251,25 @@ impl OpenSubsonicClient {
         method: Method,
         range: Option<String>,
     ) -> Result<Response, ServerError> {
+        self.request_response_with_delivery(credential, endpoint, parameters, method, range)
+            .await
+            .map_err(MutationDeliveryError::server_error)
+    }
+
+    pub(super) async fn request_response_with_delivery(
+        &self,
+        credential: Option<&ServerCredential>,
+        endpoint: Endpoint,
+        parameters: &[(&str, String)],
+        method: Method,
+        range: Option<String>,
+    ) -> Result<Response, MutationDeliveryError> {
         let mut target = self
             .transport
             .origin()
             .endpoint(endpoint.method_name())
-            .map_err(map_origin_error)?;
+            .map_err(map_origin_error)
+            .map_err(MutationDeliveryError::DefinitelyNotApplied)?;
         for redirects in 0..=MAX_REDIRECTS {
             let mut request = self
                 .transport
@@ -278,7 +282,7 @@ impl OpenSubsonicClient {
             let auth = credential
                 .map(AuthParameters::fresh)
                 .transpose()
-                .map_err(|_| ServerError::Offline)?;
+                .map_err(|_| MutationDeliveryError::DefinitelyNotApplied(ServerError::Offline))?;
             if let Some(auth) = &auth {
                 request = request.query(auth.fields());
             }
@@ -289,26 +293,40 @@ impl OpenSubsonicClient {
             let response = request
                 .send()
                 .await
-                .map_err(|error| classify_request_error(&error))?;
+                .map_err(classify_mutation_request_error)?;
             if !response.status().is_redirection() {
                 return Ok(response);
             }
+            if endpoint == Endpoint::Scrobble {
+                // A non-conforming server could commit this GET-style mutation before returning
+                // its redirect. Following even a same-origin Location could submit it twice.
+                return Err(MutationDeliveryError::Ambiguous(
+                    ServerError::OriginRejected,
+                ));
+            }
             if redirects == MAX_REDIRECTS {
-                return Err(ServerError::OriginRejected);
+                return Err(MutationDeliveryError::DefinitelyNotApplied(
+                    ServerError::OriginRejected,
+                ));
             }
             let location = response
                 .headers()
                 .get(LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .filter(|value| value.len() <= MAX_LOCATION_BYTES)
-                .ok_or(ServerError::OriginRejected)?;
+                .ok_or(MutationDeliveryError::DefinitelyNotApplied(
+                    ServerError::OriginRejected,
+                ))?;
             target = self
                 .transport
                 .origin()
                 .validate_redirect(response.url(), location)
-                .map_err(map_origin_error)?;
+                .map_err(map_origin_error)
+                .map_err(MutationDeliveryError::DefinitelyNotApplied)?;
         }
-        Err(ServerError::OriginRejected)
+        Err(MutationDeliveryError::DefinitelyNotApplied(
+            ServerError::OriginRejected,
+        ))
     }
 
     pub(crate) fn validate_item_scope(
@@ -349,6 +367,17 @@ fn classify_request_error(error: &reqwest::Error) -> ServerError {
         source = current.source();
     }
     ServerError::Offline
+}
+
+fn classify_mutation_request_error(error: reqwest::Error) -> MutationDeliveryError {
+    let classified = classify_request_error(&error);
+    if error.is_connect() || error.is_builder() || classified == ServerError::CertificateFailed {
+        MutationDeliveryError::DefinitelyNotApplied(classified)
+    } else {
+        // A timeout, request-body failure, or response-header loss can happen after the server
+        // committed a GET-style OpenSubsonic mutation.
+        MutationDeliveryError::Ambiguous(classified)
+    }
 }
 
 fn status_error_for(endpoint: Endpoint, response: &Response) -> ServerError {

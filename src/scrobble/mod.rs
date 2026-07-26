@@ -18,14 +18,17 @@ pub mod queue;
 pub mod service;
 
 #[cfg(test)]
+mod handle_closed_tests;
+#[cfg(test)]
 mod terminal_delivery_tests;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-pub use actor::{ScrobbleCmd, ScrobbleEvent, spawn};
+pub use actor::{OpenSubsonicSubmissionAck, ScrobbleCmd, ScrobbleEvent, spawn};
 pub use monitor::{Observation, ObservedTrack};
+pub use service::ScrobbleTrack;
 
 use tokio::sync::{Notify, mpsc::Sender};
 
@@ -86,6 +89,7 @@ impl Observation {
             let is_local = t.key.starts_with("local:");
             ObservedTrack {
                 key: t.key.clone(),
+                open_subsonic_item: t.open_subsonic_item.clone(),
                 title: t.title.clone(),
                 // `Song::local_file` fills a "Local file" placeholder for untagged files;
                 // that is display text, not an artist — scrobbling treats it as absent.
@@ -296,7 +300,23 @@ impl ScrobbleHandle {
     }
 
     pub fn observe(&mut self, snapshot: &crate::media::MediaSnapshot) -> DeliveryResult {
-        let obs = Observation::from_media(snapshot);
+        self.observe_derived(Observation::from_media(snapshot))
+    }
+
+    /// Seal the current playback interval at a fresh monotonic instant before the audio owner is
+    /// retired.
+    ///
+    /// Marking the snapshot non-playing makes it a terminal observation for the bounded delivery
+    /// lane, so saturation retains it in the shutdown-only retry slot. The track itself remains
+    /// present: the monitor first credits the elapsed playing interval, evaluates its threshold,
+    /// and only then disarms further wall-clock credit.
+    pub fn observe_shutdown(&mut self, snapshot: &crate::media::MediaSnapshot) -> DeliveryResult {
+        let mut observation = Observation::from_media(snapshot);
+        observation.playing = false;
+        self.observe_derived(observation)
+    }
+
+    fn observe_derived(&mut self, obs: Observation) -> DeliveryResult {
         let terminal = !obs.playing;
         let fingerprint = Fingerprint {
             track: obs.track.clone(),
@@ -1193,6 +1213,7 @@ mod tests {
 
         let track = |key: &str| ObservedTrack {
             key: key.to_owned(),
+            open_subsonic_item: None,
             title: key.to_owned(),
             artist: "Artist".to_owned(),
             album: None,
@@ -1264,6 +1285,7 @@ mod tests {
         assert!(handle.auth_start().is_ok());
         let track = ObservedTrack {
             key: "saturated-track".to_owned(),
+            open_subsonic_item: None,
             title: "Saturated Track".to_owned(),
             artist: "Artist".to_owned(),
             album: None,
@@ -1332,22 +1354,6 @@ mod tests {
             monitor::ScrobbleAction::Scrobble(track) if track.key == "saturated-track"
         )));
         assert_eq!(delivered_credit, 30.0);
-    }
-
-    #[test]
-    fn observe_preserves_admission_state_after_closed_queue() {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
-        drop(rx);
-        drop(shutdown_rx);
-        let mut handle = ScrobbleHandle::new(tx, shutdown_tx);
-
-        assert_eq!(
-            handle.observe(&crate::media::MediaSnapshot::idle()),
-            Err(DeliveryError::Closed)
-        );
-        assert!(handle.last_fingerprint.is_none());
-        assert!(handle.last_sent.is_none());
     }
 
     #[test]
@@ -1462,19 +1468,6 @@ mod tests {
                     && !observation.latest().playing
                     && !observation.latest().stopped
         ));
-    }
-
-    #[tokio::test]
-    async fn control_commands_report_closed_queue() {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
-        drop(rx);
-        drop(shutdown_rx);
-        let handle = ScrobbleHandle::new(tx, shutdown_tx);
-
-        assert_eq!(handle.reconfigure(settings()), Err(DeliveryError::Closed));
-        assert_eq!(handle.auth_start(), Err(DeliveryError::Closed));
-        assert_eq!(handle.shutdown_flush().await, Err(DeliveryError::Closed));
     }
 
     #[tokio::test]

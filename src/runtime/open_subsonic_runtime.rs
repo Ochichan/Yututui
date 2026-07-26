@@ -25,7 +25,8 @@ impl RuntimeHandles {
                 let result = if read_only {
                     crate::open_subsonic::load_actor_read_only(&paths).await
                 } else {
-                    crate::open_subsonic::load_actor(&paths).await
+                    let sink = super::open_subsonic_bridge_sink(emitter.clone());
+                    crate::open_subsonic::load_actor_with_bridge_sink(&paths, Some(sink)).await
                 };
                 emitter
                     .emit_terminal(RuntimeEvent::OpenSubsonicReloaded { generation, result })
@@ -55,13 +56,25 @@ impl RuntimeHandles {
                 runtime.activate();
                 self.open_subsonic_routes.install(runtime.route_provider());
                 self.open_subsonic_runtime = Some(runtime);
+                self.reset_open_subsonic_rating_projection();
             }
             Ok(None) => {
                 self.retire_open_subsonic_runtime();
             }
             Err(error) => {
-                self.retire_open_subsonic_runtime();
-                tracing::warn!(reason = %error, "music server runtime is unavailable");
+                // Refresh probes leave the active global owner installed, so their transient
+                // failure may retain the working route. A committed remove/history mutation
+                // revokes that owner first; never keep its stale local route object afterward.
+                let retain_existing =
+                    retain_after_reload_error(crate::open_subsonic::current_handle().is_some());
+                if !retain_existing {
+                    self.retire_open_subsonic_runtime();
+                }
+                tracing::warn!(
+                    reason = %error,
+                    retained_existing = retain_existing && self.open_subsonic_runtime.is_some(),
+                    "music server runtime is unavailable"
+                );
             }
         }
         true
@@ -71,5 +84,10 @@ impl RuntimeHandles {
     pub(crate) fn retire_open_subsonic_runtime(&mut self) {
         self.open_subsonic_routes.disable();
         self.open_subsonic_runtime = None;
+        self.reset_open_subsonic_rating_projection();
     }
+}
+
+pub(super) const fn retain_after_reload_error(current_owner_alive: bool) -> bool {
+    current_owner_alive
 }

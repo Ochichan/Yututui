@@ -19,7 +19,6 @@ use crate::remote::{
     PERSONAL_STATE_V2_CAPABILITY, WEB_DAV_SYNC_CAPABILITY,
 };
 use crate::util::process::{self, ProcessProfile};
-
 mod accounts_host;
 mod ai_host;
 mod capabilities;
@@ -49,7 +48,7 @@ use events::{DaemonEvent, DaemonEventSender, emit_daemon_event, record_daemon_ev
 use events::{DaemonTelemetrySlot, emit_daemon_callback_result};
 use gui_search_pending::{GuiSearchPending, PendingGuiSearch};
 use serve_setup::transport_or_return;
-use shutdown_drain::drain_daemon_shutdown_ingress;
+use shutdown_drain::{drain_playback_report_frontier, playback_report_frontier_succeeded};
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
@@ -713,6 +712,18 @@ async fn run_owner_loop(
             DaemonEvent::PersonalSyncFinished(finished) => {
                 personal_sync.finish(*finished, &mut engine, &event_tx, &shutdown)
             }
+            DaemonEvent::OpenSubsonicBridge(import) => {
+                engine.accept_open_subsonic_bridge_import(&import);
+            }
+            DaemonEvent::OpenSubsonicReady => {}
+            DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                event_id,
+                kind,
+                track,
+                confirmation,
+            }) => {
+                engine.queue_open_subsonic_scrobble(event_id, kind, track, confirmation);
+            }
             DaemonEvent::Scrobble(event) => {
                 accounts_host::on_scrobble_event(event, &mut engine, &mut publisher);
             }
@@ -737,6 +748,7 @@ async fn run_owner_loop(
             engine.suppress_transport_recovery_for_shutdown();
             break;
         }
+        engine.maintain_open_subsonic_bridge();
         personal_sync.observe(&mut engine, &event_tx, &shutdown);
         // Queue/session/settings mutations can invalidate an in-flight autoplay request even
         // when the seed id still exists. Settle that owner generation before publishing this
@@ -840,37 +852,30 @@ async fn run_owner_loop(
     // admission before the generic owner ingress so no accepted request can appear without a
     // wire-settlement token beyond the drain frontier.
     publisher.quiesce_owner_admission();
-    // Reject callback producers before awaiting any task that may itself be inside a callback.
-    // This breaks the owner-waits-producer / producer-waits-owner shutdown cycle under saturation.
-    event_tx.close_admission();
-    // Audio and overlay ownership ends before any slower remote/durability barrier. Keep the OS
-    // signal consumer alive until later teardown, but do not make normal daemon stop latency part
-    // of an mpv lifetime.
+    // Seal playback time while the projection and credential owner are still live.
+    shutdown_drain::seal_final_playback_observation(&mut scrobble, &engine);
     engine.shutdown_media_owners();
     // Remove the OS media surface before the slower task barrier. Its callbacks now see a closed
     // ingress, and a fast successor must not compete with a stale Now Playing/MPRIS/SMTC target.
     let _ = media.set_enabled(false);
-    let drain = drain_daemon_shutdown_ingress(
+    // The scrobble actor may discover a final threshold while draining observations which were
+    // accepted before shutdown. Keep pumping its owner events until the actor joins; closing the
+    // ingress first would reject the exact OpenSubsonic submission before bridge persistence.
+    let (scrobble_outcome, open_subsonic_outcome, drain) = drain_playback_report_frontier(
+        &mut scrobble,
         &event_tx,
         &mut event_rx,
         &mut pending_events,
         &publisher,
         &mut personal_export,
+        &mut engine,
     )
     .await;
     // A worker that completed before the admission frontier was settled by the drain above.
     // Anything still retained cannot re-enter now, so release its wire settlement explicitly.
     personal_export.shutdown();
     personal_sync.shutdown();
-    tracing::debug!(
-        remote_requests = drain.remote_requests,
-        subscribe_requests = drain.subscribe_requests,
-        terminal_events = drain.terminal_events,
-        personal_export_completions = drain.personal_export_completions,
-        coalesced_events = drain.coalesced_events,
-        retired_events = drain.retired_events,
-        "daemon shutdown ingress drained"
-    );
+    drain.log_summary();
     if !publisher.wait_for_wire_settlements().await {
         // Only a last scheduler margin after the structural writer budget timed out (and logged).
         crate::remote::await_shutdown_reply_grace().await;
@@ -885,17 +890,10 @@ async fn run_owner_loop(
     signal_handlers.shutdown().await;
     engine.shutdown_background().await;
     effect_tasks.shutdown().await;
-    // The deadline reports slow shutdown but never cancels accepted local durability. A failed
-    // final frontier is a transport failure, not a clean daemon exit.
-    match scrobble
-        .shutdown_and_join(Duration::from_millis(1500))
-        .await
-    {
-        Ok(()) => EXIT_OK,
-        Err(error) => {
-            tracing::warn!(%error, "scrobble shutdown durability was not confirmed");
-            EXIT_TRANSPORT
-        }
+    if playback_report_frontier_succeeded(scrobble_outcome, open_subsonic_outcome) {
+        EXIT_OK
+    } else {
+        EXIT_TRANSPORT
     }
 }
 
@@ -936,6 +934,9 @@ fn route_gui_search_completion(
 fn log_scrobble_event(event: crate::scrobble::ScrobbleEvent) {
     use crate::scrobble::ScrobbleEvent;
     match event {
+        ScrobbleEvent::OpenSubsonic { .. } => {
+            tracing::warn!("music server playback report missed its owner route");
+        }
         ScrobbleEvent::SessionInvalid(kind) => {
             tracing::warn!(
                 service = kind.label(),

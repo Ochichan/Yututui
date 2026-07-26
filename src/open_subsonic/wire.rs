@@ -47,6 +47,7 @@ pub(crate) struct RawResponse {
     pub playlist: Option<RawPlaylist>,
     pub album: Option<RawAlbumWithSongs>,
     pub artist: Option<RawArtistWithAlbums>,
+    pub song: Option<RawChild>,
 }
 
 impl RawResponse {
@@ -174,6 +175,8 @@ pub(crate) struct RawChild {
     pub media_type: Option<String>,
     pub user_rating: Option<i64>,
     pub starred: Option<String>,
+    pub play_count: Option<u64>,
+    pub played: Option<String>,
     #[serde(default, deserialize_with = "deserialize_child_artists")]
     pub artists: Vec<RawNamedId>,
 }

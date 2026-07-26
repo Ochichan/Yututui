@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::model::{AccountScopeId, BackendId};
+use super::native_history::NativeHistoryCredential;
 use super::profile::StoreError;
 
 pub(crate) const PRIVATE_KIND: &str = "yututui_open_subsonic_private";
-pub(crate) const PRIVATE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PRIVATE_SCHEMA_VERSION: u32 = 2;
 pub(crate) const MAX_PRIVATE_BYTES: u64 = 256 * 1024;
 const MAX_USERNAME_BYTES: usize = 1_024;
 const MAX_PASSWORD_BYTES: usize = 64 * 1024;
@@ -73,6 +74,16 @@ pub struct OpenSubsonicPrivateState {
     backend_id: BackendId,
     account_scope_id: AccountScopeId,
     credential: ServerCredential,
+    native_history: NativeHistorySetting,
+}
+
+enum NativeHistorySetting {
+    Off,
+    ReuseServerPassword,
+    DedicatedPassword {
+        username: SecretString,
+        password: SecretString,
+    },
 }
 
 impl OpenSubsonicPrivateState {
@@ -86,6 +97,7 @@ impl OpenSubsonicPrivateState {
             backend_id,
             account_scope_id,
             credential,
+            native_history: NativeHistorySetting::Off,
         }
     }
 
@@ -105,6 +117,93 @@ impl OpenSubsonicPrivateState {
         self.credential.kind()
     }
 
+    pub fn native_history_enabled(&self) -> bool {
+        !matches!(self.native_history, NativeHistorySetting::Off)
+    }
+
+    pub fn enable_native_history_reusing_server_password(&mut self) -> Result<(), StoreError> {
+        if self.credential.kind() != CredentialKind::Password {
+            return Err(StoreError::InvalidState);
+        }
+        self.native_history = NativeHistorySetting::ReuseServerPassword;
+        Ok(())
+    }
+
+    pub fn enable_native_history_with_password(
+        &mut self,
+        username: impl Into<String>,
+        password: SecretString,
+    ) -> Result<(), StoreError> {
+        if self.credential.kind() != CredentialKind::ApiKey {
+            return Err(StoreError::InvalidState);
+        }
+        let username = username.into();
+        validate_credential_part(&username, MAX_USERNAME_BYTES)?;
+        validate_credential_part(password.expose_secret(), MAX_PASSWORD_BYTES)?;
+        self.native_history = NativeHistorySetting::DedicatedPassword {
+            username: SecretString::from(username),
+            password,
+        };
+        Ok(())
+    }
+
+    pub fn disable_native_history(&mut self) {
+        self.native_history = NativeHistorySetting::Off;
+    }
+
+    pub(crate) fn preserve_native_history_from(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), StoreError> {
+        if self.backend_id != previous.backend_id
+            || self.account_scope_id != previous.account_scope_id
+        {
+            return Err(StoreError::InvalidState);
+        }
+        match (self.credential.kind(), &previous.native_history) {
+            (_, NativeHistorySetting::Off) => {
+                self.disable_native_history();
+                Ok(())
+            }
+            (CredentialKind::Password, _) => self.enable_native_history_reusing_server_password(),
+            (CredentialKind::ApiKey, NativeHistorySetting::ReuseServerPassword) => self
+                .enable_native_history_with_password(
+                    previous
+                        .credential
+                        .username()
+                        .ok_or(StoreError::InvalidState)?
+                        .expose_secret()
+                        .to_owned(),
+                    SecretString::from(previous.credential.secret().expose_secret().to_owned()),
+                ),
+            (
+                CredentialKind::ApiKey,
+                NativeHistorySetting::DedicatedPassword { username, password },
+            ) => self.enable_native_history_with_password(
+                username.expose_secret().to_owned(),
+                SecretString::from(password.expose_secret().to_owned()),
+            ),
+        }
+    }
+
+    /// Copies the selected password into an ephemeral, non-serializable login value.
+    pub fn native_history_credential(&self) -> Result<Option<NativeHistoryCredential>, StoreError> {
+        let (username, password) = match &self.native_history {
+            NativeHistorySetting::Off => return Ok(None),
+            NativeHistorySetting::ReuseServerPassword => (
+                self.credential.username().ok_or(StoreError::InvalidState)?,
+                self.credential.secret(),
+            ),
+            NativeHistorySetting::DedicatedPassword { username, password } => (username, password),
+        };
+        NativeHistoryCredential::new(
+            username.expose_secret().to_owned(),
+            SecretString::from(password.expose_secret().to_owned()),
+        )
+        .map(Some)
+        .map_err(|_| StoreError::InvalidState)
+    }
+
     pub(crate) fn credential(&self) -> &ServerCredential {
         &self.credential
     }
@@ -114,7 +213,7 @@ impl OpenSubsonicPrivateState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum DiskCredentialKind {
     ApiKey,
@@ -132,6 +231,12 @@ struct DiskPrivateState {
     credential_kind: DiskCredentialKind,
     username: Option<String>,
     secret: String,
+    #[serde(default)]
+    native_history_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_history_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_history_password: Option<String>,
 }
 
 impl Drop for DiskPrivateState {
@@ -140,12 +245,28 @@ impl Drop for DiskPrivateState {
             username.zeroize();
         }
         self.secret.zeroize();
+        if let Some(username) = &mut self.native_history_username {
+            username.zeroize();
+        }
+        if let Some(password) = &mut self.native_history_password {
+            password.zeroize();
+        }
     }
 }
 
 pub(crate) fn encode_private(
     state: &OpenSubsonicPrivateState,
 ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
+    let (native_history_enabled, native_history_username, native_history_password) =
+        match &state.native_history {
+            NativeHistorySetting::Off => (false, None, None),
+            NativeHistorySetting::ReuseServerPassword => (true, None, None),
+            NativeHistorySetting::DedicatedPassword { username, password } => (
+                true,
+                Some(username.expose_secret().to_owned()),
+                Some(password.expose_secret().to_owned()),
+            ),
+        };
     let disk = DiskPrivateState {
         kind: PRIVATE_KIND.to_owned(),
         schema_version: PRIVATE_SCHEMA_VERSION,
@@ -161,6 +282,9 @@ pub(crate) fn encode_private(
             .username()
             .map(|username| username.expose_secret().to_owned()),
         secret: state.credential.secret().expose_secret().to_owned(),
+        native_history_enabled,
+        native_history_username,
+        native_history_password,
     };
     let bytes =
         Zeroizing::new(serde_json::to_vec(&disk).map_err(|_| StoreError::SerializationFailed)?);
@@ -176,7 +300,14 @@ pub(crate) fn decode_private(bytes: &[u8]) -> Result<OpenSubsonicPrivateState, S
     }
     let disk: DiskPrivateState =
         serde_json::from_slice(bytes).map_err(|_| StoreError::InvalidState)?;
-    if disk.kind != PRIVATE_KIND || disk.schema_version != PRIVATE_SCHEMA_VERSION {
+    if disk.kind != PRIVATE_KIND || !matches!(disk.schema_version, 1 | PRIVATE_SCHEMA_VERSION) {
+        return Err(StoreError::InvalidState);
+    }
+    if disk.schema_version == 1
+        && (disk.native_history_enabled
+            || disk.native_history_username.is_some()
+            || disk.native_history_password.is_some())
+    {
         return Err(StoreError::InvalidState);
     }
     let credential = match disk.credential_kind {
@@ -189,11 +320,32 @@ pub(crate) fn decode_private(bytes: &[u8]) -> Result<OpenSubsonicPrivateState, S
         }
         DiskCredentialKind::ApiKey => return Err(StoreError::InvalidState),
     };
+    let native_history = match (
+        disk.credential_kind,
+        disk.native_history_enabled,
+        disk.native_history_username.as_deref(),
+        disk.native_history_password.as_deref(),
+    ) {
+        (_, false, None, None) => NativeHistorySetting::Off,
+        (DiskCredentialKind::Password, true, None, None) => {
+            NativeHistorySetting::ReuseServerPassword
+        }
+        (DiskCredentialKind::ApiKey, true, Some(username), Some(password)) => {
+            validate_credential_part(username, MAX_USERNAME_BYTES)?;
+            validate_credential_part(password, MAX_PASSWORD_BYTES)?;
+            NativeHistorySetting::DedicatedPassword {
+                username: SecretString::from(username.to_owned()),
+                password: SecretString::from(password.to_owned()),
+            }
+        }
+        _ => return Err(StoreError::InvalidState),
+    };
     Ok(OpenSubsonicPrivateState {
         revision: disk.revision,
         backend_id: disk.backend_id.clone(),
         account_scope_id: disk.account_scope_id.clone(),
         credential,
+        native_history,
     })
 }
 
@@ -252,12 +404,15 @@ mod tests {
 
     #[test]
     fn password_round_trip_preserves_account_binding() {
-        let state = OpenSubsonicPrivateState::new(
+        let mut state = OpenSubsonicPrivateState::new(
             BackendId::new("backend").unwrap(),
             AccountScopeId::new("account").unwrap(),
             ServerCredential::password("alice", SecretString::from("secret-password".to_owned()))
                 .unwrap(),
         );
+        state
+            .enable_native_history_reusing_server_password()
+            .unwrap();
         let decoded = decode_private(&encode_private(&state).unwrap()).unwrap();
         assert_eq!(decoded.backend_id().as_str(), "backend");
         assert_eq!(decoded.account_scope_id().as_str(), "account");
@@ -265,6 +420,128 @@ mod tests {
             decoded.credential().username().unwrap().expose_secret(),
             "alice"
         );
+        assert!(decoded.native_history_enabled());
+        assert!(decoded.native_history_credential().unwrap().is_some());
+        let disk: serde_json::Value = serde_json::from_slice(&encode_private(&state).unwrap())
+            .expect("private state should be valid JSON");
+        assert_eq!(disk["schema_version"], PRIVATE_SCHEMA_VERSION);
+        assert_eq!(disk["native_history_enabled"], true);
+        assert!(disk.get("native_history_password").is_none());
+    }
+
+    #[test]
+    fn api_key_history_password_round_trips_and_disable_clears_it() {
+        let mut state = OpenSubsonicPrivateState::new(
+            BackendId::new("backend").unwrap(),
+            AccountScopeId::new("account").unwrap(),
+            ServerCredential::api_key(SecretString::from("api-secret".to_owned())).unwrap(),
+        );
+        assert!(
+            state
+                .enable_native_history_reusing_server_password()
+                .is_err()
+        );
+        state
+            .enable_native_history_with_password(
+                "alice",
+                SecretString::from("native-password".to_owned()),
+            )
+            .unwrap();
+        let decoded = decode_private(&encode_private(&state).unwrap()).unwrap();
+        assert!(decoded.native_history_enabled());
+        assert!(decoded.native_history_credential().unwrap().is_some());
+
+        state.disable_native_history();
+        let bytes = encode_private(&state).unwrap();
+        let disk: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(disk["native_history_enabled"], false);
+        assert!(disk.get("native_history_username").is_none());
+        assert!(disk.get("native_history_password").is_none());
+        assert!(!decode_private(&bytes).unwrap().native_history_enabled());
+    }
+
+    #[test]
+    fn schema_one_migrates_to_disabled_schema_two() {
+        let legacy = br#"{
+            "kind":"yututui_open_subsonic_private",
+            "schema_version":1,
+            "revision":7,
+            "backend_id":"backend",
+            "account_scope_id":"account",
+            "credential_kind":"password",
+            "username":"alice",
+            "secret":"legacy-password"
+        }"#;
+        let state = decode_private(legacy).unwrap();
+        assert!(!state.native_history_enabled());
+        let encoded = encode_private(&state).unwrap();
+        let disk: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(disk["schema_version"], 2);
+        assert_eq!(disk["native_history_enabled"], false);
+    }
+
+    #[test]
+    fn malformed_native_history_combinations_fail_closed() {
+        let state = OpenSubsonicPrivateState::new(
+            BackendId::new("backend").unwrap(),
+            AccountScopeId::new("account").unwrap(),
+            ServerCredential::api_key(SecretString::from("api-secret".to_owned())).unwrap(),
+        );
+        let mut disk: serde_json::Value =
+            serde_json::from_slice(&encode_private(&state).unwrap()).unwrap();
+        disk["native_history_enabled"] = true.into();
+        assert!(decode_private(&serde_json::to_vec(&disk).unwrap()).is_err());
+
+        disk["schema_version"] = 1.into();
+        disk["native_history_username"] = "alice".into();
+        disk["native_history_password"] = "native-password".into();
+        assert!(decode_private(&serde_json::to_vec(&disk).unwrap()).is_err());
+    }
+
+    #[test]
+    fn same_account_credential_changes_preserve_history_without_reusing_api_keys() {
+        let backend = BackendId::new("backend").unwrap();
+        let account = AccountScopeId::new("account").unwrap();
+        let mut password_state = OpenSubsonicPrivateState::new(
+            backend.clone(),
+            account.clone(),
+            ServerCredential::password(
+                "alice",
+                SecretString::from("native-capable-password".to_owned()),
+            )
+            .unwrap(),
+        );
+        password_state
+            .enable_native_history_reusing_server_password()
+            .unwrap();
+
+        let mut api_key_state = OpenSubsonicPrivateState::new(
+            backend.clone(),
+            account.clone(),
+            ServerCredential::api_key(SecretString::from("api-key".to_owned())).unwrap(),
+        );
+        api_key_state
+            .preserve_native_history_from(&password_state)
+            .unwrap();
+        assert!(api_key_state.native_history_enabled());
+        assert!(api_key_state.native_history_credential().unwrap().is_some());
+
+        let mut replacement_password = OpenSubsonicPrivateState::new(
+            backend,
+            account,
+            ServerCredential::password(
+                "alice",
+                SecretString::from("replacement-password".to_owned()),
+            )
+            .unwrap(),
+        );
+        replacement_password
+            .preserve_native_history_from(&api_key_state)
+            .unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&encode_private(&replacement_password).unwrap()).unwrap();
+        assert_eq!(disk["native_history_enabled"], true);
+        assert!(disk.get("native_history_password").is_none());
     }
 
     #[test]

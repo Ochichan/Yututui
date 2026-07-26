@@ -632,7 +632,13 @@ impl App {
             Action::CycleRating => {
                 if let Some(song) = self.queue.current().cloned() {
                     if song.is_radio_station() {
-                        self.library_mut().toggle_favorite(&song);
+                        let change = crate::rating::toggle_liked(
+                            Arc::make_mut(&mut self.library),
+                            Arc::make_mut(&mut self.signals),
+                            &song,
+                            signals::unix_now(),
+                        );
+                        self.record_rating_session_event(&song, change);
                         self.dirty = true;
                         return vec![Cmd::Persist(PersistCmd::Library)];
                     }
@@ -643,17 +649,7 @@ impl App {
                         &song,
                         now,
                     );
-                    let artist_key = signals::normalize_artist(&song.artist);
-                    let comp = self.playback_completion();
-                    match change.after {
-                        crate::personal_state::Rating::Liked => {
-                            self.record_session_event(&artist_key, Outcome::Like, comp);
-                        }
-                        crate::personal_state::Rating::Disliked => {
-                            self.record_session_event(&artist_key, Outcome::Dislike, comp);
-                        }
-                        crate::personal_state::Rating::Neutral => {}
-                    }
+                    self.record_rating_session_event(&song, change);
                     self.dirty = true;
                     let mut persist = Vec::with_capacity(2);
                     if change.library_changed {
@@ -1041,6 +1037,25 @@ impl App {
         while buf.len() > SESSION_EVENTS_CAP {
             buf.pop_front();
         }
+    }
+
+    pub(in crate::app) fn record_rating_session_event(
+        &mut self,
+        song: &Song,
+        change: crate::rating::RatingChange,
+    ) {
+        let Some(signal) = crate::rating::session_signal(song, change) else {
+            return;
+        };
+        let outcome = match signal {
+            crate::rating::SessionRatingSignal::Like => Outcome::Like,
+            crate::rating::SessionRatingSignal::Dislike => Outcome::Dislike,
+        };
+        self.record_session_event(
+            &signals::normalize_artist(&song.artist),
+            outcome,
+            self.playback_completion(),
+        );
     }
 
     /// How much to trust a skip as a dislike signal: lower early in / in short sessions

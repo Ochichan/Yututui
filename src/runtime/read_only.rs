@@ -34,6 +34,7 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
         Cmd::MusicServer(
             crate::app::MusicServerCommand::TestAndPrepare { .. }
             | crate::app::MusicServerCommand::Commit { .. }
+            | crate::app::MusicServerCommand::DisableHistory { .. }
             | crate::app::MusicServerCommand::Remove { .. },
         ) => Some("music server settings"),
         Cmd::PlayerControl(_)

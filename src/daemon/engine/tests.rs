@@ -44,6 +44,9 @@ pub(in crate::daemon) fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
         player: None,
         open_subsonic: Default::default(),
+        open_subsonic_rating_identity: None,
+        open_subsonic_pending_rating: None,
+        open_subsonic_pending_scrobbles: VecDeque::new(),
         player_emit: Arc::new(|_| {}),
         queue,
         playback: DaemonPlayback {
