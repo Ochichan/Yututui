@@ -541,6 +541,83 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 
 </details>
 
+<details>
+<summary><b>Encrypted sync across devices</b></summary>
+
+Keep favorites, history, playlists and taste signals in step across machines through a WebDAV
+folder (Nextcloud, ownCloud, most NAS boxes). Everything is encrypted locally before upload —
+the server stores ciphertext and learns nothing but sizes and timestamps. Off until you enable it.
+
+```sh
+ytt sync setup                        # create the vault; writes a required recovery kit
+ytt sync status [--json]              # Off / Up to date / Syncing / Offline — will retry / Needs attention
+ytt sync now                          # merge local and remote state now
+
+ytt sync pair create                  # print a ten-minute, one-time connection code
+ytt sync pair join <CODE>             # on the new device; approve on the old one
+ytt sync pair join --resume           # continue an interrupted join, no code needed
+ytt sync pair cancel                  # discard an unfinished local join
+
+ytt sync devices [--json]             # active and removed devices
+ytt sync revoke <DEVICE_ID>           # remove a device and rotate the encrypted checkpoint
+ytt sync recovery export --to <DIR>   # verify and copy the recovery kit
+ytt sync audit [--json]               # redacted sync audit log
+```
+
+WebDAV credentials are prompted with echo disabled and are never accepted as arguments. The
+endpoint must be HTTPS unless it is loopback. Status and audit output deliberately omit
+endpoints, paths and secrets.
+
+**Keep the recovery kit off this machine.** It is the only way back if every device is lost;
+nobody can regenerate it for you. Revoking a device re-locks everything uploaded afterwards,
+but cannot un-read what that device already downloaded.
+
+Inside the app the same flow lives under **Settings (`o`) → Sync**.
+
+</details>
+
+<details>
+<summary><b>Your own music server (OpenSubsonic / Navidrome)</b></summary>
+
+```sh
+ytt server setup                                   # test and save one server connection
+ytt server status [--json]                         # redacted connection status
+ytt server remove                                  # forget the profile; keep local data
+
+ytt server scrobbles list [--json]                 # playback reports awaiting a decision
+ytt server scrobbles retry <OPAQUE_ID>             # treat one as unsent and retry
+ytt server scrobbles mark-sent <OPAQUE_ID>         # treat one as sent without retrying
+
+ytt server playlists pending [--json]              # playlist creates awaiting a decision
+ytt server playlists abandon <LOCAL_PLAYLIST_ID>   # forget the guard; deletes neither copy
+
+ytt server history enable --experimental           # detailed Navidrome history (off by default)
+ytt server history disable                         # also removes its saved password
+```
+
+Passwords and API keys are prompted with echo disabled and are never accepted as arguments.
+Password auth uses a fresh per-request salted token — the cleartext password is never sent.
+Experimental detailed history needs its own password and never disables standard server access.
+
+Inside the app: **Settings (`o`) → Music server**.
+
+</details>
+
+<details>
+<summary><b>Personal data export & import</b></summary>
+
+```sh
+ytt data export [--to DIR] [--schema 1|2]   # versioned JSON, no credentials or media
+ytt data import <FILE>                      # preview the merge (the default)
+ytt data import <FILE> --apply              # atomically apply it
+```
+
+The export is not encrypted and contains your listening history — treat it as a personal file.
+A foreign dataset merges without deleting anything; a bundle from this same dataset merges by
+causal order, so re-importing your own older export cannot roll back newer listening.
+
+</details>
+
 ## Security
 
 Found a vulnerability? Please use
