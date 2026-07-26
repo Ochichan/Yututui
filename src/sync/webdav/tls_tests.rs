@@ -140,10 +140,15 @@ fn spawn_tls_server(expect_handshake: bool) -> (String, thread::JoinHandle<()>) 
             .unwrap();
         let result = acceptor.accept(stream);
         if !expect_handshake {
-            assert!(
-                result.is_err(),
-                "untrusted client unexpectedly completed TLS"
-            );
+            // Only the client's verdict is the contract here, and the caller asserts it
+            // (`WebDavError::CertificateFailed`). The server's own view is deliberately not
+            // asserted: under TLS 1.3 the server side is complete once it has sent Finished, so a
+            // client that rejects the certificate afterwards leaves this `accept` returning Ok and
+            // the rejection arrives as a later alert. SChannel on Windows does exactly that, while
+            // OpenSSL and Security.framework surface the client's abort as a handshake error.
+            // Asserting either outcome would pin a platform quirk rather than the behaviour under
+            // test. Dropping the result closes the connection on both paths.
+            drop(result);
             return;
         }
         let mut stream = result.expect("trusted client completes TLS");
