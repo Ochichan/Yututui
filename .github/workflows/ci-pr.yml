@@ -2,8 +2,14 @@ name: ci-pr
 
 # Daily PR / main merge gate on the debian-ts self-hosted runner.
 # Full multi-OS release builds stay in build.yml (v* tags + workflow_dispatch).
-# Optional Windows/macOS light jobs run only with label ci:windows / ci:macos
-# or workflow_dispatch inputs — never required, so offline PCs cannot block merge.
+#
+# Windows/macOS coverage is split in two on purpose:
+#   * GitHub-hosted, always on  — `windows-compile` and `terminal-pty-macos`. These lint AND
+#     run the workspace suite, so non-Linux behaviour is exercised on every PR without
+#     depending on a machine being powered on.
+#   * Self-hosted, label-gated  — `windows-optional` / `macos-optional` (ci:windows /
+#     ci:macos or workflow_dispatch). Deeper passes on real hardware; never required, so
+#     offline PCs cannot block merge. Do not promote these two to required checks.
 
 on:
   push:
@@ -226,11 +232,18 @@ jobs:
         run: "cargo test --features desktop -- desktop::"
 
   windows-compile:
-    name: Windows compile gate
+    name: Windows compile and test gate
     # GitHub-hosted and always on, unlike windows-optional above: cfg-gated dead code and
     # non-Unix unused imports are invisible to every Linux gate, so 1.6.36 reached the release
-    # pipeline with 18 such errors. This job only compiles/lints, so it stays cheap; the
-    # self-hosted windows-optional job still owns the real test run and stays label-gated.
+    # pipeline with 18 such errors.
+    #
+    # It also RUNS the suite. `windows-optional` below owns the same run on the self-hosted
+    # box, but it is label-gated so an offline PC cannot block merge — which means that in
+    # practice it does not run: every PR merged between v1.6.36 and 1.7.0 skipped it, so
+    # `util::safe_fs::owner_only` and the `data_export::windows_private` ACL code (including
+    # its `unsafe` SID calls) reached main having only ever been compiled, never executed, on
+    # Windows. Two follow-up fix commits were needed after merge. The clippy step below already
+    # builds every test target, so executing them here costs the run time and nothing more.
     #
     # Deliberately mirrors exactly what the release pipeline lints on Windows: the workspace,
     # not the vendored crossterm fork. The fork does carry Windows-only dead code in its test
@@ -238,7 +251,7 @@ jobs:
     # condition the release itself never checks.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -251,11 +264,18 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Test
+        run: cargo test --workspace
+
   terminal-pty-macos:
-    name: Unix terminal PTY (macOS)
+    name: Unix terminal PTY and test gate (macOS)
+    # Same reasoning as `windows-compile`: `macos-optional` below is label-gated on a
+    # self-hosted Mac, so the workspace suite does not actually run on macOS at PR time.
+    # This GitHub-hosted job is always on, so it owns the always-available macOS run;
+    # `macos-optional` stays the label-gated deeper pass (clippy + tray helper).
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -283,6 +303,9 @@ jobs:
 
       - name: Test application terminal lifecycle on a controlling PTY
         run: cargo test --test terminal_startup_signal -- --test-threads=1
+
+      - name: Test workspace
+        run: cargo test --workspace
 
   macos-optional:
     name: macOS (optional light)
