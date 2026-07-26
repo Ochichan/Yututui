@@ -252,6 +252,8 @@ fn open_subsonic_download_fixture() -> Song {
         suffix: Some("flac".to_owned()),
         starred: false,
         user_rating: None,
+        play_count: None,
+        played_at: None,
     })
 }
 

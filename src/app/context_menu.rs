@@ -849,7 +849,7 @@ impl App {
                 C::Remove,
             ],
             ContextTarget::ServerLibrary { identity, .. } if identity.is_song() => {
-                vec![C::PlayNow, C::Enqueue, C::AddToPlaylist]
+                vec![C::PlayNow, C::Enqueue, C::ToggleFavorite, C::AddToPlaylist]
             }
             ContextTarget::ServerLibrary { .. } => vec![C::Activate],
             ContextTarget::Queue { .. } => vec![C::PlayFromHere, C::Remove],
@@ -1046,8 +1046,7 @@ impl App {
                 None => self.enqueue(song),
             },
             ContextCommand::ToggleFavorite if is_song_row => {
-                self.library_mut().toggle_favorite(&song);
-                vec![Cmd::Persist(PersistCmd::Library)]
+                self.toggle_song_favorite_rating(&song)
             }
             ContextCommand::AddToPlaylist if is_song_row => {
                 self.open_playlist_picker(vec![song]);
@@ -1101,13 +1100,13 @@ impl App {
             ContextCommand::Enqueue => self.enqueue_many(selected),
             ContextCommand::ToggleFavorite if selected.len() == 1 => {
                 let rows_before = self.library_len();
-                self.library_mut().toggle_favorite(&selected[0]);
+                let commands = self.toggle_song_favorite_rating(&selected[0]);
                 // Un-favoriting can remove the row (Favorites/All tab): re-clamp
                 // and drop the now-stale picks; unchanged tabs keep the selection.
                 if self.library_len() != rows_before {
                     self.clamp_library_selection();
                 }
-                vec![Cmd::Persist(PersistCmd::Library)]
+                commands
             }
             ContextCommand::AddToPlaylist => {
                 self.open_playlist_picker(selected);
@@ -1186,6 +1185,13 @@ impl App {
                 .cloned()
                 .map(crate::api::Song::from_open_subsonic)
                 .map_or_else(Vec::new, |song| self.enqueue_many(vec![song])),
+            ContextCommand::ToggleFavorite if identity.is_song() => self
+                .server
+                .library
+                .row_song(index)
+                .cloned()
+                .map(crate::api::Song::from_open_subsonic)
+                .map_or_else(Vec::new, |song| self.toggle_song_favorite_rating(&song)),
             ContextCommand::AddToPlaylist if identity.is_song() => {
                 if let Some(song) = self
                     .server
@@ -1336,6 +1342,8 @@ mod tests {
             suffix: None,
             starred: false,
             user_rating: None,
+            play_count: None,
+            played_at: None,
         }
     }
 
@@ -1392,14 +1400,18 @@ mod tests {
             .iter()
             .map(|item| item.label(menu.target_count()))
             .collect();
-        assert_eq!(labels, vec!["Play now", "Add to queue", "Add to playlist"]);
-        assert!(
-            labels
-                .iter()
-                .all(|label| !label.contains("Download") && !label.contains("Favorite"))
+        assert_eq!(
+            labels,
+            vec![
+                "Play now",
+                "Add to queue",
+                "Favorite / unfavorite",
+                "Add to playlist"
+            ]
         );
+        assert!(labels.iter().all(|label| !label.contains("Download")));
 
-        assert!(app.activate_context_menu_item(2).is_empty());
+        assert!(app.activate_context_menu_item(3).is_empty());
         assert_eq!(
             app.playlist_picker
                 .as_ref()

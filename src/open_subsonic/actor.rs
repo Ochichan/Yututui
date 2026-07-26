@@ -1,13 +1,15 @@
 //! Long-lived credential owner plus setup/status lifecycle facade.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::task::{JoinHandle, JoinSet};
 use zeroize::Zeroize;
 
-use super::OpenSubsonicBridgeState;
+use super::bridge_event::{OpenSubsonicBridgeSink, OpenSubsonicScrobbleKind};
+use super::bridge_runtime::BridgeRuntime;
+pub use super::bridge_runtime::OutboundScrobbleResolution;
 use super::capabilities::ServerCapabilities;
 use super::catalog::OpenSubsonicCatalog;
 use super::client::{BinaryPayload, OpenSubsonicClient, ServerError};
@@ -26,8 +28,13 @@ use super::transaction::{
     OpenSubsonicStoreSet, StoreRevisions, commit_store_set, load_store_set,
     load_store_set_read_only, remove_store_set, reset_store_set,
 };
+use super::{NativeHistoryHealth, OpenSubsonicBridgeState};
+use crate::personal_state::OpenSubsonicRatingWinner;
 
 const ACTOR_CAPACITY: usize = 32;
+const BRIDGE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const NATIVE_HISTORY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const HISTORY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceError {
@@ -144,6 +151,12 @@ pub struct OpenSubsonicStatus {
     /// This deliberately exposes only the redacted presence bit, never certificate bytes,
     /// fingerprints, paths, or the configured origin.
     pub uses_custom_ca: bool,
+    /// Experimental exact Navidrome history is enabled. No username/password is exposed.
+    pub native_history_enabled: bool,
+    /// Actual redacted native-history capability/health; standard play-count history is separate.
+    pub native_history_health: NativeHistoryHealth,
+    /// Bounded count of opaque outbound reports requiring an explicit delivery decision.
+    pub outbound_scrobbles_needing_attention: usize,
 }
 
 impl OpenSubsonicStatus {
@@ -156,6 +169,9 @@ impl OpenSubsonicStatus {
             credential_kind: None,
             uses_lan_http: false,
             uses_custom_ca: false,
+            native_history_enabled: false,
+            native_history_health: NativeHistoryHealth::Off,
+            outbound_scrobbles_needing_attention: 0,
         }
     }
 
@@ -168,6 +184,9 @@ impl OpenSubsonicStatus {
             credential_kind: None,
             uses_lan_http: false,
             uses_custom_ca: false,
+            native_history_enabled: false,
+            native_history_health: NativeHistoryHealth::Off,
+            outbound_scrobbles_needing_attention: 0,
         }
     }
 }
@@ -235,9 +254,28 @@ pub async fn test_and_prepare_setup(
         origin,
         custom_ca_pem,
     )?;
-    let private_state =
+    let mut private_state =
         OpenSubsonicPrivateState::new(backend_id.clone(), account_scope_id.clone(), credential);
-    let bridge_state = OpenSubsonicBridgeState::new(backend_id, account_scope_id);
+    if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+        private_state.preserve_native_history_from(
+            &current
+                .as_ref()
+                .ok_or(ServiceError::InvalidSetup)?
+                .private_state,
+        )?;
+    }
+    let mut bridge_state =
+        if input.identity_intent == SetupIdentityIntent::UpdateSameServerAndAccount {
+            current
+                .as_ref()
+                .map(|state| state.bridge_state.clone())
+                .ok_or(ServiceError::InvalidSetup)?
+        } else {
+            OpenSubsonicBridgeState::new(backend_id, account_scope_id)
+        };
+    // Candidates are identity-coherent at revision zero; commit assigns the next shared store
+    // revision after its optimistic check.
+    bridge_state.set_revision(0);
     let store_set = OpenSubsonicStoreSet::new(profile, private_state, bridge_state)?;
     let client = OpenSubsonicClient::connect(&store_set.profile).await?;
     let capabilities =
@@ -322,15 +360,54 @@ pub fn remove_profile(paths: &OpenSubsonicPaths) -> Result<OpenSubsonicStatus, S
     Ok(OpenSubsonicStatus::off())
 }
 
+/// Disable the experimental native-history credential as one coherent private/bridge commit.
+///
+/// The caller must retire any live credential owner before invoking this mutation, then load a
+/// fresh actor from the returned durable state. Standard OpenSubsonic credentials are retained.
+pub fn disable_native_history(
+    paths: &OpenSubsonicPaths,
+) -> Result<OpenSubsonicStatus, ServiceError> {
+    let Some(mut store_set) = load_store_set(paths)? else {
+        return Err(ServiceError::InvalidSetup);
+    };
+    let expected = store_set.revisions();
+    store_set.private_state.disable_native_history();
+    store_set
+        .bridge_state
+        .set_native_history_health(NativeHistoryHealth::Off);
+    commit_store_set(paths, expected, &mut store_set)?;
+    Ok(status_from_store_set(&store_set))
+}
+
 fn status_from_store_set(store_set: &OpenSubsonicStoreSet) -> OpenSubsonicStatus {
+    let native_history_enabled = store_set.private_state.native_history_enabled();
+    let native_history_health = if native_history_enabled {
+        match store_set.bridge_state.native_history_health() {
+            NativeHistoryHealth::Off => NativeHistoryHealth::Probing,
+            health => health,
+        }
+    } else {
+        NativeHistoryHealth::Off
+    };
+    let outbound_scrobbles_needing_attention = store_set
+        .bridge_state
+        .outbound_scrobble_attention_ids()
+        .len();
     OpenSubsonicStatus {
-        kind: OpenSubsonicStatusKind::UpToDate,
+        kind: if outbound_scrobbles_needing_attention == 0 {
+            OpenSubsonicStatusKind::UpToDate
+        } else {
+            OpenSubsonicStatusKind::NeedsAttention
+        },
         display_name: Some(store_set.profile.display_name().to_owned()),
         backend_id: Some(store_set.profile.backend_id().clone()),
         account_scope_id: Some(store_set.profile.account_scope_id().clone()),
         credential_kind: Some(store_set.private_state.credential_kind()),
         uses_lan_http: store_set.profile.uses_lan_http(),
         uses_custom_ca: store_set.profile.custom_ca_fingerprint().is_some(),
+        native_history_enabled,
+        native_history_health,
+        outbound_scrobbles_needing_attention,
     }
 }
 
@@ -389,6 +466,92 @@ impl OpenSubsonicHandle {
             .await
     }
 
+    /// Queue the current personal-state winners for canonical server projection.
+    ///
+    /// This never contains a credential and does not wait for the network. The credential owner
+    /// persists each projection before attempting it and retries partial writes.
+    pub fn reconcile_ratings(
+        &self,
+        winners: Vec<OpenSubsonicRatingWinner>,
+    ) -> Result<OpenSubsonicRatingReceipt, ServerError> {
+        let (reply, receipt) = oneshot::channel();
+        self.try_send(ActorCommand::ReconcileRatings { winners, reply })?;
+        Ok(receipt)
+    }
+
+    /// Confirm that the personal-state owner durably committed one bridge import.
+    pub fn acknowledge_bridge_import(
+        &self,
+        operation_id: impl Into<String>,
+    ) -> Result<(), ServerError> {
+        self.try_send(ActorCommand::AcknowledgeBridgeImport {
+            operation_id: operation_id.into(),
+        })
+    }
+
+    /// Queue an exact OpenSubsonic playback action without exposing upstream authentication.
+    ///
+    /// The returned receipt resolves only after the credential owner has committed the report to
+    /// its bridge store. Channel admission alone is not a durability acknowledgement.
+    pub fn queue_scrobble(
+        &self,
+        event_id: String,
+        kind: OpenSubsonicScrobbleKind,
+        track: crate::scrobble::ScrobbleTrack,
+    ) -> Result<OpenSubsonicScrobbleReceipt, ServerError> {
+        let (reply, receipt) = oneshot::channel();
+        self.try_send(ActorCommand::QueueScrobble {
+            event_id,
+            kind,
+            track,
+            reply,
+        })?;
+        Ok(receipt)
+    }
+
+    /// Confirm that the exact source journal durably entered its non-submitting acknowledgement
+    /// state.
+    ///
+    /// This second receipt closes the cross-store crash window: the bridge retains its replay
+    /// receipt until this command itself has crossed the bridge-store durability boundary.
+    pub fn acknowledge_scrobble_source(
+        &self,
+        event_id: String,
+        track: crate::scrobble::ScrobbleTrack,
+    ) -> Result<OpenSubsonicScrobbleReceipt, ServerError> {
+        let (reply, receipt) = oneshot::channel();
+        self.try_send(ActorCommand::AcknowledgeScrobbleSource {
+            event_id,
+            track,
+            reply,
+        })?;
+        Ok(receipt)
+    }
+
+    /// Return only opaque event IDs for reports requiring an explicit delivery decision.
+    pub async fn scrobble_attention_ids(&self) -> Result<Vec<String>, ServerError> {
+        self.request(|reply| ActorCommand::ScrobbleAttentionIds { reply })
+            .await
+    }
+
+    /// Explicitly retry or mark one ambiguously delivered report as sent.
+    ///
+    /// The command accepts only its opaque event ID; track metadata, server addresses, and
+    /// credentials never cross this API.
+    pub fn resolve_scrobble(
+        &self,
+        event_id: String,
+        resolution: OutboundScrobbleResolution,
+    ) -> Result<OpenSubsonicScrobbleReceipt, ServerError> {
+        let (reply, receipt) = oneshot::channel();
+        self.try_send(ActorCommand::ResolveScrobble {
+            event_id,
+            resolution,
+            reply,
+        })?;
+        Ok(receipt)
+    }
+
     async fn open_stream_response(
         &self,
         item: OpenSubsonicItemRef,
@@ -413,6 +576,12 @@ impl OpenSubsonicHandle {
             .map_err(|_| ServerError::Offline)?;
         response.await.map_err(|_| ServerError::Offline)?
     }
+
+    fn try_send(&self, command: ActorCommand) -> Result<(), ServerError> {
+        self.tx
+            .try_send(command)
+            .map_err(|_| ServerError::TemporarilyUnavailable)
+    }
 }
 
 impl StreamSource for OpenSubsonicHandle {
@@ -431,8 +600,29 @@ pub struct OpenSubsonicRuntime {
     generation: u64,
     handle: OpenSubsonicHandle,
     proxy_handle: OpenSubsonicProxyHandle,
+    bridge_activation: Arc<BridgeActivation>,
     proxy_guard: Option<OpenSubsonicProxyGuard>,
     actor_task: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct BridgeActivation {
+    active: AtomicBool,
+    changed: Notify,
+}
+
+impl BridgeActivation {
+    fn activate(&self) -> bool {
+        if self.active.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.changed.notify_waiters();
+        true
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
 }
 
 impl OpenSubsonicRuntime {
@@ -454,6 +644,9 @@ impl OpenSubsonicRuntime {
     /// out of order, and only the owner lane may decide which result is current. A discarded
     /// candidate therefore never replaces or revokes the active profile.
     pub(crate) fn activate(&self) {
+        if !self.bridge_activation.activate() {
+            return;
+        }
         install_current(
             self.generation,
             self.handle.clone(),
@@ -489,10 +682,20 @@ impl Drop for OpenSubsonicRuntime {
 pub async fn load_actor(
     paths: &OpenSubsonicPaths,
 ) -> Result<Option<OpenSubsonicRuntime>, ServiceError> {
+    load_actor_with_bridge_sink(paths, None).await
+}
+
+/// Load the primary credential owner and deliver durable server observations to its state owner.
+pub async fn load_actor_with_bridge_sink(
+    paths: &OpenSubsonicPaths,
+    sink: Option<OpenSubsonicBridgeSink>,
+) -> Result<Option<OpenSubsonicRuntime>, ServiceError> {
     let Some(store_set) = load_store_set(paths)? else {
         return Ok(None);
     };
-    start_actor(store_set).await.map(Some)
+    start_actor(store_set, BridgeRuntime::writable(paths.clone(), sink))
+        .await
+        .map(Some)
 }
 
 /// Start a credential owner from a coherent snapshot without creating storage, locking for
@@ -503,10 +706,15 @@ pub async fn load_actor_read_only(
     let Some(store_set) = load_store_set_read_only(paths)? else {
         return Ok(None);
     };
-    start_actor(store_set).await.map(Some)
+    start_actor(store_set, BridgeRuntime::read_only())
+        .await
+        .map(Some)
 }
 
-async fn start_actor(store_set: OpenSubsonicStoreSet) -> Result<OpenSubsonicRuntime, ServiceError> {
+async fn start_actor(
+    store_set: OpenSubsonicStoreSet,
+    bridge: BridgeRuntime,
+) -> Result<OpenSubsonicRuntime, ServiceError> {
     let client = OpenSubsonicClient::connect(&store_set.profile).await?;
     let capabilities =
         ServerCapabilities::probe(&client, store_set.private_state.credential()).await?;
@@ -520,7 +728,15 @@ async fn start_actor(store_set: OpenSubsonicStoreSet) -> Result<OpenSubsonicRunt
     };
     let (tx, rx) = mpsc::channel(ACTOR_CAPACITY);
     let handle = OpenSubsonicHandle { tx };
-    let actor_task = tokio::spawn(run_actor(rx, store_set, client, summary));
+    let bridge_activation = Arc::new(BridgeActivation::default());
+    let actor_task = tokio::spawn(run_actor(
+        rx,
+        store_set,
+        client,
+        summary,
+        bridge,
+        bridge_activation.clone(),
+    ));
     let (proxy_handle, proxy_guard) = match super::proxy::start(Arc::new(handle.clone())).await {
         Ok(proxy) => proxy,
         Err(_) => {
@@ -533,6 +749,7 @@ async fn start_actor(store_set: OpenSubsonicStoreSet) -> Result<OpenSubsonicRunt
         generation,
         handle,
         proxy_handle,
+        bridge_activation,
         proxy_guard: Some(proxy_guard),
         actor_task: Some(actor_task),
     })
@@ -556,96 +773,423 @@ pub fn current_proxy_handle() -> Option<OpenSubsonicProxyHandle> {
 
 async fn run_actor(
     mut rx: mpsc::Receiver<ActorCommand>,
-    store_set: OpenSubsonicStoreSet,
+    mut store_set: OpenSubsonicStoreSet,
     client: OpenSubsonicClient,
     summary: OpenSubsonicProfileSummary,
+    bridge: BridgeRuntime,
+    bridge_activation: Arc<BridgeActivation>,
 ) {
-    while let Some(command) = rx.recv().await {
-        let catalog = OpenSubsonicCatalog::new(
-            &client,
-            store_set.private_state.credential(),
-            store_set.profile.backend_id(),
-            store_set.profile.account_scope_id(),
-        );
-        match command {
-            ActorCommand::Search {
-                query,
-                limit,
-                mut reply,
-            } => {
-                let result = tokio::select! {
-                    _ = reply.closed() => continue,
-                    result = catalog.search(&query, limit) => result,
+    let now = tokio::time::Instant::now();
+    let mut retry = tokio::time::interval_at(
+        now + std::time::Duration::from_secs(2),
+        BRIDGE_RETRY_INTERVAL,
+    );
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut native_history = tokio::time::interval_at(
+        now + std::time::Duration::from_secs(5),
+        NATIVE_HISTORY_INTERVAL,
+    );
+    native_history.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut history_jobs = JoinSet::new();
+    let mut bridge_active = false;
+    let mut last_native_history_error = None;
+    let mut native_history_was_truncated = false;
+
+    loop {
+        if let Err(error) = activate_bridge_if_needed(
+            &bridge,
+            &bridge_activation,
+            &mut bridge_active,
+            &mut store_set,
+        ) {
+            tracing::warn!(
+                reason = %error,
+                "music server candidate could not rebase its durable bridge snapshot"
+            );
+            break;
+        }
+        tokio::select! {
+            command = rx.recv() => {
+                let Some(command) = command else {
+                    break;
                 };
-                let _ = reply.send(result);
+                // Activation and the first owner command can become ready on the same scheduler
+                // turn. Rebase in this branch too so that command cannot mutate a stale revision.
+                if let Err(error) = activate_bridge_if_needed(
+                    &bridge,
+                    &bridge_activation,
+                    &mut bridge_active,
+                    &mut store_set,
+                ) {
+                    tracing::warn!(
+                        reason = %error,
+                        "music server candidate could not rebase its durable bridge snapshot"
+                    );
+                    break;
+                }
+                handle_actor_command(
+                    command,
+                    &mut store_set,
+                    &client,
+                    &summary,
+                    &bridge,
+                )
+                .await;
             }
-            ActorCommand::LibraryPage { request, mut reply } => {
-                let result = tokio::select! {
-                    _ = reply.closed() => continue,
-                    result = catalog.library_page(
-                        request.section,
-                        request.offset,
-                        request.limit,
-                    ) => result,
-                };
-                let _ = reply.send(result);
+            _ = bridge_activation.changed.notified(), if !bridge_active => {}
+            _ = retry.tick(), if bridge.is_writable() && bridge_active => {
+                if let Err(error) = bridge.retry_network(&mut store_set, &client).await {
+                    tracing::warn!(reason = %error, "music server bridge will retry");
+                }
             }
-            ActorCommand::LibraryDetail { request, mut reply } => {
-                let operation = async {
-                    match request {
-                        ServerLibraryDetailRequest::Album(id) => catalog.album_detail(&id).await,
-                        ServerLibraryDetailRequest::Artist(id) => catalog.artist_detail(&id).await,
-                        ServerLibraryDetailRequest::Playlist(id) => {
-                            catalog.playlist_detail(&id).await
+            _ = native_history.tick(),
+                if bridge.is_writable() && bridge_active && history_jobs.is_empty() =>
+            {
+                if let Some(worker) = bridge.history_worker() {
+                    history_jobs.spawn(worker.fetch());
+                }
+            }
+            completed = history_jobs.join_next(), if !history_jobs.is_empty() => {
+                let mut retry_soon = false;
+                match completed {
+                    Some(Ok(Ok(result))) => match bridge.apply_history_refresh(
+                        &mut store_set,
+                        result,
+                    ) {
+                        Ok(outcome) => {
+                            let health = native_history_health_after(
+                                store_set.private_state.native_history_enabled(),
+                                outcome.native_error,
+                            );
+                            if let Err(error) =
+                                bridge.set_native_history_health(&mut store_set, health)
+                            {
+                                retry_soon = true;
+                                tracing::warn!(
+                                    reason = %error,
+                                    "detailed music server history status could not be persisted"
+                                );
+                            }
+                            if let Some(error) = outcome.native_error {
+                                retry_soon |= native_history_error_retries_soon(error);
+                                if last_native_history_error != Some(error) {
+                                    tracing::warn!(
+                                        reason = %error,
+                                        "detailed music server history is unavailable; standard history remains active"
+                                    );
+                                }
+                            } else if last_native_history_error.take().is_some() {
+                                tracing::info!(
+                                    "detailed music server history is available again"
+                                );
+                            }
+                            last_native_history_error = outcome.native_error;
+                            if let Some(error) = outcome.standard_error {
+                                retry_soon = true;
+                                tracing::warn!(
+                                    reason = %error,
+                                    "music server play-count history is temporarily unavailable"
+                                );
+                            }
+                            if outcome.native_stale {
+                                retry_soon = true;
+                                tracing::debug!(
+                                    "stale detailed-history result was discarded and will retry"
+                                );
+                            }
+                            if outcome.native_truncated {
+                                retry_soon = true;
+                                if !native_history_was_truncated {
+                                    tracing::warn!(
+                                        "detailed music server history reached its bounded scan limit; continuing from its durable cursor"
+                                    );
+                                }
+                            }
+                            native_history_was_truncated = outcome.native_truncated;
                         }
+                        Err(error) => {
+                            retry_soon = true;
+                            let health = if store_set.private_state.native_history_enabled() {
+                                NativeHistoryHealth::Probing
+                            } else {
+                                NativeHistoryHealth::Off
+                            };
+                            if let Err(status_error) =
+                                bridge.set_native_history_health(&mut store_set, health)
+                            {
+                                tracing::warn!(
+                                    reason = %status_error,
+                                    "detailed music server history status could not be persisted"
+                                );
+                            }
+                            tracing::warn!(
+                                reason = %error,
+                                "music server history could not be persisted"
+                            );
+                        }
+                    },
+                    Some(Ok(Err(error))) => {
+                        retry_soon = true;
+                        if store_set.private_state.native_history_enabled()
+                            && let Err(status_error) = bridge.set_native_history_health(
+                                &mut store_set,
+                                NativeHistoryHealth::Probing,
+                            )
+                        {
+                            tracing::warn!(
+                                reason = %status_error,
+                                "detailed music server history status could not be persisted"
+                            );
+                        }
+                        tracing::warn!(
+                            reason = %error,
+                            "music server history worker is temporarily unavailable"
+                        );
                     }
-                };
-                let result = tokio::select! {
-                    _ = reply.closed() => continue,
-                    result = operation => result,
-                };
-                let _ = reply.send(result);
-            }
-            ActorCommand::CoverArt {
-                item,
-                id,
-                mut reply,
-            } => {
-                let operation = async {
-                    match client.validate_item_scope(&item) {
-                        Ok(()) => catalog.cover_art(&id).await,
-                        Err(error) => Err(error),
+                    Some(Err(error)) => {
+                        retry_soon = true;
+                        if store_set.private_state.native_history_enabled()
+                            && let Err(status_error) = bridge.set_native_history_health(
+                                &mut store_set,
+                                NativeHistoryHealth::Probing,
+                            )
+                        {
+                            tracing::warn!(
+                                reason = %status_error,
+                                "detailed music server history status could not be persisted"
+                            );
+                        }
+                        tracing::warn!(
+                            cancelled = error.is_cancelled(),
+                            "music server history worker stopped unexpectedly"
+                        );
                     }
-                };
-                let result = tokio::select! {
-                    _ = reply.closed() => continue,
-                    result = operation => result,
-                };
-                let _ = reply.send(result);
-            }
-            ActorCommand::ProfileSummary { reply } => {
-                let _ = reply.send(Ok(summary.clone()));
-            }
-            ActorCommand::OpenStream {
-                item,
-                request,
-                mut reply,
-            } => {
-                let operation = async {
-                    let origin = client.proxy_origin()?;
-                    let response = client
-                        .open_stream(store_set.private_state.credential(), &item, request)
-                        .await?;
-                    Ok(UpstreamStream::new(response, origin))
-                };
-                let result = tokio::select! {
-                    _ = reply.closed() => continue,
-                    result = operation => result,
-                };
-                let _ = reply.send(result);
+                    None => {}
+                }
+                if retry_soon {
+                    native_history.reset_after(HISTORY_RETRY_INTERVAL);
+                }
             }
         }
     }
+}
+
+fn activate_bridge_if_needed(
+    bridge: &BridgeRuntime,
+    activation: &BridgeActivation,
+    bridge_active: &mut bool,
+    store_set: &mut OpenSubsonicStoreSet,
+) -> Result<(), ServiceError> {
+    if !*bridge_active && activation.is_active() {
+        bridge.refresh_snapshot_for_activation(store_set)?;
+        *bridge_active = true;
+        bridge.emit_pending(store_set);
+    }
+    Ok(())
+}
+
+fn native_history_error_retries_soon(error: super::native_history::NativeHistoryError) -> bool {
+    matches!(
+        error,
+        super::native_history::NativeHistoryError::Offline
+            | super::native_history::NativeHistoryError::TemporarilyUnavailable
+    )
+}
+
+fn native_history_health_after(
+    enabled: bool,
+    error: Option<super::native_history::NativeHistoryError>,
+) -> NativeHistoryHealth {
+    use super::native_history::NativeHistoryError;
+
+    if !enabled {
+        return NativeHistoryHealth::Off;
+    }
+    match error {
+        None => NativeHistoryHealth::Detailed,
+        Some(
+            NativeHistoryError::InvalidCredential
+            | NativeHistoryError::AuthenticationRequired
+            | NativeHistoryError::PermissionDenied,
+        ) => NativeHistoryHealth::UpdatePassword,
+        Some(NativeHistoryError::UnsupportedFeature) => NativeHistoryHealth::PlayCountsOnly,
+        Some(_) => NativeHistoryHealth::Probing,
+    }
+}
+
+async fn handle_actor_command(
+    command: ActorCommand,
+    store_set: &mut OpenSubsonicStoreSet,
+    client: &OpenSubsonicClient,
+    summary: &OpenSubsonicProfileSummary,
+    bridge: &BridgeRuntime,
+) {
+    match command {
+        ActorCommand::Search {
+            query,
+            limit,
+            mut reply,
+        } => {
+            let catalog = catalog(store_set, client);
+            let result = tokio::select! {
+                _ = reply.closed() => return,
+                result = catalog.search(&query, limit) => result,
+            };
+            if let Ok(songs) = &result
+                && let Err(error) = bridge.observe_songs(store_set, songs)
+            {
+                tracing::warn!(reason = %error, "music server observations were not persisted");
+            }
+            let _ = reply.send(result);
+        }
+        ActorCommand::LibraryPage { request, mut reply } => {
+            let catalog = catalog(store_set, client);
+            let result = tokio::select! {
+                _ = reply.closed() => return,
+                result = catalog.library_page(
+                    request.section,
+                    request.offset,
+                    request.limit,
+                ) => result,
+            };
+            if let Ok(page) = &result
+                && let Err(error) = bridge.observe_page(store_set, page)
+            {
+                tracing::warn!(reason = %error, "music server observations were not persisted");
+            }
+            let _ = reply.send(result);
+        }
+        ActorCommand::LibraryDetail { request, mut reply } => {
+            let catalog = catalog(store_set, client);
+            let operation = async {
+                match request {
+                    ServerLibraryDetailRequest::Album(id) => catalog.album_detail(&id).await,
+                    ServerLibraryDetailRequest::Artist(id) => catalog.artist_detail(&id).await,
+                    ServerLibraryDetailRequest::Playlist(id) => catalog.playlist_detail(&id).await,
+                }
+            };
+            let result = tokio::select! {
+                _ = reply.closed() => return,
+                result = operation => result,
+            };
+            if let Ok(detail) = &result
+                && let Err(error) = bridge.observe_detail(store_set, detail)
+            {
+                tracing::warn!(reason = %error, "music server observations were not persisted");
+            }
+            let _ = reply.send(result);
+        }
+        ActorCommand::CoverArt {
+            item,
+            id,
+            mut reply,
+        } => {
+            let catalog = catalog(store_set, client);
+            let operation = async {
+                match client.validate_item_scope(&item) {
+                    Ok(()) => catalog.cover_art(&id).await,
+                    Err(error) => Err(error),
+                }
+            };
+            let result = tokio::select! {
+                _ = reply.closed() => return,
+                result = operation => result,
+            };
+            let _ = reply.send(result);
+        }
+        ActorCommand::ProfileSummary { reply } => {
+            let _ = reply.send(Ok(summary.clone()));
+        }
+        ActorCommand::OpenStream {
+            item,
+            request,
+            mut reply,
+        } => {
+            let operation = async {
+                let origin = client.proxy_origin()?;
+                let response = client
+                    .open_stream(store_set.private_state.credential(), &item, request)
+                    .await?;
+                Ok(UpstreamStream::new(response, origin))
+            };
+            let result = tokio::select! {
+                _ = reply.closed() => return,
+                result = operation => result,
+            };
+            let _ = reply.send(result);
+        }
+        ActorCommand::ReconcileRatings { winners, reply } => {
+            let result = bridge.reconcile_ratings(store_set, winners);
+            let failed = result.err();
+            let _ = reply.send(failed.map_or(Ok(()), Err));
+            if let Some(error) = failed {
+                tracing::warn!(reason = %error, "music server ratings will retry");
+            }
+        }
+        ActorCommand::AcknowledgeBridgeImport { operation_id } => {
+            if let Err(error) = bridge.acknowledge_import(store_set, &operation_id) {
+                tracing::warn!(reason = %error, "music server import acknowledgement will retry");
+            }
+        }
+        ActorCommand::QueueScrobble {
+            event_id,
+            kind,
+            track,
+            reply,
+        } => {
+            let result = bridge.queue_scrobble(store_set, &event_id, kind, track);
+            let failed = result.err();
+            let _ = reply.send(failed.map_or(Ok(()), Err));
+            if let Some(error) = failed {
+                tracing::warn!(reason = %error, "music server playback report will retry");
+            }
+        }
+        ActorCommand::AcknowledgeScrobbleSource {
+            event_id,
+            track,
+            reply,
+        } => {
+            let result = bridge.acknowledge_scrobble_source(store_set, &event_id, track);
+            let failed = result.err();
+            let _ = reply.send(failed.map_or(Ok(()), Err));
+            if let Some(error) = failed {
+                tracing::warn!(
+                    reason = %error,
+                    "music server source acknowledgement will retry"
+                );
+            }
+        }
+        ActorCommand::ScrobbleAttentionIds { reply } => {
+            let _ = reply.send(Ok(bridge.outbound_scrobble_attention_ids(store_set)));
+        }
+        ActorCommand::ResolveScrobble {
+            event_id,
+            resolution,
+            reply,
+        } => {
+            let result = bridge.resolve_outbound_scrobble(store_set, &event_id, resolution);
+            let failed = result.err();
+            let _ = reply.send(failed.map_or(Ok(()), Err));
+            if let Some(error) = failed {
+                tracing::warn!(
+                    reason = %error,
+                    "music server playback report decision was not persisted"
+                );
+            }
+        }
+    }
+}
+
+fn catalog<'a>(
+    store_set: &'a OpenSubsonicStoreSet,
+    client: &'a OpenSubsonicClient,
+) -> OpenSubsonicCatalog<'a> {
+    OpenSubsonicCatalog::new(
+        client,
+        store_set.private_state.credential(),
+        store_set.profile.backend_id(),
+        store_set.profile.account_scope_id(),
+    )
 }
 
 enum ActorCommand {
@@ -675,7 +1219,39 @@ enum ActorCommand {
         request: StreamRequest,
         reply: oneshot::Sender<Result<UpstreamStream, ServerError>>,
     },
+    ReconcileRatings {
+        winners: Vec<OpenSubsonicRatingWinner>,
+        reply: oneshot::Sender<Result<(), ServiceError>>,
+    },
+    AcknowledgeBridgeImport {
+        operation_id: String,
+    },
+    QueueScrobble {
+        event_id: String,
+        kind: OpenSubsonicScrobbleKind,
+        track: crate::scrobble::ScrobbleTrack,
+        reply: oneshot::Sender<Result<(), ServiceError>>,
+    },
+    AcknowledgeScrobbleSource {
+        event_id: String,
+        track: crate::scrobble::ScrobbleTrack,
+        reply: oneshot::Sender<Result<(), ServiceError>>,
+    },
+    ScrobbleAttentionIds {
+        reply: oneshot::Sender<Result<Vec<String>, ServerError>>,
+    },
+    ResolveScrobble {
+        event_id: String,
+        resolution: OutboundScrobbleResolution,
+        reply: oneshot::Sender<Result<(), ServiceError>>,
+    },
 }
+
+/// Correlated proof that an outbound playback report crossed the bridge-store fsync boundary.
+pub type OpenSubsonicScrobbleReceipt = oneshot::Receiver<Result<(), ServiceError>>;
+
+/// Correlated proof that a rating projection crossed the bridge-store fsync boundary.
+pub type OpenSubsonicRatingReceipt = oneshot::Receiver<Result<(), ServiceError>>;
 
 fn proxy_error(error: ServerError) -> ProxyUpstreamError {
     let reason = match error {
@@ -755,248 +1331,4 @@ fn clear_current_generation(generation: u64) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use age::secrecy::SecretString;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    use super::*;
-
-    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn status_never_contains_origin_or_credentials() {
-        let status = OpenSubsonicStatus {
-            kind: OpenSubsonicStatusKind::UpToDate,
-            display_name: Some("Server".to_owned()),
-            backend_id: Some(BackendId::new("backend").unwrap()),
-            account_scope_id: Some(AccountScopeId::new("account").unwrap()),
-            credential_kind: Some(CredentialKind::ApiKey),
-            uses_lan_http: false,
-            uses_custom_ca: false,
-        };
-        let rendered = format!("{status:?}");
-        assert!(!rendered.contains("https://"));
-        assert!(!rendered.contains("sentinel-secret"));
-    }
-
-    #[test]
-    fn confirmed_remove_resets_corrupt_partial_and_oversized_stores() {
-        for (case, bytes) in [
-            ("corrupt", b"not-json".to_vec()),
-            (
-                "oversized",
-                vec![b'x'; crate::open_subsonic::profile::MAX_PROFILE_BYTES as usize + 1],
-            ),
-        ] {
-            let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "yututui-open-subsonic-reset-{case}-{}-{id}",
-                std::process::id()
-            ));
-            let paths = OpenSubsonicPaths::for_data_root(root.clone());
-            crate::util::safe_fs::write_owner_only_atomic(paths.profile(), &bytes).unwrap();
-
-            assert_eq!(
-                read_status(&paths).unwrap().kind,
-                OpenSubsonicStatusKind::NeedsAttention
-            );
-            assert_eq!(
-                remove_profile(&paths).unwrap().kind,
-                OpenSubsonicStatusKind::Off
-            );
-            assert_eq!(
-                read_status(&paths).unwrap().kind,
-                OpenSubsonicStatusKind::Off
-            );
-            let _ = std::fs::remove_dir_all(root);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn confirmed_remove_rejects_a_symlink_without_touching_its_target() {
-        use std::os::unix::fs::symlink;
-
-        let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "yututui-open-subsonic-reset-link-{}-{id}",
-            std::process::id()
-        ));
-        let paths = OpenSubsonicPaths::for_data_root(root.clone());
-        crate::util::safe_fs::ensure_private_dir(paths.root()).unwrap();
-        let external = root.join("outside-secret");
-        std::fs::write(&external, b"must-stay").unwrap();
-        symlink(&external, paths.profile()).unwrap();
-
-        assert!(remove_profile(&paths).is_err());
-        assert_eq!(std::fs::read(&external).unwrap(), b"must-stay");
-        assert!(paths.profile().is_symlink());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn setup_input_is_move_only_and_accepts_secret_credential() {
-        let input = SetupInput::new(
-            "Server",
-            "https://music.example.test/",
-            false,
-            None,
-            ServerCredential::api_key(SecretString::from("secret".to_owned())).unwrap(),
-            SetupIdentityIntent::Create,
-        );
-        assert_eq!(input.identity_intent, SetupIdentityIntent::Create);
-    }
-
-    #[tokio::test]
-    async fn tested_setup_commits_all_stores_and_remove_is_local_only() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move {
-            let replies = [
-                r#"{"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}}"#,
-                r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
-            ];
-            for body in replies.into_iter().cycle().take(12) {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut byte = [0_u8; 1];
-                while request.len() < 16 * 1024 {
-                    if stream.read(&mut byte).await.unwrap() == 0 {
-                        break;
-                    }
-                    request.push(byte[0]);
-                    if request.ends_with(b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}"
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-            }
-        });
-        let id = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "yututui-open-subsonic-service-{}-{id}",
-            std::process::id()
-        ));
-        crate::util::safe_fs::ensure_private_dir(&root).unwrap();
-        let paths = OpenSubsonicPaths::for_data_root(root.clone());
-        let input = SetupInput::new(
-            "Test server",
-            format!("http://127.0.0.1:{port}/"),
-            true,
-            None,
-            ServerCredential::api_key(SecretString::from("secret".to_owned())).unwrap(),
-            SetupIdentityIntent::Create,
-        );
-        let prepared = test_and_prepare_setup(&paths, input).await.unwrap();
-        let status = commit_setup(&paths, prepared).unwrap();
-        assert_eq!(status.kind, OpenSubsonicStatusKind::UpToDate);
-        let original_backend = status.backend_id.clone().unwrap();
-        let original_account = status.account_scope_id.clone().unwrap();
-        assert_eq!(read_status(&paths).unwrap().kind, status.kind);
-        assert_eq!(
-            test_connection(&paths).await.unwrap().kind,
-            OpenSubsonicStatusKind::UpToDate
-        );
-        let old_runtime = load_actor(&paths).await.unwrap().unwrap();
-        let old_handle = old_runtime.handle();
-        let old_provider = old_runtime.route_provider();
-        old_runtime.activate();
-        let old_target = crate::playback_target::CredentialedPlaybackRef::OpenSubsonic {
-            backend_id: original_backend.as_str().to_owned(),
-            account_scope_id: original_account.as_str().to_owned(),
-            item_id: "old-route-item".to_owned(),
-        };
-        let old_route = old_provider
-            .open_route(old_target.clone(), 1)
-            .await
-            .unwrap();
-        let (old_route_url, _old_route_lease) = old_route.into_parts();
-        let old_route_url = old_route_url.into_string();
-
-        let update = SetupInput::new(
-            "Renamed server",
-            format!("http://127.0.0.1:{port}/"),
-            true,
-            None,
-            ServerCredential::api_key(SecretString::from("updated-secret".to_owned())).unwrap(),
-            SetupIdentityIntent::UpdateSameServerAndAccount,
-        );
-        crate::open_subsonic::transaction::fail_after_commit_marker_once_for_test();
-        assert_eq!(
-            commit_setup(
-                &paths,
-                test_and_prepare_setup(&paths, update).await.unwrap(),
-            ),
-            Err(ServiceError::Store(StoreError::StorageUnavailable))
-        );
-        assert_eq!(
-            old_handle.profile_summary().await.unwrap_err(),
-            ServerError::Offline
-        );
-        assert_eq!(
-            old_provider
-                .open_route(old_target, 2)
-                .await
-                .unwrap_err()
-                .reason(),
-            "route_provider_unavailable"
-        );
-        assert_eq!(
-            reqwest::get(old_route_url).await.unwrap().status(),
-            reqwest::StatusCode::NOT_FOUND
-        );
-
-        // The next owner load rolls the committed candidate forward, but never revives the old
-        // handle or route.
-        load_store_set(&paths).unwrap().unwrap();
-        let updated = read_status(&paths).unwrap();
-        assert_eq!(updated.kind, OpenSubsonicStatusKind::UpToDate);
-        assert_eq!(updated.display_name.as_deref(), Some("Renamed server"));
-        assert_eq!(updated.backend_id.as_ref(), Some(&original_backend));
-        assert_eq!(updated.account_scope_id.as_ref(), Some(&original_account));
-        assert_eq!(
-            old_handle.profile_summary().await.unwrap_err(),
-            ServerError::Offline
-        );
-        drop(old_runtime);
-
-        let replacement = SetupInput::new(
-            "Replacement server",
-            format!("http://127.0.0.1:{port}/"),
-            true,
-            None,
-            ServerCredential::api_key(SecretString::from("replacement-secret".to_owned())).unwrap(),
-            SetupIdentityIntent::ReplaceServerOrAccount,
-        );
-        let replaced = commit_setup(
-            &paths,
-            test_and_prepare_setup(&paths, replacement).await.unwrap(),
-        )
-        .unwrap();
-        assert_ne!(replaced.backend_id.as_ref(), Some(&original_backend));
-        assert_ne!(replaced.account_scope_id.as_ref(), Some(&original_account));
-        let removal_runtime = load_actor(&paths).await.unwrap().unwrap();
-        let removal_handle = removal_runtime.handle();
-        removal_runtime.activate();
-        assert_eq!(
-            remove_profile(&paths).unwrap().kind,
-            OpenSubsonicStatusKind::Off
-        );
-        assert_eq!(
-            removal_handle.profile_summary().await.unwrap_err(),
-            ServerError::Offline
-        );
-        drop(removal_runtime);
-        assert_eq!(
-            read_status(&paths).unwrap().kind,
-            OpenSubsonicStatusKind::Off
-        );
-        server.await.unwrap();
-        let _ = std::fs::remove_dir_all(root);
-    }
-}
+mod tests;

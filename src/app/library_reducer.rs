@@ -477,19 +477,11 @@ impl App {
             // ambiguous. Manage tracks from their own tab instead.
             LibraryTab::All => Vec::new(),
             LibraryTab::Favorites => {
-                for song in targets {
-                    if let Some(pos) = self
-                        .library
-                        .favorites
-                        .iter()
-                        .position(|s| s.video_id == song.video_id)
-                    {
-                        self.library_mut().remove_favorite_at(pos);
-                    }
+                let commands = self.neutralize_song_ratings(targets);
+                if !commands.is_empty() {
+                    self.clamp_library_selection();
                 }
-                self.clamp_library_selection();
-                self.dirty = true;
-                vec![Cmd::Persist(PersistCmd::Library)]
+                commands
             }
             LibraryTab::History => {
                 for song in targets {
@@ -659,3 +651,47 @@ pub(in crate::app) struct LibraryRowsCache {
 /// (library_rev, downloaded_rev, favorites len, history len, downloaded len) — the All-tab
 /// count reads nothing else.
 pub(in crate::app) type AllCountKey = (u64, u64, usize, usize, usize);
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn favorites_delete_neutralizes_rating_and_persists_one_personal_state_snapshot() {
+        let song = Song::remote("favorite", "Favorite", "Artist", "3:00");
+        let artist_key = crate::signals::normalize_artist(&song.artist);
+        let mut app = App::new(50);
+        crate::rating::set(
+            Arc::make_mut(&mut app.library),
+            Arc::make_mut(&mut app.signals),
+            &song,
+            crate::personal_state::Rating::Liked,
+            1,
+        );
+        app.mode = Mode::Library;
+        app.library_ui.tab = LibraryTab::Favorites;
+
+        let commands = app.library_delete_rows(0, 0);
+
+        assert_eq!(
+            crate::rating::current(&app.library, &app.signals, &song.video_id),
+            crate::personal_state::Rating::Neutral
+        );
+        assert_eq!(app.signals.artist_weight(&artist_key), 0.0);
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(command, Cmd::Persist(PersistCmd::Library)))
+                .count(),
+            1
+        );
+        assert!(
+            commands
+                .iter()
+                .all(|command| !matches!(command, Cmd::Persist(PersistCmd::Signals))),
+            "the Library marker persists the whole personal-state snapshot atomically"
+        );
+    }
+}

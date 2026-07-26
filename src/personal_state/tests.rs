@@ -7,6 +7,8 @@ use base64::Engine;
 use super::transaction::{CommitPoint, TargetFile};
 use super::*;
 
+mod external_observations;
+
 fn track(id: &str) -> PortableTrack {
     PortableTrack {
         key: PortableTrackKey::Catalog {
@@ -14,6 +16,21 @@ fn track(id: &str) -> PortableTrack {
             exact_catalog_id: id.to_owned(),
         },
         title: format!("title-{id}"),
+        artist: "artist".to_owned(),
+        album: None,
+        duration_secs: Some(180),
+        isrc: None,
+    }
+}
+
+fn open_subsonic_track(id: &str) -> PortableTrack {
+    PortableTrack {
+        key: PortableTrackKey::OpenSubsonic {
+            backend_id: "backend-a".to_owned(),
+            account_scope_id: "account-a".to_owned(),
+            item_id: id.to_owned(),
+        },
+        title: format!("server-{id}"),
         artist: "artist".to_owned(),
         album: None,
         duration_secs: Some(180),
@@ -530,6 +547,120 @@ fn explicit_device_bindings_produce_distinct_dots() {
 }
 
 #[test]
+fn external_operation_identifier_conflicts_fail_closed() {
+    let device = DeviceId::new("device-a").unwrap();
+    let state = state_with_keyed_devices(&[device.as_str()]);
+    let first = append_external_operation_as(
+        &state,
+        &device,
+        "open-subsonic-observation-1".to_owned(),
+        OperationOrigin::OpenSubsonic {
+            backend_id: "backend-a".to_owned(),
+        },
+        Operation::SetRating {
+            track: open_subsonic_track("server-track"),
+            rating: Rating::Liked,
+        },
+        100,
+    )
+    .unwrap();
+
+    assert_eq!(
+        append_external_operation_as(
+            &first,
+            &device,
+            "open-subsonic-observation-1".to_owned(),
+            OperationOrigin::OpenSubsonic {
+                backend_id: "backend-a".to_owned(),
+            },
+            Operation::SetRating {
+                track: open_subsonic_track("server-track"),
+                rating: Rating::Disliked,
+            },
+            100,
+        ),
+        Err(PersonalStateError::ConflictingOperationId)
+    );
+    assert!(
+        append_external_operation_as(
+            &first,
+            &device,
+            "local-is-not-external".to_owned(),
+            OperationOrigin::Local,
+            Operation::SetRating {
+                track: open_subsonic_track("server-track"),
+                rating: Rating::Neutral,
+            },
+            100,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn open_subsonic_winners_preserve_exact_source_operation_and_origin() {
+    let device = DeviceId::new("device-a").unwrap();
+    let state = state_with_keyed_devices(&[device.as_str()]);
+    let server_track = PortableTrack {
+        key: PortableTrackKey::OpenSubsonic {
+            backend_id: "backend-a".to_owned(),
+            account_scope_id: "account-a".to_owned(),
+            item_id: "item-a".to_owned(),
+        },
+        title: "Server track".to_owned(),
+        artist: "Artist".to_owned(),
+        album: None,
+        duration_secs: Some(180),
+        isrc: None,
+    };
+    let liked = append_operation_as(
+        &state,
+        &device,
+        Operation::SetRating {
+            track: server_track.clone(),
+            rating: Rating::Liked,
+        },
+        10,
+    )
+    .unwrap();
+    let winner = open_subsonic_rating_winners(&liked).unwrap().pop().unwrap();
+    assert_eq!(winner.rating, Rating::Liked);
+    assert_eq!(winner.origin, OperationOrigin::Local);
+    assert_eq!(winner.operation_id, "device-a:1");
+    assert_eq!(winner.track, server_track);
+
+    let neutral = append_external_operation_as(
+        &liked,
+        &device,
+        "server-rating-observation-1".to_owned(),
+        OperationOrigin::OpenSubsonic {
+            backend_id: "backend-a".to_owned(),
+        },
+        Operation::SetRating {
+            track: winner.track,
+            rating: Rating::Neutral,
+        },
+        11,
+    )
+    .unwrap();
+    let winner = open_subsonic_rating_winners(&neutral)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(winner.rating, Rating::Neutral);
+    assert_eq!(
+        winner.origin,
+        OperationOrigin::OpenSubsonic {
+            backend_id: "backend-a".to_owned()
+        }
+    );
+    assert_eq!(
+        winner.operation_id,
+        external_operation_envelope_id(&device, "server-rating-observation-1").unwrap()
+    );
+}
+
+#[test]
 fn local_device_binding_rejects_missing_revoked_unkeyed_and_ambiguous_states() {
     let empty_library = crate::library::Library::default();
     let empty_playlists = crate::playlists::Playlists::default();
@@ -660,6 +791,63 @@ fn legacy_artist_affinity_is_preserved_once_without_migration_reweighting() {
         project(&reconciled).unwrap().legacy.signals.artist_affinity["artist"],
         0.7
     );
+}
+
+#[test]
+fn rating_reconciliation_retains_metadata_and_affinity_across_projection_round_trips() {
+    let song = crate::api::Song::remote("track", "Track", "Artist", "3:00");
+    let artist_key = crate::signals::normalize_artist(&song.artist);
+    let empty_library = crate::library::Library::default();
+    let empty_playlists = crate::playlists::Playlists::default();
+    let empty_signals = crate::signals::Signals::default();
+    let empty_station = crate::station::StationStore::default();
+    let baseline = legacy_state(
+        &empty_library,
+        &empty_playlists,
+        &empty_signals,
+        &empty_station,
+    )
+    .unwrap();
+
+    let mut library = empty_library;
+    let mut signals = empty_signals;
+    crate::rating::set(&mut library, &mut signals, &song, Rating::Liked, 1);
+    let liked = reconcile_runtime(
+        &baseline,
+        &library,
+        &empty_playlists,
+        &signals,
+        &empty_station,
+    )
+    .unwrap();
+    let liked = PersonalStateCommit::prepare(liked).unwrap();
+    let (mut library, playlists, mut signals, station) = liked.runtime_stores();
+    assert_eq!(signals.artist_weight(&artist_key), 0.30);
+
+    crate::rating::set(&mut library, &mut signals, &song, Rating::Disliked, 2);
+    assert_eq!(signals.artist_weight(&artist_key), -0.60);
+    let disliked =
+        reconcile_runtime(liked.state(), &library, &playlists, &signals, &station).unwrap();
+    let disliked = PersonalStateCommit::prepare(disliked).unwrap();
+    let (mut library, playlists, mut signals, station) = disliked.runtime_stores();
+    assert_eq!(signals.artist_weight(&artist_key), -0.60);
+    assert!(signals.is_disliked(&song.video_id));
+
+    crate::rating::set(&mut library, &mut signals, &song, Rating::Neutral, 3);
+    let neutral =
+        reconcile_runtime(disliked.state(), &library, &playlists, &signals, &station).unwrap();
+    let neutral = PersonalStateCommit::prepare(neutral).unwrap();
+    let (mut library, playlists, mut signals, station) = neutral.runtime_stores();
+    assert!(signals.artist_weight(&artist_key).abs() < f32::EPSILON);
+    assert!(!signals.is_disliked(&song.video_id));
+
+    crate::rating::set(&mut library, &mut signals, &song, Rating::Disliked, 4);
+    let disliked_after_neutral =
+        reconcile_runtime(neutral.state(), &library, &playlists, &signals, &station).unwrap();
+    let disliked_after_neutral = PersonalStateCommit::prepare(disliked_after_neutral).unwrap();
+    let (_, _, signals, _) = disliked_after_neutral.runtime_stores();
+    assert_eq!(signals.artist_weight(&artist_key), -0.60);
+    assert!(signals.is_disliked(&song.video_id));
 }
 
 #[test]

@@ -76,6 +76,8 @@ impl Observation {
 pub struct ObservedTrack {
     /// Stable identity (the queue `video_id`).
     pub key: String,
+    /// Exact server item for OpenSubsonic-origin playback. No credential or URL is carried.
+    pub open_subsonic_item: Option<crate::open_subsonic::OpenSubsonicItemRef>,
     pub title: String,
     pub artist: String,
     pub album: Option<String>,
@@ -142,6 +144,7 @@ impl Listen {
     fn scrobble_track(&self) -> ScrobbleTrack {
         ScrobbleTrack {
             key: self.track.key.clone(),
+            open_subsonic_item: self.track.open_subsonic_item.clone(),
             artist: self.track.artist.clone(),
             title: self.track.title.clone(),
             album: self.track.album.clone(),
@@ -315,6 +318,7 @@ mod tests {
     fn track(key: &str, duration: Option<f64>) -> ObservedTrack {
         ObservedTrack {
             key: key.to_owned(),
+            open_subsonic_item: None,
             title: format!("title-{key}"),
             artist: "artist".to_owned(),
             album: Some("album".to_owned()),
@@ -406,6 +410,38 @@ mod tests {
         assert_eq!(s[0].started_unix, started, "timestamp = listen START");
         assert_eq!(s[0].duration_secs, Some(200));
         assert_eq!(now_playings(&actions), 1);
+    }
+
+    #[test]
+    fn exact_server_item_survives_now_playing_and_submission_thresholds() {
+        let mut sim = Sim::new();
+        let item = crate::open_subsonic::OpenSubsonicItemRef::new(
+            crate::open_subsonic::BackendId::new("server-backend").unwrap(),
+            crate::open_subsonic::AccountScopeId::new("account-scope").unwrap(),
+            crate::open_subsonic::ItemId::new("song-42").unwrap(),
+        );
+        let mut observed = track("server-song", Some(40.0));
+        observed.open_subsonic_item = Some(item.clone());
+
+        let actions = sim.play(&observed, 30, 0.0);
+
+        let mut saw_now_playing = false;
+        let mut saw_submission = false;
+        for action in actions {
+            match action {
+                ScrobbleAction::NowPlaying(track) => {
+                    saw_now_playing = true;
+                    assert_eq!(track.open_subsonic_item, Some(item.clone()));
+                }
+                ScrobbleAction::Scrobble(track) => {
+                    saw_submission = true;
+                    assert_eq!(track.open_subsonic_item, Some(item.clone()));
+                }
+                ScrobbleAction::Love { .. } => {}
+            }
+        }
+        assert!(saw_now_playing);
+        assert!(saw_submission);
     }
 
     #[test]

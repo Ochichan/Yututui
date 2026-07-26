@@ -163,7 +163,14 @@ pub struct ServerSong {
     pub content_type: Option<String>,
     pub suffix: Option<String>,
     pub starred: bool,
-    pub user_rating: Option<u8>,
+    /// Exact server value. Values outside `0..=5` remain available to the bridge shadow so a
+    /// malformed/mobile-written value is never silently normalized.
+    pub user_rating: Option<i64>,
+    /// Aggregate fallback evidence from the standard Child response.
+    pub play_count: Option<u64>,
+    /// Sanitized RFC3339-ish server value. Parsing is deferred to the history bridge; malformed
+    /// values cannot make an otherwise playable catalog row disappear.
+    pub played_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +226,10 @@ pub enum ServerLibrarySection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "library rows stay inline because pages are bounded and consumers borrow every variant"
+)]
 pub enum ServerLibraryRow {
     Song(ServerSong),
     Album(ServerAlbum),

@@ -375,9 +375,7 @@ impl App {
                         if song.youtube_playlist_id().is_some() {
                             return self.playlist_row_hint();
                         }
-                        self.library_mut().toggle_favorite(&song);
-                        self.dirty = true;
-                        return vec![Cmd::Persist(PersistCmd::Library)];
+                        return self.toggle_song_favorite_rating(&song);
                     }
                     Vec::new()
                 }

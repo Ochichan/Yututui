@@ -505,11 +505,23 @@ impl DaemonEngine {
                 DaemonOutcome::FullPlay => 0.05 * completion.max(0.5),
                 DaemonOutcome::Skip => -0.10 * (1.0 - completion).max(0.25),
                 DaemonOutcome::QuickSkip => -0.20 * (1.0 - completion).max(0.5),
+                DaemonOutcome::Like => crate::rating::SessionRatingSignal::Like.affinity_delta(),
+                DaemonOutcome::Dislike => {
+                    crate::rating::SessionRatingSignal::Dislike.affinity_delta()
+                }
             };
             let entry = out.entry(event.artist_key.clone()).or_insert(0.0);
             *entry = (*entry + delta).clamp(-0.50, 0.35);
         }
         out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recommendation_station_state_for_test(
+        &self,
+        seed_video_id: &str,
+    ) -> StationState {
+        self.build_station_state(seed_video_id)
     }
 
     pub(super) fn streaming_skip_streak(&self) -> usize {

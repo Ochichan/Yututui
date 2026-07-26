@@ -247,17 +247,20 @@ impl Signals {
         if artist_key.is_empty() {
             return;
         }
-        let w = self
-            .artist_weight
-            .entry(artist_key.to_owned())
-            .or_insert(0.0);
-        *w = (*w + delta).clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
+        let next = (self.artist_weight.get(artist_key).copied().unwrap_or(0.0) + delta)
+            .clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
+        if next == 0.0 {
+            self.artist_weight.remove(artist_key);
+        } else {
+            self.artist_weight.insert(artist_key.to_owned(), next);
+        }
     }
 
     /// Bound every growable collection so memory stays flat over long-lived (or bloated-on-load)
     /// installs: `play_log`, `artist_weight`, and per-track signals (evicting non-disliked,
     /// oldest tracks first — dislikes are a deliberate, lasting signal).
     fn enforce_caps(&mut self) {
+        self.artist_weight.retain(|_, weight| *weight != 0.0);
         // play_log is bounded on runtime insert; bound it on load too, since a loaded file could
         // arrive over the cap (external edit / sync / corruption).
         while self.play_log.len() > PLAY_LOG_MAX {
@@ -367,6 +370,7 @@ impl Signals {
             artist_affinity: self
                 .artist_weight
                 .iter()
+                .filter(|(_, weight)| **weight != 0.0)
                 .map(|(key, weight)| (key.clone(), *weight))
                 .collect(),
             play_log,
@@ -399,7 +403,7 @@ impl Signals {
             artist_weight: projection
                 .artist_affinity
                 .into_iter()
-                .filter(|(_, weight)| weight.is_finite())
+                .filter(|(_, weight)| weight.is_finite() && *weight != 0.0)
                 .map(|(key, weight)| (key, weight.clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX)))
                 .collect(),
             play_log: projection
@@ -567,8 +571,8 @@ mod tests {
         assert!(after_dislike < 0.0);
         assert!(!s.toggle_dislike("a", "x", 11));
         assert!(!s.is_disliked("a"));
-        // Undo restores the affinity to ~zero.
-        assert!((*s.artist_weight.get("x").unwrap()).abs() < f32::EPSILON);
+        // Undo restores the affinity to the canonical absent-zero representation.
+        assert!(!s.artist_weight.contains_key("x"));
     }
 
     #[test]

@@ -35,6 +35,7 @@ mod gui_search;
 mod gui_settings;
 mod keymap_theme;
 mod media_session;
+mod open_subsonic_bridge;
 mod open_subsonic_runtime;
 mod persistence_gate;
 mod personal_export;
@@ -51,7 +52,9 @@ mod engine_session;
 
 pub use delivery::EngineError;
 use delivery::{record_player_delivery, require_player_delivery};
-use engine_session::data_dir;
+#[cfg(test)]
+use engine_session::SESSION_EVENTS_CAP;
+use engine_session::{DaemonOutcome, DaemonSessionEvent, data_dir};
 pub(super) use gui_search::RequesterKey;
 use gui_search::{GuiSearchAdmission, GuiSearchIndex};
 #[cfg(test)]
@@ -69,8 +72,6 @@ use crate::playback_policy::{
 use crate::streaming::CandidateSource;
 
 mod media_projection;
-
-const SESSION_EVENTS_CAP: usize = 20;
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -133,6 +134,9 @@ pub struct DaemonEngine {
     maintainer: crate::util::background_task::BackgroundTask,
     player: Option<PlayerRuntime>,
     open_subsonic: open_subsonic_runtime::OpenSubsonicOwner,
+    open_subsonic_rating_identity: Option<String>,
+    open_subsonic_pending_rating: Option<open_subsonic_bridge::PendingOpenSubsonicRatingProjection>,
+    open_subsonic_pending_scrobbles: VecDeque<open_subsonic_bridge::PendingOpenSubsonicScrobble>,
     player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
     queue: Queue,
     playback: DaemonPlayback,
@@ -234,24 +238,16 @@ enum PositionEpochReason {
     IdleReset,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonOutcome {
-    FullPlay,
-    Skip,
-    QuickSkip,
-}
-
-#[derive(Debug, Clone)]
-struct DaemonSessionEvent {
-    artist_key: String,
-    outcome: DaemonOutcome,
-    completion: f32,
-}
-
 impl DaemonEngine {
-    pub async fn start<F>(options: EngineOptions, emit: F) -> Result<Self, EngineError>
+    pub async fn start<F, B>(
+        options: EngineOptions,
+        emit: F,
+        bridge_emit: B,
+        ready_emit: open_subsonic_runtime::OpenSubsonicReadySink,
+    ) -> Result<Self, EngineError>
     where
         F: Fn(PlayerEvent) + Send + Sync + 'static,
+        B: Fn(crate::open_subsonic::OpenSubsonicBridgeImport) + Send + Sync + 'static,
     {
         let (config, startup) =
             crate::persist::load_verified_startup_state().map_err(EngineError::from)?;
@@ -281,7 +277,7 @@ impl DaemonEngine {
         engine.install_personal_state(personal_state);
         engine.personal_state_device_id = personal_state_device_id;
         // Optional server discovery must not hold local restore or player startup hostage.
-        open_subsonic_runtime::initialize(&mut engine);
+        open_subsonic_runtime::initialize(&mut engine, Arc::new(bridge_emit), ready_emit);
         // External tool discovery remains required for ordinary YouTube/local playback.
         crate::tools::init(&engine.config.tools).await;
         // Keep the managed copy fresh; the daemon has no status-line emitter.
@@ -324,6 +320,9 @@ impl DaemonEngine {
             maintainer: crate::util::background_task::BackgroundTask::disabled("yt-dlp maintainer"),
             player: None,
             open_subsonic: Default::default(),
+            open_subsonic_rating_identity: None,
+            open_subsonic_pending_rating: None,
+            open_subsonic_pending_scrobbles: VecDeque::new(),
             player_emit,
             queue,
             playback: DaemonPlayback {
@@ -463,19 +462,6 @@ impl DaemonEngine {
     pub async fn shutdown_background(&mut self) {
         self.open_subsonic.shutdown().await;
         self.maintainer.shutdown().await;
-    }
-
-    /// Retire every daemon-owned media process at the start of owner shutdown.
-    ///
-    /// The remaining remote, effect, and durability barriers can legitimately take longer than
-    /// player teardown. Keeping audio or an overlay alive through those barriers would make a
-    /// normal daemon stop appear stuck and would leave later termination signals with nothing
-    /// useful to coordinate. Recovery is suppressed before this method is called, so closing the
-    /// IPC actor cannot start a replacement player.
-    pub(crate) fn shutdown_media_owners(&mut self) {
-        self.video_overlay = None;
-        self.player = None;
-        self.open_subsonic.retire();
     }
 
     pub fn initial_effects(&mut self) -> Vec<EngineEffect> {

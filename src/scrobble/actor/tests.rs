@@ -6,6 +6,9 @@ use super::super::{
     monitor::{Observation, ObservedTrack},
 };
 
+mod open_subsonic_durability_tests;
+mod queue_drop_durability_tests;
+
 struct FakeService {
     kind: ServiceKind,
     results: Mutex<Vec<Result<(), ScrobbleError>>>,
@@ -61,12 +64,16 @@ fn entry(idx: usize, pending: Vec<ServiceKind>) -> QueueEntry {
     QueueEntry {
         id: format!("1000-track-{idx}"),
         track_key: format!("track-{idx}"),
+        open_subsonic_item: None,
         ts: 1000 + idx as i64,
         artist: format!("artist-{idx}"),
         title: format!("title-{idx}"),
         album: Some(format!("album-{idx}")),
         duration: Some(180 + idx as u32),
         origin_url: Some(format!("https://music.youtube.com/watch?v=track-{idx}")),
+        open_subsonic_pending: false,
+        open_subsonic_handoff_started: false,
+        open_subsonic_bridge_durable: false,
         pending,
     }
 }
@@ -74,6 +81,7 @@ fn entry(idx: usize, pending: Vec<ServiceKind>) -> QueueEntry {
 fn track(started_unix: i64) -> ScrobbleTrack {
     ScrobbleTrack {
         key: "track-key".to_owned(),
+        open_subsonic_item: None,
         artist: "artist".to_owned(),
         title: "title".to_owned(),
         album: Some("album".to_owned()),
@@ -81,6 +89,16 @@ fn track(started_unix: i64) -> ScrobbleTrack {
         origin_url: Some("https://music.youtube.com/watch?v=track-key".to_owned()),
         started_unix,
     }
+}
+
+fn open_subsonic_track(started_unix: i64) -> ScrobbleTrack {
+    let mut track = track(started_unix);
+    track.open_subsonic_item = Some(crate::open_subsonic::OpenSubsonicItemRef::new(
+        crate::open_subsonic::BackendId::new("server-backend").unwrap(),
+        crate::open_subsonic::AccountScopeId::new("account-scope").unwrap(),
+        crate::open_subsonic::ItemId::new("song-42").unwrap(),
+    ));
+    track
 }
 
 fn inactive_settings() -> ScrobbleSettings {
@@ -127,6 +145,7 @@ fn durable_only_settings() -> ScrobbleSettings {
 fn threshold_observations(key: &str) -> (i64, Vec<Observation>) {
     let track = ObservedTrack {
         key: key.to_owned(),
+        open_subsonic_item: None,
         title: "Shutdown Track".to_owned(),
         artist: "Artist".to_owned(),
         album: Some("Album".to_owned()),
@@ -154,11 +173,20 @@ fn threshold_observations(key: &str) -> (i64, Vec<Observation>) {
 }
 
 fn test_actor(settings: ScrobbleSettings, queue: Option<QueueFile>, emit: EventSink) -> Actor {
+    test_actor_with_ack(settings, queue, emit).0
+}
+
+fn test_actor_with_ack(
+    settings: ScrobbleSettings,
+    queue: Option<QueueFile>,
+    emit: EventSink,
+) -> (Actor, Receiver<OpenSubsonicMarkerAckRequest>) {
+    let (open_subsonic_ack_tx, open_subsonic_ack_rx) = bounded_channel(SCROBBLE_CONTROL_QUEUE);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_millis(50))
         .build()
         .unwrap_or_default();
-    Actor {
+    let actor = Actor {
         lastfm: lastfm_client(&http, &settings),
         listenbrainz: listenbrainz_client(&http, &settings),
         settings,
@@ -172,12 +200,20 @@ fn test_actor(settings: ScrobbleSettings, queue: Option<QueueFile>, emit: EventS
         next_flush: None,
         last_stall_notice: None,
         pending_appends: VecDeque::new(),
+        pending_generic_appends: 0,
+        pending_open_subsonic_appends: 0,
         pending_append_lock: None,
         pending_compaction: None,
         append_failure_active: false,
+        queue_read_failure_active: false,
         dropped_total: 0,
+        pending_queue_drop_outcome: None,
+        open_subsonic_ack_tx,
+        pending_open_subsonic_acks: HashMap::new(),
+        announced_open_subsonic: HashMap::new(),
         love_tasks: HashMap::new(),
-    }
+    };
+    (actor, open_subsonic_ack_rx)
 }
 
 fn captured_events() -> (Arc<Mutex<Vec<ScrobbleEvent>>>, EventSink) {
@@ -187,6 +223,50 @@ fn captured_events() -> (Arc<Mutex<Vec<ScrobbleEvent>>>, EventSink) {
         sink_events.lock().unwrap().push(event);
     });
     (events, sink)
+}
+
+#[tokio::test]
+async fn malformed_queue_is_never_rewritten_and_surfaces_one_stalled_event() {
+    let (dir, queue) = temp_queue("malformed-fail-closed");
+    let exact = QueueEntry::from_track(
+        &ScrobbleTrack {
+            key: "server-track".to_owned(),
+            open_subsonic_item: Some(crate::open_subsonic::OpenSubsonicItemRef::new(
+                crate::open_subsonic::BackendId::new("backend").unwrap(),
+                crate::open_subsonic::AccountScopeId::new("account").unwrap(),
+                crate::open_subsonic::ItemId::new("song").unwrap(),
+            )),
+            artist: "artist".to_owned(),
+            title: "title".to_owned(),
+            album: None,
+            duration_secs: Some(180),
+            origin_url: None,
+            started_unix: 100,
+        },
+        Vec::new(),
+    );
+    queue.append(&exact).unwrap();
+    crate::util::safe_fs::append_private_jsonl(queue.path(), "{torn").unwrap();
+    let before = std::fs::read(queue.path()).unwrap();
+    let (events, emit) = captured_events();
+    let mut actor = test_actor(inactive_settings(), Some(queue), emit);
+
+    assert_eq!(actor.flush().await, Err(DeliveryError::Saturated));
+    assert_eq!(actor.flush().await, Err(DeliveryError::Saturated));
+    assert_eq!(
+        std::fs::read(dir.join("scrobble-queue.jsonl")).unwrap(),
+        before
+    );
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, ScrobbleEvent::QueueStalled { pending: 1 }))
+            .count(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -641,6 +721,7 @@ fn failed_append_retention_is_bounded_and_reports_oldest_loss() {
             .pending_appends
             .push_back(entry(index, vec![ServiceKind::Lastfm]));
     }
+    actor.pending_generic_appends = QUEUE_CAP;
     let oldest_id = actor.pending_appends.front().unwrap().id.clone();
 
     actor.enqueue_scrobble(track(9_999));
@@ -699,6 +780,87 @@ fn observation_records_scrobble_before_returning_ephemeral_network_work() {
     assert_eq!(loaded.entries[0].track_key, scrobble.key);
     assert_eq!(loaded.entries[0].ts, scrobble.started_unix);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn exact_server_actions_emit_owner_lane_events_without_changing_service_delivery() {
+    let (dir, queue) = temp_queue("open-subsonic-owner-lane");
+    let (events, emit) = captured_events();
+    let mut actor = test_actor(inactive_settings(), Some(queue), emit);
+    let now_playing = open_subsonic_track(1_000);
+    let submission = open_subsonic_track(1_000);
+
+    let deferred_network = actor.record_durable_actions(vec![
+        ScrobbleAction::NowPlaying(now_playing.clone()),
+        ScrobbleAction::Scrobble(submission.clone()),
+    ]);
+    assert_eq!(actor.flush().await, Ok(()));
+
+    assert_eq!(deferred_network, vec![now_playing.clone()]);
+    assert!(actor.pending_appends.is_empty());
+    let loaded = actor.queue.as_ref().unwrap().load();
+    assert_eq!(loaded.entries.len(), 1);
+    assert!(loaded.entries[0].pending.is_empty());
+    assert!(loaded.entries[0].open_subsonic_pending);
+    assert!(loaded.entries[0].open_subsonic_handoff_started);
+    let captured = events.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(matches!(
+        &captured[0],
+        ScrobbleEvent::OpenSubsonic {
+            event_id,
+            kind: crate::open_subsonic::OpenSubsonicScrobbleKind::NowPlaying,
+            track,
+            confirmation: None,
+        } if !event_id.is_empty() && track == &now_playing
+    ));
+    assert!(matches!(
+        &captured[1],
+        ScrobbleEvent::OpenSubsonic {
+            event_id,
+            kind: crate::open_subsonic::OpenSubsonicScrobbleKind::Submission,
+            track,
+            confirmation: Some(_),
+        } if !event_id.is_empty() && track == &submission
+    ));
+    let (
+        ScrobbleEvent::OpenSubsonic {
+            event_id: now_playing_id,
+            ..
+        },
+        ScrobbleEvent::OpenSubsonic {
+            event_id: submission_id,
+            ..
+        },
+    ) = (&captured[0], &captured[1])
+    else {
+        unreachable!("captured events were asserted above");
+    };
+    assert_ne!(
+        now_playing_id, submission_id,
+        "same-second thresholds must retain distinct owner event identities"
+    );
+    assert_eq!(
+        loaded.entries[0].id.as_str(),
+        submission_id.as_str(),
+        "the bridge event must reuse the journaled dedupe identity"
+    );
+    drop(captured);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn non_server_actions_do_not_emit_open_subsonic_events() {
+    let (events, emit) = captured_events();
+    let mut actor = test_actor(inactive_settings(), None, emit);
+
+    let deferred_network = actor.record_durable_actions(vec![
+        ScrobbleAction::NowPlaying(track(1_000)),
+        ScrobbleAction::Scrobble(track(1_001)),
+    ]);
+
+    assert_eq!(deferred_network.len(), 1);
+    assert!(events.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -823,6 +985,7 @@ async fn immediate_shutdown_applies_latest_terminal_observation_rejected_as_busy
     let started_unix = crate::signals::unix_now() - 20;
     let long_track = ObservedTrack {
         key: "shutdown-terminal-retry".to_owned(),
+        open_subsonic_item: None,
         title: "Shutdown Terminal Retry".to_owned(),
         artist: "Artist".to_owned(),
         album: Some("Album".to_owned()),
@@ -881,6 +1044,7 @@ async fn immediate_shutdown_applies_latest_terminal_observation_rejected_as_busy
     latest.position_epoch = 1_000;
     latest.track = Some(crate::media::MediaTrack {
         key: long_track.key.clone(),
+        open_subsonic_item: None,
         title: long_track.title.clone(),
         artist: long_track.artist.clone(),
         album: long_track.album.clone(),

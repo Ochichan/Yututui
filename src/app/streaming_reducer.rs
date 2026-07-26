@@ -1049,15 +1049,23 @@ impl App {
         for event in self.streaming.session_events.iter().rev().take(8) {
             let delta = match event.outcome {
                 Outcome::FullPlay => 0.05,
-                Outcome::Like => 0.15,
+                Outcome::Like => crate::rating::SessionRatingSignal::Like.affinity_delta(),
                 Outcome::Skip => -0.10,
                 Outcome::QuickSkip => -0.20,
-                Outcome::Dislike => -0.40,
+                Outcome::Dislike => crate::rating::SessionRatingSignal::Dislike.affinity_delta(),
             };
             let entry = out.entry(event.artist_key.clone()).or_insert(0.0);
             *entry = (*entry + delta).clamp(-0.50, 0.35);
         }
         out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recommendation_station_state_for_test(
+        &self,
+        seed_video_id: &str,
+    ) -> StationState {
+        self.build_station_state(seed_video_id)
     }
 
     /// Sync the active station profile's adventurousness onto the live engine mode. The avoid

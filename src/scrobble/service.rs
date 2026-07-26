@@ -31,6 +31,8 @@ impl ServiceKind {
 pub struct ScrobbleTrack {
     /// Stable track identity (the app's `video_id`); keys queue entries and dedupe.
     pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_subsonic_item: Option<crate::open_subsonic::OpenSubsonicItemRef>,
     pub artist: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

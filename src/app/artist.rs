@@ -142,11 +142,7 @@ impl App {
             },
             Some(Action::Favorite) => match self.artist_selected_row() {
                 Some(row) if row.youtube_playlist_id().is_some() => self.playlist_row_hint(),
-                Some(row) => {
-                    self.library_mut().toggle_favorite(&row);
-                    self.dirty = true;
-                    vec![Cmd::Persist(PersistCmd::Library)]
-                }
+                Some(row) => self.toggle_song_favorite_rating(&row),
                 None => Vec::new(),
             },
             Some(Action::Download) => match self.artist_selected_row() {

@@ -730,8 +730,13 @@ fn bump_artist(weights: &mut BTreeMap<String, f32>, artist_key: &str, delta: f32
     if artist_key.is_empty() || delta == 0.0 {
         return;
     }
-    let weight = weights.entry(artist_key.to_owned()).or_default();
-    *weight = (*weight + delta).clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
+    let next = (weights.get(artist_key).copied().unwrap_or(0.0) + delta)
+        .clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
+    if next == 0.0 {
+        weights.remove(artist_key);
+    } else {
+        weights.insert(artist_key.to_owned(), next);
+    }
 }
 
 fn empty_playlist(
@@ -931,6 +936,10 @@ fn enforce_projection_caps(legacy: &mut LegacyProjection) {
     legacy.history.truncate(HISTORY_MAX);
     legacy.radio_favorites.truncate(RADIO_MAX);
     legacy.radio_history.truncate(RADIO_MAX);
+    legacy
+        .signals
+        .artist_affinity
+        .retain(|_, weight| *weight != 0.0);
     legacy.playlists.truncate(PLAYLISTS_MAX);
     for playlist in &mut legacy.playlists {
         playlist.entries.truncate(PLAYLIST_ENTRIES_MAX);

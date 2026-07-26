@@ -146,24 +146,36 @@ pub fn commit_store_set(
         return Err(StoreError::RevisionConflict);
     }
     validate_identity(candidate)?;
-    candidate
-        .profile
-        .set_revision(next_revision(expected.profile)?);
-    candidate
-        .private_state
-        .set_revision(next_revision(expected.private_state)?);
-    candidate
-        .bridge_state
-        .set_revision(next_revision(expected.bridge_state)?);
-    let profile = encode_profile(&candidate.profile)?;
-    let private_state = encode_private(&candidate.private_state)?;
-    let bridge = encode_bridge(&candidate.bridge_state)?;
-    install_transaction(
-        paths,
-        Some(profile.as_slice()),
-        Some(private_state.as_slice()),
-        Some(bridge.as_slice()),
-    )
+    let previous_profile = candidate.profile.revision();
+    let previous_private = candidate.private_state.revision();
+    let previous_bridge = candidate.bridge_state.revision();
+    let next_profile = next_revision(expected.profile)?;
+    let next_private = next_revision(expected.private_state)?;
+    let next_bridge = next_revision(expected.bridge_state)?;
+    candidate.profile.set_revision(next_profile);
+    candidate.private_state.set_revision(next_private);
+    candidate.bridge_state.set_revision(next_bridge);
+    let result = (|| {
+        let profile = encode_profile(&candidate.profile)?;
+        let private_state = encode_private(&candidate.private_state)?;
+        let bridge = encode_bridge(&candidate.bridge_state)?;
+        install_transaction(
+            paths,
+            Some(profile.as_slice()),
+            Some(private_state.as_slice()),
+            Some(bridge.as_slice()),
+        )
+    })();
+    if result.is_err() {
+        // Encoding/install may fail after assigning the optimistic next revision (including an
+        // ambiguous failure after the commit marker). Callers that retain this candidate must not
+        // subsequently present revisions which were never acknowledged. A writer can recover and
+        // reload a committed transaction before retrying.
+        candidate.profile.set_revision(previous_profile);
+        candidate.private_state.set_revision(previous_private);
+        candidate.bridge_state.set_revision(previous_bridge);
+    }
+    result
 }
 
 pub fn remove_store_set(
@@ -644,6 +656,30 @@ mod tests {
         assert_eq!(
             commit_store_set(&fixture.paths, StoreRevisions::MISSING, &mut second),
             Err(StoreError::RevisionConflict)
+        );
+    }
+
+    #[test]
+    fn failed_install_restores_candidate_revisions_before_recovery() {
+        let fixture = fixture();
+        let mut candidate = candidate();
+        let previous = candidate.revisions();
+        fail_after_commit_marker_once_for_test();
+
+        assert_eq!(
+            commit_store_set(&fixture.paths, StoreRevisions::MISSING, &mut candidate),
+            Err(StoreError::StorageUnavailable)
+        );
+        assert_eq!(candidate.revisions(), previous);
+
+        let recovered = load_store_set(&fixture.paths).unwrap().unwrap();
+        assert_eq!(
+            recovered.revisions(),
+            StoreRevisions {
+                profile: Some(1),
+                private_state: Some(1),
+                bridge_state: Some(1),
+            }
         );
     }
 

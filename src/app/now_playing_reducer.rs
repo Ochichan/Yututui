@@ -215,14 +215,12 @@ impl App {
     }
 
     /// Add a resolved YouTube track to the music-mode favorites, idempotently.
-    /// `toggle_favorite` is a toggle — the `is_favorite` precheck keeps a repeat press
-    /// from *removing* the song. A Youtube-source track routes to the music favorites
-    /// (not `radio_favorites`) by `Library`'s own rules. The toast names exactly what
-    /// was saved, which library it went to, and doubles as the wrong-song tripwire.
     fn add_resolved_favorite(&mut self, song: Song) -> Vec<Cmd> {
         self.status.kind = StatusKind::Info;
         self.dirty = true;
-        if self.library.is_favorite(&song.video_id) {
+        if crate::rating::current(&self.library, &self.signals, &song.video_id)
+            == crate::personal_state::Rating::Liked
+        {
             self.status.text = t!(
                 "Already in music favorites",
                 "이미 음악 즐겨찾기에 있어요",
@@ -231,7 +229,7 @@ impl App {
             .to_owned();
             return Vec::new();
         }
-        self.library_mut().toggle_favorite(&song);
+        let commands = self.ensure_song_liked_rating(&song);
         self.status.text = match crate::i18n::current() {
             crate::i18n::Language::Korean => {
                 format!("음악 즐겨찾기에 저장: {} — {}", song.title, song.artist)
@@ -241,7 +239,7 @@ impl App {
             }
             _ => format!("Saved to music favorites: {} — {}", song.title, song.artist),
         };
-        vec![Cmd::Persist(PersistCmd::Library)]
+        commands
     }
 
     /// "Tell me more": close the card and hand off to the DJ Gem view, seeding the normal

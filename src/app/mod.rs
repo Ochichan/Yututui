@@ -88,12 +88,13 @@ pub use server_library::{
     LibrarySource, SERVER_LIBRARY_PAGE_LIMIT, ServerLibraryCommand, ServerLibraryDetailTarget,
     ServerLibraryEvent, ServerLibraryFailure, ServerLibraryState,
 };
+mod server_history_settings;
 mod server_settings;
 pub use server_settings::{
     MusicServerBusy, MusicServerCommand, MusicServerCredentialMode, MusicServerEvent,
-    MusicServerFailure, MusicServerHealth, MusicServerIdentityIntent, MusicServerRefreshOutcome,
-    MusicServerSettingsState, MusicServerSetupField, MusicServerSetupForm, MusicServerSetupInput,
-    MusicServerSummary, MusicServerWizard, SyncArea,
+    MusicServerFailure, MusicServerHealth, MusicServerHistoryHealth, MusicServerIdentityIntent,
+    MusicServerRefreshOutcome, MusicServerSettingsState, MusicServerSetupField,
+    MusicServerSetupForm, MusicServerSetupInput, MusicServerSummary, MusicServerWizard, SyncArea,
 };
 mod server;
 pub use server::{ServerEvent, ServerUiState};
@@ -103,7 +104,9 @@ mod bootstrap;
 mod data_export;
 mod feedback;
 mod helpers;
+mod open_subsonic_bridge;
 mod personal_sync;
+mod rating_action;
 pub(crate) use helpers::open_in_browser;
 pub(in crate::app) use helpers::{
     fetch_lyrics_cmd, rect_contains, song_label, spawn_video_overlay,

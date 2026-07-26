@@ -26,6 +26,8 @@ async fn rejects_music_server_tracks_before_spawning_ytdlp() {
         suffix: Some("flac".to_owned()),
         starred: false,
         user_rating: None,
+        play_count: None,
+        played_at: None,
     });
     let emit: EventSink = Arc::new(|_| Ok(DeliveryReceipt::Enqueued));
     let root =

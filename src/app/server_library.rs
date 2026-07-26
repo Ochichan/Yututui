@@ -489,6 +489,15 @@ impl App {
         Vec::new()
     }
 
+    fn toggle_selected_server_library_song_rating(&mut self) -> Vec<Cmd> {
+        self.server
+            .library
+            .row_song(self.server.library.selected)
+            .cloned()
+            .map(Song::from_open_subsonic)
+            .map_or_else(Vec::new, |song| self.toggle_song_favorite_rating(&song))
+    }
+
     fn handle_server_library_action(&mut self, action: Action) -> Option<Vec<Cmd>> {
         let commands = match action {
             Action::Back => {
@@ -539,15 +548,15 @@ impl App {
             Action::Enqueue => self.enqueue_selected_server_library_song(),
             Action::PlayAll => self.play_now_many(self.server.library.visible_songs()),
             Action::AddToPlaylist => self.add_selected_server_library_song_to_playlist(),
+            Action::Favorite => self.toggle_selected_server_library_song_rating(),
             _ => return None,
         };
         Some(commands)
     }
 
     pub(in crate::app) fn on_key_server_library(&mut self, key: KeyEvent) -> Vec<Cmd> {
-        // Resolve the same semantic Library/Common actions as the local Library. Unsupported
-        // local mutations (favorite, remove, filter, download) deliberately fall through to a
-        // no-op on this read-only surface.
+        // Resolve the same semantic Library/Common actions as the local Library. Rating is a
+        // personal-state mutation; server catalog mutation (remove/filter/download) stays absent.
         let action = self.keymap.action(KeyContext::Library, Chord::from(key));
         if let Some(commands) = action.and_then(|action| self.handle_server_library_action(action))
         {
@@ -668,6 +677,8 @@ mod tests {
             suffix: None,
             starred: false,
             user_rating: None,
+            play_count: None,
+            played_at: None,
         }
     }
 
@@ -822,6 +833,27 @@ mod tests {
             app.server.library.failure,
             Some(ServerLibraryFailure::Offline)
         );
+    }
+
+    #[test]
+    fn server_favorite_repairs_a_local_dislike() {
+        let mut app = server_library_app(&["one"]);
+        let selected = Song::from_open_subsonic(song("one"));
+        crate::rating::set(
+            std::sync::Arc::make_mut(&mut app.library),
+            std::sync::Arc::make_mut(&mut app.signals),
+            &selected,
+            crate::personal_state::Rating::Disliked,
+            1,
+        );
+
+        let commands = app.handle_server_library_action(Action::Favorite).unwrap();
+        assert!(app.library.is_favorite(&selected.video_id));
+        assert!(!app.signals.is_disliked(&selected.video_id));
+        assert!(matches!(
+            commands.as_slice(),
+            [Cmd::Persist(crate::app::PersistCmd::Library)]
+        ));
     }
 
     #[test]

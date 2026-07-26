@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::legacy::{
-    LegacyPlaylist, LegacyPlaylistEntry, LegacyProjection, rating_from_legacy, stable_hash,
+    LegacyPlaylist, LegacyPlaylistEntry, LegacyProjection, rating_from_legacy, sha256_hex,
+    stable_hash,
 };
 use super::{
     CausalStamp, DeviceId, Dot, EngagementKind, Operation, OperationEnvelope, OperationOrigin,
@@ -50,6 +51,166 @@ pub fn append_operation_as(
     operation: Operation,
     recorded_at_unix: i64,
 ) -> Result<PersonalStateV2, PersonalStateError> {
+    append_operation_with_origin_as(
+        state,
+        local_device_id,
+        None,
+        OperationOrigin::Local,
+        operation,
+        recorded_at_unix,
+    )
+}
+
+/// Append one operation observed from an external bridge under the local device's causal dot.
+///
+/// `operation_id` is the bridge's portable acknowledgement key. The ledger envelope derives a
+/// deterministic device-scoped identifier from it, while a `RecordEngagement` keeps the portable
+/// key as its event ID. Replaying the same observation on one device is therefore a no-op, while
+/// two devices may independently observe and safely merge the same portable event.
+pub fn append_external_operation_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    operation_id: String,
+    origin: OperationOrigin,
+    operation: Operation,
+    recorded_at_unix: i64,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    if matches!(origin, OperationOrigin::Local) {
+        return Err(PersonalStateError::InvalidOperation(
+            "external operation origin cannot be local",
+        ));
+    }
+    validate_external_origin(&origin, &operation)?;
+    let envelope_id = external_operation_envelope_id(local_device_id, &operation_id)?;
+    append_operation_with_origin_as(
+        state,
+        local_device_id,
+        Some(envelope_id),
+        origin,
+        operation,
+        recorded_at_unix,
+    )
+}
+
+/// Append one externally observed operation for an unsynced single-device ledger.
+///
+/// Before encrypted sync is configured, the deterministic migration device deliberately has no
+/// signing identity. That device may still own local-first server observations; once a real sync
+/// device is enrolled, callers must switch to [`append_external_operation_as`] so the author is
+/// explicit.
+pub fn append_external_operation(
+    state: &PersonalStateV2,
+    operation_id: String,
+    origin: OperationOrigin,
+    operation: Operation,
+    recorded_at_unix: i64,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    if matches!(origin, OperationOrigin::Local) {
+        return Err(PersonalStateError::InvalidOperation(
+            "external operation origin cannot be local",
+        ));
+    }
+    validate_external_origin(&origin, &operation)?;
+    let local_device_id = local_device(state)?;
+    let envelope_id = external_operation_envelope_id(&local_device_id, &operation_id)?;
+    append_operation_with_origin_as_inner(
+        state,
+        &local_device_id,
+        Some(envelope_id),
+        origin,
+        operation,
+        recorded_at_unix,
+        false,
+    )
+}
+
+/// Return the stable ledger envelope ID for one external acknowledgement on one local device.
+///
+/// The bridge acknowledgement remains portable across devices. Only the surrounding ledger
+/// operation is scoped so independently authored observations cannot collide during merge.
+pub fn external_operation_envelope_id(
+    local_device_id: &DeviceId,
+    acknowledgement_id: &str,
+) -> Result<String, PersonalStateError> {
+    super::model::validate_id(
+        "external operation acknowledgement id",
+        acknowledgement_id,
+        256,
+    )?;
+    let mut material =
+        Vec::with_capacity(48 + local_device_id.as_str().len() + acknowledgement_id.len());
+    material.extend_from_slice(b"yututui-external-operation-envelope-v1\0");
+    for part in [
+        local_device_id.as_str().as_bytes(),
+        acknowledgement_id.as_bytes(),
+    ] {
+        material.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        material.extend_from_slice(part);
+    }
+    Ok(format!("external-{}", sha256_hex(&material)))
+}
+
+pub(crate) fn external_operation_envelope_id_for_state(
+    state: &PersonalStateV2,
+    acknowledgement_id: &str,
+) -> Result<String, PersonalStateError> {
+    external_operation_envelope_id(&local_device(state)?, acknowledgement_id)
+}
+
+fn validate_external_origin(
+    origin: &OperationOrigin,
+    operation: &Operation,
+) -> Result<(), PersonalStateError> {
+    let OperationOrigin::OpenSubsonic { backend_id } = origin else {
+        return Ok(());
+    };
+    let track = match operation {
+        Operation::SetRating { track, .. } | Operation::RecordEngagement { track, .. } => track,
+        _ => {
+            return Err(PersonalStateError::InvalidOperation(
+                "OpenSubsonic origin requires a track observation",
+            ));
+        }
+    };
+    match &track.key {
+        PortableTrackKey::OpenSubsonic {
+            backend_id: track_backend,
+            ..
+        } if track_backend == backend_id => Ok(()),
+        _ => Err(PersonalStateError::InvalidOperation(
+            "OpenSubsonic origin does not match track backend",
+        )),
+    }
+}
+
+fn append_operation_with_origin_as(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    operation_id: Option<String>,
+    origin: OperationOrigin,
+    operation: Operation,
+    recorded_at_unix: i64,
+) -> Result<PersonalStateV2, PersonalStateError> {
+    append_operation_with_origin_as_inner(
+        state,
+        local_device_id,
+        operation_id,
+        origin,
+        operation,
+        recorded_at_unix,
+        true,
+    )
+}
+
+fn append_operation_with_origin_as_inner(
+    state: &PersonalStateV2,
+    local_device_id: &DeviceId,
+    operation_id: Option<String>,
+    origin: OperationOrigin,
+    operation: Operation,
+    recorded_at_unix: i64,
+    require_keyed: bool,
+) -> Result<PersonalStateV2, PersonalStateError> {
     state.validate()?;
     let enrollment = matches!(
         &operation,
@@ -61,11 +222,28 @@ pub fn append_operation_as(
                     .get(local_device_id)
                     .is_some_and(|current| current.public_identity.is_none())
     );
-    validate_local_device_binding(state, local_device_id, !enrollment)?;
+    validate_local_device_binding(state, local_device_id, require_keyed && !enrollment)?;
+
+    if let Some(operation_id) = operation_id.as_deref()
+        && let Some(existing) = state
+            .operations
+            .iter()
+            .find(|existing| existing.operation_id == operation_id)
+    {
+        return if existing.origin == origin && existing.operation == operation {
+            Ok(state.clone())
+        } else {
+            Err(PersonalStateError::ConflictingOperationId)
+        };
+    }
 
     let mut candidate = state.clone();
-    OperationAppender::new(&mut candidate, local_device_id.clone())
-        .append(operation, recorded_at_unix)?;
+    OperationAppender::new(&mut candidate, local_device_id.clone()).append_with_metadata(
+        operation_id,
+        origin,
+        operation,
+        recorded_at_unix,
+    )?;
     refresh_device_registry(&mut candidate)?;
     candidate.normalize()?;
     Ok(candidate)
@@ -122,6 +300,16 @@ impl<'a> OperationAppender<'a> {
         operation: Operation,
         recorded_at_unix: i64,
     ) -> Result<Dot, PersonalStateError> {
+        self.append_with_metadata(None, OperationOrigin::Local, operation, recorded_at_unix)
+    }
+
+    fn append_with_metadata(
+        &mut self,
+        operation_id: Option<String>,
+        origin: OperationOrigin,
+        operation: Operation,
+        recorded_at_unix: i64,
+    ) -> Result<Dot, PersonalStateError> {
         // A different durable state must never reuse the terminal revision. The transaction
         // coordinator advances this revision when it publishes the candidate; rejecting here
         // keeps a MAX-valued imported ledger immutable instead of manufacturing same-revision
@@ -133,13 +321,14 @@ impl<'a> OperationAppender<'a> {
             sequence,
         };
         let envelope = OperationEnvelope {
-            operation_id: format!("{}:{sequence}", self.device.as_str()),
+            operation_id: operation_id
+                .unwrap_or_else(|| format!("{}:{sequence}", self.device.as_str())),
             stamp: CausalStamp {
                 dot: dot.clone(),
                 observed: self.state.version_vector.clone(),
                 recorded_at_unix,
             },
-            origin: OperationOrigin::Local,
+            origin,
             operation,
         };
         self.state.version_vector.observe(&dot);
@@ -231,30 +420,38 @@ fn reconcile_ratings(
     current: &LegacyProjection,
     appender: &mut OperationAppender<'_>,
 ) -> Result<(), PersonalStateError> {
-    let base = rating_from_legacy(&base.favorites, &base.signals);
-    let current = rating_from_legacy(&current.favorites, &current.signals);
-    let keys = base
+    let base_ratings = rating_from_legacy(&base.favorites, &base.signals);
+    let current_ratings = rating_from_legacy(&current.favorites, &current.signals);
+    let keys = base_ratings
         .keys()
-        .chain(current.keys())
+        .chain(current_ratings.keys())
         .cloned()
         .collect::<BTreeSet<_>>();
     for key in keys {
-        let before = base
+        let before = base_ratings
             .get(&key)
             .map(|(_, rating)| *rating)
             .unwrap_or_default();
-        let after = current
+        let after = current_ratings
             .get(&key)
             .map(|(_, rating)| *rating)
             .unwrap_or_default();
         if before == after {
             continue;
         }
-        let track = current
-            .get(&key)
-            .or_else(|| base.get(&key))
-            .map(|(track, _)| track.clone())
-            .expect("union key has a track");
+        let track = match (current_ratings.get(&key), base_ratings.get(&key)) {
+            (Some((current, _)), base_rating) => {
+                let existing = base_rating
+                    .map(|(track, _)| track)
+                    .or_else(|| base.signals.tracks.get(&key).map(|signal| &signal.track));
+                existing.map_or_else(
+                    || current.clone(),
+                    |existing| enrich_portable_track(current.clone(), existing),
+                )
+            }
+            (None, Some((base, _))) => base.clone(),
+            (None, None) => unreachable!("union key has a track"),
+        };
         appender.append(
             Operation::SetRating {
                 track,
@@ -264,6 +461,33 @@ fn reconcile_ratings(
         )?;
     }
     Ok(())
+}
+
+/// Preserve portable metadata that the legacy signal store cannot represent.
+///
+/// A disliked track may no longer occur in favorites, history, or playlists. In that case the
+/// runtime-to-v2 adapter can recover its exact key from `Signals`, but only has empty fallback
+/// metadata. Reconciliation must not let that lossy projection erase metadata already carried by
+/// the winning v2 rating operation, since the artist is also the stable input to affinity
+/// projection.
+fn enrich_portable_track(mut current: PortableTrack, existing: &PortableTrack) -> PortableTrack {
+    debug_assert_eq!(current.key, existing.key);
+    if current.title.is_empty() {
+        current.title.clone_from(&existing.title);
+    }
+    if current.artist.is_empty() {
+        current.artist.clone_from(&existing.artist);
+    }
+    if current.album.is_none() {
+        current.album.clone_from(&existing.album);
+    }
+    if current.duration_secs.is_none() {
+        current.duration_secs = existing.duration_secs;
+    }
+    if current.isrc.is_none() {
+        current.isrc.clone_from(&existing.isrc);
+    }
+    current
 }
 
 fn reconcile_radio(

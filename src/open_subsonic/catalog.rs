@@ -168,6 +168,51 @@ impl<'a> OpenSubsonicCatalog<'a> {
         }))
     }
 
+    pub async fn get_song(&self, item: &OpenSubsonicItemRef) -> Result<ServerSong, ServerError> {
+        self.validate_item_scope(item)?;
+        let song = self
+            .client
+            .get_song_raw(self.credential, item)
+            .await
+            .and_then(|raw| self.song(raw).ok_or(ServerError::InvalidResponse))?;
+        if &song.item != item {
+            return Err(ServerError::InvalidResponse);
+        }
+        Ok(song)
+    }
+
+    pub async fn set_rating(
+        &self,
+        item: &OpenSubsonicItemRef,
+        rating: u8,
+    ) -> Result<(), ServerError> {
+        self.validate_item_scope(item)?;
+        self.client.set_rating(self.credential, item, rating).await
+    }
+
+    pub async fn star(&self, item: &OpenSubsonicItemRef) -> Result<(), ServerError> {
+        self.validate_item_scope(item)?;
+        self.client.star(self.credential, item).await
+    }
+
+    pub async fn unstar(&self, item: &OpenSubsonicItemRef) -> Result<(), ServerError> {
+        self.validate_item_scope(item)?;
+        self.client.unstar(self.credential, item).await
+    }
+
+    pub(crate) async fn scrobble(
+        &self,
+        item: &OpenSubsonicItemRef,
+        submission: bool,
+        time_unix_ms: Option<u64>,
+    ) -> Result<(), super::client::MutationDeliveryError> {
+        self.validate_item_scope(item)
+            .map_err(super::client::MutationDeliveryError::DefinitelyNotApplied)?;
+        self.client
+            .scrobble(self.credential, item, submission, time_unix_ms)
+            .await
+    }
+
     /// Artwork is independently optional. Unsupported or unsafe images return `Ok(None)`.
     pub async fn cover_art(&self, id: &CoverArtId) -> Result<Option<BinaryPayload>, ServerError> {
         let payload = match self.client.get_cover_art(self.credential, id).await {
@@ -197,6 +242,14 @@ impl<'a> OpenSubsonicCatalog<'a> {
             bytes,
             content_type: Some(content_type),
         }))
+    }
+
+    fn validate_item_scope(&self, item: &OpenSubsonicItemRef) -> Result<(), ServerError> {
+        if item.backend_id() != self.backend_id || item.account_scope_id() != self.account_scope_id
+        {
+            return Err(ServerError::WrongAccountScope);
+        }
+        self.client.validate_item_scope(item)
     }
 
     async fn album_page(
@@ -366,10 +419,12 @@ impl<'a> OpenSubsonicCatalog<'a> {
             content_type: raw.content_type.and_then(safe_short_value),
             suffix: raw.suffix.and_then(safe_short_value),
             starred: raw.starred.is_some(),
-            user_rating: raw
-                .user_rating
-                .and_then(|rating| u8::try_from(rating).ok())
-                .filter(|rating| *rating <= 5),
+            user_rating: raw.user_rating,
+            play_count: raw.play_count,
+            played_at: raw
+                .played
+                .map(|value| crate::api::sanitize_metadata_text(&value, 64))
+                .filter(|value| !value.is_empty()),
         })
     }
 }

@@ -25,6 +25,7 @@ mod dispatch;
 mod event_policy;
 pub(crate) mod ingress;
 mod local_find;
+mod open_subsonic_bridge;
 mod open_subsonic_runtime;
 mod persist_delivery;
 mod personal_sync_commit;
@@ -89,6 +90,9 @@ pub enum RuntimeEvent {
             crate::open_subsonic::ServiceError,
         >,
     },
+    /// A path/URL/credential-free server observation retained by the bridge until the owner
+    /// confirms its personal-state transaction.
+    OpenSubsonicBridge(crate::open_subsonic::OpenSubsonicBridgeImport),
     TelemetryWake,
 }
 
@@ -174,6 +178,9 @@ impl RuntimeEvent {
             RuntimeEvent::OpenSubsonicReloaded { .. } => EventPolicy::MustDeliver {
                 lane: Lane::WorkResult,
             },
+            RuntimeEvent::OpenSubsonicBridge(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             RuntimeEvent::TelemetryWake => EventPolicy::MustDeliver {
                 lane: Lane::Control,
             },
@@ -200,6 +207,7 @@ impl RuntimeEvent {
             RuntimeEvent::Update(_) => "update",
             RuntimeEvent::Transfer(_) => "transfer",
             RuntimeEvent::OpenSubsonicReloaded { .. } => "open_subsonic_reloaded",
+            RuntimeEvent::OpenSubsonicBridge(_) => "open_subsonic_bridge",
             RuntimeEvent::TelemetryWake => "telemetry_wake",
         }
     }
@@ -512,6 +520,11 @@ impl From<RuntimeEvent> for Msg {
                     "OpenSubsonicReloaded must be installed by the owner loop before Msg conversion"
                 )
             }
+            RuntimeEvent::OpenSubsonicBridge(_) => {
+                unreachable!(
+                    "OpenSubsonicBridge must be committed by the owner loop before Msg conversion"
+                )
+            }
             RuntimeEvent::TelemetryWake => {
                 unreachable!(
                     "TelemetryWake must be drained by the owner loop before Msg conversion"
@@ -566,6 +579,14 @@ where
     }
 }
 
+fn open_subsonic_bridge_sink(
+    emitter: task_set::RuntimeTaskEmitter,
+) -> crate::open_subsonic::OpenSubsonicBridgeSink {
+    std::sync::Arc::new(move |event| {
+        emitter.emit_terminal_blocking(RuntimeEvent::OpenSubsonicBridge(event));
+    })
+}
+
 pub fn remote_sink(
     tx: RuntimeSender,
 ) -> impl Fn(crate::remote::server::RemoteEvent) -> bool + Send + Sync + 'static {
@@ -588,7 +609,7 @@ pub struct RuntimeHandles {
     download_handle: crate::download::DownloadHandle,
     resolver_handle: crate::resolver::ResolverHandle,
     ai_handle: Option<crate::ai::AiHandle>,
-    scrobble_handle: crate::scrobble::ScrobbleHandle,
+    scrobble_handle: Option<crate::scrobble::ScrobbleHandle>,
     /// Spawned on the first transfer command — costs nothing until the feature is used.
     transfer_handle: Option<crate::transfer::actor::TransferHandle>,
     /// Debounced background store writes (the `Cmd::Persist` family).
@@ -607,6 +628,18 @@ pub struct RuntimeHandles {
     open_subsonic_runtime: Option<crate::open_subsonic::OpenSubsonicRuntime>,
     /// Latest reload generation requested by the owner. Out-of-order candidates are dropped.
     open_subsonic_reload_generation: u64,
+    /// Bridge acknowledgement IDs mapped to their device-scoped ledger envelope while persistence
+    /// is outstanding.
+    open_subsonic_pending_imports: std::collections::BTreeMap<String, String>,
+    /// Imports known durable and waiting for bridge-store acknowledgement.
+    open_subsonic_committed_imports: std::collections::BTreeSet<String>,
+    /// Ledger identity last admitted to the server rating projection.
+    open_subsonic_rating_identity: Option<String>,
+    /// Ledger identity awaiting proof that its rating projection crossed the bridge-store fsync.
+    open_subsonic_pending_rating: Option<open_subsonic_bridge::PendingOpenSubsonicRatingProjection>,
+    /// Exact playback reports retained while a runtime generation is being replaced.
+    open_subsonic_pending_scrobbles:
+        std::collections::VecDeque<open_subsonic_bridge::PendingOpenSubsonicScrobble>,
 }
 
 fn settle_video_load_delivery(app: &mut App, result: DeliveryResult) -> Vec<Cmd> {
@@ -670,7 +703,7 @@ impl RuntimeHandles {
             download_handle,
             resolver_handle,
             ai_handle,
-            scrobble_handle,
+            scrobble_handle: Some(scrobble_handle),
             transfer_handle: None,
             persist,
             background_tasks: RuntimeTaskSet::new(),
@@ -682,6 +715,11 @@ impl RuntimeHandles {
             open_subsonic_routes,
             open_subsonic_runtime: None,
             open_subsonic_reload_generation: 0,
+            open_subsonic_pending_imports: std::collections::BTreeMap::new(),
+            open_subsonic_committed_imports: std::collections::BTreeSet::new(),
+            open_subsonic_rating_identity: None,
+            open_subsonic_pending_rating: None,
+            open_subsonic_pending_scrobbles: std::collections::VecDeque::new(),
         }
     }
 
@@ -692,15 +730,33 @@ impl RuntimeHandles {
         &mut self,
         snapshot: &crate::media::MediaSnapshot,
     ) -> crate::util::delivery::DeliveryResult {
-        self.scrobble_handle.observe(snapshot)
+        self.scrobble_handle
+            .as_mut()
+            .ok_or(crate::util::delivery::DeliveryError::Closed)?
+            .observe(snapshot)
+    }
+
+    /// Admit one fresh terminal observation while the player snapshot is still available.
+    pub(crate) fn scrobble_observe_shutdown(
+        &mut self,
+        snapshot: &crate::media::MediaSnapshot,
+    ) -> crate::util::delivery::DeliveryResult {
+        self.scrobble_handle
+            .as_mut()
+            .ok_or(crate::util::delivery::DeliveryError::Closed)?
+            .observe_shutdown(snapshot)
     }
 
     pub fn scrobble_heartbeat_due(&self) -> bool {
-        self.scrobble_handle.heartbeat_due()
+        self.scrobble_handle
+            .as_ref()
+            .is_some_and(crate::scrobble::ScrobbleHandle::heartbeat_due)
     }
 
     pub fn scrobble_retry_needed(&self) -> bool {
-        self.scrobble_handle.retry_needed()
+        self.scrobble_handle
+            .as_ref()
+            .is_some_and(crate::scrobble::ScrobbleHandle::retry_needed)
     }
 
     /// Cancel and join every accepted yt-dlp task before the terminal runtime exits.
@@ -771,6 +827,30 @@ impl RuntimeHandles {
             return;
         }
         match event {
+            RuntimeEvent::OpenSubsonicBridge(import) => {
+                self.apply_open_subsonic_bridge_import(app, import);
+            }
+            RuntimeEvent::Scrobble(crate::scrobble::ScrobbleEvent::OpenSubsonic {
+                event_id,
+                kind,
+                track,
+                confirmation,
+            }) => {
+                self.queue_open_subsonic_scrobble(event_id, kind, track, confirmation);
+            }
+            RuntimeEvent::Persist(crate::persist::PersistEvent::PersonalStateCommitted {
+                revision,
+                state_identity,
+            }) => {
+                self.note_open_subsonic_personal_state_commit(app, &state_identity);
+                self.reduce_owner_msg(
+                    app,
+                    Msg::PersonalStatePersisted {
+                        revision,
+                        state_identity,
+                    },
+                );
+            }
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(_, reply))
             | RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionCommand {
                 reply,
@@ -785,6 +865,7 @@ impl RuntimeHandles {
             }
             event => self.reduce_owner_msg(app, event.into()),
         }
+        self.maintain_open_subsonic_bridge(app);
     }
 
     /// Abort and join any active transfer/auth/playlist work before the owner runtime exits.
@@ -800,13 +881,10 @@ impl RuntimeHandles {
         self.transfer_handle = None;
     }
 
-    /// Confirm the durable scrobble frontier and join its isolated owner thread. `budget` is a
-    /// diagnostic warning deadline, not permission to cancel an accepted append/fsync.
-    pub async fn scrobble_shutdown(
-        &mut self,
-        budget: std::time::Duration,
-    ) -> Result<(), crate::util::delivery::DeliveryError> {
-        self.scrobble_handle.shutdown_and_join(budget).await
+    /// Move the scrobble owner into terminal teardown so its final threshold events can be pumped
+    /// through this runtime while the actor joins.
+    pub(crate) fn take_scrobble_for_shutdown(&mut self) -> Option<crate::scrobble::ScrobbleHandle> {
+        self.scrobble_handle.take()
     }
 
     /// Settle a synchronous actor rejection on the owner which already holds `App`.

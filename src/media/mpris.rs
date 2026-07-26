@@ -696,6 +696,7 @@ mod tests {
         let mut snapshot = MediaSnapshot::idle();
         snapshot.track = Some(MediaTrack {
             key: "track-key".to_owned(),
+            open_subsonic_item: None,
             title: "Title".to_owned(),
             artist: "Artist".to_owned(),
             album: Some("Album".to_owned()),

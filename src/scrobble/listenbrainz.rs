@@ -184,6 +184,7 @@ mod tests {
     fn listen_payload_shape() {
         let track = ScrobbleTrack {
             key: "abc".to_owned(),
+            open_subsonic_item: None,
             artist: "IU".to_owned(),
             title: "Blueming".to_owned(),
             album: Some("Love poem".to_owned()),

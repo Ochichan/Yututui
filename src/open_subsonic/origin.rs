@@ -100,6 +100,24 @@ impl ConfiguredPrivateOrigin {
             .map_err(|_| OriginError::InvalidOrigin)
     }
 
+    pub(crate) fn native_endpoint(&self, path: &str) -> Result<Url, OriginError> {
+        if path.is_empty()
+            || path.len() > MAX_ORIGIN_BYTES
+            || path.starts_with('/')
+            || !path.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
+        {
+            return Err(OriginError::InvalidOrigin);
+        }
+        self.base_url
+            .join(path)
+            .map_err(|_| OriginError::InvalidOrigin)
+    }
+
     pub async fn build_pinned_client(
         &self,
         custom_ca_pem: Option<&[u8]>,
@@ -276,6 +294,26 @@ mod tests {
             origin.endpoint("search3").unwrap().as_str(),
             "https://music.example.test/navidrome/rest/search3.view"
         );
+        assert_eq!(
+            origin.native_endpoint("auth/login").unwrap().as_str(),
+            "https://music.example.test/navidrome/auth/login"
+        );
+        assert_eq!(
+            origin.native_endpoint("api/scrobble").unwrap().as_str(),
+            "https://music.example.test/navidrome/api/scrobble"
+        );
+        for unsafe_path in [
+            "",
+            "/auth/login",
+            "../auth/login",
+            "api//scrobble",
+            "api/scrobble?token=secret",
+        ] {
+            assert!(
+                origin.native_endpoint(unsafe_path).is_err(),
+                "{unsafe_path}"
+            );
+        }
     }
 
     #[test]

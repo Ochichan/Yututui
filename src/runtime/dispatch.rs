@@ -158,11 +158,13 @@ impl RuntimeHandles {
                     crate::app::MusicServerCommand::Refresh { generation } => {
                         self.begin_open_subsonic_reload(generation);
                         let read_only = self.persistence_read_only.is_some();
+                        let bridge_sink =
+                            (!read_only).then(|| super::open_subsonic_bridge_sink(emitter.clone()));
                         self.background_tasks.spawn_cancellable(
                             "music_server_connection_test",
                             async move {
                                 let (runtime_result, result) =
-                                    refresh_music_server_runtime(read_only).await;
+                                    refresh_music_server_runtime(read_only, bridge_sink).await;
                                 emitter
                                     .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
                                         generation,
@@ -206,6 +208,7 @@ impl RuntimeHandles {
                         prepared,
                     } => {
                         self.begin_open_subsonic_reload(generation);
+                        let bridge_sink = super::open_subsonic_bridge_sink(emitter.clone());
                         self.background_tasks.spawn_cancellable(
                             "music_server_commit",
                             async move {
@@ -219,35 +222,27 @@ impl RuntimeHandles {
                                 .await
                                 .map_err(|_| crate::open_subsonic::ServiceError::ActorUnavailable)
                                 .and_then(std::convert::identity);
-                                let result = match committed {
-                                    Ok(status) => {
-                                        let mut summary = music_server_summary(status);
-                                        let runtime_result =
-                                            match crate::open_subsonic::OpenSubsonicPaths::current()
-                                            {
-                                                Ok(paths) => {
-                                                    crate::open_subsonic::load_actor(&paths).await
-                                                }
-                                                Err(error) => Err(error.into()),
-                                            };
-                                        if runtime_result.is_err() {
-                                            // The durable commit already succeeded. Keep the
-                                            // configured identity visible and offer retry instead
-                                            // of reopening a first-time wizard whose Create
-                                            // intent can no longer be valid.
-                                            summary.health =
-                                                crate::app::MusicServerHealth::NeedsAttention;
-                                        }
-                                        emitter
-                                            .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
-                                                generation,
-                                                result: runtime_result,
-                                            })
-                                            .await;
-                                        Ok(summary)
-                                    }
-                                    Err(error) => Err(music_server_failure(error)),
-                                };
+                                // commit_setup revokes the previous credential owner before its
+                                // transaction begins. Reload on both success and failure so an
+                                // ambiguous post-marker error cannot leave a stale local route.
+                                let runtime_result =
+                                    reload_music_server_runtime(Some(bridge_sink)).await;
+                                let mut result = committed
+                                    .map(music_server_summary)
+                                    .map_err(music_server_failure);
+                                if runtime_result.is_err()
+                                    && let Ok(summary) = result.as_mut()
+                                {
+                                    // The durable commit already succeeded. Keep the configured
+                                    // identity visible and offer retry.
+                                    summary.health = crate::app::MusicServerHealth::NeedsAttention;
+                                }
+                                emitter
+                                    .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
+                                        generation,
+                                        result: runtime_result,
+                                    })
+                                    .await;
                                 emitter
                                     .emit_terminal(RuntimeEvent::App(Msg::Server(
                                         crate::app::ServerEvent::Settings(
@@ -261,8 +256,62 @@ impl RuntimeHandles {
                             },
                         );
                     }
+                    crate::app::MusicServerCommand::DisableHistory { generation } => {
+                        self.begin_open_subsonic_reload(generation);
+                        // The old actor may retain a dedicated native-history password. Drop it
+                        // before the owner-only store removes that secret, then reload only from
+                        // the committed snapshot.
+                        self.retire_open_subsonic_runtime();
+                        let bridge_sink = super::open_subsonic_bridge_sink(emitter.clone());
+                        self.background_tasks.spawn_cancellable(
+                            "music_server_history_disable",
+                            async move {
+                                let disabled = tokio::task::spawn_blocking(move || {
+                                    crate::open_subsonic::OpenSubsonicPaths::current()
+                                        .map_err(crate::open_subsonic::ServiceError::from)
+                                        .and_then(|paths| {
+                                            crate::open_subsonic::disable_native_history(&paths)
+                                        })
+                                })
+                                .await
+                                .map_err(|_| crate::open_subsonic::ServiceError::ActorUnavailable)
+                                .and_then(std::convert::identity);
+                                let runtime_result =
+                                    reload_music_server_runtime(Some(bridge_sink)).await;
+                                let mut result = disabled
+                                    .map(music_server_summary)
+                                    .map_err(music_server_failure);
+                                if runtime_result.is_err()
+                                    && let Ok(summary) = result.as_mut()
+                                {
+                                    summary.health = crate::app::MusicServerHealth::NeedsAttention;
+                                }
+                                emitter
+                                    .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
+                                        generation,
+                                        result: runtime_result,
+                                    })
+                                    .await;
+                                emitter
+                                    .emit_terminal(RuntimeEvent::App(Msg::Server(
+                                        crate::app::ServerEvent::Settings(
+                                            crate::app::MusicServerEvent::HistoryDisabled {
+                                                generation,
+                                                result,
+                                            },
+                                        ),
+                                    )))
+                                    .await;
+                            },
+                        );
+                    }
                     crate::app::MusicServerCommand::Remove { generation } => {
                         self.begin_open_subsonic_reload(generation);
+                        // Removal is explicit and destructive. Stop credentialed routes before
+                        // deleting their owner-only store; refresh/setup probes retain the active
+                        // runtime until a replacement is fully ready.
+                        self.retire_open_subsonic_runtime();
+                        let bridge_sink = super::open_subsonic_bridge_sink(emitter.clone());
                         self.background_tasks.spawn_cancellable(
                             "music_server_remove",
                             async move {
@@ -276,29 +325,23 @@ impl RuntimeHandles {
                                 .await
                                 .map_err(|_| crate::open_subsonic::ServiceError::ActorUnavailable)
                                 .and_then(std::convert::identity);
-                                let result = match removed {
-                                    Ok(_) => {
-                                        let runtime_result =
-                                            match crate::open_subsonic::OpenSubsonicPaths::current()
-                                            {
-                                                Ok(paths) => {
-                                                    crate::open_subsonic::load_actor(&paths).await
-                                                }
-                                                Err(error) => Err(error.into()),
-                                            };
-                                        emitter
-                                            .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
-                                                generation,
-                                                result: runtime_result,
-                                            })
-                                            .await;
-                                        // Removal is already durable and clears the active
-                                        // credential boundary synchronously. A follow-up reload
-                                        // failure cannot turn it back into a configured profile.
-                                        Ok(())
-                                    }
-                                    Err(error) => Err(music_server_failure(error)),
+                                // A failed removal must not strand the process without the actor
+                                // it retired above. Reloading the coherent current snapshot also
+                                // resolves an ambiguous post-commit storage error safely.
+                                let runtime_result =
+                                    reload_music_server_runtime(Some(bridge_sink)).await;
+                                let reload_state = match &runtime_result {
+                                    Ok(runtime) => Ok(runtime.is_some()),
+                                    Err(error) => Err(*error),
                                 };
+                                let result =
+                                    resolve_music_server_remove(removed.err(), reload_state);
+                                emitter
+                                    .emit_terminal(RuntimeEvent::OpenSubsonicReloaded {
+                                        generation,
+                                        result: runtime_result,
+                                    })
+                                    .await;
                                 emitter
                                     .emit_terminal(RuntimeEvent::App(Msg::Server(
                                         crate::app::ServerEvent::Settings(
@@ -990,14 +1033,18 @@ impl RuntimeHandles {
             }
             Cmd::Scrobble(scrobble) => match scrobble {
                 ScrobbleCmd::AuthStart => {
-                    report_actor_delivery(app, "scrobble.auth", self.scrobble_handle.auth_start());
+                    let result = self.scrobble_handle.as_ref().map_or(
+                        Err(crate::util::delivery::DeliveryError::Closed),
+                        |handle| handle.auth_start(),
+                    );
+                    report_actor_delivery(app, "scrobble.auth", result);
                 }
                 ScrobbleCmd::Reconfigure(settings) => {
-                    report_actor_delivery(
-                        app,
-                        "scrobble.reconfigure",
-                        self.scrobble_handle.reconfigure(*settings),
+                    let result = self.scrobble_handle.as_ref().map_or(
+                        Err(crate::util::delivery::DeliveryError::Closed),
+                        |handle| handle.reconfigure(*settings),
                     );
+                    report_actor_delivery(app, "scrobble.reconfigure", result);
                 }
             },
             Cmd::Transfer(cmd) => {
@@ -1034,6 +1081,7 @@ impl RuntimeHandles {
 
 async fn refresh_music_server_runtime(
     read_only: bool,
+    bridge_sink: Option<crate::open_subsonic::OpenSubsonicBridgeSink>,
 ) -> (
     Result<Option<crate::open_subsonic::OpenSubsonicRuntime>, crate::open_subsonic::ServiceError>,
     Result<crate::app::MusicServerRefreshOutcome, crate::app::MusicServerFailure>,
@@ -1053,14 +1101,14 @@ async fn refresh_music_server_runtime(
     let runtime_result = if read_only {
         crate::open_subsonic::load_actor_read_only(&paths).await
     } else {
-        crate::open_subsonic::load_actor(&paths).await
+        crate::open_subsonic::load_actor_with_bridge_sink(&paths, bridge_sink).await
     };
     let outcome = match &runtime_result {
         Ok(Some(_)) => {
             let mut summary = crate::open_subsonic::read_status(&paths)
                 .map(music_server_summary)
                 .unwrap_or(local_summary);
-            summary.health = crate::app::MusicServerHealth::UpToDate;
+            summary.health = live_music_server_health(summary.playback_reports_needing_decision);
             summary.configured = true;
             crate::app::MusicServerRefreshOutcome {
                 summary,
@@ -1080,6 +1128,28 @@ async fn refresh_music_server_runtime(
         }
     };
     (runtime_result, Ok(outcome))
+}
+
+async fn reload_music_server_runtime(
+    bridge_sink: Option<crate::open_subsonic::OpenSubsonicBridgeSink>,
+) -> Result<Option<crate::open_subsonic::OpenSubsonicRuntime>, crate::open_subsonic::ServiceError> {
+    let paths = crate::open_subsonic::OpenSubsonicPaths::current()?;
+    crate::open_subsonic::load_actor_with_bridge_sink(&paths, bridge_sink).await
+}
+
+pub(super) fn resolve_music_server_remove(
+    removal_error: Option<crate::open_subsonic::ServiceError>,
+    reload: Result<bool, crate::open_subsonic::ServiceError>,
+) -> Result<(), crate::app::MusicServerFailure> {
+    match reload {
+        // The coherent store is absent. This is also the proof that an error returned after the
+        // removal commit marker was an ambiguous success.
+        Ok(false) => Ok(()),
+        Ok(true) => Err(removal_error
+            .map(music_server_failure)
+            .unwrap_or(crate::app::MusicServerFailure::Unavailable)),
+        Err(error) => Err(music_server_failure(error)),
+    }
 }
 
 async fn prepare_music_server_setup(
@@ -1162,9 +1232,13 @@ fn music_server_summary(
     status: crate::open_subsonic::OpenSubsonicStatus,
 ) -> crate::app::MusicServerSummary {
     let configured = status.kind != crate::open_subsonic::OpenSubsonicStatusKind::Off;
-    let credential_label = status.credential_kind.map(|kind| match kind {
-        crate::open_subsonic::CredentialKind::Password => "Password".to_owned(),
-        crate::open_subsonic::CredentialKind::ApiKey => "API key".to_owned(),
+    let credential_kind = status.credential_kind.map(|kind| match kind {
+        crate::open_subsonic::CredentialKind::Password => {
+            crate::app::MusicServerCredentialMode::Password
+        }
+        crate::open_subsonic::CredentialKind::ApiKey => {
+            crate::app::MusicServerCredentialMode::ApiKey
+        }
     });
     crate::app::MusicServerSummary {
         health: match status.kind {
@@ -1178,9 +1252,37 @@ fn music_server_summary(
         },
         configured,
         display_name: status.display_name,
-        credential_label,
+        credential_kind,
         lan_http: status.uses_lan_http,
         custom_ca: status.uses_custom_ca,
+        playback_reports_needing_decision: status.outbound_scrobbles_needing_attention,
+        history: match status.native_history_health {
+            crate::open_subsonic::NativeHistoryHealth::Off => {
+                crate::app::MusicServerHistoryHealth::Off
+            }
+            crate::open_subsonic::NativeHistoryHealth::Probing => {
+                crate::app::MusicServerHistoryHealth::Probing
+            }
+            crate::open_subsonic::NativeHistoryHealth::Detailed => {
+                crate::app::MusicServerHistoryHealth::Detailed
+            }
+            crate::open_subsonic::NativeHistoryHealth::PlayCountsOnly => {
+                crate::app::MusicServerHistoryHealth::PlayCountsOnly
+            }
+            crate::open_subsonic::NativeHistoryHealth::UpdatePassword => {
+                crate::app::MusicServerHistoryHealth::UpdatePassword
+            }
+        },
+    }
+}
+
+pub(super) const fn live_music_server_health(
+    playback_reports_needing_decision: usize,
+) -> crate::app::MusicServerHealth {
+    if playback_reports_needing_decision == 0 {
+        crate::app::MusicServerHealth::UpToDate
+    } else {
+        crate::app::MusicServerHealth::NeedsAttention
     }
 }
 

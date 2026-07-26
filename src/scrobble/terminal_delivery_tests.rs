@@ -3,6 +3,7 @@ use super::*;
 fn track(duration: Option<f64>, liked: bool) -> ObservedTrack {
     ObservedTrack {
         key: "repeat-a".to_owned(),
+        open_subsonic_item: None,
         title: "Repeat A".to_owned(),
         artist: "Artist".to_owned(),
         album: None,
@@ -21,6 +22,7 @@ fn paused_snapshot(duration: Option<f64>, artist: &str, epoch: u64) -> crate::me
     snapshot.position_epoch = epoch;
     snapshot.track = Some(crate::media::MediaTrack {
         key: "repeat-a".to_owned(),
+        open_subsonic_item: None,
         title: "Repeat A".to_owned(),
         artist: artist.to_owned(),
         album: None,
