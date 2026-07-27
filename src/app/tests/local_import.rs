@@ -176,6 +176,14 @@ fn finish_import_review_cmd(app: &mut App, cmd: Cmd) {
         }
     }
     .map_err(|error| format!("{error:#}"));
+    // The review action ran synchronously just above, and every caller goes on to assert that
+    // its decision reached the persisted session. Handing a failure to the reducer and saying
+    // nothing turns any transient error — a busy record lock, an IO failure — into an assertion
+    // about a session that simply never changed, several lines away and with the cause gone.
+    // `local_deck_import_review_keys_accept_and_reject_rows` failed exactly that way on Windows.
+    if let Err(error) = &result {
+        panic!("{action:?} on row {source_order} of session `{session_id}` failed: {error}");
+    }
     app.update(Msg::Local(LocalMsg::ImportReviewFinished {
         op_id,
         session_id,
