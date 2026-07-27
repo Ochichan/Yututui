@@ -207,6 +207,20 @@ fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
             if file_type.is_dir() {
                 visit(root, &path, out);
             } else if file_type.is_file() {
+                // Lock files are coordination artifacts, not data, and they are the one thing in
+                // here that cannot simply be read. A live owner holds a byte-range lock on its
+                // writer lease; Windows enforces those, so this read returns ERROR_LOCK_VIOLATION
+                // instead of bytes, while the same lock on Unix is advisory and reads fine. That
+                // asymmetry is what made `personal_data_import_preview_...` fail only on Windows.
+                // Excluding them is also more correct than including them: detecting contention
+                // means opening and try-locking the lease, so a lock file legitimately changes
+                // even when nothing about the data tree does.
+                let is_lock = path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".lock"));
+                if is_lock {
+                    continue;
+                }
                 out.push((
                     path.strip_prefix(root)
                         .expect("snapshot path below root")
@@ -647,6 +661,19 @@ fn personal_data_import_preview_runs_beside_owner_but_apply_requires_writer_leas
     .expect("open writer lease")
     .expect("hold simulated owner lease");
     let before = snapshot_tree(&data_dir);
+    // The lease this test is holding lives inside the tree being snapshotted. Windows enforces
+    // its byte-range lock, so a snapshot that tried to read it would fail here rather than in
+    // the comparison below. Pin the exclusion so restoring it cannot silently reintroduce that.
+    assert!(
+        data_dir.join(".ytt-persistence-writer.lock").exists(),
+        "the simulated owner lease should exist on disk"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|(path, _)| path.to_string_lossy().ends_with(".lock")),
+        "lock files must stay out of the snapshot"
+    );
 
     let preview = isolated_command(
         &root,
