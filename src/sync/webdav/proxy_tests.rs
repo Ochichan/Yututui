@@ -131,16 +131,37 @@ fn accept_until_done(
 fn read_headers(stream: &mut std::net::TcpStream) -> Vec<u8> {
     use std::io::Read as _;
 
+    // A short per-read timeout keeps a wedged peer from hanging the suite, but its expiry is not
+    // by itself a failure: the probe runs in a separate process and may simply not have been
+    // scheduled yet. Retry until one overall deadline — the same shape `accept_until_done` above
+    // already uses — instead of unwrapping. The previous single 2 s read surfaced a slow child as
+    // `WouldBlock` and failed the test on loaded runners.
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_millis(250)))
         .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let mut request = Vec::new();
     let mut buffer = [0_u8; 1024];
     while !request.ends_with(b"\r\n\r\n") {
-        let read = stream.read(&mut buffer).unwrap();
-        assert!(read > 0, "request ended before its headers");
-        request.extend_from_slice(&buffer[..read]);
-        assert!(request.len() <= 16 * 1024, "test request exceeded cap");
+        match stream.read(&mut buffer) {
+            Ok(0) => panic!("request ended before its headers"),
+            Ok(read) => {
+                request.extend_from_slice(&buffer[..read]);
+                assert!(request.len() <= 16 * 1024, "test request exceeded cap");
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for the probe's request headers"
+                );
+            }
+            Err(error) => panic!("test listener read failed: {error}"),
+        }
     }
     request
 }
