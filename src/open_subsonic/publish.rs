@@ -31,28 +31,28 @@ const MAX_PUBLISH_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PUBLISHED_TRACKS: usize = 999;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PublishedTrack {
-    pub(crate) relative_path: String,
-    pub(crate) content_sha256: String,
-    pub(crate) len: u64,
-    pub(crate) published_at_unix: i64,
+pub struct PublishedTrack {
+    pub relative_path: String,
+    pub content_sha256: String,
+    pub len: u64,
+    pub published_at_unix: i64,
     /// Set only once the track was actually observed on the server. The configured folder cannot
     /// be verified against the server — `getMusicFolders` returns names, never paths — so a
     /// successful copy on its own proves nothing about whether the server will ever see it.
     #[serde(default)]
-    pub(crate) confirmed_on_server: bool,
+    pub confirmed_on_server: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PendingPublish {
-    pub(crate) relative_path: String,
-    pub(crate) stage_basename: String,
-    pub(crate) started_at_unix: i64,
+pub struct PendingPublish {
+    pub relative_path: String,
+    pub stage_basename: String,
+    pub started_at_unix: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PublishLedger {
+pub struct PublishLedger {
     kind: String,
     schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,19 +76,19 @@ impl Default for PublishLedger {
 }
 
 impl PublishLedger {
-    pub(crate) fn music_folder(&self) -> Option<&Path> {
+    pub fn music_folder(&self) -> Option<&Path> {
         self.music_folder.as_deref().map(Path::new)
     }
 
-    pub(crate) fn published(&self) -> &BTreeMap<String, PublishedTrack> {
+    pub fn published(&self) -> &BTreeMap<String, PublishedTrack> {
         &self.published
     }
 
-    pub(crate) fn pending(&self) -> &BTreeMap<String, PendingPublish> {
+    pub fn pending(&self) -> &BTreeMap<String, PendingPublish> {
         &self.pending
     }
 
-    pub(crate) fn confirmed_count(&self) -> usize {
+    pub fn confirmed_count(&self) -> usize {
         self.published
             .values()
             .filter(|track| track.confirmed_on_server)
@@ -100,7 +100,7 @@ impl PublishLedger {
 ///
 /// A malformed or foreign file is an error rather than a silent reset, so a corrupt ledger is
 /// reported instead of quietly re-publishing a whole library.
-pub(crate) fn load(paths: &OpenSubsonicPaths) -> Result<PublishLedger, StoreError> {
+pub fn load(paths: &OpenSubsonicPaths) -> Result<PublishLedger, StoreError> {
     let bytes = match safe_fs::read_no_symlink_limited(paths.publish_store(), MAX_PUBLISH_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -116,7 +116,7 @@ pub(crate) fn load(paths: &OpenSubsonicPaths) -> Result<PublishLedger, StoreErro
     Ok(ledger)
 }
 
-pub(crate) fn save(paths: &OpenSubsonicPaths, ledger: &PublishLedger) -> Result<(), StoreError> {
+pub fn save(paths: &OpenSubsonicPaths, ledger: &PublishLedger) -> Result<(), StoreError> {
     safe_fs::ensure_private_dir_durable(paths.root())
         .map_err(|_| StoreError::StorageUnavailable)?;
     safe_fs::write_private_atomic_json(paths.publish_store(), ledger)
@@ -124,7 +124,7 @@ pub(crate) fn save(paths: &OpenSubsonicPaths, ledger: &PublishLedger) -> Result<
 }
 
 /// Record the music folder after the caller has validated it.
-pub(crate) fn set_music_folder(paths: &OpenSubsonicPaths, folder: &Path) -> Result<(), StoreError> {
+pub fn set_music_folder(paths: &OpenSubsonicPaths, folder: &Path) -> Result<(), StoreError> {
     let mut ledger = load(paths)?;
     ledger.music_folder = Some(folder.to_string_lossy().into_owned());
     save(paths, &ledger)
@@ -132,25 +132,25 @@ pub(crate) fn set_music_folder(paths: &OpenSubsonicPaths, folder: &Path) -> Resu
 
 /// One track to publish, as the caller knows it.
 #[derive(Clone, Debug)]
-pub(crate) struct PublishRequest {
-    pub(crate) video_id: String,
-    pub(crate) title: String,
-    pub(crate) artist: Option<String>,
-    pub(crate) album_artist: Option<String>,
-    pub(crate) album: Option<String>,
-    pub(crate) track_number: Option<u32>,
-    pub(crate) source: PathBuf,
+pub struct PublishRequest {
+    pub video_id: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub track_number: Option<u32>,
+    pub source: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PublishReport {
+pub enum PublishReport {
     Published { relative_path: String },
     AlreadyPublished { relative_path: String },
     Conflict { relative_path: String },
 }
 
 #[derive(Debug)]
-pub(crate) enum PublishError {
+pub enum PublishError {
     /// No music folder has been chosen yet.
     NotConfigured,
     /// The ledger is full.
@@ -190,7 +190,7 @@ impl From<StoreError> for PublishError {
 /// The intent is journalled durably *before* the copy, so an interrupted publish leaves evidence
 /// that something was in flight rather than looking like it never started. On a transport failure
 /// the journal is deliberately kept: that is what `publish status` reports as needing attention.
-pub(crate) fn publish_track(
+pub fn publish_track(
     paths: &OpenSubsonicPaths,
     request: &PublishRequest,
     now_unix: i64,
@@ -284,7 +284,7 @@ fn record_publication(
 }
 
 /// Mark a published track as actually observed on the server.
-pub(crate) fn record_server_confirmation(
+pub fn record_server_confirmation(
     paths: &OpenSubsonicPaths,
     video_id: &str,
 ) -> Result<(), StoreError> {

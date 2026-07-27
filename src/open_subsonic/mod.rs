@@ -22,6 +22,8 @@ pub mod profile;
 pub mod proxy;
 pub mod publish;
 pub mod rating;
+pub mod scan;
+pub use scan::{LibraryScanRequest, request_library_scan};
 pub mod transaction;
 mod wire;
 

@@ -20,6 +20,8 @@ use yututui::open_subsonic::{
 };
 use yututui::personal_state::PlaylistId;
 
+mod publish;
+
 const EXIT_OK: i32 = 0;
 const EXIT_RUNTIME: i32 = 1;
 const EXIT_USAGE: i32 = 2;
@@ -56,6 +58,13 @@ Commands:
                     List local IDs for playlist creates needing a decision
   playlists abandon <LOCAL_PLAYLIST_ID>
                     Forget one create guard without deleting either copy
+  publish setup     Choose the music folder to publish downloaded tracks into
+  publish status [--json]
+                    Show what has been published and what the server confirmed
+  publish list [--json]
+                    List downloaded tracks and their publish state
+  publish track <VIDEO_ID>
+                    Copy one downloaded track into the music folder
   remove            Remove the profile and credentials; keep local personal data
 
 Passwords and API keys are prompted with echo disabled and are never accepted as arguments.
@@ -74,6 +83,7 @@ enum Command {
     ScrobbleMarkSent { event_id: String },
     PlaylistCreatesPending { json: bool },
     PlaylistCreateAbandon { local_playlist_id: String },
+    Publish(publish::PublishCommand),
     Remove,
 }
 
@@ -146,6 +156,12 @@ pub fn run(args: &[String]) -> i32 {
         Command::PlaylistCreateAbandon { local_playlist_id } => {
             run_playlist_create_abandon(&local_playlist_id)
         }
+        Command::Publish(publish::PublishCommand::Setup) => publish::run_setup(),
+        Command::Publish(publish::PublishCommand::Status { json }) => publish::run_status(json),
+        Command::Publish(publish::PublishCommand::List { json }) => publish::run_list(json),
+        Command::Publish(publish::PublishCommand::Track { video_id }) => {
+            publish::run_track(&video_id)
+        }
         Command::Remove => run_remove(),
     };
     match result {
@@ -168,6 +184,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "history" => parse_history(&args[1..]),
         "scrobbles" => parse_scrobbles(&args[1..]),
         "playlists" => parse_playlists(&args[1..]),
+        "publish" => match &args[1..] {
+            [flag] if matches!(flag.as_str(), "-h" | "--help" | "help") => Ok(Command::Help),
+            rest => publish::parse(rest).map(Command::Publish),
+        },
         "status" => match &args[1..] {
             [] => Ok(Command::Status { json: false }),
             [flag] if flag == "--json" => Ok(Command::Status { json: true }),
