@@ -582,19 +582,27 @@ fn verify_private_dacl(file: &File, expected_sid: PSID) -> io::Result<()> {
         ));
     }
     if owner.is_null() {
-        return Err(invalid_acl(
-            "private file is not owned by the current account",
-        ));
+        return Err(invalid_acl("private file has no owner"));
     }
     // SAFETY: `owner` points inside the live descriptor and was checked for null above.
     if unsafe { IsValidSid(owner) } == 0 {
-        return Err(invalid_acl(
-            "private file is not owned by the current account",
-        ));
+        return Err(invalid_acl("private file has an invalid owner SID"));
     }
-    // SAFETY: `owner` is a valid SID in the live descriptor, and `expected_sid` is the valid
-    // current-account SID retained by the caller for the duration of this check.
-    if unsafe { EqualSid(owner, expected_sid) } == 0 {
+    // Confidentiality comes from the protected single-ACE DACL verified below, not from the owner.
+    // `apply_private_dacl` deliberately passes a null owner to `SetSecurityInfo`, so the file keeps
+    // whatever owner Windows assigned at creation. Under the default "System objects: Default owner
+    // for objects created by members of the Administrators group" policy that owner is
+    // BUILTIN\Administrators, not the creating account, so demanding an exact match rejected files
+    // this process had just created. Accept the same two owners `verify_private_destination_chain`
+    // already accepts for the directories above this file; any other owner means the file was not
+    // created by this account and is still refused.
+    let administrators = well_known_sid(WinBuiltinAdministratorsSid)?;
+    // SAFETY: `owner` is a valid SID inside the live descriptor, `expected_sid` is the caller's
+    // valid current-account SID, and `administrators` stays live across both comparisons.
+    let owner_is_acceptable = unsafe {
+        EqualSid(owner, expected_sid) != 0 || EqualSid(owner, administrators.as_ptr()) != 0
+    };
+    if !owner_is_acceptable {
         return Err(invalid_acl(
             "private file is not owned by the current account",
         ));
