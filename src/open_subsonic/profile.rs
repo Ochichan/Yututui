@@ -46,6 +46,7 @@ pub struct OpenSubsonicPaths {
     profile: PathBuf,
     private_store: PathBuf,
     bridge_store: PathBuf,
+    publish_store: PathBuf,
     transaction_manifest: PathBuf,
     transaction_profile: PathBuf,
     transaction_private: PathBuf,
@@ -61,6 +62,12 @@ impl OpenSubsonicPaths {
             profile: root.join("open-subsonic-profile-v1.json"),
             private_store: root.join("open-subsonic-private-v1.json"),
             bridge_store: root.join("open-subsonic-bridge-v1.json"),
+            // Deliberately outside the store-set transaction. Nothing in the publish ledger has to
+            // stay consistent with a rating shadow or a playlist link, and a file an older binary
+            // never opens is the only shape here that survives a downgrade: both `DiskProfile` and
+            // `DiskBridgeState` are `deny_unknown_fields` behind versioned decoders, so a new field
+            // in either makes the whole store unreadable to the previous release.
+            publish_store: root.join("open-subsonic-publish-v1.json"),
             transaction_manifest: root.join("store-set-transaction-v1.json"),
             transaction_profile: root.join("store-set-profile-v1.stage"),
             transaction_private: root.join("store-set-private-v1.stage"),
@@ -79,6 +86,11 @@ impl OpenSubsonicPaths {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The publish ledger, which is committed on its own rather than with the store set.
+    pub fn publish_store(&self) -> &Path {
+        &self.publish_store
     }
 
     pub(crate) fn profile(&self) -> &Path {

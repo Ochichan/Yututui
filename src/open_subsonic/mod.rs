@@ -20,6 +20,7 @@ mod playlist_create_recovery;
 pub mod private_store;
 pub mod profile;
 pub mod proxy;
+pub mod publish;
 pub mod rating;
 pub mod transaction;
 mod wire;
