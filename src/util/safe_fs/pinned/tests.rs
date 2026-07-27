@@ -201,19 +201,96 @@ fn unsupported_ephemeral_creation_never_falls_back_in_an_untrusted_directory() {
 }
 
 #[test]
-fn untrusted_named_generation_cannot_be_promoted() {
+fn untrusted_named_generation_cannot_be_promoted_out_of_its_directory() {
     let _revoke_reset = MutationRevokeReset::clear();
     let root = temp_root("untrusted-named-promote");
+    let stage_dir = root.join("stage");
+    let publish_dir = root.join("publish");
+    fs::create_dir_all(&stage_dir).unwrap();
+    fs::create_dir_all(&publish_dir).unwrap();
+    let staged = PinnedDir::open_existing(&stage_dir, PathBuf::new().as_path()).unwrap();
+    let published = PinnedDir::open_existing(&publish_dir, PathBuf::new().as_path()).unwrap();
+    let stage = staged.create_new(OsStr::new("owned.stage")).unwrap();
+
+    let error = stage
+        .promote_noreplace(&published, OsStr::new("final.audio"))
+        .expect_err("untrusted cross-directory promotion must fail closed");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(stage_dir.join("owned.stage").is_file());
+    assert!(!publish_dir.join("final.audio").exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn untrusted_named_generation_promotes_within_one_directory() {
+    let _revoke_reset = MutationRevokeReset::clear();
+    let root = temp_root("untrusted-same-dir-promote");
     fs::create_dir_all(&root).unwrap();
     let pinned = PinnedDir::open_existing(&root, PathBuf::new().as_path()).unwrap();
-    let stage = pinned.create_new(OsStr::new("owned.stage")).unwrap();
+    let mut stage = pinned.create_new(OsStr::new("owned.stage")).unwrap();
+    stage.file_mut().unwrap().write_all(b"published").unwrap();
+    stage.sync_durable().unwrap();
+
+    let published = stage
+        .promote_noreplace(&pinned, OsStr::new("final.audio"))
+        .expect("a stage that never leaves its own directory must promote");
+
+    assert_eq!(fs::read(root.join("final.audio")).unwrap(), b"published");
+    assert!(!root.join("owned.stage").exists());
+    let mut contents = Vec::new();
+    published
+        .file()
+        .unwrap()
+        .read_to_end(&mut contents)
+        .unwrap();
+    assert_eq!(contents, b"published");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn untrusted_same_directory_promotion_never_replaces_an_existing_name() {
+    let _revoke_reset = MutationRevokeReset::clear();
+    let root = temp_root("untrusted-same-dir-noreplace");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("final.audio"), b"already here").unwrap();
+    let pinned = PinnedDir::open_existing(&root, PathBuf::new().as_path()).unwrap();
+    let mut stage = pinned.create_new(OsStr::new("owned.stage")).unwrap();
+    stage.file_mut().unwrap().write_all(b"published").unwrap();
+    stage.sync_durable().unwrap();
 
     let error = stage
         .promote_noreplace(&pinned, OsStr::new("final.audio"))
-        .expect_err("untrusted named promotion must fail closed");
+        .expect_err("an occupied destination name must never be replaced");
 
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(root.join("final.audio")).unwrap(), b"already here");
     assert!(root.join("owned.stage").is_file());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn untrusted_same_directory_promotion_rejects_a_stage_name_swap() {
+    let _revoke_reset = MutationRevokeReset::clear();
+    let root = temp_root("untrusted-same-dir-stage-swap");
+    fs::create_dir_all(&root).unwrap();
+    let pinned = PinnedDir::open_existing(&root, PathBuf::new().as_path()).unwrap();
+    let mut stage = pinned.create_new(OsStr::new("owned.stage")).unwrap();
+    stage.file_mut().unwrap().write_all(b"owned").unwrap();
+    stage.sync_durable().unwrap();
+    fs::rename(root.join("owned.stage"), root.join("displaced-owned.stage")).unwrap();
+    fs::write(root.join("owned.stage"), b"foreign").unwrap();
+
+    let error = stage
+        .promote_noreplace(&pinned, OsStr::new("final.audio"))
+        .expect_err("a foreign stage name must not be promoted");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(root.join("owned.stage")).unwrap(), b"foreign");
+    assert_eq!(
+        fs::read(root.join("displaced-owned.stage")).unwrap(),
+        b"owned"
+    );
     assert!(!root.join("final.audio").exists());
     let _ = fs::remove_dir_all(root);
 }
