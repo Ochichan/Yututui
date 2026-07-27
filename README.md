@@ -512,7 +512,7 @@ If the primary app or daemon is running, the CLI exports that owner's current in
 
 It excludes authentication cookies, API keys, OAuth tokens and account identifiers; every filesystem path and machine-specific audio setting; playable, origin, artwork and radio-stream URLs; downloaded/recorded media, manifests and sidecars; pending scrobbles, transfer jobs/reports and session queues; AI usage logs, generated caches, artwork caches and application logs; managed-tool binaries and paths, desktop geometry and recovery backups.
 
-The JSON is **not encrypted** and still contains private listening history, so store or share it accordingly. This version is export-only: there is no import or restore command yet.
+The JSON is **not encrypted** and still contains private listening history, so store or share it accordingly. See the export/import reference below for bringing one back in.
 
 </details>
 
@@ -568,8 +568,9 @@ WebDAV credentials are prompted with echo disabled and are never accepted as arg
 endpoint must be HTTPS unless it is loopback. Status and audit output deliberately omit
 endpoints, paths and secrets.
 
-**Keep the recovery kit off this machine.** It is the only way back if every device is lost;
-nobody can regenerate it for you. Revoking a device re-locks everything uploaded afterwards,
+**Keep the recovery kit off this machine.** Nobody can regenerate it for you. Note that no
+command rebuilds a vault from the kit alone yet, so keep at least one approved device rather
+than treating the kit as a restore. Revoking a device re-locks everything uploaded afterwards,
 but cannot un-read what that device already downloaded.
 
 Inside the app the same flow lives under **Settings (`o`) → Sync**.

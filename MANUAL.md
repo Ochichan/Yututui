@@ -355,7 +355,7 @@ ytt sync setup
 
 It asks for your WebDAV address (`https://…`, or a plain `http://` address only if it is on this same machine), your username and password, and a name for this device. Passwords are typed with the screen not showing them, and they are never accepted as part of the command itself.
 
-At the end it writes a **recovery kit** — a small file, saved wherever you tell it. **Keep it somewhere safe and off this computer.** If you ever lose every device at once, that file is the only way back to your data. Nobody, including the author of YuTuTui!, can recover it for you.
+At the end it writes a **recovery kit** — a small file, saved wherever you tell it. **Keep it somewhere safe and off this computer.** It is the material any future recovery would need, and nobody — including the author of YuTuTui! — can regenerate it for you. One honest caveat for now: there is no command yet that rebuilds a vault from the kit alone, so keep at least one connected machine rather than relying on the kit as a restore.
 
 ### Adding a second device
 
@@ -371,7 +371,7 @@ It prints a one-time connection code that is good for ten minutes. Then, on the 
 ytt sync pair join ABCDE-FGHIJ-KLMNO-PQRST-UV
 ```
 
-The new machine asks for the same WebDAV details, then waits. Back on the first machine, approve it. You will see the same short fingerprint on both screens — if the two do not match, say no.
+The new machine asks for the same WebDAV details, then waits. Back on the first machine, approve it: that screen shows the joining machine's name and a short key fingerprint before you say yes. Only approve a name you recognise, and only while you are the one setting the other machine up. (The joining machine does not show you that fingerprint yet, so there is nothing to compare it against — the ten-minute one-time code is what keeps a stranger out.)
 
 If you get interrupted halfway, nothing is lost:
 
