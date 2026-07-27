@@ -17,6 +17,7 @@
 //!   vs `true` with nothing loaded). The script then must keep them equal.
 
 mod harness;
+mod personal_sync;
 mod rating_recommendation;
 
 use std::sync::Arc;
@@ -190,6 +191,18 @@ fn command_classifier_pins_shared_and_owner_boundary_exceptions() {
         command_parity_class(&RemoteCommand::ExportPersonalData {
             directory: "/tmp".to_owned(),
             schema: None,
+        }),
+        CommandParityClass::BothOwnerLoopIntercepted
+    );
+    // The other two intercepted commands. Their behavioural parity lives in
+    // `parity_tests::personal_sync`; pinning the class here keeps the classifier honest.
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SyncNow),
+        CommandParityClass::BothOwnerLoopIntercepted
+    );
+    assert_eq!(
+        command_parity_class(&RemoteCommand::SyncRevokeDevice {
+            device_id: "device-a".to_owned(),
         }),
         CommandParityClass::BothOwnerLoopIntercepted
     );
