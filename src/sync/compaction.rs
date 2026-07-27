@@ -307,6 +307,23 @@ pub fn compaction_quorum(
     Ok(!active.is_empty() && acknowledged == active)
 }
 
+/// Scoping component for acknowledgement keys.
+///
+/// This used to be three separate path components — the checkpoint id plus two 64-character
+/// hashes — which made the relative key 255 characters before any vault root was prepended. That
+/// is 5 characters below Windows' 260-character `MAX_PATH`, so writing an acknowledgement failed
+/// on Windows under every root, and the whole `sync::manual::maintenance` suite failed there while
+/// passing everywhere else. Truncating the individual hashes was not enough on its own: two
+/// truncated hashes still leave 191 characters, and a typical Windows temp or AppData root pushes
+/// that back over the limit.
+///
+/// One derived component scopes the same thing in 32 characters. Nothing is weakened: the full
+/// values stay in the signed acknowledgement payload, which is what `SignedCompactionAck::verify`
+/// authenticates, and `compaction_generation_hash` already binds the checkpoint id and every other
+/// compaction field, so a change to any input still yields a different scope.
+const ACK_PATH_SCOPE_DOMAIN: &[u8] = b"yututui/compaction-ack-path-scope/v1";
+pub(crate) const ACK_PATH_SCOPE_CHARS: usize = 32;
+
 pub fn compaction_ack_prefix(
     dataset_id: &str,
     compaction: &CompactionCheckpoint,
@@ -318,10 +335,19 @@ pub fn compaction_ack_prefix(
     if membership.dataset_id != dataset_id || !valid_hash(&membership.head_hash) {
         return Err(VaultError::InvalidObjectKey);
     }
-    ObjectKey::new(format!(
-        "yututui/v2/{dataset_id}/compaction-acks/{}/{generation_hash}/{}",
-        compaction.checkpoint_id, membership.head_hash
-    ))
+    let scope = sha256_domain_hex(
+        ACK_PATH_SCOPE_DOMAIN,
+        &[
+            dataset_id.as_bytes(),
+            compaction.checkpoint_id.as_bytes(),
+            generation_hash.as_bytes(),
+            membership.head_hash.as_bytes(),
+        ],
+    );
+    let scope = scope
+        .get(..ACK_PATH_SCOPE_CHARS)
+        .ok_or(VaultError::InvalidObjectKey)?;
+    ObjectKey::new(format!("yututui/v2/{dataset_id}/compaction-acks/{scope}"))
 }
 
 pub fn compaction_ack_key(
@@ -711,22 +737,46 @@ mod tests {
         let fixture = fixture();
         let membership = fixture.verified();
         let device = DeviceId::new("device-a").unwrap();
-        let generation_hash =
-            compaction_generation_hash("compaction-ack-dataset", &fixture.compaction).unwrap();
-        assert_eq!(
-            compaction_ack_key(
-                "compaction-ack-dataset",
-                &fixture.compaction,
-                &membership,
-                &device,
-            )
-            .unwrap()
-            .as_str(),
-            format!(
-                "yututui/v2/compaction-ack-dataset/compaction-acks/compaction-001/{generation_hash}/{}/device-a.age",
-                membership.head_hash
-            )
+        let key = compaction_ack_key(
+            "compaction-ack-dataset",
+            &fixture.compaction,
+            &membership,
+            &device,
+        )
+        .unwrap();
+        let prefix = "yututui/v2/compaction-ack-dataset/compaction-acks/";
+        let scope = key
+            .as_str()
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix("/device-a.age"))
+            .expect("the key is dataset-scoped and device-named");
+        assert_eq!(scope.len(), ACK_PATH_SCOPE_CHARS);
+        assert!(scope.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        // Windows `MAX_PATH` is 260 for the whole path, so the relative key has to leave room for
+        // a real vault root. The three-component form was 255 characters and could not.
+        assert!(
+            key.as_str().len() < 128,
+            "acknowledgement key grew back past the Windows path budget: {}",
+            key.as_str().len()
         );
+
+        // The scope must still separate different compactions and different membership epochs.
+        let mut other_epoch = fixture.verified();
+        other_epoch.head_hash = "f".repeat(64);
+        let other_key = compaction_ack_key(
+            "compaction-ack-dataset",
+            &fixture.compaction,
+            &other_epoch,
+            &device,
+        )
+        .unwrap();
+        assert_ne!(
+            key.as_str(),
+            other_key.as_str(),
+            "a different membership head must not share an acknowledgement scope"
+        );
+
         assert!(compaction_ack_prefix("../dataset", &fixture.compaction, &membership).is_err());
         let mut wrong_membership = membership;
         wrong_membership.head_hash = "not-a-hash".to_owned();

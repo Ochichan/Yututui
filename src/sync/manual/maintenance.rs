@@ -570,29 +570,24 @@ fn valid_acknowledgement_key(root: &ObjectKey, key: &ObjectKey) -> bool {
         return false;
     };
     let mut components = relative.split('/');
-    let (
-        Some(compaction_id),
-        Some(generation_hash),
-        Some(membership_hash),
-        Some(device_file),
-        None,
-    ) = (
-        components.next(),
-        components.next(),
-        components.next(),
-        components.next(),
-        components.next(),
-    )
+    let (Some(scope), Some(device_file), None) =
+        (components.next(), components.next(), components.next())
     else {
         return false;
     };
-    !compaction_id.is_empty()
-        && is_lower_hash(generation_hash)
-        && is_lower_hash(membership_hash)
+    is_ack_path_scope(scope)
         && device_file
             .strip_suffix(".age")
             .and_then(|device_id| DeviceId::new(device_id).ok())
             .is_some()
+}
+
+/// Matches the single derived component produced by `compaction_ack_prefix`.
+fn is_ack_path_scope(scope: &str) -> bool {
+    scope.len() == crate::sync::compaction::ACK_PATH_SCOPE_CHARS
+        && scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn checkpoint_hash_from_key(key: &ObjectKey) -> Option<String> {
