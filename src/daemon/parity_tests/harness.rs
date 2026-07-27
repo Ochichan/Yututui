@@ -274,6 +274,42 @@ fn normalize(player: &mut PlayerModel, queue: &mut QueueModel) {
     queue.rev = 0;
 }
 
+/// Asserts both owners accepted, naming the side that refused and why.
+///
+/// `assert!(app_resp.ok && engine_resp.ok)` says nothing about which owner rejected the command
+/// or on what grounds, which is exactly the question when it fires on CI and not on any machine
+/// you can attach to. The revision-guarded cases have exactly two ways to refuse — `stale_rev`
+/// when the guard saw a queue revision other than the one handed to it, and `queue_index` when
+/// the queue was shorter than the position — so the reason alone separates them. The live queue
+/// revision and length are printed too, because a mismatch says whether the queue moved under
+/// the test between reading the revision and issuing the command.
+pub(super) fn assert_both_accepted(
+    step: &str,
+    app: &App,
+    engine: &DaemonEngine,
+    app_resp: &RemoteResponse,
+    engine_resp: &RemoteResponse,
+) {
+    if app_resp.ok && engine_resp.ok {
+        return;
+    }
+    let app_queue = app.core_view().queue;
+    let engine_queue = engine.core_view().queue;
+    panic!(
+        "{step}: both owners had to accept.\n  \
+         App:    ok={} reason={:?} queue rev={} len={}\n  \
+         daemon: ok={} reason={:?} queue rev={} len={}",
+        app_resp.ok,
+        app_resp.reason,
+        app_queue.rev(),
+        app_queue.len(),
+        engine_resp.ok,
+        engine_resp.reason,
+        engine_queue.rev(),
+        engine_queue.len(),
+    );
+}
+
 pub(super) fn assert_parity(step: &str, app: &App, engine: &DaemonEngine) {
     let (mut app_player, mut app_queue) = models_of(&app.core_view());
     let (mut daemon_player, mut daemon_queue) = models_of(&engine.core_view());
