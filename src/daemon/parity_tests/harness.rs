@@ -283,7 +283,7 @@ fn normalize(player: &mut PlayerModel, queue: &mut QueueModel) {
 /// the queue was shorter than the position — so the reason alone separates them. The live queue
 /// revision and length are printed too, because a mismatch says whether the queue moved under
 /// the test between reading the revision and issuing the command.
-pub(super) fn assert_both_accepted(
+pub(super) fn assert_accepted(
     step: &str,
     app: &App,
     engine: &DaemonEngine,

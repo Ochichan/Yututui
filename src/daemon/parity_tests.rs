@@ -761,13 +761,7 @@ async fn revision_checked_queue_remove_is_stale_safe_and_owner_parity_holds() {
         .await;
     assert!(!shutdown);
     assert!(effects.is_empty());
-    assert_both_accepted(
-        "fresh revision-checked remove",
-        &app,
-        &engine,
-        &app_resp,
-        &engine_resp,
-    );
+    assert_accepted("guarded remove", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("fresh revision-checked remove", &app, &engine);
 }
@@ -880,13 +874,7 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
         })
         .await;
     assert!(!shutdown);
-    assert_both_accepted(
-        "fresh revision-checked move",
-        &app,
-        &engine,
-        &app_resp,
-        &engine_resp,
-    );
+    assert_accepted("guarded move", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("fresh revision-checked move", &app, &engine);
 
@@ -901,13 +889,7 @@ async fn revision_guarded_move_and_clear_reject_stale_and_accept_fresh_or_absent
     let unguarded = RemoteCommand::QueueClearUpcoming { expected_rev: None };
     let app_resp = app_apply(&mut app, unguarded.clone());
     let (engine_resp, ..) = engine.handle_remote(unguarded).await;
-    assert_both_accepted(
-        "unguarded clear-upcoming",
-        &app,
-        &engine,
-        &app_resp,
-        &engine_resp,
-    );
+    assert_accepted("unguarded clear", &app, &engine, &app_resp, &engine_resp);
     assert_eq!(app_resp.reason, engine_resp.reason);
     assert_parity("unguarded clear-upcoming", &app, &engine);
 }
