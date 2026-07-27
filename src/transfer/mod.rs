@@ -14,6 +14,8 @@ pub mod csv;
 mod download_cli;
 pub mod download_plan;
 pub mod json;
+pub(crate) mod library_modes;
+pub(crate) mod library_publish;
 pub(crate) mod local_playlist;
 mod match_cache;
 pub mod matching;
