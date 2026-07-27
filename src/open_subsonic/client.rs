@@ -297,9 +297,11 @@ impl OpenSubsonicClient {
             if !response.status().is_redirection() {
                 return Ok(response);
             }
-            if endpoint == Endpoint::Scrobble {
+            if matches!(endpoint, Endpoint::Scrobble | Endpoint::StartScan) {
                 // A non-conforming server could commit this GET-style mutation before returning
-                // its redirect. Following even a same-origin Location could submit it twice.
+                // its redirect. Following even a same-origin Location could submit it twice: a
+                // duplicated scrobble, or a second full library scan on a server that just
+                // started one.
                 return Err(MutationDeliveryError::Ambiguous(
                     ServerError::OriginRejected,
                 ));
@@ -392,6 +394,11 @@ fn status_error_for(endpoint: Endpoint, response: &Response) -> ServerError {
                     | Endpoint::AlbumList2
                     | Endpoint::Artists
                     | Endpoint::Playlists
+                    // `startScan` predates OpenSubsonic and is absent from older Subsonic servers
+                    // and from proxies that expose only part of the API. Treating that as a
+                    // missing feature is what lets a publish degrade to an advisory instead of
+                    // reporting a failure for work that already succeeded.
+                    | Endpoint::StartScan
             ) =>
         {
             ServerError::UnsupportedFeature
