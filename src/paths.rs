@@ -49,8 +49,11 @@ fn env_dir(name: &str) -> Option<PathBuf> {
 }
 
 /// The process-unique sandbox root used to isolate every store under `#[cfg(test)]`.
+///
+/// Shared with `test_util::with_isolated_data_dir`, which carves per-test directories out of it
+/// for tests that write through a real store.
 #[cfg(test)]
-fn test_base() -> PathBuf {
+pub(crate) fn test_base() -> PathBuf {
     use std::sync::OnceLock;
     static BASE: OnceLock<PathBuf> = OnceLock::new();
     BASE.get_or_init(|| {
