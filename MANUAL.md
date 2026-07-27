@@ -320,13 +320,137 @@ When the normal primary `ytt` app or daemon is running, the CLI asks that owner 
 - AI usage logs, generated caches, artwork caches and application logs;
 - managed-tool binaries and paths, desktop window geometry and recovery backups.
 
-The export is **not encrypted**. It has no passwords or tokens, but it does contain your private listening history, so treat it as a personal file before uploading or sharing it. This version only exports data — there is no import or restore command yet.
+The export is **not encrypted**. It has no passwords or tokens, but it does contain your private listening history, so treat it as a personal file before uploading or sharing it.
+
+### Bringing an export back in
+
+```sh
+ytt data import ~/Downloads/the-file.json              # preview only (the default)
+ytt data import ~/Downloads/the-file.json --apply      # actually merge it
+```
+
+Nothing changes unless you pass `--apply`; without it you get a preview of what the merge *would* do. A file from a different setup is merged without deleting anything you already have. A file from *this* setup is merged by causal order, so re-importing an older export of your own will not undo newer listening.
+
+Exports are written in schema 2 by default. `ytt data export --schema 1` writes the older format if you need to hand the file to an older copy of YuTuTui!.
 
 YuTuTui! creates a new owner-only file and never overwrites an existing one. It also rejects a destination where an untrusted local account could create, replace, or delete the completed path. If the destination filesystem cannot enforce and verify these private permissions or ACLs, the export fails instead of leaving a broadly readable copy.
 
 ---
 
-## 7. When something goes wrong (anywhere)
+## 7. Keeping two computers in step
+
+If you use YuTuTui! on more than one machine, it can keep your favorites, history, playlists and taste signals in step through a **WebDAV** folder — the kind of storage Nextcloud, ownCloud and most NAS boxes provide.
+
+The important part: **the server never sees your data.** Everything is encrypted on your computer before it is uploaded, and only devices you have personally approved can read it. A WebDAV provider that reads its own disks learns nothing but file sizes and timestamps.
+
+This is **off until you turn it on.**
+
+### Setting up the first device
+
+Inside the app: **Settings (`o`) → Sync**, which walks you through the same steps. From a terminal:
+
+```sh
+ytt sync setup
+```
+
+It asks for your WebDAV address (`https://…`, or a plain `http://` address only if it is on this same machine), your username and password, and a name for this device. Passwords are typed with the screen not showing them, and they are never accepted as part of the command itself.
+
+At the end it writes a **recovery kit** — a small file, saved wherever you tell it. **Keep it somewhere safe and off this computer.** It is the material any future recovery would need, and nobody — including the author of YuTuTui! — can regenerate it for you. One honest caveat for now: there is no command yet that rebuilds a vault from the kit alone, so keep at least one connected machine rather than relying on the kit as a restore.
+
+### Adding a second device
+
+On the machine that already works:
+
+```sh
+ytt sync pair create
+```
+
+It prints a one-time connection code that is good for ten minutes. Then, on the new machine:
+
+```sh
+ytt sync pair join ABCDE-FGHIJ-KLMNO-PQRST-UV
+```
+
+The new machine asks for the same WebDAV details, then waits. Back on the first machine, approve it: that screen shows the joining machine's name and a short key fingerprint before you say yes. Only approve a name you recognise, and only while you are the one setting the other machine up. (The joining machine does not show you that fingerprint yet, so there is nothing to compare it against — the ten-minute one-time code is what keeps a stranger out.)
+
+If you get interrupted halfway, nothing is lost:
+
+```sh
+ytt sync pair join --resume   # pick up where you left off, no code needed
+ytt sync pair cancel          # throw away an unfinished attempt
+```
+
+### Day to day
+
+```sh
+ytt sync status          # one line: what state sync is in
+ytt sync now             # merge this device with the folder right now
+```
+
+Status is always one of five things:
+
+| It says | It means |
+|---|---|
+| **Off** | Sync is not set up on this device. |
+| **Up to date** | Everything matches. Nothing to do. |
+| **Syncing** | A merge is happening right now. |
+| **Offline — will retry** | No connection. It will pick up by itself; you do not need to do anything. |
+| **Needs attention** | Something needs a decision from you — the next line tells you what. |
+
+### Managing devices
+
+```sh
+ytt sync devices                  # list active and removed devices
+ytt sync revoke <DEVICE_ID>       # remove a device you no longer have
+ytt sync recovery export --to DIR # save another copy of the recovery kit
+ytt sync audit                    # what sync has done, with no private details
+```
+
+Removing a device is real: it re-locks your data so the removed machine cannot read anything uploaded afterwards. Do this if a laptop is lost or sold. It cannot un-read what that machine already downloaded.
+
+---
+
+## 8. Playing from your own music server
+
+YuTuTui! can also play from one **OpenSubsonic** or **Navidrome** server — your own library, on your own hardware, alongside everything else in the app.
+
+Inside the app: **Settings (`o`) → Music server**. From a terminal:
+
+```sh
+ytt server setup            # test and save a connection
+ytt server status           # show the connection, with secrets left out
+ytt server remove           # forget the server; your local data stays
+```
+
+`setup` asks for the address and either a password or an API key, prompted without showing them on screen. As with sync, secrets are never accepted as part of the command.
+
+Your ratings and listening history flow back to the server. When a report cannot be delivered, it waits instead of being thrown away:
+
+```sh
+ytt server scrobbles list                  # reports waiting on a decision
+ytt server scrobbles retry <OPAQUE_ID>     # try that one again
+ytt server scrobbles mark-sent <OPAQUE_ID> # accept it as done, stop retrying
+```
+
+Playlists you create can hit the same situation — the server may or may not have finished creating one when the connection dropped:
+
+```sh
+ytt server playlists pending
+ytt server playlists abandon <LOCAL_PLAYLIST_ID>   # forget the guard; deletes nothing
+```
+
+There is also an experimental, off-by-default mode for Navidrome's detailed history:
+
+```sh
+ytt server history enable --experimental
+ytt server history disable      # also removes the extra saved password
+```
+
+It needs a second password of its own. Turning it off never affects ordinary server access.
+
+---
+
+## 9. When something goes wrong (anywhere)
 
 First, always: quit the app and run
 
