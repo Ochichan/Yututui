@@ -74,9 +74,15 @@ fn a_track_lands_under_the_library_subtree_with_its_exact_bytes() {
         PublishOutcome::Published(published) => published,
         other => panic!("expected a fresh publication, got {other:?}"),
     };
+    // Built by joining rather than written as a literal: the ledger stores whatever separator the
+    // platform uses, and this path is only ever re-joined onto the local music folder, so it is
+    // machine-local by construction — like the music folder itself.
     assert_eq!(
-        published.relative_path,
-        "YuTuTui/Some Artist/Some Album/03 - Some Song [dQw4w9WgXcQ].m4a"
+        Path::new(&published.relative_path),
+        Path::new(LIBRARY_SUBTREE)
+            .join("Some Artist")
+            .join("Some Album")
+            .join("03 - Some Song [dQw4w9WgXcQ].m4a")
     );
     assert_eq!(published.len, b"audio bytes".len() as u64);
     let landed = fixture.music.join(&published.relative_path);
