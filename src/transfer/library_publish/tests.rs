@@ -217,25 +217,27 @@ fn the_stage_name_is_hidden_from_server_scanners() {
 }
 
 #[test]
-fn a_symlinked_source_is_refused() {
+#[cfg(unix)]
+fn a_symlinked_source_is_refused_at_open_so_its_target_never_reaches_the_library() {
     let fixture = Fixture::new("symlink-source");
     let real = fixture.download("real.m4a", b"audio");
     let link = fixture.downloads.join("link.m4a");
-    #[cfg(unix)]
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    #[cfg(not(unix))]
-    {
-        let _ = &real;
-        return;
-    }
     let plan = plan_publish_path(&track("abcdefghijk", "Song"), Some("m4a"));
 
-    let error = publish_into_library(&link, &fixture.music, &plan).unwrap_err();
+    publish_into_library(&link, &fixture.music, &plan).unwrap_err();
 
+    // `O_NOFOLLOW` refuses the name before anything is read, so this holds no matter what the
+    // link pointed at or whether it was swapped after the caller looked.
+    assert!(!fixture.music.join(plan.relative_path()).exists());
     assert!(
-        error.to_string().contains("not a regular file"),
-        "unexpected error: {error}"
+        !fixture
+            .music
+            .join(&plan.relative_dir)
+            .join(&plan.stage_basename)
+            .exists()
     );
+    assert_eq!(fs::read(&real).unwrap(), b"audio");
 }
 
 #[test]
@@ -348,4 +350,34 @@ fn a_hostile_extension_is_dropped_rather_than_written() {
             "extension {hostile:?} must not reach the filename"
         );
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_subtree_too_closed_for_the_server_is_refused_rather_than_published_into() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new("closed-subtree");
+    fs::set_permissions(&fixture.music, fs::Permissions::from_mode(0o750)).unwrap();
+    let source = fixture.download("song.m4a", b"audio");
+    let plan = plan_publish_path(&track("abcdefghijk", "Song"), Some("m4a"));
+    // An existing subtree the server's account cannot traverse. This is also what a restrictive
+    // process umask produces when the publish creates the subtree itself: `DirBuilder::mode` is
+    // masked, so a user running under umask 077 gets 0o700 here and this same refusal.
+    let subtree = fixture.music.join(LIBRARY_SUBTREE);
+    fs::create_dir_all(&subtree).unwrap();
+    fs::set_permissions(&subtree, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let error = publish_into_library(&source, &fixture.music, &plan).unwrap_err();
+
+    // Refusing is right: publishing into a directory the server cannot read would look like a
+    // success and produce a track that never appears. The message has to name the mode so the
+    // user can act on it.
+    let message = error.to_string();
+    assert!(message.contains("0700"), "{message}");
+    assert!(
+        message.contains("library publication requires"),
+        "{message}"
+    );
+    assert!(!fixture.music.join(plan.relative_path()).exists());
 }

@@ -168,7 +168,10 @@ pub(crate) fn publish_into_library(
     let modes = publish_modes(PublishAudience::SharedLibrary, &destination_root)?;
     ensure_scoped_directory(&destination_root, &plan.relative_dir, modes.directory)?;
 
-    let source_len = source_length(source)?;
+    // Opened once and reused for every read below. Checking the path and then reopening it would
+    // leave a window in which the name could become a symlink to something else entirely.
+    let mut source_file = open_source(source)?;
+    let source_len = source_length(&source_file, source)?;
     ensure_room_for(&destination_root, source_len)?;
 
     // The handle walk is the containment boundary: every component is opened O_NOFOLLOW and the
@@ -176,7 +179,9 @@ pub(crate) fn publish_into_library(
     let directory = safe_fs::PinnedDir::open_existing(&destination_root, &plan.relative_dir)?;
     let relative_path = plan.relative_path();
 
-    if let Some(outcome) = settle_existing_publication(&directory, plan, source, &relative_path)? {
+    if let Some(outcome) =
+        settle_existing_publication(&directory, plan, &mut source_file, source, &relative_path)?
+    {
         return Ok(outcome);
     }
 
@@ -184,7 +189,7 @@ pub(crate) fn publish_into_library(
     if let Some(mode) = modes.file {
         apply_publish_mode(&mut stage, mode)?;
     }
-    copy_source_into_stage(source, &mut stage, source_len)?;
+    copy_source_into_stage(&mut source_file, &mut stage, source_len, source)?;
     stage.sync_durable()?;
 
     let identity = file_identity_from_open(
@@ -209,6 +214,7 @@ pub(crate) fn publish_into_library(
 fn settle_existing_publication(
     directory: &safe_fs::PinnedDir,
     plan: &PublishPlan,
+    source_file: &mut std::fs::File,
     source: &Path,
     relative_path: &str,
 ) -> Result<Option<PublishOutcome>> {
@@ -223,7 +229,7 @@ fn settle_existing_publication(
         Path::new(&plan.basename),
         ARTIFACT_AUDIO_MAX_BYTES,
     )?;
-    let local_identity = local_identity(source)?;
+    let local_identity = local_identity(source_file, source)?;
 
     if published_identity.sha256 == local_identity.sha256 {
         return Ok(Some(PublishOutcome::AlreadyPublished(PublishedArtifact {
@@ -267,18 +273,18 @@ fn open_or_reuse_stage(
 }
 
 fn copy_source_into_stage(
-    source: &Path,
+    source_file: &mut std::fs::File,
     stage: &mut safe_fs::OwnedGeneration,
     expected_len: u64,
+    source: &Path,
 ) -> Result<()> {
     use std::io::Read as _;
 
-    let mut reader = std::fs::File::open(source)
-        .with_context(|| format!("open the downloaded track {}", source.display()))?;
+    source_file.seek(SeekFrom::Start(0))?;
     let limit = expected_len
         .checked_add(1)
         .context("published artifact size overflow")?;
-    let copied = std::io::copy(&mut reader.by_ref().take(limit), stage.file_mut()?)
+    let copied = std::io::copy(&mut source_file.by_ref().take(limit), stage.file_mut()?)
         .with_context(|| format!("copy {} into the music folder", source.display()))?;
     if copied != expected_len {
         bail!(
@@ -290,18 +296,37 @@ fn copy_source_into_stage(
 }
 
 fn local_identity(
+    source_file: &mut std::fs::File,
     source: &Path,
 ) -> Result<crate::transfer::artifact_identity::ArtifactFileIdentity> {
-    let mut file = std::fs::File::open(source)
-        .with_context(|| format!("open the downloaded track {}", source.display()))?;
-    let identity = file_identity_from_open(&mut file, source, ARTIFACT_AUDIO_MAX_BYTES)?;
+    source_file.seek(SeekFrom::Start(0))?;
+    let identity = file_identity_from_open(source_file, source, ARTIFACT_AUDIO_MAX_BYTES)?;
     Ok(identity)
 }
 
-fn source_length(source: &Path) -> Result<u64> {
-    let metadata = std::fs::symlink_metadata(source)
+/// Open the downloaded track without following a final symlink.
+///
+/// Everything downstream reads this one handle. A path that is checked and then reopened can be
+/// swapped in between; a handle cannot.
+fn open_source(source: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+        .open(source)
+        .with_context(|| format!("open the downloaded track {}", source.display()))
+}
+
+/// Establish size and regular-file status from the open handle rather than from the name.
+fn source_length(source_file: &std::fs::File, source: &Path) -> Result<u64> {
+    let metadata = source_file
+        .metadata()
         .with_context(|| format!("inspect the downloaded track {}", source.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !metadata.is_file() {
         bail!(
             "refusing to publish {}, which is not a regular file",
             source.display()

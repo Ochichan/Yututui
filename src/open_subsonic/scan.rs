@@ -41,9 +41,10 @@ pub async fn request_library_scan(paths: &OpenSubsonicPaths) -> LibraryScanReque
     {
         Ok(()) => LibraryScanRequest::Started,
         Err(ServerError::UnsupportedFeature) => LibraryScanRequest::Unsupported,
-        Err(ServerError::PermissionDenied | ServerError::AuthenticationRequired) => {
-            LibraryScanRequest::NotPermitted
-        }
+        // Only an authorisation refusal means "this account may not scan". A credential the
+        // server would not accept is a different problem with a different fix, and telling the
+        // user their account lacks the right would send them to the wrong place.
+        Err(ServerError::PermissionDenied) => LibraryScanRequest::NotPermitted,
         Err(_) => LibraryScanRequest::Unavailable,
     }
 }

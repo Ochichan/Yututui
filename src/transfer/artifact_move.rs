@@ -417,12 +417,12 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
             request.destination_root.display()
         )
     })?;
-    let publish_modes = publish_modes(
+    let modes = publish_modes(
         artifact_publish_audience(request.kind, &destination_root),
         &destination_root,
     )?;
     let requested_parent =
-        ensure_scoped_directory(&destination_root, relative_parent, publish_modes.directory)?;
+        ensure_scoped_directory(&destination_root, relative_parent, modes.directory)?;
     let destination_parent = destination_root.join(relative_parent);
     let (
         destination_root_pin,
@@ -595,8 +595,8 @@ fn prepare_transaction(request: ArtifactMoveRequest) -> anyhow::Result<ArtifactM
         sidecar_stage_name: format!(".ytt-stage-{stage_tag}-sidecar"),
         audio_stage_object_id: None,
         sidecar_stage_object_id: None,
-        audio_publish_mode: publish_modes.file,
-        sidecar_publish_mode: publish_modes.sidecar,
+        audio_publish_mode: modes.file,
+        sidecar_publish_mode: modes.sidecar,
         audio_source_private_stage: source_private_stage,
         sidecar_source_private_stage: source_private_stage,
         verify_legacy_existing_modes: false,
@@ -1145,26 +1145,20 @@ fn is_false(value: &bool) -> bool {
 /// An organise into the user's own library is the only case that leaves the app-owned inbox, so it
 /// is the only one that mirrors the destination root's group and other bits. An import download
 /// staying inside the inbox stays owner-only. Anything else asks for no explicit mode.
+/// Who reads the result is a property of the move, not of the platform, so this answers the same
+/// way everywhere. Only turning an audience into concrete bits is Unix-only, and `publish_modes`
+/// already asks for nothing on platforms without them.
 fn artifact_publish_audience(kind: ArtifactMoveKind, destination_root: &Path) -> PublishAudience {
-    #[cfg(unix)]
+    if matches!(kind, ArtifactMoveKind::Organize) && import_private_root(destination_root).is_none()
     {
-        if matches!(kind, ArtifactMoveKind::Organize)
-            && import_private_root(destination_root).is_none()
-        {
-            return PublishAudience::SharedLibrary;
-        }
-        if matches!(kind, ArtifactMoveKind::ImportDownload)
-            && import_private_root(destination_root).is_some()
-        {
-            return PublishAudience::Private;
-        }
-        PublishAudience::Inherited
+        return PublishAudience::SharedLibrary;
     }
-    #[cfg(not(unix))]
+    if matches!(kind, ArtifactMoveKind::ImportDownload)
+        && import_private_root(destination_root).is_some()
     {
-        let _ = (kind, destination_root);
-        PublishAudience::Inherited
+        return PublishAudience::Private;
     }
+    PublishAudience::Inherited
 }
 
 fn already_committed_path(request: &ArtifactMoveRequest) -> anyhow::Result<Option<PathBuf>> {
