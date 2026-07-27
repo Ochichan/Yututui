@@ -34,6 +34,7 @@ pub(crate) enum Endpoint {
     Star,
     Unstar,
     Scrobble,
+    StartScan,
     CreatePlaylist,
     UpdatePlaylist,
     DeletePlaylist,
@@ -59,6 +60,7 @@ impl Endpoint {
             Self::Star => "star",
             Self::Unstar => "unstar",
             Self::Scrobble => "scrobble",
+            Self::StartScan => "startScan",
             Self::CreatePlaylist => "createPlaylist",
             Self::UpdatePlaylist => "updatePlaylist",
             Self::DeletePlaylist => "deletePlaylist",
@@ -193,6 +195,25 @@ impl OpenSubsonicClient {
             &[("id", item.item_id().as_str().to_owned())],
         )
         .await
+    }
+
+    /// Ask the server to rescan its library after a track was published into its music folder.
+    ///
+    /// Deliberately parameterless. `musicFolderId` is optional and server-specific, and YuTuTui
+    /// cannot know which configured folder the user's path corresponds to — `getMusicFolders`
+    /// returns ids and names, never paths. A full rescan is the only request that is correct
+    /// without that knowledge. `fullScan` is likewise omitted: it is a Navidrome extension, and
+    /// the default incremental scan is what picks up a new file.
+    ///
+    /// Callers must treat every error here as advisory. The publication has already committed to
+    /// disk by the time this runs, so a server that cannot or will not scan is a slower path to
+    /// the same result, not a failure.
+    pub(crate) async fn start_scan(
+        &self,
+        credential: &ServerCredential,
+    ) -> Result<(), ServerError> {
+        self.request_mutation(credential, Endpoint::StartScan, &[])
+            .await
     }
 
     async fn request_mutation(

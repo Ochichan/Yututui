@@ -296,6 +296,124 @@ async fn scrobble_redirects_are_ambiguous_and_never_followed() {
 }
 
 #[tokio::test]
+async fn a_server_without_start_scan_reports_an_unsupported_feature() {
+    // Publication has already committed by the time a scan is requested, so every one of these has
+    // to be distinguishable from a real failure. 404 is the one that mattered: without `StartScan`
+    // in the whitelist it lands on `NotFound` and the caller reports a broken publish.
+    for (status, reason) in [
+        (404, "Not Found"),
+        (405, "Method Not Allowed"),
+        (501, "Not Implemented"),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fixture = test_client(port).await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            assert!(request_target(&request).starts_with("/rest/startScan.view?"));
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        assert_eq!(
+            fixture.client.start_scan(&fixture.credential).await,
+            Err(ServerError::UnsupportedFeature),
+            "HTTP {status} must degrade to an advisory, not a publish failure"
+        );
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_start_scan_the_account_may_not_run_is_permission_denied() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let fixture = test_client(port).await;
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut stream).await;
+        assert!(request_target(&request).starts_with("/rest/startScan.view?"));
+        // Navidrome restricts scanning to admin accounts; an ordinary user gets wire code 50.
+        let body = "{\"subsonic-response\":{\"status\":\"failed\",\"version\":\"1.16.1\",\
+             \"error\":{\"code\":50,\"message\":\"not authorized\"}}}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    assert_eq!(
+        fixture.client.start_scan(&fixture.credential).await,
+        Err(ServerError::PermissionDenied)
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn start_scan_redirects_are_never_followed() {
+    // A proxy that redirects could otherwise make one publish trigger two full library scans.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let fixture = test_client(port).await;
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut stream).await;
+        assert!(request_target(&request).starts_with("/rest/startScan.view?"));
+        stream
+            .write_all(
+                b"HTTP/1.1 302 Found\r\nLocation: /rest/startScan-again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        drop(stream);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "a redirected startScan must issue exactly one request"
+        );
+    });
+
+    assert_eq!(
+        fixture.client.start_scan(&fixture.credential).await,
+        Err(ServerError::OriginRejected)
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_successful_start_scan_sends_no_music_folder_parameter() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let fixture = test_client(port).await;
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut stream).await;
+        // YuTuTui cannot map the user's path onto a server folder id, so requesting one would be
+        // a guess. A full rescan is the only correct request.
+        assert!(query_values(&request, "musicFolderId").is_empty());
+        assert!(query_values(&request, "fullScan").is_empty());
+        let body = "{\"subsonic-response\":{\"status\":\"ok\",\"version\":\"1.16.1\"}}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    fixture
+        .client
+        .start_scan(&fixture.credential)
+        .await
+        .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn get_song_rejects_a_different_returned_item_id() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

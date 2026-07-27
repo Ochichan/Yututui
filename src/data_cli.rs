@@ -441,7 +441,7 @@ fn terminal_safe_owner_message(message: impl AsRef<str>) -> String {
         .collect()
 }
 
-fn is_terminal_unsafe_character(character: char) -> bool {
+pub(crate) fn is_terminal_unsafe_character(character: char) -> bool {
     character.is_control()
         || matches!(
             character,
@@ -672,7 +672,7 @@ fn resolve_import_source(raw: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn expand_tilde(raw: &str) -> Result<PathBuf, String> {
+pub(crate) fn expand_tilde(raw: &str) -> Result<PathBuf, String> {
     if raw == "~" {
         return home_dir();
     }
