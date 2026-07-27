@@ -1,0 +1,121 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+tone_instructions: "Terse and technical. No praise, no restating the diff. Lead with the concrete defect and the file:line."
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    # Workflow here is "draft PR, human merges", so drafts must be reviewed.
+    drafts: true
+    auto_incremental_review: true
+    base_branches:
+      - "main"
+    ignore_title_keywords:
+      - "wip"
+  path_filters:
+    - "!**/node_modules/**"
+    - "!gui/dist/**"
+    - "!ds-bundle/**"
+    - "!assets/**"
+    - "!Cargo.lock"
+    - "!**/package-lock.json"
+    - "!flake.lock"
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: |
+        Repo invariants — flag any violation as a blocking issue:
+        - Playback-mode logic is dual-implemented in App and in the daemon. A change to one
+          side must be mirrored into the other AND into the parity tests, in the same diff.
+        - Every playback position change must bump `position_epoch` through the central path.
+          Ad-hoc position mutation that skips that path is a stale-position bug.
+        - Music-mode streaming and repeat are mutually exclusive: correct behavior is
+          reject + toast. Silently toggling one off is a bug. Radio mode must read the
+          `streaming_active()` getter and leave the saved value untouched.
+        - `art_overlay_mask` is a u16 with a nearly exhausted bit budget. Claiming a new bit
+          without counting free bits in the same diff must be called out.
+        - Animation/fx `off` mode contract is byte-identical output. Any fx change that could
+          alter off-mode rendering is a regression.
+        - Every `unsafe { }` needs a `// SAFETY:` comment, and `unsafe fn` bodies must wrap
+          ops in an explicit `unsafe {}` block. New `unsafe` outside the paths allowlisted in
+          `scripts/check-unsafe-inventory.sh` fails the architecture gate.
+        Also check: no `unwrap()`/`expect()` on paths reachable from user input or IO,
+        no blocking IO on the render/UI path, and `clippy -D warnings` cleanliness including
+        feature-gated / cross-target dead code (a known CI-only trap).
+    - path: "src/**/*.rs"
+      instructions: |
+        Same invariants as `crates/**/*.rs`. Additionally, `src/tools/` is the managed yt-dlp
+        downloader: `ytdl_hook` pins at spawn time and the downloader self-heals — behavior
+        changes there need explicit justification.
+    - path: ".github/workflows/build.yml"
+      instructions: |
+        This is the RELEASE pipeline: a `v*` tag push publishes to homebrew-tap, scoop-bucket
+        and AUR. Treat every change as high risk. Flag anything that could publish
+        unintentionally, widen the tag trigger, leak secrets into logs, or change artifact
+        naming/checksums. Version strings must be semver-comparable — decimal-style ordering
+        (treating 1.6.3 as newer than 1.6.28) is a past incident in this repo.
+    - path: ".github/workflows/ci-pr.yml"
+      instructions: |
+        Runs on self-hosted runners on the maintainer's LAN. Flag: any removal of the fork-PR
+        guard (`if` condition that skips untrusted forks), any release secret exposed to a
+        self-hosted job, and any change that makes the optional Windows/macOS jobs required.
+    - path: "packaging/**"
+      instructions: |
+        Templates rendered and pushed to homebrew-tap / scoop-bucket / AUR on release. Check
+        that version, checksum, URL and binary-name changes stay consistent across every
+        packaging target in the same diff; a partial update ships a broken package.
+    - path: "gui/src/**"
+      instructions: |
+        Embedded Svelte + TypeScript frontend served by the Rust binary — not a standalone app.
+        Check message/IPC contracts against the Rust side (see `gui/WIRING.md`), avoid
+        unbounded reactive loops, and keep bundle additions justified.
+    - path: "scripts/size-baseline.tsv"
+      instructions: |
+        File-size ratchet baseline. A change here is only legitimate when the same commit grows
+        the corresponding pinned file; flag any diff that re-blesses files unrelated to the
+        change, since that silently raises the cap.
+    - path: "**/*.sh"
+      instructions: "Check for unquoted expansions, missing `set -euo pipefail`, and unsafe rm/mv paths."
+  tools:
+    clippy:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    psscriptanalyzer:
+      enabled: true
+    languagetool:
+      enabled: false
+    eslint:
+      enabled: false
+
+chat:
+  auto_reply: true
+  art: false
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "local"
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "ARCHITECTURE.md"
+      - "gui/WIRING.md"
