@@ -98,6 +98,7 @@ pub use server_settings::{
     MusicServerFailure, MusicServerHealth, MusicServerHistoryHealth, MusicServerIdentityIntent,
     MusicServerRefreshOutcome, MusicServerSettingsState, MusicServerSetupField,
     MusicServerSetupForm, MusicServerSetupInput, MusicServerSummary, MusicServerWizard, SyncArea,
+    TrackPublishOutcome, TrackPublishReport,
 };
 mod server;
 pub use server::{ServerEvent, ServerUiState};

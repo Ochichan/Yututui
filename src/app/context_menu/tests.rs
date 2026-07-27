@@ -645,3 +645,113 @@ fn delayed_missing_playlist_recovery_rejects_a_changed_link_health() {
     assert!(app.server.library.playlist_recovery.is_none());
     assert!(app.status.text.contains("list changed"));
 }
+
+#[test]
+fn publish_to_server_is_complete_at_thirty_columns_in_all_languages() {
+    let _guard = crate::i18n::lock_for_test();
+    let original = crate::i18n::current();
+    for (language, expected) in [
+        (crate::i18n::Language::English, "Copy to music server"),
+        (crate::i18n::Language::Korean, "음악 서버로 복사"),
+        (crate::i18n::Language::Japanese, "音楽サーバーへコピー"),
+    ] {
+        crate::i18n::set_language(language);
+        let label = ContextMenuItem::new(ContextCommand::PublishToServer).label(1);
+        assert_eq!(label, expected);
+        // The menu renders inside a bordered box, so the label has to fit well inside 30 columns
+        // or the narrow layout truncates it into something the user cannot act on.
+        let width: usize = unicode_width::UnicodeWidthStr::width(label.as_str());
+        assert!(
+            width <= 26,
+            "{language:?} label is {width} columns: {label}"
+        );
+    }
+    crate::i18n::set_language(original);
+}
+
+/// Put one downloaded track in the Library and register its row for a right-click.
+fn downloads_app_with_one_track() -> App {
+    let mut app = App::new(50);
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Downloads;
+    let mut song = crate::api::Song::local_file(std::path::PathBuf::from(
+        "/tmp/Verify Track [dQw4w9WgXcQ].m4a",
+    ));
+    song.video_id = "dQw4w9WgXcQ".to_owned();
+    song.title = "Verify Track".to_owned();
+    song.local_path = Some(std::path::PathBuf::from(
+        "/tmp/Verify Track [dQw4w9WgXcQ].m4a",
+    ));
+    app.library_ui.downloaded = vec![song];
+    app
+}
+
+fn right_click_first_library_row(app: &mut App) {
+    app.register_mouse_button(Rect::new(1, 1, 20, 1), MouseTarget::ListRow(0));
+    app.on_mouse_right_click(2, 1);
+}
+
+#[test]
+fn publish_is_offered_for_a_downloaded_track_once_a_server_is_connected() {
+    let mut app = downloads_app_with_one_track();
+    app.server.settings.summary.configured = true;
+
+    right_click_first_library_row(&mut app);
+
+    let items = &app.overlays.context_menu.as_ref().expect("menu").items;
+    assert!(
+        items.contains(&ContextMenuItem::new(ContextCommand::PublishToServer)),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn publish_is_hidden_without_a_connected_server() {
+    let mut app = downloads_app_with_one_track();
+    app.server.settings.summary.configured = false;
+
+    right_click_first_library_row(&mut app);
+
+    // Offering it here would promise something that can only fail once the user picks it.
+    let items = &app.overlays.context_menu.as_ref().expect("menu").items;
+    assert!(
+        !items.contains(&ContextMenuItem::new(ContextCommand::PublishToServer)),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn publish_is_hidden_for_a_track_that_was_never_downloaded() {
+    let mut app = downloads_app_with_one_track();
+    app.server.settings.summary.configured = true;
+    app.library_ui.downloaded[0].local_path = None;
+
+    right_click_first_library_row(&mut app);
+
+    let items = &app.overlays.context_menu.as_ref().expect("menu").items;
+    assert!(
+        !items.contains(&ContextMenuItem::new(ContextCommand::PublishToServer)),
+        "{items:?}"
+    );
+}
+
+#[test]
+fn publish_is_hidden_for_a_multi_row_selection() {
+    let mut app = downloads_app_with_one_track();
+    app.server.settings.summary.configured = true;
+    let second = app.library_ui.downloaded[0].clone();
+    app.library_ui.downloaded.push(second);
+    app.library_ui.picked = [0, 1].into_iter().collect();
+    app.library_ui.selected = 1;
+    app.library_ui.anchor = 0;
+    app.register_mouse_button(Rect::new(1, 1, 20, 1), MouseTarget::ListRow(0));
+    app.on_mouse_right_click(2, 1);
+
+    // Publishing is one track at a time; a bulk copy into someone's music library is a
+    // different decision and is not what this entry does.
+    let items = &app.overlays.context_menu.as_ref().expect("menu").items;
+    assert!(
+        !items.contains(&ContextMenuItem::new(ContextCommand::PublishToServer)),
+        "{items:?}"
+    );
+}

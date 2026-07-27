@@ -5,6 +5,7 @@
 //! connection test has produced a prepared core transaction.
 
 mod playlist_create_recovery;
+mod publish;
 mod state;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -202,6 +203,10 @@ pub enum MusicServerCommand {
         generation: u64,
         local_playlist_id: crate::personal_state::PlaylistId,
     },
+    PublishTrack {
+        generation: u64,
+        video_id: String,
+    },
 }
 
 pub enum MusicServerEvent {
@@ -229,6 +234,29 @@ pub enum MusicServerEvent {
         generation: u64,
         result: Result<MusicServerSummary, MusicServerFailure>,
     },
+    TrackPublished {
+        generation: u64,
+        result: Result<TrackPublishOutcome, MusicServerFailure>,
+    },
+}
+
+/// What one publish actually achieved, kept separate from whether the copy succeeded.
+///
+/// The scan is a courtesy: the bytes are in the music folder before it runs, so a server that
+/// cannot or will not scan never turns a completed publication into a failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackPublishOutcome {
+    pub report: TrackPublishReport,
+    pub scan: crate::open_subsonic::LibraryScanRequest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackPublishReport {
+    Published,
+    /// The same bytes were already there; nothing was written.
+    AlreadyPublished,
+    /// Something else occupies the name. Never replaced, always reported.
+    Conflict,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -879,7 +907,8 @@ impl App {
             | MusicServerEvent::Committed { generation, .. }
             | MusicServerEvent::HistoryDisabled { generation, .. }
             | MusicServerEvent::Removed { generation, .. }
-            | MusicServerEvent::PlaylistCreateAbandoned { generation, .. } => *generation,
+            | MusicServerEvent::PlaylistCreateAbandoned { generation, .. }
+            | MusicServerEvent::TrackPublished { generation, .. } => *generation,
         };
         if event_generation != self.server.settings.generation {
             return Vec::new();
@@ -1038,6 +1067,7 @@ impl App {
             MusicServerEvent::PlaylistCreateAbandoned { result, .. } => {
                 self.finish_playlist_create_abandoned(result)
             }
+            MusicServerEvent::TrackPublished { result, .. } => self.finish_track_published(result),
         }
     }
 }

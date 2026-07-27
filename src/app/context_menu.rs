@@ -152,6 +152,7 @@ pub(crate) enum ContextCommand {
     DeleteLinkedPlaylistLocal,
     OpenPlaylist,
     OpenArtist,
+    PublishToServer,
     Remove,
 }
 
@@ -236,6 +237,13 @@ impl ContextMenuItem {
             ContextCommand::LinkServerPlaylist => {
                 t!("Link and sync", "연결 및 동기화", "リンクして同期").to_owned()
             }
+            // Kept short enough to survive the 30-column menu in every language.
+            ContextCommand::PublishToServer => t!(
+                "Copy to music server",
+                "음악 서버로 복사",
+                "音楽サーバーへコピー"
+            )
+            .to_owned(),
             ContextCommand::CreateLinkedServerPlaylist => t!(
                 "Create linked server playlist",
                 "서버 연결 목록 만들기",
@@ -896,12 +904,24 @@ impl App {
                 }
                 _ => Vec::new(),
             },
-            ContextTarget::LibrarySongs { tab, .. } => {
+            ContextTarget::LibrarySongs { rows, tab, .. } => {
                 let mut commands = vec![C::PlayNow, C::Enqueue];
                 if target.count() == 1 {
                     commands.push(C::ToggleFavorite);
                 }
                 commands.extend([C::AddToPlaylist, C::Download]);
+                // Only for a single row that actually has a downloaded file, and only when a
+                // server is connected. Offering it otherwise would promise something that can
+                // only fail once the user picks it.
+                if target.count() == 1
+                    && self.server.settings.summary.configured
+                    && rows
+                        .first()
+                        .and_then(|&row| self.library_songs().get(row).cloned())
+                        .is_some_and(|song| song.local_path.is_some())
+                {
+                    commands.push(C::PublishToServer);
+                }
                 if *tab != LibraryTab::All {
                     commands.push(C::Remove);
                 }
@@ -1205,6 +1225,9 @@ impl App {
                     self.clamp_library_selection();
                 }
                 commands
+            }
+            ContextCommand::PublishToServer if selected.len() == 1 => {
+                self.start_publish_track_to_server(&selected[0])
             }
             ContextCommand::AddToPlaylist => {
                 self.open_playlist_picker(selected);
