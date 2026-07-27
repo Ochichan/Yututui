@@ -959,6 +959,12 @@ mod tests {
         )
     }
 
+    /// Reads one whole proxy response off a real loopback socket.
+    ///
+    /// Callers must have Tokio's clock **running**. The timeout below is measured on that clock,
+    /// and with it paused Tokio auto-advances to the nearest timer whenever the runtime idles —
+    /// which is exactly what waiting on this socket does — so the timeout would fire before the
+    /// proxy could answer. A `start_paused` test must `tokio::time::resume()` first.
     async fn raw_proxy_request(url: &reqwest::Url, headers: &str) -> Vec<u8> {
         let mut stream = open_raw_proxy_request(url, headers).await;
         let mut response = Vec::new();
@@ -1092,11 +1098,10 @@ mod tests {
         upstream_task.await.unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
-    #[cfg_attr(
-        windows,
-        ignore = "GitHub Windows loopback can abort or stall this raw-socket fixture"
-    )]
+    // Deliberately not `start_paused`: this test never advances the clock, and a paused clock
+    // would let Tokio auto-advance to `raw_proxy_request`'s timeout the moment the runtime idles
+    // on the real socket — firing it before the proxy has answered.
+    #[tokio::test]
     async fn revoked_episode_returns_not_found() {
         let (upstream_url, upstream_task) = static_upstream(
             b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1116,10 +1121,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(
-        windows,
-        ignore = "GitHub Windows loopback can abort or stall this raw-socket fixture"
-    )]
     async fn unused_route_expiry_returns_not_found_and_reclaims_capacity() {
         let upstream_url = reqwest::Url::parse("http://127.0.0.1:9/unused").unwrap();
         let origin = ProxyOrigin::from_url(&upstream_url).unwrap();
@@ -1139,6 +1140,11 @@ mod tests {
         assert_eq!(capacity_error.reason(), "route_capacity_reached");
 
         tokio::time::advance(unused_ttl + Duration::from_millis(1)).await;
+        // The expiry above needs the paused clock; the request below waits on a real loopback
+        // socket. Hand the clock back before doing real I/O, exactly as
+        // `admitted_body_stream_outlives_unused_route_deadline` does — otherwise Tokio
+        // auto-advances to `raw_proxy_request`'s timeout as soon as the runtime idles on the read.
+        tokio::time::resume();
         let response = raw_proxy_request(&routes[0].0, "").await;
         assert!(response.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
 
@@ -1161,10 +1167,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(
-        windows,
-        ignore = "GitHub Windows loopback can abort or stall this raw-socket fixture"
-    )]
     async fn admitted_body_stream_outlives_unused_route_deadline() {
         let (upstream_url, finish_tx, upstream_task) = controlled_upstream().await;
         let origin = ProxyOrigin::from_url(&upstream_url).unwrap();
