@@ -65,3 +65,12 @@ cookies.txt
 
 # Cursor IDE / debug session artifacts
 .cursor/
+
+# design-sync (claude.ai/design import): staged scripts, build output, machine state
+/.ds-sync/
+/ds-bundle/
+/.design-sync/.cache/
+/.design-sync/learnings/
+/.design-sync/node_modules
+/.design-sync/kit/node_modules/
+/.design-sync/kit/dist/
