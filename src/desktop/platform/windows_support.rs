@@ -658,7 +658,7 @@ fn truncate_tooltip(text: String) -> String {
 }
 
 /// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
-/// M0 injects no theme — the frontend falls back to its app.css role defaults (static-themed).
+/// The frontend falls back to its app.css role defaults when no theme is injected.
 fn boot_json(conn: &gateway::ConnState) -> String {
     let owner = match conn {
         gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),

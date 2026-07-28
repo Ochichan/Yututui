@@ -1,4 +1,4 @@
-//! GUI keymap / theme-override / romanization-cache commands (C6, daemon-only).
+//! Daemon-side GUI keymap, theme-override, and romanization-cache commands.
 //!
 //! The daemon holds no live dispatcher: keymap edits go config → `KeyMap` round-trip so
 //! conflict detection and persistence share the TUI's exact rules, and the settings

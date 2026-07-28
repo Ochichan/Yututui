@@ -125,7 +125,6 @@ impl Signals {
         crate::persist::write_store_json(&path, self)
     }
 
-    /// Whether the track is explicitly disliked.
     pub fn is_disliked(&self, video_id: &str) -> bool {
         self.tracks.get(video_id).is_some_and(|t| t.disliked)
     }

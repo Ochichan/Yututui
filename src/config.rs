@@ -321,7 +321,6 @@ pub struct Config {
     /// toggle / `B`). The Player screen always shows the box — it IS the player. `None` → false.
     pub control_box_collapsed: Option<bool>,
 
-    // Playback / EQ -----------------------------------------------------------
     /// Selected equalizer preset.
     pub eq_preset: EqPreset,
     /// Hand-tuned band gains (dB). `None` → use the preset's gains.
@@ -368,15 +367,12 @@ pub struct Config {
     #[serde(alias = "radio")]
     pub streaming: StreamingConfig,
 
-    // Animations --------------------------------------------------------------
     /// Player-view eye-candy toggles (the Animations tab). All off by default; see
     /// [`AnimationsConfig`].
     pub animations: AnimationsConfig,
 
-    // DJ Gem assistant ------------------------------------------------------------
     /// Google Gemini API key. The `GEMINI_API_KEY` env var overrides this when set.
     pub gemini_api_key: Option<String>,
-    /// Which Gemini model the assistant uses.
     pub gemini_model: GeminiModel,
     /// Whether the DJ Gem assistant is enabled. `None` → on, so existing configs that already hold
     /// a key keep DJ Gem working. Lets the user switch DJ Gem off while keeping the key saved.
@@ -390,7 +386,6 @@ pub struct Config {
     /// Retro mode overrides it to English. See [`Self::effective_dj_gem_language`].
     pub dj_gem_language: DjGemLanguage,
 
-    // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
     pub theme: ThemeConfig,
     /// Dedicated-radio-mode theme. `theme` always holds the *normal* theme (a radio-mode
@@ -404,12 +399,10 @@ pub struct Config {
     /// Linux basic TTY compatibility mode: English UI, Retro theme, ASCII-safe rendering.
     pub retro_mode: bool,
 
-    // Localization ------------------------------------------------------------
     /// UI language. `English` is the default; switching it re-renders every label, button,
     /// hint, and message in the chosen language (see [`crate::i18n`]).
     pub language: Language,
 
-    // Keybindings -------------------------------------------------------------
     /// User keybinding overrides, keyed `"<context>.<action>"` → chord string (e.g.
     /// `"player.toggle_pause" -> "space"`). Only entries that differ from the built-in
     /// defaults are stored; everything else falls back to [`crate::keymap`]'s defaults.
@@ -420,38 +413,30 @@ pub struct Config {
     /// defaults are stored; everything else falls back to [`crate::mousemap`]'s defaults.
     pub mouse_bindings: std::collections::BTreeMap<String, String>,
 
-    // External video overlay --------------------------------------------------
     /// Window layout for the mpv video overlay (`v` opens, `Shift+V` toggles). Defaults to
     /// `Compact` (top-right ~30%).
     pub video_layout: VideoOverlay,
 
-    // OS media session ----------------------------------------------------------
     /// Publish playback to the OS media session — macOS Now Playing, Windows SMTC,
     /// Linux MPRIS — and accept media keys / widget control. `None` → on.
     pub media_controls: Option<bool>,
 
-    // Scrobbling ------------------------------------------------------------------
     /// Last.fm / ListenBrainz accounts and scrobbling behavior. See [`ScrobbleConfig`].
     pub scrobble: ScrobbleConfig,
 
-    // Spotify transfer ------------------------------------------------------------
     /// Spotify Web API app registration for playlist import/export. See [`SpotifyConfig`].
     pub spotify: SpotifyConfig,
 
-    // External tools ----------------------------------------------------------------
     /// Managed yt-dlp + binary-path overrides. See [`ToolsConfig`] and [`crate::tools`].
     pub tools: ToolsConfig,
 
-    // Audio backend ------------------------------------------------------------------
     /// First-class audio backend settings. The only supported backend is mpv; this group
     /// makes its output/device/cache policy explicit instead of relying only on escape hatches.
     pub audio: AudioConfig,
 
-    // Radio recording -----------------------------------------------------------------
     /// Shortwave-style recording of the live radio stream. See [`RecordingConfig`].
     pub recording: RecordingConfig,
 
-    // Updates -------------------------------------------------------------------------
     /// Check GitHub on startup for a newer YuTuTui! release and, if behind, show an About-card
     /// notice + nav-brand dot + one-time toast. Defaults to `true`; set `false` to make the
     /// app never contact GitHub for its own version. See [`crate::update`].

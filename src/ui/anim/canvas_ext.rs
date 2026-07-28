@@ -17,8 +17,6 @@ use super::{hash32, lerp_color, wave};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
-// ── comets ──────────────────────────────────────────────────────────────────
-
 /// Occasional shooting stars: up to two diagonal streaks with fading tails, each on its own
 /// hashed launch cycle so the sky stays mostly calm with a rare bright crossing.
 pub(super) fn comets(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64) {
@@ -81,8 +79,6 @@ pub(super) fn comets(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u6
     }
 }
 
-// ── snow ────────────────────────────────────────────────────────────────────
-
 const SNOW_GLYPHS: [char; 4] = ['❄', '*', '·', '.'];
 const SNOW_GLYPHS_RETRO: [char; 4] = ['*', '*', '.', '.'];
 
@@ -126,8 +122,6 @@ pub(super) fn snow(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64)
         );
     }
 }
-
-// ── fireflies ───────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default)]
 struct FireflyDescriptor {
@@ -215,8 +209,6 @@ pub(super) fn fireflies(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
         }
     });
 }
-
-// ── wireframe cube ──────────────────────────────────────────────────────────
 
 /// The cube's 8 corners in model space.
 const CUBE_VERTS: [(f64, f64, f64); 8] = [
@@ -317,8 +309,6 @@ pub(super) fn cube(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64)
     }
 }
 
-// ── aquarium ────────────────────────────────────────────────────────────────
-
 const FISH_RIGHT: [&str; 3] = ["><((º>", "><>", "><((('>"];
 const FISH_LEFT: [&str; 3] = ["<º))><", "<><", "<')))><"];
 const FISH_RIGHT_RETRO: [&str; 3] = ["><((o>", "><>", "><(('>"];
@@ -406,8 +396,6 @@ pub(super) fn aquarium(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: 
         );
     }
 }
-
-// ── ocean waves ─────────────────────────────────────────────────────────────
 
 /// Layered ocean swell along the bottom of the zone: two-to-four out-of-phase sine crests,
 /// deeper layers darker and slower, with sparse foam flecks on the top crest.

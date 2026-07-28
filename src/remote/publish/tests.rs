@@ -1,5 +1,4 @@
-//! Publisher unit tests, split out of publish.rs to keep the module under the
-//! size ratchet as the per-topic lanes accumulate.
+//! Publisher unit tests.
 
 use super::super::proto::PROTOCOL_VERSION;
 use super::super::sessions::{

@@ -301,8 +301,6 @@ fn playlists_reload_reconciles_a_dangling_drilldown() {
     assert_eq!(app.library_ui.selected, 0);
 }
 
-// --- "Add to playlist" picker (p / P) --------------------------------------
-
 /// Favorites tab with two tracks and one existing playlist ("Mix").
 
 #[test]
@@ -471,5 +469,3 @@ fn mouse_tab_click_on_playlists_also_nudges() {
     assert_eq!(app.library_ui.tab, LibraryTab::Playlists);
     assert!(app.status.text.contains("create a new playlist"));
 }
-
-// Text zoom (Ctrl+wheel / Ctrl+-/=) ------------------------------------------------

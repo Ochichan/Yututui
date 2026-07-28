@@ -132,8 +132,6 @@ fn selecting_streaming_mode_applies_and_persists() {
     );
 }
 
-// --- Mouse: nav bar, clickable lists/tabs, and the queue window --------------
-
 /// Render `app` to an 80x24 test terminal so its per-frame mouse hit rects are published
 /// (each frame clears and re-registers them, mirroring the real loop).
 

@@ -32,14 +32,12 @@ impl TextCursor {
         preceding_grapheme_boundary(text, self.byte)
     }
 
-    /// Move to the start of the buffer.
     pub fn move_to_start(&mut self) -> bool {
         let changed = self.byte != 0;
         self.byte = 0;
         changed
     }
 
-    /// Move to the end of the buffer.
     pub fn move_to_end(&mut self, text: &str) -> bool {
         let end = text.len();
         let changed = self.byte_index(text) != end;
@@ -47,7 +45,8 @@ impl TextCursor {
         changed
     }
 
-    /// Move one extended grapheme to the left.
+    /// Moves by one extended grapheme cluster, not one `char` — arrow keys must never
+    /// land inside a Hangul jamo sequence or emoji ZWJ run.
     pub fn move_left(&mut self, text: &str) -> bool {
         let current = self.byte_index(text);
         let next = previous_grapheme_start(text, current);
@@ -55,7 +54,6 @@ impl TextCursor {
         next != current
     }
 
-    /// Move one extended grapheme to the right.
     pub fn move_right(&mut self, text: &str) -> bool {
         let current = self.byte_index(text);
         let next = next_grapheme_end(text, current);

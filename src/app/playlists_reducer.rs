@@ -311,8 +311,6 @@ impl App {
         self.bridges.library_scroll.reset();
     }
 
-    // --- "Add to playlist" picker ------------------------------------------------
-
     /// Open the picker over the current screen for `songs` (a library selection, one
     /// search result, or the current track). No-op when there's nothing to add.
     pub(in crate::app) fn open_playlist_picker(&mut self, songs: Vec<Song>) {

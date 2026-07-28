@@ -913,8 +913,8 @@ impl DaemonEngine {
 
     /// The v8 publisher's read view of this owner (the daemon analog of
     /// `App::core_view`; docs/gui/02 §14). Interpolates elapsed to "now" from the same
-    /// anchor the OS media session uses. EQ reflects config (the daemon's live EQ apply
-    /// lands at S4/B3); the daemon has no ICY now-playing surface yet.
+    /// anchor the OS media session uses. EQ reflects config; the daemon has no ICY
+    /// now-playing surface yet.
     /// Read-only store accessors for the owner loop's push projections (search rows
     /// carry the rating halves too).
     pub(crate) fn library(&self) -> &Library {

@@ -30,7 +30,7 @@ pub struct MainWindow {
     webview: RefCell<Option<WebView>>,
     window: Window,
     window_id: WindowId,
-    // Kept so `show()` can rebuild the WebView after a drop-on-hide (M1).
+    // Kept so `show()` can rebuild the WebView after a drop-on-hide.
     boot_json: String,
     dev_url: Option<String>,
     on_message: std::rc::Rc<dyn Fn(u64, String)>,

@@ -1226,7 +1226,6 @@ impl App {
                 };
             }
             Msg::Streaming(sm) => return self.handle_streaming(sm),
-            // --- DJ Gem assistant intents ---------------------------------------
             Msg::Ai(am) => return self.handle_ai(am),
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
             Msg::UpdateChecked(status) => return self.handle_update_checked(status),

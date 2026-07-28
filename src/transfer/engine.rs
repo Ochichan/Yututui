@@ -431,8 +431,6 @@ pub(crate) async fn write_reviewed_local_job_with_store(
     Ok(report)
 }
 
-// Match ---------------------------------------------------------------------------
-
 fn accept_margin_for_policy(policy: MatchPolicy) -> f32 {
     match policy {
         MatchPolicy::Strict => MatchConfig::default().accept_margin,
@@ -966,8 +964,6 @@ async fn match_track_spotify(
     Ok(outcome)
 }
 
-// Write ---------------------------------------------------------------------------
-
 async fn write_stage(
     cp: &mut Checkpoint,
     ctx: &mut JobCtx,
@@ -1352,8 +1348,6 @@ async fn reconcile_written_spotify(
     }
     Ok(())
 }
-
-// File export ------------------------------------------------------------------------
 
 async fn export_file(
     job_id: &str,

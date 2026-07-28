@@ -167,7 +167,6 @@ impl Queue {
         }
     }
 
-    /// Restore a snapshot previously produced by [`snapshot`](Self::snapshot).
     pub fn restore_snapshot(&mut self, snapshot: QueueSnapshot) {
         let plan = self.prepare_snapshot_restore(snapshot);
         self.commit_mutation(plan);
@@ -641,7 +640,7 @@ impl Queue {
         removed
     }
 
-    /// Toggle shuffle, keeping the current track current.
+    /// Keeps the current track current.
     pub fn toggle_shuffle(&mut self) {
         self.set_shuffle(!self.shuffle);
     }
@@ -653,7 +652,6 @@ impl Queue {
         }
     }
 
-    /// Cycle the repeat mode.
     pub fn cycle_repeat(&mut self) {
         self.repeat = self.repeat.cycled();
     }

@@ -190,9 +190,8 @@ impl Topic {
     ];
 }
 
-/// The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so new
-/// event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
-/// invalidations, ticketed results, …).
+/// The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so event
+/// kinds remain additive.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts-export",

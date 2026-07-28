@@ -35,8 +35,6 @@ const ERR_BODY_CAP: usize = 200;
 const RESPONSE_BODY_MAX: usize = 4 * 1024 * 1024;
 const ERROR_BODY_MAX: usize = 64 * 1024;
 
-// --- Request models ---------------------------------------------------------
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContentRequest {
@@ -84,8 +82,6 @@ pub struct GenerationConfig {
 pub struct ThinkingConfig {
     pub thinking_budget: i32,
 }
-
-// --- Shared / response models -----------------------------------------------
 
 /// A turn of conversation. Appears in both the request and the response, so it derives
 /// both `Serialize` and `Deserialize`.
@@ -236,8 +232,6 @@ impl GenerateContentResponse {
     }
 }
 
-// --- Errors -----------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum GeminiError {
     /// 401/403 — bad or unauthorized key. Not retried; no fallback.
@@ -360,8 +354,6 @@ fn http_error_detail(raw: &str) -> Option<String> {
     }
     Some(out)
 }
-
-// --- Client -----------------------------------------------------------------
 
 /// A Gemini REST client. Deliberately does NOT derive `Debug` — the key must never be
 /// printed.

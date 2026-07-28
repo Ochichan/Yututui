@@ -302,5 +302,3 @@ fn downloads_tab_shows_download_folder_tracks() {
     assert_eq!(app.library_ui.tab, LibraryTab::Downloads);
     assert_eq!(app.library_len(), 1);
 }
-
-// --- in-library filter (`/`) -------------------------------------------------

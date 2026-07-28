@@ -1,6 +1,4 @@
 //! Per-[`Field`] metadata: widget kind, animation-flag mapping, display label, secrecy.
-//! Split out of `settings.rs` so the field tables can keep growing (the animation pack
-//! alone is 41 toggles) without blowing the parent file's size budget.
 
 use crate::config::AnimationsConfig;
 use crate::t;

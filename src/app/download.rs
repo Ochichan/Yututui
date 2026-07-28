@@ -1,4 +1,4 @@
-//! Download reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Download reducer methods.
 
 use super::*;
 use std::collections::HashSet;

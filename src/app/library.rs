@@ -1,4 +1,4 @@
-//! Library-input reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Library-input reducer methods.
 
 use super::*;
 use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_insert_query_char};

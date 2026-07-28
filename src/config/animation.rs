@@ -17,7 +17,6 @@ pub struct AnimationsConfig {
     /// selector, not an effect — deliberately excluded from [`Self::any_effect`]. Resolved
     /// through [`Self::effective`]; there is no Settings row for it.
     pub radio_master: Option<bool>,
-    // Element-level effects (restyle existing widgets in place) -----------------
     /// Shimmer + marquee scroll on the now-playing title line.
     pub title: bool,
     /// Pulse the `♥` like-marker when the track is in the library.
@@ -64,7 +63,6 @@ pub struct AnimationsConfig {
     pub activity: bool,
     /// The About card twinkles: sparkles around the icon and a gradient sweep on the name.
     pub about_fx: bool,
-    // Second-wave Now Playing element effects ----------------------------------
     /// The seekbar's gauge and time label glow briefly as each playback second lands.
     pub time_glow: bool,
     /// Tiny sparks twinkle around the seekbar head while playback runs.
@@ -75,7 +73,6 @@ pub struct AnimationsConfig {
     pub pause_flash: bool,
     /// Error status messages shake side-to-side with a decaying oscillation.
     pub error_shake: bool,
-    // Filler-canvas effects (drawn only in blank zones) ------------------------
     /// Matrix-style digital rain in the free zone(s).
     pub rain: bool,
     /// Classic spinning ASCII donut.
@@ -106,7 +103,6 @@ pub struct AnimationsConfig {
     pub pipes: bool,
     /// Demoscene plasma colour field over the whole free zone (the heaviest effect).
     pub plasma: bool,
-    // Behaviour knobs (not effects) -------------------------------------------
     /// Park the animation tick while the terminal is unfocused (minimized or behind another
     /// window). Defaults to `true`; opt out to keep animating off-screen. No-op on terminals that
     /// don't report focus (DECSET ?1004). See [`crate::app::App::animation_active`].

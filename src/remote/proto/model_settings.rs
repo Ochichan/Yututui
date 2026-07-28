@@ -296,9 +296,7 @@ pub struct ThemePresetModel {
     pub swatch: std::collections::BTreeMap<String, String>,
 }
 
-/// B1-minimal keymap block: the user's persisted overrides (`"<context>.<action>" →
-/// chord`). The full live keymap + action catalog (docs/gui/05 §8) lands with the
-/// hotkeys milestone; the GUI tab degrades to override rows until then.
+/// The live keymap and action catalog (docs/gui/05 §8).
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts-export",

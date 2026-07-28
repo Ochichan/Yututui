@@ -313,8 +313,6 @@ impl SpotifyClient {
         self.rate_waited = Duration::ZERO;
     }
 
-    // Endpoints -----------------------------------------------------------------
-
     pub async fn me(&mut self) -> Result<SpotifyUser, SpotifyError> {
         if let Some(user) = &self.user {
             return Ok(user.clone());
@@ -755,8 +753,6 @@ impl SpotifyClient {
             .unwrap_or_default();
         Ok(items.iter().filter_map(simplify).collect())
     }
-
-    // The one central request path --------------------------------------------------
 
     async fn request_json<T: DeserializeOwned>(
         &mut self,

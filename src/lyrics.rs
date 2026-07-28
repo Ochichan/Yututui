@@ -280,8 +280,6 @@ pub fn current_index_with_delay(
     current_index(lines, delay.active_position(playback_position))
 }
 
-// --- Actor ------------------------------------------------------------------
-
 /// Neutral actor request. Playback owners project their current [`crate::api::Song`] into this
 /// bounded metadata shape so the leaf actor never reaches into reducer state.
 #[derive(Debug, Clone, PartialEq)]

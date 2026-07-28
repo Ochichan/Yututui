@@ -6,8 +6,7 @@
 //! callback (the platform code wraps them in its `UserEvent`). Daemon spawn/stop never run
 //! here — that would freeze the socket ([01 §9]); the gateway only observes and reports.
 //!
-//! M1 scope: connect + Hello + live connection state + reconnect, plus the command path —
-//! the loop forwards webview `cmd`/`req`/`sub`/`unsub` envelopes into the session
+//! The loop forwards webview `cmd`/`req`/`sub`/`unsub` envelopes into the session
 //! ([`GatewayHandle::send`]) and the session fans `event`/`reply` server frames back to the
 //! window as [`GatewayEvent::Frame`] (rendered via `bridge::receive_script`).
 
@@ -122,7 +121,7 @@ impl ConnState {
 pub enum GatewayEvent {
     Connection(ConnState),
     /// An inbound server frame (topic push or correlated reply) already rendered as the
-    /// webview envelope the loop feeds to `bridge::receive_script` (M1 fan-out).
+    /// webview envelope the loop feeds to `bridge::receive_script`.
     Frame(InEnvelope),
     /// A correlated frame annotated with the native WebView generation that originated it.
     /// The PR40 page namespace remains inside the envelope; this host-side generation closes the

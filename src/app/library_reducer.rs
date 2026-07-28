@@ -1,4 +1,4 @@
-//! Library data/delete reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Library data/delete reducer methods.
 
 use super::*;
 

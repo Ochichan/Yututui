@@ -1,4 +1,4 @@
-//! Daemon-side host for the lyrics actor (B1 `lyrics` topic).
+//! Daemon-side host for the lyrics actor.
 //!
 //! The TUI owner drives `crate::lyrics` from its own panel reducer; the daemon has no
 //! panel, so this host watches the current track on the owner lane and keeps the

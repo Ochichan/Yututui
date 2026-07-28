@@ -1418,5 +1418,3 @@ fn ai_create_and_play_playlist_roundtrip() {
     assert_eq!(current(&app), "id0");
     assert_loads_video(&cmds, "id0");
 }
-
-// --- M5: library (favorites + history) ----------------------------------

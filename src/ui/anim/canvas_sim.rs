@@ -17,8 +17,6 @@ use super::{ease_out_cubic, hash32, lerp_color};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
-// ── fireworks ───────────────────────────────────────────────────────────────
-
 const FIREWORK_PALETTE: [R; 5] = [R::Accent, R::AccentAlt, R::Success, R::Warning, R::Error];
 const FIREWORK_PARTICLE_COUNT: usize = 24;
 
@@ -166,8 +164,6 @@ pub(super) fn fireworks(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f:
         }
     });
 }
-
-// ── Game of Life ────────────────────────────────────────────────────────────
 
 /// Cell ages (0 = dead, else generations alive, saturating). Kept flat, row-major.
 #[derive(Default)]
@@ -322,8 +318,6 @@ fn seed_life(age: &mut [u8], w: usize, h: usize, epoch: u64) {
     }
 }
 
-// ── pipes ───────────────────────────────────────────────────────────────────
-
 /// Box-drawing glyph per cell, packed as `(palette_index << 4) | glyph_index`; 0 = empty.
 #[derive(Default)]
 struct PipesScratch {
@@ -472,8 +466,6 @@ pub(super) fn pipes(canvas: &mut CanvasWriter<'_>, app: &App, zone: Rect, f: u64
         }
     });
 }
-
-// ── plasma ──────────────────────────────────────────────────────────────────
 
 const PLASMA_GLYPHS: [char; 4] = [' ', '░', '▒', '▓'];
 

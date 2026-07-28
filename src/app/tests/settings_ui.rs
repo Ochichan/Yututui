@@ -218,7 +218,7 @@ fn settings_accounts_tab_renders_service_sections() {
 
 #[test]
 fn settings_whole_row_click_activates_a_button_row() {
-    // B2: a click anywhere on a Button row (not only the value glyph) activates it. With no
+    // A click anywhere on a Button row (not only the value glyph) activates it. With no
     // Client ID set, activating the Spotify "connect" row surfaces the guidance message — proof
     // the click reached the handler rather than only focusing the row.
     let mut app = App::new(100);

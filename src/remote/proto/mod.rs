@@ -151,8 +151,8 @@ pub struct RemoteResponse {
 /// Typed per-command reply payloads riding [`RemoteResponse::data`]. Untagged: each
 /// variant serializes as its bare shape — exactly the body the GUI's consumers read
 /// (the gateway projects `data` as the `req` reply payload and folds it into the `cmd`
-/// reply body). Variants land additively with their milestone streams; keep the shapes
-/// structurally disjoint so untagged deserialization stays unambiguous.
+/// reply body). Keep the shapes structurally disjoint so untagged deserialization stays
+/// unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseData {

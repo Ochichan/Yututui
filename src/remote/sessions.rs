@@ -948,7 +948,7 @@ pub(crate) async fn run_session(
     let (read_half, mut write_half) = tokio::io::split(conn);
     let tuning = hub.tuning;
 
-    // --- Handshake: validate, then ack (the ack is written directly — the writer task
+    // Handshake: validate, then ack (the ack is written directly — the writer task
     // only exists for accepted sessions).
     let reject = |reason: &str| HelloAck {
         ok: false,
@@ -1011,7 +1011,7 @@ pub(crate) async fn run_session(
         return Ok(());
     }
 
-    // --- Writer task: drains the outbound queue to the socket, splicing the tiny event
+    // Writer task: drains the outbound queue to the socket, splicing the tiny event
     // envelope around shared payloads at write time (serialize-once fan-out). Every write and
     // flush is deadline-bounded, and hub cancellation interrupts an in-flight write.
     let budget = Arc::clone(&handle.budget);
@@ -1028,7 +1028,7 @@ pub(crate) async fn run_session(
         )),
     };
 
-    // --- Reader loop: one ClientFrame line per iteration, idle-GC'd.
+    // Reader loop: one ClientFrame line per iteration, idle-GC'd.
     let mut reader = BufReader::new(read_half);
     let close_reason = loop {
         // Quiesce stops new owner work but must not close this writer: it may still own a tracked
@@ -1262,7 +1262,7 @@ pub(crate) async fn run_session(
         }
     };
 
-    // --- Teardown: signal both socket halves. The writer emits a best-effort goodbye directly,
+    // Teardown: signal both socket halves. The writer emits a best-effort goodbye directly,
     // then exits within the write deadline even if this peer never reads.
     handle.request_close(close_reason);
     hub.unregister(session_id);

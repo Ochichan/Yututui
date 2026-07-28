@@ -776,7 +776,6 @@ pub struct SettingsDraft {
     /// Player-view animation toggles (the Animations tab). Edited in place; the whole struct
     /// is copied into `Config` on save. See [`AnimationsConfig`].
     pub animations: AnimationsConfig,
-    // Accounts ----------------------------------------------------------------
     pub lastfm_enabled: bool,
     pub lastfm_love_sync: bool,
     /// The stored session key; not edited directly (the Connect flow / disconnect set it),
@@ -788,7 +787,6 @@ pub struct SettingsDraft {
     /// The ListenBrainz user token (masked like the API key).
     pub listenbrainz_token: String,
     pub scrobble_local_files: bool,
-    // Spotify (transfer) -------------------------------------------------------
     pub spotify_client_id: String,
     /// Edited as text; validated + parsed on apply.
     pub spotify_redirect_port: String,
@@ -802,7 +800,6 @@ pub struct SettingsDraft {
     /// offers a one-press browser reconnect instead of disconnect.
     pub spotify_stale: bool,
     pub spotify_username: String,
-    // Radio recording ----------------------------------------------------------
     /// Recording mode (Off / Decide / Save all); the `RadioRecording` button summarizes it.
     pub recording_mode: crate::recorder::RecordingMode,
     pub recording_min_seconds: u32,

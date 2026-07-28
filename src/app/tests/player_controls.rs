@@ -56,8 +56,6 @@ fn s_enters_search_and_x_toggles_shuffle() {
     assert_eq!(current(&app), "id0");
 }
 
-// --- B+C: EQ / normalize / speed / autoplay -----------------------------
-
 #[test]
 fn e_cycles_eq_preset_and_emits_filter() {
     let mut app = app_playing(3, 0);
