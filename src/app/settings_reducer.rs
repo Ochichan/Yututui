@@ -56,6 +56,18 @@ fn draft_toggle_flag(field: Field, draft: &mut SettingsDraft) -> Option<&mut boo
     })
 }
 
+fn search_source_for(field: Field) -> Option<SearchSource> {
+    Some(match field {
+        Field::SearchYoutube => SearchSource::Youtube,
+        Field::SearchSoundCloud => SearchSource::SoundCloud,
+        Field::SearchAudius => SearchSource::Audius,
+        Field::SearchJamendo => SearchSource::Jamendo,
+        Field::SearchInternetArchive => SearchSource::InternetArchive,
+        Field::SearchRadioBrowser => SearchSource::RadioBrowser,
+        _ => return None,
+    })
+}
+
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -595,42 +607,17 @@ impl App {
                 );
                 Vec::new()
             }
-            Field::SearchYoutube => {
+            Field::SearchYoutube
+            | Field::SearchSoundCloud
+            | Field::SearchAudius
+            | Field::SearchJamendo
+            | Field::SearchInternetArchive
+            | Field::SearchRadioBrowser => {
                 let s = self.settings_mut();
-                let next = !s.draft.search.youtube;
-                s.draft.search.set_enabled(SearchSource::Youtube, next);
-                Vec::new()
-            }
-            Field::SearchSoundCloud => {
-                let s = self.settings_mut();
-                let next = !s.draft.search.soundcloud;
-                s.draft.search.set_enabled(SearchSource::SoundCloud, next);
-                Vec::new()
-            }
-            Field::SearchAudius => {
-                let s = self.settings_mut();
-                let next = !s.draft.search.audius;
-                s.draft.search.set_enabled(SearchSource::Audius, next);
-                Vec::new()
-            }
-            Field::SearchJamendo => {
-                let s = self.settings_mut();
-                let next = !s.draft.search.jamendo;
-                s.draft.search.set_enabled(SearchSource::Jamendo, next);
-                Vec::new()
-            }
-            Field::SearchInternetArchive => {
-                let s = self.settings_mut();
-                let next = !s.draft.search.internet_archive;
-                s.draft
-                    .search
-                    .set_enabled(SearchSource::InternetArchive, next);
-                Vec::new()
-            }
-            Field::SearchRadioBrowser => {
-                let s = self.settings_mut();
-                let next = !s.draft.search.radio_browser;
-                s.draft.search.set_enabled(SearchSource::RadioBrowser, next);
+                let source = search_source_for(field)
+                    .expect("field listed in the search arm but missing from search_source_for");
+                let next = !s.draft.search.is_enabled(source);
+                s.draft.search.set_enabled(source, next);
                 Vec::new()
             }
             Field::RetroMode => {
