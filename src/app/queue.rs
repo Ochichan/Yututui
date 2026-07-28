@@ -1,4 +1,4 @@
-//! Queue-popup reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Queue-popup reducer methods.
 
 use super::*;
 

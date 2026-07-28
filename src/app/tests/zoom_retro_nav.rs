@@ -286,8 +286,6 @@ fn retro_render_scrubs_cjk_metadata_without_unsupported_cells() {
     }
 }
 
-// Responsive layout under zoom / narrow grids ---------------------------------------
-
 /// Render the UI into a TestBackend of the given size and return the registered mouse
 /// targets plus the first screen row as text (the nav strip).
 

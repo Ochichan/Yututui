@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind, StatusKind};
+use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind};
 use crate::library::FavoriteLookup;
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -52,23 +52,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
     // the search screen. It auto-clears after STATUS_TTL via the global StatusTick. A just-set
     // message types itself in while the toast animation's window runs.
-    if !app.status.text.is_empty() && !app.control_box_active() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
-            frame.render_widget(Paragraph::new(line), rows[0]);
-        } else {
-            let role = match app.status.kind {
-                StatusKind::Error => R::Error,
-                StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(app.theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                rows[0],
-            );
-        }
+    if crate::ui::status_band_active(app) {
+        crate::ui::render_status_band(frame, app, rows[0]);
     }
 
     render_input(frame, app, rows[1]);
@@ -340,13 +325,7 @@ fn render_results(
         .filter(|sel| (offset..offset + area.height as usize).contains(sel));
 
     let highlight = if focused {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
+        crate::ui::selection_highlight(app)
     } else {
         Style::default()
             .fg(app.theme.color(R::SelectionInactiveFg))
@@ -531,13 +510,7 @@ fn render_dropdown(
         let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
         text.push_str(&" ".repeat(pad));
         let style = if *active {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };
@@ -689,13 +662,7 @@ fn render_filter_popup(
                 body_w.saturating_sub(1),
             );
             let style = if selected {
-                crate::ui::anim::selection_style(
-                    app,
-                    Style::default()
-                        .fg(app.theme.color(R::SelectionFg))
-                        .bg(app.theme.color(R::SelectionBg))
-                        .add_modifier(Modifier::BOLD),
-                )
+                crate::ui::selection_highlight(app)
             } else {
                 crate::ui::popup_style(app, R::TextPrimary)
             };

@@ -1,4 +1,4 @@
-//! DJ Gem assistant reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! DJ Gem assistant reducer methods.
 
 use super::*;
 
@@ -57,8 +57,6 @@ impl From<AiMsg> for Msg {
 }
 
 impl App {
-    // --- DJ Gem assistant -------------------------------------------------------
-
     /// Enter the DJ Gem assistant screen (input focused).
     pub(in crate::app) fn enter_ai(&mut self) {
         self.mode = Mode::Ai;

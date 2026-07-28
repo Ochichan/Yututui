@@ -1,4 +1,4 @@
-//! Key-routing reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Key-routing reducer methods.
 
 use super::*;
 

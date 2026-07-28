@@ -1,4 +1,4 @@
-//! The `accounts` topic projection and its config-side mutations (C5).
+//! The `accounts` topic projection and its config-side mutations.
 //!
 //! Secrets never leave this module's inputs: the projection carries presence booleans
 //! and display names only; `account_set` accepts no credential fields (the Last.fm

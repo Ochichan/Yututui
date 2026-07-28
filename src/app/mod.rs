@@ -322,8 +322,6 @@ pub struct App {
     /// Dedicated-Radio-mode theme+queue stash and the pending enter/leave confirmation — see
     /// [`RadioMode`]. The `radio_dedicated_mode` flag above stays flat (read pervasively).
     pub radio_mode: RadioMode,
-    /// Dedicated Local Deck shell under the Library mode. Phase 1 only swaps the rendered
-    /// shell; queue/session stashing lands with the later Local queue milestone.
     pub local_dedicated_mode: bool,
     /// Local Deck UI state and pending enter/leave confirmation.
     pub local_mode: LocalMode,
@@ -340,7 +338,6 @@ pub struct App {
     /// The legacy stores below remain runtime projections of this domain state.
     pub(crate) personal_state: PersonalStateRuntime,
 
-    // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed
     /// (mirrors mpv's current state, distinct from the persisted defaults in `config`).
     pub playback: Playback,
@@ -364,7 +361,6 @@ pub struct App {
     /// the audio (see [`Video`]). Private — render never reads it.
     video: Video,
 
-    // Audio / EQ --------------------------------------------------------------
     /// Live audio-processing settings (EQ preset + per-band gains, loudness normalization, and
     /// the seek step) — the in-session working copy mpv's filter chain is built from, mirrored
     /// from the persisted `config` (see [`AudioEq`]).
@@ -382,7 +378,6 @@ pub struct App {
     /// Search results-filter popup state: open flag, live query, cursor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`SearchFilterPopup`]).
     pub search_filter: SearchFilterPopup,
-    // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
     pub config: Config,
     /// First-run Search coaching and the modal external-tool setup card.
@@ -392,13 +387,11 @@ pub struct App {
     /// The settings screen state, present only while `Mode::Settings` is active.
     pub settings: Option<Box<SettingsState>>,
 
-    // DJ Gem assistant ------------------------------------------------------------
     /// DJ Gem assistant state: availability, model, chat transcript, prompt, suggestions.
     pub ai: AiState,
     /// Latin-script title display overlay cache and in-flight requests.
     pub romanization: RomanizationRuntime,
 
-    // Streaming runtime -------------------------------------------------------
     /// Streaming autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
     /// and the empty-extend circuit-breaker counter.
     pub streaming: StreamingRuntime,
@@ -414,11 +407,9 @@ pub struct App {
     /// from a `start_streaming` vibe and persisted. Read live by [`App::build_station_state`].
     pub station: StationStore,
 
-    // Search ------------------------------------------------------------------
     /// Search query, results, selection, focus, and in-flight flag.
     pub search: SearchState,
 
-    // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
     pub library: Arc<Library>,
     /// Per-track preference signals (plays/skips/dislikes + raw play log + artist affinity),
@@ -450,16 +441,13 @@ pub struct App {
     /// held-key nav accelerator — see [`Interaction`]. All transient; cleared on button release.
     pub interaction: Interaction,
 
-    // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
     pub lyrics: Lyrics,
 
-    // Album art ---------------------------------------------------------------
     /// Album-art state: graphics picker, held render protocol, decoded source + dims,
     /// owning track id, and the in-flight flag.
     pub art: ArtState,
 
-    // Downloads ---------------------------------------------------------------
     /// Download progress + source metadata, keyed by `video_id` (see [`Downloads`]).
     pub downloads: Downloads,
     /// Persisted manifest of completed downloads' YouTube identity + rich metadata, so a
@@ -467,7 +455,6 @@ pub struct App {
     /// Loaded by `main` after `new`.
     pub download_store: DownloadStore,
 
-    // Prefetch ----------------------------------------------------------------
     /// Prefetch / load tracking: stream-URL cache, last-load-was-prefetched flag, and the
     /// `video_id` currently loaded into mpv (see [`Prefetch`]).
     prefetch: Prefetch,

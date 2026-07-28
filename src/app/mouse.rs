@@ -1,4 +1,4 @@
-//! Mouse/region reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Mouse/region reducer methods.
 
 use super::*;
 

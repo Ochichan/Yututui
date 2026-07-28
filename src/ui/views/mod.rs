@@ -1,5 +1,4 @@
-//! Per-screen rendering. Home/lyrics views arrive in later milestones, each as its own
-//! module here.
+//! Per-screen rendering, with each screen in its own module.
 
 pub mod about;
 pub mod ai;

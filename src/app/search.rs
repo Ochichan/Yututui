@@ -1,4 +1,4 @@
-//! Search-screen reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Search-screen reducer methods.
 
 use super::*;
 use crate::util::query::{
@@ -456,8 +456,6 @@ impl App {
             },
         }
     }
-
-    // --- Results-filter popup ------------------------------------------------
 
     /// Play (or fetch-and-play, for a playlist row) the result at `idx`, landing the main
     /// cursor on it. The one activation path shared by Enter on the results list, Enter /

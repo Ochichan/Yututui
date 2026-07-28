@@ -1,4 +1,4 @@
-//! Player/playback reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Player/playback reducer methods.
 
 use super::*;
 use crate::tools::PlaybackFailureClass;

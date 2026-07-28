@@ -180,8 +180,6 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-// Execution ---------------------------------------------------------------------------
-
 /// Build the clients the spec needs (and only those), with setup hints on failure.
 async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
     let needs_spotify = matches!(
@@ -527,8 +525,6 @@ fn confirm(prompt: &str) -> bool {
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-// Simple commands ------------------------------------------------------------------
-
 fn jobs() -> i32 {
     let jobs = Checkpoint::list_all();
     if jobs.is_empty() {
@@ -776,8 +772,6 @@ fn sanitize_filename(name: &str) -> String {
         trimmed.chars().take(120).collect()
     }
 }
-
-// Auth + listing (also reachable as `ytt auth spotify`) ------------------------------
 
 /// `ytt auth spotify [--client-id ID] [--status] [--logout]`.
 pub fn run_auth(args: &[String]) -> i32 {

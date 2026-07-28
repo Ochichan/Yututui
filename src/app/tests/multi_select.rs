@@ -1,7 +1,5 @@
 use super::*;
 
-// --- Library: Ctrl/Cmd+click toggle ---------------------------------------
-
 fn app_with_four_favorites() -> App {
     let mut app = App::new(100);
     app.library_mut().favorites = vec![
@@ -167,8 +165,6 @@ fn delete_removes_exactly_the_picked_rows() {
         "the consumed picks are dropped"
     );
 }
-
-// --- Search results: drag range + toggle parity ---------------------------
 
 fn app_with_search_results(n: usize) -> App {
     let mut app = App::new(100);

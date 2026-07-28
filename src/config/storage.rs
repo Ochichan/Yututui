@@ -245,7 +245,7 @@ pub(super) fn config_for_missing_profile(old: Option<&Path>) -> Config {
 }
 
 /// Pull whatever we can reuse out of the old TypeScript app's config. Favorites,
-/// history and playlists are migrated later (M5) when the library view consumes them.
+/// history and playlists are migrated later when the library view consumes them.
 pub(super) fn import_old_from(path: &std::path::Path, cfg: &mut Config) {
     // Legacy import: cap the read and refuse a symlink, like every other persisted-state read.
     let Ok(bytes) = crate::util::safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) else {

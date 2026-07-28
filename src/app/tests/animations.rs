@@ -74,8 +74,6 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
     );
 }
 
-// --- one-shot fx: central trigger detection ------------------------------
-
 /// Every animation flag on, every one-shot mid-flight, every screen and overlay, several
 /// terminal sizes (down to tiny), several frames into the windows, plus a retro pass — all
 /// of it must render without panicking. This is the smoke net for the direct-cell overlay

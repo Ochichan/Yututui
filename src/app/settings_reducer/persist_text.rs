@@ -1,5 +1,4 @@
-//! Immediate persistence for free-text settings fields, split out of the parent reducer
-//! to keep its size budget for the field dispatch tables.
+//! Immediate persistence for free-text settings fields.
 
 use super::super::*;
 

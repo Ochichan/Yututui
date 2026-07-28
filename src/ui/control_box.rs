@@ -13,7 +13,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, MouseTarget, StatusKind};
+use crate::app::{App, Mode, MouseTarget};
 use crate::keymap::{Action, KeyContext};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -127,22 +127,7 @@ pub(in crate::ui) fn render_title_row(
     marquee: bool,
 ) {
     if !app.status.text.is_empty() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            let role = match app.status.kind {
-                StatusKind::Error => R::Error,
-                StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(app.theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                area,
-            );
-        }
+        crate::ui::render_status_band(frame, app, area);
     } else if let Some(line) = app.queue.current().filter(|_| animated).and_then(|s| {
         let title = app.display_title(s);
         let artist = app.display_artist(s);
@@ -668,13 +653,7 @@ fn render_dropdown(
         let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
         text.push_str(&" ".repeat(pad));
         let style = if *active {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };

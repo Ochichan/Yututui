@@ -452,5 +452,3 @@ fn video_fullscreen_and_mute_events_emit_overlay_commands() {
     assert!(matches!(mute.as_slice(), [Cmd::VideoToggleMute]));
     app.close_video();
 }
-
-// --- Playlist search & import (`Ctrl+P` kind, ytpl: rows) -----------------

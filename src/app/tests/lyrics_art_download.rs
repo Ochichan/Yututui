@@ -80,8 +80,6 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
     );
 }
 
-// --- Album art ----------------------------------------------------------
-
 #[test]
 fn album_art_off_emits_no_fetch() {
     let mut app = app_playing(3, 0);
@@ -278,8 +276,6 @@ fn art_fit_rect_centers_by_aspect() {
     assert_eq!((r.x, r.y), (0, 10));
 }
 
-// --- M7: downloads ------------------------------------------------------
-
 #[test]
 fn d_starts_download_of_current_track() {
     let mut app = app_playing(3, 0); // playing id0
@@ -341,8 +337,6 @@ fn download_error_marks_failed() {
     );
     assert!(app.status.text.contains("boom"));
 }
-
-// --- M8: prefetch / instant skip ----------------------------------------
 
 #[test]
 fn loading_prefetches_the_next_track() {
@@ -407,5 +401,3 @@ fn skip_without_prefetch_falls_back_to_watch_url() {
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // no Resolved arrived
     assert_loads_video(&cmds, "id1");
 }
-
-// --- M9: mouse controls -------------------------------------------------

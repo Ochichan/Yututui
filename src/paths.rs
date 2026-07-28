@@ -66,8 +66,7 @@ pub(crate) fn test_base() -> PathBuf {
     .clone()
 }
 
-/// The per-user **config** directory (holds `config.json`). `None` when the platform has no
-/// resolvable config dir.
+/// Holds `config.json`; `None` when the platform has no resolvable config directory.
 pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = env_dir("YTM_CONFIG_DIR") {
         return Some(dir);

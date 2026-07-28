@@ -2,12 +2,12 @@
 //! albums/singles. Reached from a Search artist row; Esc/Back returns to Search.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, ArtistSection, MouseTarget, ScrollSurface, StatusKind};
+use crate::app::{App, ArtistSection, MouseTarget, ScrollSurface};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -53,19 +53,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    if !app.status.text.is_empty() && !app.control_box_active() {
-        let role = match app.status.kind {
-            StatusKind::Error => R::Error,
-            StatusKind::Info => R::Success,
-        };
-        frame.render_widget(
-            Paragraph::new(
-                Line::from(app.status.text.as_str())
-                    .style(app.theme.style(role))
-                    .alignment(Alignment::Center),
-            ),
-            rows[0],
-        );
+    if crate::ui::status_band_active(app) {
+        crate::ui::render_status_band(frame, app, rows[0]);
     }
 
     let Some(st) = app.search.artist.as_ref() else {

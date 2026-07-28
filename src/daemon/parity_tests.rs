@@ -3,9 +3,7 @@
 //! One shared script of remote commands is applied to BOTH owner implementations; after
 //! every command the two owners must project **equal** `PlayerModel`/`QueueModel` wire
 //! models (and agree on the reply's `ok`/`reason`). This turns "the engine is kept in
-//! sync with the reducer by convention" (docs/gui/01 §4) into an executable contract,
-//! and it is the safety net every S1–S6 extraction step runs against: a parity failure
-//! after an extraction means the extraction changed behavior.
+//! sync with the reducer by convention" (docs/gui/01 §4) into an executable contract.
 //!
 //! Harness scope and its deliberate normalization:
 //! - The long shared script covers settings/toggle/queue-membership behavior without a live
@@ -40,7 +38,7 @@ use crate::station::StationStore;
 use super::engine::{DaemonEngine, EngineEffect, EngineState};
 use harness::*;
 
-/// The B0 shared command script: settings, toggles, and queue membership — everything
+/// The shared command script: settings, toggles, and queue membership — everything
 /// both owners serve today without a live player.
 fn b0_script() -> Vec<RemoteCommand> {
     vec![
@@ -1479,7 +1477,7 @@ async fn status_snapshots_agree_too() {
 /// Autoplay's exclusion set is now one shared function (`streaming::exclude_ids`); both
 /// owners must project it identically for the same queue + library + streaming config. This
 /// locks each owner's wiring (passing its own config/queue/library) as a contract, on a
-/// player-path helper the B0 command script never reaches.
+/// player-path helper the shared command script never reaches.
 #[test]
 fn streaming_exclude_ids_matches_across_owners() {
     use crate::library::Library;

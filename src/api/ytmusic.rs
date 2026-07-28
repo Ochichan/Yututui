@@ -185,8 +185,6 @@ impl YtMusicApi {
         }
     }
 
-    // Account playlist/library operations (the transfer feature) ---------------------
-
     /// The user's own playlists as `(id, title, track-count-string)`.
     pub async fn library_playlists(&self) -> Result<Vec<(String, String, String)>> {
         let playlists = self

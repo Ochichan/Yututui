@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -359,11 +359,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             width.saturating_sub(1),
         );
         let style = if selected {
-            let base = Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD);
-            crate::ui::anim::selection_style(app, base)
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextMuted)
         };
@@ -430,13 +426,7 @@ fn render_rows(frame: &mut Frame, app: &App, local_rows: &LocalRowsSnapshot, are
             crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1))
         };
         let style = if selected {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };

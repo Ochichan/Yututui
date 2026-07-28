@@ -1,4 +1,4 @@
-//! Owner-loop accounts glue (C5): the Last.fm connect flow and scrobble auth events.
+//! Owner-loop accounts glue for the Last.fm connect flow and scrobble auth events.
 //!
 //! The scrobble actor is owned by the serve loop (it also feeds playback observation),
 //! so this stays a set of free functions the loop calls with the handle — unlike the

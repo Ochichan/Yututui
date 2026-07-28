@@ -969,8 +969,6 @@ fn download_done_with_empty_path_does_not_save() {
     );
 }
 
-// --- library multi-select delete (drag + Delete), per-tab semantics ------
-
 /// A real, empty audio file in the temp dir, named uniquely so parallel tests don't clash.
 
 #[test]

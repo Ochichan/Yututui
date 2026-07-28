@@ -16,7 +16,7 @@ use ratatui::widgets::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{AiFocus, AiRole, App, MouseTarget, ScrollSurface, StatusKind};
+use crate::app::{AiFocus, AiRole, App, MouseTarget, ScrollSurface};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -62,24 +62,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    if !app.status.text.is_empty() && !app.control_box_active() {
-        // A just-set message types itself in while the toast animation's window runs.
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
-            frame.render_widget(Paragraph::new(line), rows[0]);
-        } else {
-            let role = match app.status.kind {
-                StatusKind::Error => R::Error,
-                StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(app.theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                rows[0],
-            );
-        }
+    if crate::ui::status_band_active(app) {
+        crate::ui::render_status_band(frame, app, rows[0]);
     }
 
     render_transcript(frame, app, rows[1]);
@@ -769,13 +753,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let highlight = if focused {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
+        crate::ui::selection_highlight(app)
     } else {
         Style::default()
             .fg(app.theme.color(R::SelectionInactiveFg))
@@ -1039,7 +1017,7 @@ mod tests {
     fn markdown_leaves_unclosed_markers_literal() {
         let base = Style::default();
         let accent = Style::default().fg(Color::Cyan);
-        // The M3 identify examples contain exactly this shape — it must never be eaten.
+        // This exact shape must never be eaten.
         let out = markdown_styled_chars("*ハロー、プラネット。", base, accent);
         assert_eq!(plain_text(&out), "*ハロー、プラネット。");
         let out = markdown_styled_chars("a ** b and `tick", base, accent);

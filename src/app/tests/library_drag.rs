@@ -101,5 +101,3 @@ fn library_drag_after_release_starts_a_fresh_range() {
     app.update(Msg::MouseDrag { col: c3, row: r3 });
     assert_eq!((app.library_ui.selected, app.library_ui.anchor), (3, 2));
 }
-
-// --- M6: lyrics ---------------------------------------------------------

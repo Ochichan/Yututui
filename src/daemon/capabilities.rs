@@ -21,7 +21,7 @@ pub(super) fn daemon_capabilities() -> Vec<String> {
         WEB_DAV_SYNC_CAPABILITY.to_string(),
         OPEN_SUBSONIC_CAPABILITY.to_string(),
         LONG_FORM_SEEK_OPTIMIZATION_CAPABILITY.to_string(),
-        // C6: the entire deferred v8 GUI command surface is dispatched (queue ops,
+        // The entire deferred v8 GUI command surface is dispatched (queue ops,
         // rating, video, library, playlists, downloads, AI, accounts, transfer,
         // keymap/theme) — advertising this dissolves the frontend's patch-bay gates.
         "v8-commands".to_string(),

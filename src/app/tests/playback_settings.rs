@@ -306,5 +306,3 @@ fn seek_keys_use_the_configured_interval() {
     }
     app.admit_player_intents_for_test(&cmds);
 }
-
-// --- D: settings screen -------------------------------------------------

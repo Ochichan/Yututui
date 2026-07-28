@@ -1268,7 +1268,6 @@ fn append_private_jsonl_inner(path: &Path, line: &str, durable: bool) -> io::Res
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Schema-drift-tolerant JSON loading
 //
 // Persisted state (config, play history, caches) is read by whatever build is
@@ -1283,7 +1282,6 @@ fn append_private_jsonl_inner(path: &Path, line: &str, durable: bool) -> io::Res
 // and defaults only the specific incompatible leaves (recursing into nested objects
 // and pruning individual bad elements out of arrays), so a single schema change can
 // never again reset an entire file.
-// ---------------------------------------------------------------------------
 
 /// Element-wise array recovery costs one `T` deserialization per element; skip it for
 /// pathologically large arrays and keep the (empty) default instead of stalling startup.

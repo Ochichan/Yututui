@@ -1,4 +1,4 @@
-//! Artwork/animation accessors, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Artwork/animation accessors.
 
 use super::*;
 

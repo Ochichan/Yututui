@@ -1,6 +1,6 @@
 //! Message, command, and view-state type definitions for the app reducer.
 //!
-//! Split out of the former monolithic `app.rs` (behaviour-preserving move). These are
+//! These are
 //! re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
 //! `crate::app::Cmd` / `crate::app::Mode` paths keep resolving for actors and views.
 
@@ -1425,7 +1425,6 @@ pub enum NowPlayingOverlayState {
 pub struct NowPlayingOverlay {
     /// The station `Song::video_id`, keying the favorite-resolution cache.
     pub station_id: String,
-    /// The station's display label.
     pub station_label: String,
     /// The sanitized ICY title this overlay is about.
     pub raw_title: String,

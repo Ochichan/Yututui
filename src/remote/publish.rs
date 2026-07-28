@@ -32,8 +32,7 @@ use super::proto::{
 use super::sessions::{RemoteSessionHub, RemoteSessionRef};
 
 /// A read-only borrow of the owner's core state, constructed fresh by each host per
-/// turn. Carries exactly what the B0 models need; later milestones extend it (library,
-/// settings, …). `elapsed_ms` is host-interpolated to "now" (the same math the OS media
+/// turn. `elapsed_ms` is host-interpolated to "now" (the same math the OS media
 /// session uses) so a snapshot's position is fresh at emit time.
 pub struct CoreView<'a> {
     pub queue: &'a Queue,
@@ -201,7 +200,7 @@ pub struct Publisher {
     /// Retained serialized `lyrics_snapshot` payload — the event-driven lyrics lane's
     /// initial-snapshot source for `handle_subscribe`. Unlike player/queue/settings,
     /// lyrics never ride `observe`: the host publishes explicitly on track change and
-    /// fetch completion (B1, docs/gui/02 §7).
+    /// fetch completion (docs/gui/02 §7).
     last_lyrics: Option<Arc<Vec<u8>>>,
     last_playlists: Option<Arc<Vec<u8>>>,
     last_downloads: Option<Arc<Vec<u8>>>,
@@ -417,8 +416,7 @@ impl Publisher {
                         Topic::Downloads => self.last_downloads.clone(),
                         Topic::Transfer => self.last_transfer.clone(),
                         Topic::Accounts => self.last_accounts.clone(),
-                        // Event-only (system, search) or not yet served (B1+ topics):
-                        // registered, no initial snapshot.
+                        // Event-only topics are registered without an initial snapshot.
                         _ => None,
                     };
                     if let Some(payload) = payload
@@ -964,8 +962,7 @@ pub(crate) fn long_form_seek_reason(
 }
 
 /// Project a [`Song`] to the wire track shape, with the rating halves resolved from the
-/// owner's library/signals stores (docs/gui/02 §11.2); display/romanization enrichment
-/// still lands with its milestone (B3).
+/// owner's library/signals stores (docs/gui/02 §11.2).
 pub(crate) fn track_model(
     song: &Song,
     library: &crate::library::Library,

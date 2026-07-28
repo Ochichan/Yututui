@@ -1,4 +1,4 @@
-//! The publish-one-track background task, split out of `dispatch.rs` for the size ratchet.
+//! The publish-one-track background task.
 
 use super::*;
 

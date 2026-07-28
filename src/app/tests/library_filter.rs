@@ -139,8 +139,6 @@ fn filter_text_action_remap_beats_the_library_mode_toggle() {
     assert_eq!(app.library_ui.filter_cursor.byte_index("one"), 2);
 }
 
-// --- search results-filter popup (`/`) -----------------------------------------
-
 /// Search screen with three results loaded; results arrival focuses the list.
 
 #[test]
@@ -487,5 +485,3 @@ fn reopening_the_library_clears_a_leftover_filter() {
     assert_eq!(app.library_ui.tab, LibraryTab::Favorites); // tab persists, only the filter resets
     assert_eq!(app.library_len(), 2);
 }
-
-// --- copy link (`y`): only internet-sourced tracks expose a URL --------------

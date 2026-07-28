@@ -1,8 +1,7 @@
-//! Grouped sub-states of [`App`] (Stage 2 of the re-architecture).
+//! Grouped sub-states of [`App`].
 //!
-//! The reducer historically kept ~70 flat fields on `App`; these structs gather the
-//! cohesive per-domain groups so ownership reads clearly and future changes stay local.
-//! Behaviour-preserving: the fields are the same, just nested (`app.search.input`).
+//! These structs gather cohesive per-domain groups so ownership reads clearly and future
+//! changes stay local.
 
 use super::*;
 use crate::lyrics::LyricDelay;
@@ -181,7 +180,7 @@ pub struct FxState {
     /// Play/pause toggled on a current track → light wave across the transport controls.
     pub pause: Option<u64>,
 
-    // Last-observed values the central diff compares against (reducer-only) ----
+    // Last-observed values the central diff compares against (reducer-only).
     pub(in crate::app) last_track_id: Option<String>,
     pub(in crate::app) last_volume: i64,
     pub(in crate::app) last_liked: bool,
@@ -684,7 +683,6 @@ pub struct LibraryView {
     /// In-library incremental filter query (`/`). When non-empty, the active list narrows to
     /// rows whose title or artist contains it (case-insensitive). Empty = no filter.
     pub filter_query: String,
-    /// Caret within [`Self::filter_query`] while the live filter is focused.
     pub filter_cursor: TextCursor,
     /// Whether the filter input box is capturing keystrokes (typed chars edit `filter_query`
     /// and the list narrows live). Committed with Enter (keeps the filter, returns to list

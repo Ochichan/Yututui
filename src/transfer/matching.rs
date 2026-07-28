@@ -764,7 +764,6 @@ fn evidence_completeness(input: &TrackInput, cand: &MatchCandidate) -> f32 {
     available.into_iter().filter(|present| *present).count() as f32 / available.len() as f32
 }
 
-/// Score one candidate against the input.
 pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
     score_candidate_breakdown(input, cand).total
 }
@@ -1102,8 +1101,6 @@ pub fn best_outcome(
         }
     }
 }
-
-// Retrieval query helpers ---------------------------------------------------------
 
 fn push_query_variant(out: &mut Vec<String>, seen: &mut HashSet<String>, query: String) {
     let query = query.trim();

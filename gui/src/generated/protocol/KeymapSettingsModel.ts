@@ -2,8 +2,6 @@
 import type { ActionInfoModel } from "./ActionInfoModel";
 
 /**
- * B1-minimal keymap block: the user's persisted overrides (`"<context>.<action>" →
- * chord`). The full live keymap + action catalog (docs/gui/05 §8) lands with the
- * hotkeys milestone; the GUI tab degrades to override rows until then.
+ * The live keymap and action catalog (docs/gui/05 §8).
  */
 export type KeymapSettingsModel = { bindings: { [key in string]?: string }, actions: Array<ActionInfoModel>, };

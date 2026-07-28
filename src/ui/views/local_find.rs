@@ -104,23 +104,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Match normal Search: a global action/scan toast owns this band while no docked player title
     // exists to show it. Local activity returns as soon as the transient status clears.
-    if !app.status.text.is_empty() && !app.control_box_active() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, area.width) {
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            let role = match app.status.kind {
-                StatusKind::Error => R::Error,
-                StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(app.theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                area,
-            );
-        }
+    if crate::ui::status_band_active(app) {
+        crate::ui::render_status_band(frame, app, area);
         return;
     }
     let find = &app.local_mode.find;
@@ -617,13 +602,7 @@ fn render_result_row(
         crate::ui::text::truncate_owned_to_width(format!("{marker}{content}"), body_width)
     };
     let style = if selected {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
+        crate::ui::selection_highlight(app)
     } else {
         app.theme.style(R::TextPrimary)
     };
@@ -1387,13 +1366,7 @@ fn popup_row_style(app: &App, selected: bool) -> Style {
 
 fn local_find_row_style(app: &App, selected: bool) -> Style {
     if selected {
-        crate::ui::anim::selection_style(
-            app,
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
+        crate::ui::selection_highlight(app)
     } else {
         app.theme.style(R::TextPrimary)
     }

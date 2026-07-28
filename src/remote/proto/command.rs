@@ -159,7 +159,6 @@ pub enum RemoteCommand {
     SyncRevokeDevice {
         device_id: String,
     },
-    // ── Deferred v8 GUI commands (additive; capability-gated by `v8-commands`) ─────────
     //
     // Wire shapes are pinned to what the GUI's stores already send (the demo core in
     // gui/src/lib/dev/democore.ts is the reference implementation; gui/WIRING.md §1.5).
@@ -289,7 +288,7 @@ pub enum RemoteCommand {
     /// List the connected Spotify account's playlists; results ride the `transfer` topic.
     TransferListSpotify,
     /// Start a Spotify import job. The spec is validated by the transfer engine; results
-    /// and progress ride the `transfer` topic. Typed model lands with the B4 stream.
+    /// and progress ride the `transfer` topic.
     TransferStart {
         spec: Value,
     },

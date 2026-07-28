@@ -242,5 +242,3 @@ fn ctrl_h_goes_home_from_help_overlay() {
     assert!(!app.overlays.help_visible);
     assert!(!app.should_quit);
 }
-
-// --- M4: queue / shuffle / repeat / auto-advance ------------------------

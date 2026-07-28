@@ -144,8 +144,6 @@ impl LastfmClient {
         Ok(body)
     }
 
-    // Auth flow ---------------------------------------------------------------
-
     /// Step 1: an unauthorized request token (valid 60 minutes, single use).
     pub async fn get_token(&self) -> Result<String, ScrobbleError> {
         let body = self.call(self.unauthed_params("auth.getToken")).await?;

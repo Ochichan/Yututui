@@ -12,8 +12,6 @@ use super::{ease_out_cubic, fx_t, fx_window, hash32, lerp_color};
 use crate::app::App;
 use crate::theme::ThemeRole as R;
 
-// ── time glow (second tick) ─────────────────────────────────────────────────
-
 /// The current sub-second glow amount (1 right after a second rolls over, decaying to 0), or
 /// `None` when the effect shouldn't run (flag off, paused, parked clock, radio stream — whose
 /// gauge doesn't mean elapsed time). Uses the same `time_pos_at` interpolation anchor as
@@ -62,8 +60,6 @@ pub fn time_glow_label(app: &App, label: String) -> Span<'static> {
         )),
     )
 }
-
-// ── progress sparkle ────────────────────────────────────────────────────────
 
 const SPARKLE_GLYPHS: [char; 3] = ['✦', '·', '*'];
 const SPARKLE_GLYPHS_RETRO: [char; 3] = ['*', '.', '+'];
@@ -118,8 +114,6 @@ pub fn progress_sparkle_overlay(frame: &mut Frame, app: &App, area: Rect, ratio:
     }
 }
 
-// ── border chase ────────────────────────────────────────────────────────────
-
 /// A short bright comet running clockwise around a view's outer border. Recolours the
 /// foreground of the three cells behind its head — the border glyphs themselves are left
 /// exactly as the block drew them, so this composes with (and outshines) the breathing tint.
@@ -153,8 +147,6 @@ pub fn border_chase_overlay(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 }
-
-// ── pause flash ─────────────────────────────────────────────────────────────
 
 /// A light wave washing outward across the transport-controls row right after play/pause
 /// toggles: cells near the expanding ring get their existing foreground blended toward

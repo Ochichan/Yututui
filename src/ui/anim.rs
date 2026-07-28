@@ -81,8 +81,6 @@ pub mod fx_window {
     }
 }
 
-// ── shared helpers ──────────────────────────────────────────────────────────
-
 /// A smooth 0→1→0 pulse over `period` frames (0 at the ends, 1 at the middle).
 fn wave(frame: u64, period: u64) -> f64 {
     let p = period.max(1);
@@ -162,8 +160,6 @@ fn put_char(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
         cell.set_char(ch).set_style(style);
     }
 }
-
-// ── element-level effects ───────────────────────────────────────────────────
 
 const TITLE_SEPARATOR: &str = " — ";
 const TITLE_LOOP_GAP: &str = "   •   ";
@@ -433,8 +429,6 @@ pub fn seekbar_overlay(frame: &mut Frame, app: &App, area: Rect, ratio: f64) {
         }
     }
 }
-
-// ── one-shot + ambient UI effects ───────────────────────────────────────────
 
 /// Equal-style run grouper for character-by-character line builders (these run at animation
 /// FPS, so they emit one `Span` per style-run instead of one heap `String` per char).
@@ -947,8 +941,6 @@ pub fn queue_marker(app: &App) -> Option<String> {
     }
     Some(s)
 }
-
-// ── About-card overlay effects ──────────────────────────────────────────────
 
 const ABOUT_SPARKLE_GLYPHS: [char; 6] = ['✦', '✧', '·', '*', '✦', '·'];
 

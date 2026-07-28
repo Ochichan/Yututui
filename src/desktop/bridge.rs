@@ -1,8 +1,8 @@
 //! WebView ↔ gateway glue (docs/gui/03 §2, §3.2, docs/gui/05 §4.1).
 //!
 //! The webview posts [`OutEnvelope`] lines via wry's ipc_handler (on the main thread); the
-//! bridge parses them into a [`BridgeAction`] the event loop executes: a local reply
-//! (the M0 ping echo), a native window op, or (from M1) a frame forwarded to the gateway.
+//! bridge parses them into a [`BridgeAction`] the event loop executes: a local reply,
+//! a native window op, or a frame forwarded to the gateway.
 //! Outbound, [`receive_script`] renders an [`InEnvelope`] into a `window.__ytm.receive(...)`
 //! call the loop thread runs with `evaluate_script` (WebViews are `!Send`, docs/gui/03 §3.2).
 
@@ -230,7 +230,7 @@ pub enum BridgeAction {
     Reply(InEnvelope),
     /// Perform a native window op.
     Win(WinOp),
-    /// Forward to the gateway thread (commands/requests/subscriptions — M1+).
+    /// Forward to the gateway thread (commands/requests/subscriptions).
     ToGateway(OutEnvelope),
     /// Malformed or intentionally ignored.
     Ignore,
@@ -267,7 +267,7 @@ pub fn dispatch(body: &str) -> BridgeAction {
         });
     }
     match env.kind {
-        // M0 self-test: the IPC bridge echoes `req ping` → `res pong` locally (docs/gui/09 §3).
+        // The IPC bridge echoes `req ping` → `res pong` locally (docs/gui/09 §3).
         OutKind::Req if env.name == "ping" => match env.id {
             Some(id) => BridgeAction::Reply(InEnvelope::res_for_page(
                 id,
@@ -277,7 +277,7 @@ pub fn dispatch(body: &str) -> BridgeAction {
             None => BridgeAction::Ignore,
         },
         OutKind::Win => parse_win(&env).map_or(BridgeAction::Ignore, BridgeAction::Win),
-        // Everything else belongs to the gateway once it lands (M1); harmless to forward now.
+        // Everything else belongs to the gateway.
         OutKind::Cmd | OutKind::Req | OutKind::Sub | OutKind::Unsub => BridgeAction::ToGateway(env),
     }
 }

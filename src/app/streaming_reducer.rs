@@ -1,4 +1,4 @@
-//! Autoplay/streaming reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! Autoplay/streaming reducer methods.
 
 use super::*;
 

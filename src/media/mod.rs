@@ -489,7 +489,7 @@ impl MediaSession {
     pub fn publish(&mut self, snapshot: MediaSnapshot) {
         // The artwork cache is owner state, not platform-session state: its resolved
         // file also rides the remote player snapshot (`CoreView::artwork` →
-        // `TrackModel.artwork`, B1), so art must resolve ahead of every platform gate
+        // `TrackModel.artwork`), so art must resolve ahead of every platform gate
         // below — a disabled/failed/backing-off/not-yet-activated session (headless
         // daemon, paused-at-rest restore) still wants the current track's art. The
         // request is per-track deduplicated, so running it first costs nothing extra
@@ -779,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_session_still_requests_artwork() {
-        // B1 (gui/WIRING.md artwork.live): a headless daemon runs with media controls
+        // A headless daemon runs with media controls
         // off, yet the GUI's player snapshot still needs the art cache populated.
         let mut media = MediaSession::new_cancellable(
             false,

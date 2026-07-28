@@ -223,8 +223,6 @@ pub(super) fn current(app: &App) -> &str {
     app.queue.current().unwrap().video_id.as_str()
 }
 
-// ---- Radio recorder state machine --------------------------------------------------------
-
 /// A radio station playing with recording enabled in `mode` and a scratch temp dir. The
 /// reducer only builds `Cmd`s (no disk IO), so the temp dir is never actually written.
 pub(super) fn recording_app(mode: crate::recorder::RecordingMode) -> App {

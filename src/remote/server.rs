@@ -405,8 +405,6 @@ async fn probe_alive(endpoint_name: &str) -> bool {
     )
 }
 
-/// Bind a tokio listener on `endpoint_name`.
-///
 /// `reclaim_name(false)` disables `interprocess`'s default unlink-on-listener-drop: otherwise
 /// the listener (owned by the `serve` task, dropped only when the runtime is) and
 /// [`InstanceGuard`] (dropped at end of `run`) are two independent unlinkers of the same path.

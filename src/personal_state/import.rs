@@ -30,7 +30,7 @@ pub struct ImportPlan {
     pub summary: ImportSummary,
 }
 
-/// Plan an import without mutating either input.
+/// Does not mutate either input.
 ///
 /// Bundles from the same dataset use the ordinary causal merge. A foreign dataset or legacy
 /// export becomes one deterministic, deletion-free legacy baseline operation in the current

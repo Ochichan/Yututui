@@ -52,8 +52,7 @@ impl Served {
     }
 }
 
-/// Resolve a request URL to a response. `art` maps an artwork cache key to an on-disk path
-/// (the gateway holds these from B1; M0 passes a resolver that always returns `None`).
+/// Resolve a request URL to a response. `art` maps an artwork cache key to an on-disk path.
 pub fn resolve(url: &str, art: impl Fn(&str) -> Option<PathBuf>) -> Served {
     let Some(path) = request_path(url) else {
         return Served::not_found();
