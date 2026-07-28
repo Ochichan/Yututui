@@ -3,6 +3,42 @@
 use super::*;
 
 impl App {
+    pub(crate) fn favorite_lookup(&self) -> crate::library::FavoriteLookup<'_> {
+        let fav_len = self.library.favorites.len();
+        let radio_fav_len = self.library.radio_favorites.len();
+        if fav_len.saturating_add(radio_fav_len) <= crate::library::FAVORITE_LOOKUP_LINEAR_LIMIT {
+            return crate::library::FavoriteLookup::new(&self.library, None);
+        }
+        if let Some(ids) = self
+            .favorite_index
+            .borrow()
+            .as_ref()
+            .filter(|index| {
+                index.library_rev == self.library.rev
+                    && index.fav_len == fav_len
+                    && index.radio_fav_len == radio_fav_len
+            })
+            .map(|index| Arc::clone(&index.ids))
+        {
+            return crate::library::FavoriteLookup::new(&self.library, Some(ids));
+        }
+        let ids = Arc::new(
+            self.library
+                .favorites
+                .iter()
+                .chain(&self.library.radio_favorites)
+                .map(|song| song.video_id.clone())
+                .collect(),
+        );
+        *self.favorite_index.borrow_mut() = Some(FavoriteIndex {
+            library_rev: self.library.rev,
+            fav_len,
+            radio_fav_len,
+            ids: Arc::clone(&ids),
+        });
+        crate::library::FavoriteLookup::new(&self.library, Some(ids))
+    }
+
     /// Number of rows currently shown in the active library tab — after the in-library
     /// filter, so selection/navigation bounds track what's actually on screen. At the
     /// Playlists root the rows are playlists, not songs.
@@ -20,8 +56,6 @@ impl App {
     /// and throwing away a full row vector just to read its length.
     pub(crate) fn library_rows_len(&self) -> usize {
         let tab = self.effective_library_tab();
-        // Playlist drill-down rows are built uncached because the playlist store has no cheap
-        // revision key. Count directly so rendering does not first allocate a full `Vec<&Song>`.
         if matches!(tab, LibraryTab::Playlists) {
             let Some(playlist) = self
                 .library_ui
@@ -33,13 +67,15 @@ impl App {
             };
             let needle = self.library_ui.filter_query.trim().to_lowercase();
             if needle.is_empty() {
+                self.ensure_playlist_rows_cache(playlist, &needle);
                 return playlist.songs.len();
             }
-            return playlist
-                .songs
-                .iter()
-                .filter(|song| self.song_matches_filter(song, &needle))
-                .count();
+            self.ensure_playlist_rows_cache(playlist, &needle);
+            return self
+                .playlist_rows_cache
+                .borrow()
+                .as_ref()
+                .map_or(0, |cache| cache.rows.len());
         }
         let key = self.library_rows_key(tab);
         if let Some(cache) = self.library_rows_cache.borrow().as_ref()
@@ -51,7 +87,7 @@ impl App {
         // `library_rows` call in the same frame hits the cache), and return the slot count.
         let slots = self.build_library_slots(tab);
         let n = slots.len();
-        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
+        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache::new(key, slots));
         n
     }
 
@@ -78,6 +114,7 @@ impl App {
             };
             let needle = self.library_ui.filter_query.trim().to_lowercase();
             if needle.is_empty() {
+                self.ensure_playlist_rows_cache(playlist, &needle);
                 return playlist
                     .songs
                     .iter()
@@ -86,13 +123,17 @@ impl App {
                     .map(Some)
                     .collect();
             }
-            return playlist
-                .songs
+            self.ensure_playlist_rows_cache(playlist, &needle);
+            let cache = self.playlist_rows_cache.borrow();
+            let Some(cache) = cache.as_ref() else {
+                return Vec::new();
+            };
+            return cache
+                .rows
                 .iter()
-                .filter(|song| self.song_matches_filter(song, &needle))
                 .skip(start)
                 .take(visible)
-                .map(Some)
+                .map(|index| playlist.songs.get(*index))
                 .collect();
         }
 
@@ -137,9 +178,8 @@ impl App {
 
     pub fn library_rows(&self) -> Vec<&Song> {
         let tab = self.effective_library_tab();
-        // Playlist drill-down rows borrow from the playlists store, whose mutation
-        // surface (create/rename/add/remove/reorder) is too broad to key cheaply —
-        // and an open playlist is small. Build those uncached.
+        // Row operations need borrowed songs rather than render indices, so playlist
+        // drill-down keeps this exact projection while len/window rendering use the index cache.
         if matches!(tab, LibraryTab::Playlists) {
             let rows = self.open_playlist_rows();
             return self.apply_library_filter(rows);
@@ -152,8 +192,88 @@ impl App {
         }
         let slots = self.build_library_slots(tab);
         let rows = self.rows_from_slots(&slots);
-        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
+        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache::new(key, slots));
         rows
+    }
+
+    /// Stable (pre-truncation) text for the library row at `index`. `song` MUST be the
+    /// song that row currently resolves to — the pair is not cross-checked, and a
+    /// mismatched caller would silently render (and cache) the wrong row's text. The
+    /// only caller derives both from the same `library_render_window` window.
+    pub(crate) fn library_row_text_at(&self, index: usize, song: &Song) -> Arc<str> {
+        let playlist = matches!(self.effective_library_tab(), LibraryTab::Playlists);
+        let cached = if playlist {
+            self.playlist_rows_cache
+                .borrow()
+                .as_ref()
+                .and_then(|cache| cache.row_text.borrow().get(&index).cloned())
+        } else {
+            self.library_rows_cache
+                .borrow()
+                .as_ref()
+                .and_then(|cache| cache.row_text.borrow().get(&index).cloned())
+        };
+        if let Some(text) = cached {
+            return text;
+        }
+        let title = self.display_title(song);
+        let artist = self.display_artist(song);
+        let text: Arc<str> = if song.duration.is_empty() {
+            Arc::from(format!("{title} — {artist}"))
+        } else {
+            Arc::from(format!("{title} — {artist}  ({})", song.duration))
+        };
+        if playlist {
+            if let Some(cache) = self.playlist_rows_cache.borrow().as_ref() {
+                insert_bounded_library_value(&cache.row_text, index, Arc::clone(&text));
+            }
+        } else if let Some(cache) = self.library_rows_cache.borrow().as_ref() {
+            insert_bounded_library_value(&cache.row_text, index, Arc::clone(&text));
+        }
+        text
+    }
+
+    fn ensure_playlist_rows_cache(&self, playlist: &crate::playlists::Playlist, needle: &str) {
+        let playlists_revision = self.playlists.revision();
+        let open_playlist = self.library_ui.open_playlist.as_deref().unwrap_or_default();
+        let filter = self.library_ui.filter_query.as_str();
+        let romanize_rev = self.romanization.cache.rev();
+        let romanized_on = self.config.effective_romanized_titles();
+        if self
+            .playlist_rows_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.key.playlists_revision == playlists_revision
+                    && cache.key.open_playlist == open_playlist
+                    && cache.key.filter == filter
+                    && cache.key.romanize_rev == romanize_rev
+                    && cache.key.romanized_on == romanized_on
+            })
+        {
+            return;
+        }
+        let rows = if needle.is_empty() {
+            Vec::new()
+        } else {
+            playlist
+                .songs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, song)| self.song_matches_filter(song, needle).then_some(index))
+                .collect()
+        };
+        *self.playlist_rows_cache.borrow_mut() = Some(PlaylistRowsCache {
+            key: PlaylistRowsKey {
+                playlists_revision,
+                open_playlist: open_playlist.to_owned(),
+                filter: filter.to_owned(),
+                romanize_rev,
+                romanized_on,
+            },
+            rows,
+            row_text: RefCell::new(HashMap::new()),
+        });
     }
 
     /// Narrow `rows` to the active in-library filter — a case-insensitive substring match on
@@ -385,9 +505,12 @@ impl App {
         self.library_rows().into_iter().cloned().collect()
     }
 
-    /// The track under the library cursor, if any.
+    /// The track under the library cursor, if any. Clones only the one addressed row,
+    /// not the whole tab.
     pub(in crate::app) fn selected_library_song(&self) -> Option<Song> {
-        self.library_songs().get(self.library_ui.selected).cloned()
+        self.library_rows()
+            .get(self.library_ui.selected)
+            .map(|song| (*song).clone())
     }
 
     /// Row indices of the effective library selection: the Ctrl/Cmd-picked rows when any
@@ -404,10 +527,10 @@ impl App {
     /// Tracks in the current library selection (picked rows or the drag range), in
     /// visible row order.
     pub(in crate::app) fn selected_library_songs(&self) -> Vec<Song> {
-        let songs = self.library_songs();
+        let rows = self.library_rows();
         self.library_selection_indices()
             .into_iter()
-            .filter_map(|i| songs.get(i).cloned())
+            .filter_map(|i| rows.get(i).map(|song| (*song).clone()))
             .collect()
     }
 
@@ -646,6 +769,52 @@ pub(in crate::app) struct RowsKey {
 pub(in crate::app) struct LibraryRowsCache {
     key: RowsKey,
     slots: Vec<RowSlot>,
+    row_text: RefCell<HashMap<usize, Arc<str>>>,
+}
+
+impl LibraryRowsCache {
+    fn new(key: RowsKey, slots: Vec<RowSlot>) -> Self {
+        Self {
+            key,
+            slots,
+            row_text: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+const LIBRARY_VISIBLE_VALUE_CACHE_CAP: usize = 512;
+
+fn insert_bounded_library_value(
+    cache: &RefCell<HashMap<usize, Arc<str>>>,
+    index: usize,
+    value: Arc<str>,
+) {
+    let mut cache = cache.borrow_mut();
+    if cache.len() >= LIBRARY_VISIBLE_VALUE_CACHE_CAP && !cache.contains_key(&index) {
+        cache.clear();
+    }
+    cache.insert(index, value);
+}
+
+pub(in crate::app) struct FavoriteIndex {
+    library_rev: u64,
+    fav_len: usize,
+    radio_fav_len: usize,
+    ids: Arc<HashSet<String>>,
+}
+
+struct PlaylistRowsKey {
+    playlists_revision: u64,
+    open_playlist: String,
+    filter: String,
+    romanize_rev: u64,
+    romanized_on: bool,
+}
+
+pub(in crate::app) struct PlaylistRowsCache {
+    key: PlaylistRowsKey,
+    rows: Vec<usize>,
+    row_text: RefCell<HashMap<usize, Arc<str>>>,
 }
 
 /// (library_rev, downloaded_rev, favorites len, history len, downloaded len) — the All-tab
@@ -657,6 +826,98 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    fn song(id: &str, title: &str) -> Song {
+        Song::remote(id, title, "Artist", "3:00")
+    }
+
+    #[test]
+    fn favorite_index_tracks_toggle_revision_changes() {
+        let mut app = App::new(50);
+        app.library_mut().favorites = (0..33)
+            .map(|index| song(&format!("old-{index}"), "Old"))
+            .collect();
+        assert!(app.favorite_lookup().is_favorite("old-0"));
+        assert!(app.favorite_index.borrow().is_some());
+
+        let added = song("added", "Added");
+        assert!(app.library_mut().toggle_favorite(&added));
+
+        let lookup = app.favorite_lookup();
+        assert!(lookup.is_favorite("old-0"));
+        assert!(lookup.is_favorite("added"));
+    }
+
+    #[test]
+    fn favorite_index_length_belt_invalidates_direct_fixture_replacement() {
+        let mut app = App::new(50);
+        app.library_mut().favorites = (0..33)
+            .map(|index| song(&format!("old-{index}"), "Old"))
+            .collect();
+        assert!(app.favorite_lookup().is_favorite("old-0"));
+        let revision = app.library.rev;
+
+        app.library_mut().favorites = (0..34)
+            .map(|index| song(&format!("new-{index}"), "New"))
+            .collect();
+        assert_eq!(app.library.rev, revision);
+
+        let lookup = app.favorite_lookup();
+        assert!(!lookup.is_favorite("old-0"));
+        assert!(lookup.is_favorite("new-33"));
+    }
+
+    #[test]
+    fn library_row_text_reuses_stable_pre_truncation_value() {
+        let mut app = App::new(50);
+        app.library_ui.tab = LibraryTab::Favorites;
+        app.library_mut()
+            .favorites
+            .push(song("cached", "Cached title"));
+        assert_eq!(app.library_rows_len(), 1);
+        let first = app.library_row_text_at(0, &app.library.favorites[0]);
+        let second = app.library_row_text_at(0, &app.library.favorites[0]);
+
+        assert_eq!(first.as_ref(), "Cached title — Artist  (3:00)");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn playlist_filter_cache_tracks_add_and_remove_revisions() {
+        let mut app = App::new(50);
+        let playlist_id = app.playlists_mut().create("Cache").unwrap();
+        assert!(matches!(
+            app.playlists_mut()
+                .add(&playlist_id, song("first", "Needle one")),
+            crate::playlists::AddResult::Added
+        ));
+        app.library_ui.tab = LibraryTab::Playlists;
+        app.library_ui.open_playlist = Some(playlist_id.clone());
+        app.library_ui.filter_query = "needle".to_owned();
+
+        assert_eq!(app.library_rows_len(), 1);
+        assert!(app.playlist_rows_cache.borrow().is_some());
+        {
+            let playlist_song = &app.playlists.find(&playlist_id).unwrap().songs[0];
+            let first = app.library_row_text_at(0, playlist_song);
+            let second = app.library_row_text_at(0, playlist_song);
+            assert!(Arc::ptr_eq(&first, &second));
+        }
+        assert!(matches!(
+            app.playlists_mut()
+                .add(&playlist_id, song("second", "Needle two")),
+            crate::playlists::AddResult::Added
+        ));
+        assert_eq!(app.library_rows_len(), 2);
+
+        assert!(app.playlists_mut().remove_song(&playlist_id, "first"));
+        assert_eq!(app.library_rows_len(), 1);
+        let rows = app.library_render_window(0, 1);
+        assert_eq!(
+            rows[0].as_ref().map(|song| song.video_id.as_str()),
+            Some("second")
+        );
+    }
 
     #[test]
     fn favorites_delete_neutralizes_rating_and_persists_one_personal_state_snapshot() {

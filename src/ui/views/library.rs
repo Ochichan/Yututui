@@ -82,7 +82,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if playlists_root {
         render_playlist_list(frame, app, rows[2]);
     } else {
-        let favorite_lookup = app.library.favorite_lookup();
+        let favorite_lookup = app.favorite_lookup();
         render_list(frame, app, rows[2], library_rows_len, &favorite_lookup);
     }
     crate::ui::control_box::render_docked(frame, app, rows[3]);
@@ -340,26 +340,20 @@ fn render_list(
         } else {
             "  "
         };
-        let title = app.display_title(song);
-        let artist = app.display_artist(song);
-        let text = if song.duration.is_empty() {
-            format!("{title} — {artist}")
-        } else {
-            format!("{title} — {artist}  ({})", song.duration)
-        };
+        let text = app.library_row_text_at(i, song);
         // The cursor row marquees when clipped (the 4-cell marker+heart gutter stays
         // put) so the full text stays readable even in a sliver-narrow window; every
         // other row hard-truncates as before.
         let text = if i == cursor {
-            crate::ui::anim::selected_marquee(
+            std::borrow::Cow::Owned(crate::ui::anim::selected_marquee(
                 app,
                 ScrollSurface::Library,
                 i,
                 &text,
                 body_w.saturating_sub(5),
-            )
+            ))
         } else {
-            text
+            std::borrow::Cow::Borrowed(text.as_ref())
         };
         let body = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{heart}{text}"),

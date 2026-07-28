@@ -102,6 +102,8 @@ impl App {
             library_ui: LibraryView::default(),
             server: ServerUiState::default(),
             library_rows_cache: RefCell::new(None),
+            favorite_index: RefCell::new(None),
+            playlist_rows_cache: RefCell::new(None),
             all_count_cache: Cell::new(None),
             yid_scan_memo: RefCell::new(None),
             playlist_picker: None,

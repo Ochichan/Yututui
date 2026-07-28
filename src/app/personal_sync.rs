@@ -550,6 +550,8 @@ impl App {
         self.signals = Arc::new(signals);
         self.station = station;
         self.library_rows_cache.borrow_mut().take();
+        self.favorite_index.borrow_mut().take();
+        self.playlist_rows_cache.borrow_mut().take();
         self.all_count_cache.set(None);
         self.clamp_library_selection();
         Ok(())
@@ -744,11 +746,34 @@ mod tests {
         let mut app = App::new(50);
         let matching = crate::api::Song::remote("old-track", "matches filter", "Artist", "3:00");
         app.library_mut().favorites.push(matching);
+        // Distinct titles: the All-tab count dedupes by title as well as id.
+        for index in 0..32 {
+            app.library_mut().favorites.push(crate::api::Song::remote(
+                format!("extra-{index}"),
+                format!("different title {index}"),
+                "Artist",
+                "3:00",
+            ));
+        }
         app.library_ui.filter_query = "matches".to_owned();
         assert_eq!(app.library_rows_len(), 1);
         assert!(app.library_rows_cache.borrow().is_some());
-        assert_eq!(app.library_count_for(LibraryTab::All), 1);
+        assert!(app.favorite_lookup().is_favorite("old-track"));
+        assert!(app.favorite_index.borrow().is_some());
+        assert_eq!(app.library_count_for(LibraryTab::All), 33);
         assert!(app.all_count_cache.get().is_some());
+
+        let playlist_id = app.playlists_mut().create("Old mix").unwrap();
+        app.playlists_mut().add(
+            &playlist_id,
+            crate::api::Song::remote("playlist-track", "matches playlist", "Artist", "3:00"),
+        );
+        app.library_ui.tab = LibraryTab::Playlists;
+        app.library_ui.open_playlist = Some(playlist_id);
+        assert_eq!(app.library_rows_len(), 1);
+        assert!(app.playlist_rows_cache.borrow().is_some());
+        app.library_ui.tab = LibraryTab::All;
+        app.library_ui.open_playlist = None;
 
         let mut replacement = crate::library::Library::default();
         replacement.favorites.push(crate::api::Song::remote(
@@ -766,6 +791,8 @@ mod tests {
         .unwrap();
         app.install_personal_sync_runtime(state).unwrap();
 
+        assert!(app.favorite_index.borrow().is_none());
+        assert!(app.playlist_rows_cache.borrow().is_none());
         assert!(app.all_count_cache.get().is_none());
         assert_eq!(app.library_rows_len(), 0);
         assert_eq!(app.library_count_for(LibraryTab::All), 1);

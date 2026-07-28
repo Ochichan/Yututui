@@ -13,6 +13,7 @@ dirty
 download_store
 downloads
 dropdowns
+favorite_index
 focused
 fx
 heal
@@ -35,6 +36,7 @@ personal_export
 personal_state
 playback
 playlist_picker
+playlist_rows_cache
 playlists
 prefetch
 queue
