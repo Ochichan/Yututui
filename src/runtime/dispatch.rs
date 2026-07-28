@@ -1,5 +1,6 @@
 //! Dispatch reducer commands to runtime-owned actors and background jobs.
 
+use super::publish_track_task;
 use super::*;
 
 mod linked_playlists;
@@ -355,6 +356,15 @@ impl RuntimeHandles {
                                     )))
                                     .await;
                             },
+                        );
+                    }
+                    crate::app::MusicServerCommand::PublishTrack {
+                        generation,
+                        video_id,
+                    } => {
+                        self.background_tasks.spawn_cancellable(
+                            "music_server_publish_track",
+                            publish_track_task::run(emitter.clone(), generation, video_id),
                         );
                     }
                     crate::app::MusicServerCommand::AbandonPlaylistCreate {

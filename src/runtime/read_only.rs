@@ -36,7 +36,8 @@ pub(super) fn durable_mutation_component(cmd: &Cmd) -> Option<&'static str> {
             | crate::app::MusicServerCommand::Commit { .. }
             | crate::app::MusicServerCommand::DisableHistory { .. }
             | crate::app::MusicServerCommand::Remove { .. }
-            | crate::app::MusicServerCommand::AbandonPlaylistCreate { .. },
+            | crate::app::MusicServerCommand::AbandonPlaylistCreate { .. }
+            | crate::app::MusicServerCommand::PublishTrack { .. },
         ) => Some("music server settings"),
         Cmd::ServerLibrary(
             crate::app::ServerLibraryCommand::ApplyPlaylistPreview { .. }
@@ -228,6 +229,21 @@ mod tests {
             Some("read_only_secondary")
         );
         assert!(!app.personal_state.sync.in_progress);
+    }
+
+    #[test]
+    fn publishing_a_track_is_a_durable_mutation_a_secondary_must_refuse() {
+        // A read-only secondary writing into the music folder would do it behind the primary's
+        // back, with no lease serialising the two.
+        let command = Cmd::MusicServer(crate::app::MusicServerCommand::PublishTrack {
+            generation: 1,
+            video_id: "abcdefghijk".to_owned(),
+        });
+
+        assert_eq!(
+            durable_mutation_component(&command),
+            Some("music server settings")
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ mod open_subsonic_runtime;
 mod persist_delivery;
 mod personal_sync_commit;
 pub(crate) mod player_delivery;
+mod publish_track_task;
 mod read_only;
 mod recorder_recovery;
 mod sync_activation_commit;
