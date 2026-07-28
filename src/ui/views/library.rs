@@ -64,27 +64,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             library_rows_len
         };
         render_filter(frame, app, rows[1], matches);
-    } else if !app.status.text.is_empty() && !app.control_box_active() {
+    } else if crate::ui::status_band_active(app) {
         // A transient status ("Added 2 tracks to …", the create-a-playlist nudge) rides the
         // spacer row so Library actions are visible without leaving the screen. It
-        // auto-clears after STATUS_TTL via the global StatusTick, like the Search band — and
-        // types itself in while the toast animation's window runs.
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[1].width) {
-            frame.render_widget(Paragraph::new(line), rows[1]);
-        } else {
-            let role = match app.status.kind {
-                crate::app::StatusKind::Error => R::Error,
-                crate::app::StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(app.theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                rows[1],
-            );
-        }
+        // auto-clears after STATUS_TTL via the global StatusTick, like the Search band.
+        crate::ui::render_status_band(frame, app, rows[1]);
     } else if app.effective_library_tab() == LibraryTab::Playlists
         && app.library_ui.open_playlist.is_some()
     {
@@ -383,13 +367,7 @@ fn render_list(
         );
 
         let base = if selected {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };
@@ -545,13 +523,7 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
         );
 
         let base = if selected {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else {
             app.theme.style(R::TextPrimary)
         };
@@ -852,13 +824,7 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
             };
             let body = crate::ui::text::truncate_owned_to_width(body, rows[1].width as usize);
             let style = if selected {
-                crate::ui::anim::selection_style(
-                    app,
-                    Style::default()
-                        .fg(app.theme.color(R::SelectionFg))
-                        .bg(app.theme.color(R::SelectionBg))
-                        .add_modifier(Modifier::BOLD),
-                )
+                crate::ui::selection_highlight(app)
             } else {
                 crate::ui::popup_style(app, R::TextPrimary)
             };

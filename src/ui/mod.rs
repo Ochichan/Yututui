@@ -13,11 +13,12 @@ pub mod text;
 pub mod views;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Clear};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Clear, Paragraph};
 
-use crate::app::{ActiveSearchSurface, App, Mode};
+use crate::app::{ActiveSearchSurface, App, Mode, StatusKind};
 use crate::theme::ThemeRole as R;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -234,6 +235,46 @@ pub fn centered_list_popup(area: Rect, body_rows: usize, chrome_rows: u16, min_w
         height: box_h,
     }
     .intersection(area)
+}
+
+/// True while a transient status message should own a view's spare band. The docked
+/// control box's title row shows the same text, so the band stays free when the box is on
+/// screen — otherwise the message would appear twice.
+pub(in crate::ui) fn status_band_active(app: &App) -> bool {
+    !app.status.text.is_empty() && !app.control_box_active()
+}
+
+/// The shared status/toast band: the type-in toast while its animation window runs
+/// (identity when animations are off), otherwise the plain centered line colored by kind.
+pub(in crate::ui) fn render_status_band(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(line) = anim::status_toast_line(app, area.width) {
+        frame.render_widget(Paragraph::new(line), area);
+    } else {
+        let role = match app.status.kind {
+            StatusKind::Error => R::Error,
+            StatusKind::Info => R::Success,
+        };
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(app.status.text.as_str())
+                    .style(app.theme.style(role))
+                    .alignment(Alignment::Center),
+            ),
+            area,
+        );
+    }
+}
+
+/// The cursor-row highlight every list shares: bold `SelectionFg` on `SelectionBg`,
+/// routed through the selection-pulse animation (identity when that effect is off).
+pub(in crate::ui) fn selection_highlight(app: &App) -> Style {
+    anim::selection_style(
+        app,
+        Style::default()
+            .fg(app.theme.color(R::SelectionFg))
+            .bg(app.theme.color(R::SelectionBg))
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 pub fn popup_bg(app: &App) -> Color {

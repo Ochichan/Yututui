@@ -19,13 +19,13 @@ pub(crate) use sync::render_sync;
 pub(crate) use sync_wizard::render_sync_wizard;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget, ScrollSurface, StatusKind};
+use crate::app::{App, MouseTarget, ScrollSurface};
 use crate::config::{
     FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
 };
@@ -278,23 +278,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // renders `app.status` — Settings must too, or account actions look like silent no-ops.
     // With the docked control box on screen its title row already shows the same status, so
     // the footer keeps the keybinding hint instead of doubling the message.
-    if !app.status.text.is_empty() && !app.control_box_active() {
-        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[4].width) {
-            frame.render_widget(Paragraph::new(line), rows[4]);
-        } else {
-            let role = match app.status.kind {
-                StatusKind::Error => R::Error,
-                StatusKind::Info => R::Success,
-            };
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(app.status.text.as_str())
-                        .style(theme.style(role))
-                        .alignment(Alignment::Center),
-                ),
-                rows[4],
-            );
-        }
+    if crate::ui::status_band_active(app) {
+        crate::ui::render_status_band(frame, app, rows[4]);
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),

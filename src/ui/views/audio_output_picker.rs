@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -155,13 +155,7 @@ fn render_rows(frame: &mut Frame, app: &App, rows: &[crate::app::AudioOutputRow]
             width,
         );
         let style = if focused {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            crate::ui::selection_highlight(app)
         } else if row.selectable {
             crate::ui::popup_style(app, R::TextPrimary)
         } else {
